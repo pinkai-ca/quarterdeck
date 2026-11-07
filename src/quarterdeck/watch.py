@@ -172,7 +172,7 @@ class Facts:
     disks: list[tuple[str, int]] = field(default_factory=list)
     login: list[str] = field(default_factory=list)
 
-    def line(self) -> str:
+    def line(self) -> str:  # law: nothing-waits-silently
         parts = ["service ok" if self.service else "SERVICE DOWN"]
         parts.append(f"{self.waiting} waiting" + (f", oldest {self.oldest}m" if self.waiting else ""))
         if self.blind:

@@ -108,6 +108,40 @@ def seat_section(ship: Ship, seat: SeatSpec, human_session: bool) -> str:
     return "\n".join(lines)
 
 
+TAG = re.compile(r"law: ([a-z][a-z-]*[a-z])")
+PROJECT_DIR = FRAMEWORK_DIR.parent
+
+
+def carriers(root: Path | None = None) -> dict[str, list[tuple[Path, int]]]:
+    """Every ``law: <id>`` tag in the source and the tests, by law id, with file and line."""
+    root = root or PROJECT_DIR
+    found: dict[str, list[tuple[Path, int]]] = {}
+    for folder in ("src", "tests"):
+        for path in sorted((root / folder).rglob("*.py")):
+            for number, line in enumerate(path.read_text().splitlines(), 1):
+                for tag in TAG.findall(line):
+                    found.setdefault(tag, []).append((path.relative_to(root), number))
+    return found
+
+
+def laws_table(root: Path | None = None) -> list[str]:
+    """``qd laws``: each law with the lines that carry it, in the code and in the tests."""
+    root = root or PROJECT_DIR
+    found = carriers(root)
+    lines = []
+    for law in laws():
+        lines.append(f"{law.id:<24} {law.text}")
+        by_file: dict[Path, list[int]] = {}
+        for path, number in found.get(law.id, []):
+            by_file.setdefault(path, []).append(number)
+        where = "   ".join(f"{path}:{', '.join(map(str, numbers))}" for path, numbers in by_file.items())
+        lines.append(f"{'':<24} {where or 'carried nowhere'}")
+    strays = sorted(set(found) - {law.id for law in laws()})
+    if strays:
+        lines.append(f"tags naming no law: {', '.join(strays)}")
+    return lines
+
+
 def render(ship: Ship, seat: SeatSpec) -> Path:
     folder = ship.runtime / "brief"
     folder.mkdir(parents=True, exist_ok=True)

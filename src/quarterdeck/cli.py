@@ -78,6 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--adopt", action="store_true", help="write what the seat is running into the ship file")
     p = verb("controls", cmd_controls, "list a seat's controls with the form each has")
     p.add_argument("seat", nargs="?", help="default: this seat (QD_SEAT)")
+    verb("laws", cmd_laws, "the laws, each with the lines of code and test that carry it")
     p = verb("brief", cmd_brief, "print exactly what a seat reads at boot")
     p.add_argument("seat", nargs="?", help="default: this seat (QD_SEAT)")
     p.add_argument("--sources", action="store_true", help="say which file each part came from")
@@ -243,6 +244,10 @@ def cmd_controls(args: argparse.Namespace) -> list[str]:
     for key, how in RESTART_CONTROLS.items():
         rows.append(f"{key:<10} {'the ship file':<22} {'-':<18} qd {how}")
     return rows
+
+
+def cmd_laws(args: argparse.Namespace) -> list[str]:
+    return standing.laws_table()
 
 
 def cmd_brief(args: argparse.Namespace) -> str:

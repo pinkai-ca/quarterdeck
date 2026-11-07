@@ -237,7 +237,7 @@ SETTINGS = {
     "env": {"DISABLE_AUTOUPDATER": "1"},
     "promptSuggestionEnabled": False,
     "includeCoAuthoredBy": False,
-    "permissions": {"allow": ["Bash(qd *)", "Bash(qd:*)"], "defaultMode": "auto"},
+    "permissions": {"allow": ["Bash(qd *)", "Bash(qd:*)"], "defaultMode": "auto"},  # law: can-post
 }
 
 

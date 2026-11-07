@@ -307,7 +307,7 @@ def commit(folder: Path, paths: list[str], message: str) -> str:
     _git(folder, "add", "--", *paths)
     if not _git(folder, "status", "--porcelain", "--", *paths):
         return "nothing"
-    _git(folder, "commit", "--quiet", "--only", "-m", message, "--", *paths)
+    _git(folder, "commit", "--quiet", "--only", "-m", message, "--", *paths)  # the named files, nothing swept in (law: nothing-leaks)
     return _git(folder, "rev-parse", "--short", "HEAD")
 
 
@@ -318,7 +318,7 @@ def fence(ship: Ship) -> str:
     """
     runtime = ship.runtime
     if ship.is_repository:
-        if _git(ship.folder, "ls-files", "--", RUNTIME):
+        if _git(ship.folder, "ls-files", "--", RUNTIME):  # law: nothing-leaks
             raise ShipError(
                 f"{ship.folder.name} tracks {RUNTIME}/ in git; "
                 f"`git -C {ship.folder} rm -r --cached {RUNTIME}` lifts it"

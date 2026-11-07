@@ -111,6 +111,7 @@ def test_a_worker_starts_fresh_after_its_order_closes(ship: shipmod.Ship, tmux: 
     qd(capsys, "up", "worker-1")
     worker = seatmod.Seat(ship, ship.seat("worker-1"), tmux)
     first_launch = worker.launched()
+    qd(capsys, "set", "worker-1", "model=fake-2")  # written to the ship file while the seat runs
     # the fake follows the "$ " line, which posts the closing report from inside the seat (law: can-post)
     qd(capsys, "post", "order", "--to", "worker-1", "Do it and report.\n$ qd post report --re {this} done")
     wait_for(lambda: not post.Store(ship.runtime).open_for("worker-1"), seconds=20)
@@ -118,6 +119,7 @@ def test_a_worker_starts_fresh_after_its_order_closes(ship: shipmod.Ship, tmux: 
     assert report.kind == "report" and report.sender == "worker-1" and report.to == "operator"
     wait_for(lambda: worker.launched() and worker.launched().at != first_launch.at, seconds=20)  # law: context-is-cache
     assert worker.launched().resume is None, "fresh: a new conversation"
+    assert "fake-2" in worker.launched().argv, "the service read the ship file afresh, not what it loaded at start"  # law: ship-file
     log = (ship.runtime / "log" / "service.jsonl").read_text()
     assert '"event": "fresh"' in log
 
@@ -244,6 +246,21 @@ def test_a_seat_moves_on_at_a_wall_and_stays(ship: shipmod.Ship, tmux: Tmux, cap
     assert "wall: fake 5h" in qd(capsys, "status", "--line")  # law: nothing-waits-silently
     time.sleep(2.5)
     assert captain.pool.name == "fake-2", "it stays, even though the first pool is the one declared first"
+
+
+def test_a_blocked_delivery_goes_in_on_the_tick_after_the_human_clears_the_box(ship: shipmod.Ship, tmux: Tmux, capsys):
+    qd(capsys, "up", "captain")
+    captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
+    wait_for(lambda: captain.harness.screen(tmux.capture(captain.pane().id)).box == "")
+    tmux.paste(captain.pane().id, "a human's half-written thought")  # the human at this keyboard
+    qd(capsys, "post", "order", "--to", "captain", "waits behind the human's text")
+    time.sleep(2.5)
+    store, attempts = post.Store(ship.runtime), post.Attempts(ship.runtime)
+    assert attempts.all() == [], "nothing typed, nothing attempted while a human's text is in the box"  # law: one-door
+    assert "captain needs a human" in qd(capsys, "status", "--line")
+    tmux.keys(captain.pane().id, "C-u")  # the human clears their own box
+    done = wait_for(lambda: [a for a in attempts.all() if a.delivered], seconds=6)  # law: events-not-clocks
+    assert done[0].message == store.all()[0].id and done[0].result == "delivered"
 
 
 def test_the_service_reconciles_an_attempt_it_died_in_the_middle_of(ship: shipmod.Ship, tmux: Tmux, capsys):

@@ -118,6 +118,27 @@ def test_a_resumed_record_continues_its_turn_count(tmp_path: Path):
         assert reader.records(tmp_path) == [record.path]
 
 
+def test_a_seat_joins_the_first_record_after_its_launch_and_an_ambiguous_join_is_reported(tmp_path: Path):
+    from datetime import datetime, timedelta, timezone
+
+    from quarterdeck.harness.fake import FakeHarness
+
+    harness = FakeHarness()
+    launched = datetime.now(timezone.utc) - timedelta(seconds=1)
+    before = ClaudeShape(tmp_path, Path("/work"), "old", "fake-1")
+    before.write({"type": "user", "timestamp": (launched - timedelta(minutes=5)).isoformat(), "sessionId": "old",
+                  "message": {"role": "user", "content": "an older session"}})
+    assert harness.join(tmp_path, launched).reason == "no record yet", "a record from before the launch is not this seat's"
+    first = ClaudeShape(tmp_path, Path("/work"), "new", "fake-1")
+    first.begin("hello", "fake-1", "low")
+    assert harness.join(tmp_path, launched).record == first.path  # law: one-record
+    twin = ClaudeShape(tmp_path, Path("/work"), "twin", "fake-1")
+    stamp = claude.entries(first.path)[0]["timestamp"]
+    twin.write({"type": "user", "timestamp": stamp, "sessionId": "twin", "message": {"role": "user", "content": "hello"}})
+    join = harness.join(tmp_path, launched)
+    assert join.record is None and join.reason.startswith("ambiguous:"), "two records at the same moment: reported, never guessed"
+
+
 def test_a_partial_last_line_is_skipped(tmp_path: Path):
     record = ClaudeShape(tmp_path, Path("/work"), "sess-6", "fake-1")
     record.begin("one", "fake-1", "low")

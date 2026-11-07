@@ -180,7 +180,7 @@ project_doc_max_bytes = 0
 check_for_update_on_startup = false
 
 [sandbox_workspace_write]
-writable_roots = [{runtime}]
+writable_roots = [{runtime}]  # the post store lives here: qd post works from the seat (law: can-post)
 network_access = true
 
 [projects.{cwd}]
