@@ -18,11 +18,12 @@ Python 3.12 or later, tmux 3.x, git. The framework uses the standard library onl
 git clone <this repository> quarterdeck && cd quarterdeck
 python3 -m venv --system-site-packages .venv && .venv/bin/pip install -e .
 .venv/bin/qd drill                      # the all-hands exercise on the fake harness, about 25 seconds
-.venv/bin/qd --ship ships/example up    # the example ship: three fake seats in three tmux sessions
-.venv/bin/qd --ship ships/example status
+.venv/bin/qd --ship ships/drydock up    # the drydock: three fake seats in three tmux sessions
+.venv/bin/qd --ship ships/drydock status
+.venv/bin/qd doctor                     # is this machine ready: programs, versions, sign-ins, tmux, disk
 ```
 
-A ship of your own is a folder under `ships/`, its own git repository, holding a `ship.toml` like `ships/example/ship.toml` with real pools and programs, and an `orders.md`. Point `qd` at it with `--ship` or `QD_SHIP`. Then:
+A ship of your own is a folder under `ships/`, its own git repository, holding a `ship.toml` and an `orders.md`. `ships/default/` is the smallest crew on real programs, a desk on Claude Code with a captain and an engineer on Codex, using the sign-ins already on the machine; copy it and change what differs. Point `qd` at a ship with `--ship` or `QD_SHIP`. Then:
 
 ```
 qd up                               # the service and every seat marked up, resuming what has a record
@@ -39,10 +40,10 @@ Every verb prints a proof line saying what was done and how it was confirmed; ev
 
 ## What is proven, and what is not
 
-Claude Code 2.1.317 and Codex 0.166.0 are proven live by `qd check` on 7 November 2026; their adapters know each program's record, screen, keys, dialogs and controls, pinned by fixtures under `tests/fixtures/`. Antigravity 1.5.2 has no home switch, so its seat runs in the user's Antigravity state. It reads only proven seat-owned records through an in-memory SQLite/WAL snapshot, confirms inputs from the record and accounts completed turns. Unsupported fields and incomplete records remain unknown. Its synthetic contracts and schema evidence are documented in [the record contract](docs/ANTIGRAVITY.md); no live check has been run for this reader. A newer version of any program runs with the newest known facts and is reported as unproven until `qd check` proves it.
+Claude Code 2.1.317 and Codex 0.166.0 are proven live by `qd check` on 7 November 2026; their adapters know each program's record, screen, keys, dialogs and controls, pinned by fixtures under `tests/fixtures/`. Antigravity 1.5.2 has no home switch, so its seat runs in the user's Antigravity state; its record, a SQLite database of protobuf messages, is read from a snapshot of its bytes, so deliveries are confirmed and turns accounted like the others, and what the record does not hold is marked rather than guessed. The fields read are in `docs/ANTIGRAVITY.md`; its live check is still to run. A newer version of any program runs with the newest known facts and is reported as unproven until `qd check` proves it.
 
 ## Working on it
 
-`AGENTS.md` is for whoever works on the framework itself. The tests run with `.venv/bin/python -m pytest -q`: unit tests, contract tests against recorded screens, and integration tests on a private tmux server with the fake harness. No source file may exceed 400 lines, nothing from a runtime may be tracked, and every law must be carried in code and tried by a test; three tests guard those.
+`AGENTS.md` is for whoever works on the framework itself. The tests run with `.venv/bin/python -m pytest -q`: unit tests, contract tests against recorded screens, and integration tests on a private tmux server with the fake harness. Nothing from a runtime may be tracked, and every law must be carried in code and tried by a test; two tests guard those.
 
 MIT licence. Copyright (c) 2026 Tyler Dwyer.
