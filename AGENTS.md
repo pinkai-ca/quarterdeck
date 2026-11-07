@@ -4,7 +4,7 @@ For whoever works on the framework itself, person or agent. The design is `docs/
 
 ## Shape
 
-- `src/quarterdeck/` is the framework: standard library only, Python 3.12 or later, no file over 400 lines (a test enforces it). One module per part, named in `docs/DESIGN.md` section 13. `tmux.py` is the only module that runs tmux.
+- `src/quarterdeck/` is the framework: standard library only, Python 3.12 or later, no file over 400 lines (a test enforces it). One module per part, named in `docs/DESIGN.md` section 13, plus the pieces that grew beside them: `servicectl.py` (the service's heartbeat, lock, start, stop and requests), `credential.py` (the one link a seat shares with its pool, reseeded and relinked on the tick), `machine.py` (a seat's process tree sampled for the Ledger), `check.py` (`qd check`, the live proof of an installed program), `fakerecord.py` (the fake harness's records in the real programs' shapes). `tmux.py` is the only module that runs tmux.
 - `standing-orders/` holds the laws and the generic cards every seat reads. `ships/example/` is the one ship tracked here; every other ship under `ships/` is its own repository, ignored by this one, and its `runtime/` is a nested repository with no commits.
 - `tests/unit` is pure logic, `tests/integration` runs a private tmux server and the fake harness, `tests/contract` runs each adapter against recorded fixtures, `tests/live` spends real tokens and runs only with `-m live`.
 
