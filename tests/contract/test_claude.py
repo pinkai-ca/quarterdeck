@@ -141,6 +141,7 @@ def test_the_launch_carries_our_files_and_nothing_of_the_users(tmp_path: Path):
     pool_dir = tmp_path / "pool"
     pool_dir.mkdir()
     (pool_dir / ".credentials.json").write_text("{}")
+    (pool_dir / ".claude.json").write_text(json.dumps({"oauthAccount": {"accountUuid": "acc", "organizationUuid": "org"}, "theme": "light"}))
     pool = Pool("claude-secondary", "claude", config_dir=pool_dir)
     seat = SeatSpec("pike", "bridge", "captain", "claude", ("claude-secondary",), model="claude-opus-5-5", effort="max",
                     persona="Pike", cwd=tmp_path / "work", settings={"autoCompactWindow": "auto"})
@@ -154,6 +155,8 @@ def test_the_launch_carries_our_files_and_nothing_of_the_users(tmp_path: Path):
     assert "Bash(qd *)" in settings["permissions"]["allow"]
     state = json.loads((home / ".claude.json").read_text())
     assert state["hasCompletedOnboarding"] and state["projects"][str(tmp_path / "work")]["hasTrustDialogAccepted"]
+    assert state["oauthAccount"] == {"accountUuid": "acc", "organizationUuid": "org"} and state["theme"] == "dark", \
+        "the pool's account record, nothing else of its state"
     brief = tmp_path / "brief.md"
     launch = harness.launch(seat, pool, home, brief, None, "qd > briefed as pike")
     assert launch.argv == ("claude", "--setting-sources", "user", "--append-system-prompt-file", str(brief), "--name", "Pike",

@@ -247,6 +247,21 @@ def merged(base: dict, layer: dict) -> dict:
     return out
 
 
+def pool_account(pool: Pool) -> dict | None:
+    """The account record beside a subscription's credential, and nothing else of the pool's state.
+
+    Probed on 2.1.317: a home that does not yet know whose credential it holds opens Remote Control
+    only on its second launch, so a seat's state is given the record before its first.
+    """
+    if pool.config_dir is None:
+        return None
+    try:
+        account = json.loads((pool.config_dir / ".claude.json").read_text()).get("oauthAccount")
+    except (OSError, json.JSONDecodeError):
+        return None
+    return account if isinstance(account, dict) else None
+
+
 class ClaudeHarness(Harness):
     """Claude Code, proven on 2.1.317."""
 
@@ -265,6 +280,8 @@ class ClaudeHarness(Harness):
         state_file = home / ".claude.json"
         state = json.loads(state_file.read_text()) if state_file.is_file() else {}
         state.update({"hasCompletedOnboarding": True, "theme": state.get("theme", "dark")})
+        if account := pool_account(pool):
+            state["oauthAccount"] = account  # whose credential this is, known before the first launch
         cwd = str(seat.cwd) if seat.cwd else None
         if cwd:
             state.setdefault("projects", {}).setdefault(cwd, {})["hasTrustDialogAccepted"] = True
