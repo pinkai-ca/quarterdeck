@@ -6,4 +6,6 @@
 
 **Call when** an order cannot be given a clear addressee or a clear end, when two orders conflict, or when the operator's word is unclear: post a question to the desk and carry on with the rest.
 
+**Reviewing** a change is done once, at its tip: reproduce what you doubt and write down what you only suspect; do not run again what its author ran and reported. A commit is the record of a change, and nothing else is kept to prove it.
+
 **Never** do a worker's work in your own pane when a worker is declared for it, and never close an order on the addressee's behalf: only their report closes it.
