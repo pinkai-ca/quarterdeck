@@ -83,8 +83,10 @@ class Reading:
 
 
 class UsageCache:
-    def __init__(self, db):
+    def __init__(self, db, create: bool = True):
         self.db = db
+        if not create:  # a reading opens the book read-only and migrates nothing
+            return
         columns = {r[1] for r in db.execute('PRAGMA table_info(pools)')}
         for name in ('attempted_at', 'error'):
             if name not in columns:

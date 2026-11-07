@@ -9,15 +9,14 @@ refreshed by tmux itself, so a dead service never looks like a healthy idle ship
 
 from __future__ import annotations
 
-from . import pending as pending_delivery
-
 import shutil
+import sqlite3
 import tempfile
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from . import credential, ledger, post, record_owner, service
+from . import credential, ledger, pending as pending_delivery, post, record_owner, service
 from .door import Door, Reading
 from .harness.base import same_name
 from .seat import Seat, seats
@@ -81,7 +80,7 @@ class SeatReading:
     activity: Activity
     door: Reading
     order: str | None
-    today: int | None
+    today: ledger.Count
     pool: str
     model: str
     harness: str
@@ -120,42 +119,38 @@ def reading(seat: Seat, store: post.Store | None = None) -> SeatReading:
                        f"{seat.harness.name} {version}".strip() if version else seat.harness.name)
 
 
-def tokens_today(seat: Seat) -> int | None:
-    """Today's tokens from the Ledger, which outlives a fresh start; from the record while the Ledger has nothing; None when unknown."""
-    book_path = seat.ship.runtime / "ledger.sqlite"
+def tokens_today(seat: Seat) -> ledger.Count:
+    """Today's tokens: the Ledger's count, which outlives a fresh start; the records' while the Ledger has nothing.
+
+    A ``+`` on the figure says some of today's turns could not be measured: a record that would not
+    read, a turn whose usage the record does not hold, a turn count the record leaves uncertain.
+    """
     day = date.today().isoformat()
-    counted: int | None = 0
-    if book_path.exists():
-        book = ledger.Ledger(book_path)
-        try:
-            counted = book.today(seat.name, day)
-        finally:
-            book.close()
-        if counted is None:
-            return None
+    book = ledger.Ledger.reading(seat.ship.runtime / "ledger.sqlite")
+    if book is not None:
+        with book:
+            try:
+                counted = book.today(seat.name, day)
+            except sqlite3.OperationalError:  # a book written by an older service: read the records instead
+                counted = ledger.Count()
+        if counted.known or counted.unmeasured:
+            return counted
     if not seat.harness.record_confirms:
-        return counted or None
-    join = seat.join()
-    if join.record is None and join.reason and join.reason.split(":")[0] in ("record missing", "ambiguous", "record reader unknown", "record reader changed", "record unreadable"):
-        return None
-    if join.record is None and seat.launched() is not None:
-        return None  # the new program has not established a readable record yet
-    owned = record_owner.records(seat)
-    if not owned:
-        return counted or 0
-    uncounted = 0
-    for item in owned:
+        return ledger.Count()
+    found = ledger.Count()
+    for item in record_owner.records(seat):
         try:
             state, turns = item.read()
         except OSError:
-            return None
+            found += ledger.Count(0, 1)  # a record that would not read: whatever it holds is not in the figure
+            continue
+        for turn in turns:
+            when = turn.ended or turn.started
+            if when is not None and when.astimezone().date().isoformat() == day:
+                found += ledger.Count(turn.tokens.total, turn.tokens.unmeasured)
         if state.turns is None or state.turn_open is None:
-            return None
-        today_turns = [t for t in turns if t.ended is None or t.ended.astimezone().date().isoformat() == day]
-        if any(t.ended is None or t.tokens.total is None for t in today_turns):
-            return None
-        uncounted += sum(t.tokens.total for t in today_turns)
-    return counted if counted else uncounted
+            found += ledger.Count(0, 1)  # the record leaves its own turn count uncertain
+    return found
 
 
 def running_settings(seat: Seat) -> dict[str, str]:
@@ -190,8 +185,7 @@ def table(ship: Ship, tmux: Tmux) -> list[str]:
     rows = [head, f"{'seat':<10} {'activity':<24} {'door':<40} {'order':<10} {'today':>8}  pool · model"]
     for seat in seats(ship, tmux):
         r = reading(seat, store)
-        today = str(r.today) if r.today is not None else "unknown"
-        rows.append(f"{r.name:<10} {str(r.activity):<24} {str(r.door):<40} {r.order or '-':<10} {today:>8}  {r.pool} · {r.model}")
+        rows.append(f"{r.name:<10} {str(r.activity):<24} {str(r.door):<40} {r.order or '-':<10} {str(r.today):>8}  {r.pool} · {r.model}")
     open_orders = [m for m in store.all() if m.kind == "order" and store.is_open(m)]
     rows.append(f"open orders: {len(open_orders)}")
     for m in open_orders:
@@ -203,7 +197,7 @@ def table(ship: Ship, tmux: Tmux) -> list[str]:
 def full(seat: Seat) -> list[str]:
     """``qd watch <seat>``: the whole reading, including the screen as the adapter parsed it."""
     r = reading(seat)
-    today = f"{r.today} tokens today" if r.today is not None else "unknown tokens today"
+    today = f"{r.today} tokens today" + (" (+: some turns were not measured)" if r.today.unmeasured else "")
     lines = [f"{r.name}: {r.activity} · door {r.door} · order {r.order or '-'} · {today}",
              f"  {r.harness} · pool {r.pool} · model {r.model}"]
     record = seat.record()
@@ -274,36 +268,37 @@ class Facts:
         return " · ".join(parts)
 
 
-def ledger_usage(ship: Ship) -> list[str]:
-    """The Google decision window already read by the service, never a provider request."""
-    from .quota import reset_text
+SCHEMA_BEHIND = "ledger written by an older service; qd up restarts it"
 
-    path = ship.runtime / "ledger.sqlite"
+
+def ledger_usage(ship: Ship) -> list[str]:
+    """The Google decision window the service already read; a reading, never a provider request."""
     google = {p.name for p in ship.pools.values() if p.provider == "antigravity"}
     if not google:
         return []
     found = {}
-    if path.exists():
-        book = ledger.Ledger(path)
-        try:
-            for reading in book.usage.rows():
-                if reading.group == 'Gemini 4 Argon' and reading.blocks:
-                    found[reading.pool] = reading.describe(post.now())
-        finally:
-            book.close()
+    book = ledger.Ledger.reading(ship.runtime / "ledger.sqlite")
+    if book is not None:
+        with book:
+            try:
+                for reading in book.usage.rows():
+                    if reading.group == "Gemini 4 Argon" and reading.blocks:
+                        found[reading.pool] = reading.describe(post.now())
+            except sqlite3.OperationalError:
+                return [SCHEMA_BEHIND]
     return [found.get(pool, f"{pool} usage unknown") for pool in sorted(google)]
 
 
 def ledger_walls(ship: Ship) -> list[str]:
     """The walls the Ledger knows of, read without opening a book the service has not written yet."""
-    path = ship.runtime / "ledger.sqlite"
-    if not path.exists():
+    book = ledger.Ledger.reading(ship.runtime / "ledger.sqlite")
+    if book is None:
         return []
-    book = ledger.Ledger(path)
-    try:
-        return book.walls(ship)
-    finally:
-        book.close()
+    with book:
+        try:
+            return book.walls(ship)
+        except sqlite3.OperationalError:
+            return [SCHEMA_BEHIND]
 
 
 def disks(paths: list[Path]) -> list[tuple[str, int]]:

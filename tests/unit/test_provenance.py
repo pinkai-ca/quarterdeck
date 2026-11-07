@@ -72,7 +72,7 @@ def test_account_same_record_failover_restart_and_delayed_metadata(tmp_path, mon
     record.unlink()
     svc.account()
     assert {r[2] for r in svc.ledger.incomplete_records()} == {'pool-a', 'pool-b'}
-    assert all(r.turns is None for r in svc.ledger.rollup('pool'))
+    assert all(r.unmeasured for r in svc.ledger.rollup('pool')), 'a record that would not read marks its pools, and hides nothing'
     new = replace(old, index=4, started=resumed.when + timedelta(seconds=1),
                   ended=resumed.when + timedelta(seconds=2), tokens=Tokens(2, 20, 0, 3), tools=())
     data.update(turns=[old, new], state=State(turns=2, turn_open=False))
@@ -90,7 +90,7 @@ def test_account_same_record_failover_restart_and_delayed_metadata(tmp_path, mon
     svc.account()
     expected = [(0,'pool-a',11),(2,'pool-a',10),(4,'pool-b',20)]
     assert svc.ledger.db.execute('SELECT turn,pool,read_uncached FROM turns ORDER BY turn').fetchall() == expected
-    assert svc.ledger.tools() == [('shell',1,1.5,0)]
+    assert svc.ledger.tools() == [('shell',1,1.5,0,0,0)]
     assert svc.ledger.db.execute('SELECT cpu_seconds,peak_rss,max_processes,write_bytes FROM turns WHERE turn=0').fetchone() == (3.5,4096,2,800)
     before = svc.ledger.db.total_changes
     svc.account()
@@ -141,5 +141,5 @@ def test_missing_or_ambiguous_launch_history_is_explicit_and_can_improve(tmp_pat
     assert book.db.execute('SELECT pool FROM turns WHERE turn=8').fetchone() == ('-',)
     book.mark_record(record, 'worker', '-', 'incomplete history')
     assert {r[2] for r in book.incomplete_records()} == {'-', 'pool-a', 'pool-b', 'pool-c'}
-    assert all(r.turns is None for r in book.rollup('pool'))
+    assert all(r.unmeasured for r in book.rollup('pool'))
     book.close()

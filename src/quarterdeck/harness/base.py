@@ -25,30 +25,39 @@ from .json_record import RecordError, entries, when
 
 @dataclass(frozen=True)
 class Tokens:
-    """As many classes as the provider bills; four for Anthropic. None where a class is not exposed."""
+    """As many classes as the provider bills; four for Anthropic. A class a provider never reports is zero.
 
-    read_cached: int | None = 0
-    read_uncached: int | None = 0
-    cache_written: int | None = 0
-    written: int | None = 0
+    ``unmeasured`` counts the steps whose usage the record did not hold. Their tokens are missing from
+    the four sums, so a figure built on them is shown with a trailing ``+``: at least this much.
+    """
+
+    read_cached: int = 0
+    read_uncached: int = 0
+    cache_written: int = 0
+    written: int = 0
+    unmeasured: int = 0
 
     @classmethod
     def unknown(cls) -> "Tokens":
-        return cls(None, None, None, None)
+        """One step whose usage the record does not hold."""
+        return cls(unmeasured=1)
 
     def __add__(self, other: "Tokens") -> "Tokens":
-        add = lambda a, b: None if (a is None or b is None) else a + b
         return Tokens(
-            add(self.read_cached, other.read_cached),
-            add(self.read_uncached, other.read_uncached),
-            add(self.cache_written, other.cache_written),
-            add(self.written, other.written),
+            self.read_cached + other.read_cached,
+            self.read_uncached + other.read_uncached,
+            self.cache_written + other.cache_written,
+            self.written + other.written,
+            self.unmeasured + other.unmeasured,
         )
 
     @property
-    def total(self) -> int | None:
-        parts = (self.read_cached, self.read_uncached, self.cache_written, self.written)
-        return None if any(p is None for p in parts) else sum(parts)
+    def total(self) -> int:
+        return self.read_cached + self.read_uncached + self.cache_written + self.written
+
+    @property
+    def complete(self) -> bool:
+        return self.unmeasured == 0
 
 
 @dataclass(frozen=True)
@@ -72,10 +81,13 @@ class Turn:
     tools: tuple[ToolCall, ...] = ()
     cost: float | None = None
     subagent_turns: int | None = 0
+    timed: bool = True  # False where the end is the last step's time, not a completion the record stated: the duration is unknown
 
     @property
     def seconds(self) -> float | None:
-        return None if (self.started is None or self.ended is None) else (self.ended - self.started).total_seconds()
+        if not self.timed or self.started is None or self.ended is None:
+            return None
+        return (self.ended - self.started).total_seconds()
 
 
 @dataclass(frozen=True)

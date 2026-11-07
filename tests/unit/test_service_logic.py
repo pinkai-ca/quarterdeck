@@ -53,7 +53,7 @@ def test_account_tracks_wal_fingerprint_and_retries_after_transient_read_error(t
     pool = Pool("google", "antigravity")
     spec = SeatSpec("scott", "bridge", "worker", "antigravity", ("google",), cwd=tmp_path)
     ship = Ship(tmp_path, "enterprise", "admiral", tmp_path, {"google": pool}, {"bridge": Session("bridge", "qd")}, {"scott": spec})
-    fake_tmux = SimpleNamespace(pane=lambda pane_id: Pane("%1", "qd", "scott", 4242, 80, 24, False, False, None))
+    fake_tmux = SimpleNamespace(pane=lambda pane_id: Pane("%1", "qd", "scott", 4242, 80, 24, False, False, None), capture=lambda *a, **k: "")
     svc = Service(ship, fake_tmux)
     seat = svc.seat("scott")
     seat.folder.mkdir(parents=True, exist_ok=True)
@@ -82,7 +82,7 @@ def test_account_tracks_wal_fingerprint_and_retries_after_transient_read_error(t
     svc.account()
     assert svc.ledger.ingested(rec.path) == 0 and rec.path not in svc.read_marks
     assert svc.ledger.incomplete_records() == [(str(rec.path), "scott", "google", "transient concurrent write")]
-    assert svc.ledger.rollup("seat")[0].turns is None
+    assert svc.ledger.rollup("seat")[0].unmeasured == 1, "nothing read yet, and the figure says so with a +"
     svc.account()
     assert svc.ledger.ingested(rec.path) == 1 and rec.path in svc.read_marks
     assert svc.ledger.incomplete_records() == [] and svc.ledger.rollup("seat")[0].turns == 1
@@ -112,14 +112,14 @@ def test_account_tracks_wal_fingerprint_and_retries_after_transient_read_error(t
     # Closing the writer checkpoints and removes .db-wal: fingerprint reflects WAL removal
     assert record_fingerprint(rec.path) != fp_with_wal
 
-    # If an earlier step becomes status 0 (unknown turn state), account() keeps the known turn in the ledger
-    # and marks the record incomplete so rollup reports turns as None (unknown) rather than a partial count
+    # If an earlier step becomes status 0 (unknown turn state), account() keeps the known turns in the ledger
+    # and marks the record incomplete, so the rollup keeps its figures and puts a + beside them
     with sqlite3.connect(rec.path) as con:
         con.execute("UPDATE steps SET status = 0 WHERE idx = 0")
     svc.account()
     assert svc.ledger.ingested(rec.path) == 2
     assert len(svc.ledger.incomplete_records()) == 1
-    assert svc.ledger.rollup("seat")[0].turns is None
+    assert svc.ledger.rollup("seat")[0].turns == 2 and svc.ledger.rollup("seat")[0].unmeasured >= 1
     svc.ledger.close()
 
 
@@ -161,5 +161,5 @@ def test_account_keeps_sparse_ids_and_missing_owned_records_visible(tmp_path, mo
     assert harness.records(home) == [record], 'missing owned record must remain enumerable'
     svc.account()
     assert 'record missing' in '\n'.join(table(svc.ledger,'seat'))
-    assert svc.ledger.rollup('seat')[0].turns is None
+    assert svc.ledger.rollup('seat')[0].unmeasured >= 1
     svc.ledger.close()

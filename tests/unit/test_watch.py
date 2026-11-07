@@ -38,7 +38,7 @@ def test_ages_read_as_a_person_says_them():
     assert str(watch.Activity("working", "in Bash 3m")) == "working, in Bash 3m" and str(watch.Activity("idle")) == "idle"
 
 
-def test_watch_and_seat_report_unknown_instead_of_zero_when_record_or_tokens_are_unknown(tmp_path: Path):
+def test_watch_and_seat_count_what_was_read_and_mark_what_was_not(tmp_path: Path):
     import json
     import sqlite3
 
@@ -68,51 +68,53 @@ def test_watch_and_seat_report_unknown_instead_of_zero_when_record_or_tokens_are
         "pool": "google", "resume": None, "argv": ["agy"], "version": "1.5.2",
     }))
 
-    # 1. Corrupt record: activity is unknown, tokens_today is None, watch.full and watch.table say unknown, is_working falls back to screen
+    # 1. A record that will not read: activity unknown, today 0+ (nothing read, something there), the screen says whether it works
     bad_record = tmp_path / "bad.db"
     bad_record.write_text("not sqlite")
     (seat.folder / "record").write_text(f"{bad_record}\n")
     assert watch.activity(seat).state == "unknown"  # law: record-first
-    assert watch.tokens_today(seat) is None
+    assert str(watch.tokens_today(seat)) == "0+", "nothing could be read, and the + says so"
     assert seat.is_working() is True, "when record is unreadable, is_working falls back to screen"
     state_holder["screen"] = idle_screen
     assert seat.is_working() is False
-    assert "unknown" in "\n".join(watch.table(ship, FakeTmux()))
-    assert "unreadable" in "\n".join(watch.full(seat)) and "unknown tokens today" in "\n".join(watch.full(seat))
+    assert "unknown" in "\n".join(watch.table(ship, FakeTmux())) and " 0+ " in "\n".join(watch.table(ship, FakeTmux()))
+    assert "unreadable" in "\n".join(watch.full(seat)) and "0+ tokens today" in "\n".join(watch.full(seat))
 
-    # 2. Valid Antigravity record with an ended turn: activity is idle, model is from record, tokens_today is None (cache_written unknown)
+    # 2. A readable record with one ended turn: idle, the model from the record, and today's tokens a plain figure
     rec = AntigravityShape(seat.home, tmp_path, "conv-ok", "gemini-3.1-pro-high")
     rec.begin("ping", "gemini-3.1-pro-high", "high")
     rec.end("pong")
     (seat.folder / "record").write_text(f"{rec.path}\n")
     assert watch.activity(seat).state == "idle"
     assert seat.is_working() is False
-    assert watch.tokens_today(seat) is None
+    today = watch.tokens_today(seat)
+    assert today.known > 0 and today.unmeasured == 1, "the turn is counted in full; the corrupt record is still the seat's, so the + stays"
     full_lines = "\n".join(watch.full(seat))
-    assert "1 turns" in full_lines and "unknown tokens today" in full_lines
+    assert "1 turns" in full_lines and f"{today.known}+ tokens today" in full_lines
 
-    # 3. Unknown step status in record: turn_open is None and turns is None (turns() is empty, tokens_today must be None not 0)
+    # 3. A step status the reader does not know: the turn state is unknown, so are the turns, and the figure says 0+
     with sqlite3.connect(rec.path) as con:
         con.executescript(AGY_SCHEMA)
         con.execute("UPDATE steps SET status = 0 WHERE idx = 0")
     assert seat.harness.turns(rec.path) == []
     assert watch.activity(seat) == watch.Activity("unknown", "turn state unknown in record")
-    assert watch.tokens_today(seat) is None, "empty turns() with unknown turn state must be None, never 0"
-    assert "unknown turns" in "\n".join(watch.full(seat)) and "unknown tokens today" in "\n".join(watch.full(seat))
+    assert str(watch.tokens_today(seat)) == "0+", "no turn could be closed, and the record's own count is uncertain"
+    assert "unknown turns" in "\n".join(watch.full(seat)) and "0+ tokens today" in "\n".join(watch.full(seat))
 
-    # 4. Unknown earlier turn + completed later turn: even if a turn has all 4 token classes, incomplete record makes tokens_today None
+    # 4. A measured turn in a record whose turn count is uncertain: the figure stands, with the + beside it
     from types import SimpleNamespace
     from quarterdeck.harness.base import State, Tokens, Turn
     now = datetime.now(timezone.utc)
     partial_turn = Turn(1, now, now, "in", "out", "m", Tokens(10, 20, 30, 40))
-    seat.harness = SimpleNamespace(
-        record_confirms=True, home_variable=None,
-        read=lambda r: (State(turn_open=False, turns=None, model="m"), [partial_turn]),
-        state=lambda r: State(turn_open=False, turns=None, model="m"),
-        turns=lambda r: [partial_turn],
-        records=lambda home: [rec.path],
-    )
-    assert watch.tokens_today(seat) is None, "incomplete record history must not report partial token sum as complete"
+    def read(path):
+        if path != rec.path:
+            raise OSError("not this record")
+        return State(turn_open=False, turns=None, model="m"), [partial_turn]
+
+    seat.harness = SimpleNamespace(record_confirms=True, home_variable=None, read=read,
+                                   state=lambda r: State(turn_open=False, turns=None, model="m"),
+                                   turns=lambda r: [partial_turn], records=lambda home: [rec.path])
+    assert str(watch.tokens_today(seat)) == "100+", "what was read is counted; the uncertainty is marked, not spread"
 
 
 def test_check_probe_handles_unknown_turns_without_crashing(tmp_path: Path, monkeypatch):

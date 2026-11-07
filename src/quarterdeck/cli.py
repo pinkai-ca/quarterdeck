@@ -356,19 +356,15 @@ def cmd_service(args: argparse.Namespace) -> None:
 
 def cmd_ledger(args: argparse.Namespace) -> list[str]:
     ship = load_ship(args)
-    book = ledger.Ledger(ship.runtime / "ledger.sqlite")
-    try:
+    book = ledger.Ledger.reading(ship.runtime / "ledger.sqlite")  # a reading never writes the book
+    if book is None:
+        return ["no ledger yet: the service writes it once the ship is up"]
+    with book:
         if args.tools:
-            rows = [f"{'tool':<24} {'calls':>6} {'seconds':>9} {'failed':>6}"]
-            return rows + [
-                f"{name:<24} {(str(count) if count is not None else 'unknown'):>6} {(f'{seconds:.1f}' if seconds is not None else 'unknown'):>9} {(str(failed) if failed is not None else 'unknown'):>6}"
-                for name, count, seconds, failed in book.tools()
-            ] + ledger.incomplete_notes(book)
+            return ledger.tools_table(book)
         if args.by:
             return ledger.table(book, args.by)
         return ledger.pools_table(book, ship)
-    finally:
-        book.close()
 
 
 def cmd_check(args: argparse.Namespace) -> list[str]:

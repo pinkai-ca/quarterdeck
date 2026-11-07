@@ -183,7 +183,7 @@ def test_the_record_confirms_and_the_controls_are_launch_only():
     assert all(c.session is None for c in harness.controls()), "model and effort change at launch"
 
 
-def test_record_decodes_turns_tools_and_state_and_leaves_unexposed_fields_unknown(tmp_path: Path):
+def test_record_decodes_turns_tools_and_state_and_counts_an_unreported_class_as_zero(tmp_path: Path):
     home = tmp_path / "home"
     rec = AntigravityShape(home, tmp_path, "conv-1", "gemini-3.1-pro-high")
     rec.begin("qd > order from pike · ord-1234\nCheck status", "gemini-3.1-pro-high", "high")
@@ -215,7 +215,8 @@ def test_record_decodes_turns_tools_and_state_and_leaves_unexposed_fields_unknow
     expected = tokens_for(turn.input, turn.reply, 0)
     assert turn.tokens.read_cached == expected["read_cached"] * 4
     assert turn.tokens.read_uncached > 0 and turn.tokens.written > 0
-    assert turn.tokens.cache_written is None and turn.tokens.total is None
+    assert turn.tokens.cache_written == 0 and turn.tokens.complete, "a class this provider never reports is zero, not unknown"
+    assert turn.tokens.total == turn.tokens.read_cached + turn.tokens.read_uncached + turn.tokens.written
     assert turn.cost is None and turn.subagent_turns is None
 
 
@@ -298,7 +299,7 @@ def test_delayed_terminal_insertion_preserves_stable_turn_identity_and_idempoten
     book.close()
 
 
-def test_terminated_turns_without_completion_timestamps_preserve_unknown_end_and_duration(tmp_path: Path):
+def test_a_turn_without_a_completion_timestamp_ends_at_its_last_step_with_its_duration_unknown(tmp_path: Path):
     from datetime import timedelta
 
     db_path = tmp_path / "times.db"
@@ -326,9 +327,11 @@ def test_terminated_turns_without_completion_timestamps_preserve_unknown_end_and
 
     state, turns = antigravity.read(db_path)
     assert len(turns) == 3
-    assert turns[0].started == t0 and turns[0].ended is None and turns[0].seconds is None, "never invent ended==started"
+    assert turns[0].started == t0 and turns[0].ended == t0 and turns[0].seconds is None, \
+        "a canceled input ends at its own step: it has a place in time, and no duration is invented"
     assert turns[1].started == t0 and turns[1].ended == t1 and turns[1].seconds == 12.5, "completed_at of the final step supplies end"
-    assert turns[2].started == t0 and turns[2].ended is None and turns[2].seconds is None
+    assert turns[2].started == t0 and turns[2].ended == t0 and turns[2].seconds is None and not turns[2].timed, \
+        "the last step's time places the turn; the duration stays unknown"
     assert state.last_write is not None and state.last_write >= t0, "last activity time is tracked separately"
 
 
@@ -394,9 +397,9 @@ def test_proto3_absent_zero_tokens_vs_missing_usage_message(tmp_path: Path):
 
     turns = antigravity.turns(db_path)
     assert len(turns) == 2
-    assert turns[0].tokens == Tokens(read_cached=0, read_uncached=120, cache_written=None, written=30)
-    assert turns[1].tokens == Tokens.unknown()
-    assert (turns[0].tokens + turns[1].tokens) == Tokens.unknown()
+    assert turns[0].tokens == Tokens(read_cached=0, read_uncached=120, cache_written=0, written=30), "an absent proto3 scalar is zero"
+    assert turns[1].tokens == Tokens.unknown() and turns[1].tokens.unmeasured == 1, "no usage message at all: one unmeasured step"
+    assert (turns[0].tokens + turns[1].tokens) == Tokens(0, 120, 0, 30, unmeasured=1), "the known part is kept, the gap counted"
 
 
 def test_unknown_step_status_and_unclosed_prior_turn_before_newer_user_input(tmp_path: Path):

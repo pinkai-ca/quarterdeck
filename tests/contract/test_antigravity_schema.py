@@ -77,9 +77,9 @@ def test_usage_enum_wire_shape_zero_presence_and_no_generator_double_count(tmp_p
         # Final response explicitly reports a zero-valued usage submessage.
         con.execute('UPDATE steps SET metadata=? WHERE idx=3', (m+_pb_bytes(9,b''),))
     turn = agy.turns(rec.path)[0]
-    assert turn.tokens == Tokens(560,120,None,30)
-    assert agy._parse_usage(None) == Tokens.unknown()
-    assert agy._parse_usage(b'') == Tokens(0,0,None,0)
+    assert turn.tokens == Tokens(560,120,0,30), "cache writes are a class this provider never reports: zero"
+    assert agy._parse_usage(None) == Tokens.unknown() and agy._parse_usage(None).unmeasured == 1
+    assert agy._parse_usage(b'') == Tokens(0,0,0,0)
 
 
 def test_nonplanner_usage_and_missing_final_time_are_not_lost(tmp_path):
@@ -96,7 +96,8 @@ def test_nonplanner_usage_and_missing_final_time_are_not_lost(tmp_path):
     after = agy.turns(rec.path)[0]
     assert after.tokens.read_uncached == before.tokens.read_uncached + 20
     assert after.tokens.written == before.tokens.written + 5
-    assert after.ended is None and after.seconds is None, 'an earlier completed step cannot timestamp the last step'
+    assert after.ended == before.ended and after.seconds is None and not after.timed, \
+        'the turn ends at its last timed step; a final step without a time leaves the duration unknown'
 
 
 def test_error_message_after_executor_boundary_does_not_invent_an_open_turn(tmp_path):
@@ -111,7 +112,8 @@ def test_error_message_after_executor_boundary_does_not_invent_an_open_turn(tmp_
         con.execute('INSERT INTO steps VALUES (2,17,3,0,?,?,?)',(b'',b'',b''))
     state, turns = agy.read(rec.path)
     assert state.turn_open is False and state.turns == 1
-    assert len(turns) == 1 and turns[0].ended is None and turns[0].seconds is None
+    assert len(turns) == 1 and turns[0].ended is not None and turns[0].seconds is None and not turns[0].timed, \
+        'the turn ends at its last timed step; the untimed trailer leaves its duration unknown'
 
 
 def test_new_input_reports_its_model_before_generation_and_confirms_exact_text(tmp_path):

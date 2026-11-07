@@ -37,8 +37,8 @@ def test_ingestion_is_idempotent_and_sums_the_classes(tmp_path: Path):
     assert (rows[0].read_cached, rows[0].read_uncached, rows[0].cache_written, rows[0].written) == (
         expected.read_cached, expected.read_uncached, expected.cache_written, expected.written)
     assert rows[0].tool_calls == 4 and rows[0].tool_failures == 2 and rows[0].cpu_seconds == 2.5 and rows[0].write_bytes == 4096
-    assert book.today("captain", datetime.now().astimezone().date().isoformat()) == expected.total
-    assert [(name, count) for name, count, _, _ in book.tools()] == [("Bash", 2), ("Read", 2)]
+    assert book.today("captain", datetime.now().astimezone().date().isoformat()) == ledgermod.Count(expected.total)
+    assert [(name, count) for name, count, *_ in book.tools()] == [("Bash", 2), ("Read", 2)]
     assert ledgermod.table(book, "seat")[1].startswith("captain")
     # a third turn later: only it is written
     ClaudeShape(tmp_path / "home", Path("/work"), "s1", "fake-1").begin("three", "fake-1", "high")
@@ -115,67 +115,67 @@ def test_turns_are_stored_in_local_time_so_today_is_the_local_day(tmp_path: Path
     ended = datetime.now(timezone.utc)
     turn = claude.Turn(0, ended - timedelta(seconds=5), ended, "x", "y", "m", claude.Tokens(1, 2, 3, 4))
     book.ingest("captain", "fake", tmp_path / "r.jsonl", [turn], Store(tmp_path))
-    assert book.today("captain", ended.astimezone().date().isoformat()) == 10
+    assert book.today("captain", ended.astimezone().date().isoformat()) == ledgermod.Count(10)
     book.close()
 
 
-def test_unknown_token_classes_and_tool_seconds_propagate_as_unknown_in_rollup_today_and_tools(tmp_path: Path):
+def test_what_the_record_did_not_measure_is_counted_and_marked_with_a_plus(tmp_path: Path):
     from quarterdeck.harness.base import Tokens, ToolCall, Turn
 
     book = Ledger(tmp_path / "ledger.sqlite")
     store = Store(tmp_path)
     ended = datetime.now(timezone.utc)
     day = ended.astimezone().date().isoformat()
-    assert book.today("scott", day) == 0, "no turns on that day means 0 tokens"
+    assert book.today("scott", day) == ledgermod.Count(0, 0), "no turns on that day: 0 tokens, nothing unmeasured"
 
-    # Turn 0 has known read_cached/read_uncached/written, but unknown cache_written (Antigravity shape)
-    t0 = Turn(0, ended - timedelta(seconds=10), ended - timedelta(seconds=5), "in0", "out0", "gemini-3.1-pro-high",
-              Tokens(read_cached=500, read_uncached=100, cache_written=None, written=40),
+    # A turn measured in every class the provider reports, with one tool call the record did not time
+    t0 = Turn(0, ended - timedelta(seconds=10), ended - timedelta(seconds=5), "in0", "out0", "gemini-4-argon-high",
+              Tokens(read_cached=500, read_uncached=100, cache_written=0, written=40),
               tools=(ToolCall("run_command", 1.5, False), ToolCall("run_command", None, True)), subagent_turns=None)
     book.ingest("scott", "google", tmp_path / "agy.db", [t0], store)
     row = book.rollup("seat")[0]
-    assert row.read_cached == 500 and row.read_uncached == 100 and row.written == 40
-    assert row.cache_written is None, "NULL token class must stay None, never 0"
-    assert book.today("scott", day) is None, "a turn with a NULL token class makes today's total unknown, not a partial sum"
-    assert book.tools() == [("run_command", 2, None, 1)], "a tool call with unknown duration makes total seconds unknown"
-    rendered = ledgermod.table(book, "seat")
-    assert "unknown" in rendered[1]
+    assert (row.read_cached, row.read_uncached, row.cache_written, row.written, row.unmeasured) == (500, 100, 0, 40, 0)
+    assert book.today("scott", day) == ledgermod.Count(640, 0) and str(book.today("scott", day)) == "640"
+    assert book.tools() == [("run_command", 2, 1.5, 1, 1, 0)], "the call without a duration is counted, and the seconds carry its mark"
+    assert ledgermod.tools_table(book)[1].split() == ["run_command", "2", "1.5+", "1"]
 
-    # Adding a second turn with completely unknown tokens makes read_cached/read_uncached/written None too (SUM must not drop NULL)
-    t1 = Turn(1, ended - timedelta(seconds=4), ended, "in1", "out1", "gemini-3.1-pro-high", Tokens.unknown())
+    # A second turn whose usage the record did not hold at all: the sums stand, and every figure built on them says +
+    t1 = Turn(1, ended - timedelta(seconds=4), ended, "in1", "out1", "gemini-4-argon-high", Tokens.unknown())
     book.ingest("scott", "google", tmp_path / "agy.db", [t0, t1], store)
-    row2 = book.rollup("seat")[0]
-    assert (row2.read_cached, row2.read_uncached, row2.cache_written, row2.written) == (None, None, None, None)
+    row = book.rollup("seat")[0]
+    assert (row.turns, row.read_cached, row.written, row.unmeasured) == (2, 500, 40, 1), "the known part is kept, the gap counted"
+    assert str(book.today("scott", day)) == "640+"
+    rendered = ledgermod.table(book, "seat")
+    assert "500+" in rendered[1] and "40+" in rendered[1] and ledgermod.PLUS_NOTE in rendered
     book.close()
 
 
-def test_incomplete_or_unreadable_record_is_persisted_and_surfaced_as_unknown(tmp_path: Path):
+def test_a_record_that_would_not_read_is_noted_and_marks_its_seats_figures(tmp_path: Path):
     book = Ledger(tmp_path / "ledger.sqlite")
     store = Store(tmp_path)
     bad_rec = tmp_path / "corrupt.db"
     day = datetime.now().astimezone().date().isoformat()
 
-    # 1. Fresh unreadable record with 0 ingested turns still surfaces seat/pool/order as unknown
+    # 1. An unreadable record with no turn read yet: its seat shows 0+ and the note names the file
     book.mark_record(bad_rec, "scott", "google", "corrupt sqlite header")
     book.close()
     book = Ledger(tmp_path / "ledger.sqlite")
     assert book.incomplete_records() == [(str(bad_rec), "scott", "google", "corrupt sqlite header")]
     seat_rows = book.rollup("seat")
-    assert len(seat_rows) == 1 and seat_rows[0].key == "scott" and seat_rows[0].turns is None
-    assert (seat_rows[0].read_cached, seat_rows[0].read_uncached, seat_rows[0].cache_written, seat_rows[0].written) == (None, None, None, None)
-    assert seat_rows[0].tool_calls is None and seat_rows[0].minutes is None
-    assert book.today("scott", day) is None
+    assert len(seat_rows) == 1 and seat_rows[0].key == "scott" and seat_rows[0].turns == 0 and seat_rows[0].unmeasured == 1
+    assert str(book.today("scott", day)) == "0+"
     seat_table = "\n".join(ledgermod.table(book, "seat"))
-    assert "unknown" in seat_table and "incomplete record: corrupt.db (scott, google) · corrupt sqlite header" in seat_table
-    assert "incomplete record: corrupt.db (scott, google) · corrupt sqlite header" in "\n".join(ledgermod.pools_table(book))
+    assert "0+" in seat_table and "unread record: corrupt.db (scott, google) · corrupt sqlite header" in seat_table
+    assert "unread record: corrupt.db (scott, google) · corrupt sqlite header" in "\n".join(ledgermod.pools_table(book))
 
-    # 2. Clearing the mark when the record becomes readable restores normal accounting
+    # 2. Once the record reads, the note goes and the figures stand plain
     now = datetime.now(timezone.utc)
     t0 = claude.Turn(0, now - timedelta(seconds=5), now, "in", "out", "m", claude.Tokens(1, 2, 3, 4))
     book.ingest("scott", "google", bad_rec, [t0], store)
     book.mark_record(bad_rec, "scott", "google", None)
     assert book.incomplete_records() == []
-    assert book.rollup("seat")[0].turns == 1 and book.today("scott", day) == 10
+    assert book.rollup("seat")[0].turns == 1 and book.rollup("seat")[0].unmeasured == 0
+    assert book.today("scott", day) == ledgermod.Count(10) and ledgermod.PLUS_NOTE not in ledgermod.table(book, "seat")
     book.close()
 
 
@@ -207,10 +207,10 @@ def test_late_metadata_refreshes_tools_and_times_without_moving_pool_or_machine(
     assert book.ingest('worker','pool-a',record,[initial],store,{8:sample}) == 1
     duration = replace(initial,tools=(ToolCall('run_command',1.5,False),))
     assert book.ingest('worker','pool-b',record,[duration],store,{8:Machine(99)}) == 1
-    assert book.tools() == [('run_command',1,1.5,0)]
+    assert book.tools() == [('run_command',1,1.5,0,0,0)]
     renamed = replace(duration,tools=(ToolCall('shell',1.5,False),))
     assert book.ingest('worker','pool-b',record,[renamed],store) == 1
-    assert book.tools() == [('shell',1,1.5,0)]
+    assert book.tools() == [('shell',1,1.5,0,0,0)]
     final = replace(renamed,ended=stamp+timedelta(seconds=4),tokens=Tokens(1,2,3,4),model='model')
     assert book.ingest('worker','pool-b',record,[final],store) == 1
     assert book.ingest('worker','pool-b',record,[final],store) == 0
@@ -228,7 +228,7 @@ def test_late_metadata_refreshes_tools_and_times_without_moving_pool_or_machine(
     book.close()
 
 
-def test_unknown_tool_failure_and_incomplete_history_stay_unknown(tmp_path):
+def test_an_unjudged_tool_call_and_an_unread_record_are_marked_not_hidden(tmp_path):
     from quarterdeck.harness.base import ToolCall, Tokens, Turn
 
     book, store = Ledger(tmp_path / 'ledger.sqlite'), Store(tmp_path)
@@ -237,12 +237,11 @@ def test_unknown_tool_failure_and_incomplete_history_stay_unknown(tmp_path):
     t = Turn(0,stamp,stamp,'question','answer','m',Tokens(1,2,3,4),(ToolCall('tool',None,None),))
     record = tmp_path / 'synthetic.db'
     book.ingest('worker','pool-a',record,[t],store)
-    assert book.tools() == [('tool',1,None,None)]
-    assert book.rollup('order')[0].key == order.id
+    assert book.tools() == [('tool',1,0.0,0,1,1)], "a call with no duration and no verdict is counted, and both figures carry its mark"
+    assert book.rollup('order')[0].key == order.id and book.rollup('order')[0].unjudged == 1
     book.mark_record(record,'worker','pool-a','unknown earlier history')
-    assert all(r.turns is None for r in book.rollup('order'))
-    assert book.tools() == [('tool',None,None,None)]
-    assert all('unknown' in '\n'.join(ledgermod.table(book,by)) for by in ('seat','pool','order'))
+    assert all(r.unmeasured for r in book.rollup('order'))
+    assert all('+' in '\n'.join(ledgermod.table(book,by)) and 'unread record' in '\n'.join(ledgermod.table(book,by)) for by in ('seat','pool','order'))
     book.mark_record(record,'worker','pool-a',None)
-    assert book.rollup('order')[0].turns == 1
+    assert book.rollup('order')[0].turns == 1 and book.rollup('order')[0].unmeasured == 0
     book.close()
