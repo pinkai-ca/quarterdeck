@@ -253,7 +253,26 @@ class CodexHarness(Harness):
             status = STATUS_LINE.match(line)
             if status:
                 shows = {"model": status.group(1), "effort": status.group(2)}
-        return Screen(text, box=box, working=bool(WORKING.search(text)), interruption=self.recognize(text), shows=shows)
+        working = WORKING.search(text)
+        return Screen(text, box=box, working=bool(working), interruption=self.recognize(text), shows=shows,
+                      echoes=self.echoes(lines) if working else ())
+
+    @staticmethod
+    def echoes(lines: list[str]) -> tuple[str, ...]:
+        """The inputs shown above ``• Working``: the turn's own prompt, and anything queued behind it."""
+        found, block = [], None
+        for line in lines:
+            if WORKING.search(line):
+                break
+            start = BOX_START.match(line)
+            if start:
+                block = [start.group(1)]
+                found.append(block)
+            elif block is not None and line.startswith("  ") and line.strip():
+                block.append(line[2:])
+            else:
+                block = None
+        return tuple("\n".join(b) for b in found)
 
     def box(self, text: str) -> Box:
         return Box(text)

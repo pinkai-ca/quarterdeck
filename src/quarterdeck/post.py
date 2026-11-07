@@ -20,6 +20,7 @@ from .ship import ShipError
 
 KINDS = ("order", "report", "question", "answer", "ack")
 SPEEDS = ("now", "interrupt")
+SHIP = "ship"  # the sender of the ship's own notices, and an inbox a seat may answer to
 REPLY_VERB = {"order": "report", "question": "answer"}
 
 

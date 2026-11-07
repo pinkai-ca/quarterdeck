@@ -22,6 +22,13 @@ from .base import (Box, Control, Credential, Harness, Interruption, Keys, Launch
 ENDS_TURN = {"end_turn", "max_tokens", "stop_sequence"}
 LOCAL_TAGS = ("<command-name>", "<local-command", "<bash-input>", "<bash-stdout>", "<bash-stderr>")
 INTERRUPTED = "[Request interrupted"
+PASTED = re.compile(r'^<pasted_content id="[^"]*">\n?(.*?)\n?</pasted_content(?: id="[^"]*")?>\s*$', re.S)
+
+
+def unwrap(text: str) -> str:
+    """A folded paste is recorded inside ``<pasted_content>`` tags; the message is what is inside."""
+    match = PASTED.match(text)
+    return match.group(1) if match else text
 
 
 def records(home: Path) -> list[Path]:
@@ -48,7 +55,7 @@ def prompt_text(entry: dict) -> str | None:
         content = "\n".join(block.get("text", "") for block in content if block.get("type") == "text")
     if not isinstance(content, str) or content.startswith(LOCAL_TAGS):
         return None
-    return content
+    return unwrap(content)
 
 
 def usage_tokens(usage: dict) -> Tokens:
@@ -69,6 +76,7 @@ class _Reader:
         self.open: dict | None = None
         self.pending: dict[str, tuple[str, datetime | None]] = {}
         self.queued: list[str] = []
+        self.consumed: list[str] = []
         self.model = self.effort = self.last_input = self.last_input_at = self.local_stdout = None
         self.closed_message = None
         self.subagent_turns = 0
@@ -90,11 +98,13 @@ class _Reader:
             self.end(when(entry.get("timestamp")))
 
     def queue(self, entry: dict) -> None:
-        text = entry.get("content") or ""
+        """A message queued mid-turn; removed when the program takes it, often into the running turn itself."""
+        text = unwrap(entry.get("content") or "")
         if entry.get("operation") == "enqueue":
             self.queued.append(text)
         elif text in self.queued:
             self.queued.remove(text)
+            self.consumed.append(text)
 
     def user(self, entry: dict) -> None:
         text = prompt_text(entry)
@@ -194,6 +204,7 @@ class _Reader:
             model=self.model,
             effort=self.effort,
             queued=tuple(self.queued),
+            consumed=tuple(self.consumed),
             turns=len(self.turns),
             local_stdout=self.local_stdout,
         )
@@ -214,7 +225,7 @@ def read(record: Path) -> tuple[State, list[Turn]]:
 
 # -- the adapter -----------------------------------------------------------------------------
 
-FOLD_LINES = 4  # a paste of this many lines or more folds in the box (2.1.317)
+FOLD_NEWLINES = 3  # a paste with this many newlines or more folds in the box (2.1.317)
 RULE = re.compile(r"^─{10,}")
 BOX_START = re.compile(r"^❯[  ]?(.*)$")
 MODE_LINE = re.compile(r"[○◐●◑] (\w+) · /effort")
@@ -295,9 +306,10 @@ class ClaudeHarness(Harness):
                       queued=queued, shows={"effort": mode.group(1)} if mode else {})
 
     def box(self, text: str) -> Box:
-        lines = text.strip().count("\n") + 1
-        if lines >= FOLD_LINES:
-            return Box(text, pattern=rf"\[Pasted text #\d+ \+{lines - 1} lines\]")
+        """A paste with three newlines or more folds, and the count is of newlines: a trailing one counts."""
+        newlines = text.count("\n")
+        if newlines >= FOLD_NEWLINES:
+            return Box(text, pattern=rf"\[Pasted text #\d+ \+{newlines} lines\]")
         return Box(text)
 
     def controls(self) -> tuple[Control, ...]:

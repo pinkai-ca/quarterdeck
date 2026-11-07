@@ -33,6 +33,14 @@ class Reading:
         return f"obstructed: {self.reason}, {self.clears}"
 
 
+def echoed(echo: str, wanted: str) -> bool:
+    """Whether a transcript echo is the wanted text; a program may cut a long echo short with an ellipsis."""
+    flat = " ".join(echo.split())
+    if flat.endswith("…"):
+        return len(flat) > 1 and wanted.startswith(flat[:-1].rstrip())
+    return flat == wanted
+
+
 @dataclass(frozen=True)
 class Delivery:
     result: str
@@ -163,12 +171,14 @@ class Door:
                 state = self.harness.state(record)
                 if state.last_input and " ".join(state.last_input.split()) == wanted:
                     return Delivery("delivered", f"in the record {record.name}")
+                if any(" ".join(c.split()) == wanted for c in state.consumed):
+                    return Delivery("delivered", "queued and taken into the running turn")
                 if any(" ".join(q.split()) == wanted for q in state.queued):
                     return Delivery("queued", "queued in the record; read at the turn's end")
             if time.monotonic() > deadline:
                 break
             time.sleep(0.2)
         screen = self.screen()
-        if screen and screen.queued:
+        if screen and (screen.queued or any(echoed(e, wanted) for e in screen.echoes)):
             return Delivery("queued", "the screen shows it queued; the record will confirm")
         return Delivery("blind", f"typed and submitted, not seen in the record within {seconds:.0f}s")

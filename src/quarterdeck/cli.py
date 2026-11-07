@@ -284,8 +284,9 @@ def cmd_post(args: argparse.Namespace) -> str:
         raise ShipError(f"a {args.kind} needs --to <seat>" + (" or --re <message>" if args.kind != "order" else ""))
     if to.lower() == ship.operator.lower():
         to = ship.operator.lower()
-    if to not in ship.seats and to != ship.operator.lower():
-        raise ShipError(f"no seat {to!r} to address; declared: {', '.join(ship.seats)}, or the operator {ship.operator.lower()}")
+    if to not in ship.seats and to not in (ship.operator.lower(), post.SHIP):
+        raise ShipError(f"no seat {to!r} to address; declared: {', '.join(ship.seats)}, "
+                        f"the operator {ship.operator.lower()}, or {post.SHIP} for the ship's own notices")
     message = store.new(args.kind, sender, to, body, re=args.re, subject=args.subject, due=args.due, speed=args.speed)
     return f"{message.short} to {to} · stored · {delivery_note(ship, to)}"
 

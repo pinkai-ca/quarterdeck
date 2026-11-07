@@ -83,6 +83,7 @@ class State:
     model: str | None = None
     effort: str | None = None
     queued: tuple[str, ...] = ()
+    consumed: tuple[str, ...] = ()
     turns: int = 0
     local_stdout: str | None = None
 
@@ -145,6 +146,7 @@ class Screen:
     unknown: str | None = None
     queued: int = 0
     shows: dict[str, str] = field(default_factory=dict)
+    echoes: tuple[str, ...] = ()  # inputs the transcript shows above a running turn, possibly cut short with …
 
 
 @dataclass(frozen=True)

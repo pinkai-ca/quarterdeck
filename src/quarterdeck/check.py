@@ -11,7 +11,7 @@ proven in the runtime. It spends real tokens and runs only when asked.
 from __future__ import annotations
 
 import secrets
-import time
+import shutil
 from dataclasses import replace
 from pathlib import Path
 
@@ -40,12 +40,16 @@ def check(ship: Ship, name: str, tmux: Tmux) -> list[Check]:
     checks: list[Check] = []
     version = harness.version()
     checks.append(Check("installed", version is not None, f"{name} {version or 'not found on the PATH'}"))
+    store = post.Store(ship.runtime)
     try:
         checks += probe(checked, seat, version)
     finally:
         seat.down()
         if tmux.has_session(session_name):
             tmux.kill_session(session_name)
+        for order in store.open_for(seat_name):  # the check closes what it opened, in the seat's name
+            store.new("report", seat_name, order.sender, "qd check ended; closed by the check itself", re=order.id)
+        shutil.rmtree(seat.folder, ignore_errors=True)
     if all(c.passed for c in checks) and version:
         proven = ship.runtime / "proven"
         proven.mkdir(parents=True, exist_ok=True)
@@ -67,12 +71,16 @@ def probe(ship: Ship, seat: Seat, version: str | None) -> list[Check]:
     checks.append(Check("door open at start", bool(opened), str(door.reading())))
     if not opened:
         return checks
-    store = post.Store(ship.runtime)
+    store, attempts = post.Store(ship.runtime), post.Attempts(ship.runtime)
     order = store.new("order", "ship", seat.name,
                       f"Write the file {proof_file} containing exactly one line: {proof_line}\n"
                       f"Then post your report on this order with the body: written", subject="qd check")
+    launched = seat.launched()
+    attempt = attempts.open(order, seat.name, launched.pane, launched.pid, launched.at)
     delivery = door.deliver(post.typed([order]))
-    checks.append(Check("paste matched the box, submitted, found in the record", delivery.result == "delivered", str(delivery)))
+    attempts.close(attempt, delivery.result, delivery.detail)
+    checks.append(Check("paste matched the box, submitted, confirmed by the record", delivery.result in ("delivered", "queued"),
+                        str(delivery)))
     closed = wait_for(lambda: store.closing_report(order), PATIENCE)
     checks.append(Check("task: the report closed the order", closed is not None,
                         f"report {closed.short}: {closed.body[:40]!r}" if closed else "no report within the patience"))  # law: can-post
@@ -80,7 +88,8 @@ def probe(ship: Ship, seat: Seat, version: str | None) -> list[Check]:
     checks.append(Check("task: the named file holds the given line", content == proof_line,
                         f"{proof_file}: {content!r}"))
     record = seat.record()
+    ended = wait_for(lambda: record and seat.harness.state(record).turns >= 1 and not seat.harness.state(record).turn_open, 60)
     state = seat.harness.state(record) if record else None
-    checks.append(Check("record joined and read", record is not None and state is not None and state.turns >= 1,
+    checks.append(Check("record joined, the turn ended and read", bool(ended),
                         f"{record.name if record else 'no record'} · {state.turns if state else 0} turns · model {state.model if state else '?'}"))
     return checks

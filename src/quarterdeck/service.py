@@ -116,7 +116,7 @@ class Service:
         inputs = [t.input for t in turns if t.started and t.started >= since]
         if state.turn_open and state.last_input_at and state.last_input_at >= since:
             inputs.append(state.last_input)
-        return any(carries(text) for text in inputs + list(state.queued))
+        return any(carries(text) for text in inputs + list(state.queued) + list(state.consumed))
 
     def deliveries(self) -> None:
         for seat in seats(self.ship, self.tmux):

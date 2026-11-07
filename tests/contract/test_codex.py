@@ -42,6 +42,19 @@ def test_a_working_seat_is_open_and_queues():
     assert CodexHarness().queues_while_working(SeatSpec("s", "bridge", "engineering", "codex", ("codex",)))
 
 
+def test_a_message_queued_mid_turn_is_echoed_above_the_working_line():
+    from quarterdeck.door import echoed
+
+    s = screen("working")
+    typed = "qd > order from desk · ord-0002 · Second\nThis arrived mid-turn. Say SECOND-SEEN.\nqd > reply: qd post report --re ord-0002\n"
+    assert any(echoed(e, " ".join(typed.split())) for e in s.echoes), s.echoes
+    assert s.echoes[-1].startswith("qd > order from desk · ord-0002 · Second"), "the queued one is the last echo before Working"
+    assert any("Run exactly this shell command" in e for e in s.echoes), "the turn's own prompt is echoed too"
+    assert echoed("qd > order from desk · ord-7f3a · Spike What seat are you, per your develope…",
+                  "qd > order from desk · ord-7f3a · Spike What seat are you, per your developer instructions? And more")
+    assert not echoed("qd > order from desk · ord-7f3a · Spike", "qd > order from desk · ord-7f3b · Spike")
+
+
 def test_the_model_picker_is_known_and_closed_with_escape():
     s = screen("model-picker")
     assert s.interruption is not None and s.interruption.name == "model picker" and s.interruption.key == "Escape"

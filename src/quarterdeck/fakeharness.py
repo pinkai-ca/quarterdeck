@@ -84,8 +84,8 @@ class Program:
         self.box_lines = sum(max(1, (len(l) + width - 1) // width) for l in lines) - 1
 
     def shown_box(self) -> str:
-        if "\n" in self.box.strip():
-            return f"[Pasted text #{self.pastes} +{self.box.strip().count(chr(10))} lines]"
+        if "\n" in self.box:
+            return f"[Pasted text #{self.pastes} +{self.box.count(chr(10))} lines]"
         return self.box
 
     def status(self) -> str:
