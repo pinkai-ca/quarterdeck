@@ -138,8 +138,16 @@ class Tmux:
         args = ["new-window", "-d", "-P", "-F", _FORMAT, "-t", _session(session), "-n", name, "-c", str(cwd)]
         for key, value in (env or {}).items():
             args += ["-e", f"{key}={value}"]
-        pane = _parse(self.run(*args, shlex.join(command)).rstrip("\n"))
+        # Prepare a blocking pane before running a command that may exit immediately.
+        pane = _parse(self.run(*args, "cat").rstrip("\n"))
         self.run("set-option", "-w", "-t", pane.id, "remain-on-exit", "failed")
+        args = ["respawn-pane", "-k", "-t", pane.id, "-c", str(cwd)]
+        for key, value in (env or {}).items():
+            args += ["-e", f"{key}={value}"]
+        # Read the new PID in the same command queue, before an immediate successful
+        # exit can remove the pane. Its pane id and retention setting are preserved.
+        pane = _parse(self.run(*args, shlex.join(command), ";", "display-message", "-p", "-t", pane.id,
+                               _FORMAT).rstrip("\n"))
         self._drop_placeholder(session)
         return pane
 

@@ -5,6 +5,8 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+import pytest
+
 from quarterdeck.tmux import HISTORY_LINES, Tmux
 
 
@@ -50,11 +52,14 @@ def test_paste_reaches_the_program_and_the_screen_reads_back(tmux: Tmux, tmp_pat
     assert tmux.pane(pane.id) is not None and tmux.pane("%999") is None
 
 
-def test_a_failed_program_leaves_its_pane_with_the_exit_status(tmux: Tmux, tmp_path: Path):
+@pytest.mark.parametrize("exit_code", [3, 7])
+def test_a_failed_program_leaves_its_pane_with_the_exit_status(tmux: Tmux, tmp_path: Path, exit_code):
     tmux.new_session("Crew")
-    pane = tmux.new_window("Crew", "worker-1", tmp_path, ["sh", "-c", "exit 3"])
+    pane = tmux.new_window("Crew", "worker-1", tmp_path, ["sh", "-c", f"exit {exit_code}"])
     dead = wait_for(lambda: dead_pane(tmux, pane.id))
-    assert dead.exit_status == 3
+    assert dead.exit_status == exit_code
+    assert dead.id == pane.id and dead.pid == pane.pid and pane.pid > 0
+    assert dead.window == "worker-1" and dead.session == "Crew"
     tmux.kill_window(pane.id)
     assert tmux.pane(pane.id) is None
 
@@ -64,3 +69,34 @@ def test_status_line_is_refreshed_by_tmux_itself(tmux: Tmux, tmp_path: Path):
     tmux.status_line("Bridge", "echo service ok", interval=1)
     assert tmux.run("show-option", "-v", "-t", "=Bridge:", "status-right").strip() == "#(echo service ok)"
     assert tmux.run("show-option", "-v", "-t", "=Bridge:", "status-interval").strip() == "1"
+
+
+def test_prepared_pane_preserves_environment_cwd_pid_and_other_window_options(tmux: Tmux, tmp_path: Path):
+    tmux.new_session("Crew")
+    global_before = tmux.run("show-option", "-gwv", "remain-on-exit")
+    anchor = tmux.new_window("Crew", "anchor", tmp_path, ["cat"])
+    tmux.run("set-option", "-w", "-t", anchor.id, "remain-on-exit", "off")
+    pane = tmux.new_window("Crew", "worker", tmp_path,
+                           ["sh", "-c", 'printf "%s\\n" "$$" "$SEAT_VALUE" "$PWD"; exec cat'],
+                           env={"SEAT_VALUE": "synthetic value"})
+    shown = wait_for(lambda: screen_showing(tmux, pane.id, "synthetic value"))
+    assert str(pane.pid) in shown.splitlines()
+    joined = tmux.run("capture-pane", "-pJ", "-t", pane.id)
+    assert str(tmp_path) in joined.splitlines(), "cwd survives even when its screen line wraps"
+    assert tmux.pane(pane.id).pid == pane.pid
+    assert tmux.run("show-option", "-wv", "-t", pane.id, "remain-on-exit").strip() == "failed"
+    assert tmux.run("show-option", "-wv", "-t", anchor.id, "remain-on-exit").strip() == "off"
+    assert tmux.run("show-option", "-gwv", "remain-on-exit") == global_before
+    tmux.paste(pane.id, "still interactive")
+    tmux.keys(pane.id, "Enter")
+    wait_for(lambda: screen_showing(tmux, pane.id, "still interactive"))
+    assert all(p.window != "qd" for p in tmux.panes("Crew"))
+
+
+def test_an_immediately_successful_program_is_not_retained(tmux: Tmux, tmp_path: Path):
+    tmux.new_session("Crew")
+    anchor = tmux.new_window("Crew", "anchor", tmp_path, ["cat"])
+    pane = tmux.new_window("Crew", "success", tmp_path, ["sh", "-c", "exit 0"])
+    assert pane.pid > 0 and pane.id != anchor.id
+    wait_for(lambda: tmux.pane(pane.id) is None)
+    assert tmux.pane(anchor.id) is not None
