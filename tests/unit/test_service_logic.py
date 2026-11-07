@@ -144,7 +144,7 @@ def test_account_keeps_sparse_ids_and_missing_owned_records_visible(tmp_path, mo
                            pool=SimpleNamespace(name='pool-a'))
     from quarterdeck import service
     monkeypatch.setattr(service,'seats',lambda *a:[seat])
-    ship = SimpleNamespace(runtime=tmp_path/'runtime',folder=tmp_path)
+    ship = SimpleNamespace(runtime=tmp_path/'runtime',folder=tmp_path,pools={})
     svc = Service(ship,None)
     svc.account()
     assert svc.ledger.ingested(record) == 1

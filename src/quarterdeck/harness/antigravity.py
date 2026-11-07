@@ -18,7 +18,7 @@ from ..ship import Pool, SeatSpec
 from .base import (Box, Control, Credential, Harness, Interruption, Join, Keys, Launch, RecordError, Screen, State,
                    Tokens, ToolCall, Turn, program_version, record_fingerprint)
 
-from .antigravity_quota import banner, fetch_usage, record_wall
+from .antigravity_quota import banner, fetch_usage, record_wall, unknown
 from .antigravity_wire import _bytes, _int, _proto, _snapshot_query, _str, _ts, _uints
 
 STATE_DIR, BEFORE, OWNED = Path.home() / ".gemini" / "antigravity-cli", "conversations.before", "conversations.owned"
@@ -237,7 +237,11 @@ class AntigravityHarness(Harness):
     record_limits = ("cache-write tokens and cost are unknown unless explicitly reported; effort and child-turn counts "
                      "are not exposed; missing completion timestamps leave durations unknown")
     reads_usage = True
-    def usage(self, pool): return fetch_usage()
+    def usage(self, pool):
+        if pool.config_dir is not None:
+            return unknown("configured Google account directory is not qualified; /usage reads only the default local sign-in",
+                           datetime.now(timezone.utc))
+        return fetch_usage()
 
     keys = Keys(submit="Enter", send_now=("M-m",), interrupt="Escape", empty=None)
 

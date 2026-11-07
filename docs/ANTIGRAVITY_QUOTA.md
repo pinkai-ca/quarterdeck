@@ -6,7 +6,9 @@ usage read does not erase an active observed wall.
 
 ## Observed walls
 
-The 1.5.2 individual-quota banner is recognized even when the input box is empty. The
+The 1.5.2 individual-quota banner is recognized even when the input box is empty.
+Bounded wrapped continuations are normalized through the error ID, stopping at input
+and frame boundaries, so terminal reflow preserves reset and event identity. The
 owned SQLite record is canonical: `steps.step_type=17` is `CortexStepErrorMessage`,
 `step_payload` field 24 contains that message, and its field 3 contains
 `CortexErrorDetails`. Fields 1 (`user_error_message`) and 3 (`full_error`) carry the
@@ -72,9 +74,17 @@ exhaustion in Claude/GPT or the other Gemini group does not automatically block 
 Missing/unknown Argon usage is visibly unknown and cannot establish a pool as available
 for automatic failover. Valid percentage evidence and reset availability are separate.
 
-The service refreshes Google usage every five minutes while active or held by its wall,
-with one additional refresh when it observes a new active wall. The attempt time is
+The service refreshes every declared Google subscription pool every five minutes,
+including with only Codex seats, all seats down, or no seats. A new active wall adds
+one refresh. Scheduling follows declared pools rather than the currently running harness. The attempt time is
 persisted, so service restarts do not reset the cadence; failures are paced too. Expired
 historical events and duplicate observations do not request another refresh. Other
 providers retain their existing cadence. Status reads only the resulting cached
 headline; ledger pool output includes all scopes and named read failures.
+
+Only the default local sign-in has a qualified account binding. Google pool names with
+no `config_dir` refer to that same sign-in and share one read when due together; they
+are not separate authenticated accounts. An explicit account directory yields visible
+unknown before any invocation rather than charging default-account usage to it. API-key
+and other-provider pools do not receive this subscription measurement. No account
+selector or credential-file mutation was qualified by the command audit.

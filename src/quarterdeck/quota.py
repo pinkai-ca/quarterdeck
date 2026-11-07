@@ -126,21 +126,31 @@ def guard(seat, screen) -> str | None:
         book.close()
 
 
+def refresh_declared(service) -> None:
+    """Declared Google subscriptions are read even when all seats use other programs."""
+    from .harness.antigravity import AntigravityHarness
+
+    shared = None
+    for pool in service.ship.pools.values():
+        if getattr(pool, "provider", None) != "antigravity" or pool.kind != "subscription":
+            continue
+        if not service.ledger.quota.due(pool.name, datetime.now(timezone.utc)):
+            continue
+        # No account selector is qualified. Default-sign-in pool names are aliases,
+        # so one measured result suffices; an explicit account directory stays unknown.
+        usage = shared if pool.config_dir is None and shared is not None else AntigravityHarness().usage(pool)
+        if pool.config_dir is None:
+            shared = usage
+        service.ledger.record_usage(pool.name, usage)
+        service.ledger.quota.usage_read(pool.name, datetime.now(timezone.utc), usage.error)
+
+
 def refresh(service, seat, live: bool, launched) -> None:
-    """Usage runs on the accounting tick, with persisted Google cadence and event-triggered refresh."""
+    """Other providers retain their existing live-seat cadence."""
+    if not live or seat.harness.name == "antigravity":
+        return
     pool = service.ship.pools[launched.pool] if launched and launched.pool in service.ship.pools else seat.pool
-    if not live and not service.ledger.quota.blocked(seat.name, pool.name):
-        return
-    if pool.kind != "subscription":
-        return
-    if seat.harness.name == "antigravity":
-        now = datetime.now(timezone.utc)
-        if (live or service.ledger.quota.blocked(seat.name, pool.name)) and service.ledger.quota.due(pool.name, now):
-            usage = seat.harness.usage(pool)
-            service.ledger.record_usage(pool.name, usage)
-            # Timestamp the completed attempt, after events collected before it; restarts keep the cadence.
-            service.ledger.quota.usage_read(pool.name, datetime.now(timezone.utc), usage.error)
-    elif live and time.monotonic() - service.usage_read.get(pool.name, -60) >= 60:
+    if pool.kind == "subscription" and time.monotonic() - service.usage_read.get(pool.name, -60) >= 60:
         service.usage_read[pool.name] = time.monotonic()
         usage = seat.harness.usage(pool)
         if usage:

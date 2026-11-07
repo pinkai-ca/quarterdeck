@@ -338,6 +338,7 @@ class Service:
                             self.meters[seat.name] = machine.Meter(pane.pid)
                         self.log("ledger", seat=seat.name, record=record.name, turns=written)
             quota.refresh(self, seat, live, launched)
+        quota.refresh_declared(self)
 
     def failover(self) -> None:
         """A seat whose pool is walled moves on at its turn's end to the next pool of its list that is not, and stays."""

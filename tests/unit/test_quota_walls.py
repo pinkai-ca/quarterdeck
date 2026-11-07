@@ -148,7 +148,7 @@ def test_background_refresh_cadence_restart_wall_trigger_and_failures(tmp_path, 
     def usage(pool):
         calls.append(pool.name)
         return parse_usage(document(),datetime.now(timezone.utc))
-    monkeypatch.setattr(seat.harness,'usage',usage)
+    monkeypatch.setattr(AntigravityHarness,'usage',lambda self,pool:usage(pool))
     monkeypatch.setattr(service.machine,'processes',lambda:{})
     svc=Service(seat.ship,seat.tmux)
     svc.account()
@@ -166,7 +166,7 @@ def test_background_refresh_cadence_restart_wall_trigger_and_failures(tmp_path, 
     for _ in range(3): svc.account()
     assert len(calls)==2
     # Failed refresh must show unknown instead of retaining an apparently current old percentage.
-    monkeypatch.setattr(seat.harness,'usage',lambda pool:unknown('synthetic timeout',datetime.now(timezone.utc)))
+    monkeypatch.setattr(AntigravityHarness,'usage',lambda self,pool:unknown('synthetic timeout',datetime.now(timezone.utc)))
     svc.ledger.quota.usage_read('google-a',datetime.now(timezone.utc)-timedelta(seconds=301),None)
     svc.account()
     assert not svc.ledger.usage_known('google-a') and svc.ledger.walled('google-a')
@@ -202,4 +202,45 @@ def test_expired_record_event_recognized_after_restart_and_record_failure(tmp_pa
     book = Ledger(seat.ship.runtime/'ledger.sqlite')
     assert book.db.execute('SELECT COUNT(*) FROM wall_events').fetchone() == (1,)
     assert not book.quota.active()
+    book.close()
+
+
+def test_wrapped_canonical_banner_keeps_identity_and_does_not_resurrect(tmp_path, monkeypatch):
+    seat, rec, shown, _ = synthetic_seat(tmp_path, monkeypatch)
+    canonical = ('Individual quota reached. Please upgrade your subscription to increase your limits. '
+                 'Resets in 2h.\nError ID: synthetic-wrapped')
+    wrapped = ('⚠ Individual quota reached. Please upgrade your subscription to increase your\n'
+               'limits. Resets in 2h.\nError ID: synthetic-wrapped\n')
+    at = datetime.now(timezone.utc) - timedelta(hours=3)
+    append_error(rec, canonical, at)
+    shown['text'] = wrapped + IDLE
+    screen = seat.harness.screen(shown['text'])
+    parsed = wall(screen.quota, 'screen', at)
+    persisted = seat.harness.state(rec.path).walls[0]
+    assert parsed.error_id == persisted.error_id == 'synthetic-wrapped'
+    assert parsed.signature == persisted.signature and parsed.resets_at == at + timedelta(hours=2)
+    assert Door(seat).reading().open
+    book = Ledger(seat.ship.runtime/'ledger.sqlite')
+    assert book.db.execute('SELECT COUNT(*) FROM wall_events').fetchone() == (1,)
+    assert not book.quota.active()
+    book.close()
+
+
+def test_wrapped_current_screen_has_fixed_reset_across_reflow_and_polls(tmp_path, monkeypatch):
+    seat, rec, shown, _ = synthetic_seat(tmp_path, monkeypatch)
+    shown['text'] = ('Individual quota reached. Please upgrade your subscription to increase your\n'
+                     'limits. Resets in 2h.\nError ID: synthetic-wrapped-current\n' + IDLE)
+    before = datetime.now(timezone.utc)
+    assert not Door(seat).reading().open
+    book = Ledger(seat.ship.runtime/'ledger.sqlite')
+    initial = book.db.execute('SELECT at,resets_at,error_id,signature FROM wall_events').fetchone()
+    started, reset = map(datetime.fromisoformat, initial[:2])
+    assert started >= before and reset == started + timedelta(hours=2)
+    assert initial[2] == 'synthetic-wrapped-current'
+    book.close()
+    shown['text'] = shown['text'].replace('your\nlimits.', 'your limits.').replace('subscription to', 'subscription\nto')
+    for _ in range(3):
+        assert not Door(seat).reading().open
+    book = Ledger(seat.ship.runtime/'ledger.sqlite')
+    assert book.db.execute('SELECT at,resets_at,error_id,signature FROM wall_events').fetchall() == [initial]
     book.close()

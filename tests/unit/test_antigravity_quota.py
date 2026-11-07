@@ -126,3 +126,13 @@ def test_banner_original_time_missing_reset_and_overflow():
     assert agq.wall(text,'synthetic-step',None).resets_at is None
     for suffix in ('', ' Resets in nonsense.', ' Resets in 3hgarbage.', ' Resets in '+ '9'*100+'h.'):
         assert agq.wall('Individual quota reached.'+suffix,'step',AT).resets_at is None
+
+
+def test_banner_scan_is_bounded_and_stops_before_input_or_frame():
+    for boundary in ('> typed draft', '─' * 40, ''):
+        text = 'Individual quota reached.\n' + boundary + '\nResets in 7h.\nError ID: synthetic-unrelated'
+        event = agq.wall(text, 'synthetic-step', AT)
+        assert event.resets_at is None and event.error_id is None
+    far = 'Individual quota reached.\n' + 'continuation\n' * 6 + 'Resets in 7h.\nError ID: synthetic-distant'
+    event = agq.wall(far, 'synthetic-step', AT)
+    assert event.resets_at is None and event.error_id is None

@@ -18,18 +18,31 @@ from .antigravity_wire import _bytes, _proto, _str
 QUALIFIED_SHA256 = "da1751e7658469fa80bf36eda2c60ee61216d8e42b735a184382ba31d1f6b88e"
 EXECUTABLE = Path.home() / ".local/bin/agy"
 ARGV = ("-p", "/usage", "--output-format", "json")
-BANNER = re.compile(r"Individual quota reached[^\n]*(?:\n[^\n]*Error ID[^\n]*)?", re.I)
+BANNER = re.compile(r"Individual quota reached", re.I)
 RESET = re.compile(r"Resets in\s+(?:(\d+)d)?\s*(?:(\d+)h)?\s*(?:(\d+)m)?\s*(?:(\d+)s)?(?=[.\s]|$)", re.I)
 ERROR_ID = re.compile(r"Error ID\s*:?\s*([\w-]+)", re.I)
 
 
 def banner(text: str) -> str | None:
     match = BANNER.search(text)
-    return match.group(0) if match else None
+    if match is None:
+        return None
+    # Terminal wrapping changes whitespace, not event identity. Stop at UI boundaries
+    # and cap the scan so unrelated transcript/input text cannot supply a distant reset.
+    lines = []
+    for line in text[match.start():match.start() + 2048].splitlines()[:6]:
+        stripped = line.strip()
+        if lines and (not stripped or stripped.startswith((">", "─", "━", "╭", "╰", "│"))):
+            break
+        lines.append(stripped)
+        if ERROR_ID.search(" ".join(lines)):
+            break
+    return " ".join(lines)
 
 
 def wall(text: str, key: str, at: datetime | None) -> Wall | None:
-    if not banner(text):
+    text = banner(text)
+    if text is None:
         return None
     match = RESET.search(text)
     seconds = sum(int(v or 0) * n for v, n in zip(match.groups(), (86400, 3600, 60, 1))) if match and any(match.groups()) else None
@@ -39,7 +52,7 @@ def wall(text: str, key: str, at: datetime | None) -> Wall | None:
         reset = None
     error_id = ERROR_ID.search(text)
     return Wall(key, at, reset, error_id=error_id.group(1) if error_id else None,
-                signature=hashlib.sha256(" ".join(banner(text).split()).encode()).hexdigest())
+                signature=hashlib.sha256(text.encode()).hexdigest())
 
 
 def record_wall(index: int, payload: dict, at: datetime | None) -> Wall | None:
