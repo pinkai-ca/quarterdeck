@@ -108,12 +108,12 @@ def seat_section(ship: Ship, seat: SeatSpec, human_session: bool) -> str:
     return "\n".join(lines)
 
 
-TAG = re.compile(r"law: ([a-z][a-z-]*[a-z])")
+TAG = re.compile(r"#.*?\blaw: ([a-z][a-z-]*[a-z])")  # in a comment: a law named in prose is mentioned, not carried
 PROJECT_DIR = FRAMEWORK_DIR.parent
 
 
 def carriers(root: Path | None = None) -> dict[str, list[tuple[Path, int]]]:
-    """Every ``law: <id>`` tag in the source and the tests, by law id, with file and line."""
+    """Every ``# law: <id>`` tag in a comment of the source and the tests, by law id, with file and line."""
     root = root or PROJECT_DIR
     found: dict[str, list[tuple[Path, int]]] = {}
     for folder in ("src", "tests"):

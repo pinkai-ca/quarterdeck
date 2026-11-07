@@ -130,6 +130,20 @@ def test_the_store_reads_its_folder_once_until_a_file_arrives(tmp_path: Path):
     assert cached == [first] and cached is not store._cache[1], "callers get a copy"
     second = store.new("order", "desk", "scott", "two")
     assert store.all() == [first, second], "a new file invalidates the cache"
+    reply = store.new("report", "scott", "desk", "done", re=first.id)
+    assert store.replies(first) == [reply] and store.replies(second) == [], "replies come from the same reading, by id"
+
+
+def test_the_services_verdict_never_overwrites_a_result_the_watch_wrote(tmp_path: Path):
+    store, attempts = Store(tmp_path), post.Attempts(tmp_path)
+    question = store.new("question", "operator", "desk", "Which branch?")
+    opened = attempts.open(question, "desk", None, None, None)
+    assert attempts.judge(opened, "blind", "a watch opened it and never reported printing it") is True
+    assert attempts.for_message(question.id)[0].result == "blind"
+    again = attempts.open(question, "desk", None, None, None)
+    post.Attempts(tmp_path).close(again, "watch", "printed by qd inbox --wait")  # the watch, in its own process
+    assert attempts.judge(again, "blind", "a late verdict") is False
+    assert attempts.for_message(question.id)[-1].result == "watch", "the result the watch wrote stands"  # law: one-door
 
 
 def test_the_watch_hands_back_open_attempts_to_close_after_printing(tmp_path: Path):

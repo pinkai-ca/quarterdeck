@@ -46,8 +46,10 @@ def test_a_refreshed_seat_reseeds_the_pool_and_is_relinked(tmp_path: Path):
     assert proofs[0].startswith("claude-secondary reseeded from pike's refresh") and proofs[1] == "pike relinked to claude-secondary"
     assert link.is_symlink() and link.resolve() == source.resolve()
     assert json.loads(source.read_text())["claudeAiOauth"]["refreshToken"] == "new", "the pool holds the live token"
-    parked = [p for p in source.parent.iterdir() if ".stale-" in p.name]
-    assert len(parked) == 1 and json.loads(parked[0].read_text())["claudeAiOauth"]["refreshToken"] == "old"
+    assert proofs[0].endswith("the replaced file kept as runtime/credentials/claude-secondary-.credentials.json.stale")
+    kept = tmp_path / "runtime" / "credentials" / "claude-secondary-.credentials.json.stale"
+    assert json.loads(kept.read_text())["claudeAiOauth"]["refreshToken"] == "old"
+    assert [p.name for p in source.parent.iterdir()] == [".credentials.json"], "the user's folder holds only the live file"  # law: one-folder
     assert credential.reseed(ship, [pike]) == []
 
 
@@ -58,7 +60,7 @@ def test_a_logged_out_stub_never_replaces_a_live_pool_but_is_relinked_to_it(tmp_
     proofs = credential.reseed(ship, [desk])
     assert proofs == ["desk relinked to claude-secondary"]
     assert json.loads(source.read_text())["claudeAiOauth"]["refreshToken"] == "live", "the pool is untouched"
-    assert not [p for p in source.parent.iterdir() if ".stale-" in p.name]
+    assert not (tmp_path / "runtime" / "credentials").exists(), "nothing replaced, nothing kept"
 
 
 def test_the_newest_live_refresh_wins_when_two_seats_detached_in_one_tick(tmp_path: Path):
@@ -71,7 +73,7 @@ def test_the_newest_live_refresh_wins_when_two_seats_detached_in_one_tick(tmp_pa
     assert proofs[0].startswith("claude-secondary reseeded from pike's refresh")
     assert json.loads(source.read_text())["claudeAiOauth"]["refreshToken"] == "newer"
     assert all((s.home / ".credentials.json").is_symlink() for s in (pike, scott, desk))
-    assert len([p for p in source.parent.iterdir() if ".stale-" in p.name]) == 1, "parked once"
+    assert len(list((tmp_path / "runtime" / "credentials").iterdir())) == 1, "the replaced file kept once"
 
 
 def test_an_older_refresh_than_the_pool_holds_installs_nothing(tmp_path: Path):

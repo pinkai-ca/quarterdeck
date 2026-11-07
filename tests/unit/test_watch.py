@@ -10,9 +10,10 @@ from quarterdeck.watch import Facts
 
 
 def test_the_status_line_says_everything_that_waits():  # law: nothing-waits-silently
-    quiet = Facts(service=True, waiting=0, oldest=0, blind=0)
+    quiet = Facts(service="ok", waiting=0, oldest=0, blind=0)
     assert quiet.line() == "service ok · 0 waiting"
-    loud = Facts(service=False, waiting=2, oldest=14, blind=1, needs_human=["laan"], unarmed=["desk"],
+    assert Facts(service="busy 23s", waiting=0, oldest=0, blind=0).line() == "service busy 23s · 0 waiting", "busy is not dead"
+    loud = Facts(service="down", waiting=2, oldest=14, blind=1, needs_human=["laan"], unarmed=["desk"],
                  walls=["claude-primary 7d"], disks=[("root", 94)], login=[("claude-secondary", "11-13 22:24")],
                  queued=1, oldest_queued=31)
     assert loud.line() == (

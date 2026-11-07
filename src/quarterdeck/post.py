@@ -74,7 +74,7 @@ class Store:
 
     def __init__(self, runtime: Path):
         self.dir = runtime / "post" / "store"
-        self._cache: tuple[tuple[int, int], list[Message]] | None = None
+        self._cache: tuple[tuple[int, int], list[Message], dict[str, list[Message]]] | None = None
 
     def new(self, kind: str, sender: str, to: str, body: str, **fields) -> Message:
         if kind not in KINDS:
@@ -99,21 +99,30 @@ class Store:
         self.dir.mkdir(parents=True, exist_ok=True)
         path = self.dir / f"{message.id}.json"
         if path.exists():
-            raise ShipError(f"{message.id} exists; messages are immutable")
+            raise ShipError(f"{message.id} exists; messages are immutable")  # law: post-is-files
         tmp = path.with_suffix(".tmp")
         tmp.write_text(message.to_json())
         os.replace(tmp, path)
         return path
 
-    def all(self) -> list[Message]:
-        """Every message, oldest first; read once per change of the store folder, since files there never change."""
+    def _loaded(self) -> tuple[list[Message], dict[str, list[Message]]]:
+        """The messages, oldest first, and the replies by the id they answer: read once per change of the
+        store folder, since files there never change, so every question of the store is one lookup."""
         if not self.dir.is_dir():
-            return []
+            return [], {}
         stamp = (self.dir.stat().st_mtime_ns, len(list(self.dir.iterdir())))
         if self._cache is None or self._cache[0] != stamp:
-            messages = [Message.from_json(p.read_text()) for p in self.dir.glob("*.json")]
-            self._cache = (stamp, sorted(messages, key=lambda m: (m.at, m.id)))
-        return list(self._cache[1])
+            messages = sorted((Message.from_json(p.read_text()) for p in self.dir.glob("*.json")), key=lambda m: (m.at, m.id))
+            replies: dict[str, list[Message]] = {}
+            for message in messages:
+                if message.re:
+                    replies.setdefault(message.re, []).append(message)
+            self._cache = (stamp, messages, replies)
+        return self._cache[1], self._cache[2]
+
+    def all(self) -> list[Message]:
+        """Every message, oldest first."""
+        return list(self._loaded()[0])
 
     def get(self, ref: str) -> Message:
         """A message by its id or its short form; ambiguity refused, never guessed."""
@@ -128,11 +137,11 @@ class Store:
         return [m for m in self.all() if m.to == seat]
 
     def replies(self, message: Message) -> list[Message]:
-        return [m for m in self.all() if m.re == message.id]
+        return list(self._loaded()[1].get(message.id, []))
 
     def closing_report(self, order: Message) -> Message | None:
-        """The report from the addressee that closes the order, if any (law: open-until-closed)."""
-        return next((m for m in self.replies(order) if m.kind == "report" and m.sender == order.to), None)
+        """The report from the addressee that closes the order, if any."""
+        return next((m for m in self.replies(order) if m.kind == "report" and m.sender == order.to), None)  # law: open-until-closed
 
     def is_open(self, message: Message) -> bool:
         if message.kind == "order":
@@ -275,6 +284,15 @@ class Attempts:
         self._write(done)
         return done
 
+    def judge(self, attempt: Attempt, result: str, detail: str = "") -> bool:
+        """The service's verdict on an attempt nobody finished, written only while the file still has no
+        result, so a result the door or a watch wrote in the meantime stands."""
+        current = Attempt(**json.loads(attempt.path.read_text()), path=attempt.path)
+        if current.result is not None:
+            return False
+        self.close(attempt, result, detail)
+        return True
+
     def _write(self, attempt: Attempt) -> None:
         data = {k: v for k, v in asdict(attempt).items() if k != "path"}
         tmp = attempt.path.with_suffix(".tmp")
@@ -324,7 +342,7 @@ class Attempts:
         never wakes, so it is never delivered at all (law: open-until-closed).
         """
         skip = self.delivered_ids() | self.blind_ids() | {a.message for a in self.unfinished()}
-        return [m for m in store.for_seat(seat) if m.id not in skip and m.kind != "ack"]
+        return [m for m in store.for_seat(seat) if m.id not in skip and m.kind != "ack"]  # law: open-until-closed
 
 
 # -- the watch: how a seat in a human session is reached -----------------------------------------

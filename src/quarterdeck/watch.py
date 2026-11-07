@@ -52,7 +52,7 @@ def activity(seat: Seat, now: datetime | None = None) -> Activity:
         return Activity("off", f"exited {pane.exit_status}")
     if not seat.harness.record_confirms:  # an opaque record: the screen is all there is, and the reading says so
         screen = Door(seat).screen()
-        return Activity("working", "by the screen") if screen and screen.working else Activity("idle", "by the screen")
+        return Activity("working", "by the screen") if screen and screen.working else Activity("idle", "by the screen")  # law: record-first
     join = seat.join()
     if join.record is None:
         if join.reason and join.reason.split(":")[0] in ("record missing", "ambiguous"):
@@ -100,7 +100,7 @@ def reading(seat: Seat, store: post.Store | None = None) -> SeatReading:
     observed = running_settings(seat) if act.state != "off" else {}
     running = observed.get("model")
     if running is None:
-        model = f"- (ship file: {seat.spec.model})" if seat.spec.model else "-"
+        model = f"- (ship file: {seat.spec.model})" if seat.spec.model else "-"  # law: record-first
     elif seat.spec.model is None or same_name(running, seat.spec.model):
         model = running
     else:
@@ -146,18 +146,25 @@ def running_settings(seat: Seat) -> dict[str, str]:
         state = None
     screen = Door(seat).screen()
     for key in ("model", "effort"):
-        value = (getattr(state, key, None) if state else None) or (screen.shows.get(key) if screen else None)
+        value = (getattr(state, key, None) if state else None) or (screen.shows.get(key) if screen else None)  # law: record-first
         if value:
             found[key] = value
     return found
 
 
+def service_state(runtime: Path) -> str:
+    """``ok``, ``busy <age>`` while a service holds its lock but has not ticked lately, or ``down``."""
+    if not service.alive(runtime):
+        return "down"
+    late = service.stale(runtime)
+    return f"busy {int(late)}s" if late else "ok"
+
+
 def table(ship: Ship, tmux: Tmux) -> list[str]:
     """``qd status``: every seat on one screen, then the open orders."""
     store = post.Store(ship.runtime)
-    beat = service.read_heartbeat(ship.runtime)
-    head = "service " + ("ok" if service.alive(ship.runtime) else
-                         "down" if beat is None else f"down, last tick {int(beat[1])}s ago; qd up restarts it")
+    state = service_state(ship.runtime)
+    head = f"service {state}" + ("; qd up restarts it" if state == "down" else "")
     rows = [head, f"{'seat':<10} {'activity':<24} {'door':<40} {'order':<10} {'today':>8}  pool · model"]
     for seat in seats(ship, tmux):
         r = reading(seat, store)
@@ -201,7 +208,7 @@ def save_screen(seat: Seat) -> Path:
 
 @dataclass(frozen=True)
 class Facts:
-    service: bool
+    service: str  # ok, busy <age>, or down
     waiting: int
     oldest: int
     blind: int
@@ -214,7 +221,7 @@ class Facts:
     oldest_queued: int = 0
 
     def line(self) -> str:  # law: nothing-waits-silently
-        parts = ["service ok" if self.service else "SERVICE DOWN"]
+        parts = ["SERVICE DOWN" if self.service == "down" else f"service {self.service}"]
         parts.append(f"{self.waiting} waiting" + (f", oldest {self.oldest}m" if self.waiting else ""))
         if self.queued:
             parts.append(f"{self.queued} queued behind a turn, oldest {self.oldest_queued}m")
@@ -281,7 +288,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
     oldest = int(max(((now - m.at).total_seconds() for m in waiting), default=0) // 60)
     queued = [a for a in attempts.all() if a.result == "queued" and a.message in attempts.queued_ids()]
     return Facts(
-        service=service.alive(ship.runtime),
+        service=service_state(ship.runtime),
         waiting=len(waiting),
         oldest=oldest,
         blind=len(attempts.blind_ids()),

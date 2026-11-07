@@ -48,6 +48,16 @@ def test_a_ship_replaces_a_card_at_the_same_path(example_ship: Path):
     assert path == example_ship / "runtime" / "brief" / "worker-1.md" and path.read_text() == brief.text
 
 
+def test_a_law_named_in_prose_is_mentioned_not_carried(tmp_path: Path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "src" / "a.py").write_text('"""The door (law: one-door) is one path."""\nx = 1  # law: identity\n')
+    (tmp_path / "tests" / "b.py").write_text("assert x  # law: identity\n")
+    found = standing.carriers(tmp_path)
+    assert set(found) == {"identity"}, "a tag counts only in a comment"
+    assert found["identity"] == [(Path("src/a.py"), 2), (Path("tests/b.py"), 1)]
+
+
 def test_a_missing_card_is_said_not_hidden(example_ship: Path):
     text = (example_ship / "ship.toml").read_text().replace('role = "worker"', 'role = "navigator"')
     (example_ship / "ship.toml").write_text(text)

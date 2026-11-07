@@ -1,8 +1,10 @@
 """Control of the service process: its heartbeat, its lock, start and stop, and requests to it.
 
-One service owns a ship, held by an exclusive lock for its whole life; the heartbeat only
-says how recently it ticked. The CLI never types or relaunches a working seat itself: it
-files a request here and waits for the service's answer.
+One service owns a ship, held by an exclusive lock for its whole life, and the lock is the
+one fact about whether it exists: the kernel drops it the moment the process dies. The
+heartbeat only says how recently it ticked; a service that holds the lock and has not
+ticked lately is busy, never dead. The CLI never types or relaunches a working seat itself:
+it files a request here and waits for the service's answer.
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ from pathlib import Path
 from .seat import qd_bin
 from .ship import Ship, ShipError
 
-STALE_SECONDS = 10.0
+STALE_SECONDS = 10.0  # a tick longer than this reads as busy
 ANSWER_SECONDS = 8.0
 
 
@@ -48,22 +50,6 @@ def read_heartbeat(runtime: Path) -> tuple[int, float] | None:
     return int(pid), age
 
 
-def running(pid: int) -> bool:
-    """Whether a process is alive and not a zombie waiting to be reaped."""
-    try:
-        state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
-        return state != "Z"
-    except (FileNotFoundError, IndexError):
-        pass
-    except OSError:
-        return False
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
-
-
 def acquire_lock(runtime: Path):
     """Take the ship's service lock for this process's life, or refuse."""
     handle = lock_path(runtime).open("a")
@@ -88,20 +74,25 @@ def locked(runtime: Path) -> bool:
 
 
 def alive(runtime: Path) -> bool:
-    """A service owns the ship and has ticked recently; a held lock with a stale heartbeat is a hung one."""
+    """A service owns the ship: its lock is held. A dead process has dropped it; a busy one keeps it."""
+    return locked(runtime)
+
+
+def stale(runtime: Path) -> float | None:
+    """How long the owning service has gone without a tick, when longer than a tick should take; else None."""
     beat = read_heartbeat(runtime)
-    return locked(runtime) and beat is not None and beat[1] <= STALE_SECONDS
+    return beat[1] if beat is not None and beat[1] > STALE_SECONDS else None
+
+
+def started(runtime: Path) -> bool:
+    return alive(runtime) and read_heartbeat(runtime) is not None
 
 
 def start(ship: Ship) -> str:
     """Start the service detached, logging under the runtime; a proof line."""
     if alive(ship.runtime):
-        pid, _ = read_heartbeat(ship.runtime)
-        return f"service alive · pid {pid}"
-    if locked(ship.runtime):
-        beat = read_heartbeat(ship.runtime)
-        raise ShipError(f"a service holds {lock_path(ship.runtime)} but last ticked {int(beat[1]) if beat else '?'}s ago; "
-                        f"qd down stops it" + (f", or kill {beat[0]}" if beat else ""))
+        beat, late = read_heartbeat(ship.runtime), stale(ship.runtime)
+        return f"service alive · pid {beat[0] if beat else '?'}" + (f" · busy, last tick {int(late)}s ago" if late else "")
     log_dir = ship.runtime / "log"
     log_dir.mkdir(parents=True, exist_ok=True)
     out = (log_dir / "service.out").open("ab")
@@ -110,27 +101,38 @@ def start(ship: Ship) -> str:
         stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True, cwd=str(ship.folder),
     )
     deadline = time.monotonic() + 5
-    while time.monotonic() < deadline and not alive(ship.runtime):
+    while time.monotonic() < deadline and not started(ship.runtime):
         time.sleep(0.1)
-    if not alive(ship.runtime):
-        raise ShipError(f"service did not write its heartbeat within 5s; see {log_dir / 'service.out'}")
+    if not started(ship.runtime):
+        raise ShipError(f"service did not take its lock and write a heartbeat within 5s; see {log_dir / 'service.out'}")
     return f"service started · pid {process.pid} · heartbeat {heartbeat_path(ship.runtime).relative_to(ship.folder)}"
 
 
 def stop(runtime: Path) -> str:
-    beat = read_heartbeat(runtime)
-    if beat is None or not alive(runtime):
+    """Signal the service that holds the lock and wait for the lock to drop; one that ignores SIGTERM is killed."""
+    if not alive(runtime):
+        heartbeat_path(runtime).unlink(missing_ok=True)
         return "service was not running"
-    os.kill(beat[0], signal.SIGTERM)
-    deadline = time.monotonic() + 3
-    while time.monotonic() < deadline and running(beat[0]):
-        time.sleep(0.05)
-    heartbeat_path(runtime).unlink(missing_ok=True)
-    return f"service stopped · pid {beat[0]}"
+    beat = read_heartbeat(runtime)
+    if beat is None:
+        raise ShipError(f"a service holds {lock_path(runtime)} and has written no heartbeat; fuser {lock_path(runtime)} names it")
+    pid = beat[0]
+    for sig, patience, how in ((signal.SIGTERM, 3.0, "stopped"), (signal.SIGKILL, 2.0, "killed")):
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            pass
+        deadline = time.monotonic() + patience
+        while time.monotonic() < deadline and locked(runtime):
+            time.sleep(0.05)
+        if not locked(runtime):
+            heartbeat_path(runtime).unlink(missing_ok=True)
+            return f"service {how} · pid {pid}" + (" · it did not answer SIGTERM within 3s" if how == "killed" else "")
+    raise ShipError(f"service {pid} still holds {lock_path(runtime)} after SIGKILL")
 
 
 def request(runtime: Path, kind: str, **data) -> str:
-    """File a request and wait for the service's answer; refuse when the service is down."""
+    """File a request and wait for the service's answer; refuse when no service owns the ship."""
     if not alive(runtime):
         raise ShipError("service down; qd up restarts it")
     folder = runtime / "requests"
@@ -146,4 +148,6 @@ def request(runtime: Path, kind: str, **data) -> str:
             answer.unlink()
             return proof
         time.sleep(0.1)
-    return f"pending: the service has not answered within {ANSWER_SECONDS:.0f}s (request {name}); it applies when it can"
+    late = stale(runtime)
+    return (f"pending: the service has not answered within {ANSWER_SECONDS:.0f}s (request {name})"
+            + (f"; it last ticked {int(late)}s ago" if late else "") + "; it applies when it can")

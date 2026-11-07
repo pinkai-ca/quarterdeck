@@ -6,7 +6,7 @@ What the framework itself guarantees, enforced in code and tests. A rule nothing
 
 - `ship-file` `qd` reads its configuration from the ship file alone; the ship file is the only configuration a ship has.
 - `nothing-leaks` Nothing from the runtime enters a repository: no ids, records, credentials or usage.
-- `one-folder` The `qd` program writes only inside its project folder: a ship's declaration, which it commits, and a ship's runtime, which git never tracks. The user's instruction files, program configuration and code are read, never written.
+- `one-folder` The `qd` program writes only inside its project folder: a ship's declaration, which it commits, and a ship's runtime, which git never tracks. The user's instruction files, program configuration and code are read, never written. The one exception is a pool's credential file: when a seat's program refreshes its token, the service puts the refreshed file in the pool's place, so the pool and every seat on it stay signed in.
 
 ## Harness
 

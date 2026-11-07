@@ -119,13 +119,13 @@ def test_turns_are_stored_in_local_time_so_today_is_the_local_day(tmp_path: Path
 
 
 def test_the_meter_charges_a_turn_with_its_tree(tmp_path: Path):
-    meter = machine.Meter()
-    table = machine.processes()
     me = os.getpid()
+    meter = machine.Meter(me)
+    table = machine.processes()
     assert me in table and table[me].cpu_seconds >= 0
-    meter.sample(me, table)
+    meter.sample(table)
     busy = sum(range(2_000_000))  # spend some CPU
-    meter.sample(me, machine.processes())
+    meter.sample()
     result = meter.result()
     assert result.max_processes >= 1 and result.peak_rss > 0 and result.cpu_seconds >= 0 and busy
     assert machine.tree(me)[0].pid == me

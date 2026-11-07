@@ -24,7 +24,7 @@ from .ledger import Ledger
 from .post import Attempts, Store
 from .seat import Seat, seats
 from .servicectl import (  # noqa: F401  (the process control, reachable as service.* too)
-    acquire_lock, alive, heartbeat_path, locked, read_heartbeat, request, running, start, stop, write_heartbeat,
+    acquire_lock, alive, heartbeat_path, locked, read_heartbeat, request, stale, start, stop, write_heartbeat,
 )
 from .ship import Ship, ShipError
 from .tmux import Tmux
@@ -61,13 +61,13 @@ class Service:
 
     def tick(self) -> None:
         """One pass: the ship file read afresh, then every duty, each failing alone."""
-        self.heartbeat()
         try:
             self.ship = shipmod.load(self.ship.folder)  # law: ship-file
         except ShipError as error:
             self.log("error", step="load", error=str(error))
         for step in (self.reconcile, self.account, self.inboxes, self.deliveries, self.requests, self.fresh_after_order,
                      self.rebrief, self.credentials, self.failover):  # accounting before anything relaunches a seat
+            self.heartbeat()  # before every step: a slow delivery or usage read reads as busy, never as dead
             try:
                 step()
             except Exception as error:  # one failing step never stops the others
@@ -89,22 +89,22 @@ class Service:
     def reconcile(self) -> None:
         """Attempts left without a result: the record says delivered, else blind, never resent.
 
-        The program is given the door's confirm window from the attempt's time before it is
-        judged, since a message typed a moment before the crash may still be on its way in.
+        An attempt younger than the door's confirm window is left to whoever opened it, a
+        door still confirming or a watch still printing. The verdict is written only while
+        the file still has no result, so a result they write in the meantime stands.
         """
         for attempt in self.attempts.unfinished():
-            message = self.store.get(attempt.message)
-            if attempt.pane is None:
-                self.attempts.close(attempt, "blind", "a watch opened it and never reported printing it; qd post resend")
+            if time.time() < attempt.when.timestamp() + CONFIRM_SECONDS:
                 continue
-            seat = self.seat(attempt.seat)
-            deadline = attempt.when.timestamp() + CONFIRM_SECONDS
-            while not (seen := self.taken(seat, message, attempt.when)) and time.time() < deadline:
-                time.sleep(0.2)
+            if attempt.pane is None:
+                self.attempts.judge(attempt, "blind", "a watch opened it and never reported printing it; qd post resend")
+                continue
+            seat, message = self.seat(attempt.seat), self.store.get(attempt.message)
+            seen = self.taken(seat, message, attempt.when)
             result = "delivered" if seen else "blind"
-            self.attempts.close(attempt, result, "found in the record on reconciliation" if seen else
-                                "the service died mid-delivery and the record does not show it; qd post resend")  # law: one-door
-            self.log("reconciled", message=message.id, seat=seat.name, result=result)
+            if self.attempts.judge(attempt, result, "found in the record on reconciliation" if seen else
+                                   "the service died mid-delivery and the record does not show it; qd post resend"):  # law: one-door
+                self.log("reconciled", message=message.id, seat=seat.name, result=result)
         for attempt in self.attempts.all():  # a queued message is delivered once the record shows it read
             if attempt.result == "queued" and attempt.message in self.attempts.queued_ids():
                 seat = self.seat(attempt.seat)
@@ -129,8 +129,7 @@ class Service:
             return message.short in flat and wanted in flat
 
         if not seat.harness.record_confirms:
-            screen = Door(seat).screen()
-            return bool(screen) and any(carries(e) for e in screen.echoes)
+            return any(carries(e) for e in Door(seat).echoes())
         record = seat.record()
         if record is None:
             return False
@@ -155,7 +154,7 @@ class Service:
         if last is None:
             return True
         screen = Door(seat).screen()
-        return screen is None or screen.text != last
+        return screen is None or screen.text != last  # law: events-not-clocks
 
     def needs_human(self, seat: Seat) -> None:
         """When a seat's door needs a human, the desk is told once, with a report from ``ship``."""
@@ -298,27 +297,30 @@ class Service:
         for seat in seats(self.ship, self.tmux):
             if not seat.harness.record_confirms:
                 continue  # an opaque record has no turns to account; the Ledger says nothing rather than guessing
-            pane = seat.pane()
-            current = seat.record() if pane and not pane.dead else None
-            meter = self.meters.setdefault(seat.name, machine.Meter())
-            if pane and not pane.dead:
-                meter.sample(pane.pid, table)
-            for record in seat.harness.records(seat.home):
+            pane, launched = seat.pane(), seat.launched()
+            live = pane is not None and not pane.dead
+            current = seat.record() if live else None
+            meter = self.meters.get(seat.name)
+            if live:
+                if meter is None or meter.root != pane.pid:
+                    meter = self.meters[seat.name] = machine.Meter(pane.pid)  # a new process starts a new meter
+                meter.sample(table)
+            for record in seat.harness.records(seat.home):  # law: every-turn-accounted
                 stamp = record.stat().st_mtime_ns
                 if self.read_marks.get(record) == stamp:
                     continue
                 self.read_marks[record] = stamp
                 state, turns = seat.harness.read(record)
                 if turns and self.ledger.ingested(record) < len(turns):
-                    figures = {turns[-1].index: meter.result()} if record == current and not state.turn_open else {}
-                    pool = seat.launched().pool if (record == current and seat.launched()) else seat.pool.name
+                    figures = {turns[-1].index: meter.result()} if record == current and meter and not state.turn_open else {}
+                    pool = launched.pool if (record == current and launched) else seat.pool.name
                     written = self.ledger.ingest(seat.name, pool, record, turns, self.store, figures)
                     if written:
                         if record == current:
-                            self.meters[seat.name] = machine.Meter()
+                            self.meters[seat.name] = machine.Meter(pane.pid)
                         self.log("ledger", seat=seat.name, record=record.name, turns=written)
-            pool = seat.pool
-            if pane and pool.kind == "subscription" and time.monotonic() - self.usage_read.get(pool.name, -USAGE_SECONDS) >= USAGE_SECONDS:
+            pool = self.ship.pools[launched.pool] if launched and launched.pool in self.ship.pools else seat.pool  # the one it runs on
+            if live and pool.kind == "subscription" and time.monotonic() - self.usage_read.get(pool.name, -USAGE_SECONDS) >= USAGE_SECONDS:
                 self.usage_read[pool.name] = time.monotonic()
                 usage = seat.harness.usage(pool)
                 if usage:

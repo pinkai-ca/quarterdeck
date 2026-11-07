@@ -5,9 +5,9 @@ refresh. The link alone is not enough either: a program that writes its refreshe
 atomic rename turns the seat's link into a private file holding the only live token, and
 strands the pool and every sibling. So on every tick the service looks at each seat's
 credential path: one that is no longer a link has refreshed. Of the detached files on one
-pool, the newest live one is installed over the pool's, the stale one parked beside it, and
-every detached seat relinked; a logged-out stub installs nothing. Expiry times are read as
-metadata; token values are never read.
+pool, the newest live one is put in the pool's place, one copy of the replaced file kept
+under the runtime, and every detached seat relinked; a logged-out stub installs nothing.
+Expiry times are read as metadata; token values are never read.
 """
 
 from __future__ import annotations
@@ -69,9 +69,10 @@ def reseed(ship: Ship, seats: list[Seat]) -> list[str]:
         newer = [c for c in live if current is None or c[0] > current]
         if newer:
             _, winner, from_seat = max(newer, key=lambda c: c[0])
-            parked = _park(source)
-            shutil.copy2(winner, source)
-            proofs.append(f"{pool_name} reseeded from {from_seat.name}'s refresh · stale file parked as {parked.name if parked else 'nothing'}")
+            parked = _park(source, ship.runtime / "credentials" / f"{pool_name}-{source.name}.stale")
+            _install(winner, source)
+            proofs.append(f"{pool_name} reseeded from {from_seat.name}'s refresh · the replaced file kept as "
+                          f"{parked.relative_to(ship.folder) if parked else 'nothing'}")
         if not source.exists():
             continue  # a pool with no credential yet and only stubs to offer: nothing to link to
         for link, seat in candidates:
@@ -81,13 +82,21 @@ def reseed(ship: Ship, seats: list[Seat]) -> list[str]:
     return proofs
 
 
-def _park(source: Path) -> Path | None:
+def _park(source: Path, parked: Path) -> Path | None:
+    """One copy of the pool's replaced file, kept under the runtime for a look back; each replaces the last."""
     if not source.exists():
         return None
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
-    parked = source.with_name(f"{source.name}.stale-{stamp}")
-    os.replace(source, parked)
+    parked.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, parked)
     return parked
+
+
+def _install(winner: Path, source: Path) -> None:
+    """The refreshed file put in the pool's place in one step, so no seat finds the place empty: the one
+    write outside the project folder, and the law names it."""
+    tmp = source.with_name(f"{source.name}.qd-tmp")
+    shutil.copy2(winner, tmp)
+    os.replace(tmp, source)  # law: one-folder
 
 
 def grant_expiry(pool: Pool) -> datetime | None:

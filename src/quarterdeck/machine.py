@@ -65,15 +65,16 @@ def tree(root: int, table: dict[int, Process] | None = None) -> list[Process]:
 
 @dataclass
 class Meter:
-    """Accumulates one seat's machine use over a turn, from repeated samples of its tree."""
+    """Accumulates one process tree's machine use over a turn, from repeated samples; a new process gets a new meter."""
 
+    root: int
     first: dict[int, Process] = field(default_factory=dict)
     last: dict[int, Process] = field(default_factory=dict)
     peak_rss: int = 0
     max_processes: int = 0
 
-    def sample(self, root: int, table: dict[int, Process] | None = None) -> None:
-        seen = tree(root, table)
+    def sample(self, table: dict[int, Process] | None = None) -> None:
+        seen = tree(self.root, table)
         self.peak_rss = max(self.peak_rss, sum(p.rss for p in seen))
         self.max_processes = max(self.max_processes, len(seen))
         for process in seen:

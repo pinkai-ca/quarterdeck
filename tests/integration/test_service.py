@@ -11,7 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from quarterdeck import cli, ledger, post, seat as seatmod, service, ship as shipmod
+from quarterdeck import cli, ledger, post, seat as seatmod, service, servicectl, ship as shipmod
+from quarterdeck.door import CONFIRM_SECONDS
 from quarterdeck.harness.base import Usage, Window
 from quarterdeck.tmux import Tmux
 
@@ -124,8 +125,7 @@ def test_a_worker_starts_fresh_after_its_order_closes(ship: shipmod.Ship, tmux: 
     wait_for(lambda: book_path.exists() and ledger.Ledger(book_path).rollup("seat"), seconds=15)
     rows = ledger.Ledger(book_path).rollup("seat")
     assert rows and rows[0].key == "worker-1" and rows[0].turns >= 1, "the closing turn is accounted though its record was left behind"  # law: every-turn-accounted
-    log = (ship.runtime / "log" / "service.jsonl").read_text()
-    assert '"event": "fresh"' in log
+    wait_for(lambda: '"event": "fresh"' in (ship.runtime / "log" / "service.jsonl").read_text())
 
 
 def test_changed_orders_rebrief_every_seat_with_a_message_from_ship(ship: shipmod.Ship, tmux: Tmux, capsys):
@@ -151,19 +151,44 @@ def test_the_service_clears_a_known_notice_and_delivers_behind_it(ship: shipmod.
     assert "· notice dismissed" in tmux.capture(captain.pane().id, history=50)
 
 
-def test_one_service_per_ship_by_lock_not_by_heartbeat(ship: shipmod.Ship, tmux: Tmux, capsys):
+def test_a_busy_service_reads_busy_not_dead_and_qd_down_still_stops_it(ship: shipmod.Ship, tmux: Tmux, capsys, monkeypatch):
+    monkeypatch.setattr(servicectl, "ANSWER_SECONDS", 1.0)
     qd(capsys, "up", "captain")
     pid, _ = service.read_heartbeat(ship.runtime)
-    os.kill(pid, signal.SIGSTOP)  # hung: the lock stays held while the heartbeat ages
+    os.kill(pid, signal.SIGSTOP)  # a tick that never ends: the lock stays held while the heartbeat ages
     try:
-        service.heartbeat_path(ship.runtime).write_text(f"{pid} 2026-01-01T00:00:00+00:00\n")
-        assert not service.alive(ship.runtime) and service.locked(ship.runtime)
-        code = cli.main(["up"])
-        err = capsys.readouterr().err
-        assert code == 2 and "holds" in err and "qd down stops it" in err
+        stamp = (datetime.now(timezone.utc) - timedelta(seconds=30)).isoformat()
+        service.heartbeat_path(ship.runtime).write_text(f"{pid} {stamp}\n")
+        assert service.alive(ship.runtime) and 29 < service.stale(ship.runtime) < 40, "the lock says alive, the heartbeat says busy"
+        assert qd(capsys, "status", "--line").startswith("service busy 3")  # law: nothing-waits-silently
+        assert qd(capsys, "status").splitlines()[0].startswith("service busy 3")
+        assert qd(capsys, "up").splitlines()[-1].startswith(f"service alive · pid {pid} · busy, last tick 3"), "nobody is told to qd down"
+        filed = qd(capsys, "set", "captain", "effort=low").splitlines()[1]
+        assert filed.startswith("  pending: the service has not answered within 1s") and "; it last ticked 3" in filed, "filed, not refused"
     finally:
         os.kill(pid, signal.SIGCONT)
-    wait_for(lambda: service.alive(ship.runtime))
+    wait_for(lambda: service.stale(ship.runtime) is None)
+    assert qd(capsys, "status", "--line").startswith("service ok")
+    captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
+    wait_for(lambda: captain.harness.screen(tmux.capture(captain.pane().id)).shows.get("effort") == "low", seconds=15)
+    os.kill(pid, signal.SIGSTOP)
+    proof = service.stop(ship.runtime)
+    assert proof == f"service killed · pid {pid} · it did not answer SIGTERM within 3s" and not service.alive(ship.runtime)
+
+
+def test_a_watch_attempt_is_judged_only_after_the_confirm_window(ship: shipmod.Ship, tmux: Tmux, capsys):
+    qd(capsys, "up", "captain")
+    store, attempts = post.Store(ship.runtime), post.Attempts(ship.runtime)
+    question = store.new("question", "operator", "desk", "still printing")
+    opened = attempts.open(question, "desk", None, None, None)  # a watch that is printing right now
+    time.sleep(2.5)
+    assert attempts.for_message(question.id)[0].result is None, "left to the watch within the confirm window"
+    post.printed(ship.runtime, [opened])
+    time.sleep(CONFIRM_SECONDS + 1.5)
+    assert attempts.for_message(question.id)[0].result == "watch", "the watch's own result stands"  # law: one-door
+    lost = store.new("question", "operator", "desk", "the watch died")
+    attempts.open(lost, "desk", None, None, None)
+    wait_for(lambda: attempts.for_message(lost.id)[0].result == "blind", seconds=CONFIRM_SECONDS + 5)
 
 
 def test_a_restart_waits_for_the_turn_to_end(ship: shipmod.Ship, tmux: Tmux, capsys):

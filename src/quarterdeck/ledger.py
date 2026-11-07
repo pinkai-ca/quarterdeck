@@ -210,7 +210,7 @@ def attribution(store: Store, seat: str, turn: Turn) -> str:
         return claimed
     open_then = [m for m in messages if m.kind == "order" and m.to == seat and m.at <= turn.ended
                  and not any(r.kind == "report" and r.sender == seat and r.re == m.id and r.at <= turn.ended for r in messages)]
-    return open_then[0].id if len(open_then) == 1 else UNATTRIBUTED
+    return open_then[0].id if len(open_then) == 1 else UNATTRIBUTED  # law: every-turn-accounted
 
 
 def table(ledger: Ledger, by: str) -> list[str]:
