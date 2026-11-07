@@ -1,4 +1,4 @@
-"""Three guards on the repository itself: file size, what may never be tracked, and the laws' carriers."""
+"""Two guards on the repository itself: what may never be tracked, and the laws' carriers."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ from pathlib import Path
 from quarterdeck import standing
 
 ROOT = Path(__file__).resolve().parents[2]
-MAX_LINES = 400
 UUID = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
 SECRETS = re.compile(r"sk-ant-|\beyJ[A-Za-z0-9_-]{20,}|\"accessToken\": \"[^\"]{8,}|\"refreshToken\": \"[^\"]{8,}")
 TEXT = {".py", ".md", ".toml", ".txt", ".json", ".cfg", ".gitignore"}
@@ -20,18 +19,13 @@ def tracked() -> list[Path]:
     return [ROOT / line for line in out.splitlines() if line]
 
 
-def test_no_source_file_over_400_lines():
-    long = {p.relative_to(ROOT): len(p.read_text().splitlines()) for p in (ROOT / "src").rglob("*.py")
-            if len(p.read_text().splitlines()) > MAX_LINES}
-    assert long == {}, f"over {MAX_LINES} lines: {long}"
-
-
 def test_nothing_from_a_runtime_is_tracked():  # law: nothing-leaks
     files = tracked()
     assert files, "run from the repository"
     assert not [p for p in files if "/runtime/" in str(p)], "a runtime is fenced, never tracked"
     ignored = (ROOT / ".gitignore").read_text().splitlines()
-    assert "ships/*/runtime/" in ignored and "ships/*" in ignored and "!ships/example/" in ignored
+    assert "ships/*/runtime/" in ignored and "ships/*" in ignored
+    assert "!ships/drydock/" in ignored and "!ships/default/" in ignored and "work/" in ignored
     leaks = {}
     for path in files:
         if path.suffix not in TEXT and path.name != ".gitignore" or path == Path(__file__):

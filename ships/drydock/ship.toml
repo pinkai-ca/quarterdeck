@@ -1,8 +1,8 @@
-# The example ship: three seats on the fake harness, one in each kind of session.
-# It runs anywhere, needs no credential, and is what `qd drill` exercises.
+# The drydock: three seats on the fake harness, one in each kind of session, for the tests and the drill.
+# It runs anywhere, needs no credential and spends nothing. For a crew on real programs, see ships/default.
 
 [ship]
-name = "example"
+name = "drydock"
 operator = "operator"            # what this ship calls its human
 
 [pools.fake]
@@ -21,7 +21,7 @@ title = "Crew"
 [seats.captain]
 session = "bridge"
 role = "captain"
-persona = "Pike"
+persona = "Picard"
 harness = "fake"
 pool = "fake"
 model = "fake-1"

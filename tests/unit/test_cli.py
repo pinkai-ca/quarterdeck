@@ -15,9 +15,9 @@ def run(capsys, *argv: str) -> tuple[int, str, str]:
     return code, out.out, out.err
 
 
-def test_set_writes_the_ship_file_and_says_what_applies_it(example_ship: Path, capsys, monkeypatch):
+def test_set_writes_the_ship_file_and_says_what_applies_it(drydock: Path, capsys, monkeypatch):
     monkeypatch.setenv("QD_TMUX_SOCKET", "qd-test-nobody-here")
-    code, out, err = run(capsys, "--ship", str(example_ship), "set", "captain", "model=fake-2", "pool=fake", "remote_control=true")
+    code, out, err = run(capsys, "--ship", str(drydock), "set", "captain", "model=fake-2", "pool=fake", "remote_control=true")
     assert code == 0 and err == ""
     lines = out.splitlines()
     assert lines[0].startswith('ship.toml: seats.captain.model = "fake-2" · written')
@@ -25,12 +25,12 @@ def test_set_writes_the_ship_file_and_says_what_applies_it(example_ship: Path, c
     assert lines[3] == "  pool written; qd restart captain applies it"
     assert lines[4].startswith("ship.toml: seats.captain.remote_control = true")
     assert lines[5] == "  remote_control written; qd restart captain applies it"
-    captain = load(example_ship).seat("captain")
+    captain = load(drydock).seat("captain")
     assert captain.model == "fake-2" and captain.remote_control
 
 
-def test_set_takes_the_ship_from_the_environment_and_refuses_with_a_reason(example_ship: Path, capsys, monkeypatch):
-    monkeypatch.setenv("QD_SHIP", str(example_ship))
+def test_set_takes_the_ship_from_the_environment_and_refuses_with_a_reason(drydock: Path, capsys, monkeypatch):
+    monkeypatch.setenv("QD_SHIP", str(drydock))
     code, out, err = run(capsys, "set", "nobody", "model=x")
     assert code == 2 and "no seat 'nobody'" in err and "declared: captain, desk, worker-1" in err
     code, out, err = run(capsys, "set", "captain")
@@ -40,15 +40,15 @@ def test_set_takes_the_ship_from_the_environment_and_refuses_with_a_reason(examp
     assert code == 2 and "--ship" in err
 
 
-def test_brief_and_json_output(example_ship: Path, capsys):
-    code, out, _ = run(capsys, "--ship", str(example_ship), "--json", "brief", "desk", "--sources")
+def test_brief_and_json_output(drydock: Path, capsys):
+    code, out, _ = run(capsys, "--ship", str(drydock), "--json", "brief", "desk", "--sources")
     assert code == 0 and '"proof"' in out and "laws" in out
-    code, out, _ = run(capsys, "--ship", str(example_ship), "brief", "desk")
+    code, out, _ = run(capsys, "--ship", str(drydock), "brief", "desk")
     assert out.startswith("# Standing orders for Maeve")
 
 
-def test_inside_a_seat_the_seat_is_known_and_outside_the_operator_has_an_inbox(example_ship: Path, capsys, monkeypatch):
-    monkeypatch.setenv("QD_SHIP", str(example_ship))
+def test_inside_a_seat_the_seat_is_known_and_outside_the_operator_has_an_inbox(drydock: Path, capsys, monkeypatch):
+    monkeypatch.setenv("QD_SHIP", str(drydock))
     monkeypatch.setenv("QD_SEAT", "worker-1")
     code, out, _ = run(capsys, "brief")
     assert code == 0 and out.startswith("# Standing orders for worker-1: worker-1, worker")
@@ -75,21 +75,21 @@ def test_set_routes_a_programs_own_key_to_the_settings_table(enterprise_ship: Pa
     assert seat.settings == {"model_auto_compact_token_limit": 100000, "model_reasoning_summary": "concise"} and seat.effort == "low"
 
 
-def test_an_ack_needs_no_body_and_wakes_nobody(example_ship: Path, capsys, monkeypatch):
+def test_an_ack_needs_no_body_and_wakes_nobody(drydock: Path, capsys, monkeypatch):
     from quarterdeck import post
 
     monkeypatch.setenv("QD_TMUX_SOCKET", "qd-test-nobody-here")
-    monkeypatch.setenv("QD_SHIP", str(example_ship))
+    monkeypatch.setenv("QD_SHIP", str(drydock))
     code, out, _ = run(capsys, "post", "order", "--to", "worker-1", "build it")
     short = out.split(" ")[0]
     code, out, err = run(capsys, "post", "ack", "--from", "worker-1", "--re", short)
     assert code == 0, err
     assert out.startswith("ack-") and out.strip().endswith(f"claims {short} for the ledger; an ack wakes nobody")
-    store, attempts = post.Store(example_ship / "runtime"), post.Attempts(example_ship / "runtime")
+    store, attempts = post.Store(drydock / "runtime"), post.Attempts(drydock / "runtime")
     ack = store.all()[-1]
     assert ack.kind == "ack" and ack.body == "claimed" and ack.to == "operator"
     assert attempts.undelivered(store, "operator") == [], "an ack is never delivered"  # law: open-until-closed
-    assert (example_ship / "runtime" / ".git").is_dir(), "qd post made the fence before writing"  # law: nothing-leaks
+    assert (drydock / "runtime" / ".git").is_dir(), "qd post made the fence before writing"  # law: nothing-leaks
 
 
 def test_parse_value():

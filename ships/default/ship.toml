@@ -1,0 +1,51 @@
+# The default ship: the smallest crew on real programs. A desk the operator talks to, a captain who
+# turns the operator's word into orders and reviews the work, and an engineer who does it. The pools
+# are the sign-ins already on this machine, shared with each seat by one link and never copied.
+# To make a ship of your own, copy this folder under ships/, make it a repository, and change what differs.
+
+[ship]
+name = "default"
+operator = "operator"            # what this ship calls its human
+workspace = "../.."              # the project the crew works on: here, the project folder this ship sits in
+
+[pools.claude]
+provider = "claude"
+config_dir = "~/.claude"         # the Claude Code sign-in on this machine
+
+[pools.codex]
+provider = "codex"
+home = "~/.codex"                # the Codex sign-in on this machine
+
+[sessions.bridge]
+title = "Bridge"
+
+[sessions.office]
+title = "Office"
+human = true                     # the operator types here; the ship never does
+
+[seats.desk]
+session = "office"
+role = "desk"
+persona = "Maeve"
+harness = "claude"
+pool = "claude"
+model = "claude-opus-5-5"
+effort = "max"
+
+[seats.captain]
+session = "bridge"
+role = "captain"
+persona = "Picard"
+harness = "codex"
+pool = "codex"
+model = "gpt-6-astra"
+effort = "xhigh"
+
+[seats.engineering]
+session = "bridge"
+role = "engineering"
+persona = "Scott"
+harness = "codex"
+pool = "codex"
+model = "gpt-6-astra"
+effort = "high"

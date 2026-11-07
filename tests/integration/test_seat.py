@@ -27,10 +27,10 @@ def wait_for(predicate, seconds: float = 10.0):
 
 
 @pytest.fixture
-def ship(example_ship: Path) -> shipmod.Ship:
-    text = (example_ship / "ship.toml").read_text() + '\n[seats.captain.settings]\nstep_seconds = "0.05"\n'
-    (example_ship / "ship.toml").write_text(text)
-    return shipmod.load(example_ship)
+def ship(drydock: Path) -> shipmod.Ship:
+    text = (drydock / "ship.toml").read_text() + '\n[seats.captain.settings]\nstep_seconds = "0.05"\n'
+    (drydock / "ship.toml").write_text(text)
+    return shipmod.load(drydock)
 
 
 def environ(pid: int) -> dict[str, str]:
@@ -45,7 +45,7 @@ def test_up_brings_up_every_declared_seat_in_its_session(ship: shipmod.Ship, tmu
     assert [p.split(" ")[0] for p in proofs[2:]] == ["captain", "desk", "worker-1"]
     assert all("· fake fake · pool fake · fresh" in p for p in proofs[2:])
     assert sorted(tmux.sessions()) == ["Bridge", "Crew", "Office"]
-    assert [p.window for p in tmux.panes("Bridge")] == ["Pike"]
+    assert [p.window for p in tmux.panes("Bridge")] == ["Picard"]
     assert [p.window for p in tmux.panes("Office")] == ["Maeve"]
     assert [p.window for p in tmux.panes("Crew")] == ["worker-1"]
     runtime = ship.runtime
@@ -143,7 +143,7 @@ def test_a_program_that_exits_at_once_is_a_refusal_not_an_up(ship: shipmod.Ship,
     assert pane is not None and pane.dead and pane.exit_status == 7, "the pane stays, and the seat knows whose it is"
     monkeypatch.undo()
     assert "captain up in %" in captain.up()
-    assert [p.window for p in tmux.panes("Bridge")] == ["Pike"], "the dead pane went when the seat came back"
+    assert [p.window for p in tmux.panes("Bridge")] == ["Picard"], "the dead pane went when the seat came back"
 
 
 def test_identity_is_pane_and_process_not_name(ship: shipmod.Ship, tmux: Tmux):
@@ -166,9 +166,9 @@ def test_a_session_owned_by_another_ship_is_refused(ship: shipmod.Ship, tmux: Tm
     other_folder = tmp_path / "ships" / "other"
     shutil.copytree(ship.folder, other_folder, ignore=shutil.ignore_patterns("runtime"))
     other = shipmod.load(other_folder)
-    with pytest.raises(ShipError, match="belongs to .*example.*another title"):
+    with pytest.raises(ShipError, match="belongs to .*drydock.*another title"):
         seatmod.Seat(other, other.seat("captain"), tmux).up()
-    assert [p.window for p in tmux.panes("Bridge")] == ["Pike"], "nothing of the other ship landed here"
+    assert [p.window for p in tmux.panes("Bridge")] == ["Picard"], "nothing of the other ship landed here"
 
 
 def test_a_missing_working_directory_is_refused_not_created(ship: shipmod.Ship, tmux: Tmux, tmp_path: Path):

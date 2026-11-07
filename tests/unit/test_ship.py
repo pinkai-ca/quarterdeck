@@ -36,11 +36,23 @@ def test_loads_the_design_example(enterprise_ship: Path):
     assert worker.settings == {"model_auto_compact_token_limit": 200000}
 
 
-def test_the_example_ship_loads_and_runs_anywhere(example_ship: Path):
-    ship = shipmod.load(example_ship)
-    assert ship.workspace == example_ship
+def test_the_drydock_loads_and_runs_anywhere(drydock: Path):
+    ship = shipmod.load(drydock)
+    assert ship.workspace == drydock
     assert ship.pools["fake"].kind == "subscription" and ship.pools["fake"].config_dir is None
     assert {s.session for s in ship.seats.values()} == {"bridge", "office", "crew"}
+    assert ship.seat("captain").persona == "Picard" and ship.seat("desk").persona == "Maeve"
+
+
+def test_the_default_ship_is_the_smallest_crew_on_real_programs():
+    folder = FIXTURES.parent.parent / "ships" / "default"
+    ship = shipmod.load(folder)
+    assert ship.workspace == folder.parent.parent, "the crew works on the project folder the ship sits in"
+    assert [(s.name, s.role, s.harness, s.persona) for s in ship.seats.values()] == [
+        ("desk", "desk", "claude", "Maeve"), ("captain", "captain", "codex", "Picard"), ("engineering", "engineering", "codex", "Scott")]
+    assert {p.provider for p in ship.pools.values()} == {"claude", "codex"}
+    assert ship.session_of(ship.seat("desk")).human and not ship.session_of(ship.seat("captain")).human
+    assert "the desk lands it" in (folder / "orders.md").read_text()
 
 
 def test_refusals_name_what_lifts_them(tmp_path: Path):
@@ -52,16 +64,16 @@ def test_refusals_name_what_lifts_them(tmp_path: Path):
     with pytest.raises(ShipError, match="holds no ship.toml"):
         shipmod.load(tmp_path / "missing")
     with pytest.raises(ShipError, match="no seat 'nobody'"):
-        shipmod.load(FIXTURES.parent.parent / "ships" / "example").seat("nobody")
+        shipmod.load(FIXTURES.parent.parent / "ships" / "drydock").seat("nobody")
 
 
-def test_find_takes_the_argument_then_the_environment(example_ship: Path, monkeypatch):
+def test_find_takes_the_argument_then_the_environment(drydock: Path, monkeypatch):
     monkeypatch.delenv("QD_SHIP", raising=False)
     with pytest.raises(ShipError, match="--ship"):
         shipmod.find(None)
-    monkeypatch.setenv("QD_SHIP", str(example_ship))
-    assert shipmod.find(None) == example_ship
-    assert shipmod.find(str(example_ship)) == example_ship
+    monkeypatch.setenv("QD_SHIP", str(drydock))
+    assert shipmod.find(None) == drydock
+    assert shipmod.find(str(drydock)) == drydock
 
 
 # -- the line editor -------------------------------------------------------------------
@@ -142,11 +154,11 @@ def test_set_value_refuses_a_declaration_it_could_not_load(enterprise_ship: Path
     assert ship.file.read_text() == before and git(enterprise_ship, "status", "--porcelain") == ""
 
 
-def test_set_value_in_a_folder_that_is_not_a_repository_says_so(example_ship: Path):
-    ship = shipmod.load(example_ship)
+def test_set_value_in_a_folder_that_is_not_a_repository_says_so(drydock: Path):
+    ship = shipmod.load(drydock)
     proof = shipmod.set_value(ship, "seats.captain", "effort", "max")
     assert "not a repository" in proof
-    assert shipmod.load(example_ship).seat("captain").effort == "max"
+    assert shipmod.load(drydock).seat("captain").effort == "max"
 
 
 def test_fence_makes_the_runtime_a_nested_repository(enterprise_ship: Path):
@@ -173,8 +185,8 @@ def test_fence_refuses_a_tracked_runtime(enterprise_ship: Path):
         shipmod.fence(shipmod.load(enterprise_ship))
 
 
-def test_fence_in_a_folder_that_is_not_a_repository(example_ship: Path):
-    ship = shipmod.load(example_ship)
+def test_fence_in_a_folder_that_is_not_a_repository(drydock: Path):
+    ship = shipmod.load(drydock)
     shipmod.fence(ship)
     assert (ship.runtime / ".git").is_dir()
     assert subprocess.run(["git", "-C", str(ship.runtime), "rev-parse", "HEAD"], capture_output=True).returncode

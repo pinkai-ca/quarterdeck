@@ -15,13 +15,13 @@ from .test_seat import wait_for
 
 
 @pytest.fixture
-def ship(example_ship: Path, tmux: Tmux, monkeypatch) -> shipmod.Ship:
-    text = (example_ship / "ship.toml").read_text()
+def ship(drydock: Path, tmux: Tmux, monkeypatch) -> shipmod.Ship:
+    text = (drydock / "ship.toml").read_text()
     text += '\n[seats.captain.settings]\nsteps = "3"\nstep_seconds = "0.8"\n\n[seats.worker-1.settings]\ndialog = "unknown"\n'
-    (example_ship / "ship.toml").write_text(text)
+    (drydock / "ship.toml").write_text(text)
     monkeypatch.setenv("QD_TMUX_SOCKET", tmux.socket)
-    monkeypatch.setenv("QD_SHIP", str(example_ship))
-    return shipmod.load(example_ship)
+    monkeypatch.setenv("QD_SHIP", str(drydock))
+    return shipmod.load(drydock)
 
 
 def qd(capsys, *argv: str) -> str:

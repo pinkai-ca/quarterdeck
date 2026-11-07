@@ -1,8 +1,12 @@
-# Ships are their own repositories; the example ship travels with the framework.
+# Ships are their own repositories. Two travel with the framework: the drydock, which runs on the
+# fake harness for the tests and the drill, and the default ship, the smallest crew on real programs.
 ships/*
-!ships/example/
+!ships/drydock/
+!ships/default/
 # A ship's state is fenced in a nested repository and never tracked anywhere.
 ships/*/runtime/
+# Worktrees for work on the framework itself live here, inside the project folder.
+work/
 
 .venv/
 __pycache__/

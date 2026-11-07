@@ -20,15 +20,15 @@ from .test_seat import wait_for
 
 
 @pytest.fixture
-def ship(example_ship: Path, tmux: Tmux, monkeypatch) -> shipmod.Ship:
+def ship(drydock: Path, tmux: Tmux, monkeypatch) -> shipmod.Ship:
     """The example ship with quick fakes, the CLI pointed at the private tmux server."""
-    text = (example_ship / "ship.toml").read_text()
+    text = (drydock / "ship.toml").read_text()
     text += '\n[seats.captain.settings]\nstep_seconds = "0.05"\n\n[seats.worker-1.settings]\nstep_seconds = "0.05"\n'
-    (example_ship / "ship.toml").write_text(text)
+    (drydock / "ship.toml").write_text(text)
     monkeypatch.setenv("QD_TMUX_SOCKET", tmux.socket)
-    monkeypatch.setenv("QD_SHIP", str(example_ship))
+    monkeypatch.setenv("QD_SHIP", str(drydock))
     monkeypatch.delenv("QD_SEAT", raising=False)
-    ship = shipmod.load(example_ship)
+    ship = shipmod.load(drydock)
     yield ship
     service.stop(ship.runtime)
 
@@ -131,7 +131,7 @@ def test_a_worker_starts_fresh_after_its_order_closes(ship: shipmod.Ship, tmux: 
 def test_changed_orders_rebrief_every_seat_with_a_message_from_ship(ship: shipmod.Ship, tmux: Tmux, capsys):
     qd(capsys, "up", "captain")
     time.sleep(1.2)
-    (ship.folder / "orders.md").write_text("# Ship's orders: example\n\nNew orders.\n")
+    (ship.folder / "orders.md").write_text("# Ship's orders: drydock\n\nNew orders.\n")
     wait_for(lambda: "New orders." in (ship.runtime / "brief" / "captain.md").read_text(), seconds=10)
     notice = wait_for(lambda: [m for m in post.Store(ship.runtime).all() if m.sender == "ship"], seconds=10)[0]
     assert notice.to == "captain" and notice.body == "ship's orders changed · read runtime/brief/captain.md"
@@ -256,8 +256,8 @@ def test_every_turn_is_accounted_by_pool_seat_and_order(ship: shipmod.Ship, tmux
 def test_a_seat_moves_on_at_a_wall_and_stays(ship: shipmod.Ship, tmux: Tmux, capsys):
     text = (ship.folder / "ship.toml").read_text()
     text = text.replace('[pools.fake]\nprovider = "fake"', '[pools.fake]\nprovider = "fake"\n\n[pools.fake-2]\nprovider = "fake"')
-    text = text.replace('[seats.captain]\nsession = "bridge"\nrole = "captain"\npersona = "Pike"\nharness = "fake"\npool = "fake"',
-                        '[seats.captain]\nsession = "bridge"\nrole = "captain"\npersona = "Pike"\nharness = "fake"\npool = ["fake", "fake-2"]')
+    text = text.replace('[seats.captain]\nsession = "bridge"\nrole = "captain"\npersona = "Picard"\nharness = "fake"\npool = "fake"',
+                        '[seats.captain]\nsession = "bridge"\nrole = "captain"\npersona = "Picard"\nharness = "fake"\npool = ["fake", "fake-2"]')
     (ship.folder / "ship.toml").write_text(text)
     ship = shipmod.load(ship.folder)
     assert ship.seat("captain").pools == ("fake", "fake-2")

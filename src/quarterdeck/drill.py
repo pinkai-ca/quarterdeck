@@ -3,7 +3,7 @@
 The all-hands exercise: every seat sends an order to every other seat and each is closed
 by its addressee's report; the service is killed in the middle of a delivery and recovers
 with no message lost or doubled; every seat is relaunched fresh and receives what is open;
-and the matrix runs again. On the example ship's fake harness by default, on a private
+and the matrix runs again. On the drydock's fake harness by default, on a private
 tmux server; on a real ship when one is named, with real programs and real tokens.
 """
 
@@ -22,7 +22,7 @@ from .post import Attempts, Store
 from .seat import Seat
 from .tmux import Tmux
 
-EXAMPLE = Path(__file__).resolve().parents[2] / "ships" / "example"
+DRYDOCK = Path(__file__).resolve().parents[2] / "ships" / "drydock"
 QUICK = '\n[seats.{seat}.settings]\nstep_seconds = "0.05"\n'
 SLOW_TO_ACCEPT = 'accept_seconds = "1.5"\n'  # one seat takes its time writing a message into its record
 
@@ -165,10 +165,10 @@ class Drill:
             wait_for(lambda: watch.reading(seat).door.open or seat.session.human, self.patience)
 
 
-def temporary_example() -> tuple[shipmod.Ship, Tmux, Path]:
-    """A copy of the example ship with quick fakes, on a private tmux server."""
-    folder = Path(tempfile.mkdtemp(prefix="qd-drill-")) / "example"
-    shutil.copytree(EXAMPLE, folder)
+def temporary_drydock() -> tuple[shipmod.Ship, Tmux, Path]:
+    """A copy of the drydock with quick fakes, on a private tmux server."""
+    folder = Path(tempfile.mkdtemp(prefix="qd-drill-")) / "drydock"
+    shutil.copytree(DRYDOCK, folder)
     ship = shipmod.load(folder)
     slow = next(name for name, spec in ship.seats.items() if not ship.session_of(spec).human)
     with (folder / "ship.toml").open("a") as f:
@@ -191,7 +191,7 @@ def temporary_copy(ship: shipmod.Ship) -> tuple[shipmod.Ship, Path]:
 def run(ship: shipmod.Ship | None, keep: bool = False) -> tuple[bool, list[str]]:
     """``qd drill``: the exercise and its pass table; the temporary ship is removed unless kept."""
     if ship is None:
-        ship, tmux, folder = temporary_example()
+        ship, tmux, folder = temporary_drydock()
         os.environ["QD_TMUX_SOCKET"] = tmux.socket
     else:
         ship, folder = temporary_copy(ship)

@@ -14,10 +14,10 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
 @pytest.fixture
-def example_ship(tmp_path: Path) -> Path:
-    """A copy of ships/example in a temporary folder, not a repository."""
-    folder = tmp_path / "ships" / "example"
-    shutil.copytree(ROOT / "ships" / "example", folder)
+def drydock(tmp_path: Path) -> Path:
+    """A copy of ships/drydock in a temporary folder, not a repository."""
+    folder = tmp_path / "ships" / "drydock"
+    shutil.copytree(ROOT / "ships" / "drydock", folder)
     return folder
 
 

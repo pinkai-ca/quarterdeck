@@ -1,4 +1,4 @@
-# Ship's orders: example
+# Ship's orders: drydock
 
 How this crew behaves. The framework carries these orders to every seat and does not read them.
 

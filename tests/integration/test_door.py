@@ -14,14 +14,14 @@ from quarterdeck.tmux import Tmux
 from .test_seat import wait_for
 
 
-def ship_with(example_ship: Path, extra: str) -> shipmod.Ship:
-    (example_ship / "ship.toml").write_text((example_ship / "ship.toml").read_text() + extra)
-    return shipmod.load(example_ship)
+def ship_with(drydock: Path, extra: str) -> shipmod.Ship:
+    (drydock / "ship.toml").write_text((drydock / "ship.toml").read_text() + extra)
+    return shipmod.load(drydock)
 
 
 @pytest.fixture
-def captain(example_ship: Path, tmux: Tmux) -> seatmod.Seat:
-    ship = ship_with(example_ship, '\n[seats.captain.settings]\nstep_seconds = "0.05"\n')
+def captain(drydock: Path, tmux: Tmux) -> seatmod.Seat:
+    ship = ship_with(drydock, '\n[seats.captain.settings]\nstep_seconds = "0.05"\n')
     seat = seatmod.Seat(ship, ship.seat("captain"), tmux)
     seat.up()
     wait_for(lambda: Door(seat).reading().open)
@@ -58,8 +58,8 @@ def test_text_in_the_box_is_an_obstruction_and_nothing_more_is_done(captain: sea
     assert captain.record() is None, "nothing was submitted"
 
 
-def test_a_known_notice_is_cleared_and_an_unknown_one_refused(example_ship: Path, tmux: Tmux):
-    ship = ship_with(example_ship, '\n[seats.captain.settings]\ndialog = "daybreak"\nstep_seconds = "0.05"\n'
+def test_a_known_notice_is_cleared_and_an_unknown_one_refused(drydock: Path, tmux: Tmux):
+    ship = ship_with(drydock, '\n[seats.captain.settings]\ndialog = "daybreak"\nstep_seconds = "0.05"\n'
                                    '\n[seats.worker-1.settings]\ndialog = "unknown"\n')
     captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
     captain.up()
@@ -76,8 +76,8 @@ def test_a_known_notice_is_cleared_and_an_unknown_one_refused(example_ship: Path
     assert Door(worker).deliver("x").result == "withheld" and Door(worker).screen().unknown == "Something else"
 
 
-def test_a_message_mid_turn_is_queued_and_the_speeds_reach_the_program(example_ship: Path, tmux: Tmux):
-    ship = ship_with(example_ship, '\n[seats.captain.settings]\nsteps = "4"\nstep_seconds = "0.7"\n')
+def test_a_message_mid_turn_is_queued_and_the_speeds_reach_the_program(drydock: Path, tmux: Tmux):
+    ship = ship_with(drydock, '\n[seats.captain.settings]\nsteps = "4"\nstep_seconds = "0.7"\n')
     captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
     captain.up()
     door = Door(captain)
@@ -98,8 +98,8 @@ def test_a_message_mid_turn_is_queued_and_the_speeds_reach_the_program(example_s
     assert door.interrupt().startswith("captain interrupted with Escape in %")
 
 
-def test_a_program_that_does_not_queue_is_obstructed_by_time(example_ship: Path, tmux: Tmux):
-    ship = ship_with(example_ship, '\n[seats.captain.settings]\nqueues = false\nsteps = "4"\nstep_seconds = "0.5"\n')
+def test_a_program_that_does_not_queue_is_obstructed_by_time(drydock: Path, tmux: Tmux):
+    ship = ship_with(drydock, '\n[seats.captain.settings]\nqueues = false\nsteps = "4"\nstep_seconds = "0.5"\n')
     captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
     captain.up()
     door = Door(captain)
@@ -114,8 +114,8 @@ def test_a_program_that_does_not_queue_is_obstructed_by_time(example_ship: Path,
     assert "· interrupted" in tmux.capture(captain.pane().id, history=100)
 
 
-def test_the_door_never_types_into_a_human_session(example_ship: Path, tmux: Tmux):
-    ship = shipmod.load(example_ship)
+def test_the_door_never_types_into_a_human_session(drydock: Path, tmux: Tmux):
+    ship = shipmod.load(drydock)
     desk = seatmod.Seat(ship, ship.seat("desk"), tmux)
     desk.up()
     door = Door(desk)
@@ -125,10 +125,10 @@ def test_the_door_never_types_into_a_human_session(example_ship: Path, tmux: Tmu
     assert desk.harness.screen(tmux.capture(desk.pane().id)).box == ""
 
 
-def test_a_paste_the_program_took_but_has_not_recorded_yet_is_queued_not_blind(example_ship: Path, tmux: Tmux):
+def test_a_paste_the_program_took_but_has_not_recorded_yet_is_queued_not_blind(drydock: Path, tmux: Tmux):
     """A fresh session can take longer than the confirm window to record its first prompt: the box emptied and the
     program at work say it took the paste, so the attempt reads queued and the record confirms it later."""
-    ship = ship_with(example_ship, '\n[seats.captain.settings]\nstep_seconds = "0.05"\naccept_seconds = "7"\n')
+    ship = ship_with(drydock, '\n[seats.captain.settings]\nstep_seconds = "0.05"\naccept_seconds = "7"\n')
     captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
     captain.up()
     wait_for(lambda: Door(captain).reading().open)
