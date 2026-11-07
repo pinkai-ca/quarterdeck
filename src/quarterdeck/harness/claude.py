@@ -236,7 +236,9 @@ SETTINGS = {
     "env": {"DISABLE_AUTOUPDATER": "1"},
     "promptSuggestionEnabled": False,
     "includeCoAuthoredBy": False,
-    "permissions": {"allow": ["Bash(qd *)", "Bash(qd:*)"], "defaultMode": "auto"},  # law: can-post
+    "autoMemoryEnabled": False,  # a seat keeps nothing of its own between conversations: what must survive is a post or a ship file
+    # No approval prompts: a seat runs its program open, and a ship that wants a sandbox asks for one seat by seat.
+    "permissions": {"allow": ["Bash(qd *)", "Bash(qd:*)"], "defaultMode": "bypassPermissions"},  # law: can-post
 }
 
 
