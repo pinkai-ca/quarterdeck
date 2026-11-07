@@ -94,5 +94,5 @@ def test_default_account_aliases_share_one_read_other_accounts_and_keys_stay_sep
     assert svc.ledger.usage_known('google') and svc.ledger.usage_known('google-alias')
     assert not svc.ledger.usage_known('different-account')
     assert not svc.ledger.pool_windows('key-pool') and not svc.ledger.pool_windows('codex')
-    assert 'account directory is not qualified' in '\n'.join(svc.ledger.quota.usage_notes())
+    assert 'account directory is not read' in '\n'.join(svc.ledger.quota.usage_notes())
     svc.ledger.close()
