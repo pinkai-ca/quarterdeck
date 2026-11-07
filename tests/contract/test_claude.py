@@ -62,7 +62,7 @@ def test_effort_shows_on_the_mode_line_and_model_in_the_record():
     assert harness.confirms(effort, "medium", s, State()) is True
     assert harness.confirms(effort, "high", s, State()) is False
     model = harness.control("model")
-    confirmed = State(local_stdout="Set model to `Sonnet 5.5` and saved as your default for new sessions")
+    confirmed = State(model="Sonnet 5.5")  # what the record's `Set model to …` line leaves behind
     assert harness.confirms(model, "claude-sonnet-5-5", s, confirmed) is True
     assert harness.confirms(model, "claude-haiku-5-5", s, confirmed) is False
     assert harness.confirms(model, "claude-haiku-5-5", s, State()) is None, "not readable yet: pending, not false"
@@ -148,6 +148,25 @@ def test_the_launch_carries_our_files_and_nothing_of_the_users(tmp_path: Path):
     assert launch.env == {"CLAUDE_CONFIG_DIR": str(home)}
     resumed = harness.launch(seat, pool, home, brief, "abc-123", None)
     assert resumed.argv[-2:] == ("--resume", "abc-123")
+
+
+def test_a_move_to_another_pool_replaces_the_link_and_copies_no_token(tmp_path: Path):
+    harness = ClaudeHarness()
+    pools = {}
+    for name in ("a", "b"):
+        folder = tmp_path / name
+        folder.mkdir()
+        (folder / ".credentials.json").write_text(json.dumps({"claudeAiOauth": {"refreshToken": name}}))
+        pools[name] = Pool(f"pool-{name}", "claude", config_dir=folder)
+    seat = SeatSpec("pike", "bridge", "captain", "claude", ("pool-a", "pool-b"), cwd=tmp_path)
+    home = tmp_path / "home"
+    harness.build_home(home, seat, pools["a"], None)
+    link = home / ".credentials.json"
+    link.unlink()
+    link.write_text(json.dumps({"claudeAiOauth": {"refreshToken": "a2"}}))  # a refresh detached it
+    harness.build_home(home, seat, pools["b"], None)  # the seat moves to pool b
+    assert link.is_symlink() and link.resolve() == (tmp_path / "b" / ".credentials.json").resolve()
+    assert json.loads((tmp_path / "b" / ".credentials.json").read_text())["claudeAiOauth"]["refreshToken"] == "b", "nothing of pool a reached pool b"
 
 
 def test_a_key_pool_reaches_the_program_by_environment(tmp_path: Path, monkeypatch):

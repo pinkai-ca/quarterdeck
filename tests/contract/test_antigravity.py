@@ -55,6 +55,16 @@ def test_an_interrupted_seat_is_idle_and_the_turns_prompt_is_echoed():
     assert any(echoed(e, "Run exactly this shell command: sleep 30; echo late") for e in s.echoes)
 
 
+def test_an_echo_keeps_a_paragraph_break_and_stops_at_the_programs_own_line():
+    msg = "qd > order from desk · ord-1234\nFirst paragraph.\n\nSecond paragraph.\nqd > reply: qd post report --re ord-1234"
+    text = ("─" * 60 + "\n> qd > order from desk · ord-1234\n  First paragraph.\n\n  Second paragraph.\n  qd > reply: qd post report --re ord-1234\n"
+            "  ⎿  Interrupted · What should Antigravity CLI do instead?\n" + "─" * 80 + "\n>\n" + "─" * 80 + "\n"
+            "esc to cancel                                              Gemini 4 Argon · high\n")
+    s = AntigravityHarness().screen(text)
+    assert any(echoed(e, " ".join(msg.split())) for e in s.echoes), s.echoes
+    assert all("Interrupted" not in e for e in s.echoes)
+
+
 def test_the_record_is_opaque_and_the_adapter_says_so():
     harness = AntigravityHarness()
     assert harness.record_confirms is False and harness.home_variable is None

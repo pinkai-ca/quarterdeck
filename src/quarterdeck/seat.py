@@ -101,14 +101,36 @@ class Seat:
         """The seat's record: pinned once found, the first written after its launch."""
         pinned = self.folder / "record"
         if pinned.is_file():
-            return Join(Path(pinned.read_text().strip()))
+            record = Path(pinned.read_text().strip())
+            return Join(record) if record.exists() else Join(None, f"record missing: {record.name}")
         launched = self.launched()
         if launched is None:
             return Join(None, "not up")
+        if self.harness.home_variable is None and self._shared_state_contended():
+            return Join(None, f"ambiguous: another {self.harness.name} seat is up without a record of its own")  # law: one-record
         found = self.harness.join(self.home, launched.when)
         if found.record is not None:
             pinned.write_text(str(found.record) + "\n")  # law: one-record
         return found
+
+    def _shared_state_contended(self) -> bool:
+        """A program with no home of its own writes every seat's record to one place: two unjoined seats cannot be told apart."""
+        for other in self.ship.seats.values():
+            if other.name != self.name and other.harness == self.spec.harness:
+                sibling = Seat(self.ship, other, self.tmux)
+                if sibling.is_up and not (sibling.folder / "record").is_file():
+                    return True
+        return False
+
+    def is_working(self) -> bool:
+        """Whether a turn is open: from the record first, from the screen where the record is opaque."""
+        pane = self.pane()
+        if pane is None or pane.dead:
+            return False
+        if not self.harness.record_confirms:
+            return self.harness.screen(self.tmux.capture(pane.id)).working
+        record = self.record()
+        return bool(record and self.harness.state(record).turn_open)
 
     def record(self) -> Path | None:
         return self.join().record
@@ -120,15 +142,19 @@ class Seat:
             raise ShipError(f"{self.name} is up in {self.pane().id}; qd restart {self.name} relaunches it")
         shipmod.fence(self.ship)
         self.folder.mkdir(parents=True, exist_ok=True)
+        if self.launched() is not None:
+            from . import credential  # the credential module reads seats, so it is imported here, not above
+
+            credential.reseed(self.ship, [self])  # a refresh left in this home reseeds the pool it came from, before any move
         brief = standing.render(self.ship, self.spec)
         pool = self.pool
         ship_home = self.ship.folder / "homes" / self.harness.name
         spec = replace(self.spec, cwd=self.ship.cwd_of(self.spec))  # the adapter sees the seat's real working directory
         self.harness.build_home(self.home, spec, pool, ship_home if ship_home.is_dir() else None)
         resume_id = self._resume_id() if resume else None
+        first, carried = self.first_message()  # read while the last record is still pinned
         if not resume_id:
             (self.folder / "record").unlink(missing_ok=True)
-        first, carried = self.first_message(resume=resume_id is not None)
         launch = self.harness.launch(spec, pool, self.home, brief, resume_id, first)
         at = datetime.now(timezone.utc).isoformat()  # before the program can write a record (law: one-record)
         pane = self._open_window(list(launch.argv), launch.env)
@@ -146,7 +172,7 @@ class Seat:
         record = self.record()
         return self.harness.session_id(record) if record else None
 
-    def first_message(self, resume: bool) -> tuple[str | None, list[post.Message]]:
+    def first_message(self) -> tuple[str | None, list[post.Message]]:
         """What the launch carries as its first message, under a header saying the seat was briefed.
 
         Every open message, whatever reached the seat before, plus what never reached it and
@@ -161,14 +187,16 @@ class Seat:
         return post.briefed_header(self.name, self.spec.role, open_messages) + "\n" + post.typed(ordered), ordered
 
     def _queued_unread(self, store: post.Store, attempts: post.Attempts) -> list[post.Message]:
-        """Messages confirmed queued whose turn never came: nothing in the record, taken or typed, names them."""
-        record = self.record()
-        seen = ""
-        if record:
+        """Messages whose last attempt says queued and that no record of this seat, taken or typed, ever names."""
+        queued = {m for m, result in attempts.last_results(self.name).items() if result == "queued"}
+        if not queued or not self.harness.record_confirms:
+            return []
+        seen: list[str] = []
+        for record in self.harness.records(self.home):
             state, turns = self.harness.read(record)
-            seen = " ".join(" ".join(t.split()) for t in [*(x.input for x in turns), *state.consumed, state.last_input or ""])
-        queued = {a.message for a in attempts.all() if a.seat == self.name and a.result == "queued"}
-        return [m for m in store.for_seat(self.name) if m.id in queued and m.short not in seen]
+            seen += [" ".join(t.split()) for t in [*(x.input for x in turns), *state.consumed, state.last_input or ""]]
+        flat = " ".join(seen)
+        return [m for m in store.for_seat(self.name) if m.id in queued and m.short not in flat]
 
     def _open_window(self, argv: list[str], env: dict[str, str]) -> Pane:
         session = self.session

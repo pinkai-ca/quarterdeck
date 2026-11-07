@@ -90,6 +90,8 @@ class Door:
         Never while text sits in the box: a key pressed then could submit a person's draft.
         """
         screen = self.screen()
+        if self.seat.session.human:
+            return screen  # no key of ours is ever pressed in a human's session
         if screen and screen.interruption and screen.interruption.dismissable and not (screen.box or "").strip():
             self.tmux.keys(self.seat.pane().id, screen.interruption.key)
             time.sleep(SETTLE_SECONDS)

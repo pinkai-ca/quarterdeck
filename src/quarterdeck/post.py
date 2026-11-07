@@ -74,6 +74,7 @@ class Store:
 
     def __init__(self, runtime: Path):
         self.dir = runtime / "post" / "store"
+        self._cache: tuple[tuple[int, int], list[Message]] | None = None
 
     def new(self, kind: str, sender: str, to: str, body: str, **fields) -> Message:
         if kind not in KINDS:
@@ -105,10 +106,14 @@ class Store:
         return path
 
     def all(self) -> list[Message]:
+        """Every message, oldest first; read once per change of the store folder, since files there never change."""
         if not self.dir.is_dir():
             return []
-        messages = [Message.from_json(p.read_text()) for p in self.dir.glob("*.json")]
-        return sorted(messages, key=lambda m: (m.at, m.id))
+        stamp = (self.dir.stat().st_mtime_ns, len(list(self.dir.iterdir())))
+        if self._cache is None or self._cache[0] != stamp:
+            messages = [Message.from_json(p.read_text()) for p in self.dir.glob("*.json")]
+            self._cache = (stamp, sorted(messages, key=lambda m: (m.at, m.id)))
+        return list(self._cache[1])
 
     def get(self, ref: str) -> Message:
         """A message by its id or its short form; ambiguity refused, never guessed."""
@@ -285,25 +290,41 @@ class Attempts:
     def for_message(self, message_id: str) -> list[Attempt]:
         return [a for a in self.all() if a.message == message_id]
 
+    def latest(self, seat: str | None = None) -> dict[str, str | None]:
+        """Each message's latest attempt result, at one seat or at any: the latest attempt is the one that speaks."""
+        results: dict[str, str | None] = {}
+        for attempt in self.all():
+            if seat is None or attempt.seat == seat:
+                results[attempt.message] = attempt.result
+        return results
+
+    def last_results(self, seat: str) -> dict[str, str | None]:
+        return self.latest(seat)
+
     def delivered_ids(self) -> set[str]:
-        return {a.message for a in self.all() if a.delivered}
+        return {m for m, result in self.latest().items() if result in DELIVERED}
+
+    def blind_ids(self) -> set[str]:
+        """Messages whose latest attempt is blind: typed, unconfirmed, waiting for a hand (``qd post resend``)."""
+        return {m for m, result in self.latest().items() if result == "blind"}
+
+    def queued_ids(self) -> set[str]:
+        """Messages whose latest attempt says queued: taken by the program, not yet read."""
+        return {m for m, result in self.latest().items() if result == "queued"}
 
     def unfinished(self) -> list[Attempt]:
         """Attempts with no result: the service died between typing and confirming."""
         return [a for a in self.all() if a.result is None]
 
-    def blind_ids(self) -> set[str]:
-        delivered = self.delivered_ids()
-        return {a.message for a in self.all() if a.result == "blind"} - delivered
-
     def undelivered(self, store: Store, seat: str) -> list[Message]:
         """What is addressed to the seat and never reached it, oldest first.
 
-        A blind message waits for a hand, and one with an attempt still open is being
-        judged, so neither is sent again by the service (law: one-door).
+        A blind message waits for a hand, one with an attempt still open is being judged, so
+        neither is sent again by the service (law: one-door); an acknowledgment claims and
+        never wakes, so it is never delivered at all (law: open-until-closed).
         """
         skip = self.delivered_ids() | self.blind_ids() | {a.message for a in self.unfinished()}
-        return [m for m in store.for_seat(seat) if m.id not in skip]
+        return [m for m in store.for_seat(seat) if m.id not in skip and m.kind != "ack"]
 
 
 # -- the watch: how a seat in a human session is reached -----------------------------------------

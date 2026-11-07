@@ -84,7 +84,6 @@ class State:
     queued: tuple[str, ...] = ()
     consumed: tuple[str, ...] = ()
     turns: int = 0
-    local_stdout: str | None = None
 
 
 @dataclass(frozen=True)
@@ -221,14 +220,13 @@ def credential(pool: Pool, link: Path, variable: str) -> Credential | None:
     A refreshed file in the link's place is left alone: the service reseeds the pool from it.
     """
     if pool.api_key:
+        link.unlink(missing_ok=True)  # a key pool shares no file: whatever a former pool left here goes
         return Credential(variable=variable)
     if pool.config_dir is None:
         return None
     source = pool.config_dir / link.name
-    if link.is_symlink():
-        link.unlink()
-    if not link.exists():
-        link.symlink_to(source)
+    link.unlink(missing_ok=True)  # a link to a former pool, or a refreshed file the service has reseeded from
+    link.symlink_to(source)
     return Credential(link=(link, source))
 
 
@@ -278,6 +276,7 @@ class Harness(ABC):
     keys: Keys
     brief_channel: str
     record_confirms: bool = True  # False where the record is opaque: the screen's echo confirms a delivery instead
+    reads_usage: bool = False  # True where usage() reads the provider's windows; a pool of such a program is read before a move
 
     def queues_while_working(self, seat: SeatSpec) -> bool:
         """Whether a message typed during a turn is taken and queued, or refused until it ends."""

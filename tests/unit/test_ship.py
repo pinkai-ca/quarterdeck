@@ -27,7 +27,7 @@ def test_loads_the_design_example(enterprise_ship: Path):
     assert ship.sessions["office"].human and not ship.sessions["bridge"].human
     desk = ship.seat("desk")
     assert desk.pools == ("claude-secondary", "claude-primary")
-    assert desk.cwd == Path("~/dev").expanduser() and desk.remote_control
+    assert desk.cwd == Path("~/dev").expanduser()
     assert ship.seat("pike").pools == ("claude-secondary",)
     worker = ship.seat("worker-1")
     assert not worker.up and worker.fresh == "after-order" and worker.persona is None

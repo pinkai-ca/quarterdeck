@@ -47,6 +47,7 @@ class Service:
         self.ledger = Ledger(self.runtime / "ledger.sqlite")
         self.meters: dict[str, machine.Meter] = {}
         self.usage_read: dict[str, float] = {}
+        self.read_marks: dict[Path, int] = {}  # record -> the mtime it was last read at
 
     # -- the loop ------------------------------------------------------------------------
 
@@ -65,8 +66,8 @@ class Service:
             self.ship = shipmod.load(self.ship.folder)  # law: ship-file
         except ShipError as error:
             self.log("error", step="load", error=str(error))
-        for step in (self.reconcile, self.inboxes, self.deliveries, self.requests, self.fresh_after_order,
-                     self.rebrief, self.credentials, self.account, self.failover):
+        for step in (self.reconcile, self.account, self.inboxes, self.deliveries, self.requests, self.fresh_after_order,
+                     self.rebrief, self.credentials, self.failover):  # accounting before anything relaunches a seat
             try:
                 step()
             except Exception as error:  # one failing step never stops the others
@@ -104,20 +105,36 @@ class Service:
             self.attempts.close(attempt, result, "found in the record on reconciliation" if seen else
                                 "the service died mid-delivery and the record does not show it; qd post resend")  # law: one-door
             self.log("reconciled", message=message.id, seat=seat.name, result=result)
+        for attempt in self.attempts.all():  # a queued message is delivered once the record shows it read
+            if attempt.result == "queued" and attempt.message in self.attempts.queued_ids():
+                seat = self.seat(attempt.seat)
+                if seat.harness.record_confirms and seat.record() and self.read_now(seat, self.store.get(attempt.message)):
+                    self.attempts.close(attempt, "delivered", "queued, then read: the record names it")
+
+    @staticmethod
+    def read_now(seat: Seat, message: post.Message) -> bool:
+        """Whether a message once queued has been read: it is an input or a consumed entry, no longer only queued."""
+        state, turns = seat.harness.read(seat.record())
+        flat = " ".join(" ".join(t.split()) for t in [*(x.input for x in turns), *state.consumed, state.last_input or ""])
+        return message.short in flat and message.short not in " ".join(state.queued)
 
     @staticmethod
     def taken(seat: Seat, message: post.Message, since: datetime) -> bool:
-        """Whether the record shows this very message, by its id and body, as an input after ``since``."""
-        record = seat.record()
-        if record is None:
-            return False
-        state, turns = seat.harness.read(record)
+        """Whether the record shows this very message, by its id and body, as an input after ``since``;
+        for a program whose record is opaque, whether its transcript echoes it."""
         wanted = " ".join(message.body.split())
 
         def carries(text: str | None) -> bool:
             flat = " ".join((text or "").split())
             return message.short in flat and wanted in flat
 
+        if not seat.harness.record_confirms:
+            screen = Door(seat).screen()
+            return bool(screen) and any(carries(e) for e in screen.echoes)
+        record = seat.record()
+        if record is None:
+            return False
+        state, turns = seat.harness.read(record)
         inputs = [t.input for t in turns if t.started and t.started >= since]
         if state.turn_open and state.last_input_at and state.last_input_at >= since:
             inputs.append(state.last_input)
@@ -155,11 +172,12 @@ class Service:
     def deliver(self, seat: Seat, messages: list[post.Message], resend: bool = False) -> str:
         """One paste for all that waits for a seat, one attempt per message, written before typing."""
         door = Door(seat)
-        reading = door.reading(door.clear_known())  # a notice the adapter knows never holds a delivery
-        if not reading.open:
+        speed = max((m.speed for m in messages), key=lambda s: SPEEDS[s], default=None)
+        reading = door.reading()
+        clearable = reading.clears == "dismissable" or (speed == "interrupt" and reading.clears == "time")
+        if not reading.open and not clearable:  # the door itself clears a known notice or interrupts; this only spares an attempt file
             return f"{seat.name}: {reading}"
         launched = seat.launched()
-        speed = max((m.speed for m in messages), key=lambda s: SPEEDS[s], default=None)
         attempts = [self.attempts.open(m, seat.name, launched.pane, launched.pid, launched.at) for m in messages]
         delivery = door.deliver(post.typed(messages), speed)
         detail = delivery.detail + (" · resend" if resend else "")
@@ -199,6 +217,9 @@ class Service:
         if kind == "resend":
             message = self.store.get(data["message"])
             seat = self.seat(message.to)
+            if seat.session.human:  # the Office is reached by its watch alone: the message is offered to it again
+                self.attempts.close(self.attempts.open(message, seat.name, None, None, None), "resend", "re-offered to the watch")
+                return f"{message.short} re-offered to {seat.name}'s watch; " + ("it prints it now" if post.watch_armed(self.runtime, seat.name) else "no watch is armed yet")
             if not seat.is_up:
                 return f"{message.short}: {seat.name} is down; it is delivered at qd up"
             return self.deliver(seat, [message], resend=True)
@@ -210,8 +231,7 @@ class Service:
 
     def relaunch(self, seat: Seat, resume: bool) -> str | None:
         """Restart or fresh at the turn's end, so nothing is relaunched under a running tool call."""
-        record = seat.record() if seat.is_up else None
-        if record and seat.harness.state(record).turn_open:
+        if seat.is_working():
             return None
         return seat.restart() if resume else seat.fresh()
 
@@ -222,10 +242,9 @@ class Service:
             return f"{name} written; qd restart {seat.name} applies it"
         if not seat.is_up:
             return f"{name} written; {seat.name} is down, so qd up {seat.name} applies it"
+        if seat.is_working():
+            return None  # at the turn's end
         door = Door(seat)
-        screen = door.screen()
-        if screen is not None and screen.working:
-            return None
         command = control.command(value)
         delivery = door.deliver(command, confirm=False)
         if delivery.result != "typed":
@@ -254,8 +273,7 @@ class Service:
                 m.kind == "report" and m.sender == seat.name and m.re and m.at > launched.when
                 for m in self.store.all()
             )
-            record = seat.record()
-            if closed_since_launch and record and not seat.harness.state(record).turn_open:
+            if closed_since_launch and not seat.is_working():
                 proof = seat.fresh()  # law: context-is-cache
                 self.log("fresh", seat=seat.name, proof=proof)
 
@@ -273,24 +291,34 @@ class Service:
     # -- the ledger ------------------------------------------------------------------------
 
     def account(self) -> None:
-        """Sample each running seat's machine use, ingest its ended turns, and read its pool's usage once a minute."""
+        """Ingest every ended turn of every record in each seat's home, sample a running seat's machine use,
+        and read its pool's usage once a minute. A record a relaunch left behind is still accounted
+        (law: every-turn-accounted); one whose file has not moved is not read again."""
         table = machine.processes()
         for seat in seats(self.ship, self.tmux):
+            if not seat.harness.record_confirms:
+                continue  # an opaque record has no turns to account; the Ledger says nothing rather than guessing
             pane = seat.pane()
-            record = seat.record() if pane else None
-            if pane is None or pane.dead or record is None:
-                continue
-            state, turns = seat.harness.read(record)
+            current = seat.record() if pane and not pane.dead else None
             meter = self.meters.setdefault(seat.name, machine.Meter())
-            meter.sample(pane.pid, table)
-            if turns and self.ledger.ingested(record) < len(turns):
-                figures = {turns[-1].index: meter.result()} if not state.turn_open else {}
-                written = self.ledger.ingest(seat.name, seat.pool.name, record, turns, self.store, figures)
-                if written:
-                    self.meters[seat.name] = machine.Meter()
-                    self.log("ledger", seat=seat.name, turns=written)
+            if pane and not pane.dead:
+                meter.sample(pane.pid, table)
+            for record in seat.harness.records(seat.home):
+                stamp = record.stat().st_mtime_ns
+                if self.read_marks.get(record) == stamp:
+                    continue
+                self.read_marks[record] = stamp
+                state, turns = seat.harness.read(record)
+                if turns and self.ledger.ingested(record) < len(turns):
+                    figures = {turns[-1].index: meter.result()} if record == current and not state.turn_open else {}
+                    pool = seat.launched().pool if (record == current and seat.launched()) else seat.pool.name
+                    written = self.ledger.ingest(seat.name, pool, record, turns, self.store, figures)
+                    if written:
+                        if record == current:
+                            self.meters[seat.name] = machine.Meter()
+                        self.log("ledger", seat=seat.name, record=record.name, turns=written)
             pool = seat.pool
-            if pool.kind == "subscription" and time.monotonic() - self.usage_read.get(pool.name, -USAGE_SECONDS) >= USAGE_SECONDS:
+            if pane and pool.kind == "subscription" and time.monotonic() - self.usage_read.get(pool.name, -USAGE_SECONDS) >= USAGE_SECONDS:
                 self.usage_read[pool.name] = time.monotonic()
                 usage = seat.harness.usage(pool)
                 if usage:
@@ -299,22 +327,39 @@ class Service:
     def failover(self) -> None:
         """A seat whose pool is walled moves on at its turn's end to the next pool of its list that is not, and stays."""
         for seat in seats(self.ship, self.tmux):
-            if len(seat.spec.pools) < 2 or not seat.is_up or not self.ledger.walled(seat.pool.name):
+            if len(seat.spec.pools) < 2 or not seat.is_up or not self.ledger.walled(seat.pool.name, self.ship):
                 continue
-            record = seat.record()
-            if record and seat.harness.state(record).turn_open:
+            if seat.is_working():
                 continue
             pools = list(seat.spec.pools)
             start = pools.index(seat.pool.name)
             ordered = pools[start + 1:] + pools[:start]
-            target = next((p for p in ordered if not self.ledger.walled(p)), None)
+            target = next((p for p in ordered if self.known_open(seat, p)), None)
             if target is None:
-                continue  # every pool is walled: a fact the status line shows, not a move
+                continue  # every pool is walled or unread: a fact the status line shows, not a move
             came_from = seat.pool.name
             seat.move_to(target)
             proof = seat.restart()
             self.store.new("report", post.SHIP, seat.name, f"moved to pool {target} from {came_from} at its wall")
             self.log("failover", seat=seat.name, pool=target, came_from=came_from, proof=proof)
+
+    def known_open(self, seat: Seat, pool_name: str) -> bool:
+        """A pool a seat may move to: not walled, and where its program reads usage, read within the hour first.
+
+        An unread pool is read before the move, never assumed; a program that reads no usage
+        has only the Ledger's walls to go by, and the move says so."""
+        pool = self.ship.pools[pool_name]
+        if pool.kind == "key" or not seat.harness.reads_usage:
+            return not self.ledger.walled(pool_name, self.ship)
+        windows = self.ledger.pool_windows(pool_name)
+        fresh = windows and all((post.now() - datetime.fromisoformat(w[4])).total_seconds() < 3600 for w in windows)
+        if not fresh:
+            usage = seat.harness.usage(pool)
+            if usage is None:
+                self.log("failover", seat=seat.name, pool=pool_name, skipped="its usage could not be read")
+                return False
+            self.ledger.record_usage(pool_name, usage)
+        return not self.ledger.walled(pool_name, self.ship)
 
     def rebrief(self) -> None:
         """When the orders or a card change, every brief is rendered again and each seat is told."""

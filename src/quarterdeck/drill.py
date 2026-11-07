@@ -172,21 +172,35 @@ def temporary_example() -> tuple[shipmod.Ship, Tmux, Path]:
     return shipmod.load(folder), Tmux(socket=f"qd-drill-{os.getpid()}"), folder.parent
 
 
+def temporary_copy(ship: shipmod.Ship) -> tuple[shipmod.Ship, Path]:
+    """A named ship's declaration copied for the live drill: its real pools and programs, in throwaway
+    ``qd-drill`` sessions, with a runtime of its own; the live ship's seats and service are never touched."""
+    folder = Path(tempfile.mkdtemp(prefix="qd-drill-")) / ship.folder.name
+    shutil.copytree(ship.folder, folder, ignore=shutil.ignore_patterns("runtime", ".git"))
+    text = (folder / "ship.toml").read_text()
+    for name, session in ship.sessions.items():
+        text = shipmod.edit(text, f"sessions.{name}", "title", f"qd-drill {session.title}")
+    (folder / "ship.toml").write_text(text)
+    return shipmod.load(folder), folder.parent
+
+
 def run(ship: shipmod.Ship | None, keep: bool = False) -> tuple[bool, list[str]]:
     """``qd drill``: the exercise and its pass table; the temporary ship is removed unless kept."""
-    temporary = ship is None
-    if temporary:
+    if ship is None:
         ship, tmux, folder = temporary_example()
         os.environ["QD_TMUX_SOCKET"] = tmux.socket
     else:
-        tmux, folder = Tmux.default(), None
+        ship, folder = temporary_copy(ship)
+        tmux = Tmux.default()
     checks = Drill(ship, tmux).run()
     passed = all(c.passed for c in checks)
     lines = [str(c) for c in checks]
     lines.append(f"{'all' if passed else sum(not c.passed for c in checks)} {'passed' if passed else 'failed'} of {len(checks)} checks")
-    if temporary and not keep:
-        tmux.kill_server()
+    if not keep:
+        seatmod.bring_down(ship, tmux)
+        if tmux.socket:
+            tmux.kill_server()
         shutil.rmtree(folder, ignore_errors=True)
-    elif temporary:
-        lines.append(f"kept: ship {ship.folder} on tmux -L {tmux.socket}")
+    else:
+        lines.append(f"kept: ship {ship.folder}" + (f" on tmux -L {tmux.socket}" if tmux.socket else " in its qd-drill sessions"))
     return passed, lines

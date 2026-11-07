@@ -78,7 +78,7 @@ class _Reader:
         self.pending: dict[str, tuple[str, datetime | None]] = {}
         self.queued: list[str] = []
         self.consumed: list[str] = []
-        self.model = self.effort = self.last_input = self.last_input_at = self.local_stdout = None
+        self.model = self.effort = self.last_input = self.last_input_at = None
         self.sidechain_ends: set[str | None] = set()
         self.subagent_turns = 0
         for entry in entries(record):
@@ -113,10 +113,9 @@ class _Reader:
         text = prompt_text(entry)
         content = entry.get("message", {}).get("content")
         if isinstance(content, str) and content.startswith("<local-command-stdout>"):
-            self.local_stdout = content.removeprefix("<local-command-stdout>").removesuffix("</local-command-stdout>")
-            if match := SET_MODEL.search(self.local_stdout):
+            if match := SET_MODEL.search(content):
                 self.model = match.group(1)  # the display name, until the next assistant entry names the id
-            if match := SET_EFFORT.search(self.local_stdout):
+            if match := SET_EFFORT.search(content):
                 self.effort = match.group(1)
             return
         if text is not None and text.startswith(INTERRUPTED):
@@ -201,7 +200,6 @@ class _Reader:
             queued=tuple(self.queued),
             consumed=tuple(self.consumed),
             turns=len(self.turns),
-            local_stdout=self.local_stdout,
         )
 
 
@@ -256,6 +254,7 @@ class ClaudeHarness(Harness):
     home_variable = "CLAUDE_CONFIG_DIR"
     keys = Keys(submit="Enter", send_now=("C-x", "C-s"), interrupt="Escape", empty=("C-c",))
     brief_channel = "system-prompt"
+    reads_usage = True
 
     def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None) -> Credential | None:
         home.mkdir(parents=True, exist_ok=True)
@@ -326,12 +325,6 @@ class ClaudeHarness(Harness):
             Control("model", launch="--model <value>", session="/model {value}", confirmed_by="record"),
             Control("effort", launch="--effort <value>", session="/effort {value}", confirmed_by="screen"),
         )
-
-    def confirms(self, control: Control, value: str, screen: Screen, state: State) -> bool | None:
-        if control.name == "model":
-            match = SET_MODEL.search(state.local_stdout or "") if state else None
-            return None if not match else same_name(match.group(1), value)
-        return super().confirms(control, value, screen, state)
 
     def interruptions(self) -> tuple[Interruption, ...]:
         return (

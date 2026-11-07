@@ -81,6 +81,43 @@ def test_pool_windows_and_walls(tmp_path: Path):
     book.close()
 
 
+def test_a_key_pools_budget_is_a_wall_when_its_spend_is_stated(tmp_path: Path):
+    from quarterdeck.ship import Pool, Ship
+
+    pool = Pool("anthropic-api", "claude", api_key="env:ANTHROPIC_API_KEY", budget="200 USD/month")
+    ship = Ship(tmp_path, "t", "operator", tmp_path, {pool.name: pool}, {}, {})
+    book = Ledger(tmp_path / "ledger.sqlite")
+    now = datetime.now(timezone.utc)
+    turn = claude.Turn(0, now - timedelta(minutes=2), now - timedelta(minutes=1), "x", "y", "m", claude.Tokens(), cost=250.0)
+    book.ingest("worker", "anthropic-api", tmp_path / "r.jsonl", [turn], Store(tmp_path))
+    assert book.spend("anthropic-api", ledgermod.Budget.parse("200 USD/month").period_start(now.astimezone())) == (250.0, 0)
+    assert book.walls(ship) == ["anthropic-api budget"] and book.walled("anthropic-api", ship)
+    assert book.walls() == [], "no ship, no budgets to know"
+    lines = ledgermod.pools_table(book, ship)
+    assert lines[1].startswith("anthropic-api        spend    250.00 USD of 200 USD/month") and lines[1].endswith("WALL")
+    unpriced = claude.Turn(1, now - timedelta(minutes=1), now, "x", "y", "m", claude.Tokens())
+    book.ingest("worker", "anthropic-api", tmp_path / "r2.jsonl", [unpriced], Store(tmp_path))
+    assert "1 turns with no price" in ledgermod.pools_table(book, ship)[1]
+    book.close()
+    import pytest
+
+    from quarterdeck.ship import ShipError
+
+    with pytest.raises(ShipError, match="200 USD/month"):
+        ledgermod.Budget.parse("lots")
+    assert ledgermod.Budget.parse(None) is None
+    assert ledgermod.Budget.parse("50 USD/week").period_start(now.astimezone()).weekday() == 0
+
+
+def test_turns_are_stored_in_local_time_so_today_is_the_local_day(tmp_path: Path):
+    book = Ledger(tmp_path / "ledger.sqlite")
+    ended = datetime.now(timezone.utc)
+    turn = claude.Turn(0, ended - timedelta(seconds=5), ended, "x", "y", "m", claude.Tokens(1, 2, 3, 4))
+    book.ingest("captain", "fake", tmp_path / "r.jsonl", [turn], Store(tmp_path))
+    assert book.today("captain", ended.astimezone().date().isoformat()) == 10
+    book.close()
+
+
 def test_the_meter_charges_a_turn_with_its_tree(tmp_path: Path):
     meter = machine.Meter()
     table = machine.processes()

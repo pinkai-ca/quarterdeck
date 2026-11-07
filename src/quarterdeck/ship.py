@@ -61,7 +61,6 @@ class SeatSpec:
     cwd: Path | None = None
     up: bool = True
     fresh: str | None = None
-    remote_control: bool = False
     settings: dict = field(default_factory=dict)
 
     @property
@@ -185,9 +184,12 @@ def _seat(name: str, table: dict, folder: Path) -> SeatSpec:
         cwd=_path(table["cwd"], folder) if "cwd" in table else None,
         up=bool(table.get("up", True)),
         fresh=table.get("fresh"),
-        remote_control=bool(table.get("remote_control", False)),
         settings=dict(table.get("settings", {})),
     )
+
+
+SEAT_KEYS = frozenset({"session", "role", "harness", "pool", "model", "effort", "persona", "cwd", "up", "fresh"})
+"""The keys of ``[seats.<name>]`` the framework reads; any other key belongs to the program, under ``.settings``."""
 
 
 def _path(value: str, folder: Path) -> Path:

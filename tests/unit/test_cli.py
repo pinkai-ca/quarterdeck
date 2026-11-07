@@ -58,6 +58,37 @@ def test_inside_a_seat_the_seat_is_known_and_outside_the_operator_has_an_inbox(e
     assert code == 0 and out.startswith("# Inbox: operator"), "case does not matter for the operator"
 
 
+def test_set_routes_a_programs_own_key_to_the_settings_table(enterprise_ship: Path, capsys, monkeypatch):
+    monkeypatch.setenv("QD_TMUX_SOCKET", "qd-test-nobody-here")
+    code, out, err = run(capsys, "--ship", str(enterprise_ship), "set", "worker-1", "model_auto_compact_token_limit=100000",
+                         "settings.model_reasoning_summary=concise", "effort=low")
+    assert code == 0, err
+    lines = out.splitlines()
+    assert lines[0].startswith("ship.toml: seats.worker-1.settings.model_auto_compact_token_limit = 100000")
+    assert lines[1] == "  model_auto_compact_token_limit written under [seats.worker-1.settings]; qd restart worker-1 passes it to the program"
+    assert lines[2].startswith('ship.toml: seats.worker-1.settings.model_reasoning_summary = "concise"')
+    assert lines[4].startswith('ship.toml: seats.worker-1.effort = "low"')
+    seat = load(enterprise_ship).seat("worker-1")
+    assert seat.settings == {"model_auto_compact_token_limit": 100000, "model_reasoning_summary": "concise"} and seat.effort == "low"
+
+
+def test_an_ack_needs_no_body_and_wakes_nobody(example_ship: Path, capsys, monkeypatch):
+    from quarterdeck import post
+
+    monkeypatch.setenv("QD_TMUX_SOCKET", "qd-test-nobody-here")
+    monkeypatch.setenv("QD_SHIP", str(example_ship))
+    code, out, _ = run(capsys, "post", "order", "--to", "worker-1", "build it")
+    short = out.split(" ")[0]
+    code, out, err = run(capsys, "post", "ack", "--from", "worker-1", "--re", short)
+    assert code == 0, err
+    assert out.startswith("ack-") and out.strip().endswith(f"claims {short} for the ledger; an ack wakes nobody")
+    store, attempts = post.Store(example_ship / "runtime"), post.Attempts(example_ship / "runtime")
+    ack = store.all()[-1]
+    assert ack.kind == "ack" and ack.body == "claimed" and ack.to == "operator"
+    assert attempts.undelivered(store, "operator") == [], "an ack is never delivered"  # law: open-until-closed
+    assert (example_ship / "runtime" / ".git").is_dir(), "qd post made the fence before writing"  # law: nothing-leaks
+
+
 def test_parse_value():
     assert parse_value("true") is True and parse_value("false") is False
     assert parse_value("42") == 42 and parse_value("-1") == -1

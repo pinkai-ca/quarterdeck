@@ -12,13 +12,44 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from .harness.base import Turn, Usage
 from .post import Store
+from .ship import Ship, ShipError
 
 UNATTRIBUTED = "-"
+PERIODS = {"day": 1, "week": 7, "month": 30}
+
+
+@dataclass(frozen=True)
+class Budget:
+    """A key pool's wall: ``200 USD/month`` in the ship file."""
+
+    amount: float
+    currency: str
+    period: str
+
+    @classmethod
+    def parse(cls, text: str | None) -> "Budget | None":
+        if not text:
+            return None
+        try:
+            figure, period = text.split("/")
+            amount, currency = figure.split()
+            if period.strip() not in PERIODS:
+                raise ValueError(period)
+            return cls(float(amount), currency.strip(), period.strip())
+        except ValueError:
+            raise ShipError(f"a budget reads like \"200 USD/month\" (day, week or month), not {text!r}") from None
+
+    def period_start(self, now: datetime) -> datetime:
+        if self.period == "month":
+            return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        if self.period == "week":
+            return (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+        return now.replace(hour=0, minute=0, second=0, microsecond=0)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS turns (
@@ -90,8 +121,8 @@ class Ledger:
             used = (machine or {}).get(turn.index, Machine())
             self.db.execute(
                 "INSERT OR REPLACE INTO turns VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (str(record), turn.index, seat, pool, attribution(store, seat, turn), turn.started.isoformat(),
-                 turn.ended.isoformat(), turn.seconds, turn.model, turn.tokens.read_cached, turn.tokens.read_uncached,
+                (str(record), turn.index, seat, pool, attribution(store, seat, turn), turn.started.astimezone().isoformat(),
+                 turn.ended.astimezone().isoformat(), turn.seconds, turn.model, turn.tokens.read_cached, turn.tokens.read_uncached,
                  turn.tokens.cache_written, turn.tokens.written, turn.cost, len(turn.tools),
                  sum(t.failed for t in turn.tools), turn.subagent_turns, used.cpu_seconds, used.peak_rss,
                  used.max_processes, used.write_bytes),
@@ -114,16 +145,18 @@ class Ledger:
                       r[9] or 0.0, r[10] or 0.0, r[11] or 0)) for r in rows]
 
     def today(self, seat: str, day: str) -> int:
-        """Tokens of every class a seat used in turns that ended on ``day`` (local ISO date)."""
+        """Tokens of every class a seat used in turns that ended on ``day``, a local ISO date; turns are stored in local time."""
         row = self.db.execute(
             "SELECT SUM(read_cached + read_uncached + cache_written + written) FROM turns WHERE seat = ? AND substr(ended, 1, 10) = ?",
             (seat, day),
         ).fetchone()
         return row[0] or 0
 
-    def spend(self, pool: str, since: str) -> float | None:
-        row = self.db.execute("SELECT SUM(cost) FROM turns WHERE pool = ? AND ended >= ?", (pool, since)).fetchone()
-        return row[0]
+    def spend(self, pool: str, since: datetime) -> tuple[float | None, int]:
+        """A pool's stated cost since a moment, and how many of its turns stated no cost."""
+        row = self.db.execute("SELECT SUM(cost), SUM(cost IS NULL) FROM turns WHERE pool = ? AND ended >= ?",
+                              (pool, since.astimezone().isoformat())).fetchone()
+        return row[0], row[1] or 0
 
     def tools(self, by: str = "name") -> list[tuple[str, int, float, int]]:
         """Tool calls by name: count, total seconds, failures."""
@@ -144,18 +177,24 @@ class Ledger:
         query = "SELECT pool, window, used, resets_at, read_at FROM pools" + (" WHERE pool = ?" if pool else "") + " ORDER BY pool, window"
         return self.db.execute(query, (pool,) if pool else ()).fetchall()
 
-    def walls(self, now: datetime | None = None) -> list[str]:
-        """Pools with a window spent and not yet reset: ``claude-primary 7d``."""
+    def walls(self, ship: Ship | None = None, now: datetime | None = None) -> list[str]:
+        """Pools with a window spent and not yet reset, ``claude-primary 7d``, and key pools past their budget."""
         now = now or datetime.now().astimezone()
         found = []
         for pool, window, used, resets_at, _ in self.pool_windows():
             reset = datetime.fromisoformat(resets_at) if resets_at else None
             if used is not None and used >= 1.0 and (reset is None or reset > now):
                 found.append(f"{pool} {window}")
+        for pool in (ship.pools.values() if ship else ()):
+            budget = Budget.parse(pool.budget)
+            if budget is not None:
+                spent, _ = self.spend(pool.name, budget.period_start(now))
+                if spent is not None and spent >= budget.amount:
+                    found.append(f"{pool.name} budget")
         return found
 
-    def walled(self, pool: str) -> bool:
-        return any(w.split(" ")[0] == pool for w in self.walls())
+    def walled(self, pool: str, ship: Ship | None = None) -> bool:
+        return any(w.split(" ")[0] == pool for w in self.walls(ship))
 
 
 def attribution(store: Store, seat: str, turn: Turn) -> str:
@@ -187,14 +226,23 @@ def table(ledger: Ledger, by: str) -> list[str]:
     return lines
 
 
-def pools_table(ledger: Ledger) -> list[str]:
+def pools_table(ledger: Ledger, ship: Ship | None = None) -> list[str]:
     lines = [f"{'pool':<20} {'window':<8} {'used':>6} {'resets':<17} read"]
-    walls = set(ledger.walls())
+    walls = set(ledger.walls(ship))
+    now = datetime.now().astimezone()
     for pool, window, used, resets_at, read_at in ledger.pool_windows():
         reset = datetime.fromisoformat(resets_at).astimezone().strftime("%m-%d %H:%M") if resets_at else "-"
-        age = int((datetime.now().astimezone() - datetime.fromisoformat(read_at)).total_seconds() // 60)
+        age = int((now - datetime.fromisoformat(read_at)).total_seconds() // 60)
         wall = "  WALL" if f"{pool} {window}" in walls else ""
         lines.append(f"{pool:<20} {window:<8} {used * 100:>5.0f}% {reset:<17} {age}m ago{wall}")
+    for pool in (p for p in (ship.pools.values() if ship else ()) if p.kind == "key"):
+        budget = Budget.parse(pool.budget)
+        spent, unpriced = ledger.spend(pool.name, budget.period_start(now) if budget else now.replace(day=1, hour=0, minute=0, second=0, microsecond=0))
+        stated = f"{spent:.2f} {budget.currency if budget else ''}".strip() if spent is not None else "no cost stated"
+        note = f" ({unpriced} turns with no price: the program states none and no table is carried)" if unpriced else ""
+        limit = f" of {budget.amount:.0f} {budget.currency}/{budget.period}" if budget else ""
+        wall = "  WALL" if f"{pool.name} budget" in walls else ""
+        lines.append(f"{pool.name:<20} {'spend':<8} {stated}{limit}{note}{wall}")
     if len(lines) == 1:
         lines.append("no usage read yet: the service reads subscription pools once a minute while a seat runs on them")
     return lines

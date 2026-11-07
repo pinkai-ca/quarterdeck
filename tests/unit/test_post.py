@@ -109,6 +109,29 @@ def test_an_attempt_still_open_holds_its_message_back(tmp_path: Path):
     assert attempts.undelivered(store, "scott") == [] and attempts.delivered_ids() == {again.id}
 
 
+def test_queued_is_a_state_of_its_own_and_an_ack_is_never_delivered(tmp_path: Path):
+    store, attempts = Store(tmp_path), post.Attempts(tmp_path)
+    order = store.new("order", "desk", "scott", "mid-turn")
+    attempts.close(attempts.open(order, "scott", "%1", 1, None), "queued", "queued in the record")
+    assert attempts.queued_ids() == {order.id} and attempts.undelivered(store, "scott") == []
+    attempts.close(attempts.open(order, "scott", "%1", 1, None), "delivered", "read")
+    assert attempts.queued_ids() == set(), "the latest attempt speaks"
+    assert attempts.last_results("scott") == {order.id: "delivered"}
+    ack = store.new("ack", "scott", "desk", "claimed", re=order.id)
+    assert ack not in attempts.undelivered(store, "desk"), "an ack claims and never wakes"  # law: open-until-closed
+    assert ack in store.for_seat("desk") and f"ack {ack.short}" in post.inbox_text(store, "desk"), "but the inbox shows it"
+
+
+def test_the_store_reads_its_folder_once_until_a_file_arrives(tmp_path: Path):
+    store = Store(tmp_path)
+    first = store.new("order", "desk", "scott", "one")
+    assert store.all() == [first]
+    cached = store.all()
+    assert cached == [first] and cached is not store._cache[1], "callers get a copy"
+    second = store.new("order", "desk", "scott", "two")
+    assert store.all() == [first, second], "a new file invalidates the cache"
+
+
 def test_the_watch_hands_back_open_attempts_to_close_after_printing(tmp_path: Path):
     store = Store(tmp_path)
     question = store.new("question", "operator", "desk", "Which branch?")

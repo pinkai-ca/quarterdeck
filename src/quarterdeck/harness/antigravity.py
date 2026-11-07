@@ -115,11 +115,11 @@ class AntigravityHarness(Harness):
             elif queued:
                 found.append([queued.group(1).rstrip(".") + "…"])
                 block = None
-            elif block is not None and line.startswith("  ") and line.strip():
-                block.append(line[2:])
+            elif block is not None and (line.startswith("  ") or not line.strip()) and not line.lstrip().startswith("⎿"):
+                block.append(line[2:] if line.startswith("  ") else "")  # a paragraph break continues the echo; ⎿ is the program's own line
             else:
                 block = None
-        return tuple("\n".join(b) for b in found)
+        return tuple("\n".join(b).strip("\n") for b in found)
 
     def box(self, text: str) -> Box:
         return Box(text)

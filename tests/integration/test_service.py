@@ -120,6 +120,10 @@ def test_a_worker_starts_fresh_after_its_order_closes(ship: shipmod.Ship, tmux: 
     wait_for(lambda: worker.launched() and worker.launched().at != first_launch.at, seconds=20)  # law: context-is-cache
     assert worker.launched().resume is None, "fresh: a new conversation"
     assert "fake-2" in worker.launched().argv, "the service read the ship file afresh, not what it loaded at start"  # law: ship-file
+    book_path = ship.runtime / "ledger.sqlite"
+    wait_for(lambda: book_path.exists() and ledger.Ledger(book_path).rollup("seat"), seconds=15)
+    rows = ledger.Ledger(book_path).rollup("seat")
+    assert rows and rows[0].key == "worker-1" and rows[0].turns >= 1, "the closing turn is accounted though its record was left behind"  # law: every-turn-accounted
     log = (ship.runtime / "log" / "service.jsonl").read_text()
     assert '"event": "fresh"' in log
 
@@ -261,6 +265,72 @@ def test_a_blocked_delivery_goes_in_on_the_tick_after_the_human_clears_the_box(s
     tmux.keys(captain.pane().id, "C-u")  # the human clears their own box
     done = wait_for(lambda: [a for a in attempts.all() if a.delivered], seconds=6)  # law: events-not-clocks
     assert done[0].message == store.all()[0].id and done[0].result == "delivered"
+
+
+def test_a_message_once_queued_is_not_carried_again_once_read(ship: shipmod.Ship, tmux: Tmux, capsys):
+    text = (ship.folder / "ship.toml").read_text().replace('step_seconds = "0.05"', 'steps = "3"\nstep_seconds = "0.6"', 1)
+    (ship.folder / "ship.toml").write_text(text)
+    qd(capsys, "up", "captain")
+    captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
+    first = qd(capsys, "post", "order", "--to", "captain", "first\n$ qd post report --re {this} done-1").split(" ")[0]
+    wait_for(lambda: captain.record() and captain.harness.state(captain.record()).turn_open, seconds=15)
+    second = qd(capsys, "post", "order", "--to", "captain", "second, mid-turn\n$ qd post report --re {this} done-2").split(" ")[0]
+    store = post.Store(ship.runtime)
+    wait_for(lambda: not store.open_for("captain"), seconds=40)
+    attempts = post.Attempts(ship.runtime)
+    wait_for(lambda: attempts.last_results("captain").get(store.get(second).id) == "delivered", seconds=10), "queued, then read, then delivered"
+    assert "queued behind a turn" not in qd(capsys, "status", "--line")
+    proof = qd(capsys, "fresh", "captain")
+    assert "carried" not in proof, f"nothing is open or unread, so nothing is carried: {proof}"  # law: context-is-cache
+
+
+def test_interrupt_reaches_a_working_seat_that_does_not_queue_through_the_service(ship: shipmod.Ship, tmux: Tmux, capsys):
+    text = (ship.folder / "ship.toml").read_text().replace('step_seconds = "0.05"', 'queues = false\nsteps = "8"\nstep_seconds = "0.6"', 1)
+    (ship.folder / "ship.toml").write_text(text)
+    qd(capsys, "up", "captain")
+    captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
+    qd(capsys, "post", "order", "--to", "captain", "a long turn")
+    wait_for(lambda: captain.harness.screen(tmux.capture(captain.pane().id)).working, seconds=15)
+    urgent = qd(capsys, "post", "order", "--to", "captain", "--interrupt", "urgent").split(" ")[0]
+    store, attempts = post.Store(ship.runtime), post.Attempts(ship.runtime)
+    done = wait_for(lambda: [a for a in attempts.for_message(store.get(urgent).id) if a.result], seconds=15)
+    assert done[0].result in ("delivered", "queued"), done[0]
+    assert "· interrupted" in tmux.capture(captain.pane().id, history=100)
+
+
+def test_an_ack_wakes_nobody_and_a_resend_to_the_office_goes_to_its_watch(ship: shipmod.Ship, tmux: Tmux, capsys):
+    qd(capsys, "up", "captain")
+    qd(capsys, "up", "desk")
+    captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
+    order = qd(capsys, "post", "order", "--from", "captain", "--to", "worker-1", "build it").split(" ")[0]
+    qd(capsys, "post", "ack", "--from", "worker-1", "--re", order)
+    time.sleep(3)
+    assert post.Attempts(ship.runtime).all() == [], "an ack is never typed into the captain's pane"  # law: open-until-closed
+    assert captain.record() is None, "and the captain was never woken"
+    question = qd(capsys, "post", "question", "--to", "desk", "for the desk").split(" ")[0]
+    store, attempts = post.Store(ship.runtime), post.Attempts(ship.runtime)
+    message = store.get(question)
+    attempts.close(attempts.open(message, "desk", None, None, None), "blind", "a watch that died mid-print")
+    proof = qd(capsys, "post", "resend", question)
+    assert proof.startswith(f"{question} re-offered to desk's watch") and "no watch is armed yet" in proof
+    assert attempts.undelivered(store, "desk") == [message], "offered to the watch again"
+    desk = seatmod.Seat(ship, ship.seat("desk"), tmux)
+    assert desk.harness.screen(tmux.capture(desk.pane().id)).box == "", "and no key was pressed in the human's session"  # law: one-door
+
+
+def test_status_shows_what_the_seat_runs_and_never_the_ship_file_as_a_fact(ship: shipmod.Ship, tmux: Tmux, capsys):
+    rows = {r.split()[0]: r for r in qd(capsys, "status").splitlines()[2:5]}
+    assert "- (ship file: fake-1)" in rows["captain"], "down: nothing observed, the declaration shown as such"
+    qd(capsys, "up", "captain")
+    captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
+    wait_for(lambda: captain.harness.screen(tmux.capture(captain.pane().id)).shows.get("model") == "fake-1")
+    rows = {r.split()[0]: r for r in qd(capsys, "status").splitlines()[2:5]}
+    assert "fake · fake-1" in rows["captain"] and "ship file" not in rows["captain"], "observed on the screen and agreeing"
+    tmux.paste(captain.pane().id, "/model fake-9")
+    tmux.keys(captain.pane().id, "Enter")
+    wait_for(lambda: captain.harness.screen(tmux.capture(captain.pane().id)).shows.get("model") == "fake-9")
+    rows = {r.split()[0]: r for r in qd(capsys, "status").splitlines()[2:5]}
+    assert "fake-9 (ship file: fake-1)" in rows["captain"], "a hand changed it in the pane: the difference is shown"  # law: record-first
 
 
 def test_the_service_reconciles_an_attempt_it_died_in_the_middle_of(ship: shipmod.Ship, tmux: Tmux, capsys):

@@ -177,8 +177,7 @@ def cmd_fresh(args: argparse.Namespace) -> str:
 def relaunch(ship: shipmod.Ship, name: str | None, resume: bool) -> str:
     """Relaunch now when the seat is idle; when it is working, the service does it at the turn's end."""
     seat = seat_of(ship, this_seat(ship, name))
-    record = seat.record() if seat.is_up else None
-    if record and seat.harness.state(record).turn_open:
+    if seat.is_working():
         return service.request(ship.runtime, "relaunch", seat=seat.name, resume=resume)
     return seat.restart() if resume else seat.fresh()
 
@@ -207,7 +206,9 @@ def cmd_set(args: argparse.Namespace) -> list[str]:
         key, equals, raw = change.partition("=")
         if not equals:
             raise ShipError(f"{change!r} is not KEY=VALUE")
-        proofs.append(shipmod.set_value(ship, f"seats.{seat.name}", key, parse_value(raw)))
+        key = key.removeprefix("settings.")
+        table = f"seats.{seat.name}" if key in shipmod.SEAT_KEYS else f"seats.{seat.name}.settings"  # the program's own keys
+        proofs.append(shipmod.set_value(ship, table, key, parse_value(raw)))
         proofs.append(apply_control(ship, seat, key, raw))
     return proofs
 
@@ -225,6 +226,8 @@ def apply_control(ship: shipmod.Ship, seat: seatmod.Seat, key: str, value: str) 
     control = seat.harness.control(key)
     if key in RESTART_CONTROLS:
         return f"  {key} written; qd {RESTART_CONTROLS[key]} {seat.name} applies it"
+    if key not in shipmod.SEAT_KEYS:
+        return f"  {key} written under [seats.{seat.name}.settings]; qd restart {seat.name} passes it to the program"
     if control is None or control.session is None or key == "up":
         return f"  {key} written; qd restart {seat.name} applies it" if key != "up" else "  up written"
     if seat.session.human:
@@ -280,6 +283,7 @@ def cmd_watch(args: argparse.Namespace) -> list[str] | str:
 
 def cmd_post(args: argparse.Namespace) -> str:
     ship = load_ship(args)
+    shipmod.fence(ship)  # the first file written into a runtime finds the fence already there
     store = post.Store(ship.runtime)
     if args.kind == "resend":
         if len(args.body) != 1:
@@ -296,6 +300,8 @@ def cmd_post(args: argparse.Namespace) -> str:
         raise ShipError(f"no seat {to!r} to address; declared: {', '.join(ship.seats)}, "
                         f"the operator {ship.operator.lower()}, or {post.SHIP} for the ship's own notices")
     message = store.new(args.kind, sender, to, body, re=args.re, subject=args.subject, due=args.due, speed=args.speed)
+    if message.kind == "ack":
+        return f"{message.short} to {to} · stored · claims {post.short_of(message.re) if message.re else 'nothing'} for the ledger; an ack wakes nobody"
     return f"{message.short} to {to} · stored · {delivery_note(ship, to)}"
 
 
@@ -305,6 +311,8 @@ def read_body(args: argparse.Namespace) -> str:
     if args.body == ["-"]:
         return sys.stdin.read().strip()
     body = " ".join(args.body).strip()
+    if not body and args.kind == "ack":
+        return "claimed"  # an ack needs no words: it names the order it claims
     if not body:
         raise ShipError("an empty body: give the text, --body-file, or '-' for stdin")
     return body
@@ -331,6 +339,7 @@ def cmd_inbox(args: argparse.Namespace) -> str | None:
         return post.inbox_text(post.Store(ship.runtime), seat).rstrip("\n")
     if seat in ship.seats and not ship.session_of(ship.seat(seat)).human:
         raise ShipError(f"{seat} is reached through its door; --wait is for seats in a human's session")
+    shipmod.fence(ship)
     arrived = post.wait(ship.runtime, seat)
     if arrived is None:
         return None
@@ -354,7 +363,7 @@ def cmd_ledger(args: argparse.Namespace) -> list[str]:
             return rows + [f"{name:<24} {count:>6} {seconds:>9.1f} {failed:>6}" for name, count, seconds, failed in book.tools()]
         if args.by:
             return ledger.table(book, args.by)
-        return ledger.pools_table(book)
+        return ledger.pools_table(book, ship)
     finally:
         book.close()
 
