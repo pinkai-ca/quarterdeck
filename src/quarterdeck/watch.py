@@ -50,6 +50,9 @@ def activity(seat: Seat, now: datetime | None = None) -> Activity:
         return Activity("off", "no pane" if seat.launched() else "down")
     if pane.dead:
         return Activity("off", f"exited {pane.exit_status}")
+    if not seat.harness.record_confirms:  # an opaque record: the screen is all there is, and the reading says so
+        screen = Door(seat).screen()
+        return Activity("working", "by the screen") if screen and screen.working else Activity("idle", "by the screen")
     join = seat.join()
     if join.record is None:
         return Activity("idle", join.reason or "")  # a seat that has never moved is idle, not stalled

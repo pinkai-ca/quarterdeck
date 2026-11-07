@@ -89,6 +89,11 @@ def probe(ship: Ship, seat: Seat) -> list[Check]:
                         f"report {closed.short}: {closed.body[:40]!r}" if closed else "no report within the patience"))  # law: can-post
     content = proof_file.read_text().strip() if proof_file.exists() else None
     checks.append(Check("task: the named file holds the given line", content == proof_line, f"{proof_file}: {content!r}"))
+    if not seat.harness.record_confirms:
+        record = wait_for(seat.record, 60)
+        checks.append(Check("record joined; not read, this program's record is opaque", record is not None,
+                            record.name if record else "no record"))
+        return checks
     ended = wait_for(lambda: (r := seat.record()) and seat.harness.state(r).turns >= 1 and not seat.harness.state(r).turn_open, 60)
     record = seat.record()
     state = seat.harness.state(record) if record else None

@@ -256,7 +256,8 @@ def same_name(shown: str, wanted: str) -> bool:
     def key(name: str) -> str:
         return re.sub(r"[^a-z0-9]", "", name.lower().removeprefix("claude-"))
 
-    return key(shown) == key(wanted) or key(wanted).endswith(key(shown))
+    a, b = key(shown), key(wanted)
+    return bool(a) and (a == b or b.endswith(a) or b.startswith(a))
 
 
 def program_version(argv: tuple[str, ...]) -> str | None:
@@ -273,9 +274,10 @@ class Harness(ABC):
     """One agent program, as the framework knows it."""
 
     name: str
-    home_variable: str
+    home_variable: str | None
     keys: Keys
     brief_channel: str
+    record_confirms: bool = True  # False where the record is opaque: the screen's echo confirms a delivery instead
 
     def queues_while_working(self, seat: SeatSpec) -> bool:
         """Whether a message typed during a turn is taken and queued, or refused until it ends."""

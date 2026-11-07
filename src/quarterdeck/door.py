@@ -113,9 +113,12 @@ class Door:
         self.tmux.paste(pane.id, text)
         shown = self.box_shows(self.harness.box(text))
         if shown is None or not self.harness.box(text).matches(shown.box):  # law: one-door
-            self.empty_box()
             seen = shown.box if shown else None
-            return Delivery("withheld", f"box showed {seen!r}, not the message; emptied")
+            if self.harness.keys.empty:
+                self.empty_box()
+                return Delivery("withheld", f"box showed {seen!r}, not the message; emptied")
+            return Delivery("withheld", f"box showed {seen!r}, not the message; the program has no key to empty it, "
+                                        f"so the door's text is left there for a human")
         self.submit(pane.id)
         if speed == "now" and shown.working and self.harness.keys.send_now:
             self.tmux.keys(pane.id, *self.harness.keys.send_now)
@@ -165,8 +168,20 @@ class Door:
         return f"{self.seat.name} interrupted with {key} in {pane.id}"
 
     def confirm(self, text: str, seconds: float = CONFIRM_SECONDS) -> Delivery:
-        """Delivered when the record shows the text as an input or queued; blind when it never does."""
+        """Delivered when the record shows the text as an input or queued; blind when it never does.
+
+        A program whose record the framework cannot read is confirmed by its transcript: the
+        text echoed above the box, as the adapter reads it.
+        """
         wanted = " ".join(text.split())
+        if not self.harness.record_confirms:
+            deadline = time.monotonic() + seconds
+            while time.monotonic() < deadline:
+                screen = self.screen()
+                if screen and any(echoed(e, wanted) for e in screen.echoes):
+                    return Delivery("delivered", "echoed in the transcript; this program's record is not read")
+                time.sleep(0.2)
+            return Delivery("blind", f"typed and submitted, not echoed in the transcript within {seconds:.0f}s")
         deadline = time.monotonic() + seconds
         while True:
             record = self.seat.record()
