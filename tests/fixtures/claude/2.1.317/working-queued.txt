@@ -1,0 +1,24 @@
+  would send content outward. Send the report text and I'll post it with
+  --body-file or stdin.
+
+✻ Cogitated for 9s · done 3:39 AM
+
+❯ Run exactly this with Bash: sleep 20; echo slept. Then say DONE-SLEEP.
+
+● Sleeping 20 seconds then echo slept · 6s
+  ⎿  $ sleep 20; echo slept (6s)
+     (ctrl+b ctrl+b (twice) to run in background)
+
+❯ qd > order from desk · ord-0002 · Second
+  This arrived mid-turn. Say SECOND-SEEN.
+  qd > reply: qd post report --re ord-0002
+  ctrl+x ctrl+s to send now
+
+* Flambéing… (8s · ↓ 91 tokens)
+  ⎿  Tip: Working on a plan or design doc? Ask Claude to publish it as an
+     artifact — a polished web page you can open in your browser.
+
+────────────────────────────────────────────────────────────── qd-spike-claude ─
+❯ Press up to edit queued messages
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt

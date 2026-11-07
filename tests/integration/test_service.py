@@ -174,6 +174,29 @@ def test_a_restart_waits_for_the_turn_to_end(ship: shipmod.Ship, tmux: Tmux, cap
     assert captain.launched().resume is not None, "a restart resumes"
 
 
+def test_a_seat_that_needs_a_human_is_reported_to_the_desk_once(ship: shipmod.Ship, tmux: Tmux, capsys):
+    text = (ship.folder / "ship.toml").read_text().replace('[seats.worker-1.settings]\n', '[seats.worker-1.settings]\ndialog = "unknown"\n')
+    (ship.folder / "ship.toml").write_text(text)
+    qd(capsys, "up", "worker-1")
+    store = post.Store(ship.runtime)
+    report = wait_for(lambda: [m for m in store.all() if m.sender == "ship" and m.to == "desk"], seconds=15)[0]
+    assert report.kind == "report" and report.body == "worker-1 obstructed, unknown dialog: Something else"
+    time.sleep(2.5)
+    assert len([m for m in store.all() if m.sender == "ship"]) == 1, "told once, not every tick"
+
+
+def test_set_adopt_writes_what_the_seat_runs_into_the_file(ship: shipmod.Ship, tmux: Tmux, capsys):
+    qd(capsys, "up", "captain")
+    qd(capsys, "set", "captain", "effort=low")
+    captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
+    wait_for(lambda: captain.harness.screen(tmux.capture(captain.pane().id)).shows.get("effort") == "low")
+    (ship.folder / "ship.toml").write_text((ship.folder / "ship.toml").read_text().replace('effort = "low"', 'effort = "high"'))
+    assert shipmod.load(ship.folder).seat("captain").effort == "high", "the file and the seat disagree"
+    lines = qd(capsys, "set", "captain", "--adopt").splitlines()
+    assert any(line.startswith('ship.toml: seats.captain.effort = "low"') for line in lines), lines
+    assert shipmod.load(ship.folder).seat("captain").effort == "low"
+
+
 def test_the_service_reconciles_an_attempt_it_died_in_the_middle_of(ship: shipmod.Ship, tmux: Tmux, capsys):
     qd(capsys, "up", "captain")
     service.stop(ship.runtime)

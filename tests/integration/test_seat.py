@@ -78,13 +78,16 @@ def test_restart_resumes_the_record_and_fresh_does_not(ship: shipmod.Ship, tmux:
     tmux.keys(captain.pane().id, "Enter")
     record = wait_for(captain.record)
     wait_for(lambda: captain.harness.state(record).turns == 1)
+    standing_order = post.Store(ship.runtime).new("order", "desk", "captain", "still open across the restart")
     proof = captain.restart()
     assert proof.splitlines()[0].startswith("captain down · pane %") and " · resumed " in proof
+    assert proof.endswith("1 open message carried"), "every open message, on a restart too"  # law: context-is-cache
     assert captain.record() == record, "the same conversation, in a new process"
+    wait_for(lambda: standing_order.short in " ".join(t.input for t in captain.harness.turns(record)))
     assert "· 1 turns" in wait_for(lambda: tmux.capture(captain.pane().id) if "resumed" in tmux.capture(captain.pane().id) else None)
     proof = captain.fresh()
-    assert proof.endswith("· fresh")
-    assert captain.join().reason == "no record yet", "a fresh start begins a new record"
+    assert "· fresh · 1 open message carried" in proof, "the still-open order comes along into the new conversation"
+    assert captain.join().reason in ("no record yet", None), "a fresh start begins a new record"
     assert record.exists(), "the old record stays for the Ledger"
 
 

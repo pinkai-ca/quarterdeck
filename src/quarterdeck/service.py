@@ -29,7 +29,6 @@ from .tmux import Tmux
 
 TICK = 1.0
 STALE_SECONDS = 10.0
-RETRY_SECONDS = 60.0
 ANSWER_SECONDS = 8.0
 SPEEDS = {None: 0, "now": 1, "interrupt": 2}
 
@@ -153,7 +152,8 @@ class Service:
         self.store = Store(self.runtime)
         self.attempts = Attempts(self.runtime)
         self.log_path = self.runtime / "log" / "service.jsonl"
-        self.withheld: dict[tuple[str, str], float] = {}
+        self.withheld: dict[tuple[str, str], str] = {}  # (message, seat) -> the screen it was withheld on
+        self.told: dict[str, str | None] = {}  # seat -> the obstruction the desk was last told of
         self.brief_stamp = self._brief_stamp()
 
     # -- the loop ------------------------------------------------------------------------
@@ -241,12 +241,30 @@ class Service:
         for seat in seats(self.ship, self.tmux):
             if seat.session.human or not seat.is_up:
                 continue
-            pending = [m for m in self.attempts.undelivered(self.store, seat.name) if self._due(m, seat.name)]
+            pending = [m for m in self.attempts.undelivered(self.store, seat.name) if self._due(m, seat)]
             if pending:
                 self.deliver(seat, pending)
+            self.needs_human(seat)
 
-    def _due(self, message: post.Message, seat: str) -> bool:
-        return time.monotonic() - self.withheld.get((message.id, seat), -RETRY_SECONDS) >= RETRY_SECONDS
+    def _due(self, message: post.Message, seat: Seat) -> bool:
+        """A withheld message is tried again when the screen has changed since, not on a clock (law: events-not-clocks)."""
+        last = self.withheld.get((message.id, seat.name))
+        if last is None:
+            return True
+        screen = Door(seat).screen()
+        return screen is None or screen.text != last
+
+    def needs_human(self, seat: Seat) -> None:
+        """When a seat's door needs a human, the desk is told once, with a report from ``ship``."""
+        reading = Door(seat).reading()
+        reason = reading.reason if (not reading.open and reading.clears == "needs a human") else None
+        if reason == self.told.get(seat.name):
+            return
+        self.told[seat.name] = reason
+        if reason:
+            for desk in self.ship.seats.values():
+                if desk.role == "desk":
+                    self.store.new("report", "ship", desk.name, f"{seat.name} obstructed, {reason}")
 
     def deliver(self, seat: Seat, messages: list[post.Message], resend: bool = False) -> str:
         """One paste for all that waits for a seat, one attempt per message, written before typing."""
@@ -259,10 +277,11 @@ class Service:
         attempts = [self.attempts.open(m, seat.name, launched.pane, launched.pid, launched.at) for m in messages]
         delivery = door.deliver(post.typed(messages), speed)
         detail = delivery.detail + (" · resend" if resend else "")
+        screen = door.screen()
         for attempt in attempts:
             self.attempts.close(attempt, delivery.result, detail)
             if delivery.result == "withheld":
-                self.withheld[(attempt.message, seat.name)] = time.monotonic()
+                self.withheld[(attempt.message, seat.name)] = screen.text if screen else ""
         self.log("delivery", seat=seat.name, messages=[m.id for m in messages], speed=speed, result=delivery.result,
                  detail=detail)
         return f"{', '.join(m.short for m in messages)} to {seat.name} · {delivery.result}: {detail}"

@@ -1,0 +1,24 @@
+› qd > order from desk · ord-7f3a · Spike What seat are you, per your develope…
+  Reply command failed because it requires a message body.
+
+  Worked for 9s • 3:45 AM
+
+
+› Run exactly this shell command: sleep 20; echo slept. Then say DONE-SLEEP.
+
+
+• I’ll run the command exactly as given.
+
+
+› qd > order from desk · ord-0002 · Second
+  This arrived mid-turn. Say SECOND-SEEN.
+  qd > reply: qd post report --re ord-0002
+
+
+• Working (10s • esc to interrupt) · 1 background terminal running · /ps to vie…
+
+
+› Ask Codex to do anything
+
+  GPT-6-Astra low · /mnt/scratch/qd-spike/codex/work · Check qd version
+  ? for shortcuts

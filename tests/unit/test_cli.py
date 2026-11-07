@@ -44,6 +44,20 @@ def test_brief_and_json_output(example_ship: Path, capsys):
     assert out.startswith("# Standing orders for Maeve")
 
 
+def test_inside_a_seat_the_seat_is_known_and_outside_the_operator_has_an_inbox(example_ship: Path, capsys, monkeypatch):
+    monkeypatch.setenv("QD_SHIP", str(example_ship))
+    monkeypatch.setenv("QD_SEAT", "worker-1")
+    code, out, _ = run(capsys, "brief")
+    assert code == 0 and out.startswith("# Standing orders for worker-1: worker-1, worker")
+    monkeypatch.delenv("QD_SEAT")
+    code, out, err = run(capsys, "brief")
+    assert code == 2 and "QD_SEAT is not set" in err
+    code, out, _ = run(capsys, "inbox")
+    assert code == 0 and out.startswith("# Inbox: operator"), "outside a seat, the operator's inbox"
+    code, out, _ = run(capsys, "inbox", "Operator")
+    assert code == 0 and out.startswith("# Inbox: operator"), "case does not matter for the operator"
+
+
 def test_parse_value():
     assert parse_value("true") is True and parse_value("false") is False
     assert parse_value("42") == 42 and parse_value("-1") == -1

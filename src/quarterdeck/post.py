@@ -139,9 +139,15 @@ class Store:
         return [m for m in self.for_seat(seat) if self.is_open(m)]
 
     def claimed(self, seat: str, before: datetime) -> str | None:
-        """The order the seat last claimed with an ack before ``before``, for the Ledger."""
-        acks = [m for m in self.all() if m.kind == "ack" and m.sender == seat and m.re and m.at <= before]
-        return acks[-1].re if acks else None
+        """The order the seat last claimed with an ack and still had open at ``before``, for the Ledger."""
+        messages = self.all()
+        by_id = {m.id: m for m in messages}
+        for ack in reversed([m for m in messages if m.kind == "ack" and m.sender == seat and m.re and m.at <= before]):
+            order = by_id.get(ack.re)
+            closed = self.closing_report(order) if order else None
+            if order and (closed is None or closed.at > before):
+                return order.id
+        return None
 
 
 # -- the typed form ----------------------------------------------------------------------

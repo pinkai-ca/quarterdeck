@@ -8,13 +8,17 @@ for the box and the dialogs.
 
 from __future__ import annotations
 
+import functools
+import json
+import os
 import re
+import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
-from ..ship import Pool, SeatSpec
+from ..ship import Pool, SeatSpec, ShipError
 
 
 @dataclass(frozen=True)
@@ -183,6 +187,77 @@ class Window:
 class Usage:
     windows: tuple[Window, ...]
     read_at: datetime
+
+
+def entries(record: Path) -> list[dict]:
+    """Every parseable line of a JSON-lines record; a line still being written is skipped, not an error."""
+    out: list[dict] = []
+    try:
+        lines = record.read_text().splitlines()
+    except FileNotFoundError:
+        return out
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(entry, dict):
+            out.append(entry)
+    return out
+
+
+def when(value: str | None) -> datetime | None:
+    """An ISO timestamp as an aware datetime; a bare one is read as UTC."""
+    if not value:
+        return None
+    moment = datetime.fromisoformat(value)
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+def credential(pool: Pool, link: Path, variable: str) -> Credential | None:
+    """How a pool's credential reaches a seat home: a key by environment, a subscription by one link.
+
+    A refreshed file in the link's place is left alone: the service reseeds the pool from it.
+    """
+    if pool.api_key:
+        return Credential(variable=variable)
+    if pool.config_dir is None:
+        return None
+    source = pool.config_dir / link.name
+    if link.is_symlink():
+        link.unlink()
+    if not link.exists():
+        link.symlink_to(source)
+    return Credential(link=(link, source))
+
+
+def key_environment(pool: Pool, variable: str) -> dict[str, str]:
+    """The variable a key pool's program reads, from ``env:NAME`` or ``file:PATH`` in the ship file."""
+    if not pool.api_key:
+        return {}
+    kind, _, where = pool.api_key.partition(":")
+    if kind == "env":
+        value = os.environ.get(where)
+        if not value:
+            raise ShipError(f"pool {pool.name}: {where} is not set in the environment")
+        return {variable: value}
+    if kind == "file":
+        try:
+            return {variable: Path(where).expanduser().read_text().strip()}
+        except OSError as error:
+            raise ShipError(f"pool {pool.name}: cannot read {where}: {error}") from None
+    raise ShipError(f"pool {pool.name}: api_key must be env:NAME or file:PATH, not {pool.api_key!r}")
+
+
+@functools.cache
+def program_version(argv: tuple[str, ...]) -> str | None:
+    """The installed version a program prints for ``--version``, or None when it is not installed."""
+    try:
+        out = subprocess.run(list(argv), capture_output=True, text=True, timeout=20).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    match = re.search(r"\d+\.\d+(\.\d+)?", out)
+    return match.group(0) if match else None
 
 
 class Harness(ABC):

@@ -92,12 +92,13 @@ class Door:
         follows, since a local command leaves no input in the record.
         """
         screen = self.clear_known()  # law: one-door
+        if speed == "interrupt" and screen is not None and screen.working and not self.seat.session.human:
+            self.interrupt()
+            screen = self.settled()
         reading = self.reading(screen)
         if not reading.open:
             return Delivery("withheld", str(reading))
         pane = self.seat.pane()
-        if speed == "interrupt" and screen.working:
-            self.interrupt()
         self.tmux.paste(pane.id, text)
         shown = self.box_shows(self.harness.box(text))
         if shown is None or not self.harness.box(text).matches(shown.box):  # law: one-door
@@ -110,6 +111,15 @@ class Door:
         if not confirm:
             return Delivery("typed", f"submitted in {pane.id}")
         return self.confirm(text)  # law: one-door
+
+    def settled(self, seconds: float = BOX_SECONDS) -> Screen | None:
+        """The screen once the program has stopped working, or the last screen seen."""
+        deadline = time.monotonic() + seconds
+        while True:
+            screen = self.screen()
+            if screen is None or not screen.working or time.monotonic() > deadline:
+                return screen
+            time.sleep(SETTLE_SECONDS)
 
     def box_shows(self, box, seconds: float = BOX_SECONDS) -> Screen | None:
         """The screen once the box shows the paste as the program folds it, or the last screen seen."""

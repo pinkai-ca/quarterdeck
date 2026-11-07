@@ -1,0 +1,24 @@
+› qd > order from desk · ord-0002 · Second This arrived mid-turn. Say SECOND-S…
+  └ slept
+
+• SECOND-SEEN. DONE-SLEEP.
+
+  Reply command failed: message body required.
+
+  Worked for 23s • 3:46 AM
+
+
+› Run exactly this shell command: sleep 30; echo late
+
+
+• I’ll run the command exactly as given.
+
+■ Conversation interrupted - use /feedback if something went wrong
+
+  1 background terminal running · /ps to view · /stop to close
+
+
+› Ask Codex to do anything
+
+  GPT-6-Astra low · /mnt/scratch/qd-spike/codex/work · Check qd version
+  ? for shortcuts

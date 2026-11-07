@@ -60,6 +60,17 @@ def test_an_interrupted_turn_closes(tmp_path: Path, shape, reader):
     assert not reader.state(record.path).turn_open
 
 
+@pytest.mark.parametrize("shape,reader", SHAPES, ids=["claude", "codex"])
+def test_a_tool_left_open_by_an_interrupted_turn_does_not_haunt_the_next(tmp_path: Path, shape, reader):
+    record = shape(tmp_path, Path("/work"), "sess-7", "fake-1")
+    record.begin("turn 1", "fake-1", "high")
+    record.tool_start("Bash", "sleep 100")
+    record.abort()
+    record.begin("turn 2", "fake-1", "high")
+    state = reader.state(record.path)
+    assert state.turn_open and state.open_tool is None and state.open_tool_since is None
+
+
 def test_claude_records_queued_messages_and_local_commands(tmp_path: Path):
     record = ClaudeShape(tmp_path, Path("/work"), "sess-4", "fake-1")
     record.begin("first", "fake-1", "low")

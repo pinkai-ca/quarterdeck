@@ -1,0 +1,24 @@
+› qd > order from desk · ord-7f3a · Spike What seat are you, per your develope…
+  └ qd 0.1.0
+
+• Exited (status 2) qd post report --re ord-7f3a
+  └ qd: an empty body: give the text, --body-file, or '-' for stdin
+
+• Seat scott. NO-MARKER.
+
+  qd --version returned qd 0.1.0.
+
+  Reply command failed because it requires a message body.
+
+  Worked for 9s • 3:45 AM
+
+
+› qd > order from desk · ord-5678 · Six
+  a
+  b
+  c
+  d
+  qd > reply: qd post report --re ord-5678
+
+  GPT-6-Astra low · /mnt/scratch/qd-spike/codex/work · Check qd version
+

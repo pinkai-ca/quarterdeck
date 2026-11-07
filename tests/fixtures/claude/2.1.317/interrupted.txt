@@ -1,0 +1,24 @@
+  exit code 2: qd: an empty body: give the text, --body-file, or '-' for stdin.
+  The order gives no body text, so I haven't invented one. Send the report text
+  and I'll post it with --body-file or stdin.
+
+✻ Brewed for 29s · done 3:40 AM
+
+❯ /model claude-sonnet-5-5
+  ⎿  Set model to Sonnet 5.5 and saved as your default for new sessions
+
+❯ Run exactly this with Bash: sleep 30; echo late
+
+  Ran 1 shell command
+
+● The harness blocked the foreground run, so I'm running the same command in the
+  background as the error message suggests.
+
+  Ran 1 shell command
+  ⎿  Interrupted · What should Claude do instead?
+  ⎿  Interrupted · What should Claude do instead?
+
+────────────────────────────────────────────────────────────── qd-spike-claude ─
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)

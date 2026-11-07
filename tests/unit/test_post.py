@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -129,3 +130,8 @@ def test_claimed_order_for_attribution(tmp_path: Path):
     assert store.claimed("scott", post.now()) == a.id
     store.new("ack", "scott", "desk", "now b", re=b.id)
     assert store.claimed("scott", post.now()) == b.id
+    report = store.new("report", "scott", "desk", "b is done", re=b.id)
+    assert store.claimed("scott", post.now()) == a.id, "a closed order is no longer the claim; the earlier open one is"
+    assert store.claimed("scott", report.at - timedelta(microseconds=1)) == b.id, "but it was, back when the turn ran"
+    store.new("report", "scott", "desk", "a is done too", re=a.id)
+    assert store.claimed("scott", post.now()) is None

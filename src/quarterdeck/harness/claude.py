@@ -10,11 +10,14 @@ same message) and the stop reason that ends a turn. Queued messages appear as
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .base import State, Tokens, ToolCall, Turn
+from ..ship import Pool, SeatSpec
+from .base import (Box, Control, Credential, Harness, Interruption, Keys, Launch, Screen, State, Tokens,
+                   ToolCall, Turn, credential, entries, key_environment, program_version, when)
 
 ENDS_TURN = {"end_turn", "max_tokens", "stop_sequence"}
 LOCAL_TAGS = ("<command-name>", "<local-command", "<bash-input>", "<bash-stdout>", "<bash-stderr>")
@@ -24,30 +27,6 @@ INTERRUPTED = "[Request interrupted"
 def records(home: Path) -> list[Path]:
     files = [p for p in (home / "projects").glob("*/*.jsonl") if p.is_file()]
     return sorted(files, key=lambda p: p.stat().st_mtime)
-
-
-def entries(record: Path) -> list[dict]:
-    """Every parseable line; a line still being written is skipped, not an error."""
-    out = []
-    try:
-        lines = record.read_text().splitlines()
-    except FileNotFoundError:
-        return out
-    for line in lines:
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(entry, dict):
-            out.append(entry)
-    return out
-
-
-def when(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    moment = datetime.fromisoformat(value)
-    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
 def first_timestamp(record: Path) -> datetime | None:
@@ -131,7 +110,10 @@ class _Reader:
             self.last_input, self.last_input_at = text, when(entry.get("timestamp"))
             if text in self.queued:
                 self.queued.remove(text)
-            self.open = {"started": when(entry.get("timestamp")), "input": text, "usage": {}, "tools": [],
+            if self.open is not None:
+                self.end(self.last_input_at)  # a prompt while a turn is open ends it: nothing else will
+            self.pending.clear()
+            self.open = {"started": self.last_input_at, "input": text, "usage": {}, "tools": [],
                          "reply": "", "model": None, "subagents": self.subagent_turns}
             return
         for block in entry.get("message", {}).get("content") or []:
@@ -180,6 +162,7 @@ class _Reader:
     def end(self, at: datetime | None) -> None:
         turn = self.open
         self.open = None
+        self.pending.clear()  # a tool call the turn never closed does not haunt the next one
         tokens = sum((usage_tokens(u) for u in turn["usage"].values()), Tokens())
         self.turns.append(
             Turn(
@@ -227,3 +210,119 @@ def turns(record: Path) -> list[Turn]:
 def read(record: Path) -> tuple[State, list[Turn]]:
     reader = _Reader(record)
     return reader.state(), reader.turns
+
+
+# -- the adapter -----------------------------------------------------------------------------
+
+FOLD_LINES = 4  # a paste of this many lines or more folds in the box (2.1.317)
+RULE = re.compile(r"^─{10,}")
+BOX_START = re.compile(r"^❯[  ]?(.*)$")
+MODE_LINE = re.compile(r"[○◐●◑] (\w+) · /effort")
+WORKING = re.compile(r"esc to interrupt|^[*✻✶✳✢·⠂⠄⠆] \S+… \(\d+s", re.M)
+SET_MODEL = re.compile(r"Set model to `?([^`]+?)`? and saved")
+QUEUED_PLACEHOLDER = "Press up to edit queued messages"
+SETTINGS = {
+    "env": {"DISABLE_AUTOUPDATER": "1"},
+    "promptSuggestionEnabled": False,
+    "includeCoAuthoredBy": False,
+    "permissions": {"allow": ["Bash(qd *)", "Bash(qd:*)"], "defaultMode": "auto"},
+}
+
+
+class ClaudeHarness(Harness):
+    """Claude Code, proven on 2.1.317."""
+
+    name = "claude"
+    home_variable = "CLAUDE_CONFIG_DIR"
+    keys = Keys(submit="Enter", send_now=("C-x", "C-s"), interrupt="Escape", empty=("C-c",))
+    brief_channel = "system-prompt"
+
+    def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None) -> Credential | None:
+        home.mkdir(parents=True, exist_ok=True)
+        settings = json.loads((ship_home / "settings.json").read_text()) if ship_home and (ship_home / "settings.json").is_file() else dict(SETTINGS)
+        settings.update(seat.settings)
+        (home / "settings.json").write_text(json.dumps(settings, indent=2) + "\n")
+        state_file = home / ".claude.json"
+        state = json.loads(state_file.read_text()) if state_file.is_file() else {}
+        state.update({"hasCompletedOnboarding": True, "theme": state.get("theme", "dark")})
+        cwd = str(seat.cwd) if seat.cwd else None
+        if cwd:
+            state.setdefault("projects", {}).setdefault(cwd, {})["hasTrustDialogAccepted"] = True
+        state_file.write_text(json.dumps(state, indent=2) + "\n")
+        return credential(pool, home / ".credentials.json", "ANTHROPIC_API_KEY")
+
+    def launch(self, seat: SeatSpec, pool: Pool, home: Path, brief: Path, resume: str | None, first: str | None) -> Launch:
+        argv = ["claude", "--setting-sources", "user", "--append-system-prompt-file", str(brief), "--name", seat.display]
+        if seat.model:
+            argv += ["--model", seat.model]
+        if seat.effort:
+            argv += ["--effort", seat.effort]
+        if resume:
+            argv += ["--resume", resume]
+        if first:
+            argv.append(first)
+        env = {self.home_variable: str(home), **key_environment(pool, "ANTHROPIC_API_KEY")}
+        return Launch(tuple(argv), env)
+
+    def version(self) -> str | None:
+        return program_version(("claude", "--version"))
+
+    records = staticmethod(records)
+    first_timestamp = staticmethod(first_timestamp)
+    session_id = staticmethod(session_id)
+    state = staticmethod(state)
+    turns = staticmethod(turns)
+    read = staticmethod(read)
+
+    def screen(self, text: str) -> Screen:
+        lines = text.rstrip("\n").split("\n")
+        interruption = self.recognize(text)
+        box, queued = None, 1 if "ctrl+x ctrl+s to send now" in text else 0
+        for index, line in enumerate(lines):
+            start = BOX_START.match(line)
+            if start and index and RULE.match(lines[index - 1]):
+                body = [start.group(1)]
+                for following in lines[index + 1:]:
+                    if RULE.match(following):
+                        break
+                    body.append(following[2:] if following.startswith("  ") else following)
+                box = "\n".join(body).replace(" ", " ").rstrip()
+                if box.strip() == QUEUED_PLACEHOLDER:
+                    box, queued = "", max(queued, 1)
+                break
+        mode = MODE_LINE.search(text)
+        return Screen(text, box=box, working=bool(WORKING.search(text)), interruption=interruption,
+                      queued=queued, shows={"effort": mode.group(1)} if mode else {})
+
+    def box(self, text: str) -> Box:
+        lines = text.strip().count("\n") + 1
+        if lines >= FOLD_LINES:
+            return Box(text, pattern=rf"\[Pasted text #\d+ \+{lines - 1} lines\]")
+        return Box(text)
+
+    def controls(self) -> tuple[Control, ...]:
+        return (
+            Control("model", launch="--model <value>", session="/model {value}", confirmed_by="record"),
+            Control("effort", launch="--effort <value>", session="/effort {value}", confirmed_by="screen"),
+        )
+
+    def confirms(self, control: Control, value: str, screen: Screen, state: State) -> bool | None:
+        if control.name == "model":
+            match = SET_MODEL.search(state.local_stdout or "") if state else None
+            return None if not match else same_model(match.group(1), value)
+        return super().confirms(control, value, screen, state)
+
+    def interruptions(self) -> tuple[Interruption, ...]:
+        return (
+            Interruption("switch-model confirmation", r"Switch model\?", key="Enter"),
+            Interruption("login", r"Select login method|Paste code here if prompted|Browser didn't open", key=None),
+            Interruption("trust dialog", r"Do you trust the files in this folder\?", key=None),
+            Interruption("permission prompt", r"Do you want to proceed\?|Allow once|Allow always", key=None),
+        )
+
+
+def same_model(shown: str, wanted: str) -> bool:
+    """``Sonnet 5.5`` names ``claude-sonnet-5-5``: compare the words and digits, nothing else."""
+    def key(name: str) -> str:
+        return re.sub(r"[^a-z0-9]", "", name.lower().removeprefix("claude-"))
+    return key(shown) == key(wanted) or key(wanted).endswith(key(shown))

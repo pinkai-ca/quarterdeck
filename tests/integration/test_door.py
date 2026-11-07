@@ -108,6 +108,10 @@ def test_a_program_that_does_not_queue_is_obstructed_by_time(example_ship: Path,
     wait_for(lambda: door.screen().working)
     assert str(door.reading()) == "obstructed: working, program does not queue, time"
     assert door.deliver("second").result == "withheld"
+    # --interrupt is for exactly this seat: the turn is stopped first, then the message goes in
+    urgent = door.deliver(post.typed([order(captain, "urgent")]), speed="interrupt")
+    assert urgent.result == "delivered", urgent
+    assert "· interrupted" in tmux.capture(captain.pane().id, history=100)
 
 
 def test_the_door_never_types_into_a_human_session(example_ship: Path, tmux: Tmux):

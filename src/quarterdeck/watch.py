@@ -100,6 +100,19 @@ def reading(seat: Seat, store: post.Store | None = None) -> SeatReading:
                        f"{seat.harness.name} {version}".strip() if version else seat.harness.name)
 
 
+def running_settings(seat: Seat) -> dict[str, str]:
+    """The model and effort the program reports, from its record first and its screen second (law: record-first)."""
+    found: dict[str, str] = {}
+    record = seat.record()
+    state = seat.harness.state(record) if record else None
+    screen = Door(seat).screen()
+    for key in ("model", "effort"):
+        value = (getattr(state, key, None) if state else None) or (screen.shows.get(key) if screen else None)
+        if value:
+            found[key] = value
+    return found
+
+
 def table(ship: Ship, tmux: Tmux) -> list[str]:
     """``qd status``: every seat on one screen, then the open orders."""
     store = post.Store(ship.runtime)

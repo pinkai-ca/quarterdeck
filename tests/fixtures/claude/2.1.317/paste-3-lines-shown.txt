@@ -1,0 +1,24 @@
+
+ ▐▛███▛█   Claude Code v2.1.317
+▝▜██████▀  Haiku 5.5 with low effort · Claude Max
+ ▝▝   ▝▝   /mnt/scratch/qd-spike/claude/work
+
+▎ Auto mode is now Claude Code's default permission mode.
+▎ Auto mode lets Claude handle permission prompts automatically. Claude checks
+▎ each tool call for risky actions and prompt injection before executing, runs
+▎ the ones it assesses as lower-risk, and blocks the rest.
+▎ https://code.claude.com/docs/en/permission-modes
+  1 more notice hidden
+
+
+
+
+
+                                                         ctrl+g to edit in Vim
+────────────────────────────────────────────────────────────── qd-spike-claude ─
+❯ qd > order from desk · ord-7f3a · Spike
+  Answer MARKER-LOADED if you read a CLAUDE.md marker, else NO-MARKER. Then
+  run exactly: qd --version
+  qd > reply: qd post report --re ord-7f3a · inbox: post/inbox/captain.md
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)

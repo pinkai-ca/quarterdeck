@@ -202,10 +202,10 @@ class Program:
             return
         if self.box.strip():
             self.queue.insert(0, self.box.strip())
+            self.record.queued(self.queue[0])
             self.box = ""
         if self.queue:
             self.say(f"· sent now: {self.queue[0].splitlines()[0]}")
-            self.record.queued(self.queue[0])
 
     def submit(self) -> None:
         text = self.box.strip()

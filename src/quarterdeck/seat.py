@@ -148,17 +148,23 @@ class Seat:
     def first_message(self, resume: bool) -> tuple[str | None, list[post.Message]]:
         """What the launch carries as its first message, under a header saying the seat was briefed.
 
-        A resumed conversation gets what never reached it; a new one gets every open message
-        as well, since it has seen nothing (law: context-is-cache).
+        Every open message, whatever reached the seat before, plus what never reached it and
+        what was queued in a turn that never read it (law: context-is-cache).
         """
-        store = post.Store(self.ship.runtime)
+        store, attempts = post.Store(self.ship.runtime), post.Attempts(self.ship.runtime)
         open_messages = store.open_for(self.name)
-        carried = post.Attempts(self.ship.runtime).undelivered(store, self.name)
-        if not resume:
-            carried = sorted(set(carried) | set(open_messages), key=lambda m: (m.at, m.id))
+        carried = set(open_messages) | set(attempts.undelivered(store, self.name)) | set(self._queued_unread(store, attempts))
         if not carried:
             return None, []
-        return post.briefed_header(self.name, self.spec.role, open_messages) + "\n" + post.typed(carried), carried
+        ordered = sorted(carried, key=lambda m: (m.at, m.id))
+        return post.briefed_header(self.name, self.spec.role, open_messages) + "\n" + post.typed(ordered), ordered
+
+    def _queued_unread(self, store: post.Store, attempts: post.Attempts) -> list[post.Message]:
+        """Messages confirmed queued whose turn never came: the record holds no input naming them."""
+        record = self.record()
+        inputs = " ".join(" ".join(t.input.split()) for t in self.harness.turns(record)) if record else ""
+        queued = {a.message for a in attempts.all() if a.seat == self.name and a.result == "queued"}
+        return [m for m in store.for_seat(self.name) if m.id in queued and m.short not in inputs]
 
     def _open_window(self, argv: list[str], env: dict[str, str]) -> Pane:
         session = self.session
