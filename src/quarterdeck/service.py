@@ -18,6 +18,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
+from . import pending as pending_delivery, delivery_queue, delivery_record
 from . import credential, machine, post, quota, record_owner, ship as shipmod, standing
 from .door import CONFIRM_SECONDS, Door
 from .harness.base import record_fingerprint
@@ -50,7 +51,6 @@ class Service:
         self.usage_read: dict[str, float] = {}
         self.read_marks: dict[Path, tuple] = {}  # record -> the fingerprint it was last read at
 
-    # -- the loop ------------------------------------------------------------------------
 
     def run(self) -> None:
         self.lock = acquire_lock(self.runtime)  # one service per ship, for its whole life
@@ -85,7 +85,6 @@ class Service:
     def seat(self, name: str) -> Seat:
         return Seat(self.ship, self.ship.seat(name), self.tmux)
 
-    # -- deliveries ----------------------------------------------------------------------
 
     def reconcile(self) -> None:
         """Attempts left without a result: the record says delivered, else blind, never resent.
@@ -94,7 +93,10 @@ class Service:
         door still confirming or a watch still printing. The verdict is written only while
         the file still has no result, so a result they write in the meantime stands.
         """
+        tracked = pending_delivery.reconcile(self)
         for attempt in self.attempts.unfinished():
+            if attempt.path in tracked:
+                continue
             if time.time() < attempt.when.timestamp() + CONFIRM_SECONDS:
                 continue
             if attempt.pane is None:
@@ -107,44 +109,13 @@ class Service:
                                    "the service died mid-delivery and the record does not show it; qd post resend"):  # law: one-door
                 self.log("reconciled", message=message.id, seat=seat.name, result=result)
         for attempt in self.attempts.all():  # a queued message is delivered once the record shows it read
-            if attempt.result == "queued" and attempt.message in self.attempts.queued_ids():
+            if attempt.path not in tracked and attempt.result == "queued" and attempt.message in self.attempts.queued_ids():
                 seat = self.seat(attempt.seat)
                 if seat.harness.record_confirms and seat.record() and self.read_now(seat, self.store.get(attempt.message)):
                     self.attempts.close(attempt, "delivered", "queued, then read: the record names it")
 
-    @staticmethod
-    def read_now(seat: Seat, message: post.Message) -> bool:
-        """Whether a message once queued has been read: it is an input or a consumed entry, no longer only queued."""
-        try:
-            state, turns = seat.harness.read(seat.record())
-        except OSError:
-            return False
-        flat = " ".join(" ".join(t.split()) for t in [*(x.input for x in turns), *state.consumed, state.last_input or ""])
-        return message.short in flat and message.short not in " ".join(state.queued)
-
-    @staticmethod
-    def taken(seat: Seat, message: post.Message, since: datetime) -> bool:
-        """Whether the record shows this very message, by its id and body, as an input after ``since``;
-        for a program whose record is opaque, whether its transcript echoes it."""
-        wanted = " ".join(message.body.split())
-
-        def carries(text: str | None) -> bool:
-            flat = " ".join((text or "").split())
-            return message.short in flat and wanted in flat
-
-        if not seat.harness.record_confirms:
-            return any(carries(e) for e in Door(seat).echoes())
-        record = seat.record()
-        if record is None:
-            return False
-        try:
-            state, turns = seat.harness.read(record)
-        except OSError:
-            return False
-        inputs = [t.input for t in turns if t.started and t.started >= since]
-        if state.turn_open and state.last_input_at and state.last_input_at >= since:
-            inputs.append(state.last_input)
-        return any(carries(text) for text in inputs + list(state.queued) + list(state.consumed))
+    read_now = staticmethod(delivery_record.read_now)
+    taken = staticmethod(delivery_record.taken)
 
     def deliveries(self) -> None:
         for seat in seats(self.ship, self.tmux):
@@ -167,6 +138,7 @@ class Service:
         """When a seat's door needs a human, the desk is told once, with a report from ``ship``."""
         reading = Door(seat).reading()
         reason = reading.reason if (not reading.open and reading.clears == "needs a human") else None
+        reason = reason or next(iter(pending_delivery.detached(seat)), None)
         if reason == self.told.get(seat.name):
             return
         self.told[seat.name] = reason
@@ -176,7 +148,10 @@ class Service:
                     self.store.new("report", "ship", desk.name, f"{seat.name} obstructed, {reason}")
 
     def deliver(self, seat: Seat, messages: list[post.Message], resend: bool = False) -> str:
-        """One paste for all that waits for a seat, one attempt per message, written before typing."""
+        return delivery_queue.deliver(self, seat, messages, resend)
+
+    def _deliver(self, seat: Seat, messages: list[post.Message], resend: bool = False) -> str:
+        """One isolated transport, journaled before typing."""
         door = Door(seat)
         speed = max((m.speed for m in messages), key=lambda s: SPEEDS[s], default=None)
         reading = door.reading()
@@ -185,7 +160,11 @@ class Service:
             return f"{seat.name}: {reading}"
         launched = seat.launched()
         attempts = [self.attempts.open(m, seat.name, launched.pane, launched.pid, launched.at) for m in messages]
-        delivery = door.deliver(post.typed(messages), speed)
+        text = post.typed(messages)
+        proof = pending_delivery.Proof.begin(seat, attempts, text)
+        delivery = door.deliver(text, speed, proof=proof)
+        if proof:
+            proof.finish(delivery.result)
         detail = delivery.detail + (" · resend" if resend else "")
         screen = door.screen()
         for attempt in attempts:
@@ -203,7 +182,6 @@ class Service:
             if not path.exists() or path.read_text() != text:
                 post.render_inbox(self.runtime, self.store, name)
 
-    # -- requests ------------------------------------------------------------------------
 
     def requests(self) -> None:
         folder = self.runtime / "requests"
@@ -270,7 +248,6 @@ class Service:
             time.sleep(0.2)
         return f"{name} = {value} · typed {command} in {seat.pane().id} · not confirmed by the {control.confirmed_by} yet"
 
-    # -- fresh starts and briefs -----------------------------------------------------------
 
     def fresh_after_order(self) -> None:
         """A worker whose last open order closed, and whose closing turn ended, starts fresh."""
@@ -297,7 +274,6 @@ class Service:
         for line in credential.reseed(self.ship, seats(self.ship, self.tmux)):
             self.log("credential", proof=line)
 
-    # -- the ledger ------------------------------------------------------------------------
 
     def account(self) -> None:
         """Ingest every ended turn of every record in each seat's home, sample a running seat's machine use,

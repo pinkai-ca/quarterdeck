@@ -37,7 +37,10 @@ def test_a_short_paste_shows_in_full_and_a_long_one_folds():
     three = ("qd > order from desk · ord-7f3a · Spike\nAnswer MARKER-LOADED if you read a CLAUDE.md marker, else NO-MARKER. "
              "Then run exactly: qd --version\nqd > reply: qd post report --re ord-7f3a · inbox: post/inbox/captain.md")
     shown = screen("paste-3-lines-shown")
-    assert harness.box(three).matches(shown.box), shown.box
+    # This scrubbed screen retains composer rows but no terminal wrap metadata.
+    # Supply its observed text-area bound explicitly; bare text cannot prove a wrap.
+    assert not harness.box(three).matches(shown.box)
+    assert harness.box(three).matches(shown.box, 76), shown.box
     four = "qd > order from desk · ord-9abc · Four\na\nb\nqd > reply: qd post report --re ord-9abc"
     folded = screen("paste-4-lines-folded")
     assert folded.box == "[Pasted text #3 +3 lines]"

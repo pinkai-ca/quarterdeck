@@ -91,7 +91,11 @@ class Drill:
         for name, spec in self.ship.seats.items():
             if self.ship.session_of(spec).human:
                 self.play_human_seat(name, [o for (_, to), o in orders.items() if to == name])
-        closed = wait_for(lambda: all(not self.store.is_open(o) for o in orders.values()), self.patience * 2)
+        # A program can post its report before the service finishes writing its
+        # receipt. Wait for both observable facts, keeping the exact-once check.
+        wait_for(lambda: all(not self.store.is_open(o) and any(a.delivered for a in self.attempts.for_message(o.id))
+                             for o in orders.values()), self.patience * 2)
+        closed = all(not self.store.is_open(o) for o in orders.values())
         for (sender, to), order in orders.items():
             report = self.store.closing_report(order)
             results = [a.result for a in self.attempts.for_message(order.id) if a.delivered]

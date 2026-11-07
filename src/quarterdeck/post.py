@@ -341,7 +341,7 @@ class Attempts:
         neither is sent again by the service (law: one-door); an acknowledgment claims and
         never wakes, so it is never delivered at all (law: open-until-closed).
         """
-        skip = self.delivered_ids() | self.blind_ids() | {a.message for a in self.unfinished()}
+        skip = self.delivered_ids() | self.blind_ids() | {m for m, r in self.latest().items() if r in (None, "pending")}
         return [m for m in store.for_seat(seat) if m.id not in skip and m.kind != "ack"]  # law: open-until-closed
 
 

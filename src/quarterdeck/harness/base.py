@@ -169,10 +169,11 @@ class Box:
     text: str
     folded: str | None = None
 
-    def matches(self, shown: str | None) -> bool:
+    def matches(self, shown: str | None, columns: int | None = None) -> bool:
         if shown is None:
             return False
-        if " ".join(self.text.split()) == " ".join(shown.split()):
+        from ..composer import matches
+        if matches(self.text, shown, columns):
             return True
         return bool(self.folded) and re.fullmatch(self.folded, shown.strip()) is not None
 
@@ -331,6 +332,10 @@ class Harness(ABC):
     @abstractmethod
     def screen(self, text: str) -> Screen:
         pass
+
+    def box_columns(self, pane_width: int) -> int | None:
+        """Text-area columns for a recognized ordinary composer, never a guessed width."""
+        return pane_width - 2
 
     @abstractmethod
     def box(self, text: str) -> Box:

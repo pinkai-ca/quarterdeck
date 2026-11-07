@@ -9,6 +9,8 @@ refreshed by tmux itself, so a dead service never looks like a healthy idle ship
 
 from __future__ import annotations
 
+from . import pending as pending_delivery
+
 import shutil
 import tempfile
 from dataclasses import dataclass, field
@@ -251,6 +253,7 @@ class Facts:
     queued: int = 0
     oldest_queued: int = 0
     usage: list[str] = field(default_factory=list)
+    pending: list[str] = field(default_factory=list)
 
     def line(self) -> str:  # law: nothing-waits-silently
         parts = ["SERVICE DOWN" if self.service == "down" else f"service {self.service}"]
@@ -262,6 +265,7 @@ class Facts:
         parts += [f"{name} needs a human" for name in self.needs_human]
         parts += [f"{name}: no watch armed" for name in self.unarmed]
         parts += [f"wall: {wall}" for wall in self.walls]
+        parts += self.pending
         parts += self.usage
         parts += [f"disk: {name} {pct}%" for name, pct in self.disks]
         parts += [f"{pool} · login needed by {when}" for pool, when in self.login]
@@ -329,17 +333,23 @@ def _mount(path: Path) -> str:
 def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tuple[str, str]] | None = None) -> Facts:
     """Everything the status line says; cheap enough for tmux to ask every few seconds."""
     store, attempts = post.Store(ship.runtime), post.Attempts(ship.runtime)
-    waiting, needs_human, unarmed = [], [], []
+    waiting, needs_human, unarmed, pending_lines = [], [], [], []
     for seat in seats(ship, tmux):
         pending = attempts.undelivered(store, seat.name)
         waiting += pending
         if seat.session.human:
             if pending and not post.watch_armed(ship.runtime, seat.name):
                 unarmed.append(seat.name)
-        elif seat.is_up:
+        else:
             door = Door(seat).reading()
             if not door.open and door.clears == "needs a human":
                 needs_human.append(seat.name)
+            if door.waiting or "pending" in door.reason:
+                pending_lines.append(f"{seat.name}: {door.reason}")
+            for reason in pending_delivery.detached(seat):
+                if seat.name not in needs_human:
+                    needs_human.append(seat.name)
+                pending_lines.append(f"{seat.name}: {reason}")
     now = post.now()
     oldest = int(max(((now - m.at).total_seconds() for m in waiting), default=0) // 60)
     queued = [a for a in attempts.all() if a.result == "queued" and a.message in attempts.queued_ids()]
@@ -351,6 +361,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         queued=len(queued),
         oldest_queued=int(max(((now - a.when).total_seconds() for a in queued), default=0) // 60),
         needs_human=needs_human,
+        pending=pending_lines,
         unarmed=unarmed,
         walls=walls if walls is not None else ledger_walls(ship),
         usage=ledger_usage(ship),

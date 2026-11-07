@@ -171,8 +171,8 @@ class Tmux:
         return next((p for p in self.panes() if p.id == pane_id), None)
 
     def capture(self, pane_id: str, history: int = 0) -> str:
-        """The screen as shown, with ``history`` lines of scrollback above it."""
-        return self.run("capture-pane", "-p", "-t", pane_id, "-S", str(-history))
+        """Join only terminal-marked soft wraps; preserve application newlines."""
+        return self.run("capture-pane", "-p", "-J", "-t", pane_id, "-S", str(-history))
 
     def session_environment(self, session: str, name: str) -> str | None:
         """A variable set on the session with ``new_session``; None when unset."""
