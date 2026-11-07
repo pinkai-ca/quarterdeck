@@ -9,7 +9,7 @@ config_dir = "~/.claude"
 
 [pools.claude-secondary]
 provider = "claude"
-config_dir = "~/.config/helm/subscriptions/claude-max5x"
+config_dir = "~/.config/claude-second"
 
 [pools.codex]
 provider = "codex"

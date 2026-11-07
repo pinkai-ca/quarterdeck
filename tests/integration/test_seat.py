@@ -171,13 +171,14 @@ def test_a_session_owned_by_another_ship_is_refused(ship: shipmod.Ship, tmux: Tm
     assert [p.window for p in tmux.panes("Bridge")] == ["Pike"], "nothing of the other ship landed here"
 
 
-def test_a_missing_working_directory_is_refused_not_created(ship: shipmod.Ship, tmux: Tmux):
-    text = (ship.folder / "ship.toml").read_text().replace('[seats.captain]\n', '[seats.captain]\ncwd = "/mnt/scratch/qd-nowhere-at-all"\n')
+def test_a_missing_working_directory_is_refused_not_created(ship: shipmod.Ship, tmux: Tmux, tmp_path: Path):
+    nowhere = tmp_path / "nowhere"
+    text = (ship.folder / "ship.toml").read_text().replace('[seats.captain]\n', f'[seats.captain]\ncwd = "{nowhere}"\n')
     (ship.folder / "ship.toml").write_text(text)
     ship = shipmod.load(ship.folder)
     with pytest.raises(ShipError, match="does not exist; qd creates nothing outside its folder"):  # law: one-folder
         seatmod.Seat(ship, ship.seat("captain"), tmux).up()
-    assert not Path("/mnt/scratch/qd-nowhere-at-all").exists()
+    assert not nowhere.exists()
 
 
 def test_bring_down_closes_the_sessions(ship: shipmod.Ship, tmux: Tmux):

@@ -3,7 +3,7 @@
       ▄▀▀▄        Antigravity CLI 1.5.2
      ▀▀▀▀▀▀       user@example.com (Google AI Pro)
     ▀▀▀▀▀▀▀▀      Gemini 4 Argon (High)
-   ▄▀▀    ▀▀▄     /mnt/scratch/qd-spike/agy/work
+   ▄▀▀    ▀▀▄     ~/work
   ▄▀▀      ▀▀▄
 
 ────────────────────────────────────────────────────────────

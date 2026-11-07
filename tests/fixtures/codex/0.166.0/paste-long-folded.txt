@@ -20,5 +20,5 @@
 
 › [Pasted Content 2003 chars]
 
-  GPT-6-Astra low · /mnt/scratch/qd-spike/codex/work · Check qd version
+  GPT-6-Astra low · ~/work · Check qd version
 

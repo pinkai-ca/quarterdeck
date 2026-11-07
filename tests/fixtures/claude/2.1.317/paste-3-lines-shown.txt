@@ -1,7 +1,7 @@
 
  ▐▛███▛█   Claude Code v2.1.317
 ▝▜██████▀  Haiku 5.5 with low effort · Claude Max
- ▝▝   ▝▝   /mnt/scratch/qd-spike/claude/work
+ ▝▝   ▝▝   ~/work
 
 ▎ Auto mode is now Claude Code's default permission mode.
 ▎ Auto mode lets Claude handle permission prompts automatically. Claude checks

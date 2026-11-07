@@ -8,7 +8,7 @@ It is a control plane and nothing more. It is not the agents, not the code they 
 
 A **ship** is one file, `ship.toml`, naming the tmux sessions, the seats in each, and every seat's role, program, pool, model and persona. A **pool** is one way of paying: a subscription, named by its credential directory, or an API key, named by the variable that holds it. A **seat** is one running program in one pane under one role, with a home of its own built from the ship's files and nothing of the user's. Orders, reports, questions, answers and acknowledgments are immutable files in the **post**; the ship's one service types each message in full into its addressee's pane, through one door, or hands it to the seat's own watch in a session the human owns. The **watch** reads a seat from its record first and its screen second. The **ledger** accounts every turn by pool, by seat and by order, with the tool calls it made and what it cost the machine. Fourteen **laws** say what the framework itself guarantees, each tagged where the code enforces it and where a test tries to break it; `qd laws` lists them. The **drill** proves the whole thing on a fake harness, and `qd check` proves an installed program live.
 
-The design is `docs/DESIGN.md`. The night it was built, and what each review found, is `docs/BUILD.md` and `docs/reviews/`.
+The design is `docs/DESIGN.md`.
 
 ## Running it
 

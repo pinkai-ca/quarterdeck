@@ -1,6 +1,6 @@
 # Working on Quarterdeck
 
-For whoever works on the framework itself, person or agent. The design is `docs/DESIGN.md`; read its sections 2, 11 and 13 before changing anything, and the build log `docs/BUILD.md` for how it was built.
+For whoever works on the framework itself, person or agent. The design is `docs/DESIGN.md`; read its sections 2, 11 and 13 before changing anything.
 
 ## Shape
 
@@ -13,6 +13,7 @@ For whoever works on the framework itself, person or agent. The design is `docs/
 - A law (`standing-orders/laws.md`) is a guarantee the code enforces. Tag the line that enforces it `# law: <id>` and the test that tries to break it the same way; `qd laws` lists both and a test fails when a law has no carrier or a tag names no law.
 - Nothing from a runtime enters this repository: no seat ids, records, credentials or usage. Fixtures are scrubbed before they are saved.
 - Every `qd` verb prints a proof line saying what was done and how it was confirmed; every refusal names the reason and what would lift it. A reading that could not see something says so.
+- A commit message says what changed, in plain words, and carries no attribution trailer: several models work on this code by default, and the history records what changed, not who typed.
 
 ## Running
 
