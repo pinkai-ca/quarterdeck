@@ -18,8 +18,9 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-from . import credential, post, ship as shipmod, standing
+from . import credential, machine, post, ship as shipmod, standing
 from .door import CONFIRM_SECONDS, Door
+from .ledger import Ledger
 from .post import Attempts, Store
 from .seat import Seat, seats
 from .servicectl import (  # noqa: F401  (the process control, reachable as service.* too)
@@ -29,6 +30,7 @@ from .ship import Ship, ShipError
 from .tmux import Tmux
 
 TICK = 1.0
+USAGE_SECONDS = 60.0
 SPEEDS = {None: 0, "now": 1, "interrupt": 2}
 
 
@@ -42,6 +44,9 @@ class Service:
         self.withheld: dict[tuple[str, str], str] = {}  # (message, seat) -> the screen it was withheld on
         self.told: dict[str, str | None] = {}  # seat -> the obstruction the desk was last told of
         self.brief_stamp = self._brief_stamp()
+        self.ledger = Ledger(self.runtime / "ledger.sqlite")
+        self.meters: dict[str, machine.Meter] = {}
+        self.usage_read: dict[str, float] = {}
 
     # -- the loop ------------------------------------------------------------------------
 
@@ -61,7 +66,7 @@ class Service:
         except ShipError as error:
             self.log("error", step="load", error=str(error))
         for step in (self.reconcile, self.inboxes, self.deliveries, self.requests, self.fresh_after_order,
-                     self.rebrief, self.credentials):
+                     self.rebrief, self.credentials, self.account, self.failover):
             try:
                 step()
             except Exception as error:  # one failing step never stops the others
@@ -264,6 +269,52 @@ class Service:
         """A seat whose credential link became a file has refreshed the token: reseed the pool and relink."""
         for line in credential.reseed(self.ship, seats(self.ship, self.tmux)):
             self.log("credential", proof=line)
+
+    # -- the ledger ------------------------------------------------------------------------
+
+    def account(self) -> None:
+        """Sample each running seat's machine use, ingest its ended turns, and read its pool's usage once a minute."""
+        table = machine.processes()
+        for seat in seats(self.ship, self.tmux):
+            pane = seat.pane()
+            record = seat.record() if pane else None
+            if pane is None or pane.dead or record is None:
+                continue
+            state, turns = seat.harness.read(record)
+            meter = self.meters.setdefault(seat.name, machine.Meter())
+            meter.sample(pane.pid, table)
+            if turns and self.ledger.ingested(record) < len(turns):
+                figures = {turns[-1].index: meter.result()} if not state.turn_open else {}
+                written = self.ledger.ingest(seat.name, seat.pool.name, record, turns, self.store, figures)
+                if written:
+                    self.meters[seat.name] = machine.Meter()
+                    self.log("ledger", seat=seat.name, turns=written)
+            pool = seat.pool
+            if pool.kind == "subscription" and time.monotonic() - self.usage_read.get(pool.name, -USAGE_SECONDS) >= USAGE_SECONDS:
+                self.usage_read[pool.name] = time.monotonic()
+                usage = seat.harness.usage(pool)
+                if usage:
+                    self.ledger.record_usage(pool.name, usage)
+
+    def failover(self) -> None:
+        """A seat whose pool is walled moves on at its turn's end to the next pool of its list that is not, and stays."""
+        for seat in seats(self.ship, self.tmux):
+            if len(seat.spec.pools) < 2 or not seat.is_up or not self.ledger.walled(seat.pool.name):
+                continue
+            record = seat.record()
+            if record and seat.harness.state(record).turn_open:
+                continue
+            pools = list(seat.spec.pools)
+            start = pools.index(seat.pool.name)
+            ordered = pools[start + 1:] + pools[:start]
+            target = next((p for p in ordered if not self.ledger.walled(p)), None)
+            if target is None:
+                continue  # every pool is walled: a fact the status line shows, not a move
+            came_from = seat.pool.name
+            seat.move_to(target)
+            proof = seat.restart()
+            self.store.new("report", post.SHIP, seat.name, f"moved to pool {target} from {came_from} at its wall")
+            self.log("failover", seat=seat.name, pool=target, came_from=came_from, proof=proof)
 
     def rebrief(self) -> None:
         """When the orders or a card change, every brief is rendered again and each seat is told."""

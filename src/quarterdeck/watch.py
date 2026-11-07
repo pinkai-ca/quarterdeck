@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from . import credential, post, service
+from . import credential, ledger, post, service
 from .door import Door, Reading
 from .seat import Seat, seats
 from .ship import Ship
@@ -185,6 +185,18 @@ class Facts:
         return " · ".join(parts)
 
 
+def ledger_walls(ship: Ship) -> list[str]:
+    """The walls the Ledger knows of, read without opening a book the service has not written yet."""
+    path = ship.runtime / "ledger.sqlite"
+    if not path.exists():
+        return []
+    book = ledger.Ledger(path)
+    try:
+        return book.walls()
+    finally:
+        book.close()
+
+
 def disks(paths: list[Path]) -> list[tuple[str, int]]:
     """Filesystems the ship writes to that are nearly full, by mount and percent used."""
     seen, found = set(), []
@@ -231,7 +243,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         blind=len(attempts.blind_ids()),
         needs_human=needs_human,
         unarmed=unarmed,
-        walls=walls or [],
+        walls=walls if walls is not None else ledger_walls(ship),
         disks=disks([ship.runtime, ship.workspace, Path(tempfile.gettempdir())]),
         login=login if login is not None else credential.login_needed(ship),
     )

@@ -13,7 +13,8 @@ import os
 import sys
 from typing import Any
 
-from . import __version__, check, drill, harness as harnesses, post, seat as seatmod, service, ship as shipmod, standing, watch
+from . import (__version__, check, drill, harness as harnesses, ledger, post, seat as seatmod, service,
+               ship as shipmod, standing, watch)
 from .ship import ShipError
 from .tmux import Tmux, TmuxError
 
@@ -100,6 +101,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = verb("inbox", cmd_inbox, "print a seat's inbox, or wait for what arrives next")
     p.add_argument("seat", nargs="?", help="default: this seat")
     p.add_argument("--wait", action="store_true", help="block until something new arrives, print it in full, exit")
+    p = verb("ledger", cmd_ledger, "what the crew spends: the pools, or turns rolled up --by seat, order or pool")
+    p.add_argument("--by", choices=("seat", "order", "pool"), help="roll the turns up by this")
+    p.add_argument("--tools", action="store_true", help="tool calls by name: count, seconds, failures")
     verb("service", cmd_service, "run the ship's service in the foreground (qd up starts it detached)")
     p = verb("drill", cmd_drill, "the all-hands drill: on the example ship's fake harness, or on --ship with real programs")
     p.add_argument("--keep", action="store_true", help="keep the temporary ship and its tmux server for a look")
@@ -335,6 +339,20 @@ def cmd_inbox(args: argparse.Namespace) -> str | None:
 def cmd_service(args: argparse.Namespace) -> None:
     ship = load_ship(args)
     service.Service(ship, Tmux.default()).run()
+
+
+def cmd_ledger(args: argparse.Namespace) -> list[str]:
+    ship = load_ship(args)
+    book = ledger.Ledger(ship.runtime / "ledger.sqlite")
+    try:
+        if args.tools:
+            rows = [f"{'tool':<24} {'calls':>6} {'seconds':>9} {'failed':>6}"]
+            return rows + [f"{name:<24} {count:>6} {seconds:>9.1f} {failed:>6}" for name, count, seconds, failed in book.tools()]
+        if args.by:
+            return ledger.table(book, args.by)
+        return ledger.pools_table(book)
+    finally:
+        book.close()
 
 
 def cmd_check(args: argparse.Namespace) -> list[str]:

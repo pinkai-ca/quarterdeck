@@ -11,13 +11,14 @@ from __future__ import annotations
 
 import json
 import re
+import urllib.request
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
 from ..ship import Pool, SeatSpec
 from .base import (Box, Control, Credential, Harness, Interruption, Keys, Launch, Screen, State, Tokens,
-                   ToolCall, Turn, credential, entries, key_environment, program_version, when)
+                   ToolCall, Turn, Usage, Window, credential, entries, key_environment, program_version, when)
 
 ENDS_TURN = {"end_turn", "max_tokens", "stop_sequence"}
 LOCAL_TAGS = ("<command-name>", "<local-command", "<bash-input>", "<bash-stdout>", "<bash-stderr>")
@@ -331,6 +332,35 @@ class ClaudeHarness(Harness):
             Interruption("trust dialog", r"Do you trust the files in this folder\?", key=None),
             Interruption("permission prompt", r"Do you want to proceed\?|Allow once|Allow always", key=None),
         )
+
+
+USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+USAGE_WINDOWS = {"five_hour": "5h", "seven_day": "7d"}
+
+
+def usage(pool: Pool) -> Usage | None:
+    """A subscription pool's utilization windows from the OAuth usage endpoint; None when it cannot be read."""
+    source = pool.config_dir / ".credentials.json" if pool.config_dir else None
+    if source is None or not source.exists():
+        return None
+    try:
+        token = json.loads(source.read_text()).get("claudeAiOauth", {}).get("accessToken")
+        request = urllib.request.Request(USAGE_URL, headers={
+            "Authorization": f"Bearer {token}", "anthropic-beta": "oauth-2025-04-20", "Accept": "application/json"})
+        with urllib.request.urlopen(request, timeout=10) as response:
+            data = json.loads(response.read())
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    windows = []
+    for key, name in USAGE_WINDOWS.items():
+        window = data.get(key) or {}
+        if "utilization" in window:
+            resets = when(window.get("resets_at")) if window.get("resets_at") else None
+            windows.append(Window(name, float(window["utilization"]) / 100.0, resets))
+    return Usage(tuple(windows), datetime.now(timezone.utc)) if windows else None
+
+
+ClaudeHarness.usage = staticmethod(usage)
 
 
 def same_model(shown: str, wanted: str) -> bool:

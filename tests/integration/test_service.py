@@ -6,11 +6,13 @@ import json
 import os
 import signal
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
-from quarterdeck import cli, post, seat as seatmod, service, ship as shipmod
+from quarterdeck import cli, ledger, post, seat as seatmod, service, ship as shipmod
+from quarterdeck.harness.base import Usage, Window
 from quarterdeck.tmux import Tmux
 
 from .test_seat import wait_for
@@ -195,6 +197,53 @@ def test_set_adopt_writes_what_the_seat_runs_into_the_file(ship: shipmod.Ship, t
     lines = qd(capsys, "set", "captain", "--adopt").splitlines()
     assert any(line.startswith('ship.toml: seats.captain.effort = "low"') for line in lines), lines
     assert shipmod.load(ship.folder).seat("captain").effort == "low"
+
+
+def test_every_turn_is_accounted_by_pool_seat_and_order(ship: shipmod.Ship, tmux: Tmux, capsys):
+    qd(capsys, "up", "captain")
+    proof = qd(capsys, "post", "order", "--to", "captain", "count\n$ qd post report --re {this} counted")
+    short = proof.split(" ")[0]
+    store = post.Store(ship.runtime)
+    order = store.get(short)
+    wait_for(lambda: not store.open_for("captain"), seconds=20)
+    book_path = ship.runtime / "ledger.sqlite"
+    wait_for(lambda: book_path.exists() and ledger.Ledger(book_path).rollup("seat"), seconds=15)
+    book = ledger.Ledger(book_path)
+    rows = book.rollup("seat")
+    assert rows[0].key == "captain" and rows[0].turns == 1 and rows[0].read_cached > 0 and rows[0].tool_calls == 1
+    by_order = book.rollup("order")
+    assert [r.key for r in by_order] == [order.id], "the closing turn is charged to the order it closes"  # law: every-turn-accounted
+    assert book.rollup("pool")[0].key == "fake"
+    book.close()
+    out = qd(capsys, "ledger", "--by", "seat")
+    assert out.splitlines()[1].startswith("captain") and " 1 " in out.splitlines()[1]
+    assert order.id in qd(capsys, "ledger", "--by", "order")
+    assert "no usage read yet" in qd(capsys, "ledger"), "the fake has no subscription windows"
+    assert qd(capsys, "ledger", "--tools").splitlines()[1].startswith("Bash")
+
+
+def test_a_seat_moves_on_at_a_wall_and_stays(ship: shipmod.Ship, tmux: Tmux, capsys):
+    text = (ship.folder / "ship.toml").read_text()
+    text = text.replace('[pools.fake]\nprovider = "fake"', '[pools.fake]\nprovider = "fake"\n\n[pools.fake-2]\nprovider = "fake"')
+    text = text.replace('[seats.captain]\nsession = "bridge"\nrole = "captain"\npersona = "Pike"\nharness = "fake"\npool = "fake"',
+                        '[seats.captain]\nsession = "bridge"\nrole = "captain"\npersona = "Pike"\nharness = "fake"\npool = ["fake", "fake-2"]')
+    (ship.folder / "ship.toml").write_text(text)
+    ship = shipmod.load(ship.folder)
+    assert ship.seat("captain").pools == ("fake", "fake-2")
+    qd(capsys, "up", "captain")
+    captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
+    first = captain.launched()
+    assert captain.pool.name == "fake"
+    book = ledger.Ledger(ship.runtime / "ledger.sqlite")
+    book.record_usage("fake", Usage((Window("5h", 1.0, datetime.now(timezone.utc) + timedelta(hours=1)),), datetime.now(timezone.utc)))
+    book.close()
+    wait_for(lambda: captain.launched() and captain.launched().at != first.at, seconds=20)
+    assert captain.pool.name == "fake-2" and captain.launched().pool == "fake-2"
+    notice = wait_for(lambda: [m for m in post.Store(ship.runtime).all() if m.sender == "ship" and "moved to pool" in m.body], seconds=10)[0]
+    assert notice.body == "moved to pool fake-2 from fake at its wall"
+    assert "wall: fake 5h" in qd(capsys, "status", "--line")  # law: nothing-waits-silently
+    time.sleep(2.5)
+    assert captain.pool.name == "fake-2", "it stays, even though the first pool is the one declared first"
 
 
 def test_the_service_reconciles_an_attempt_it_died_in_the_middle_of(ship: shipmod.Ship, tmux: Tmux, capsys):
