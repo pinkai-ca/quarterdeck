@@ -3,7 +3,9 @@
 It shows a box that folds a long paste, a dialog, a program that queues while working and
 one that does not; it takes a message, works through steps, writes the record in the
 shape of the program it imitates, and replies. Lines of the message beginning ``$ `` are
-run as tool calls, so a drill can ask it to do something and check that it did.
+run as tool calls, so a drill can ask it to do something and check that it did; in them
+``{this}`` is the id of the order or question being worked, read from its header as an
+agent would.
 
     qd-fakeharness --as claude|codex [--model M] [--effort E] [--brief FILE] [--resume ID] [--first TEXT]
 
@@ -15,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import select
 import subprocess
 import sys
@@ -110,49 +113,74 @@ class Program:
             data += os.read(sys.stdin.fileno(), 65536)
         return data.decode("utf-8", "replace")
 
-    def handle(self, data: str) -> None:
-        if self.dialog:
-            if data.startswith(self.dialog[3]):
-                self.dialog = None
-                self.erase_box()
-                sys.stdout.write("\x1b[4A\r\x1b[J")  # the dialog's four lines go with it
-                self.draw_box()
-                self.say("· notice dismissed")
-            return
-        if data == "\x1b":
-            self.escape()
-        elif data == "\x03":
-            raise SystemExit(0)
-        elif data == "\x18\x13" or data == "\x18":
-            self.send_now(data)
-        elif data == "\x15":
-            self.box = ""
-            self.draw()
-        elif data.startswith(PASTE_START):
-            self.paste(data)
-        else:
-            self.type(data)
+    @staticmethod
+    def tokens(data: str):
+        """The input stream as a terminal program sees it: pastes, keys and escape sequences."""
+        while data:
+            if data.startswith(PASTE_START):
+                end = data.find(PASTE_END)
+                yield "paste", data[len(PASTE_START):end if end >= 0 else None]
+                data = data[end + len(PASTE_END):] if end >= 0 else ""
+            elif data.startswith("\x1b["):
+                length = 2
+                while length < len(data) and not data[length].isalpha() and data[length] != "~":
+                    length += 1
+                yield "sequence", data[: length + 1]
+                data = data[length + 1:]
+            elif data.startswith("\x18\x13"):
+                yield "chord", "C-x C-s"
+                data = data[2:]
+            else:
+                yield "key", data[0]
+                data = data[1:]
 
-    def paste(self, data: str) -> None:
-        text = data[len(PASTE_START):]
-        text = text[: text.index(PASTE_END)] if PASTE_END in text else text
+    def handle(self, data: str) -> None:
+        if data.endswith("\x18"):
+            data += self.read(0.3)
+        for kind, value in self.tokens(data):
+            if self.dialog:
+                if kind == "key" and value == self.dialog[3]:
+                    self.dismiss()
+            elif kind == "paste":
+                self.paste(value)
+            elif kind == "chord":
+                self.send_now()
+            elif kind == "key":
+                self.key(value)
+
+    def dismiss(self) -> None:
+        self.dialog = None
+        self.erase_box()
+        sys.stdout.write("\x1b[4A\r\x1b[J")  # the dialog's four lines go with it
+        self.draw_box()
+        self.say("· notice dismissed")
+
+    def paste(self, text: str) -> None:
         if self.working and not self.queues:
             return
         self.pastes += 1
         self.box += text.replace("\r\n", "\n").replace("\r", "\n")
         self.draw()
 
-    def type(self, data: str) -> None:
-        if self.working and not self.queues:
+    def key(self, char: str) -> None:
+        if char == "\x1b":
+            self.escape()
+        elif char == "\x03":
+            raise SystemExit(0)
+        elif char == "\x15":
+            self.box = ""
+            self.draw()
+        elif self.working and not self.queues:
             return
-        for char in data:
-            if char in "\r\n":
-                self.submit()
-            elif char == "\x7f":
-                self.box = self.box[:-1]
-            elif char >= " ":
-                self.box += char
-        self.draw()
+        elif char in "\r\n":
+            self.submit()
+            self.draw()
+        elif char == "\x7f":
+            self.box = self.box[:-1]
+            self.draw()
+        elif char >= " ":
+            self.box += char
+            self.draw()
 
     def draw(self) -> None:
         self.erase_box()
@@ -166,13 +194,16 @@ class Program:
             self.box = ""
             self.draw()
 
-    def send_now(self, data: str) -> None:
-        if data == "\x18":
-            data += self.read(0.3)
-        if data == "\x18\x13" and self.working and self.box.strip():
-            self.queue.insert(0, self.box)
+    def send_now(self) -> None:
+        """The chord: what is queued, or in the box, is read at the next step of this turn."""
+        if not self.working:
+            return
+        if self.box.strip():
+            self.queue.insert(0, self.box.strip())
             self.box = ""
-            self.say("· sent now")
+        if self.queue:
+            self.say(f"· sent now: {self.queue[0].splitlines()[0]}")
+            self.record.queued(self.queue[0])
 
     def submit(self) -> None:
         text = self.box.strip()
@@ -204,7 +235,9 @@ class Program:
         first, extra = text.splitlines()[0], text.count("\n")
         self.say(f"> {first}" + (f"  … (+{extra} lines)" if extra else ""))
         self.record.begin(text, self.model, self.effort)
-        commands = [line[2:] for line in text.splitlines() if line.startswith("$ ")]
+        this = re.search(r"^qd > (?:order|question) from \S+ · (\S+)", text, re.M)
+        commands = [line[2:].replace("{this}", this.group(1) if this else "{this}")
+                    for line in text.splitlines() if line.startswith("$ ")]
         for command in commands or [None] * self.steps:
             if self.interrupted:
                 break

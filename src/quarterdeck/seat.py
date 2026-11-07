@@ -126,26 +126,38 @@ class Seat:
         resume_id = self._resume_id() if resume else None
         if not resume_id:
             (self.folder / "record").unlink(missing_ok=True)
-        first = self.first_message()
+        first, carried = self.first_message(resume=resume_id is not None)
         launch = self.harness.launch(self.spec, pool, self.home, brief, resume_id, first)
         pane = self._open_window(list(launch.argv), launch.env)
         launched = Launched(pane.id, pane.pid, datetime.now(timezone.utc).isoformat(), pool.name,
                             resume_id, list(launch.argv), self.harness.version())
         (self.folder / "launch.json").write_text(json.dumps(asdict(launched), indent=2) + "\n")
+        attempts = post.Attempts(self.ship.runtime)
+        for message in carried:
+            attempt = attempts.open(message, self.name, pane.id, pane.pid, launched.at)
+            attempts.close(attempt, "launch", "carried as the first message of the launch")
         how = f"resumed {resume_id[:8]}" if resume_id else "fresh"
-        return f"{self.name} up in {pane.id} · {self.harness.name} {launched.version or ''} · pool {pool.name} · {how}"
+        carried_note = f" · {len(carried)} open message{'s' if len(carried) != 1 else ''} carried" if carried else ""
+        return f"{self.name} up in {pane.id} · {self.harness.name} {launched.version or ''} · pool {pool.name} · {how}{carried_note}"
 
     def _resume_id(self) -> str | None:
         record = self.record()
         return self.harness.session_id(record) if record else None
 
-    def first_message(self) -> str | None:
-        """The seat's open messages, in full, under a header saying it was briefed (law: context-is-cache)."""
+    def first_message(self, resume: bool) -> tuple[str | None, list[post.Message]]:
+        """What the launch carries as its first message, under a header saying the seat was briefed.
+
+        A resumed conversation gets what never reached it; a new one gets every open message
+        as well, since it has seen nothing (law: context-is-cache).
+        """
         store = post.Store(self.ship.runtime)
         open_messages = store.open_for(self.name)
-        if not open_messages:
-            return None
-        return post.briefed_header(self.name, self.spec.role, open_messages) + "\n" + post.typed(open_messages)
+        carried = post.Attempts(self.ship.runtime).undelivered(store, self.name)
+        if not resume:
+            carried = sorted(set(carried) | set(open_messages), key=lambda m: (m.at, m.id))
+        if not carried:
+            return None, []
+        return post.briefed_header(self.name, self.spec.role, open_messages) + "\n" + post.typed(carried), carried
 
     def _open_window(self, argv: list[str], env: dict[str, str]) -> Pane:
         session = self.session

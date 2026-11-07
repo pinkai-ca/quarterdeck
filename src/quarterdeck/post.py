@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import time
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -211,5 +212,122 @@ def render_inbox(runtime: Path, store: Store, seat: str) -> Path:
     return path
 
 
-def with_speed(message: Message, speed: str | None) -> Message:
-    return replace(message, speed=speed)
+# -- delivery attempts -----------------------------------------------------------------------
+
+DELIVERED = ("delivered", "queued", "launch", "watch")
+
+
+@dataclass(frozen=True)
+class Attempt:
+    """One delivery attempt, written before the door types; its result written after."""
+
+    message: str
+    seat: str
+    at: str
+    pane: str | None = None
+    pid: int | None = None
+    launched_at: str | None = None
+    result: str | None = None
+    detail: str = ""
+    path: Path | None = None
+
+    @property
+    def delivered(self) -> bool:
+        return self.result in DELIVERED
+
+    @property
+    def when(self) -> datetime:
+        return datetime.fromisoformat(self.at)
+
+
+class Attempts:
+    def __init__(self, runtime: Path):
+        self.dir = runtime / "post" / "attempts"
+
+    def open(self, message: Message, seat: str, pane: str | None, pid: int | None, launched_at: str | None) -> Attempt:
+        self.dir.mkdir(parents=True, exist_ok=True)
+        at = now()
+        number = len(list(self.dir.glob(f"{message.id}-*.json"))) + 1
+        attempt = Attempt(message.id, seat, at.isoformat(timespec="seconds"), pane, pid, launched_at,
+                          path=self.dir / f"{message.id}-{number}.json")
+        self._write(attempt)
+        return attempt
+
+    def close(self, attempt: Attempt, result: str, detail: str = "") -> Attempt:
+        done = replace(attempt, result=result, detail=detail)
+        self._write(done)
+        return done
+
+    def _write(self, attempt: Attempt) -> None:
+        data = {k: v for k, v in asdict(attempt).items() if k != "path"}
+        tmp = attempt.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2) + "\n")
+        os.replace(tmp, attempt.path)
+
+    def all(self) -> list[Attempt]:
+        if not self.dir.is_dir():
+            return []
+        found = [Attempt(**json.loads(p.read_text()), path=p) for p in self.dir.glob("*.json")]
+        return sorted(found, key=lambda a: (a.at, a.path.name))
+
+    def for_message(self, message_id: str) -> list[Attempt]:
+        return [a for a in self.all() if a.message == message_id]
+
+    def delivered_ids(self) -> set[str]:
+        return {a.message for a in self.all() if a.delivered}
+
+    def unfinished(self) -> list[Attempt]:
+        """Attempts with no result: the service died between typing and confirming."""
+        return [a for a in self.all() if a.result is None]
+
+    def blind_ids(self) -> set[str]:
+        delivered = self.delivered_ids()
+        return {a.message for a in self.all() if a.result == "blind"} - delivered
+
+    def undelivered(self, store: Store, seat: str) -> list[Message]:
+        """What is addressed to the seat and never reached it, oldest first; blind ones wait for a hand."""
+        skip = self.delivered_ids() | self.blind_ids()
+        return [m for m in store.for_seat(seat) if m.id not in skip]
+
+
+# -- the watch: how a seat in a human session is reached -----------------------------------------
+
+
+def watch_file(runtime: Path, seat: str) -> Path:
+    return runtime / "seats" / seat / "watch"
+
+
+def watch_armed(runtime: Path, seat: str) -> bool:
+    path = watch_file(runtime, seat)
+    try:
+        pid = int(path.read_text().split()[0])
+        os.kill(pid, 0)
+    except (FileNotFoundError, ValueError, IndexError, OSError):
+        return False
+    return True
+
+
+def wait(runtime: Path, seat: str, interval: float = 1.0, stop_after: float | None = None) -> str | None:
+    """Block until something new is addressed to ``seat``; print it in full; exit.
+
+    The wait registers itself while it runs, so the service and the status line know a
+    watch is armed. Nothing is typed into the seat's pane: this is the Office's one path.
+    """
+    store, attempts = Store(runtime), Attempts(runtime)
+    path = watch_file(runtime, seat)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"{os.getpid()} {now().isoformat(timespec='seconds')}\n")
+    deadline = None if stop_after is None else datetime.now().timestamp() + stop_after
+    try:
+        while True:
+            waiting = attempts.undelivered(store, seat)
+            if waiting:
+                text = typed(waiting)
+                for message in waiting:
+                    attempts.close(attempts.open(message, seat, None, None, None), "watch", "printed by qd inbox --wait")
+                return text
+            if deadline is not None and datetime.now().timestamp() > deadline:
+                return None
+            time.sleep(interval)
+    finally:
+        path.unlink(missing_ok=True)

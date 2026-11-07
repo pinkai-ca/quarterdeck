@@ -183,12 +183,19 @@ class Tmux:
     # -- typing ------------------------------------------------------------------------
 
     def paste(self, pane_id: str, text: str, bracketed: bool = True) -> None:
-        """Paste ``text`` into the pane as one bracketed paste, the way a terminal would."""
+        """Paste ``text`` into the pane as one bracketed paste, the way a terminal would.
+
+        tmux brackets a paste itself (``-p``) except while the pane is in copy mode, where
+        the paste still reaches the program but without its brackets; there the brackets go
+        in with the text, so a multi-line message stays one paste for the reader scrolled up.
+        """
+        pane = self.pane(pane_id)
+        if bracketed and pane is not None and pane.in_mode:
+            self.run("load-buffer", "-b", "qd", "-", stdin=f"\x1b[200~{text.replace(chr(10), chr(13))}\x1b[201~")
+            self.run("paste-buffer", "-d", "-r", "-b", "qd", "-t", pane_id)
+            return
         self.run("load-buffer", "-b", "qd", "-", stdin=text)
-        args = ["paste-buffer", "-d", "-b", "qd", "-t", pane_id]
-        if bracketed:
-            args.append("-p")
-        self.run(*args)
+        self.run("paste-buffer", "-d", "-b", "qd", "-t", pane_id, *(["-p"] if bracketed else []))
 
     def keys(self, pane_id: str, *keys: str) -> None:
         self.run("send-keys", "-t", pane_id, *keys)

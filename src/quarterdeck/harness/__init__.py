@@ -9,20 +9,17 @@ NAMES = ("fake", "claude", "codex", "antigravity")
 
 
 def get(name: str) -> Harness:
-    if name == "fake":
-        from .fake import FakeHarness
-
-        return FakeHarness()
-    if name == "claude":
-        from .claude import ClaudeHarness
-
-        return ClaudeHarness()
-    if name == "codex":
-        from .codex import CodexHarness
-
-        return CodexHarness()
-    if name == "antigravity":
-        from .antigravity import AntigravityHarness
-
-        return AntigravityHarness()
-    raise ShipError(f"no harness {name!r}; known: {', '.join(NAMES)}")
+    if name not in NAMES:
+        raise ShipError(f"no harness {name!r}; known: {', '.join(NAMES)}")
+    try:
+        if name == "fake":
+            from .fake import FakeHarness as cls
+        elif name == "claude":
+            from .claude import ClaudeHarness as cls
+        elif name == "codex":
+            from .codex import CodexHarness as cls
+        else:
+            from .antigravity import AntigravityHarness as cls
+    except ImportError as error:
+        raise ShipError(f"harness {name!r} is not built yet: {error}") from None
+    return cls()

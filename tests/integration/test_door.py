@@ -1,0 +1,129 @@
+"""The door on the fake harness: one path, cleared, checked, submitted, confirmed by the record."""
+
+from __future__ import annotations
+
+import time
+from pathlib import Path
+
+import pytest
+
+from quarterdeck import post, seat as seatmod, ship as shipmod
+from quarterdeck.door import Door
+from quarterdeck.tmux import Tmux
+
+from .test_seat import wait_for
+
+
+def ship_with(example_ship: Path, extra: str) -> shipmod.Ship:
+    (example_ship / "ship.toml").write_text((example_ship / "ship.toml").read_text() + extra)
+    return shipmod.load(example_ship)
+
+
+@pytest.fixture
+def captain(example_ship: Path, tmux: Tmux) -> seatmod.Seat:
+    ship = ship_with(example_ship, '\n[seats.captain.settings]\nstep_seconds = "0.05"\n')
+    seat = seatmod.Seat(ship, ship.seat("captain"), tmux)
+    seat.up()
+    wait_for(lambda: Door(seat).reading().open)
+    return seat
+
+
+def order(seat: seatmod.Seat, body: str, **fields) -> post.Message:
+    return post.Store(seat.ship.runtime).new("order", "desk", seat.name, body, **fields)
+
+
+def test_a_message_is_typed_once_and_confirmed_by_the_record(captain: seatmod.Seat, tmux: Tmux):
+    door = Door(captain)
+    message = order(captain, "Count the stars.\n$ echo counted", subject="Stars")
+    text = post.typed([message])
+    delivery = door.deliver(text)
+    assert delivery.result == "delivered" and "in the record" in delivery.detail  # law: one-door
+    turns = wait_for(lambda: captain.harness.turns(captain.record()) or None)
+    assert turns[0].input == text.strip() and [t.name for t in turns[0].tools] == ["Bash"]
+    screen = tmux.capture(captain.pane().id, history=100)
+    assert f"qd > order from desk · {message.short} · Stars" in screen and "⎿ counted" in screen
+    assert door.reading().open and str(door.reading()) == "open"
+
+
+def test_text_in_the_box_is_an_obstruction_and_nothing_more_is_done(captain: seatmod.Seat, tmux: Tmux):
+    tmux.paste(captain.pane().id, "a human's half-written thou")
+    wait_for(lambda: captain.harness.screen(tmux.capture(captain.pane().id)).box == "a human's half-written thou")
+    door = Door(captain)
+    reading = door.reading()
+    assert not reading.open and str(reading) == "obstructed: text in the box, needs a human"
+    delivery = door.deliver(post.typed([order(captain, "never sent")]))
+    assert delivery.result == "withheld" and "text in the box" in delivery.detail  # law: one-door
+    time.sleep(0.3)
+    assert captain.harness.screen(tmux.capture(captain.pane().id)).box == "a human's half-written thou", "untouched"
+    assert captain.record() is None, "nothing was submitted"
+
+
+def test_a_known_notice_is_cleared_and_an_unknown_one_refused(example_ship: Path, tmux: Tmux):
+    ship = ship_with(example_ship, '\n[seats.captain.settings]\ndialog = "daybreak"\nstep_seconds = "0.05"\n'
+                                   '\n[seats.worker-1.settings]\ndialog = "unknown"\n')
+    captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
+    captain.up()
+    wait_for(lambda: Door(captain).screen() and Door(captain).screen().interruption)
+    door = Door(captain)
+    assert str(door.reading()) == "obstructed: daybreak notice, dismissable"
+    delivery = door.deliver(post.typed([order(captain, "after the notice")]))
+    assert delivery.result == "delivered"
+    worker = seatmod.Seat(ship, ship.seat("worker-1"), tmux)
+    worker.up()
+    wait_for(lambda: Door(worker).screen() and Door(worker).screen().unknown)
+    reading = Door(worker).reading()
+    assert str(reading) == "obstructed: unknown dialog: Something else, needs a human"
+    assert Door(worker).deliver("x").result == "withheld" and Door(worker).screen().unknown == "Something else"
+
+
+def test_a_message_mid_turn_is_queued_and_the_speeds_reach_the_program(example_ship: Path, tmux: Tmux):
+    ship = ship_with(example_ship, '\n[seats.captain.settings]\nsteps = "4"\nstep_seconds = "0.7"\n')
+    captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
+    captain.up()
+    door = Door(captain)
+    wait_for(lambda: door.reading().open)
+    assert door.deliver(post.typed([order(captain, "a long one")])).result == "delivered"
+    wait_for(lambda: door.screen().working)
+    assert str(door.reading()) == "open, queues"
+    queued = door.deliver(post.typed([order(captain, "a second, mid-turn")]))
+    assert queued.result == "queued", queued
+    wait_for(lambda: captain.harness.state(captain.record()).turns == 2, seconds=20)
+    wait_for(lambda: door.screen().working or captain.harness.state(captain.record()).turns == 2)
+    # interrupt: the turn stops, then the message goes in
+    assert door.deliver(post.typed([order(captain, "a third, slow\n")])).result == "delivered"
+    wait_for(lambda: door.screen().working)
+    stopped = door.deliver(post.typed([order(captain, "stop and take this")]), speed="interrupt")
+    assert stopped.result in ("delivered", "queued")
+    assert "· interrupted" in tmux.capture(captain.pane().id, history=200)
+    assert door.interrupt().startswith("captain interrupted with Escape in %")
+
+
+def test_a_program_that_does_not_queue_is_obstructed_by_time(example_ship: Path, tmux: Tmux):
+    ship = ship_with(example_ship, '\n[seats.captain.settings]\nqueues = false\nsteps = "4"\nstep_seconds = "0.5"\n')
+    captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
+    captain.up()
+    door = Door(captain)
+    wait_for(lambda: door.reading().open)
+    assert door.deliver(post.typed([order(captain, "first")])).result == "delivered"
+    wait_for(lambda: door.screen().working)
+    assert str(door.reading()) == "obstructed: working, program does not queue, time"
+    assert door.deliver("second").result == "withheld"
+
+
+def test_the_door_never_types_into_a_human_session(example_ship: Path, tmux: Tmux):
+    ship = shipmod.load(example_ship)
+    desk = seatmod.Seat(ship, ship.seat("desk"), tmux)
+    desk.up()
+    door = Door(desk)
+    assert str(door.reading()) == "obstructed: a human's session, its watch delivers"  # law: one-door
+    assert door.deliver("anything").result == "withheld"
+    time.sleep(0.3)
+    assert desk.harness.screen(tmux.capture(desk.pane().id)).box == ""
+
+
+def test_a_scrolled_pane_is_delivered_through(captain: seatmod.Seat, tmux: Tmux):
+    tmux.run("copy-mode", "-t", captain.pane().id)
+    assert tmux.pane(captain.pane().id).in_mode
+    delivery = Door(captain).deliver(post.typed([order(captain, "read while scrolled")]))
+    assert delivery.result == "delivered", delivery
+    assert tmux.pane(captain.pane().id).in_mode, "the reader keeps their place"
