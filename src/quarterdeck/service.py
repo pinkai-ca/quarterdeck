@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import post, standing
-from .door import Door
+from .door import CONFIRM_SECONDS, Door
 from .post import Attempts, Store
 from .seat import Seat, qd_bin, seats
 from .ship import Ship, ShipError
@@ -168,15 +168,24 @@ class Service:
     # -- deliveries ----------------------------------------------------------------------
 
     def reconcile(self) -> None:
-        """Attempts left without a result: the record says delivered, else blind, never resent."""
+        """Attempts left without a result: the record says delivered, else blind, never resent.
+
+        The program is given the door's confirm window from the attempt's time before it is
+        judged, since a message typed a moment before the crash may still be on its way in.
+        """
         for attempt in self.attempts.unfinished():
             message = self.store.get(attempt.message)
             seat = self.seat(attempt.seat)
-            record = seat.record()
-            state = seat.harness.state(record) if record else None
             wanted = " ".join(message.body.split())
-            seen = state and ((state.last_input and wanted in " ".join(state.last_input.split()))
-                              or any(wanted in " ".join(q.split()) for q in state.queued))
+            deadline = attempt.when.timestamp() + CONFIRM_SECONDS
+            while True:
+                record = seat.record()
+                state = seat.harness.state(record) if record else None
+                seen = state and ((state.last_input and wanted in " ".join(state.last_input.split()))
+                                  or any(wanted in " ".join(q.split()) for q in state.queued))
+                if seen or time.time() > deadline:
+                    break
+                time.sleep(0.2)
             result = "delivered" if seen else "blind"
             self.attempts.close(attempt, result, "found in the record on reconciliation" if seen else
                                 "the service died mid-delivery and the record does not show it; qd post resend")  # law: one-door

@@ -13,7 +13,7 @@ import os
 import sys
 from typing import Any
 
-from . import __version__, post, seat as seatmod, service, ship as shipmod, standing, watch
+from . import __version__, drill, post, seat as seatmod, service, ship as shipmod, standing, watch
 from .ship import ShipError
 from .tmux import Tmux, TmuxError
 
@@ -32,7 +32,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"qd: {error}", file=sys.stderr)
         return 2
     emit(args, result)
-    return 0
+    return getattr(args, "exit_code", 0)
 
 
 def emit(args: argparse.Namespace, result: Any) -> None:
@@ -100,6 +100,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("seat", nargs="?", help="default: this seat")
     p.add_argument("--wait", action="store_true", help="block until something new arrives, print it in full, exit")
     verb("service", cmd_service, "run the ship's service in the foreground (qd up starts it detached)")
+    p = verb("drill", cmd_drill, "the all-hands drill: on the example ship's fake harness, or on --ship with real programs")
+    p.add_argument("--keep", action="store_true", help="keep the temporary ship and its tmux server for a look")
     return parser
 
 
@@ -293,3 +295,10 @@ def cmd_inbox(args: argparse.Namespace) -> str | None:
 def cmd_service(args: argparse.Namespace) -> None:
     ship = load_ship(args)
     service.Service(ship, Tmux.default()).run()
+
+
+def cmd_drill(args: argparse.Namespace) -> list[str]:
+    ship = shipmod.load(shipmod.find(args.ship)) if args.ship or os.environ.get("QD_SHIP") else None
+    passed, lines = drill.run(ship, keep=args.keep)
+    args.exit_code = 0 if passed else 1
+    return lines

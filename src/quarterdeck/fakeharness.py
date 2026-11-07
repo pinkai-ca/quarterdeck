@@ -10,7 +10,8 @@ agent would.
     qd-fakeharness --as claude|codex [--model M] [--effort E] [--brief FILE] [--resume ID] [--first TEXT]
 
 Its home is ``QD_FAKE_HOME``; its own keys arrive as ``QD_FAKE_<KEY>``: QUEUES (1 or 0),
-DIALOG (daybreak, unknown), STEPS, STEP_SECONDS.
+DIALOG (daybreak, unknown), STEPS, STEP_SECONDS, and ACCEPT_SECONDS, the time it takes to
+write a submitted message into its record, as a real program may.
 """
 
 from __future__ import annotations
@@ -48,6 +49,7 @@ class Program:
         self.queues = os.environ.get("QD_FAKE_QUEUES", "1") != "0"
         self.steps = int(os.environ.get("QD_FAKE_STEPS", "2"))
         self.step_seconds = float(os.environ.get("QD_FAKE_STEP_SECONDS", "0.3"))
+        self.accept_seconds = float(os.environ.get("QD_FAKE_ACCEPT_SECONDS", "0"))
         self.dialog = DIALOGS.get(os.environ.get("QD_FAKE_DIALOG", ""))
         self.model, self.effort = args.model, args.effort
         shape = ClaudeShape if args.shape == "claude" else CodexShape
@@ -234,10 +236,9 @@ class Program:
         self.working, self.interrupted = True, False
         first, extra = text.splitlines()[0], text.count("\n")
         self.say(f"> {first}" + (f"  … (+{extra} lines)" if extra else ""))
+        self.wait(self.accept_seconds)
         self.record.begin(text, self.model, self.effort)
-        this = re.search(r"^qd > (?:order|question) from \S+ · (\S+)", text, re.M)
-        commands = [line[2:].replace("{this}", this.group(1) if this else "{this}")
-                    for line in text.splitlines() if line.startswith("$ ")]
+        commands = self.commands(text)
         for command in commands or [None] * self.steps:
             if self.interrupted:
                 break
@@ -250,6 +251,18 @@ class Program:
             self.record.end(reply)
         self.working = False
         self.draw()
+
+    @staticmethod
+    def commands(text: str) -> list[str]:
+        """The ``$ `` lines, each with ``{this}`` resolved to the message it sits under, as an agent reads them."""
+        found, this = [], "{this}"
+        for line in text.splitlines():
+            header = re.match(r"^qd > (?:order|question) from \S+ · (\S+)", line)
+            if header:
+                this = header.group(1)
+            elif line.startswith("$ "):
+                found.append(line[2:].replace("{this}", this))
+        return found
 
     def step(self, command: str | None) -> None:
         """One tool call: opened in the record, run or waited through, then closed with its result."""
