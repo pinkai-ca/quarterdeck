@@ -6,6 +6,8 @@ import json
 import sqlite3
 from types import SimpleNamespace
 
+import pytest
+
 from quarterdeck import quota, service, watch
 from quarterdeck.door import Door
 from quarterdeck.fakerecord import AntigravityShape, _pb_bytes, _pb_str, _pb_ts, _pb_uint
@@ -91,29 +93,45 @@ def test_record_wall_survives_idle_later_input_restart_and_blocks_delivery(tmp_p
         assert 'google-a usage unknown' in line
 
 
-def test_screen_fallback_is_stable_then_yields_to_matching_record_time(tmp_path, monkeypatch):
+@pytest.mark.parametrize('expired', [True, False])
+def test_screen_fallback_is_stable_then_yields_to_matching_record_time(tmp_path, monkeypatch, expired):
     seat,rec,shown,_=synthetic_seat(tmp_path,monkeypatch)
     shown['text']=TEXT+'\n'+IDLE
-    assert not Door(seat).reading().open
+    reading = Door(seat).reading()
+    assert not reading.open and 'estimated from first screen observation' in reading.reason
+    assert 'estimated from first screen observation' in watch.line(seat.ship,seat.tmux)
     book=Ledger(seat.ship.runtime/'ledger.sqlite')
     first=book.db.execute('SELECT at,resets_at,observed_at FROM wall_events').fetchone()
+    assert 'estimated from first screen observation' in book.quota.walls()[0]
     book.close()
     assert not Door(seat).reading().open
     book=Ledger(seat.ship.runtime/'ledger.sqlite')
     assert book.db.execute('SELECT at,resets_at,observed_at FROM wall_events').fetchone() == first
     book.close()
-    # The canonical record proves the banner was old; do not re-anchor it at this poll.
-    append_error(rec,TEXT,datetime.now(timezone.utc)-timedelta(hours=5))
-    assert Door(seat).reading().open
+    # Canonical time replaces the estimate, including when it proves expiration.
+    at = datetime.now(timezone.utc) - (timedelta(hours=5) if expired else timedelta(minutes=5))
+    append_error(rec,TEXT,at)
+    reading = Door(seat).reading()
+    assert reading.open == expired
+    assert 'estimated' not in reading.reason
+    assert 'estimated' not in watch.line(seat.ship,seat.tmux)
     book=Ledger(seat.ship.runtime/'ledger.sqlite')
-    assert not book.quota.active() and not book.walls()
+    if expired:
+        assert not book.quota.active() and not book.walls()
+    else:
+        expected = quota.reset_text((at + timedelta(hours=2,minutes=3,seconds=4)).isoformat())
+        assert expected in reading.reason and expected in book.quota.walls()[0]
+        assert 'estimated' not in book.quota.walls()[0]
     assert book.db.execute("SELECT superseded FROM wall_events WHERE source LIKE 'screen:%'").fetchone() == (1,)
+    # The original fallback times are retained, not rewritten while changing presentation.
+    assert book.db.execute("SELECT at,resets_at,observed_at FROM wall_events WHERE source LIKE 'screen:%'").fetchone() == first
     book.close()
-    assert Door(seat).reading().open, 'an expired historical banner must not resurrect'
+    assert Door(seat).reading().open == expired, 'an expired historical banner must not resurrect'
 
 
 def test_unknown_time_and_reset_stay_unknown_and_wrong_pool_is_never_charged(tmp_path, monkeypatch):
     seat,rec,shown,_=synthetic_seat(tmp_path,monkeypatch)
+    assert quota.reset_text(None, from_screen=True) == 'reset unknown'
     append_error(rec,'Individual quota reached.',None)
     assert not Door(seat).reading().open
     book=Ledger(seat.ship.runtime/'ledger.sqlite')

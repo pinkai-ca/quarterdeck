@@ -16,8 +16,11 @@ def stamp(at: datetime | None) -> str | None:
     return at.astimezone(timezone.utc).isoformat() if at is not None else None
 
 
-def reset_text(at: str | None) -> str:
-    return f"reset {datetime.fromisoformat(at).astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}" if at else "reset unknown"
+def reset_text(at: str | None, from_screen: bool = False) -> str:
+    if not at:
+        return "reset unknown"
+    label = " (estimated from first screen observation)" if from_screen else ""
+    return f"reset {datetime.fromisoformat(at).astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}{label}"
 
 
 class Quotas:
@@ -53,12 +56,12 @@ class Quotas:
 
     def active(self, now: datetime | None = None) -> list[tuple]:
         now = now or datetime.now(timezone.utc)
-        rows = self.db.execute("SELECT seat,pool,reason,resets_at,observed_at FROM wall_events WHERE superseded=0").fetchall()
+        rows = self.db.execute("SELECT seat,pool,reason,resets_at,observed_at,source FROM wall_events WHERE superseded=0").fetchall()
         return [r for r in rows if r[3] is None or datetime.fromisoformat(r[3]) > now]
 
     def walls(self, now: datetime | None = None) -> list[str]:
-        return sorted({f"{pool if pool != UNKNOWN else seat + ' (pool unknown)'} {reason} · {reset_text(reset)}"
-                       for seat, pool, reason, reset, _ in self.active(now)})
+        return sorted({f"{pool if pool != UNKNOWN else seat + ' (pool unknown)'} {reason} · {reset_text(reset, source.startswith('screen:'))}"
+                       for seat, pool, reason, reset, _, source in self.active(now)})
 
     def recognized(self, seat: str, event: Wall) -> bool:
         """Persisted evidence also recognizes an old banner when its record is unreadable."""
@@ -67,16 +70,16 @@ class Quotas:
                                (seat, event.signature, event.error_id)).fetchone() is not None
 
     def blocked(self, seat: str, pool: str) -> str | None:
-        for owner, charged, reason, reset, _ in self.active():
+        for owner, charged, reason, reset, _, source in self.active():
             if charged == pool or (charged == UNKNOWN and owner == seat):
-                return f"{charged if charged != UNKNOWN else 'pool unknown'} {reason} · {reset_text(reset)}"
+                return f"{charged if charged != UNKNOWN else 'pool unknown'} {reason} · {reset_text(reset, source.startswith('screen:'))}"
         return None
 
     def due(self, pool: str, now: datetime) -> bool:
         last = self.db.execute("SELECT at FROM usage_reads WHERE pool=?", (pool,)).fetchone()
         if last is None or (now - datetime.fromisoformat(last[0])).total_seconds() >= GOOGLE_INTERVAL:
             return True
-        return any(p == pool and observed > last[0] for _, p, _, _, observed in self.active(now))
+        return any(p == pool and observed > last[0] for _, p, _, _, observed, _ in self.active(now))
 
     def usage_read(self, pool: str, at: datetime, error: str | None) -> None:
         self.db.execute("INSERT OR REPLACE INTO usage_reads VALUES (?,?,?)", (pool, stamp(at), error))

@@ -24,8 +24,10 @@ is displayed as an unknown pool and holds that seat, without charging another po
 A known wall follows its original pool across a resume or pool switch.
 
 Screen-only evidence uses the first observation of that launch/error; repeated polls
-cannot move its reset. A matching canonical record supersedes that fallback, including
-when it proves the displayed banner has already expired. Persisted matching evidence
+cannot move its reset. Door and ship-wide wall text label this reset as estimated from
+first screen observation. A superseding canonical record shows its event-anchored reset
+without the estimate label; an unknown reset remains unknown. A matching canonical
+record supersedes that fallback, including when it proves the displayed banner has already expired. Persisted matching evidence
 also recognizes that banner after a restart while the record is unreadable. Disappearing banners, record
 read failures, and idle screens leave persisted events intact. Known expired events do
 not block or trigger another refresh. A reset with no reliable timestamp remains
