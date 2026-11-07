@@ -1,4 +1,5 @@
-"""Antigravity quota facts: owned record errors, banners, and the qualified /usage command."""
+"""Antigravity quota facts: the quota errors in an owned record, the banner on the screen, and the program's own
+``/usage`` command, run as every launch runs the program: found on the PATH, proven by ``qd check``, never pinned."""
 
 from __future__ import annotations
 
@@ -6,19 +7,17 @@ import hashlib
 import json
 import math
 import os
-from pathlib import Path
-from dataclasses import replace
 import re
+import shutil
 import subprocess
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 from .limits import Usage, Wall, Window
 from .antigravity_wire import _bytes, _proto, _str
 
-# Qualified 1.5.2 command path skips session.start; changed bytes require a new side-effect audit.
-QUALIFIED_SHA256 = "da1751e7658469fa80bf36eda2c60ee61216d8e42b735a184382ba31d1f6b88e"
-EXECUTABLE = Path.home() / ".local/bin/agy"
-ARGV = ("-p", "/usage", "--output-format", "json")
+PROGRAM = "agy"
+ARGV = ("-p", "/usage", "--output-format", "json")  # on 1.5.2 this answers without opening a conversation
 BANNER = re.compile(r"Individual quota reached", re.I)
 RESET = re.compile(r"Resets in\s+(?:(\d+)d)?\s*(?:(\d+)h)?\s*(?:(\d+)m)?\s*(?:(\d+)s)?(?=[.\s]|$)", re.I)
 ERROR_ID = re.compile(r"Error ID\s*:?\s*([\w-]+)", re.I)
@@ -123,23 +122,21 @@ def parse_usage(doc, at: datetime) -> Usage:
 
 
 def fetch_usage() -> Usage:
-    """Hash and execute the same opened inode. Never invoke changed/unqualified bytes."""
+    """The program's own usage command, run with the program the PATH gives, as every launch runs it."""
     at = datetime.now(timezone.utc)
+    program = shutil.which(PROGRAM)
+    if program is None:
+        return unknown(f"{PROGRAM} is not on the PATH qd runs with", at)
     try:
-        with EXECUTABLE.open("rb") as binary:
-            before = os.fstat(binary.fileno())
-            digest = hashlib.file_digest(binary, "sha256").hexdigest()
-            after = os.fstat(binary.fileno())
-            identity = lambda stat: (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
-            if digest != QUALIFIED_SHA256 or identity(before) != identity(after):
-                return unknown("Antigravity executable is unqualified; repeat the /usage write/join audit before invocation", at)
-            result = subprocess.run([str(EXECUTABLE), *ARGV], executable=f"/proc/self/fd/{binary.fileno()}",
-                                    pass_fds=(binary.fileno(),), env=dict(os.environ, AGY_CLI_DISABLE_AUTO_UPDATE="true"),
-                                    capture_output=True, timeout=20)
-        if result.returncode:
-            return unknown(f"usage command failed (exit {result.returncode})", at)
-        return parse_usage(json.loads(result.stdout), at)
+        result = subprocess.run([program, *ARGV], env=dict(os.environ, AGY_CLI_DISABLE_AUTO_UPDATE="true"),
+                                capture_output=True, timeout=20)
     except subprocess.TimeoutExpired:
         return unknown("usage command timed out", at)
-    except (OSError, ValueError) as error:
+    except OSError as error:
         return unknown(f"usage unavailable: {type(error).__name__}", at)
+    if result.returncode:
+        return unknown(f"usage command failed (exit {result.returncode})", at)
+    try:
+        return parse_usage(json.loads(result.stdout), at)
+    except ValueError:
+        return unknown("usage command printed no JSON", at)

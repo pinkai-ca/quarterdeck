@@ -2,9 +2,7 @@
 
 import copy
 from datetime import datetime, timedelta, timezone
-import hashlib
 import json
-import os
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
@@ -70,41 +68,28 @@ def test_malformed_missing_and_duplicate_usage_data():
         assert next(w for w in agq.parse_usage(doc,AT).windows if w.blocks).resets_at is None
 
 
-def test_command_identity_checked_before_invocation_and_same_inode_executed(tmp_path, monkeypatch):
-    executable = tmp_path/'synthetic-agy'
-    executable.write_bytes(b'qualified synthetic binary')
-    monkeypatch.setattr(agq,'EXECUTABLE',executable)
+def test_the_usage_command_runs_the_program_the_path_gives_with_exact_arguments(monkeypatch):
     calls = []
-    monkeypatch.setattr(agq.subprocess,'run',lambda *a,**k: calls.append((a,k)))
+    monkeypatch.setattr(agq.shutil, 'which', lambda name: None)
+    monkeypatch.setattr(agq.subprocess, 'run', lambda *a, **k: calls.append((a, k)))
     result = agq.fetch_usage()
-    assert not calls and 'unqualified' in result.error
-    monkeypatch.setattr(agq,'QUALIFIED_SHA256',hashlib.sha256(executable.read_bytes()).hexdigest())
+    assert not calls and 'agy is not on the PATH' in result.error, "no program, no call, and the reading says why"
+    monkeypatch.setattr(agq.shutil, 'which', lambda name: '/synthetic/bin/agy')
 
     def run(argv, **options):
-        calls.append((argv,options))
-        assert argv == [str(executable),'-p','/usage','--output-format','json']
+        calls.append(argv)
+        assert argv == ['/synthetic/bin/agy', '-p', '/usage', '--output-format', 'json']
         assert options['env']['AGY_CLI_DISABLE_AUTO_UPDATE'] == 'true'
         assert options['timeout'] == 20 and options['capture_output']
-        fd = options['pass_fds'][0]
-        assert options['executable'] == f'/proc/self/fd/{fd}'
-        # Replacing the pathname cannot redirect this already qualified invocation.
-        executable.rename(tmp_path/'old-image')
-        executable.write_bytes(b'unqualified replacement')
-        os.lseek(fd,0,0)
-        assert os.read(fd,100) == b'qualified synthetic binary'
-        return SimpleNamespace(returncode=0,stdout=json.dumps(document()).encode())
+        return SimpleNamespace(returncode=0, stdout=json.dumps(document()).encode())
 
-    monkeypatch.setattr(agq.subprocess,'run',run)
+    monkeypatch.setattr(agq.subprocess, 'run', run)
     assert agq.fetch_usage().error is None and len(calls) == 1
-    assert 'unqualified' in agq.fetch_usage().error and len(calls) == 1
 
 
 @pytest.mark.parametrize('case',['exit','timeout','bad-json','conversation','turn','tokens'])
 def test_command_failure_and_unexpected_work_produce_visible_unknown(tmp_path, monkeypatch, case):
-    binary=tmp_path/'synthetic-agy'
-    binary.write_bytes(b'synthetic')
-    monkeypatch.setattr(agq,'EXECUTABLE',binary)
-    monkeypatch.setattr(agq,'QUALIFIED_SHA256',hashlib.sha256(b'synthetic').hexdigest())
+    monkeypatch.setattr(agq.shutil, 'which', lambda name: str(tmp_path/'synthetic-agy'))
     doc=document()
     if case=='conversation': doc['conversation_id']='synthetic-unexpected-record'
     if case=='turn': doc['num_turns']=1
