@@ -92,7 +92,13 @@ times. A tool duration requires its started/created time and completed_at. Missi
 times and interrupted tool durations remain unknown. Last activity remains separate.
 
 The ledger inserts by persistent key, refreshes late metadata and child tool rows,
-and preserves established seat/pool provenance and machine measurements on rereads.
+and preserves established per-turn seat/pool provenance and machine measurements on
+rereads. Proven joins journal each launch time and pool in the seat runtime, retained
+across down, fresh and resumed launches. New turns use the launch covering their start
+time; a conversation resumed on a new pool may therefore contain turns charged to both.
+Absent turn times, a turn spanning pools, or missing/ambiguous launch history leaves
+the pool unattributed, with an explicit ledger note; current seat preferences never fill that gap. Incomplete
+records affect every known pool for that record, even a launch with no decoded turn yet.
 Unknown classes propagate through rollups and daily totals. Incomplete or unreadable
 records are persisted with their known seat/pool; unseen orders remain unattributed.
 Warnings also appear in ledger tool/pool output. Missing owned files remain visible.

@@ -17,6 +17,7 @@ from pathlib import Path
 
 from .harness.base import Turn, Usage
 from .post import Store
+from .provenance import Provenance, UNKNOWN
 from .ship import Ship, ShipError
 
 UNATTRIBUTED = "-"
@@ -105,6 +106,7 @@ class Ledger:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path)
         self.db.executescript(SCHEMA)
+        self.provenance = Provenance(self.db)
 
     def close(self) -> None:
         self.db.close()
@@ -115,14 +117,8 @@ class Ledger:
         """How many turns of this record are already in the Ledger."""
         return self.db.execute("SELECT COUNT(*) FROM turns WHERE record = ?", (str(record),)).fetchone()[0]
 
-    def owner(self, record: Path, seat: str, pool: str) -> tuple[str, str]:
-        known = self.db.execute("SELECT seat, pool FROM turns WHERE record = ? LIMIT 1", (str(record),)).fetchone()
-        known = known or self.db.execute("SELECT seat, pool FROM records WHERE record = ?", (str(record),)).fetchone()
-        return known or (seat, pool)
-
     def mark_record(self, record: Path, seat: str, pool: str, error: str | None) -> None:
         """Record or clear an unreadable or incomplete record so totals are never presented as complete."""
-        seat, pool = self.owner(record, seat, pool)
         if error is None:
             self.db.execute("DELETE FROM records WHERE record = ?", (str(record),))
         else:
@@ -130,20 +126,25 @@ class Ledger:
         self.db.commit()
 
     def incomplete_records(self) -> list[tuple[str, str, str, str]]:
-        return self.db.execute("SELECT record, seat, pool, error FROM records ORDER BY record").fetchall()
+        errors = self.db.execute("SELECT record, seat, pool, error FROM records ORDER BY record").fetchall()
+        return [(r, s, p, error) for r, seat, pool, error in errors
+                for s, p in self.provenance.owners(r, seat, pool)]
 
     def ingest(self, seat: str, pool: str, record: Path, turns: list[Turn], store: Store,
                machine: dict[int, Machine] | None = None) -> int:
         """Write the turns of a record not yet written; the count written. Reading twice counts once."""
-        seat, pool = self.owner(record, seat, pool)
         known = {r[1]: r for r in self.db.execute("SELECT * FROM turns WHERE record = ?", (str(record),))}
         changed = 0
         for turn in turns:
             previous = known.get(turn.index)
+            owner, charged_pool = (previous[2:4] if previous and previous[3] != UNKNOWN else
+                                   self.provenance.resolve(record, turn.started, turn.ended, seat, pool))
+            if previous:
+                owner = previous[2]  # an unknown pool does not undo an established seat identity
             used = Machine(*previous[17:]) if previous else (machine or {}).get(turn.index, Machine())
             started = turn.started.astimezone().isoformat() if turn.started else None
             ended = turn.ended.astimezone().isoformat() if turn.ended else None
-            row = (str(record), turn.index, seat, pool, attribution(store, seat, turn), started,
+            row = (str(record), turn.index, owner, charged_pool, attribution(store, owner, turn), started,
                  ended, turn.seconds, turn.model, turn.tokens.read_cached, turn.tokens.read_uncached,
                  turn.tokens.cache_written, turn.tokens.written, turn.cost, len(turn.tools),
                  sum(t.failed for t in turn.tools) if all(t.failed is not None for t in turn.tools) else None, turn.subagent_turns, used.cpu_seconds, used.peak_rss,
@@ -186,7 +187,7 @@ class Ledger:
 
     def today(self, seat: str, day: str) -> int | None:
         """Tokens of every class a seat used in turns that ended on ``day``; None when any token class on that day is unknown."""
-        if self.db.execute("SELECT 1 FROM records WHERE seat = ?", (seat,)).fetchone():
+        if any(owner == seat for _, owner, _, _ in self.incomplete_records()):
             return None
         total_expr = "read_cached + read_uncached + cache_written + written"
         count_all, count_known, total = self.db.execute(
@@ -266,7 +267,10 @@ def attribution(store: Store, seat: str, turn: Turn) -> str:
 
 
 def incomplete_notes(ledger: Ledger) -> list[str]:
-    return [f"incomplete record: {Path(r).name} ({s}, {p}) · {e}" for r, s, p, e in ledger.incomplete_records()]
+    unknown = ledger.db.execute("SELECT COUNT(*) FROM turns WHERE pool = ?", (UNKNOWN,)).fetchone()[0]
+    notes = ([f"{unknown} turns with unknown pool attribution: missing/ambiguous launch history or turn times, or a turn crossing pools"]
+             if unknown else [])
+    return notes + [f"incomplete record: {Path(r).name} ({s}, {p}) · {e}" for r, s, p, e in ledger.incomplete_records()]
 
 
 def table(ledger: Ledger, by: str) -> list[str]:

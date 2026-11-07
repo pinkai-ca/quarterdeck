@@ -19,6 +19,7 @@ from pathlib import Path
 
 from . import harness as harnesses, post, ship as shipmod, standing
 from .harness.base import Harness, Join
+from .provenance import remember_launch
 from .ship import Pool, SeatSpec, Ship, ShipError
 from .tmux import Pane, Tmux
 
@@ -127,6 +128,7 @@ class Seat:
         return found
 
     def _note_owned(self, record: Path) -> None:
+        remember_launch(self.folder, record, self.launched())
         owned = self.home / "conversations.owned"
         self.home.mkdir(parents=True, exist_ok=True)
         existing = owned.read_text().splitlines() if owned.is_file() else []
@@ -193,6 +195,8 @@ class Seat:
         pane = self._open_window(list(launch.argv), launch.env, path)
         launched = Launched(pane.id, pane.pid, at, pool.name, resume_id, list(launch.argv), self.harness.version())
         (self.folder / "launch.json").write_text(json.dumps(asdict(launched), indent=2) + "\n")
+        if resume_id:
+            self.record()  # retain the resumed record's new pool boundary immediately
         self._survives(pane.id, launch.argv[0])
         attempts = post.Attempts(self.ship.runtime)
         for message in carried:
@@ -276,6 +280,8 @@ class Seat:
 
     def down(self) -> str:
         launched = self.launched()
+        if launched is not None:
+            self.record()  # preserve the last proven join before removing its launch
         pane = self.pane()
         (self.folder / "launch.json").unlink(missing_ok=True)
         if pane is None:

@@ -22,6 +22,7 @@ from . import credential, machine, post, ship as shipmod, standing
 from .door import CONFIRM_SECONDS, Door
 from .harness.base import record_fingerprint
 from .ledger import Ledger
+from .provenance import UNKNOWN
 from .post import Attempts, Store
 from .seat import Seat, seats
 from .servicectl import (  # noqa: F401  (the process control, reachable as service.* too)
@@ -308,14 +309,15 @@ class Service:
             pane, launched = seat.pane(), seat.launched()
             live = pane is not None and not pane.dead
             current = seat.record() if launched else None
+            for changed in self.ledger.provenance.sync(seat, current, launched):
+                self.read_marks.pop(changed, None)
             meter = self.meters.get(seat.name)
             if live:
                 if meter is None or meter.root != pane.pid:
                     meter = self.meters[seat.name] = machine.Meter(pane.pid)  # a new process starts a new meter
                 meter.sample(table)
             for record in seat.harness.records(seat.home):  # law: every-turn-accounted
-                pool = launched.pool if (record == current and launched) else seat.pool.name
-                _, pool = self.ledger.owner(record, seat.name, pool)
+                pool = launched.pool if (record == current and launched) else UNKNOWN
                 try:
                     stamp = record_fingerprint(record)
                     if self.read_marks.get(record) == stamp:
@@ -330,7 +332,7 @@ class Service:
                 self.ledger.mark_record(record, seat.name, pool, incomplete)
                 if turns:
                     figures = {turns[-1].index: meter.result()} if live and record == current and meter and state.turn_open is False else {}
-                    written = self.ledger.ingest(seat.name, pool, record, turns, self.store, figures)
+                    written = self.ledger.ingest(seat.name, UNKNOWN, record, turns, self.store, figures)
                     if written:
                         if live and record == current:
                             self.meters[seat.name] = machine.Meter(pane.pid)

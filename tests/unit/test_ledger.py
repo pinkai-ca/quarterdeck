@@ -201,6 +201,7 @@ def test_late_metadata_refreshes_tools_and_times_without_moving_pool_or_machine(
     stamp = datetime.now(timezone.utc)
     initial = Turn(8, stamp, None, 'question', 'answer', None, Tokens.unknown(),
                    (ToolCall('run_command',None,False),))
+    book.provenance.remember(record, 'worker', 'pool-a', stamp - timedelta(seconds=10))
     sample = Machine(3.5,4096,2,800)
     assert book.ingest('worker','pool-a',record,[initial],store,{8:sample}) == 1
     duration = replace(initial,tools=(ToolCall('run_command',1.5,False),))
@@ -214,11 +215,12 @@ def test_late_metadata_refreshes_tools_and_times_without_moving_pool_or_machine(
     assert book.ingest('worker','pool-b',record,[final],store) == 0
     row = book.db.execute('SELECT pool,seconds,read_uncached,cpu_seconds,peak_rss,max_processes,write_bytes FROM turns').fetchone()
     assert row == ('pool-a',4,2,3.5,4096,2,800)
+    book.provenance.remember(record, 'worker', 'pool-b', stamp + timedelta(seconds=10))
     book.mark_record(record,'worker','pool-b','temporary failure')
-    assert book.incomplete_records()[0][2] == 'pool-a'
+    assert {r[2] for r in book.incomplete_records()} == {'pool-a', 'pool-b'}
     book.close()
     book = Ledger(tmp_path / 'ledger.sqlite')
-    # A delayed earlier turn inherits the established record owner after service restart.
+    # A delayed earlier turn uses the historical launch after service restart.
     earlier = replace(final,index=0)
     book.ingest('worker','pool-b',record,[earlier,final],store)
     assert book.db.execute('SELECT DISTINCT pool FROM turns').fetchall() == [('pool-a',)]
