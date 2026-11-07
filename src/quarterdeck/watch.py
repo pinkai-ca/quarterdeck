@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from . import credential, ledger, post, service
+from . import credential, ledger, post, record_owner, service
 from .door import Door, Reading
 from .harness.base import same_name
 from .seat import Seat, seats
@@ -55,7 +55,7 @@ def activity(seat: Seat, now: datetime | None = None) -> Activity:
         return Activity("working", "by the screen") if screen and screen.working else Activity("idle", "by the screen")  # law: record-first
     join = seat.join()
     if join.record is None:
-        if join.reason and join.reason.split(":")[0] in ("record missing", "ambiguous"):
+        if join.reason and join.reason.split(":")[0] in ("record missing", "ambiguous", "record reader unknown", "record reader changed", "record unreadable"):
             return Activity("unknown", join.reason)  # what the Watch cannot see, it says, never a default
         return Activity("idle", join.reason or "")  # a seat that has never moved is idle, not stalled
     try:
@@ -134,15 +134,17 @@ def tokens_today(seat: Seat) -> int | None:
     if not seat.harness.record_confirms:
         return counted or None
     join = seat.join()
-    if join.record is None and join.reason and join.reason.split(":")[0] in ("record missing", "ambiguous"):
+    if join.record is None and join.reason and join.reason.split(":")[0] in ("record missing", "ambiguous", "record reader unknown", "record reader changed", "record unreadable"):
         return None
-    owned = list(dict.fromkeys([*seat.harness.records(seat.home), *([join.record] if join.record else [])]))
+    if join.record is None and seat.launched() is not None:
+        return None  # the new program has not established a readable record yet
+    owned = record_owner.records(seat)
     if not owned:
         return counted or 0
     uncounted = 0
-    for record in owned:
+    for item in owned:
         try:
-            state, turns = seat.harness.read(record)
+            state, turns = item.read()
         except OSError:
             return None
         if state.turns is None or state.turn_open is None:
@@ -210,6 +212,8 @@ def full(seat: Seat) -> list[str]:
         else:
             turns_shown = state.turns if state.turns is not None else "unknown"
             lines.append(f"  record {record} · {turns_shown} turns · last input: {(state.last_input or '')[:60]!r}")
+    elif seat.join().reason:
+        lines.append(f"  record absent: {seat.join().reason}")
     if note := getattr(seat.harness, "record_limits", None):
         lines.append(f"  record limits: {note}")
     screen = Door(seat).screen()

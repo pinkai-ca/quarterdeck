@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..ship import Pool, SeatSpec
-from .base import (Box, Control, Credential, Harness, Interruption, Keys, Launch, Screen, State, Tokens,
+from .base import (Box, Control, Credential, Harness, Interruption, Keys, Launch, RecordError, Screen, State, Tokens,
                    ToolCall, Turn, Usage, Window, credential, entries, key_environment, program_version, same_name, when)
 
 ENDS_TURN = {"end_turn", "max_tokens", "stop_sequence"}
@@ -82,8 +82,14 @@ class _Reader:
         self.model = self.effort = self.last_input = self.last_input_at = None
         self.sidechain_ends: set[str | None] = set()
         self.subagent_turns = 0
-        for entry in entries(record):
-            self.take(entry)
+        rows = entries(record)
+        if not any(row.get('type') in ['assistant', 'queue-operation', 'system', 'user'] for row in rows):
+            raise RecordError('record has no recognizable claude entries')
+        try:
+            for entry in rows:
+                self.take(entry)
+        except (TypeError, ValueError, AttributeError, KeyError) as error:
+            raise RecordError('malformed claude record fields') from error
 
     def take(self, entry: dict) -> None:
         kind = entry.get("type")

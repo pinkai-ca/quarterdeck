@@ -14,7 +14,9 @@ def remember_launch(folder: Path, record: Path, launched) -> None:
     """Journal a proven join before its launch file can be replaced or removed."""
     if launched is None:
         return
-    event = {"record": str(record), "at": launched.at, "pool": launched.pool}
+    from .record_owner import launch_reader
+
+    event = {"record": str(record), "at": launched.at, "pool": launched.pool, "harness": launch_reader(launched)}
     with (folder / "record-launches.jsonl").open("a+") as stream:
         fcntl.flock(stream, fcntl.LOCK_EX)
         stream.seek(0)

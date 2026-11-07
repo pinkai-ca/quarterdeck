@@ -1,0 +1,227 @@
+"""Synthetic retained-record ownership across a down seat's program change."""
+
+from dataclasses import asdict, replace
+from datetime import datetime, timedelta, timezone
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from quarterdeck import record_owner, service, watch
+from quarterdeck.fakerecord import AntigravityShape, CodexShape
+from quarterdeck.harness.antigravity import AntigravityHarness
+from quarterdeck.harness.base import Launch, RecordError
+from quarterdeck.harness.codex import CodexHarness
+from quarterdeck.ledger import table
+from quarterdeck.post import Store
+from quarterdeck.seat import Launched, Seat
+from quarterdeck.service import Service
+from quarterdeck.ship import Pool, SeatSpec, Session, Ship
+from quarterdeck.tmux import Pane
+from .test_quota_walls import append_error
+
+
+def setup_seat(tmp_path, monkeypatch):
+    pools = {'google': Pool('google','antigravity'), 'codex': Pool('codex','codex')}
+    specs = {'worker': SeatSpec('worker','crew','worker','antigravity',('google',),cwd=tmp_path),
+             'neighbor': SeatSpec('neighbor','crew','worker','codex',('codex',),up=False)}
+    ship = Ship(tmp_path,'example','admiral',tmp_path,pools,{'crew':Session('crew','crew')},specs)
+    active = {'pane':None}
+    tmux = SimpleNamespace(pane=lambda ident:active['pane'],kill_window=lambda ident:active.update(pane=None))
+    seat = Seat(ship,specs['worker'],tmux)
+    seat.home.mkdir(parents=True)
+    old = AntigravityShape(seat.home,tmp_path,'synthetic-old','synthetic-model')
+    old.begin('synthetic old input','synthetic-model','high')
+    old.end('synthetic old reply')
+    launch = Launched('%1',12345,(datetime.now(timezone.utc)-timedelta(minutes=5)).isoformat(),
+                      'google',None,['agy'],'synthetic',harness='antigravity')
+    (seat.folder/'launch.json').write_text(json.dumps(asdict(launch)))
+    (seat.folder/'record').write_text(str(old.path))
+    monkeypatch.setattr(service.machine,'processes',lambda:{})
+    return seat,old,active
+
+
+def switch(seat):
+    seat.down()  # archives the reader and actual launch before removing launch.json
+    spec = replace(seat.spec,harness='codex',pools=('codex',))
+    seat.ship.seats[seat.name] = spec
+    return Seat(seat.ship,spec,seat.tmux)
+
+
+def test_down_switch_fresh_join_and_history_use_original_reader_pool_and_quota(tmp_path, monkeypatch):
+    seat,old,active = setup_seat(tmp_path,monkeypatch)
+    at = datetime.now(timezone.utc)-timedelta(minutes=1)
+    append_error(old,'Individual quota reached. Resets in 2h.\nError ID: synthetic-old-error',at)
+    old_turns = seat.harness.turns(old.path)
+    seat = switch(seat)
+    snapshot = old.path.read_bytes()
+    codex_read = CodexHarness.read
+    seen = []
+    def only_codex(path):
+        assert path != old.path, 'the selected text reader must never receive old SQLite'
+        seen.append(path)
+        return codex_read(path)
+    monkeypatch.setattr(CodexHarness,'read',staticmethod(only_codex))
+    assert seat.record() is None and 'reader changed' in seat.join().reason
+    assert watch.tokens_today(seat) is None
+    shown = '\n'.join(watch.table(seat.ship,seat.tmux))
+    assert 'worker' in shown and 'neighbor' in shown and 'unknown' in shown
+    assert 'record absent: record reader changed' in '\n'.join(watch.full(seat))
+    svc = Service(seat.ship,seat.tmux)
+    svc.account()
+    original = svc.ledger.db.execute('SELECT record,pool,read_uncached FROM turns').fetchall()
+    assert original == [(str(old.path),'google',old_turns[0].tokens.read_uncached)]
+    assert svc.ledger.walled('google') and not svc.ledger.walled('codex')
+    assert not seen and old.path.read_bytes() == snapshot
+    journal = [json.loads(line) for line in (seat.folder/'record-launches.jsonl').read_text().splitlines()]
+    assert journal[0]['harness'] == 'antigravity' and journal[0]['pool'] == 'google'
+
+    # Real fresh lifecycle; only opening the synthetic process and its version are substituted.
+    created = []
+    def open_window(*args):
+        rec = CodexShape(seat.home,tmp_path,'synthetic-new','synthetic-model')
+        rec.begin('new synthetic input','synthetic-model','low')
+        rec.end('new synthetic reply')
+        created.append(rec)
+        active['pane'] = Pane('%2','crew','worker',12346,80,24,False,False,None)
+        return active['pane']
+    monkeypatch.setattr(seat,'_open_window',open_window)
+    monkeypatch.setattr(seat,'_survives',lambda *args:None)
+    monkeypatch.setattr(CodexHarness,'version',lambda self:'synthetic')
+    monkeypatch.setattr(CodexHarness,'launch',lambda *args:Launch(('sh','-c','exit 0'),{}))
+    assert 'fresh' in seat.fresh()
+    assert seat.launched().harness == 'codex' and seat.record() == created[0].path
+    svc.account()
+    expected = [(str(old.path),'google'),(str(created[0].path),'codex')]
+    assert svc.ledger.db.execute('SELECT record,pool FROM turns ORDER BY started').fetchall() == expected
+    svc.ledger.close()
+    svc = Service(seat.ship,seat.tmux)
+    svc.account()
+    svc.account()
+    assert svc.ledger.db.execute('SELECT record,pool FROM turns ORDER BY started').fetchall() == expected
+    assert svc.ledger.walled('google') and not svc.ledger.walled('codex')
+    assert old.path.read_bytes() == snapshot
+    # Missing historical data is still represented, never filtered out of ownership.
+    old.path.unlink()
+    svc.account()
+    assert any(row[0] == str(old.path) and row[2] == 'google' for row in svc.ledger.incomplete_records())
+    assert svc.ledger.db.execute('SELECT COUNT(*) FROM turns').fetchone() == (2,)
+    assert watch.tokens_today(seat) is None
+    old.path.write_bytes(snapshot)
+    svc.account()
+    assert not svc.ledger.incomplete_records()
+    assert svc.ledger.db.execute('SELECT COUNT(*) FROM turns').fetchone() == (2,)
+    svc.ledger.close()
+
+
+def test_legacy_launch_proves_reader_but_untyped_down_history_does_not_guess(tmp_path, monkeypatch):
+    seat,old,_ = setup_seat(tmp_path,monkeypatch)
+    launch = asdict(seat.launched())
+    launch.pop('harness')  # old launch.json still has exact argv evidence
+    (seat.folder/'launch.json').write_text(json.dumps(launch))
+    spec = replace(seat.spec,harness='codex',pools=('codex',))
+    changed = Seat(seat.ship,spec,seat.tmux)
+    assert changed.record() is None
+    assert record_owner.records(changed)[0].name == 'antigravity'
+    # Separate legacy down seat: no saved program identity, only owned path and pool boundary.
+    (seat.folder/record_owner.REGISTRY).unlink()
+    (seat.folder/'launch.json').unlink()
+    event = {'record':str(old.path),'at':launch['at'],'pool':'google'}
+    (seat.folder/'record-launches.jsonl').write_text(json.dumps(event)+'\n')
+    monkeypatch.setattr(AntigravityHarness,'read',lambda *args:pytest.fail('unproven reader invoked'))
+    monkeypatch.setattr(CodexHarness,'read',lambda *args:pytest.fail('foreign record decoded'))
+    assert changed.record() is None and 'reader unknown' in changed.join().reason
+    owned = record_owner.records(changed)
+    assert len(owned) == 1 and owned[0].reader is None
+    seat.ship.seats[seat.name] = spec
+    svc = Service(seat.ship,seat.tmux)
+    svc.account()
+    assert svc.ledger.incomplete_records()[0][2] == 'google'
+    assert 'reader unknown' in '\n'.join(table(svc.ledger,'pool'))
+    assert old.path.exists()
+    svc.ledger.close()
+
+
+@pytest.mark.parametrize('data', [b'SQLite format 3\x00\xff', b'broken\n', b'[]\n', b'{}\n',
+                                  b'{"type":"event_msg","payload":[]}\n',
+                                  b'{"type":"event_msg","payload":{"type":"task_started"},"timestamp":"bad"}\n',
+                                  b'{"type":"user","message":{"content":"other program"}}\n', None])
+def test_missing_mismatched_and_malformed_owned_codex_records_are_unknown(tmp_path, monkeypatch, data):
+    seat,old,_ = setup_seat(tmp_path,monkeypatch)
+    seat = switch(seat)
+    path = seat.home/'sessions/2030/01/01/rollout-synthetic-bad.jsonl'
+    path.parent.mkdir(parents=True)
+    if data is not None:
+        path.write_bytes(data)
+    record_owner.register(seat.folder,path,'codex')
+    (seat.folder/'record').write_text(str(path))
+    if data is not None:
+        with pytest.raises(OSError):
+            CodexHarness().read(path)
+    assert watch.tokens_today(seat) is None
+    assert 'neighbor' in '\n'.join(watch.table(seat.ship,seat.tmux))
+    svc = Service(seat.ship,seat.tmux)
+    svc.account()
+    assert any(row[0] == str(path) for row in svc.ledger.incomplete_records())
+    assert svc.ledger.db.execute('SELECT pool FROM turns').fetchall() == [('google',)]
+    svc.ledger.close()
+
+
+def test_queued_history_uses_original_reader_and_conflicts_remain_unknown(tmp_path, monkeypatch):
+    seat,old,_ = setup_seat(tmp_path,monkeypatch)
+    store = Store(seat.ship.runtime)
+    message = store.new('order','desk','worker','synthetic queued task')
+    old.begin(message.short+' synthetic queued task','synthetic-model','high')
+    old.end('synthetic reply')
+    seat = switch(seat)
+    attempts = SimpleNamespace(last_results=lambda name:{message.id:'queued'})
+    assert seat._queued_unread(store,attempts) == []
+    record_owner.register(seat.folder,old.path,'codex')  # conflicting explicit history is not guessed
+    assert record_owner.records(seat)[0].reader is None
+    assert seat._queued_unread(store,attempts) == [message]
+    assert old.path.exists()
+
+
+def test_saved_launch_disagreement_cannot_add_a_wrong_pool_boundary(tmp_path, monkeypatch):
+    seat,old,_ = setup_seat(tmp_path,monkeypatch)
+    assert seat.record() == old.path
+    previous = (seat.folder/'record-launches.jsonl').read_bytes()
+    changed = replace(seat.launched(),harness='codex',pool='codex',argv=['codex'])
+    (seat.folder/'launch.json').write_text(json.dumps(asdict(changed)))
+    assert seat.record() is None and 'disagree' in seat.join().reason
+    svc = Service(seat.ship,seat.tmux)
+    svc.account()
+    assert svc.ledger.db.execute('SELECT pool FROM turns').fetchall() == [('google',)]
+    assert (seat.folder/'record-launches.jsonl').read_bytes() == previous
+    svc.ledger.close()
+
+
+def test_stale_sibling_pin_does_not_resolve_shared_record_ambiguity(tmp_path, monkeypatch):
+    seat,old,_ = setup_seat(tmp_path,monkeypatch)
+    (seat.folder/'record').unlink()
+    neighbor = replace(seat.ship.seats['neighbor'],harness='antigravity',pools=('google',))
+    seat.ship.seats['neighbor'] = neighbor
+    sibling = Seat(seat.ship,neighbor,seat.tmux)
+    sibling.home.mkdir(parents=True)
+    stale = sibling.home/'synthetic-codex-record'
+    stale.write_bytes(b'foreign synthetic bytes must never be opened')
+    record_owner.register(sibling.folder,stale,'codex')
+    (sibling.folder/'record').write_text(str(stale))
+    launch = replace(seat.launched(),pane='%2',pid=45678)
+    (sibling.folder/'launch.json').write_text(json.dumps(asdict(launch)))
+    seat.tmux.pane = lambda ident: Pane('%2','crew','neighbor',45678,80,24,False,False,None)
+    monkeypatch.setattr(AntigravityHarness,'_appeared',lambda *a:pytest.fail('ambiguous shared candidates enumerated'))
+    monkeypatch.setattr(AntigravityHarness,'state',lambda *a:pytest.fail('foreign candidate decoded'))
+    assert seat.join().record is None and seat.join().reason.startswith('ambiguous:')  # law: one-record
+
+
+def test_new_program_without_a_joined_record_reports_unknown_usage(tmp_path, monkeypatch):
+    seat,_,_ = setup_seat(tmp_path,monkeypatch)
+    fresh = Seat(seat.ship,seat.ship.seats['neighbor'],seat.tmux)
+    fresh.home.mkdir(parents=True)
+    launch = replace(seat.launched(),harness='codex',pool='codex',argv=['codex'])
+    (fresh.folder/'launch.json').write_text(json.dumps(asdict(launch)))
+    assert fresh.join().reason == 'no record yet'
+    assert watch.tokens_today(fresh) is None
+    assert 'record absent: no record yet' in '\n'.join(watch.full(fresh))

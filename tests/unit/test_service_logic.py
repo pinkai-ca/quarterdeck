@@ -141,9 +141,11 @@ def test_account_keeps_sparse_ids_and_missing_owned_records_visible(tmp_path, mo
     monkeypatch.setattr(harness,'read',lambda r: (data['state'],data['turns']) if r.exists() else
                         (_ for _ in ()).throw(OSError('record missing')))
     seat = SimpleNamespace(name='worker',home=home,harness=harness,pane=lambda:None,launched=lambda:None,
-                           pool=SimpleNamespace(name='pool-a'))
+                           pool=SimpleNamespace(name='pool-a'), record=lambda: None, spec=SimpleNamespace(harness='antigravity'))
     from quarterdeck import service
     monkeypatch.setattr(service,'seats',lambda *a:[seat])
+    from quarterdeck.record_owner import register
+    register(home.parent, record, 'antigravity')
     ship = SimpleNamespace(runtime=tmp_path/'runtime',folder=tmp_path,pools={})
     svc = Service(ship,None)
     svc.account()

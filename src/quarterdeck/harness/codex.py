@@ -17,7 +17,7 @@ from datetime import date, datetime, time, timezone
 from pathlib import Path
 
 from ..ship import Pool, SeatSpec, literal
-from .base import (Box, Control, Credential, Harness, Interruption, Keys, Launch, Screen, State, Tokens,
+from .base import (Box, Control, Credential, Harness, Interruption, Keys, Launch, RecordError, Screen, State, Tokens,
                    ToolCall, Turn, credential, entries, key_environment, program_version, when)
 
 ENDS_TURN = {"task_complete", "turn_aborted"}
@@ -80,11 +80,19 @@ class _Reader:
         self.pending: dict[str, tuple[str, datetime | None]] = {}
         self.model = self.effort = self.last_input = self.last_input_at = None
         self.consumed: list[str] = []
-        for entry in entries(record):
-            self.take(entry)
+        rows = entries(record)
+        if not any(row.get('type') in ['event_msg', 'response_item', 'session_meta', 'turn_context'] for row in rows):
+            raise RecordError('record has no recognizable codex entries')
+        try:
+            for entry in rows:
+                self.take(entry)
+        except (TypeError, ValueError, AttributeError, KeyError) as error:
+            raise RecordError('malformed codex record fields') from error
 
     def take(self, entry: dict) -> None:
-        payload = entry.get("payload") or {}
+        payload = entry.get("payload")
+        if not isinstance(payload, dict):
+            raise RecordError("Codex entry payload is not an object")
         kind, sub, at = entry.get("type"), payload.get("type"), when(entry.get("timestamp"))
         if kind == "turn_context":
             self.model = payload.get("model") or self.model

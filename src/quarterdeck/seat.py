@@ -13,11 +13,11 @@ import shlex
 import shutil
 import sys
 import time
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import harness as harnesses, post, ship as shipmod, standing
+from . import harness as harnesses, post, record_owner, ship as shipmod, standing
 from .harness.base import Harness, Join
 from .provenance import remember_launch
 from .ship import Pool, SeatSpec, Ship, ShipError
@@ -35,6 +35,8 @@ class Launched:
     resume: str | None
     argv: list[str]
     version: str | None
+    harness: str | None = None
+    records_before: list[str] = field(default_factory=list)
 
     @property
     def when(self) -> datetime:
@@ -112,6 +114,14 @@ class Seat:
         pinned = self.folder / "record"
         if pinned.is_file():
             record = Path(pinned.read_text().strip())
+            try:
+                owner = record_owner.pinned_reader(self, record)
+            except OSError as error:
+                return Join(None, f"record reader unknown: {error}")
+            if owner != self.spec.harness:
+                return Join(None, f"record reader {'unknown' if owner is None else 'changed'}: retained {owner or 'untyped'} record; fresh {self.spec.harness} launch required")
+            if self.launched() is not None and record_owner.launch_reader(self.launched()) != owner:
+                return Join(None, "record reader changed: pin and saved launch disagree; fresh launch required")
             if record.exists():
                 self._note_owned(record)
                 return Join(record)
@@ -119,16 +129,23 @@ class Seat:
         launched = self.launched()
         if launched is None:
             return Join(None, "not up")
+        if record_owner.launch_reader(launched) != self.spec.harness:
+            return Join(None, "record reader changed: launch belongs to another or unknown harness; fresh launch required")
         if self.harness.home_variable is None and self._shared_state_contended():
             return Join(None, f"ambiguous: another {self.harness.name} seat is up without a record of its own")  # law: one-record
-        found = self.harness.join(self.home, launched.when)
+        try:
+            found = self.harness.join(self.home, launched.when, tuple(Path(p) for p in launched.records_before))
+        except OSError as error:
+            return Join(None, f"record unreadable: {error}")
         if found.record is not None:
             pinned.write_text(str(found.record) + "\n")  # law: one-record
             self._note_owned(found.record)
         return found
 
     def _note_owned(self, record: Path) -> None:
-        remember_launch(self.folder, record, self.launched())
+        record_owner.register(self.folder, record, self.spec.harness)
+        launched = self.launched()
+        remember_launch(self.folder, record, launched if record_owner.launch_reader(launched) == self.spec.harness else None)
         owned = self.home / "conversations.owned"
         self.home.mkdir(parents=True, exist_ok=True)
         existing = owned.read_text().splitlines() if owned.is_file() else []
@@ -140,8 +157,16 @@ class Seat:
         for other in self.ship.seats.values():
             if other.name != self.name and other.harness == self.spec.harness:
                 sibling = Seat(self.ship, other, self.tmux)
-                if sibling.is_up and not (sibling.folder / "record").is_file():
-                    return True
+                if sibling.is_up:
+                    pinned = sibling.folder / "record"
+                    if not pinned.is_file():
+                        return True
+                    try:
+                        record = Path(pinned.read_text().strip())
+                        if not record.exists() or record_owner.pinned_reader(sibling, record) != other.harness:
+                            return True
+                    except OSError:
+                        return True
         return False
 
     def is_working(self) -> bool:
@@ -178,6 +203,10 @@ class Seat:
             from . import credential  # the credential module reads seats, so it is imported here, not above
 
             credential.reseed(self.ship, [self])  # a refresh left in this home reseeds the pool it came from, before any move
+        prior = {item.path for item in record_owner.records(self)}
+        prior.update(self.harness.records(self.home))
+        for record in prior:
+            record_owner.register(self.folder, record, None)  # retain even untyped history before clearing a fresh pin
         brief = standing.render(self.ship, self.spec)
         pool = self.pool
         ship_home = self.ship.folder / "homes" / self.harness.name
@@ -193,7 +222,7 @@ class Seat:
             raise ShipError(f"{self.name}: {launch.argv[0]} is not on the PATH qd runs with; install it, or put it on that PATH")
         at = datetime.now(timezone.utc).isoformat()  # before the program can write a record (law: one-record)
         pane = self._open_window(list(launch.argv), launch.env, path)
-        launched = Launched(pane.id, pane.pid, at, pool.name, resume_id, list(launch.argv), self.harness.version())
+        launched = Launched(pane.id, pane.pid, at, pool.name, resume_id, list(launch.argv), self.harness.version(), self.spec.harness, sorted(map(str, prior)))
         (self.folder / "launch.json").write_text(json.dumps(asdict(launched), indent=2) + "\n")
         if resume_id:
             self.record()  # retain the resumed record's new pool boundary immediately
@@ -233,9 +262,9 @@ class Seat:
         if not queued or not self.harness.record_confirms:
             return []
         seen: list[str] = []
-        for record in self.harness.records(self.home):
+        for owned in record_owner.records(self):
             try:
-                state, turns = self.harness.read(record)
+                state, turns = owned.read()
             except OSError:
                 continue
             seen += [" ".join(t.split()) for t in [*(x.input for x in turns), *state.consumed, state.last_input or ""]]

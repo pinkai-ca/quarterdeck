@@ -39,7 +39,7 @@ def synthetic_seat(tmp_path, monkeypatch):
     seat = Seat(ship,spec,tmux)
     seat.home.mkdir(parents=True)
     now = datetime.now(timezone.utc)
-    launched = Launched('%1',4242,(now-timedelta(hours=1)).isoformat(),'google-a',None,['synthetic-agy'],'synthetic')
+    launched = Launched('%1',4242,(now-timedelta(hours=1)).isoformat(),'google-a',None,['synthetic-agy'],'synthetic', harness='antigravity')
     (seat.folder/'launch.json').write_text(json.dumps(asdict(launched)))
     rec = AntigravityShape(seat.home,tmp_path,'synthetic-conversation','synthetic-model')
     rec.begin('synthetic input','synthetic-model','high')

@@ -272,8 +272,8 @@ class AntigravityHarness(Harness):
         noted = set((home / BEFORE).read_text().split()) if (home / BEFORE).is_file() else set()
         return sorted((p for p in self._conversations() if p.name not in noted), key=lambda p: p.stat().st_mtime)
 
-    def join(self, home: Path, launched_at: datetime) -> Join:
-        if not (appeared := self._appeared(home)):
+    def join(self, home: Path, launched_at: datetime, excluded: tuple[Path, ...] = ()) -> Join:
+        if not (appeared := [p for p in self._appeared(home) if p not in excluded]):
             return Join(None, "no record yet")
         if len(appeared) > 1:
             return Join(None, f"ambiguous: {', '.join(p.name for p in appeared)} appeared since the launch")  # law: one-record

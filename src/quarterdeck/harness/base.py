@@ -8,21 +8,19 @@ for the box and the dialogs.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from .limits import Usage, Wall, Window
 
 from ..ship import Pool, SeatSpec, ShipError
 
 
-class RecordError(OSError):
-    """A record file that cannot be decoded or is inconsistent."""
+from .json_record import RecordError, entries, when
 
 
 @dataclass(frozen=True)
@@ -193,31 +191,6 @@ class Launch:
     env: dict[str, str] = field(default_factory=dict)
 
 
-def entries(record: Path) -> list[dict]:
-    """Every parseable line of a JSON-lines record; a line still being written is skipped, not an error."""
-    out: list[dict] = []
-    try:
-        lines = record.read_text().splitlines()
-    except FileNotFoundError:
-        return out
-    for line in lines:
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(entry, dict):
-            out.append(entry)
-    return out
-
-
-def when(value: str | None) -> datetime | None:
-    """An ISO timestamp as an aware datetime; a bare one is read as UTC."""
-    if not value:
-        return None
-    moment = datetime.fromisoformat(value)
-    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
-
-
 def record_fingerprint(record: Path) -> tuple:
     """Presence, inode, size and mtime of a record and of its SQLite write-ahead log."""
     def stat_of(path: Path) -> tuple:
@@ -337,10 +310,12 @@ class Harness(ABC):
         """The live state and the ended turns from one reading of the record."""
         return self.state(record), self.turns(record)
 
-    def join(self, home: Path, launched_at: datetime) -> Join:
+    def join(self, home: Path, launched_at: datetime, excluded: tuple[Path, ...] = ()) -> Join:
         """The first record written after the launch; ambiguity reported, never guessed."""
         after = []
         for record in self.records(home):
+            if record in excluded:
+                continue
             first = self.first_timestamp(record)
             if first is not None and first >= launched_at:
                 after.append((first, record))

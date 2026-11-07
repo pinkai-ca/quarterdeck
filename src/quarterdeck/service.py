@@ -18,7 +18,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-from . import credential, machine, post, quota, ship as shipmod, standing
+from . import credential, machine, post, quota, record_owner, ship as shipmod, standing
 from .door import CONFIRM_SECONDS, Door
 from .harness.base import record_fingerprint
 from .ledger import Ledger
@@ -307,7 +307,7 @@ class Service:
         for seat in seats(self.ship, self.tmux):
             pane, launched = seat.pane(), seat.launched()
             live = pane is not None and not pane.dead
-            current = seat.record() if launched else None
+            current = seat.record()
             for changed in self.ledger.provenance.sync(seat, current, launched):
                 self.read_marks.pop(changed, None)
             meter = self.meters.get(seat.name)
@@ -315,13 +315,14 @@ class Service:
                 if meter is None or meter.root != pane.pid:
                     meter = self.meters[seat.name] = machine.Meter(pane.pid)  # a new process starts a new meter
                 meter.sample(table)
-            for record in seat.harness.records(seat.home):  # law: every-turn-accounted
+            for owned in record_owner.records(seat):  # law: every-turn-accounted
+                record = owned.path
                 pool = launched.pool if (record == current and launched) else UNKNOWN
                 try:
-                    stamp = record_fingerprint(record)
+                    stamp = (owned.name, record_fingerprint(record))
                     if self.read_marks.get(record) == stamp:
                         continue
-                    state, turns = seat.harness.read(record)
+                    state, turns = owned.read()
                 except OSError as error:
                     self.ledger.mark_record(record, seat.name, pool, str(error))
                     self.log("error", step="account", seat=seat.name, record=record.name, error=str(error))

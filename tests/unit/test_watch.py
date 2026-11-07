@@ -106,7 +106,7 @@ def test_watch_and_seat_report_unknown_instead_of_zero_when_record_or_tokens_are
     now = datetime.now(timezone.utc)
     partial_turn = Turn(1, now, now, "in", "out", "m", Tokens(10, 20, 30, 40))
     seat.harness = SimpleNamespace(
-        record_confirms=True,
+        record_confirms=True, home_variable=None,
         read=lambda r: (State(turn_open=False, turns=None, model="m"), [partial_turn]),
         state=lambda r: State(turn_open=False, turns=None, model="m"),
         turns=lambda r: [partial_turn],
