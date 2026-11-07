@@ -39,3 +39,33 @@ def test_terminal_soft_wrap_and_real_newline_are_distinct(tmux, tmp_path, name, 
     # Same characters, deliberate short hard break: -J must not erase it.
     hard = show(payload[:5]+'\r\n  '+payload[5:])
     assert '\n' in hard.box and not get(name).box(payload).matches(hard.box)
+
+
+@pytest.mark.parametrize('name', ['codex','claude','antigravity','fake'])
+@pytest.mark.parametrize('body', ['', 'payload  with two spaces\nnext line'])
+def test_real_private_capture_retains_padding_and_adapters_read_it(tmux, tmp_path, monkeypatch, name, body):
+    from quarterdeck.door import Door
+    from types import SimpleNamespace
+    from tests.contract.test_padded_composer import capture
+
+    monkeypatch.setattr('quarterdeck.door.guard',lambda *args:None)
+    tmux.new_session('Padding')
+    script = tmp_path/'padded.sh'
+    output = '\x1b[2J\x1b[H'+capture(name,body,'full',80).replace('\n','\r\n')
+    script.write_text('printf %s '+shlex.quote(output)+'\nsleep 30\n')
+    pane = tmux.new_window('Padding','display',tmp_path,['sh',str(script)])
+    tmux.run('resize-window','-t',pane.id,'-x','80','-y','24')
+    seat = SimpleNamespace(harness=get(name),session=SimpleNamespace(human=False),spec=SimpleNamespace(),
+                           pane=lambda:tmux.pane(pane.id),tmux=tmux)
+    door = Door(seat)
+    deadline = time.monotonic()+3
+    while time.monotonic()<deadline:
+        screen = door.screen()
+        if screen and screen.box is not None:
+            break
+        time.sleep(.02)
+    assert any(line.endswith('   ') for line in tmux.capture(pane.id).splitlines()), 'exercise actual -J padding'
+    assert door.reading().open is (not body)
+    if body:
+        assert door.matches(get(name).box(body),screen)
+        assert not door.matches(get(name).box(body.replace('  with',' with')),screen)

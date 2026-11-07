@@ -290,3 +290,25 @@ def test_new_launch_empty_door_progresses_but_old_uncertainty_remains_visible(se
     assert svc.attempts.latest()[old.id] == 'launch'
     assert json.loads(proof.path.read_text())['phase'] == 'carried'
     assert not pending.detached(seat)
+
+
+def test_padded_capture_never_confirms_a_visually_hidden_record_difference(setup, monkeypatch):
+    from tests.contract.test_padded_composer import capture
+
+    svc, seat, live, record = setup
+    monkeypatch.setattr(svc.tmux,'capture',lambda *a,**k:capture('codex',live['box'],'full'))
+    assert Door(seat).reading().open
+    message, proof = send(svc,seat,'first  line\nsecond line')
+    assert svc.attempts.latest()[message.id] == 'pending'
+    assert proof.data['shown'].endswith(' ')
+    assert live['pasted'] == live['submitted'] == 1
+    # The extra spaces occur before a hard newline, not at the trimmed outer
+    # message boundary; they must not become an exact record receipt.
+    input_row(record,proof.data['payload'].replace('first  line\n','first  line  \n'),post.now())
+    svc.reconcile(); svc.deliveries()
+    assert svc.attempts.latest()[message.id] == 'pending'
+    assert live['pasted'] == live['submitted'] == 1  # law: one-door
+    input_row(record,proof.data['payload'],post.now())
+    svc.reconcile()
+    assert svc.attempts.latest()[message.id] == 'delivered'
+    assert live['pasted'] == live['submitted'] == 1

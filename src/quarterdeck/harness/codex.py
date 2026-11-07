@@ -307,7 +307,7 @@ class CodexHarness(Harness):
                 body = [BOX_START.match(lines[start_at]).group(1)] + [l[2:] if l.startswith("  ") else l for l in lines[start_at + 1:status_at]]
                 while body and not body[-1].strip():
                     body.pop()
-                box = "" if body == [PLACEHOLDER] else "\n".join(body)
+                box = "" if len(body) == 1 and body[0].rstrip(" ") == PLACEHOLDER else "\n".join(body)
         working = bool(WORKING.search(text))
         return Screen(text, box=box, working=working, interruption=self.recognize(text) if box is None else None,
                       shows=shows, echoes=self.echoes(lines) if working else ())

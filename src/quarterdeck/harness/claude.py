@@ -330,7 +330,9 @@ class ClaudeHarness(Harness):
                     if RULE.match(following):
                         break
                     body.append(following[2:] if following.startswith("  ") else following)
-                box = "\n".join(body).replace(" ", " ").rstrip()
+                while body and not body[-1].strip():
+                    body.pop()
+                box = "\n".join(body).replace(" ", " ")
                 if box.strip() == QUEUED_PLACEHOLDER:
                     box, queued = "", max(queued, 1)
                 break

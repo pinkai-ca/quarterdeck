@@ -66,3 +66,14 @@ uses the existing source-read-only in-memory SQLite/WAL snapshot.
 
 Malformed journals are human-visible unknowns and never reconstructed or resent.
 They hold that seat's door; intact receipts for other seats still reconcile.
+
+`capture-pane -J` also retains painted right-edge ASCII padding. Recognized
+empty rows and known placeholders tolerate that padding. Nonempty `Screen.box`
+rows stay raw, including their padding, for obstruction and journal ownership
+checks. Visual payload comparison may disregard bounded row-end ASCII padding
+only with a known text-area width; indentation, interior spaces and hard
+newlines remain significant. A payload requiring trailing spaces cannot be
+inferred from a padded display and stays unverified unless shown exactly.
+Painted padding and typed trailing spaces can be visually indistinguishable:
+visual verification never proves delivery. The exact timestamped record receipt
+must still match, and a mismatch cannot trigger another paste or submission.

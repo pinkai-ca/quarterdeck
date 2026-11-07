@@ -103,6 +103,8 @@ class FakeHarness(Harness):
             return Screen(text, box=None, interruption=interruption, unknown=unknown)
         top, bottom = rules[-2], rules[-1]
         box = "\n".join(line[2:] for line in lines[top + 1 : bottom])
+        if not box.strip():
+            box = ""
         status = STATUS.match(lines[bottom + 1]) if bottom + 1 < len(lines) else None
         shows = {"model": status.group(2), "effort": status.group(3)} if status else {}
         return Screen(

@@ -26,7 +26,18 @@ def matches(text: str, shown: str, columns: int | None = None) -> bool:
         return True
     if not columns or columns < 1:
         return False
+    # -J preserves painted ASCII spaces at the right edge, including partial
+    # padding on a short row. Keep raw Screen.box for obstruction/ownership;
+    # this is only visual verification of an already known transport payload.
+    # A payload requiring trailing spaces cannot be established from padding.
+    if any(line.endswith(' ') for line in wanted.split('\n')):
+        return False
     rows = shown.split('\n')
+    if any(len(row) - len(row.rstrip(' ')) > columns + 1 for row in rows):
+        return False  # more than a pane's padding is not a supported layout
+    rows = [row.rstrip(' ') for row in rows]
+    if '\n'.join(rows) == wanted:
+        return True
     pos = 0
     for index, row in enumerate(rows):
         if not wanted.startswith(row, pos):

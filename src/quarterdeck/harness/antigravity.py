@@ -295,6 +295,8 @@ class AntigravityHarness(Harness):
                 while body and not body[-1].strip():
                     body.pop()
                 box = "\n".join(body)
+                if box.rstrip(" ") == QUEUED_PLACEHOLDER:
+                    box, queued = "", max(queued, 1)
         status = STATUS_LINE.search(lines[-1]) if lines else None
         shows = {"model": status.group(1).strip(), "effort": status.group(2)} if status else {}
         return Screen(text, box=box, working=bool(WORKING.search(text)), interruption=self.recognize(text) if box is None else None,
