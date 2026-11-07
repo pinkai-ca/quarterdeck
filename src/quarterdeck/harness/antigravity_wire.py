@@ -164,4 +164,3 @@ def _snapshot_query(record: Path) -> tuple[tuple, str | None, bytes | None, list
     except sqlite3.Error as error:
         raise RecordError(f"{record.name}: {error}") from error
     return after, (cascade[0] if cascade and cascade[0] else None), (meta[0] if meta else None), steps, gen_rows, exec_rows
-
