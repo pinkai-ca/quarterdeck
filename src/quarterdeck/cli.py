@@ -1,8 +1,7 @@
-"""The ``qd`` command: one verb per act, every reading available as ``--json``.
+"""qd: one verb per act, every act followed by a proof line, every reading available as JSON.
 
-Written for an agent at the keyboard as much as for a person: every act is followed by a
-proof line saying what was done and how it was confirmed, and every refusal names the
-reason and what would lift it.
+Written for an agent at the keyboard as much as for a person: a proof line says what was
+done and how it was confirmed, and every refusal names the reason and what would lift it.
 """
 
 from __future__ import annotations
