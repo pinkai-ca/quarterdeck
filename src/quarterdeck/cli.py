@@ -13,7 +13,7 @@ import os
 import sys
 from typing import Any
 
-from . import __version__, post, seat as seatmod, service, ship as shipmod, standing
+from . import __version__, post, seat as seatmod, service, ship as shipmod, standing, watch
 from .ship import ShipError
 from .tmux import Tmux, TmuxError
 
@@ -79,7 +79,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = verb("brief", cmd_brief, "print exactly what a seat reads at boot")
     p.add_argument("seat")
     p.add_argument("--sources", action="store_true", help="say which file each part came from")
-    verb("status", cmd_status, "every seat on one screen")
+    p = verb("status", cmd_status, "every seat on one screen, then the open orders")
+    p.add_argument("--line", action="store_true", help="the one line every ship session's status bar shows")
+    p = verb("watch", cmd_watch, "read a seat: activity from its record, the door from its screen")
+    p.add_argument("seat", nargs="?")
+    p.add_argument("--save-screen", action="store_true", help="save the screen for the adapter's next fixture")
     p = verb("post", cmd_post, "send a message: order, report, question, answer or ack; or resend one")
     p.add_argument("kind", choices=(*post.KINDS, "resend"))
     p.add_argument("body", nargs="*", help="the text; '-' reads it from stdin; with resend, the message id")
@@ -213,19 +217,21 @@ def cmd_brief(args: argparse.Namespace) -> str:
     return brief.text.rstrip("\n")
 
 
-def cmd_status(args: argparse.Namespace) -> list[str]:
+def cmd_status(args: argparse.Namespace) -> list[str] | str:
     ship = load_ship(args)
-    tmux = Tmux.default()
-    beat = service.read_heartbeat(ship.runtime)
-    rows = ["service " + ("ok" if service.alive(ship.runtime) else "down" if beat is None else f"down, last tick {beat[1]:.0f}s ago")]
-    rows.append(f"{'seat':<10} {'pane':<6} {'harness':<10} {'pool':<18} {'model':<22} record")
-    for seat in seatmod.seats(ship, tmux):
-        pane = seat.pane()
-        where = pane.id if pane and not pane.dead else ("exited" if pane else "down")
-        join = seat.join() if pane else None
-        record = join.record.name if join and join.record else (join.reason if join else "-")
-        rows.append(f"{seat.name:<10} {where:<6} {seat.harness.name:<10} {seat.pool.name:<18} {seat.spec.model or '-':<22} {record}")
-    return rows
+    if args.line:
+        return watch.line(ship, Tmux.default())
+    return watch.table(ship, Tmux.default())
+
+
+def cmd_watch(args: argparse.Namespace) -> list[str] | str:
+    ship = load_ship(args)
+    if not args.seat:
+        return watch.table(ship, Tmux.default())
+    seat = seat_of(ship, args.seat)
+    if args.save_screen:
+        return f"screen saved to {watch.save_screen(seat)}"
+    return watch.full(seat)
 
 
 # -- post --------------------------------------------------------------------------------

@@ -252,15 +252,18 @@ class Program:
         self.draw()
 
     def step(self, command: str | None) -> None:
+        """One tool call: opened in the record, run or waited through, then closed with its result."""
         if command is None:
-            self.record.tool("Read", "a file", "contents", False)
+            self.record.tool_start("Read", "a file")
             self.wait(self.step_seconds)
+            self.record.tool_end("contents", False)
             return
         self.say(f"⏺ Bash({command})")
+        self.record.tool_start("Bash", command)
         done = subprocess.run(command, shell=True, capture_output=True, text=True)
         output = (done.stdout + done.stderr).strip()
         self.say(f"  ⎿ {output.splitlines()[0] if output else '(no output)'}")
-        self.record.tool("Bash", command, output, done.returncode != 0)
+        self.record.tool_end(output, done.returncode != 0)
         self.wait(self.step_seconds)
 
     def wait(self, seconds: float) -> None:

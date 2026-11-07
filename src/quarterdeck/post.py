@@ -24,7 +24,12 @@ REPLY_VERB = {"order": "report", "question": "answer"}
 
 
 def now() -> datetime:
-    return datetime.now().astimezone().replace(microsecond=0)
+    return datetime.now().astimezone()
+
+
+def short_of(message_id: str) -> str:
+    """``ord-7f3a`` for ``ord-20261106-2101-desk-7f3a``: the kind and the hash."""
+    return f"{message_id[:3]}-{message_id.rsplit('-', 1)[1]}"
 
 
 @dataclass(frozen=True)
@@ -43,7 +48,7 @@ class Message:
     @property
     def short(self) -> str:
         """``ord-7f3a``: the kind and the hash, enough to name a message in a pane."""
-        return f"{self.id[:3]}-{self.id.rsplit('-', 1)[1]}"
+        return short_of(self.id)
 
     @property
     def obligation(self) -> bool:
@@ -52,7 +57,7 @@ class Message:
     def to_json(self) -> str:
         data = asdict(self)
         data["from"] = data.pop("sender")
-        data["at"] = self.at.isoformat(timespec="seconds")
+        data["at"] = self.at.isoformat()
         return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
 
     @classmethod
@@ -85,7 +90,7 @@ class Store:
         taken = {m.short for m in self.all()}
         while True:
             candidate = f"{kind[:3]}-{at.strftime('%Y%m%d-%H%M')}-{sender}-{secrets.token_hex(2)}"
-            if f"{kind[:3]}-{candidate.rsplit('-', 1)[1]}" not in taken:
+            if short_of(candidate) not in taken:
                 return candidate
 
     def write(self, message: Message) -> Path:
@@ -148,7 +153,7 @@ def typed(messages: list[Message]) -> str:
     for message in messages:
         header = f"qd > {message.kind} from {message.sender} · {message.short}"
         if message.re:
-            header += f" · re {message.re[:3]}-{message.re.rsplit('-', 1)[1]}"
+            header += f" · re {short_of(message.re)}"
         if message.subject:
             header += f" · {message.subject}"
         if message.due:

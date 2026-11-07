@@ -68,11 +68,17 @@ class ClaudeShape(_Writer):
                    "content": blocks, "stop_reason": stop, "usage": usage}
         self.entry("assistant", message, effort=self.effort)
 
-    def tool(self, name: str, input_: str, output: str, failed: bool) -> None:
-        call = f"toolu_{uuid.uuid4().hex[:12]}"
-        self.assistant([{"type": "tool_use", "id": call, "name": name, "input": {"command": input_}}], "tool_use")
+    def tool_start(self, name: str, input_: str) -> None:
+        self.call = f"toolu_{uuid.uuid4().hex[:12]}"
+        self.assistant([{"type": "tool_use", "id": self.call, "name": name, "input": {"command": input_}}], "tool_use")
+
+    def tool_end(self, output: str, failed: bool) -> None:
         self.entry("user", {"role": "user", "content": [
-            {"type": "tool_result", "tool_use_id": call, "content": output, "is_error": failed}]})
+            {"type": "tool_result", "tool_use_id": self.call, "content": output, "is_error": failed}]})
+
+    def tool(self, name: str, input_: str, output: str, failed: bool) -> None:
+        self.tool_start(name, input_)
+        self.tool_end(output, failed)
 
     def end(self, reply: str) -> None:
         self.assistant([{"type": "text", "text": reply}], "end_turn", reply)
@@ -133,13 +139,19 @@ class CodexShape(_Writer):
         self.line("event_msg", {"type": "token_count", "info": {"total_token_usage": dict(self.total),
                                                                 "last_token_usage": last}})
 
-    def tool(self, name: str, input_: str, output: str, failed: bool) -> None:
-        call = f"call_{uuid.uuid4().hex[:12]}"
+    def tool_start(self, name: str, input_: str) -> None:
+        self.call = f"call_{uuid.uuid4().hex[:12]}"
         self.line("response_item", {"type": "function_call", "name": "shell" if name == "Bash" else name,
-                                    "arguments": json.dumps({"command": input_}), "call_id": call})
+                                    "arguments": json.dumps({"command": input_}), "call_id": self.call})
         self.count()
-        self.line("response_item", {"type": "function_call_output", "call_id": call,
+
+    def tool_end(self, output: str, failed: bool) -> None:
+        self.line("response_item", {"type": "function_call_output", "call_id": self.call,
                                     "output": json.dumps({"output": output, "metadata": {"exit_code": int(failed)}})})
+
+    def tool(self, name: str, input_: str, output: str, failed: bool) -> None:
+        self.tool_start(name, input_)
+        self.tool_end(output, failed)
 
     def end(self, reply: str) -> None:
         self.line("response_item", {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": reply}]})
