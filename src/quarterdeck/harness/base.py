@@ -8,7 +8,6 @@ for the box and the dialogs.
 
 from __future__ import annotations
 
-import functools
 import json
 import os
 import re
@@ -251,9 +250,17 @@ def key_environment(pool: Pool, variable: str) -> dict[str, str]:
     raise ShipError(f"pool {pool.name}: api_key must be env:NAME or file:PATH, not {pool.api_key!r}")
 
 
-@functools.cache
+def same_name(shown: str, wanted: str) -> bool:
+    """``Sonnet 5.5`` and ``GPT-6-Astra`` name ``claude-sonnet-5-5`` and ``gpt-6-astra``: compare letters and digits only."""
+
+    def key(name: str) -> str:
+        return re.sub(r"[^a-z0-9]", "", name.lower().removeprefix("claude-"))
+
+    return key(shown) == key(wanted) or key(wanted).endswith(key(shown))
+
+
 def program_version(argv: tuple[str, ...]) -> str | None:
-    """The installed version a program prints for ``--version``, or None when it is not installed."""
+    """The installed version a program prints for ``--version``, read every time: programs update under a running ship."""
     try:
         out = subprocess.run(list(argv), capture_output=True, text=True, timeout=20).stdout
     except (OSError, subprocess.TimeoutExpired):
@@ -354,12 +361,13 @@ class Harness(ABC):
 
     def confirms(self, control: Control, value: str, screen: Screen, state: State) -> bool | None:
         """Whether the program's resulting state shows the change; None when it cannot be read."""
+        same = same_name if control.name == "model" else (lambda shown, wanted: shown == wanted)
         if control.confirmed_by == "screen":
-            shown = screen.shows.get(control.name)
-            return None if shown is None else shown == value
+            shown = screen.shows.get(control.name) if screen else None
+            return None if shown is None else same(shown, value)
         if control.confirmed_by == "record":
-            reported = getattr(state, control.name, None)
-            return None if reported is None else reported == value
+            reported = getattr(state, control.name, None) if state else None
+            return None if reported is None else same(reported, value)
         return None
 
     # -- usage -------------------------------------------------------------------------

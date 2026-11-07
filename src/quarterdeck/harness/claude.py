@@ -18,7 +18,7 @@ from pathlib import Path
 
 from ..ship import Pool, SeatSpec
 from .base import (Box, Control, Credential, Harness, Interruption, Keys, Launch, Screen, State, Tokens,
-                   ToolCall, Turn, Usage, Window, credential, entries, key_environment, program_version, when)
+                   ToolCall, Turn, Usage, Window, credential, entries, key_environment, program_version, same_name, when)
 
 ENDS_TURN = {"end_turn", "max_tokens", "stop_sequence"}
 LOCAL_TAGS = ("<command-name>", "<local-command", "<bash-input>", "<bash-stdout>", "<bash-stderr>")
@@ -79,7 +79,7 @@ class _Reader:
         self.queued: list[str] = []
         self.consumed: list[str] = []
         self.model = self.effort = self.last_input = self.last_input_at = self.local_stdout = None
-        self.closed_message = None
+        self.sidechain_ends: set[str | None] = set()
         self.subagent_turns = 0
         for entry in entries(record):
             self.take(entry)
@@ -89,14 +89,16 @@ class _Reader:
         if kind == "queue-operation":
             self.queue(entry)
         elif entry.get("isSidechain"):
-            if kind == "assistant" and entry.get("message", {}).get("stop_reason") in ENDS_TURN:
+            message = entry.get("message", {})
+            if kind == "assistant" and message.get("stop_reason") in ENDS_TURN and message.get("id") not in self.sidechain_ends:
+                self.sidechain_ends.add(message.get("id"))
                 self.subagent_turns += 1
         elif kind == "user":
             self.user(entry)
         elif kind == "assistant":
             self.assistant(entry)
         elif kind == "system" and entry.get("subtype") == "turn_duration" and self.open is not None:
-            self.end(when(entry.get("timestamp")))
+            self.end(when(entry.get("timestamp")))  # the one entry that says the turn is over
 
     def queue(self, entry: dict) -> None:
         """A message queued mid-turn; removed when the program takes it, often into the running turn itself."""
@@ -112,6 +114,10 @@ class _Reader:
         content = entry.get("message", {}).get("content")
         if isinstance(content, str) and content.startswith("<local-command-stdout>"):
             self.local_stdout = content.removeprefix("<local-command-stdout>").removesuffix("</local-command-stdout>")
+            if match := SET_MODEL.search(self.local_stdout):
+                self.model = match.group(1)  # the display name, until the next assistant entry names the id
+            if match := SET_EFFORT.search(self.local_stdout):
+                self.effort = match.group(1)
             return
         if text is not None and text.startswith(INTERRUPTED):
             if self.open is not None:
@@ -140,35 +146,23 @@ class _Reader:
     def assistant(self, entry: dict) -> None:
         """One entry per content block, all carrying the message's usage and stop reason.
 
-        A message's last blocks may arrive after the block that ended the turn, so entries
-        of the message that closed a turn still belong to it.
+        No stop reason ends the turn: the program may take a queued message into the same
+        turn after an ``end_turn`` block. Only ``turn_duration``, an interruption or the
+        next prompt does.
         """
         message = entry.get("message", {})
         self.model = message.get("model") or self.model
         self.effort = entry.get("effort") or self.effort
-        message_id = message.get("id") or entry.get("requestId") or entry.get("uuid")
-        if self.open is None and self.turns and message_id == self.closed_message:
-            self.continue_closed(message)
-            return
         if self.open is None:
             return
         self.open["model"] = self.model
         if message.get("usage"):
-            self.open["usage"][message_id] = message["usage"]
+            self.open["usage"][message.get("id") or entry.get("requestId") or entry.get("uuid")] = message["usage"]
         for block in message.get("content") or []:
             if block.get("type") == "tool_use":
                 self.pending[block.get("id")] = (block.get("name", "?"), when(entry.get("timestamp")))
             elif block.get("type") == "text" and block.get("text"):
-                self.open["reply"] = block["text"]
-        if message.get("stop_reason") in ENDS_TURN:
-            self.closed_message = message_id
-            self.end(when(entry.get("timestamp")))
-
-    def continue_closed(self, message: dict) -> None:
-        last = self.turns[-1]
-        reply = next((b["text"] for b in message.get("content") or [] if b.get("type") == "text" and b.get("text")), None)
-        if reply:
-            self.turns[-1] = replace(last, reply=reply)
+                self.open["reply"] = (self.open["reply"] + "\n\n" + block["text"]).strip()
 
     def end(self, at: datetime | None) -> None:
         turn = self.open
@@ -232,6 +226,7 @@ BOX_START = re.compile(r"^❯[  ]?(.*)$")
 MODE_LINE = re.compile(r"[○◐●◑] (\w+) · /effort")
 WORKING = re.compile(r"esc to interrupt|^[*✻✶✳✢·⠂⠄⠆] \S+… \(\d+s", re.M)
 SET_MODEL = re.compile(r"Set model to `?([^`]+?)`? and saved")
+SET_EFFORT = re.compile(r"Set effort level to `?(\w+)`?")
 QUEUED_PLACEHOLDER = "Press up to edit queued messages"
 SETTINGS = {
     "env": {"DISABLE_AUTOUPDATER": "1"},
@@ -239,6 +234,19 @@ SETTINGS = {
     "includeCoAuthoredBy": False,
     "permissions": {"allow": ["Bash(qd *)", "Bash(qd:*)"], "defaultMode": "auto"},  # law: can-post
 }
+
+
+def merged(base: dict, layer: dict) -> dict:
+    """``layer`` over ``base``, table by table; lists are joined so a permission added never removes one."""
+    out = dict(base)
+    for key, value in layer.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = merged(out[key], value)
+        elif isinstance(value, list) and isinstance(out.get(key), list):
+            out[key] = out[key] + [v for v in value if v not in out[key]]
+        else:
+            out[key] = value
+    return out
 
 
 class ClaudeHarness(Harness):
@@ -251,8 +259,8 @@ class ClaudeHarness(Harness):
 
     def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None) -> Credential | None:
         home.mkdir(parents=True, exist_ok=True)
-        settings = json.loads((ship_home / "settings.json").read_text()) if ship_home and (ship_home / "settings.json").is_file() else dict(SETTINGS)
-        settings.update(seat.settings)
+        template = json.loads((ship_home / "settings.json").read_text()) if ship_home and (ship_home / "settings.json").is_file() else {}
+        settings = merged(merged(SETTINGS, template), seat.settings)  # a ship's or a seat's keys never drop the launch's own
         (home / "settings.json").write_text(json.dumps(settings, indent=2) + "\n")
         state_file = home / ".claude.json"
         state = json.loads(state_file.read_text()) if state_file.is_file() else {}
@@ -288,7 +296,6 @@ class ClaudeHarness(Harness):
 
     def screen(self, text: str) -> Screen:
         lines = text.rstrip("\n").split("\n")
-        interruption = self.recognize(text)
         box, queued = None, 1 if "ctrl+x ctrl+s to send now" in text else 0
         for index, line in enumerate(lines):
             start = BOX_START.match(line)
@@ -303,6 +310,7 @@ class ClaudeHarness(Harness):
                     box, queued = "", max(queued, 1)
                 break
         mode = MODE_LINE.search(text)
+        interruption = self.recognize(text) if box is None else None  # a dialog replaces the box; prose never counts
         return Screen(text, box=box, working=bool(WORKING.search(text)), interruption=interruption,
                       queued=queued, shows={"effort": mode.group(1)} if mode else {})
 
@@ -322,7 +330,7 @@ class ClaudeHarness(Harness):
     def confirms(self, control: Control, value: str, screen: Screen, state: State) -> bool | None:
         if control.name == "model":
             match = SET_MODEL.search(state.local_stdout or "") if state else None
-            return None if not match else same_model(match.group(1), value)
+            return None if not match else same_name(match.group(1), value)
         return super().confirms(control, value, screen, state)
 
     def interruptions(self) -> tuple[Interruption, ...]:
@@ -361,10 +369,3 @@ def usage(pool: Pool) -> Usage | None:
 
 
 ClaudeHarness.usage = staticmethod(usage)
-
-
-def same_model(shown: str, wanted: str) -> bool:
-    """``Sonnet 5.5`` names ``claude-sonnet-5-5``: compare the words and digits, nothing else."""
-    def key(name: str) -> str:
-        return re.sub(r"[^a-z0-9]", "", name.lower().removeprefix("claude-"))
-    return key(shown) == key(wanted) or key(wanted).endswith(key(shown))

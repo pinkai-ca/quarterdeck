@@ -85,9 +85,12 @@ class Door:
         return Reading(True, working=screen.working)
 
     def clear_known(self) -> Screen | None:
-        """Dismiss a notice the adapter knows, once, and read again (law: one-door)."""
+        """Dismiss a notice the adapter knows, once, and read again (law: one-door).
+
+        Never while text sits in the box: a key pressed then could submit a person's draft.
+        """
         screen = self.screen()
-        if screen and screen.interruption and screen.interruption.dismissable:
+        if screen and screen.interruption and screen.interruption.dismissable and not (screen.box or "").strip():
             self.tmux.keys(self.seat.pane().id, screen.interruption.key)
             time.sleep(SETTLE_SECONDS)
             screen = self.screen()

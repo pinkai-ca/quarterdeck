@@ -12,7 +12,7 @@ import os
 import shlex
 import shutil
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -123,12 +123,13 @@ class Seat:
         brief = standing.render(self.ship, self.spec)
         pool = self.pool
         ship_home = self.ship.folder / "homes" / self.harness.name
-        self.harness.build_home(self.home, self.spec, pool, ship_home if ship_home.is_dir() else None)
+        spec = replace(self.spec, cwd=self.ship.cwd_of(self.spec))  # the adapter sees the seat's real working directory
+        self.harness.build_home(self.home, spec, pool, ship_home if ship_home.is_dir() else None)
         resume_id = self._resume_id() if resume else None
         if not resume_id:
             (self.folder / "record").unlink(missing_ok=True)
         first, carried = self.first_message(resume=resume_id is not None)
-        launch = self.harness.launch(self.spec, pool, self.home, brief, resume_id, first)
+        launch = self.harness.launch(spec, pool, self.home, brief, resume_id, first)
         at = datetime.now(timezone.utc).isoformat()  # before the program can write a record (law: one-record)
         pane = self._open_window(list(launch.argv), launch.env)
         launched = Launched(pane.id, pane.pid, at, pool.name, resume_id, list(launch.argv), self.harness.version())
@@ -160,11 +161,14 @@ class Seat:
         return post.briefed_header(self.name, self.spec.role, open_messages) + "\n" + post.typed(ordered), ordered
 
     def _queued_unread(self, store: post.Store, attempts: post.Attempts) -> list[post.Message]:
-        """Messages confirmed queued whose turn never came: the record holds no input naming them."""
+        """Messages confirmed queued whose turn never came: nothing in the record, taken or typed, names them."""
         record = self.record()
-        inputs = " ".join(" ".join(t.input.split()) for t in self.harness.turns(record)) if record else ""
+        seen = ""
+        if record:
+            state, turns = self.harness.read(record)
+            seen = " ".join(" ".join(t.split()) for t in [*(x.input for x in turns), *state.consumed, state.last_input or ""])
         queued = {a.message for a in attempts.all() if a.seat == self.name and a.result == "queued"}
-        return [m for m in store.for_seat(self.name) if m.id in queued and m.short not in inputs]
+        return [m for m in store.for_seat(self.name) if m.id in queued and m.short not in seen]
 
     def _open_window(self, argv: list[str], env: dict[str, str]) -> Pane:
         session = self.session

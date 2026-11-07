@@ -139,6 +139,43 @@ def test_a_seat_joins_the_first_record_after_its_launch_and_an_ambiguous_join_is
     assert join.record is None and join.reason.startswith("ambiguous:"), "two records at the same moment: reported, never guessed"
 
 
+def test_claude_ends_a_turn_only_at_its_duration_entry_and_keeps_every_block(tmp_path: Path):
+    import json
+
+    record = tmp_path / "c.jsonl"
+    stamp = "2026-11-07T04:00:0{}Z"
+    entries = [
+        {"type": "user", "timestamp": stamp.format(0), "message": {"role": "user", "content": "first"}},
+        {"type": "queue-operation", "operation": "enqueue", "content": "second", "timestamp": stamp.format(1)},
+        {"type": "assistant", "timestamp": stamp.format(2), "message": {"id": "m1", "model": "claude-opus-5-5", "stop_reason": "end_turn",
+                                                                          "usage": {"output_tokens": 50}, "content": [{"type": "thinking", "thinking": "…"}]}},
+        {"type": "assistant", "timestamp": stamp.format(3), "message": {"id": "m1", "model": "claude-opus-5-5", "stop_reason": "end_turn",
+                                                                          "usage": {"output_tokens": 50}, "content": [{"type": "text", "text": "first reply"}]}},
+        {"type": "queue-operation", "operation": "remove", "content": "second", "timestamp": stamp.format(4)},
+        {"type": "assistant", "timestamp": stamp.format(5), "message": {"id": "m2", "model": "claude-opus-5-5", "stop_reason": "tool_use",
+                                                                          "usage": {"output_tokens": 20}, "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]}},
+        {"type": "assistant", "timestamp": stamp.format(5), "isSidechain": True, "message": {"id": "s1", "stop_reason": "end_turn", "content": [{"type": "text", "text": "a"}]}},
+        {"type": "assistant", "timestamp": stamp.format(5), "isSidechain": True, "message": {"id": "s1", "stop_reason": "end_turn", "content": [{"type": "text", "text": "b"}]}},
+    ]
+    record.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+    state, turns = claude.read(record)
+    assert state.turn_open and state.open_tool == "Bash" and turns == [], "an end_turn block does not end the turn: the queued message was taken into it"
+    assert state.consumed == ("second",)
+    entries += [
+        {"type": "user", "timestamp": stamp.format(6), "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}},
+        {"type": "assistant", "timestamp": stamp.format(7), "message": {"id": "m3", "model": "claude-opus-5-5", "stop_reason": "end_turn",
+                                                                          "usage": {"output_tokens": 5}, "content": [{"type": "text", "text": "second reply"}]}},
+        {"type": "system", "subtype": "turn_duration", "durationMs": 9000, "timestamp": stamp.format(9)},
+    ]
+    record.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+    state, turns = claude.read(record)
+    assert not state.turn_open and len(turns) == 1
+    turn = turns[0]
+    assert turn.tokens.written == 50 + 20 + 5, "one usage per message, repeated on its entries, every message of the turn"
+    assert turn.reply == "first reply\n\nsecond reply" and turn.seconds == 9 and turn.subagent_turns == 1
+    assert [t.name for t in turn.tools] == ["Bash"]
+
+
 def test_a_partial_last_line_is_skipped(tmp_path: Path):
     record = ClaudeShape(tmp_path, Path("/work"), "sess-6", "fake-1")
     record.begin("one", "fake-1", "low")

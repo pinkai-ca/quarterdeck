@@ -34,7 +34,7 @@ def test_nothing_from_a_runtime_is_tracked():  # law: nothing-leaks
     assert "ships/*/runtime/" in ignored and "ships/*" in ignored and "!ships/example/" in ignored
     leaks = {}
     for path in files:
-        if path.suffix not in TEXT and path.name != ".gitignore":
+        if path.suffix not in TEXT and path.name != ".gitignore" or path == Path(__file__):
             continue
         text = path.read_text(errors="replace")
         if path.suffix in (".py", ".txt", ".md") and "docs/" not in str(path) and UUID.search(text):

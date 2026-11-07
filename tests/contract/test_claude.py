@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from quarterdeck.harness.base import State
-from quarterdeck.harness.claude import ClaudeHarness, same_model
+from quarterdeck.harness.base import State, same_name
+from quarterdeck.harness.claude import ClaudeHarness
 from quarterdeck.ship import Pool, SeatSpec
 
 from tests.conftest import FIXTURES
@@ -66,7 +66,56 @@ def test_effort_shows_on_the_mode_line_and_model_in_the_record():
     assert harness.confirms(model, "claude-sonnet-5-5", s, confirmed) is True
     assert harness.confirms(model, "claude-haiku-5-5", s, confirmed) is False
     assert harness.confirms(model, "claude-haiku-5-5", s, State()) is None, "not readable yet: pending, not false"
-    assert same_model("Haiku 5.5", "claude-haiku-5-5") and not same_model("Opus 5.5", "claude-haiku-5-5")
+    assert same_name("Haiku 5.5", "claude-haiku-5-5") and not same_name("Opus 5.5", "claude-haiku-5-5")
+    assert same_name("GPT-6-Astra", "gpt-6-astra")
+
+
+def test_prose_on_the_screen_is_never_a_dialog_while_the_box_is_there():
+    start = (SCREENS / "start.txt").read_text()
+    s = ClaudeHarness().screen("Switch model?\nDo you want to proceed?\n" + start)
+    assert s.box == "" and s.interruption is None, "a dialog replaces the box; words in the transcript do not"
+    lines = start.split("\n")
+    box_at = next(i for i, l in enumerate(lines) if l.startswith("❯"))
+    lines[box_at] = "❯ Switch model? is what a human may type"
+    s = ClaudeHarness().screen("\n".join(lines))
+    assert s.box == "Switch model? is what a human may type" and s.interruption is None
+
+
+def test_trust_covers_the_inherited_workspace(tmp_path: Path):
+    from dataclasses import replace
+
+    from quarterdeck import ship as shipmod
+    from tests.conftest import FIXTURES as F
+
+    folder = tmp_path / "enterprise"
+    folder.mkdir()
+    (folder / "ship.toml").write_text((F / "ships" / "enterprise.toml").read_text())
+    ship = shipmod.load(folder)
+    pike = ship.seat("pike")
+    assert pike.cwd is None, "pike inherits the ship's workspace"
+    resolved = replace(pike, cwd=ship.cwd_of(pike))  # what Seat.up hands the adapter
+    pool_dir = tmp_path / "pool"
+    pool_dir.mkdir()
+    (pool_dir / ".credentials.json").write_text("{}")
+    home = tmp_path / "home"
+    ClaudeHarness().build_home(home, resolved, Pool("claude-secondary", "claude", config_dir=pool_dir), None)
+    state = json.loads((home / ".claude.json").read_text())
+    assert state["projects"][str(ship.workspace)]["hasTrustDialogAccepted"]
+
+
+def test_a_ship_template_and_seat_settings_keep_what_the_launch_relies_on(tmp_path: Path):
+    ship_home = tmp_path / "homes" / "claude"
+    ship_home.mkdir(parents=True)
+    (ship_home / "settings.json").write_text(json.dumps({"theme": "light", "permissions": {"allow": ["Bash(git *)"]}}))
+    pool_dir = tmp_path / "pool"
+    pool_dir.mkdir()
+    (pool_dir / ".credentials.json").write_text("{}")
+    seat = SeatSpec("w", "crew", "worker", "claude", ("p",), cwd=tmp_path, settings={"permissions": {"allow": ["Bash(make *)"]}})
+    home = tmp_path / "home"
+    ClaudeHarness().build_home(home, seat, Pool("p", "claude", config_dir=pool_dir), ship_home)
+    settings = json.loads((home / "settings.json").read_text())
+    assert settings["theme"] == "light" and settings["promptSuggestionEnabled"] is False
+    assert {"Bash(qd *)", "Bash(git *)", "Bash(make *)"} <= set(settings["permissions"]["allow"])  # law: can-post
 
 
 def test_an_interrupted_seat_is_idle_with_an_open_door():

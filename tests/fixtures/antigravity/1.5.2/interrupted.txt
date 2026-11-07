@@ -1,0 +1,24 @@
+  Run exactly this shell command: sleep 15; echo slept. Then say DONE-SLEEP.
+
+○ Thought for 5.8s (MARKER-LOADED is observed in the output, indicating suc...)
+● Ran (sleep 15; echo slept) (ctrl+o to expand)
+
+  MARKER-LOADED — Launched sleep 15; echo slept and waiting for it to finish.
+
+  MARKER-LOADED DONE-SLEEP
+
+────────────────────────────────────────────────────────────
+> qd > order from desk · ord-0002 · Second
+  This arrived mid-turn. Say SECOND-SEEN.
+  qd > reply: qd post report --re ord-0002
+
+  MARKER-LOADED SECOND-SEEN
+
+────────────────────────────────────────────────────────────
+> Run exactly this shell command: sleep 30; echo late
+
+  ⎿  Interrupted · What should Antigravity CLI do instead?
+────────────────────────────────────────────────────────────────────────────────
+>
+────────────────────────────────────────────────────────────────────────────────
+? for shortcuts                                            Gemini 4 Argon · high

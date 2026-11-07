@@ -1,0 +1,24 @@
+
+────────────────────────────────────────────────────────────
+> You are seat laan on ship example, a spike. Answer briefly. Say READY and
+  whether you read an AGENTS.md marker (MARKER-LOADED or NO-MARKER).
+
+▸ Thought for 8s, 123 tokens
+
+  READY NO-MARKER
+
+────────────────────────────────────────────────────────────
+> qd > order from desk · ord-1234 · Four
+  line two
+  line three
+  Run exactly this shell command: sleep 15; echo slept. Then say DONE-SLEEP.
+
+○ Thought for 5.8s (MARKER-LOADED is observed in the output, indicating suc...)
+○ Running (sleep 15; echo slept) (ctrl+o to expand)
+⣽  Running command...
+▸ qd > order from desk · ord-0002 · Second... (alt+m to send immediately)
+────────────────────────────────────────────────────────────────────────────────
+>
+────────────────────────────────────────────────────────────────────────────────
+  Press up to edit queued messages                         Gemini 4 Argon · high
+

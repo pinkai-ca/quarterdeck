@@ -55,14 +55,19 @@ def _text(content: list | str | None) -> str:
     return "\n".join(block.get("text", "") for block in content or [] if isinstance(block, dict))
 
 
+EXIT_CODE = re.compile(r"[Ee]xit code:? (\d+)")
+
+
 def _failed(output: str | list | None) -> bool:
-    """A shell call's output is JSON with the exit code; anything else is taken as success."""
-    if not isinstance(output, str):
+    """A shell call's output carries its exit code, as JSON metadata or as text blocks that state it."""
+    text = _text(output) if isinstance(output, list) else output
+    if not isinstance(text, str):
         return False
     try:
-        return bool(json.loads(output).get("metadata", {}).get("exit_code", 0))
+        return bool(json.loads(text).get("metadata", {}).get("exit_code", 0))
     except (json.JSONDecodeError, AttributeError):
-        return False
+        match = EXIT_CODE.search(text)
+        return bool(match and int(match.group(1)))
 
 
 class _Reader:
@@ -72,6 +77,7 @@ class _Reader:
         self.open: dict | None = None
         self.pending: dict[str, tuple[str, datetime | None]] = {}
         self.model = self.effort = self.last_input = self.last_input_at = None
+        self.consumed: list[str] = []
         for entry in entries(record):
             self.take(entry)
 
@@ -103,9 +109,12 @@ class _Reader:
     def item(self, sub: str | None, payload: dict, at: datetime | None) -> None:
         if sub == "message" and payload.get("role") == "user":
             text = _text(payload.get("content"))
-            if text and not text.startswith("<") and self.open is not None and not self.open["input"]:
-                self.open["input"] = self.last_input = text
-                self.last_input_at = at
+            if text and not text.startswith("<") and self.open is not None:
+                self.last_input, self.last_input_at = text, at
+                if self.open["input"]:
+                    self.consumed.append(text)  # a message taken into the running turn
+                else:
+                    self.open["input"] = text
         elif sub == "message" and payload.get("role") == "assistant" and self.open is not None:
             self.open["reply"] = _text(payload.get("content")) or self.open["reply"]
         elif sub in CALLS:
@@ -148,6 +157,7 @@ class _Reader:
             last_input_at=self.last_input_at,
             model=self.model,
             effort=self.effort,
+            consumed=tuple(self.consumed),
             turns=len(self.turns),
         )
 
@@ -170,7 +180,7 @@ def read(record: Path) -> tuple[State, list[Turn]]:
 BOX_START = re.compile(r"^› (.*)$")
 PLACEHOLDER = "Ask Codex to do anything"
 STATUS_LINE = re.compile(r"^\s+(\S+) (low|medium|high|xhigh|max) · ")
-WORKING = re.compile(r"• Working \(\d+s • esc to interrupt")
+WORKING = re.compile(r"• Working \([^)]*esc to interrupt")  # the elapsed time reads 10s, then 1m 05s
 CONFIG = """\
 model = {model}
 model_reasoning_effort = {effort}
@@ -191,6 +201,14 @@ notifications = false
 """
 
 
+def set_root_key(config: str, key: str, value: str) -> str:
+    """Set a root key of a TOML text: replace the line it has, else put it first, never twice."""
+    pattern = re.compile(rf"^{re.escape(key)}\s*=.*$", re.M)
+    if pattern.search(config):
+        return pattern.sub(f"{key} = {value}", config, count=1)
+    return f"{key} = {value}\n" + config
+
+
 class CodexHarness(Harness):
     """Codex, proven on 0.166.0. Model and effort change only at launch: ``/model`` opens a picker."""
 
@@ -202,13 +220,21 @@ class CodexHarness(Harness):
     def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None) -> Credential | None:
         home.mkdir(parents=True, exist_ok=True)
         runtime = home.parents[2]  # runtime/seats/<seat>/home
+        cwd = seat.cwd or runtime.parent
+        required = CONFIG.format(model=literal(seat.model or "gpt-6-astra"), effort=literal(seat.effort or "medium"),
+                                 runtime=literal(str(runtime)), cwd=literal(str(cwd)))
+        config = required
         if ship_home and (ship_home / "config.toml").is_file():
-            config = (ship_home / "config.toml").read_text()
-        else:
-            config = CONFIG.format(model=literal(seat.model or "gpt-6-astra"), effort=literal(seat.effort or "medium"),
-                                   runtime=literal(str(runtime)), cwd=literal(str(seat.cwd or runtime.parent.parent)))
+            config = (ship_home / "config.toml").read_text().rstrip("\n") + "\n"
+            for line in required.split("\n\n")[0].splitlines():  # the root keys the launch relies on
+                key = line.split(" = ")[0]
+                if not re.search(rf"^{re.escape(key)}\s*=", config, re.M):
+                    config = f"{line}\n" + config
+            for table in required.split("\n\n")[1:]:  # the tables: the sandbox, trust for the workspace, the tui
+                if table.splitlines()[0] not in config:
+                    config += "\n" + table
         for key, value in seat.settings.items():
-            config = f"{key} = {literal(value)}\n" + config
+            config = set_root_key(config, key, literal(value))
         (home / "config.toml").write_text(config)
         return credential(pool, home / "auth.json", "OPENAI_API_KEY")
 
@@ -236,31 +262,30 @@ class CodexHarness(Harness):
     read = staticmethod(read)
 
     def screen(self, text: str) -> Screen:
+        """The box is the last ``› `` block above the status line, blank lines inside it and all."""
         lines = text.rstrip("\n").split("\n")
-        box = None
-        for index in range(len(lines) - 1, -1, -1):
-            start = BOX_START.match(lines[index])
-            if start:
-                body = [start.group(1)]
-                for following in lines[index + 1:]:
-                    if not following.startswith("  ") or not following.strip():
-                        break
-                    body.append(following[2:])
-                box = "" if body == [PLACEHOLDER] else "\n".join(body).rstrip()
-                break
+        status_at = next((i for i in range(len(lines) - 1, -1, -1) if STATUS_LINE.match(lines[i])), None)
         shows = {}
-        for line in lines:
-            status = STATUS_LINE.match(line)
-            if status:
-                shows = {"model": status.group(1), "effort": status.group(2)}
-        working = WORKING.search(text)
-        return Screen(text, box=box, working=bool(working), interruption=self.recognize(text), shows=shows,
-                      echoes=self.echoes(lines) if working else ())
+        if status_at is not None:
+            status = STATUS_LINE.match(lines[status_at])
+            shows = {"model": status.group(1), "effort": status.group(2)}
+        box = None
+        if status_at is not None:
+            start_at = next((i for i in range(status_at - 1, -1, -1) if BOX_START.match(lines[i])), None)
+            if start_at is not None:
+                body = [BOX_START.match(lines[start_at]).group(1)] + [l[2:] if l.startswith("  ") else l for l in lines[start_at + 1:status_at]]
+                while body and not body[-1].strip():
+                    body.pop()
+                box = "" if body == [PLACEHOLDER] else "\n".join(body)
+        working = bool(WORKING.search(text))
+        return Screen(text, box=box, working=working, interruption=self.recognize(text) if box is None else None,
+                      shows=shows, echoes=self.echoes(lines) if working else ())
 
     @staticmethod
     def echoes(lines: list[str]) -> tuple[str, ...]:
         """The inputs shown above ``• Working``: the turn's own prompt, and anything queued behind it."""
-        found, block = [], None
+        found: list[list[str]] = []
+        block: list[str] | None = None
         for line in lines:
             if WORKING.search(line):
                 break
@@ -268,11 +293,11 @@ class CodexHarness(Harness):
             if start:
                 block = [start.group(1)]
                 found.append(block)
-            elif block is not None and line.startswith("  ") and line.strip():
-                block.append(line[2:])
+            elif block is not None and (line.startswith("  ") or not line.strip()):
+                block.append(line[2:] if line.startswith("  ") else "")
             else:
                 block = None
-        return tuple("\n".join(b) for b in found)
+        return tuple("\n".join(b).strip("\n") for b in found)
 
     def box(self, text: str) -> Box:
         return Box(text)

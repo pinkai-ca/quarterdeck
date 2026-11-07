@@ -17,6 +17,7 @@ from pathlib import Path
 
 from . import credential, ledger, post, service
 from .door import Door, Reading
+from .harness.base import same_name
 from .seat import Seat, seats
 from .ship import Ship
 from .tmux import Tmux
@@ -90,7 +91,8 @@ def reading(seat: Seat, store: post.Store | None = None) -> SeatReading:
     today = sum(t.tokens.total for t in turns if t.ended.astimezone().date() == date.today())
     state = seat.harness.state(record) if record else None
     running = (state.model if state and state.model else None) or seat.spec.model or "-"
-    model = running if running == (seat.spec.model or running) else f"{running} (ship file: {seat.spec.model})"
+    agrees = seat.spec.model is None or same_name(running, seat.spec.model)
+    model = running if agrees else f"{running} (ship file: {seat.spec.model})"
     open_orders = [m for m in store.open_for(seat.name) if m.kind == "order"]
     claimed = store.claimed(seat.name, post.now())
     order = claimed or (open_orders[0].id if len(open_orders) == 1 else None)
