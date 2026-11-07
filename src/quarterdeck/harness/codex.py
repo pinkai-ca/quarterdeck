@@ -9,9 +9,11 @@ follows each model response with the usage of that response and the running tota
 
 from __future__ import annotations
 
+import copy
 import json
 import re
-from datetime import datetime, timezone
+import tomllib
+from datetime import date, datetime, time, timezone
 from pathlib import Path
 
 from ..ship import Pool, SeatSpec, literal
@@ -185,13 +187,9 @@ CONFIG = """\
 model = {model}
 model_reasoning_effort = {effort}
 approval_policy = "never"
-sandbox_mode = "workspace-write"
+sandbox_mode = "danger-full-access"
 project_doc_max_bytes = 0
 check_for_update_on_startup = false
-
-[sandbox_workspace_write]
-writable_roots = [{runtime}]  # the post store lives here: qd post works from the seat (law: can-post)
-network_access = true
 
 [projects.{cwd}]
 trust_level = "trusted"
@@ -201,12 +199,36 @@ notifications = false
 """
 
 
-def set_root_key(config: str, key: str, value: str) -> str:
-    """Set a root key of a TOML text: replace the line it has, else put it first, never twice."""
-    pattern = re.compile(rf"^{re.escape(key)}\s*=.*$", re.M)
-    if pattern.search(config):
-        return pattern.sub(f"{key} = {value}", config, count=1)
-    return f"{key} = {value}\n" + config
+def config_text(config: dict) -> str:
+    """Write parsed configuration without losing unrelated TOML values or table scopes."""
+    def quote(text: str) -> str:
+        # JSON escapes the C0 controls; TOML also forbids literal DEL. Keep astral
+        # characters literal: JSON's surrogate-pair escapes are invalid TOML scalars.
+        return json.dumps(text, ensure_ascii=False).replace("\x7f", "\\u007f")
+
+    def key(name: str) -> str:
+        return name if re.fullmatch(r"[A-Za-z0-9_-]+", name) else quote(name)
+
+    def value(item: object) -> str:
+        if isinstance(item, str):
+            return quote(item)
+        if isinstance(item, dict):
+            return "{ " + ", ".join(f"{key(k)} = {value(v)}" for k, v in item.items()) + " }"
+        if isinstance(item, list):
+            return "[" + ", ".join(value(v) for v in item) + "]"
+        if isinstance(item, (datetime, date, time)):
+            return item.isoformat()
+        return literal(item)
+
+    def table(items: dict, path: tuple[str, ...] = ()) -> list[str]:
+        lines = ["", "[" + ".".join(key(k) for k in path) + "]"] if path else []
+        lines += [f"{key(k)} = {value(v)}" for k, v in items.items() if not isinstance(v, dict)]
+        for name, item in items.items():
+            if isinstance(item, dict):
+                lines += table(item, (*path, name))
+        return lines
+
+    return "\n".join(table(config)) + "\n"
 
 
 class CodexHarness(Harness):
@@ -221,21 +243,22 @@ class CodexHarness(Harness):
         home.mkdir(parents=True, exist_ok=True)
         runtime = home.parents[2]  # runtime/seats/<seat>/home
         cwd = seat.cwd or runtime.parent
-        required = CONFIG.format(model=literal(seat.model or "gpt-6-astra"), effort=literal(seat.effort or "medium"),
-                                 runtime=literal(str(runtime)), cwd=literal(str(cwd)))
-        config = required
-        if ship_home and (ship_home / "config.toml").is_file():
-            config = (ship_home / "config.toml").read_text().rstrip("\n") + "\n"
-            for line in required.split("\n\n")[0].splitlines():  # the root keys the launch relies on
-                key = line.split(" = ")[0]
-                if not re.search(rf"^{re.escape(key)}\s*=", config, re.M):
-                    config = f"{line}\n" + config
-            for table in required.split("\n\n")[1:]:  # the tables: the sandbox, trust for the workspace, the tui
-                if table.splitlines()[0] not in config:
-                    config += "\n" + table
-        for key, value in seat.settings.items():
-            config = set_root_key(config, key, literal(value))
-        (home / "config.toml").write_text(config)
+        defaults = tomllib.loads(CONFIG.format(model=literal(seat.model or "gpt-6-astra"),
+                                               effort=literal(seat.effort or "medium"), cwd=literal(str(cwd))))
+        template = ship_home / "config.toml" if ship_home else None
+        config = tomllib.loads(template.read_text()) if template and template.is_file() else {}
+        for key, value in defaults.items():
+            if isinstance(value, dict):
+                config[key] = {**value, **config.get(key, {})}
+            else:
+                config.setdefault(key, value)
+        config.update(copy.deepcopy(seat.settings))
+        # Full access is required policy, including when a template selects a profile.
+        for scope in [config, *config.get("profiles", {}).values()]:
+            scope["sandbox_mode"] = "danger-full-access"  # law: can-post
+            scope["approval_policy"] = "never"
+            scope.pop("sandbox_workspace_write", None)
+        (home / "config.toml").write_text(config_text(config))
         return credential(pool, home / "auth.json", "OPENAI_API_KEY")
 
     def launch(self, seat: SeatSpec, pool: Pool, home: Path, brief: Path, resume: str | None, first: str | None) -> Launch:

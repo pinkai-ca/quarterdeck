@@ -119,7 +119,7 @@ def test_seat_settings_replace_template_keys_and_a_ship_template_keeps_the_requi
     home = tmp_path / "ship" / "runtime" / "seats" / "w" / "home"
     harness.build_home(home, seat, pool, None)
     config = tomllib.loads((home / "config.toml").read_text())
-    assert config["model_reasoning_effort"] == "low" and config["sandbox_mode"] == "read-only" and config["project_doc_max_bytes"] == 4096
+    assert config["model_reasoning_effort"] == "low" and config["sandbox_mode"] == "danger-full-access" and config["project_doc_max_bytes"] == 4096
     ship_home = tmp_path / "homes" / "codex"
     ship_home.mkdir(parents=True)
     (ship_home / "config.toml").write_text('model = "gpt-6-luna"\nhide_agent_reasoning = true\n')
@@ -127,9 +127,9 @@ def test_seat_settings_replace_template_keys_and_a_ship_template_keeps_the_requi
     harness.build_home(home, plain, pool, ship_home)
     config = tomllib.loads((home / "config.toml").read_text())
     assert config["model"] == "gpt-6-luna" and config["hide_agent_reasoning"] is True, "the ship's own choices stand"
-    assert config["project_doc_max_bytes"] == 0 and config["sandbox_mode"] == "workspace-write"
+    assert config["project_doc_max_bytes"] == 0 and config["sandbox_mode"] == "danger-full-access"
     assert config["projects"][str(tmp_path / "work")]["trust_level"] == "trusted"
-    assert str(home.parents[2]) in config["sandbox_workspace_write"]["writable_roots"]  # law: can-post
+    assert config["approval_policy"] == "never" and "sandbox_workspace_write" not in config  # law: can-post
 
 
 def test_an_interrupted_seat_is_idle():
@@ -151,9 +151,9 @@ def test_the_launch_builds_a_home_of_the_ships_own(tmp_path: Path):
     assert credential.link == (home / "auth.json", pool_dir / "auth.json") and (home / "auth.json").is_symlink()
     config = (home / "config.toml").read_text()
     assert 'model = "gpt-6-astra"' in config and 'model_reasoning_effort = "xhigh"' in config
-    assert "project_doc_max_bytes = 0" in config and f'writable_roots = ["{runtime}"]' in config
+    assert "project_doc_max_bytes = 0" in config and 'sandbox_mode = "danger-full-access"' in config
     assert f'[projects."{tmp_path / "work"}"]\ntrust_level = "trusted"' in config
-    assert config.startswith("model_auto_compact_token_limit = 200000\n"), "the seat's own keys pass through"
+    assert "model_auto_compact_token_limit = 200000\n" in config, "the seat's own keys pass through"
     brief = tmp_path / "brief.md"
     brief.write_text("# Standing orders\nBe brief.\n")
     launch = harness.launch(seat, pool, home, brief, None, None)
@@ -162,3 +162,133 @@ def test_the_launch_builds_a_home_of_the_ships_own(tmp_path: Path):
     assert launch.env == {"CODEX_HOME": str(home)}
     resumed = harness.launch(seat, pool, home, brief, "0199-abc", "qd > briefed")
     assert resumed.argv[-3:] == ("resume", "0199-abc", "qd > briefed")
+
+
+def test_rebuild_replaces_legacy_home_template_and_profile_policy_without_editing_sources(tmp_path):
+    import copy
+    import tomllib
+
+    home = tmp_path / 'runtime' / 'seats' / 'worker' / 'home'
+    home.mkdir(parents=True)
+    (home / 'config.toml').write_text('sandbox_mode = "workspace-write"\napproval_policy = "on-request"\n'
+                                     '[sandbox_workspace_write]\nwritable_roots = ["/old"]\nnetwork_access = true\n')
+    template = tmp_path / 'templates'
+    template.mkdir()
+    original = '''model = "chosen-model"
+profile = "legacy"
+sandbox_mode = "workspace-write"
+approval_policy = "on-request"
+model_auto_compact_token_limit = 12345
+[sandbox_workspace_write]
+writable_roots = ["/old"]
+network_access = false
+[profiles.legacy]
+sandbox_mode = "read-only"
+approval_policy = "on-request"
+model_reasoning_effort = "low"
+[profiles.legacy.sandbox_workspace_write]
+writable_roots = ["/old-profile"]
+[tui]
+notifications = ["agent-turn-complete"]
+[mcp_servers.local]
+command = "local-server"
+args = ["--name", "example"]
+env = { EXAMPLE = "preserved" }
+'''
+    source = template / 'config.toml'
+    source.write_text(original)
+    settings = {'approval_policy':'on-request','sandbox_mode':'read-only','model_reasoning_summary':'detailed'}
+    before = copy.deepcopy(settings)
+    spec = SeatSpec('worker','crew','worker','codex',('codex',),cwd=tmp_path,settings=settings)
+    harness, pool = CodexHarness(), Pool('codex','codex')
+    harness.build_home(home,spec,pool,template)
+    first = (home/'config.toml').read_text()
+    parsed = tomllib.loads(first)
+    for scope in (parsed,parsed['profiles']['legacy']):
+        assert scope['sandbox_mode'] == 'danger-full-access' and scope['approval_policy'] == 'never'  # law: can-post
+        assert 'sandbox_workspace_write' not in scope
+    expected = tomllib.loads(original)
+    assert parsed['model'] == 'chosen-model' and parsed['profile'] == 'legacy'
+    assert parsed['tui'] == expected['tui'] and parsed['mcp_servers'] == expected['mcp_servers']
+    assert parsed['profiles']['legacy']['model_reasoning_effort'] == 'low'
+    assert parsed['model_auto_compact_token_limit'] == 12345
+    assert parsed['model_reasoning_summary'] == 'detailed'
+    assert source.read_text() == original and settings == before
+    harness.build_home(home,spec,pool,template)
+    assert (home/'config.toml').read_text() == first, 'rebuilding is idempotent'
+    # An old generated home without a template is rebuilt by the same path too.
+    (home/'config.toml').write_text(original)
+    harness.build_home(home,spec,pool,None)
+    assert tomllib.loads((home/'config.toml').read_text())['sandbox_mode'] == 'danger-full-access'
+    assert 'sandbox_workspace_write' not in (home/'config.toml').read_text()
+
+
+def test_config_writer_preserves_unrelated_toml_types_and_does_not_mutate_seat_profile(tmp_path):
+    import copy
+    import tomllib
+    from quarterdeck.harness.codex import config_text
+
+    document = '''title = "workspace 🚀"
+limit = 100
+scale = 0.5
+flags = [true, false]
+date = 2026-01-01
+when = 2026-01-01T12:00:00Z
+clock = 12:34:56
+servers = [{name = "local", args = ["a"]}]
+["key.with.dots".empty]
+'''
+    assert tomllib.loads(config_text(tomllib.loads(document))) == tomllib.loads(document)
+    settings = {'profiles': {'custom': {'sandbox_mode': 'read-only', 'model': 'custom-model'}}}
+    before = copy.deepcopy(settings)
+    home = tmp_path/'runtime'/'seats'/'worker'/'home'
+    spec = SeatSpec('worker','crew','worker','codex',('codex',),settings=settings)
+    CodexHarness().build_home(home,spec,Pool('codex','codex'),None)
+    assert settings == before
+    result = tomllib.loads((home/'config.toml').read_text())
+    assert result['profiles']['custom'] == {'sandbox_mode':'danger-full-access','approval_policy':'never','model':'custom-model'}
+
+
+def test_restart_rebuilds_generated_policy_before_opening_the_program(tmp_path, monkeypatch):
+    import tomllib
+    from types import SimpleNamespace
+    from quarterdeck import seat as seatmod
+    from quarterdeck.seat import Seat
+    from quarterdeck.ship import Session, Ship
+
+    spec = SeatSpec('worker','crew','worker','codex',('codex',),cwd=tmp_path)
+    ship = Ship(tmp_path,'example','admiral',tmp_path,{'codex':Pool('codex','codex')},
+                {'crew':Session('crew','crew')},{'worker':spec})
+    seat = Seat(ship,spec,SimpleNamespace())
+    seat.home.mkdir(parents=True)
+    (seat.home/'config.toml').write_text('sandbox_mode = "workspace-write"\napproval_policy = "on-request"\n')
+    monkeypatch.setattr(seat,'pane',lambda:None)
+    monkeypatch.setattr(seat,'_resume_id',lambda:'synthetic-resume')
+    monkeypatch.setattr(seat,'_survives',lambda *args:None)
+    monkeypatch.setattr(seat.harness,'version',lambda:'synthetic-version')
+    monkeypatch.setattr(seatmod.shutil,'which',lambda *args,**kwargs:'/synthetic/codex')
+    launches = []
+
+    def open_window(argv,env,path):
+        config = tomllib.loads((seat.home/'config.toml').read_text())
+        assert config['sandbox_mode'] == 'danger-full-access' and config['approval_policy'] == 'never'
+        assert 'sandbox_workspace_write' not in config
+        assert env['CODEX_HOME'] == str(seat.home)
+        launches.append(argv)
+        return SimpleNamespace(id='%1',pid=1234)
+
+    monkeypatch.setattr(seat,'_open_window',open_window)
+    assert 'resumed synthet' in seat.restart()
+    assert len(launches) == 1 and launches[0][-2:] == ['resume','synthetic-resume']
+
+
+def test_config_writer_escapes_del_in_strings_and_keys_without_surrogate_pairs():
+    import tomllib
+    from quarterdeck.harness.codex import config_text
+
+    source = r'"key\u007f🚀" = "value\u007f🚀"'
+    expected = {"key\x7f🚀": "value\x7f🚀"}
+    assert tomllib.loads(source) == expected
+    encoded = config_text(tomllib.loads(source))
+    assert "\x7f" not in encoded and r"\u007f" in encoded
+    assert tomllib.loads(encoded) == expected
