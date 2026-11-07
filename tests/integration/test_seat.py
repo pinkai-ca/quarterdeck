@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -54,7 +56,9 @@ def test_up_brings_up_every_declared_seat_in_its_session(ship: shipmod.Ship, tmu
     assert env["QD_SHIP"] == str(ship.folder) and env["QD_SEAT"] == "captain"
     assert env["QD_FAKE_HOME"] == str(runtime / "seats" / "captain" / "home")
     assert env["PATH"].startswith(str(seatmod.qd_bin()))
-    assert tmux.run("show-option", "-v", "-t", "=Bridge:", "status-right").strip().endswith(f"status --line --ship {ship.folder})")
+    status = tmux.run("show-option", "-v", "-t", "=Bridge:", "status-right").strip()
+    assert status.endswith(f"--ship {ship.folder} status --line)"), status
+    assert subprocess.run(status[2:-1], shell=True, capture_output=True, text=True).stdout.startswith("SERVICE DOWN")
     assert seatmod.bring_up(ship, tmux)[2:] == [f"{s} already up in {seatmod.Seat(ship, ship.seat(s), tmux).pane().id}"
                                                 for s in ("captain", "desk", "worker-1")]
 
@@ -113,6 +117,25 @@ def test_identity_is_pane_and_process_not_name(ship: shipmod.Ship, tmux: Tmux):
     path.write_text(json.dumps({**data, "pid": launched.pid}))
     assert captain.down().startswith("captain down · pane %")
     assert captain.down() == "captain was not up" and not captain.is_up
+
+
+def test_a_session_owned_by_another_ship_is_refused(ship: shipmod.Ship, tmux: Tmux, tmp_path: Path):
+    seatmod.Seat(ship, ship.seat("captain"), tmux).up()
+    other_folder = tmp_path / "ships" / "other"
+    shutil.copytree(ship.folder, other_folder, ignore=shutil.ignore_patterns("runtime"))
+    other = shipmod.load(other_folder)
+    with pytest.raises(ShipError, match="belongs to .*example.*another title"):
+        seatmod.Seat(other, other.seat("captain"), tmux).up()
+    assert [p.window for p in tmux.panes("Bridge")] == ["Pike"], "nothing of the other ship landed here"
+
+
+def test_a_missing_working_directory_is_refused_not_created(ship: shipmod.Ship, tmux: Tmux):
+    text = (ship.folder / "ship.toml").read_text().replace('[seats.captain]\n', '[seats.captain]\ncwd = "/mnt/scratch/qd-nowhere-at-all"\n')
+    (ship.folder / "ship.toml").write_text(text)
+    ship = shipmod.load(ship.folder)
+    with pytest.raises(ShipError, match="does not exist; qd creates nothing outside its folder"):  # law: one-folder
+        seatmod.Seat(ship, ship.seat("captain"), tmux).up()
+    assert not Path("/mnt/scratch/qd-nowhere-at-all").exists()
 
 
 def test_bring_down_closes_the_sessions(ship: shipmod.Ship, tmux: Tmux):

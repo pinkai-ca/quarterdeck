@@ -9,6 +9,7 @@ than the tick (law: events-not-clocks).
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import signal
@@ -19,7 +20,7 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import post, standing
+from . import post, ship as shipmod, standing
 from .door import CONFIRM_SECONDS, Door
 from .post import Attempts, Store
 from .seat import Seat, qd_bin, seats
@@ -63,9 +64,27 @@ def running(pid: int) -> bool:
     return True
 
 
+def lock_path(runtime: Path) -> Path:
+    return runtime / "service.lock"
+
+
+def locked(runtime: Path) -> bool:
+    """Whether a service holds the runtime's lock: the one fact that says a service owns this ship."""
+    try:
+        with lock_path(runtime).open("a") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(handle, fcntl.LOCK_UN)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return False
+
+
 def alive(runtime: Path) -> bool:
+    """A service owns the ship and has ticked recently; a held lock with a stale heartbeat is a hung one."""
     beat = read_heartbeat(runtime)
-    return beat is not None and beat[1] <= STALE_SECONDS and running(beat[0])
+    return locked(runtime) and beat is not None and beat[1] <= STALE_SECONDS
 
 
 def start(ship: Ship) -> str:
@@ -73,6 +92,10 @@ def start(ship: Ship) -> str:
     if alive(ship.runtime):
         pid, _ = read_heartbeat(ship.runtime)
         return f"service alive · pid {pid}"
+    if locked(ship.runtime):
+        beat = read_heartbeat(ship.runtime)
+        raise ShipError(f"a service holds {lock_path(ship.runtime)} but last ticked {int(beat[1]) if beat else '?'}s ago; "
+                        f"qd down stops it" + (f", or kill {beat[0]}" if beat else ""))
     log_dir = ship.runtime / "log"
     log_dir.mkdir(parents=True, exist_ok=True)
     out = (log_dir / "service.out").open("ab")
@@ -136,16 +159,25 @@ class Service:
     # -- the loop ------------------------------------------------------------------------
 
     def run(self) -> None:
+        self.lock = lock_path(self.runtime).open("a")
+        try:
+            fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)  # one service per ship, for its whole life
+        except OSError:
+            raise ShipError(f"another service holds {lock_path(self.runtime)}") from None
         self.log("start", pid=os.getpid())
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-        self.reconcile()
         while True:
             self.tick()
             time.sleep(TICK)
 
     def tick(self) -> None:
+        """One pass: the ship file read afresh, then every duty, each failing alone."""
         self.heartbeat()
-        for step in (self.inboxes, self.deliveries, self.requests, self.fresh_after_order, self.rebrief):
+        try:
+            self.ship = shipmod.load(self.ship.folder)  # law: ship-file
+        except ShipError as error:
+            self.log("error", step="load", error=str(error))
+        for step in (self.reconcile, self.inboxes, self.deliveries, self.requests, self.fresh_after_order, self.rebrief):
             try:
                 step()
             except Exception as error:  # one failing step never stops the others
@@ -175,21 +207,35 @@ class Service:
         """
         for attempt in self.attempts.unfinished():
             message = self.store.get(attempt.message)
+            if attempt.pane is None:
+                self.attempts.close(attempt, "blind", "a watch opened it and never reported printing it; qd post resend")
+                continue
             seat = self.seat(attempt.seat)
-            wanted = " ".join(message.body.split())
             deadline = attempt.when.timestamp() + CONFIRM_SECONDS
-            while True:
-                record = seat.record()
-                state = seat.harness.state(record) if record else None
-                seen = state and ((state.last_input and wanted in " ".join(state.last_input.split()))
-                                  or any(wanted in " ".join(q.split()) for q in state.queued))
-                if seen or time.time() > deadline:
-                    break
+            while not (seen := self.taken(seat, message, attempt.when)) and time.time() < deadline:
                 time.sleep(0.2)
             result = "delivered" if seen else "blind"
             self.attempts.close(attempt, result, "found in the record on reconciliation" if seen else
                                 "the service died mid-delivery and the record does not show it; qd post resend")  # law: one-door
             self.log("reconciled", message=message.id, seat=seat.name, result=result)
+
+    @staticmethod
+    def taken(seat: Seat, message: post.Message, since: datetime) -> bool:
+        """Whether the record shows this very message, by its id and body, as an input after ``since``."""
+        record = seat.record()
+        if record is None:
+            return False
+        state, turns = seat.harness.read(record)
+        wanted = " ".join(message.body.split())
+
+        def carries(text: str | None) -> bool:
+            flat = " ".join((text or "").split())
+            return message.short in flat and wanted in flat
+
+        inputs = [t.input for t in turns if t.started and t.started >= since]
+        if state.turn_open and state.last_input_at and state.last_input_at >= since:
+            inputs.append(state.last_input)
+        return any(carries(text) for text in inputs + list(state.queued))
 
     def deliveries(self) -> None:
         for seat in seats(self.ship, self.tmux):
@@ -205,7 +251,7 @@ class Service:
     def deliver(self, seat: Seat, messages: list[post.Message], resend: bool = False) -> str:
         """One paste for all that waits for a seat, one attempt per message, written before typing."""
         door = Door(seat)
-        reading = door.reading()
+        reading = door.reading(door.clear_known())  # a notice the adapter knows never holds a delivery
         if not reading.open:
             return f"{seat.name}: {reading}"
         launched = seat.launched()
@@ -253,7 +299,16 @@ class Service:
             return self.deliver(seat, [message], resend=True)
         if kind == "control":
             return self.control(self.seat(data["seat"]), data["name"], str(data["value"]))
+        if kind == "relaunch":
+            return self.relaunch(self.seat(data["seat"]), bool(data["resume"]))
         return f"unknown request {kind!r}"
+
+    def relaunch(self, seat: Seat, resume: bool) -> str | None:
+        """Restart or fresh at the turn's end, so nothing is relaunched under a running tool call."""
+        record = seat.record() if seat.is_up else None
+        if record and seat.harness.state(record).turn_open:
+            return None
+        return seat.restart() if resume else seat.fresh()
 
     def control(self, seat: Seat, name: str, value: str) -> str | None:
         """Apply a control by its in-session form, through the door, when the seat is idle."""

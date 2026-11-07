@@ -109,7 +109,10 @@ class Drill:
         """Stand in for the agent at a human-session seat: its watch prints the orders, it reports on each."""
         printed, deadline = "", time.monotonic() + self.patience
         while time.monotonic() < deadline and not all(o.short in printed for o in orders):
-            printed += post.wait(self.ship.runtime, name, interval=0.1, stop_after=deadline - time.monotonic()) or ""
+            arrived = post.wait(self.ship.runtime, name, interval=0.1, stop_after=deadline - time.monotonic())
+            if arrived:
+                printed += arrived[0]
+                post.printed(self.ship.runtime, arrived[1])
         for order in orders:
             received = order.short in printed
             self.check(f"{name} reached by its watch", received,

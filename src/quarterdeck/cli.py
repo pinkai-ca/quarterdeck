@@ -156,11 +156,20 @@ def cmd_down(args: argparse.Namespace) -> list[str] | str:
 
 
 def cmd_restart(args: argparse.Namespace) -> str:
-    return seat_of(load_ship(args), args.seat).restart()
+    return relaunch(load_ship(args), args.seat, resume=True)
 
 
 def cmd_fresh(args: argparse.Namespace) -> str:
-    return seat_of(load_ship(args), args.seat).fresh()
+    return relaunch(load_ship(args), args.seat, resume=False)
+
+
+def relaunch(ship: shipmod.Ship, name: str, resume: bool) -> str:
+    """Relaunch now when the seat is idle; when it is working, the service does it at the turn's end."""
+    seat = seat_of(ship, name)
+    record = seat.record() if seat.is_up else None
+    if record and seat.harness.state(record).turn_open:
+        return service.request(ship.runtime, "relaunch", seat=seat.name, resume=resume)
+    return seat.restart() if resume else seat.fresh()
 
 
 def cmd_stop(args: argparse.Namespace) -> str:
@@ -285,11 +294,17 @@ def delivery_note(ship: shipmod.Ship, to: str) -> str:
 def cmd_inbox(args: argparse.Namespace) -> str | None:
     ship = load_ship(args)
     seat = this_seat(ship, args.seat)
-    if args.wait:
-        if not ship.session_of(ship.seat(seat)).human:
-            raise ShipError(f"{seat} is reached through its door; --wait is for seats in a human's session")
-        return post.wait(ship.runtime, seat)
-    return post.inbox_text(post.Store(ship.runtime), seat).rstrip("\n")
+    if not args.wait:
+        return post.inbox_text(post.Store(ship.runtime), seat).rstrip("\n")
+    if not ship.session_of(ship.seat(seat)).human:
+        raise ShipError(f"{seat} is reached through its door; --wait is for seats in a human's session")
+    arrived = post.wait(ship.runtime, seat)
+    if arrived is None:
+        return None
+    text, opened = arrived
+    print(text, end="", flush=True)  # printed first, then recorded as delivered
+    post.printed(ship.runtime, opened)
+    return None
 
 
 def cmd_service(args: argparse.Namespace) -> None:

@@ -67,8 +67,10 @@ def test_a_seat_in_a_human_session_is_reached_by_its_watch_only(ship: shipmod.Sh
     time.sleep(2.5)
     desk = seatmod.Seat(ship, ship.seat("desk"), tmux)
     assert desk.harness.screen(tmux.capture(desk.pane().id)).box == "", "never typed into"  # law: one-door
-    text = post.wait(ship.runtime, "desk", interval=0.1, stop_after=3)
+    text, opened = post.wait(ship.runtime, "desk", interval=0.1, stop_after=3)
     assert text.startswith("qd > question from operator · que-") and "Which branch?" in text
+    assert [a.result for a in opened] == [None], "open until printed"
+    post.printed(ship.runtime, opened)
     assert post.Attempts(ship.runtime).for_message(post.Store(ship.runtime).all()[0].id)[0].result == "watch"
     assert post.wait(ship.runtime, "desk", interval=0.1, stop_after=0.3) is None, "nothing new, nothing printed"
 
@@ -126,6 +128,50 @@ def test_changed_orders_rebrief_every_seat_with_a_message_from_ship(ship: shipmo
     notice = wait_for(lambda: [m for m in post.Store(ship.runtime).all() if m.sender == "ship"], seconds=10)[0]
     assert notice.to == "captain" and notice.body == "ship's orders changed · read runtime/brief/captain.md"
     assert wait_for(lambda: [a for a in post.Attempts(ship.runtime).for_message(notice.id) if a.result], seconds=15)[0].result == "delivered"
+
+
+def test_the_service_clears_a_known_notice_and_delivers_behind_it(ship: shipmod.Ship, tmux: Tmux, capsys):
+    text = (ship.folder / "ship.toml").read_text().replace('[seats.captain.settings]\n', '[seats.captain.settings]\ndialog = "daybreak"\n')
+    (ship.folder / "ship.toml").write_text(text)
+    qd(capsys, "up", "captain")
+    captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
+    wait_for(lambda: captain.harness.screen(tmux.capture(captain.pane().id)).interruption is not None)
+    qd(capsys, "post", "order", "--to", "captain", "behind the notice")
+    message = post.Store(ship.runtime).all()[0]
+    done = wait_for(lambda: [a for a in post.Attempts(ship.runtime).for_message(message.id) if a.result], seconds=15)
+    assert done[0].result == "delivered"
+    assert "· notice dismissed" in tmux.capture(captain.pane().id, history=50)
+
+
+def test_one_service_per_ship_by_lock_not_by_heartbeat(ship: shipmod.Ship, tmux: Tmux, capsys):
+    qd(capsys, "up", "captain")
+    pid, _ = service.read_heartbeat(ship.runtime)
+    os.kill(pid, signal.SIGSTOP)  # hung: the lock stays held while the heartbeat ages
+    try:
+        service.heartbeat_path(ship.runtime).write_text(f"{pid} 2026-01-01T00:00:00+00:00\n")
+        assert not service.alive(ship.runtime) and service.locked(ship.runtime)
+        code = cli.main(["up"])
+        err = capsys.readouterr().err
+        assert code == 2 and "holds" in err and "qd down stops it" in err
+    finally:
+        os.kill(pid, signal.SIGCONT)
+    wait_for(lambda: service.alive(ship.runtime))
+
+
+def test_a_restart_waits_for_the_turn_to_end(ship: shipmod.Ship, tmux: Tmux, capsys):
+    text = (ship.folder / "ship.toml").read_text().replace('step_seconds = "0.05"', 'steps = "6"\nstep_seconds = "0.5"', 1)
+    (ship.folder / "ship.toml").write_text(text)
+    qd(capsys, "up", "captain")
+    captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
+    first = captain.launched()
+    qd(capsys, "post", "order", "--to", "captain", "slow work\n$ echo first-turn-marker")
+    wait_for(lambda: captain.record() and captain.harness.state(captain.record()).turn_open, seconds=15)
+    proof = qd(capsys, "restart", "captain")
+    assert proof.startswith("pending: the service has not answered") or "resumed" in proof
+    wait_for(lambda: captain.launched() and captain.launched().at != first.at, seconds=30)
+    turns = captain.harness.turns(captain.record())
+    assert turns and all(t.ended for t in turns), "the running turn ended before the relaunch"
+    assert captain.launched().resume is not None, "a restart resumes"
 
 
 def test_the_service_reconciles_an_attempt_it_died_in_the_middle_of(ship: shipmod.Ship, tmux: Tmux, capsys):

@@ -127,13 +127,20 @@ def find(argument: str | None = None) -> Path:
 
 def load(folder: Path) -> Ship:
     folder = Path(folder).expanduser().resolve()
-    file = folder / "ship.toml"
     try:
-        data = tomllib.loads(file.read_text())
+        text = (folder / "ship.toml").read_text()
     except FileNotFoundError:
         raise ShipError(f"{folder} holds no ship.toml") from None
+    ship = _from_text(text, folder)
+    _validate(ship)
+    return ship
+
+
+def _from_text(text: str, folder: Path) -> Ship:
+    try:
+        data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as error:
-        raise ShipError(f"{file}: {error}") from None
+        raise ShipError(f"{folder / 'ship.toml'}: {error}") from None
     head = data.get("ship", {})
     pools = {name: _pool(name, table) for name, table in data.get("pools", {}).items()}
     sessions = {
@@ -141,7 +148,7 @@ def load(folder: Path) -> Ship:
         for name, table in data.get("sessions", {}).items()
     }
     seats = {name: _seat(name, table, folder) for name, table in data.get("seats", {}).items()}
-    ship = Ship(
+    return Ship(
         folder=folder,
         name=head.get("name", folder.name),
         operator=head.get("operator", "operator"),
@@ -150,8 +157,6 @@ def load(folder: Path) -> Ship:
         sessions=sessions,
         seats=seats,
     )
-    _validate(ship)
-    return ship
 
 
 def _pool(name: str, table: dict) -> Pool:
@@ -272,6 +277,7 @@ def set_value(ship: Ship, table: str, key: str, value: object) -> str:
     changed = edit(text, table, key, value)
     if changed == text:
         return f"{ship.file.name}: {table}.{key} = {literal(value)} already"
+    _validate(_from_text(changed, ship.folder))  # the file never holds a declaration qd cannot load
     _write_atomically(ship.file, changed)
     line = f"{ship.file.name}: {table}.{key} = {literal(value)}"
     if ship.is_repository:

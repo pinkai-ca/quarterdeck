@@ -75,10 +75,12 @@ class State:
     open_tool_since: datetime | None = None
     last_write: datetime | None = None
     last_input: str | None = None
+    last_input_at: datetime | None = None
     model: str | None = None
     effort: str | None = None
     queued: tuple[str, ...] = ()
     turns: int = 0
+    local_stdout: str | None = None
 
 
 @dataclass(frozen=True)
@@ -231,6 +233,10 @@ class Harness(ABC):
     @abstractmethod
     def turns(self, record: Path) -> list[Turn]:
         pass
+
+    def read(self, record: Path) -> tuple[State, list[Turn]]:
+        """The live state and the ended turns from one reading of the record."""
+        return self.state(record), self.turns(record)
 
     def join(self, home: Path, launched_at: datetime) -> Join:
         """The first record written after the launch; ambiguity reported, never guessed."""

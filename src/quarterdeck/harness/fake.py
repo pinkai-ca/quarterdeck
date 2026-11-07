@@ -85,6 +85,9 @@ class FakeHarness(Harness):
     def turns(self, record: Path) -> list[Turn]:
         return self._reader(record).turns(record)
 
+    def read(self, record: Path) -> tuple[State, list[Turn]]:
+        return self._reader(record).read(record)
+
     # -- screen ------------------------------------------------------------------------
 
     def screen(self, text: str) -> Screen:

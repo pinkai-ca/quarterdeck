@@ -290,8 +290,12 @@ class Attempts:
         return {a.message for a in self.all() if a.result == "blind"} - delivered
 
     def undelivered(self, store: Store, seat: str) -> list[Message]:
-        """What is addressed to the seat and never reached it, oldest first; blind ones wait for a hand."""
-        skip = self.delivered_ids() | self.blind_ids()
+        """What is addressed to the seat and never reached it, oldest first.
+
+        A blind message waits for a hand, and one with an attempt still open is being
+        judged, so neither is sent again by the service (law: one-door).
+        """
+        skip = self.delivered_ids() | self.blind_ids() | {a.message for a in self.unfinished()}
         return [m for m in store.for_seat(seat) if m.id not in skip]
 
 
@@ -312,11 +316,13 @@ def watch_armed(runtime: Path, seat: str) -> bool:
     return True
 
 
-def wait(runtime: Path, seat: str, interval: float = 1.0, stop_after: float | None = None) -> str | None:
-    """Block until something new is addressed to ``seat``; print it in full; exit.
+def wait(runtime: Path, seat: str, interval: float = 1.0, stop_after: float | None = None) -> tuple[str, list[Attempt]] | None:
+    """Block until something new is addressed to ``seat``; return it in full, with its open attempts.
 
-    The wait registers itself while it runs, so the service and the status line know a
-    watch is armed. Nothing is typed into the seat's pane: this is the Office's one path.
+    The caller prints the text and then closes the attempts with ``printed``, so a wait
+    that dies between the two leaves them open to be judged, never silently taken. The
+    wait registers itself while it runs, so the service and the status line know a watch
+    is armed. Nothing is typed into the seat's pane: this is the Office's one path.
     """
     store, attempts = Store(runtime), Attempts(runtime)
     path = watch_file(runtime, seat)
@@ -327,12 +333,17 @@ def wait(runtime: Path, seat: str, interval: float = 1.0, stop_after: float | No
         while True:
             waiting = attempts.undelivered(store, seat)
             if waiting:
-                text = typed(waiting)
-                for message in waiting:
-                    attempts.close(attempts.open(message, seat, None, None, None), "watch", "printed by qd inbox --wait")
-                return text
+                opened = [attempts.open(message, seat, None, None, None) for message in waiting]
+                return typed(waiting), opened
             if deadline is not None and datetime.now().timestamp() > deadline:
                 return None
             time.sleep(interval)
     finally:
         path.unlink(missing_ok=True)
+
+
+def printed(runtime: Path, opened: list[Attempt]) -> None:
+    """Close a watch's attempts once their text has reached the seat."""
+    attempts = Attempts(runtime)
+    for attempt in opened:
+        attempts.close(attempt, "watch", "printed by qd inbox --wait")

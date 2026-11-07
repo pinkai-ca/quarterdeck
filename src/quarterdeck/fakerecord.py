@@ -82,6 +82,8 @@ class ClaudeShape(_Writer):
 
     def end(self, reply: str) -> None:
         self.assistant([{"type": "text", "text": reply}], "end_turn", reply)
+        self.write({"type": "system", "subtype": "turn_duration", "durationMs": 1, "sessionId": self.session,
+                    "timestamp": now().isoformat()})
         self.turn += 1
 
     def abort(self) -> None:
@@ -93,6 +95,7 @@ class ClaudeShape(_Writer):
                     "sessionId": self.session, "timestamp": now().isoformat()})
 
     def command(self, text: str, output: str) -> None:
+        """A local command, as Claude Code records one: the echo, then its output."""
         name, _, args = text[1:].partition(" ")
         self.entry("user", {"role": "user", "content":
                    f"<command-name>/{name}</command-name>\n<command-message>{name}</command-message>\n<command-args>{args}</command-args>"})

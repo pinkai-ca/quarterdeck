@@ -134,6 +134,14 @@ def test_set_value_writes_the_file_and_commits_in_a_repository(enterprise_ship: 
     assert shipmod.set_value(ship, "seats.pike", "model", "claude-fable-5-1").endswith("already")
 
 
+def test_set_value_refuses_a_declaration_it_could_not_load(enterprise_ship: Path):
+    ship = shipmod.load(enterprise_ship)
+    before = ship.file.read_text()
+    with pytest.raises(ShipError, match="session 'nowhere' is not declared"):
+        shipmod.set_value(ship, "seats.pike", "session", "nowhere")
+    assert ship.file.read_text() == before and git(enterprise_ship, "status", "--porcelain") == ""
+
+
 def test_set_value_in_a_folder_that_is_not_a_repository_says_so(example_ship: Path):
     ship = shipmod.load(example_ship)
     proof = shipmod.set_value(ship, "seats.captain", "effort", "max")

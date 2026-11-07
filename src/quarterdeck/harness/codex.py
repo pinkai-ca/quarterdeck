@@ -69,7 +69,7 @@ class _Reader:
         self.turns: list[Turn] = []
         self.open: dict | None = None
         self.pending: dict[str, tuple[str, datetime | None]] = {}
-        self.model = self.effort = self.last_input = None
+        self.model = self.effort = self.last_input = self.last_input_at = None
         for entry in entries(record):
             self.take(entry)
 
@@ -100,6 +100,7 @@ class _Reader:
             text = _text(payload.get("content"))
             if text and not text.startswith("<") and self.open is not None and not self.open["input"]:
                 self.open["input"] = self.last_input = text
+                self.last_input_at = at
         elif sub == "message" and payload.get("role") == "assistant" and self.open is not None:
             self.open["reply"] = _text(payload.get("content")) or self.open["reply"]
         elif sub in CALLS:
@@ -138,6 +139,7 @@ class _Reader:
             open_tool_since=tool[1] if tool else None,
             last_write=last_write,
             last_input=self.last_input,
+            last_input_at=self.last_input_at,
             model=self.model,
             effort=self.effort,
             turns=len(self.turns),
@@ -150,3 +152,8 @@ def state(record: Path) -> State:
 
 def turns(record: Path) -> list[Turn]:
     return _Reader(record).turns
+
+
+def read(record: Path) -> tuple[State, list[Turn]]:
+    reader = _Reader(record)
+    return reader.state(), reader.turns

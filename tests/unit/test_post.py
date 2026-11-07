@@ -94,6 +94,32 @@ def test_the_inbox_shows_open_obligations_first(tmp_path: Path):
     assert f"open · reply: qd post report --re {new.short}" in text and "closed by rep-" in text
 
 
+def test_an_attempt_still_open_holds_its_message_back(tmp_path: Path):
+    store, attempts = Store(tmp_path), post.Attempts(tmp_path)
+    order = store.new("order", "desk", "scott", "once only")
+    assert attempts.undelivered(store, "scott") == [order]
+    attempt = attempts.open(order, "scott", "%1", 42, "2026-11-07T00:00:00+00:00")
+    assert attempts.undelivered(store, "scott") == [], "being judged, never sent again"  # law: one-door
+    attempts.close(attempt, "blind", "never confirmed")
+    assert attempts.undelivered(store, "scott") == [] and attempts.blind_ids() == {order.id}
+    again = store.new("order", "desk", "scott", "a second")
+    assert attempts.undelivered(store, "scott") == [again]
+    attempts.close(attempts.open(again, "scott", "%1", 42, None), "delivered")
+    assert attempts.undelivered(store, "scott") == [] and attempts.delivered_ids() == {again.id}
+
+
+def test_the_watch_hands_back_open_attempts_to_close_after_printing(tmp_path: Path):
+    store = Store(tmp_path)
+    question = store.new("question", "operator", "desk", "Which branch?")
+    text, opened = post.wait(tmp_path, "desk", interval=0.05, stop_after=2)
+    assert question.short in text and [a.result for a in opened] == [None]
+    assert not post.watch_file(tmp_path, "desk").exists(), "unregistered once it returns"
+    assert post.Attempts(tmp_path).undelivered(store, "desk") == [], "held while the print is in flight"
+    post.printed(tmp_path, opened)
+    assert post.Attempts(tmp_path).for_message(question.id)[0].result == "watch"
+    assert post.wait(tmp_path, "desk", interval=0.05, stop_after=0.2) is None
+
+
 def test_claimed_order_for_attribution(tmp_path: Path):
     store = Store(tmp_path)
     a = store.new("order", "desk", "scott", "a")

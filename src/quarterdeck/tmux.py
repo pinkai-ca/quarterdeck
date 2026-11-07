@@ -6,6 +6,7 @@ programs rewrite titles themselves (law: identity).
 
 from __future__ import annotations
 
+import itertools
 import os
 import shlex
 import subprocess
@@ -76,6 +77,7 @@ class Tmux:
 
     def __init__(self, socket: str | None = None):
         self.socket = socket
+        self._buffers = itertools.count()
 
     @classmethod
     def default(cls) -> "Tmux":
@@ -170,15 +172,17 @@ class Tmux:
         """The screen as shown, with ``history`` lines of scrollback above it."""
         return self.run("capture-pane", "-p", "-t", pane_id, "-S", str(-history))
 
-    def pane_environment(self, pane_id: str, name: str) -> str | None:
-        pane = self.pane(pane_id)
-        if pane is None:
-            return None
+    def session_environment(self, session: str, name: str) -> str | None:
+        """A variable set on the session with ``new_session``; None when unset."""
         try:
-            out = self.run("show-environment", "-t", _session(pane.session), name)
+            out = self.run("show-environment", "-t", _session(session), name)
         except TmuxError:
             return None
         return out.strip().partition("=")[2] or None
+
+    def pane_environment(self, pane_id: str, name: str) -> str | None:
+        pane = self.pane(pane_id)
+        return self.session_environment(pane.session, name) if pane else None
 
     # -- typing ------------------------------------------------------------------------
 
@@ -190,12 +194,13 @@ class Tmux:
         in with the text, so a multi-line message stays one paste for the reader scrolled up.
         """
         pane = self.pane(pane_id)
+        buffer = f"qd-{os.getpid()}-{next(self._buffers)}"  # one buffer per paste: concurrent pastes never cross
         if bracketed and pane is not None and pane.in_mode:
-            self.run("load-buffer", "-b", "qd", "-", stdin=f"\x1b[200~{text.replace(chr(10), chr(13))}\x1b[201~")
-            self.run("paste-buffer", "-d", "-r", "-b", "qd", "-t", pane_id)
+            self.run("load-buffer", "-b", buffer, "-", stdin=f"\x1b[200~{text.replace(chr(10), chr(13))}\x1b[201~")
+            self.run("paste-buffer", "-d", "-r", "-b", buffer, "-t", pane_id)
             return
-        self.run("load-buffer", "-b", "qd", "-", stdin=text)
-        self.run("paste-buffer", "-d", "-b", "qd", "-t", pane_id, *(["-p"] if bracketed else []))
+        self.run("load-buffer", "-b", buffer, "-", stdin=text)
+        self.run("paste-buffer", "-d", "-b", buffer, "-t", pane_id, *(["-p"] if bracketed else []))
 
     def keys(self, pane_id: str, *keys: str) -> None:
         self.run("send-keys", "-t", pane_id, *keys)

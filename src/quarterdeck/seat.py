@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import sys
 from dataclasses import asdict, dataclass
@@ -128,9 +129,9 @@ class Seat:
             (self.folder / "record").unlink(missing_ok=True)
         first, carried = self.first_message(resume=resume_id is not None)
         launch = self.harness.launch(self.spec, pool, self.home, brief, resume_id, first)
+        at = datetime.now(timezone.utc).isoformat()  # before the program can write a record (law: one-record)
         pane = self._open_window(list(launch.argv), launch.env)
-        launched = Launched(pane.id, pane.pid, datetime.now(timezone.utc).isoformat(), pool.name,
-                            resume_id, list(launch.argv), self.harness.version())
+        launched = Launched(pane.id, pane.pid, at, pool.name, resume_id, list(launch.argv), self.harness.version())
         (self.folder / "launch.json").write_text(json.dumps(asdict(launched), indent=2) + "\n")
         attempts = post.Attempts(self.ship.runtime)
         for message in carried:
@@ -162,13 +163,20 @@ class Seat:
     def _open_window(self, argv: list[str], env: dict[str, str]) -> Pane:
         session = self.session
         ship_env = {"QD_SHIP": str(self.ship.folder)}
-        if not self.tmux.has_session(session.title):
+        if self.tmux.has_session(session.title):
+            owner = self.tmux.session_environment(session.title, "QD_SHIP")
+            if owner != str(self.ship.folder):
+                raise ShipError(f"tmux session {session.title!r} belongs to {owner or 'another server user'}; "
+                                f"give this ship's session another title")
+        else:
             self.tmux.new_session(session.title, env=ship_env)
-            self.tmux.status_line(session.title, f"{qd_bin() / 'qd'} status --line --ship {self.ship.folder}")
+            status = shlex.join([str(qd_bin() / "qd"), "--ship", str(self.ship.folder), "status", "--line"])
+            self.tmux.status_line(session.title, status)
         path = os.pathsep.join(filter(None, [str(qd_bin()), os.environ.get("PATH", "")]))
         env = {**env, **ship_env, "QD_SEAT": self.name}
         cwd = self.ship.cwd_of(self.spec)
-        cwd.mkdir(parents=True, exist_ok=True)
+        if not cwd.is_dir():
+            raise ShipError(f"{self.name}: working directory {cwd} does not exist; qd creates nothing outside its folder")  # law: one-folder
         return self.tmux.new_window(session.title, self.spec.display, cwd, ["env", f"PATH={path}", *argv], env)
 
     def down(self) -> str:

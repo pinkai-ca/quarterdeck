@@ -10,6 +10,7 @@ same message) and the stop reason that ends a turn. Queued messages appear as
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -89,7 +90,8 @@ class _Reader:
         self.open: dict | None = None
         self.pending: dict[str, tuple[str, datetime | None]] = {}
         self.queued: list[str] = []
-        self.model = self.effort = self.last_input = None
+        self.model = self.effort = self.last_input = self.last_input_at = self.local_stdout = None
+        self.closed_message = None
         self.subagent_turns = 0
         for entry in entries(record):
             self.take(entry)
@@ -105,6 +107,8 @@ class _Reader:
             self.user(entry)
         elif kind == "assistant":
             self.assistant(entry)
+        elif kind == "system" and entry.get("subtype") == "turn_duration" and self.open is not None:
+            self.end(when(entry.get("timestamp")))
 
     def queue(self, entry: dict) -> None:
         text = entry.get("content") or ""
@@ -115,12 +119,16 @@ class _Reader:
 
     def user(self, entry: dict) -> None:
         text = prompt_text(entry)
+        content = entry.get("message", {}).get("content")
+        if isinstance(content, str) and content.startswith("<local-command-stdout>"):
+            self.local_stdout = content.removeprefix("<local-command-stdout>").removesuffix("</local-command-stdout>")
+            return
         if text is not None and text.startswith(INTERRUPTED):
             if self.open is not None:
                 self.end(when(entry.get("timestamp")))
             return
         if text is not None:
-            self.last_input = text
+            self.last_input, self.last_input_at = text, when(entry.get("timestamp"))
             if text in self.queued:
                 self.queued.remove(text)
             self.open = {"started": when(entry.get("timestamp")), "input": text, "usage": {}, "tools": [],
@@ -137,21 +145,37 @@ class _Reader:
             self.open["tools"].append(ToolCall(name, seconds, bool(block.get("is_error"))))
 
     def assistant(self, entry: dict) -> None:
+        """One entry per content block, all carrying the message's usage and stop reason.
+
+        A message's last blocks may arrive after the block that ended the turn, so entries
+        of the message that closed a turn still belong to it.
+        """
         message = entry.get("message", {})
         self.model = message.get("model") or self.model
         self.effort = entry.get("effort") or self.effort
+        message_id = message.get("id") or entry.get("requestId") or entry.get("uuid")
+        if self.open is None and self.turns and message_id == self.closed_message:
+            self.continue_closed(message)
+            return
         if self.open is None:
             return
         self.open["model"] = self.model
         if message.get("usage"):
-            self.open["usage"][message.get("id") or entry.get("requestId") or entry.get("uuid")] = message["usage"]
+            self.open["usage"][message_id] = message["usage"]
         for block in message.get("content") or []:
             if block.get("type") == "tool_use":
                 self.pending[block.get("id")] = (block.get("name", "?"), when(entry.get("timestamp")))
             elif block.get("type") == "text" and block.get("text"):
                 self.open["reply"] = block["text"]
         if message.get("stop_reason") in ENDS_TURN:
+            self.closed_message = message_id
             self.end(when(entry.get("timestamp")))
+
+    def continue_closed(self, message: dict) -> None:
+        last = self.turns[-1]
+        reply = next((b["text"] for b in message.get("content") or [] if b.get("type") == "text" and b.get("text")), None)
+        if reply:
+            self.turns[-1] = replace(last, reply=reply)
 
     def end(self, at: datetime | None) -> None:
         turn = self.open
@@ -183,10 +207,12 @@ class _Reader:
             open_tool_since=tool[1] if tool else None,
             last_write=last_write,
             last_input=self.last_input,
+            last_input_at=self.last_input_at,
             model=self.model,
             effort=self.effort,
             queued=tuple(self.queued),
             turns=len(self.turns),
+            local_stdout=self.local_stdout,
         )
 
 
@@ -196,3 +222,8 @@ def state(record: Path) -> State:
 
 def turns(record: Path) -> list[Turn]:
     return _Reader(record).turns
+
+
+def read(record: Path) -> tuple[State, list[Turn]]:
+    reader = _Reader(record)
+    return reader.state(), reader.turns
