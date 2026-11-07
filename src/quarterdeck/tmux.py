@@ -6,6 +6,8 @@ programs rewrite titles themselves (law: identity).
 
 from __future__ import annotations
 
+import os
+import shlex
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -75,6 +77,11 @@ class Tmux:
     def __init__(self, socket: str | None = None):
         self.socket = socket
 
+    @classmethod
+    def default(cls) -> "Tmux":
+        """The user's server, or the one ``QD_TMUX_SOCKET`` names (the drill uses its own)."""
+        return cls(os.environ.get("QD_TMUX_SOCKET") or None)
+
     def run(self, *args: str, stdin: str | None = None) -> str:
         command = ["tmux"] + (["-L", self.socket] if self.socket else []) + list(args)
         done = subprocess.run(command, input=stdin, capture_output=True, text=True)
@@ -123,11 +130,16 @@ class Tmux:
     def new_window(
         self, session: str, name: str, cwd: Path, command: list[str], env: dict[str, str] | None = None
     ) -> Pane:
-        """Open ``command`` in a new window of ``session``; the window stays when it fails."""
+        """Open ``command`` in a new window of ``session``; the window stays when it fails.
+
+        tmux runs the command through the user's login shell, whose profile resets PATH,
+        so a PATH the program needs travels in the command itself (``env PATH=…``), and
+        every other variable in ``env`` reaches it as given.
+        """
         args = ["new-window", "-d", "-P", "-F", _FORMAT, "-t", _session(session), "-n", name, "-c", str(cwd)]
         for key, value in (env or {}).items():
             args += ["-e", f"{key}={value}"]
-        pane = _parse(self.run(*args, "--", *command).rstrip("\n"))
+        pane = _parse(self.run(*args, shlex.join(command)).rstrip("\n"))
         self.run("set-option", "-w", "-t", pane.id, "remain-on-exit", "failed")
         self._drop_placeholder(session)
         return pane
