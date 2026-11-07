@@ -83,13 +83,13 @@ class _Reader:
         self.sidechain_ends: set[str | None] = set()
         self.subagent_turns = 0
         rows = entries(record)
-        if not any(row.get('type') in ['assistant', 'queue-operation', 'system', 'user'] for row in rows):
-            raise RecordError('record has no recognizable claude entries')
-        try:
-            for entry in rows:
+        if rows and not any(row.get("type") in ("assistant", "queue-operation", "system", "user") for row in rows):
+            raise RecordError("no Claude Code entries in this record: another program's file")
+        for entry in rows:
+            try:
                 self.take(entry)
-        except (TypeError, ValueError, AttributeError, KeyError) as error:
-            raise RecordError('malformed claude record fields') from error
+            except (TypeError, ValueError, AttributeError, KeyError):
+                continue  # a line of a shape this reader does not know is skipped; the rest is still read
 
     def take(self, entry: dict) -> None:
         kind = entry.get("type")

@@ -31,10 +31,10 @@ def test_an_ended_turn_sums_its_steps(tmp_path: Path, shape, reader):
     steps = 3  # two tool calls and the reply each carry a usage
     assert turn.tokens.read_cached == expected["read_cached"] * steps
     assert turn.tokens.written > 0
+    assert turn.tokens.complete, "every step of the turn carried its usage"
+    assert turn.tokens.total == turn.tokens.read_cached + turn.tokens.read_uncached + turn.tokens.cache_written + turn.tokens.written
     if reader is antigravity:
-        assert turn.tokens.cache_written is None and turn.tokens.total is None and turn.subagent_turns is None
-    else:
-        assert turn.tokens.total == turn.tokens.read_cached + turn.tokens.read_uncached + turn.tokens.cache_written + turn.tokens.written
+        assert turn.tokens.cache_written == 0 and turn.subagent_turns is None, "a class the provider never reports is zero"
     state = reader.state(record.path)
     assert not state.turn_open and state.turns == 1 and state.model == "fake-1"
     assert state.effort == (None if reader is antigravity else "high")
@@ -194,9 +194,38 @@ def test_a_partial_last_line_is_skipped(tmp_path: Path):
     assert claude.state(record.path).turns == 1
 
 
-def test_tokens_add():
+def test_tokens_add_and_count_the_steps_they_could_not_measure():
     assert Tokens(1, 2, 3, 4) + Tokens(10, 20, 30, 40) == Tokens(11, 22, 33, 44)
-    assert Tokens(1, 2, 3, 4).total == 10
-    partial = Tokens(1, 2, None, 4) + Tokens(10, 20, 30, 40)
-    assert partial == Tokens(11, 22, None, 44) and partial.total is None
-    assert Tokens.unknown().total is None
+    assert Tokens(1, 2, 3, 4).total == 10 and Tokens(1, 2, 3, 4).complete
+    partly = Tokens(1, 2, 3, 4) + Tokens.unknown()
+    assert partly == Tokens(1, 2, 3, 4, unmeasured=1) and partly.total == 10 and not partly.complete, \
+        "the known part is summed and the gap is counted, never hidden and never guessed"
+    assert Tokens.unknown().total == 0 and Tokens.unknown().unmeasured == 1
+
+
+@pytest.mark.parametrize("shape,reader", SHAPES[:2], ids=["claude", "codex"])
+def test_a_line_the_reader_does_not_know_is_skipped_and_the_rest_still_read(tmp_path: Path, shape, reader):
+    record = shape(tmp_path, Path("/work"), "sess-9", "fake-1")
+    record.begin("one", "fake-1", "low")
+    record.end("done")
+    with record.path.open("a") as f:
+        f.write('{"type": "a-shape-from-a-newer-version", "payload": 7}\nnot json at all\n[1, 2, 3]\n')
+    record.begin("two", "fake-1", "low")
+    record.end("done again")
+    state, turns = reader.read(record.path)
+    assert [t.input for t in turns] == ["one", "two"] and not state.turn_open and state.turns == 2
+    assert state.last_input == "two", "the seat stays readable, so a delivery can still be confirmed"
+
+
+def test_another_programs_record_is_refused_by_name(tmp_path: Path):
+    from quarterdeck.harness.base import RecordError
+
+    record = tmp_path / "other.jsonl"
+    record.write_text('{"kind": "nothing a reader knows"}\n')
+    with pytest.raises(RecordError, match="another program's file"):
+        claude.state(record)
+    with pytest.raises(RecordError, match="another program's file"):
+        codex.state(record)
+    empty = tmp_path / "empty.jsonl"
+    empty.write_text("")
+    assert claude.state(empty).turns == 0 and not claude.state(empty).turn_open, "a record with nothing in it yet is idle, not an error"

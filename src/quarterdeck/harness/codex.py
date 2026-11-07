@@ -81,18 +81,18 @@ class _Reader:
         self.model = self.effort = self.last_input = self.last_input_at = None
         self.consumed: list[str] = []
         rows = entries(record)
-        if not any(row.get('type') in ['event_msg', 'response_item', 'session_meta', 'turn_context'] for row in rows):
-            raise RecordError('record has no recognizable codex entries')
-        try:
-            for entry in rows:
+        if rows and not any(row.get("type") in ("event_msg", "response_item", "session_meta", "turn_context") for row in rows):
+            raise RecordError("no Codex entries in this record: another program's file")
+        for entry in rows:
+            try:
                 self.take(entry)
-        except (TypeError, ValueError, AttributeError, KeyError) as error:
-            raise RecordError('malformed codex record fields') from error
+            except (TypeError, ValueError, AttributeError, KeyError):
+                continue  # a line of a shape this reader does not know is skipped; the rest is still read
 
     def take(self, entry: dict) -> None:
         payload = entry.get("payload")
         if not isinstance(payload, dict):
-            raise RecordError("Codex entry payload is not an object")
+            return  # not an entry this reader knows
         kind, sub, at = entry.get("type"), payload.get("type"), when(entry.get("timestamp"))
         if kind == "turn_context":
             self.model = payload.get("model") or self.model

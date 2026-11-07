@@ -1,4 +1,10 @@
-"""JSON-lines records: malformed or missing sources are unknown, never empty usage."""
+"""JSON-lines records: a line the reader cannot parse is skipped, a file it cannot read is an error.
+
+A record is written by a program that is still running: its last line may be half written, and a
+version the adapter has not seen may add a line of a shape it does not know. Neither makes the
+record unreadable, so neither blinds the seat; they are skipped. A file that is not text, or not
+there, is a RecordError, and the reading says so instead of showing nothing.
+"""
 
 from datetime import datetime, timezone
 import json
@@ -6,39 +12,36 @@ from pathlib import Path
 
 
 class RecordError(OSError):
-    """A record file that cannot be decoded or is inconsistent."""
+    """A record file that cannot be read or decoded at all."""
 
 
 def entries(record: Path) -> list[dict]:
-    """Read complete entries, retaining the existing tolerance for one unfinished tail."""
+    """Every parseable object line of the record, in order; the rest is skipped."""
     try:
         raw = record.read_text()
     except UnicodeError as error:
-        raise RecordError('record is not UTF-8 JSON lines') from error
-    lines, out = raw.splitlines(), []
-    for index, line in enumerate(lines):
+        raise RecordError("record is not UTF-8 JSON lines") from error
+    out = []
+    for line in raw.splitlines():
         if not line.strip():
             continue
         try:
             entry = json.loads(line)
-        except json.JSONDecodeError as error:
-            if out and index == len(lines)-1 and not raw.endswith('\n'):
-                continue  # the writer may still be appending this final entry
-            raise RecordError(f'malformed JSON record at line {index+1}') from error
-        if not isinstance(entry, dict):
-            raise RecordError(f'non-object JSON record at line {index+1}')
-        out.append(entry)
-    if not out:
-        raise RecordError('record has no readable entries yet')
+        except json.JSONDecodeError:
+            continue  # half written, or not JSON at all: not this reader's to interpret
+        if isinstance(entry, dict):
+            out.append(entry)
+    if raw.strip() and not out:
+        raise RecordError("no JSON object lines in this record: not a record this reader can read")
     return out
 
 
 def when(value: str | None) -> datetime | None:
-    """An ISO timestamp as an aware datetime; a bare one is read as UTC."""
-    if not value:
+    """An ISO timestamp as an aware datetime; a bare one is read as UTC; one that is not a timestamp is None."""
+    if not value or not isinstance(value, str):
         return None
     try:
         moment = datetime.fromisoformat(value)
-    except (TypeError, ValueError) as error:
-        raise RecordError('invalid record timestamp') from error
+    except ValueError:
+        return None
     return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)

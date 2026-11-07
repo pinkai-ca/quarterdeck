@@ -13,7 +13,7 @@ from quarterdeck.fakerecord import AntigravityShape, CodexShape
 from quarterdeck.harness.antigravity import AntigravityHarness
 from quarterdeck.harness.base import Launch, RecordError
 from quarterdeck.harness.codex import CodexHarness
-from quarterdeck.ledger import table
+from quarterdeck.ledger import Count, table
 from quarterdeck.post import Store
 from quarterdeck.seat import Launched, Seat
 from quarterdeck.service import Service
@@ -64,9 +64,9 @@ def test_down_switch_fresh_join_and_history_use_original_reader_pool_and_quota(t
         return codex_read(path)
     monkeypatch.setattr(CodexHarness,'read',staticmethod(only_codex))
     assert seat.record() is None and 'reader changed' in seat.join().reason
-    assert watch.tokens_today(seat) is None
+    assert watch.tokens_today(seat) == Count(old_turns[0].tokens.total), 'the old record is still the seat\'s, read by its own reader'
     shown = '\n'.join(watch.table(seat.ship,seat.tmux))
-    assert 'worker' in shown and 'neighbor' in shown and 'unknown' in shown
+    assert 'worker' in shown and 'neighbor' in shown and str(old_turns[0].tokens.total) in shown, 'the old record counts for its seat'
     assert 'record absent: record reader changed' in '\n'.join(watch.full(seat))
     svc = Service(seat.ship,seat.tmux)
     svc.account()
@@ -107,7 +107,7 @@ def test_down_switch_fresh_join_and_history_use_original_reader_pool_and_quota(t
     svc.account()
     assert any(row[0] == str(old.path) and row[2] == 'google' for row in svc.ledger.incomplete_records())
     assert svc.ledger.db.execute('SELECT COUNT(*) FROM turns').fetchone() == (2,)
-    assert watch.tokens_today(seat) is None
+    assert watch.tokens_today(seat).unmeasured == 1, 'the figure stands, and the missing record puts a + beside it'
     old.path.write_bytes(snapshot)
     svc.account()
     assert not svc.ledger.incomplete_records()
@@ -143,11 +143,7 @@ def test_legacy_launch_proves_reader_but_untyped_down_history_does_not_guess(tmp
     svc.ledger.close()
 
 
-@pytest.mark.parametrize('data', [b'SQLite format 3\x00\xff', b'broken\n', b'[]\n', b'{}\n',
-                                  b'{"type":"event_msg","payload":[]}\n',
-                                  b'{"type":"event_msg","payload":{"type":"task_started"},"timestamp":"bad"}\n',
-                                  b'{"type":"user","message":{"content":"other program"}}\n', None])
-def test_missing_mismatched_and_malformed_owned_codex_records_are_unknown(tmp_path, monkeypatch, data):
+def owned_codex_record(tmp_path, monkeypatch, data):
     seat,old,_ = setup_seat(tmp_path,monkeypatch)
     seat = switch(seat)
     path = seat.home/'sessions/2030/01/01/rollout-synthetic-bad.jsonl'
@@ -156,15 +152,37 @@ def test_missing_mismatched_and_malformed_owned_codex_records_are_unknown(tmp_pa
         path.write_bytes(data)
     record_owner.register(seat.folder,path,'codex')
     (seat.folder/'record').write_text(str(path))
+    return seat, old, path
+
+
+@pytest.mark.parametrize('data', [b'SQLite format 3\x00\xff', b'broken\n', b'[]\n', b'{}\n',
+                                  b'{"type":"user","message":{"content":"other program"}}\n', None])
+def test_a_missing_or_foreign_owned_record_is_noted_and_marks_the_figures(tmp_path, monkeypatch, data):
+    seat, old, path = owned_codex_record(tmp_path, monkeypatch, data)
     if data is not None:
         with pytest.raises(OSError):
             CodexHarness().read(path)
-    assert watch.tokens_today(seat) is None
+    today = watch.tokens_today(seat)
+    assert today.unmeasured == 1, 'what the old record holds is counted; the unread one adds a +'
     assert 'neighbor' in '\n'.join(watch.table(seat.ship,seat.tmux))
     svc = Service(seat.ship,seat.tmux)
     svc.account()
     assert any(row[0] == str(path) for row in svc.ledger.incomplete_records())
     assert svc.ledger.db.execute('SELECT pool FROM turns').fetchall() == [('google',)]
+    assert '+' in '\n'.join(table(svc.ledger,'seat'))
+    svc.ledger.close()
+
+
+@pytest.mark.parametrize('data', [b'{"type":"event_msg","payload":[]}\n',
+                                  b'{"type":"event_msg","payload":{"type":"task_started"},"timestamp":"bad"}\n'])
+def test_an_odd_line_in_an_owned_record_is_skipped_not_a_blind_seat(tmp_path, monkeypatch, data):
+    seat, old, path = owned_codex_record(tmp_path, monkeypatch, data)
+    state, turns = CodexHarness().read(path)
+    assert turns == [] and state.turns == 0, 'the line is skipped and the record reads as what it is: nothing yet'
+    assert watch.tokens_today(seat).unmeasured == 0
+    svc = Service(seat.ship,seat.tmux)
+    svc.account()
+    assert not any(row[0] == str(path) for row in svc.ledger.incomplete_records())
     svc.ledger.close()
 
 
@@ -216,12 +234,12 @@ def test_stale_sibling_pin_does_not_resolve_shared_record_ambiguity(tmp_path, mo
     assert seat.join().record is None and seat.join().reason.startswith('ambiguous:')  # law: one-record
 
 
-def test_new_program_without_a_joined_record_reports_unknown_usage(tmp_path, monkeypatch):
+def test_new_program_without_a_joined_record_has_nothing_to_count_yet(tmp_path, monkeypatch):
     seat,_,_ = setup_seat(tmp_path,monkeypatch)
     fresh = Seat(seat.ship,seat.ship.seats['neighbor'],seat.tmux)
     fresh.home.mkdir(parents=True)
     launch = replace(seat.launched(),harness='codex',pool='codex',argv=['codex'])
     (fresh.folder/'launch.json').write_text(json.dumps(asdict(launch)))
     assert fresh.join().reason == 'no record yet'
-    assert watch.tokens_today(fresh) is None
+    assert watch.tokens_today(fresh) == Count(), 'no record, nothing spent, nothing unmeasured'
     assert 'record absent: no record yet' in '\n'.join(watch.full(fresh))
