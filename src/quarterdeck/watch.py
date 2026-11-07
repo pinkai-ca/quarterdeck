@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from . import post, service
+from . import credential, post, service
 from .door import Door, Reading
 from .seat import Seat, seats
 from .ship import Ship
@@ -233,7 +233,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         unarmed=unarmed,
         walls=walls or [],
         disks=disks([ship.runtime, ship.workspace, Path(tempfile.gettempdir())]),
-        login=login or [],
+        login=login if login is not None else credential.login_needed(ship),
     )
 
 

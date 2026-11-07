@@ -9,140 +9,27 @@ than the tick (law: events-not-clocks).
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import signal
-import subprocess
 import sys
 import time
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
-from . import post, ship as shipmod, standing
+from . import credential, post, ship as shipmod, standing
 from .door import CONFIRM_SECONDS, Door
 from .post import Attempts, Store
-from .seat import Seat, qd_bin, seats
+from .seat import Seat, seats
+from .servicectl import (  # noqa: F401  (the process control, reachable as service.* too)
+    acquire_lock, alive, heartbeat_path, locked, read_heartbeat, request, running, start, stop, write_heartbeat,
+)
 from .ship import Ship, ShipError
 from .tmux import Tmux
 
 TICK = 1.0
-STALE_SECONDS = 10.0
-ANSWER_SECONDS = 8.0
 SPEEDS = {None: 0, "now": 1, "interrupt": 2}
-
-
-def heartbeat_path(runtime: Path) -> Path:
-    return runtime / "service.heartbeat"
-
-
-def read_heartbeat(runtime: Path) -> tuple[int, float] | None:
-    """The service's pid and the age of its last tick in seconds, or None when none was written."""
-    try:
-        pid, stamp = heartbeat_path(runtime).read_text().split()
-    except (FileNotFoundError, ValueError):
-        return None
-    age = datetime.now(timezone.utc).timestamp() - datetime.fromisoformat(stamp).timestamp()
-    return int(pid), age
-
-
-def running(pid: int) -> bool:
-    """Whether a process is alive and not a zombie waiting to be reaped."""
-    try:
-        state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
-        return state != "Z"
-    except (FileNotFoundError, IndexError):
-        pass
-    except OSError:
-        return False
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
-
-
-def lock_path(runtime: Path) -> Path:
-    return runtime / "service.lock"
-
-
-def locked(runtime: Path) -> bool:
-    """Whether a service holds the runtime's lock: the one fact that says a service owns this ship."""
-    try:
-        with lock_path(runtime).open("a") as handle:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            fcntl.flock(handle, fcntl.LOCK_UN)
-    except FileNotFoundError:
-        return False
-    except OSError:
-        return True
-    return False
-
-
-def alive(runtime: Path) -> bool:
-    """A service owns the ship and has ticked recently; a held lock with a stale heartbeat is a hung one."""
-    beat = read_heartbeat(runtime)
-    return locked(runtime) and beat is not None and beat[1] <= STALE_SECONDS
-
-
-def start(ship: Ship) -> str:
-    """Start the service detached, logging under the runtime; a proof line."""
-    if alive(ship.runtime):
-        pid, _ = read_heartbeat(ship.runtime)
-        return f"service alive · pid {pid}"
-    if locked(ship.runtime):
-        beat = read_heartbeat(ship.runtime)
-        raise ShipError(f"a service holds {lock_path(ship.runtime)} but last ticked {int(beat[1]) if beat else '?'}s ago; "
-                        f"qd down stops it" + (f", or kill {beat[0]}" if beat else ""))
-    log_dir = ship.runtime / "log"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    out = (log_dir / "service.out").open("ab")
-    process = subprocess.Popen(
-        [str(qd_bin() / "qd"), "--ship", str(ship.folder), "service"],
-        stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True, cwd=str(ship.folder),
-    )
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline and not alive(ship.runtime):
-        time.sleep(0.1)
-    if not alive(ship.runtime):
-        raise ShipError(f"service did not write its heartbeat within 5s; see {log_dir / 'service.out'}")
-    return f"service started · pid {process.pid} · heartbeat {heartbeat_path(ship.runtime).relative_to(ship.folder)}"
-
-
-def stop(runtime: Path) -> str:
-    beat = read_heartbeat(runtime)
-    if beat is None or not alive(runtime):
-        return "service was not running"
-    os.kill(beat[0], signal.SIGTERM)
-    deadline = time.monotonic() + 3
-    while time.monotonic() < deadline and running(beat[0]):
-        time.sleep(0.05)
-    heartbeat_path(runtime).unlink(missing_ok=True)
-    return f"service stopped · pid {beat[0]}"
-
-
-# -- requests: what the CLI asks the service to do, since only the service types ----------------
-
-
-def request(runtime: Path, kind: str, **data) -> str:
-    """File a request and wait for the service's answer; refuse when the service is down."""
-    if not alive(runtime):
-        raise ShipError("service down; qd up restarts it")
-    folder = runtime / "requests"
-    folder.mkdir(parents=True, exist_ok=True)
-    name = f"{datetime.now().strftime('%H%M%S')}-{kind}-{os.getpid()}"
-    path = folder / f"{name}.json"
-    path.write_text(json.dumps({"kind": kind, **data}) + "\n")
-    answer = folder / f"{name}.done"
-    deadline = time.monotonic() + ANSWER_SECONDS
-    while time.monotonic() < deadline:
-        if answer.exists():
-            proof = answer.read_text().strip()
-            answer.unlink()
-            return proof
-        time.sleep(0.1)
-    return f"pending: the service has not answered within {ANSWER_SECONDS:.0f}s (request {name}); it applies when it can"
 
 
 class Service:
@@ -159,11 +46,7 @@ class Service:
     # -- the loop ------------------------------------------------------------------------
 
     def run(self) -> None:
-        self.lock = lock_path(self.runtime).open("a")
-        try:
-            fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)  # one service per ship, for its whole life
-        except OSError:
-            raise ShipError(f"another service holds {lock_path(self.runtime)}") from None
+        self.lock = acquire_lock(self.runtime)  # one service per ship, for its whole life
         self.log("start", pid=os.getpid())
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
         while True:
@@ -177,17 +60,15 @@ class Service:
             self.ship = shipmod.load(self.ship.folder)  # law: ship-file
         except ShipError as error:
             self.log("error", step="load", error=str(error))
-        for step in (self.reconcile, self.inboxes, self.deliveries, self.requests, self.fresh_after_order, self.rebrief):
+        for step in (self.reconcile, self.inboxes, self.deliveries, self.requests, self.fresh_after_order,
+                     self.rebrief, self.credentials):
             try:
                 step()
             except Exception as error:  # one failing step never stops the others
                 self.log("error", step=step.__name__, error=repr(error), trace=traceback.format_exc())
 
     def heartbeat(self) -> None:
-        path = heartbeat_path(self.runtime)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(f"{os.getpid()} {datetime.now(timezone.utc).isoformat()}\n")
-        os.replace(tmp, path)
+        write_heartbeat(self.runtime)
 
     def log(self, event: str, **data) -> None:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -344,6 +225,8 @@ class Service:
         delivery = door.deliver(command, confirm=False)
         if delivery.result != "typed":
             return f"{name}: {delivery}"
+        time.sleep(0.5)
+        door.clear_known()  # a program that asks "switch?" after the command is answered yes
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
             record = seat.record()
@@ -376,6 +259,11 @@ class Service:
         for folder in (standing.FRAMEWORK_DIR, self.ship.folder):
             paths += sorted((folder / "roles").glob("*.md")) + sorted((folder / "harnesses").glob("*.md"))
         return tuple((str(p), p.stat().st_mtime) for p in paths if p.exists())
+
+    def credentials(self) -> None:
+        """A seat whose credential link became a file has refreshed the token: reseed the pool and relink."""
+        for line in credential.reseed(self.ship, seats(self.ship, self.tmux)):
+            self.log("credential", proof=line)
 
     def rebrief(self) -> None:
         """When the orders or a card change, every brief is rendered again and each seat is told."""

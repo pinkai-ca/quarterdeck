@@ -13,7 +13,7 @@ import os
 import sys
 from typing import Any
 
-from . import __version__, drill, post, seat as seatmod, service, ship as shipmod, standing, watch
+from . import __version__, check, drill, harness as harnesses, post, seat as seatmod, service, ship as shipmod, standing, watch
 from .ship import ShipError
 from .tmux import Tmux, TmuxError
 
@@ -103,6 +103,8 @@ def build_parser() -> argparse.ArgumentParser:
     verb("service", cmd_service, "run the ship's service in the foreground (qd up starts it detached)")
     p = verb("drill", cmd_drill, "the all-hands drill: on the example ship's fake harness, or on --ship with real programs")
     p.add_argument("--keep", action="store_true", help="keep the temporary ship and its tmux server for a look")
+    p = verb("check", cmd_check, "prove the installed version of a program live, on a throwaway seat (spends tokens)")
+    p.add_argument("harness", choices=[n for n in harnesses.NAMES if n != "fake"])
     return parser
 
 
@@ -332,6 +334,13 @@ def cmd_inbox(args: argparse.Namespace) -> str | None:
 def cmd_service(args: argparse.Namespace) -> None:
     ship = load_ship(args)
     service.Service(ship, Tmux.default()).run()
+
+
+def cmd_check(args: argparse.Namespace) -> list[str]:
+    ship = load_ship(args)
+    checks = check.check(ship, args.harness, Tmux.default())
+    args.exit_code = 0 if all(c.passed for c in checks) else 1
+    return [str(c) for c in checks]
 
 
 def cmd_drill(args: argparse.Namespace) -> list[str]:
