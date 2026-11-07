@@ -10,6 +10,7 @@ from .harness.limits import Wall, Usage
 from .provenance import UNKNOWN
 
 GOOGLE_INTERVAL = 300
+PROVIDER_INTERVAL = 60
 
 
 def stamp(at: datetime | None) -> str | None:
@@ -75,9 +76,9 @@ class Quotas:
                 return f"{charged if charged != UNKNOWN else 'pool unknown'} {reason} · {reset_text(reset, source.startswith('screen:'))}"
         return None
 
-    def due(self, pool: str, now: datetime) -> bool:
+    def due(self, pool: str, now: datetime, interval: int = GOOGLE_INTERVAL) -> bool:
         last = self.db.execute("SELECT at FROM usage_reads WHERE pool=?", (pool,)).fetchone()
-        if last is None or (now - datetime.fromisoformat(last[0])).total_seconds() >= GOOGLE_INTERVAL:
+        if last is None or (now - datetime.fromisoformat(last[0])).total_seconds() >= interval:
             return True
         return any(p == pool and observed > last[0] for _, p, _, _, observed, _ in self.active(now))
 
@@ -152,8 +153,9 @@ def refresh(service, seat, live: bool, launched) -> None:
     if not live or seat.harness.name == "antigravity":
         return
     pool = service.ship.pools[launched.pool] if launched and launched.pool in service.ship.pools else seat.pool
-    if pool.kind == "subscription" and time.monotonic() - service.usage_read.get(pool.name, -60) >= 60:
+    if pool.kind == "subscription" and time.monotonic() - service.usage_read.get(pool.name, -PROVIDER_INTERVAL) >= PROVIDER_INTERVAL:
         service.usage_read[pool.name] = time.monotonic()
         usage = seat.harness.usage(pool)
         if usage is not None or seat.harness.reads_usage:
-            service.ledger.record_usage(pool.name, usage or Usage((), datetime.now(timezone.utc), "provider usage unavailable"))
+            service.ledger.record_usage(pool.name, usage or Usage((), datetime.now(timezone.utc), "provider usage unavailable"),
+                                        attempted_at=datetime.now(timezone.utc))

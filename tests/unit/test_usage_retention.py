@@ -13,6 +13,7 @@ from quarterdeck.harness.antigravity_quota import parse_usage, unknown, wall
 from quarterdeck.harness.limits import Usage, Window
 from quarterdeck.ledger import Ledger, pools_table
 from quarterdeck.service import Service
+from quarterdeck.ship import Pool
 from .test_antigravity_quota import document
 from .test_quota_refresh import declared_ship
 
@@ -251,4 +252,65 @@ def test_service_retention_partial_cadence_selection_presentation_and_observed_w
     assert svc.ledger.db.execute('SELECT * FROM wall_events').fetchall() == observed
     assert len(rows(svc.ledger)) == 5 and not svc.ledger.pool_windows('codex')
     assert 'synthetic timeout' in watch.ledger_usage(ship)[0]
+    svc.ledger.close()
+
+
+@pytest.mark.parametrize('failure_kind', ['none', 'empty', 'partial'])
+def test_inactive_non_google_fallback_recovers_at_attempt_cadence_across_restart(tmp_path, monkeypatch, failure_kind):
+    ship = declared_ship(tmp_path, 'empty')
+    ship.pools['fallback'] = Pool('fallback', 'claude')
+    now = datetime.now(timezone.utc)
+    clock = [now]
+    monkeypatch.setattr(service.post, 'now', lambda: clock[0])
+    svc = Service(ship, SimpleNamespace())
+    good_at = now-timedelta(minutes=10)
+    window = Window('5h', .2, now+timedelta(hours=2))
+    svc.ledger.record_usage('fallback', Usage((window,), good_at))
+    original = svc.ledger.pool_windows('fallback')
+    svc.ledger.record_usage('fallback', Usage((), now-timedelta(minutes=2), 'synthetic timeout'))
+    assert svc.ledger.pool_windows('fallback') == original
+    calls = []
+    outcomes = [None] if failure_kind == 'none' else [
+        Usage((), now, 'synthetic timeout') if failure_kind == 'empty'
+        else Usage((replace(window, resets_at=None),), now)]
+    def fetch(pool):
+        assert pool.name == 'fallback'
+        calls.append(clock[0])
+        return outcomes.pop(0) if outcomes else Usage((replace(window, used=.3),), clock[0])
+    seat = SimpleNamespace(name='worker', harness=SimpleNamespace(reads_usage=True, usage=fetch))
+    # The old good timestamp is only ten minutes old; retry must not wait an hour.
+    assert not svc.known_open(seat, 'fallback') and calls == [now]
+    assert svc.ledger.pool_windows('fallback') == original
+    assert svc.ledger.db.execute("SELECT at FROM usage_reads WHERE pool='fallback'").fetchone() == (now.isoformat(),)
+    for seconds in (0, 30, 59):
+        clock[0] = now+timedelta(seconds=seconds)
+        assert not svc.known_open(seat, 'fallback')
+    assert len(calls) == 1
+    svc.ledger.close()
+    svc = Service(ship, SimpleNamespace())
+    assert not svc.known_open(seat, 'fallback') and len(calls) == 1
+    assert svc.ledger.pool_windows('fallback') == original
+    clock[0] = now+timedelta(seconds=60)
+    assert svc.known_open(seat, 'fallback') and calls == [now, clock[0]]
+    fresh = svc.ledger.usage.rows('fallback')[0]
+    assert fresh.used == .3 and fresh.read_at == clock[0].isoformat() and fresh.error is None
+    # A successful fresh cache does not query each tick or at the retry boundary.
+    clock[0] = now+timedelta(minutes=3)
+    assert svc.known_open(seat, 'fallback') and len(calls) == 2
+    assert svc.ledger.db.execute("SELECT count(*) FROM pools WHERE pool='fallback'").fetchone() == (1,)
+    svc.ledger.close()
+
+
+def test_fallback_key_and_no_usage_cases_do_not_query_provider(tmp_path):
+    ship = declared_ship(tmp_path, 'empty')
+    ship.pools['key'] = Pool('key', 'claude', api_key='env:SYNTHETIC_KEY')
+    ship.pools['unmeasured'] = Pool('unmeasured', 'fake')
+    svc = Service(ship, SimpleNamespace())
+    def forbidden(pool):
+        raise AssertionError('key/no-usage pool must not query subscription usage')
+    seat = SimpleNamespace(harness=SimpleNamespace(reads_usage=True, usage=forbidden))
+    assert svc.known_open(seat, 'key')
+    seat.harness.reads_usage = False
+    assert svc.known_open(seat, 'unmeasured')
+    assert not svc.ledger.pool_windows()
     svc.ledger.close()

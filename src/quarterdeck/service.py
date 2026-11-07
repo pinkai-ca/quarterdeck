@@ -348,16 +348,16 @@ class Service:
             return self.ledger.usage_known(pool_name) and not self.ledger.walled(pool_name, self.ship)
         if not seat.harness.reads_usage:
             return not self.ledger.walled(pool_name, self.ship)
-        windows = self.ledger.pool_windows(pool_name)
-        fresh = windows and all(w[4] is not None and (post.now() - datetime.fromisoformat(w[4])).total_seconds() < 3600 for w in windows)
-        if not fresh:
+        if not self.ledger.usage_known(pool_name):
+            if not self.ledger.quota.due(pool_name, post.now(), interval=quota.PROVIDER_INTERVAL):
+                return False  # retained failures retry by attempt time, including after a restart
             usage = seat.harness.usage(pool)
             if usage is None:
                 from .harness.limits import Usage
                 self.ledger.record_usage(pool_name, Usage((), post.now(), "provider usage unavailable"))
                 self.log("failover", seat=seat.name, pool=pool_name, skipped="its usage could not be read")
                 return False
-            self.ledger.record_usage(pool_name, usage)
+            self.ledger.record_usage(pool_name, usage, attempted_at=post.now())
         return self.ledger.usage_known(pool_name) and not self.ledger.walled(pool_name, self.ship)
 
     def rebrief(self) -> None:

@@ -111,6 +111,11 @@ error. The one-hour availability bound is unchanged; it is separate from the fiv
 background refresh cadence. Neither status nor automatic Google pool selection starts
 a provider query. Failed/partial results persist their attempt time and diagnostics once,
 so service restarts and selection cannot bypass cadence or overwrite per-window errors.
+For other providers, an inactive fallback with a failed/incomplete measurement may
+retry after the existing one-minute provider interval, measured from its latest persisted
+attempt. Its retained good timestamp does not postpone recovery for an hour. A current
+complete successful cache still avoids a query; key/no-usage pools keep their existing
+selection behavior.
 
 A known bucket ID cannot be replaced by a different non-null ID for the same logical
 window. Such a response keeps the original tuple/ID as LAST KNOWN and reports that the
