@@ -20,6 +20,7 @@ from pathlib import Path
 
 from . import credential, machine, post, ship as shipmod, standing
 from .door import CONFIRM_SECONDS, Door
+from .harness.base import record_fingerprint
 from .ledger import Ledger
 from .post import Attempts, Store
 from .seat import Seat, seats
@@ -47,7 +48,7 @@ class Service:
         self.ledger = Ledger(self.runtime / "ledger.sqlite")
         self.meters: dict[str, machine.Meter] = {}
         self.usage_read: dict[str, float] = {}
-        self.read_marks: dict[Path, int] = {}  # record -> the mtime it was last read at
+        self.read_marks: dict[Path, tuple] = {}  # record -> the fingerprint it was last read at
 
     # -- the loop ------------------------------------------------------------------------
 
@@ -114,7 +115,10 @@ class Service:
     @staticmethod
     def read_now(seat: Seat, message: post.Message) -> bool:
         """Whether a message once queued has been read: it is an input or a consumed entry, no longer only queued."""
-        state, turns = seat.harness.read(seat.record())
+        try:
+            state, turns = seat.harness.read(seat.record())
+        except OSError:
+            return False
         flat = " ".join(" ".join(t.split()) for t in [*(x.input for x in turns), *state.consumed, state.last_input or ""])
         return message.short in flat and message.short not in " ".join(state.queued)
 
@@ -133,7 +137,10 @@ class Service:
         record = seat.record()
         if record is None:
             return False
-        state, turns = seat.harness.read(record)
+        try:
+            state, turns = seat.harness.read(record)
+        except OSError:
+            return False
         inputs = [t.input for t in turns if t.started and t.started >= since]
         if state.turn_open and state.last_input_at and state.last_input_at >= since:
             inputs.append(state.last_input)
@@ -253,7 +260,10 @@ class Service:
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
             record = seat.record()
-            state = seat.harness.state(record) if record else None
+            try:
+                state = seat.harness.state(record) if record else None
+            except OSError:
+                state = None
             confirmed = seat.harness.confirms(control, value, door.screen(), state)
             if confirmed:
                 return f"{name} = {value} · applied by {command} in {seat.pane().id} · confirmed by {control.confirmed_by}"
@@ -295,28 +305,34 @@ class Service:
         (law: every-turn-accounted); one whose file has not moved is not read again."""
         table = machine.processes()
         for seat in seats(self.ship, self.tmux):
-            if not seat.harness.record_confirms:
-                continue  # an opaque record has no turns to account; the Ledger says nothing rather than guessing
             pane, launched = seat.pane(), seat.launched()
             live = pane is not None and not pane.dead
-            current = seat.record() if live else None
+            current = seat.record() if launched else None
             meter = self.meters.get(seat.name)
             if live:
                 if meter is None or meter.root != pane.pid:
                     meter = self.meters[seat.name] = machine.Meter(pane.pid)  # a new process starts a new meter
                 meter.sample(table)
             for record in seat.harness.records(seat.home):  # law: every-turn-accounted
-                stamp = record.stat().st_mtime_ns
-                if self.read_marks.get(record) == stamp:
+                pool = launched.pool if (record == current and launched) else seat.pool.name
+                _, pool = self.ledger.owner(record, seat.name, pool)
+                try:
+                    stamp = record_fingerprint(record)
+                    if self.read_marks.get(record) == stamp:
+                        continue
+                    state, turns = seat.harness.read(record)
+                except OSError as error:
+                    self.ledger.mark_record(record, seat.name, pool, str(error))
+                    self.log("error", step="account", seat=seat.name, record=record.name, error=str(error))
                     continue
                 self.read_marks[record] = stamp
-                state, turns = seat.harness.read(record)
-                if turns and self.ledger.ingested(record) < len(turns):
-                    figures = {turns[-1].index: meter.result()} if record == current and meter and not state.turn_open else {}
-                    pool = launched.pool if (record == current and launched) else seat.pool.name
+                incomplete = "incomplete turn state in record" if (state.turns is None or state.turn_open is None) else None
+                self.ledger.mark_record(record, seat.name, pool, incomplete)
+                if turns:
+                    figures = {turns[-1].index: meter.result()} if live and record == current and meter and state.turn_open is False else {}
                     written = self.ledger.ingest(seat.name, pool, record, turns, self.store, figures)
                     if written:
-                        if record == current:
+                        if live and record == current:
                             self.meters[seat.name] = machine.Meter(pane.pid)
                         self.log("ledger", seat=seat.name, record=record.name, turns=written)
             pool = self.ship.pools[launched.pool] if launched and launched.pool in self.ship.pools else seat.pool  # the one it runs on

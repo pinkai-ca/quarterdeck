@@ -1,0 +1,18 @@
+  READY NO-MARKER
+
+────────────────────────────────────────────────────────────
+> qd > order from desk · ord-1234 · Four
+  line two
+  line three
+  Run a background task and wait.
+
+○ Thought for 4.2s (Starting the background task in the workspace...)
+● Ran 1 command (sleep 30; echo done) (ctrl+o to expand)
+⣷  Running command...
+└ Tip: Press ctrl+r to review pending artifacts.
+────────────────────────────────────────────────────────────────────────────────
+>
+────────────────────────────────────────────────────────────────────────────────
+  ● [12:00:00] sleep 30; echo done running
+────────────────────────────────────────────────────────────────────────────────
+esc to cancel                                              Gemini 4 Argon · high · 1 task(s) · /tasks

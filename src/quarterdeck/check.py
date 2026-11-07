@@ -100,9 +100,22 @@ def probe(ship: Ship, seat: Seat) -> list[Check]:
         checks.append(Check("record joined; not read, this program's record is opaque", record is not None,
                             record.name if record else "no record"))
         return checks
-    ended = wait_for(lambda: (r := seat.record()) and seat.harness.state(r).turns >= 1 and not seat.harness.state(r).turn_open, 60)
+    def _turn_ended() -> bool:
+        if (r := seat.record()) is None:
+            return False
+        try:
+            s = seat.harness.state(r)
+        except OSError:
+            return False
+        return s.turns is not None and s.turns >= 1 and s.turn_open is False
+
+    ended = wait_for(_turn_ended, 60)
     record = seat.record()
-    state = seat.harness.state(record) if record else None
+    try:
+        state = seat.harness.state(record) if record else None
+    except OSError:
+        state = None
+    turns_shown = state.turns if state and state.turns is not None else "?"
     checks.append(Check("record joined, the turn ended and read", bool(ended),
-                        f"{record.name if record else 'no record'} · {state.turns if state else 0} turns · model {state.model if state else '?'}"))
+                        f"{record.name if record else 'no record'} · {turns_shown} turns · model {state.model if state and state.model else '?'}"))
     return checks

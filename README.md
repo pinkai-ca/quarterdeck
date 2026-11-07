@@ -39,7 +39,7 @@ Every verb prints a proof line saying what was done and how it was confirmed; ev
 
 ## What is proven, and what is not
 
-Claude Code 2.1.317 and Codex 0.166.0 are proven live by `qd check` on 7 November 2026; their adapters know each program's record, screen, keys, dialogs and controls, pinned by fixtures under `tests/fixtures/`. Antigravity 1.5.2 is best effort and says so: it has no home switch and an opaque record, so its seat runs in the user's Antigravity state, deliveries are confirmed by its transcript and the ledger gets nothing from it. A newer version of any program runs with the newest known facts and is reported as unproven until `qd check` proves it.
+Claude Code 2.1.317 and Codex 0.166.0 are proven live by `qd check` on 7 November 2026; their adapters know each program's record, screen, keys, dialogs and controls, pinned by fixtures under `tests/fixtures/`. Antigravity 1.5.2 has no home switch, so its seat runs in the user's Antigravity state. It reads only proven seat-owned records through an in-memory SQLite/WAL snapshot, confirms inputs from the record and accounts completed turns. Unsupported fields and incomplete records remain unknown. Its synthetic contracts and schema evidence are documented in [the record contract](docs/ANTIGRAVITY.md); no live check has been run for this reader. A newer version of any program runs with the newest known facts and is reported as unproven until `qd check` proves it.
 
 ## Working on it
 

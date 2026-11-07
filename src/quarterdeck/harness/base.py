@@ -20,33 +20,43 @@ from pathlib import Path
 from ..ship import Pool, SeatSpec, ShipError
 
 
+class RecordError(OSError):
+    """A record file that cannot be decoded or is inconsistent."""
+
+
 @dataclass(frozen=True)
 class Tokens:
-    """As many classes as the provider bills; four for Anthropic."""
+    """As many classes as the provider bills; four for Anthropic. None where a class is not exposed."""
 
-    read_cached: int = 0
-    read_uncached: int = 0
-    cache_written: int = 0
-    written: int = 0
+    read_cached: int | None = 0
+    read_uncached: int | None = 0
+    cache_written: int | None = 0
+    written: int | None = 0
+
+    @classmethod
+    def unknown(cls) -> "Tokens":
+        return cls(None, None, None, None)
 
     def __add__(self, other: "Tokens") -> "Tokens":
+        add = lambda a, b: None if (a is None or b is None) else a + b
         return Tokens(
-            self.read_cached + other.read_cached,
-            self.read_uncached + other.read_uncached,
-            self.cache_written + other.cache_written,
-            self.written + other.written,
+            add(self.read_cached, other.read_cached),
+            add(self.read_uncached, other.read_uncached),
+            add(self.cache_written, other.cache_written),
+            add(self.written, other.written),
         )
 
     @property
-    def total(self) -> int:
-        return self.read_cached + self.read_uncached + self.cache_written + self.written
+    def total(self) -> int | None:
+        parts = (self.read_cached, self.read_uncached, self.cache_written, self.written)
+        return None if any(p is None for p in parts) else sum(parts)
 
 
 @dataclass(frozen=True)
 class ToolCall:
     name: str
     seconds: float | None
-    failed: bool = False
+    failed: bool | None = False
 
 
 @dataclass(frozen=True)
@@ -54,26 +64,26 @@ class Turn:
     """One ended turn: from an input to the next idle, summed over its steps."""
 
     index: int
-    started: datetime
-    ended: datetime
+    started: datetime | None
+    ended: datetime | None
     input: str
     reply: str
     model: str | None
     tokens: Tokens
     tools: tuple[ToolCall, ...] = ()
     cost: float | None = None
-    subagent_turns: int = 0
+    subagent_turns: int | None = 0
 
     @property
-    def seconds(self) -> float:
-        return (self.ended - self.started).total_seconds()
+    def seconds(self) -> float | None:
+        return None if (self.started is None or self.ended is None) else (self.ended - self.started).total_seconds()
 
 
 @dataclass(frozen=True)
 class State:
     """The live reading of a record."""
 
-    turn_open: bool = False
+    turn_open: bool | None = False
     open_tool: str | None = None
     open_tool_since: datetime | None = None
     last_write: datetime | None = None
@@ -83,7 +93,7 @@ class State:
     effort: str | None = None
     queued: tuple[str, ...] = ()
     consumed: tuple[str, ...] = ()
-    turns: int = 0
+    turns: int | None = 0
 
 
 @dataclass(frozen=True)
@@ -218,6 +228,17 @@ def when(value: str | None) -> datetime | None:
     return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
+def record_fingerprint(record: Path) -> tuple:
+    """Presence, inode, size and mtime of a record and of its SQLite write-ahead log."""
+    def stat_of(path: Path) -> tuple:
+        try:
+            s = path.stat()
+        except FileNotFoundError:
+            return (False, 0, 0, 0, 0, 0)
+        return (True, s.st_ino, s.st_size, s.st_mtime_ns, s.st_dev, s.st_ctime_ns)
+    return (stat_of(record), stat_of(Path(f"{record}-wal")))
+
+
 def credential(pool: Pool, link: Path, variable: str) -> Credential | None:
     """How a pool's credential reaches a seat home: a key by environment, a subscription by one link.
 
@@ -286,7 +307,6 @@ class Harness(ABC):
     def queues_while_working(self, seat: SeatSpec) -> bool:
         """Whether a message typed during a turn is taken and queued, or refused until it ends."""
         return True
-
     # -- launch ------------------------------------------------------------------------
 
     @abstractmethod
@@ -301,7 +321,6 @@ class Harness(ABC):
 
     def version(self) -> str | None:
         return None
-
     # -- record ------------------------------------------------------------------------
 
     @abstractmethod
@@ -342,7 +361,6 @@ class Harness(ABC):
             names = ", ".join(r.name for _, r in after[:2])
             return Join(None, f"ambiguous: {names} were first written at the same moment")  # law: one-record
         return Join(after[0][1])
-
     # -- screen ------------------------------------------------------------------------
 
     @abstractmethod
@@ -375,7 +393,6 @@ class Harness(ABC):
             reported = getattr(state, control.name, None) if state else None
             return None if reported is None else same(reported, value)
         return None
-
     # -- usage -------------------------------------------------------------------------
 
     def usage(self, pool: Pool) -> Usage | None:

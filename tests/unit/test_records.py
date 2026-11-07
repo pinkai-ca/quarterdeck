@@ -6,14 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from quarterdeck.fakerecord import ClaudeShape, CodexShape, tokens_for
-from quarterdeck.harness import claude, codex
+from quarterdeck.fakerecord import AntigravityShape, ClaudeShape, CodexShape, tokens_for
+from quarterdeck.harness import antigravity, claude, codex
 from quarterdeck.harness.base import Tokens
 
-SHAPES = [(ClaudeShape, claude), (CodexShape, codex)]
+SHAPES = [(ClaudeShape, claude), (CodexShape, codex), (AntigravityShape, antigravity)]
 
 
-@pytest.mark.parametrize("shape,reader", SHAPES, ids=["claude", "codex"])
+@pytest.mark.parametrize("shape,reader", SHAPES, ids=["claude", "codex", "antigravity"])
 def test_an_ended_turn_sums_its_steps(tmp_path: Path, shape, reader):
     record = shape(tmp_path, Path("/work/here"), "sess-1", "fake-1")
     record.begin("hello there", "fake-1", "high")
@@ -24,19 +24,24 @@ def test_an_ended_turn_sums_its_steps(tmp_path: Path, shape, reader):
     assert len(turns) == 1
     turn = turns[0]
     assert turn.input == "hello there" and turn.reply == "done: hello there" and turn.model == "fake-1"
-    assert [t.name for t in turn.tools] == ["Bash", "Bash"] if reader is claude else ["shell", "shell"]
+    assert [t.name for t in turn.tools] == (["shell", "shell"] if reader is codex else ["Bash", "Bash"])
     assert [t.failed for t in turn.tools] == [False, True]
     assert all(t.seconds is not None and t.seconds >= 0 for t in turn.tools)
     expected = tokens_for("hello there", "done: hello there", 0)
     steps = 3  # two tool calls and the reply each carry a usage
     assert turn.tokens.read_cached == expected["read_cached"] * steps
-    assert turn.tokens.written > 0 and turn.tokens.total == turn.tokens.read_cached + turn.tokens.read_uncached + turn.tokens.cache_written + turn.tokens.written
+    assert turn.tokens.written > 0
+    if reader is antigravity:
+        assert turn.tokens.cache_written is None and turn.tokens.total is None and turn.subagent_turns is None
+    else:
+        assert turn.tokens.total == turn.tokens.read_cached + turn.tokens.read_uncached + turn.tokens.cache_written + turn.tokens.written
     state = reader.state(record.path)
-    assert not state.turn_open and state.turns == 1 and state.model == "fake-1" and state.effort == "high"
+    assert not state.turn_open and state.turns == 1 and state.model == "fake-1"
+    assert state.effort == (None if reader is antigravity else "high")
     assert state.last_input == "hello there" and state.open_tool is None
 
 
-@pytest.mark.parametrize("shape,reader", SHAPES, ids=["claude", "codex"])
+@pytest.mark.parametrize("shape,reader", SHAPES, ids=["claude", "codex", "antigravity"])
 def test_an_open_turn_names_its_open_tool(tmp_path: Path, shape, reader):
     record = shape(tmp_path, Path("/work"), "sess-2", "fake-1")
     record.begin("go", "fake-1", "low")
@@ -45,14 +50,16 @@ def test_an_open_turn_names_its_open_tool(tmp_path: Path, shape, reader):
     # a tool call without its result: the open tool is named, with when it started
     if reader is claude:
         record.assistant([{"type": "tool_use", "id": "toolu_x", "name": "Bash", "input": {}}], "tool_use")
-    else:
+    elif reader is codex:
         record.line("response_item", {"type": "function_call", "name": "shell", "arguments": "{}", "call_id": "c1"})
+    else:
+        record.tool_start("Bash", "echo hi")
     state = reader.state(record.path)
     assert state.turn_open and state.open_tool in ("Bash", "shell") and state.open_tool_since is not None
     assert reader.turns(record.path) == []
 
 
-@pytest.mark.parametrize("shape,reader", SHAPES, ids=["claude", "codex"])
+@pytest.mark.parametrize("shape,reader", SHAPES, ids=["claude", "codex", "antigravity"])
 def test_an_interrupted_turn_closes(tmp_path: Path, shape, reader):
     record = shape(tmp_path, Path("/work"), "sess-3", "fake-1")
     record.begin("go", "fake-1", "low")
@@ -60,7 +67,7 @@ def test_an_interrupted_turn_closes(tmp_path: Path, shape, reader):
     assert not reader.state(record.path).turn_open
 
 
-@pytest.mark.parametrize("shape,reader", SHAPES, ids=["claude", "codex"])
+@pytest.mark.parametrize("shape,reader", SHAPES, ids=["claude", "codex", "antigravity"])
 def test_a_tool_left_open_by_an_interrupted_turn_does_not_haunt_the_next(tmp_path: Path, shape, reader):
     record = shape(tmp_path, Path("/work"), "sess-7", "fake-1")
     record.begin("turn 1", "fake-1", "high")
@@ -190,3 +197,6 @@ def test_a_partial_last_line_is_skipped(tmp_path: Path):
 def test_tokens_add():
     assert Tokens(1, 2, 3, 4) + Tokens(10, 20, 30, 40) == Tokens(11, 22, 33, 44)
     assert Tokens(1, 2, 3, 4).total == 10
+    partial = Tokens(1, 2, None, 4) + Tokens(10, 20, 30, 40)
+    assert partial == Tokens(11, 22, None, 44) and partial.total is None
+    assert Tokens.unknown().total is None

@@ -67,6 +67,9 @@ CREATE TABLE IF NOT EXISTS pools (
     pool TEXT NOT NULL, window TEXT NOT NULL, used REAL, resets_at TEXT, read_at TEXT,
     PRIMARY KEY (pool, window)
 );
+CREATE TABLE IF NOT EXISTS records (
+    record TEXT PRIMARY KEY, seat TEXT NOT NULL, pool TEXT NOT NULL, error TEXT NOT NULL
+);
 """
 
 
@@ -83,15 +86,15 @@ class Machine:
 @dataclass(frozen=True)
 class Row:
     key: str
-    turns: int
-    read_cached: int
-    read_uncached: int
-    cache_written: int
-    written: int
+    turns: int | None
+    read_cached: int | None
+    read_uncached: int | None
+    cache_written: int | None
+    written: int | None
     cost: float | None
-    tool_calls: int
-    tool_failures: int
-    minutes: float
+    tool_calls: int | None
+    tool_failures: int | None
+    minutes: float | None
     cpu_seconds: float
     write_bytes: int
 
@@ -112,45 +115,90 @@ class Ledger:
         """How many turns of this record are already in the Ledger."""
         return self.db.execute("SELECT COUNT(*) FROM turns WHERE record = ?", (str(record),)).fetchone()[0]
 
+    def owner(self, record: Path, seat: str, pool: str) -> tuple[str, str]:
+        known = self.db.execute("SELECT seat, pool FROM turns WHERE record = ? LIMIT 1", (str(record),)).fetchone()
+        known = known or self.db.execute("SELECT seat, pool FROM records WHERE record = ?", (str(record),)).fetchone()
+        return known or (seat, pool)
+
+    def mark_record(self, record: Path, seat: str, pool: str, error: str | None) -> None:
+        """Record or clear an unreadable or incomplete record so totals are never presented as complete."""
+        seat, pool = self.owner(record, seat, pool)
+        if error is None:
+            self.db.execute("DELETE FROM records WHERE record = ?", (str(record),))
+        else:
+            self.db.execute("INSERT OR REPLACE INTO records VALUES (?,?,?,?)", (str(record), seat, pool, error))
+        self.db.commit()
+
+    def incomplete_records(self) -> list[tuple[str, str, str, str]]:
+        return self.db.execute("SELECT record, seat, pool, error FROM records ORDER BY record").fetchall()
+
     def ingest(self, seat: str, pool: str, record: Path, turns: list[Turn], store: Store,
                machine: dict[int, Machine] | None = None) -> int:
         """Write the turns of a record not yet written; the count written. Reading twice counts once."""
-        known = self.ingested(record)
-        fresh = [t for t in turns if t.index >= known]
-        for turn in fresh:
-            used = (machine or {}).get(turn.index, Machine())
-            self.db.execute(
-                "INSERT OR REPLACE INTO turns VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (str(record), turn.index, seat, pool, attribution(store, seat, turn), turn.started.astimezone().isoformat(),
-                 turn.ended.astimezone().isoformat(), turn.seconds, turn.model, turn.tokens.read_cached, turn.tokens.read_uncached,
+        seat, pool = self.owner(record, seat, pool)
+        known = {r[1]: r for r in self.db.execute("SELECT * FROM turns WHERE record = ?", (str(record),))}
+        changed = 0
+        for turn in turns:
+            previous = known.get(turn.index)
+            used = Machine(*previous[17:]) if previous else (machine or {}).get(turn.index, Machine())
+            started = turn.started.astimezone().isoformat() if turn.started else None
+            ended = turn.ended.astimezone().isoformat() if turn.ended else None
+            row = (str(record), turn.index, seat, pool, attribution(store, seat, turn), started,
+                 ended, turn.seconds, turn.model, turn.tokens.read_cached, turn.tokens.read_uncached,
                  turn.tokens.cache_written, turn.tokens.written, turn.cost, len(turn.tools),
-                 sum(t.failed for t in turn.tools), turn.subagent_turns, used.cpu_seconds, used.peak_rss,
-                 used.max_processes, used.write_bytes),
-            )
+                 sum(t.failed for t in turn.tools) if all(t.failed is not None for t in turn.tools) else None, turn.subagent_turns, used.cpu_seconds, used.peak_rss,
+                 used.max_processes, used.write_bytes)
+            tool_rows = [(str(record), turn.index, t.name, t.seconds, t.failed) for t in turn.tools]
+            previous_tools = self.db.execute("SELECT * FROM tool_calls WHERE record = ? AND turn = ? ORDER BY rowid",
+                                             (str(record), turn.index)).fetchall()
+            if previous == row and previous_tools == tool_rows:
+                continue
+            changed += 1
+            self.db.execute("INSERT OR REPLACE INTO turns VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
             self.db.execute("DELETE FROM tool_calls WHERE record = ? AND turn = ?", (str(record), turn.index))
             self.db.executemany("INSERT INTO tool_calls VALUES (?,?,?,?,?)",
-                                [(str(record), turn.index, t.name, t.seconds, int(t.failed)) for t in turn.tools])
+                                tool_rows)
         self.db.commit()
-        return len(fresh)
+        return changed
 
     def rollup(self, by: str) -> list[Row]:
-        """Turns summed by ``seat``, ``order`` (order_id) or ``pool``."""
+        """Turns summed by ``seat``, ``order`` (order_id) or ``pool``; a column with any NULL or incomplete record stays None."""
         column = {"seat": "seat", "order": "order_id", "pool": "pool"}[by]
+        sums = ", ".join(
+            f"CASE WHEN COUNT({c}) = COUNT(*) THEN SUM({c}) END"
+            for c in ("read_cached", "read_uncached", "cache_written", "written", "cost", "tool_calls", "tool_failures")
+        )
         rows = self.db.execute(
-            f"SELECT {column}, COUNT(*), SUM(read_cached), SUM(read_uncached), SUM(cache_written), SUM(written), "
-            f"SUM(cost), SUM(tool_calls), SUM(tool_failures), SUM(seconds) / 60.0, SUM(cpu_seconds), SUM(write_bytes) "
-            f"FROM turns GROUP BY {column} ORDER BY {column}"
+            f"SELECT {column}, COUNT(*), {sums}, CASE WHEN COUNT(seconds) = COUNT(*) THEN SUM(seconds) / 60.0 END, "
+            f"SUM(cpu_seconds), SUM(write_bytes) FROM turns GROUP BY {column} ORDER BY {column}"
         ).fetchall()
-        return [Row(*(r[0], r[1], r[2] or 0, r[3] or 0, r[4] or 0, r[5] or 0, r[6], r[7] or 0, r[8] or 0,
-                      r[9] or 0.0, r[10] or 0.0, r[11] or 0)) for r in rows]
+        by_key = {r[0]: Row(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9], r[10] or 0.0, r[11] or 0) for r in rows}
+        incomplete = self.incomplete_records()
+        affected = ({s for _, s, _, _ in incomplete} if by == "seat" else
+                    {p for _, _, p, _ in incomplete} if by == "pool" else
+                    ({UNATTRIBUTED} | {r[0] for r in self.db.execute(
+                        "SELECT DISTINCT order_id FROM turns WHERE record IN (SELECT record FROM records)")} if incomplete else set()))
+        for key in affected:
+            prev = by_key.get(key)
+            by_key[key] = Row(key, None, None, None, None, None, None, None, None, None,
+                              prev.cpu_seconds if prev else 0.0, prev.write_bytes if prev else 0)
+        return [by_key[k] for k in sorted(by_key)]
 
-    def today(self, seat: str, day: str) -> int:
-        """Tokens of every class a seat used in turns that ended on ``day``, a local ISO date; turns are stored in local time."""
-        row = self.db.execute(
-            "SELECT SUM(read_cached + read_uncached + cache_written + written) FROM turns WHERE seat = ? AND substr(ended, 1, 10) = ?",
+    def today(self, seat: str, day: str) -> int | None:
+        """Tokens of every class a seat used in turns that ended on ``day``; None when any token class on that day is unknown."""
+        if self.db.execute("SELECT 1 FROM records WHERE seat = ?", (seat,)).fetchone():
+            return None
+        total_expr = "read_cached + read_uncached + cache_written + written"
+        count_all, count_known, total = self.db.execute(
+            f"SELECT COUNT(*), COUNT(CASE WHEN ended IS NOT NULL THEN {total_expr} END), SUM({total_expr}) "
+            f"FROM turns WHERE seat = ? AND (substr(ended, 1, 10) = ? OR ended IS NULL)",
             (seat, day),
         ).fetchone()
-        return row[0] or 0
+        if count_all == 0:
+            return 0
+        if count_known < count_all or total is None:
+            return None
+        return int(total)
 
     def spend(self, pool: str, since: datetime) -> tuple[float | None, int]:
         """A pool's stated cost since a moment, and how many of its turns stated no cost."""
@@ -158,11 +206,13 @@ class Ledger:
                               (pool, since.astimezone().isoformat())).fetchone()
         return row[0], row[1] or 0
 
-    def tools(self, by: str = "name") -> list[tuple[str, int, float, int]]:
-        """Tool calls by name: count, total seconds, failures."""
-        return self.db.execute(
-            "SELECT name, COUNT(*), SUM(COALESCE(seconds, 0)), SUM(failed) FROM tool_calls GROUP BY name ORDER BY COUNT(*) DESC, name"
+    def tools(self, by: str = "name") -> list[tuple[str, int | None, float | None, int | None]]:
+        """Tool calls by name: count, total seconds (None if any call's duration is unknown), failures."""
+        rows = self.db.execute(
+            "SELECT name, COUNT(*), CASE WHEN COUNT(seconds) = COUNT(*) THEN SUM(seconds) END, CASE WHEN COUNT(failed) = COUNT(*) THEN SUM(failed) END "
+            "FROM tool_calls GROUP BY name ORDER BY COUNT(*) DESC, name"
         ).fetchall()
+        return [(name, None, None, None) for name, *_ in rows] if self.incomplete_records() else rows
 
     # -- pools -----------------------------------------------------------------------------
 
@@ -200,9 +250,11 @@ class Ledger:
 def attribution(store: Store, seat: str, turn: Turn) -> str:
     """The order a turn is charged to: the one closed by a report sent in the turn, the one claimed
     with an ack, else the seat's only open order at the time; failing all, unattributed."""
+    if turn.ended is None:
+        return UNATTRIBUTED  # law: every-turn-accounted
     messages = store.all()
     closing = [m for m in messages if m.kind == "report" and m.sender == seat and m.re
-               and turn.started <= m.at <= turn.ended]
+               and turn.started is not None and turn.started <= m.at <= turn.ended]
     if closing:
         return closing[-1].re
     claimed = store.claimed(seat, turn.ended)
@@ -213,17 +265,29 @@ def attribution(store: Store, seat: str, turn: Turn) -> str:
     return open_then[0].id if len(open_then) == 1 else UNATTRIBUTED  # law: every-turn-accounted
 
 
+def incomplete_notes(ledger: Ledger) -> list[str]:
+    return [f"incomplete record: {Path(r).name} ({s}, {p}) · {e}" for r, s, p, e in ledger.incomplete_records()]
+
+
 def table(ledger: Ledger, by: str) -> list[str]:
     """``qd ledger --by seat|order|pool``: tokens, cost, tool calls, minutes, machine load side by side."""
-    head = f"{by:<30} {'turns':>5} {'cached':>10} {'uncached':>9} {'cache-w':>9} {'written':>8} {'cost':>8} {'tools':>6} {'fail':>5} {'min':>7} {'cpu-s':>7} {'written-MB':>10}"
+    head = f"{by:<30} {'turns':>5} {'cached':>10} {'uncached':>9} {'cache-w':>9} {'written':>8} {'cost':>8} {'tools':>7} {'fail':>7} {'min':>7} {'cpu-s':>7} {'written-MB':>10}"
     lines = [head]
     for r in ledger.rollup(by):
+        turns = str(r.turns) if r.turns is not None else "unknown"
+        cached = str(r.read_cached) if r.read_cached is not None else "unknown"
+        uncached = str(r.read_uncached) if r.read_uncached is not None else "unknown"
+        cache_w = str(r.cache_written) if r.cache_written is not None else "unknown"
+        written = str(r.written) if r.written is not None else "unknown"
         cost = f"{r.cost:.2f}" if r.cost is not None else "-"
-        lines.append(f"{r.key:<30} {r.turns:>5} {r.read_cached:>10} {r.read_uncached:>9} {r.cache_written:>9} {r.written:>8} "
-                     f"{cost:>8} {r.tool_calls:>6} {r.tool_failures:>5} {r.minutes:>7.1f} {r.cpu_seconds:>7.1f} {r.write_bytes / 1e6:>10.1f}")
+        tools = str(r.tool_calls) if r.tool_calls is not None else "unknown"
+        fail = str(r.tool_failures) if r.tool_failures is not None else "unknown"
+        mins = f"{r.minutes:.1f}" if r.minutes is not None else "unknown"
+        lines.append(f"{r.key:<30} {turns:>5} {cached:>10} {uncached:>9} {cache_w:>9} {written:>8} "
+                     f"{cost:>8} {tools:>7} {fail:>7} {mins:>7} {r.cpu_seconds:>7.1f} {r.write_bytes / 1e6:>10.1f}")
     if by == "order":
         lines.append(f"unattributed turns are shown as {UNATTRIBUTED!r}")
-    return lines
+    return lines + incomplete_notes(ledger)
 
 
 def pools_table(ledger: Ledger, ship: Ship | None = None) -> list[str]:
@@ -245,4 +309,4 @@ def pools_table(ledger: Ledger, ship: Ship | None = None) -> list[str]:
         lines.append(f"{pool.name:<20} {'spend':<8} {stated}{limit}{note}{wall}")
     if len(lines) == 1:
         lines.append("no usage read yet: the service reads subscription pools once a minute while a seat runs on them")
-    return lines
+    return lines + incomplete_notes(ledger)

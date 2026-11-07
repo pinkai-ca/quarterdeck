@@ -111,7 +111,10 @@ class Seat:
         pinned = self.folder / "record"
         if pinned.is_file():
             record = Path(pinned.read_text().strip())
-            return Join(record) if record.exists() else Join(None, f"record missing: {record.name}")
+            if record.exists():
+                self._note_owned(record)
+                return Join(record)
+            return Join(None, f"record missing: {record.name}")
         launched = self.launched()
         if launched is None:
             return Join(None, "not up")
@@ -120,7 +123,15 @@ class Seat:
         found = self.harness.join(self.home, launched.when)
         if found.record is not None:
             pinned.write_text(str(found.record) + "\n")  # law: one-record
+            self._note_owned(found.record)
         return found
+
+    def _note_owned(self, record: Path) -> None:
+        owned = self.home / "conversations.owned"
+        self.home.mkdir(parents=True, exist_ok=True)
+        existing = owned.read_text().splitlines() if owned.is_file() else []
+        if str(record) not in existing:
+            owned.write_text("".join(f"{line}\n" for line in [*existing, str(record)]))
 
     def _shared_state_contended(self) -> bool:
         """A program with no home of its own writes every seat's record to one place: two unjoined seats cannot be told apart."""
@@ -132,14 +143,18 @@ class Seat:
         return False
 
     def is_working(self) -> bool:
-        """Whether a turn is open: from the record first, from the screen where the record is opaque."""
+        """Whether a turn is open: from the record first, from the screen where the record is opaque or unknown."""
         pane = self.pane()
         if pane is None or pane.dead:
             return False
-        if not self.harness.record_confirms:
-            return self.harness.screen(self.tmux.capture(pane.id)).working
-        record = self.record()
-        return bool(record and self.harness.state(record).turn_open)
+        if self.harness.record_confirms and (record := self.record()) is not None:
+            try:
+                turn_open = self.harness.state(record).turn_open
+            except OSError:
+                turn_open = None
+            if turn_open is not None:
+                return turn_open  # law: record-first
+        return self.harness.screen(self.tmux.capture(pane.id)).working
 
     def record(self) -> Path | None:
         return self.join().record
@@ -189,7 +204,10 @@ class Seat:
 
     def _resume_id(self) -> str | None:
         record = self.record()
-        return self.harness.session_id(record) if record else None
+        try:
+            return self.harness.session_id(record) if record else None
+        except OSError:
+            return None
 
     def first_message(self) -> tuple[str | None, list[post.Message]]:
         """What the launch carries as its first message, under a header saying the seat was briefed.
@@ -212,7 +230,10 @@ class Seat:
             return []
         seen: list[str] = []
         for record in self.harness.records(self.home):
-            state, turns = self.harness.read(record)
+            try:
+                state, turns = self.harness.read(record)
+            except OSError:
+                continue
             seen += [" ".join(t.split()) for t in [*(x.input for x in turns), *state.consumed, state.last_input or ""]]
         flat = " ".join(seen)
         return [m for m in store.for_seat(self.name) if m.id in queued and m.short not in flat]

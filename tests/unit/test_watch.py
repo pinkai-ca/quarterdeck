@@ -36,3 +36,120 @@ def test_ages_read_as_a_person_says_them():
     assert watch._ago(now - timedelta(minutes=14, seconds=3), now) == "14m"
     assert watch._ago(None, now) == ""
     assert str(watch.Activity("working", "in Bash 3m")) == "working, in Bash 3m" and str(watch.Activity("idle")) == "idle"
+
+
+def test_watch_and_seat_report_unknown_instead_of_zero_when_record_or_tokens_are_unknown(tmp_path: Path):
+    import json
+    import sqlite3
+
+    from quarterdeck.fakerecord import AGY_SCHEMA, AntigravityShape
+    from quarterdeck.seat import Seat
+    from quarterdeck.ship import Pool, SeatSpec, Session, Ship
+    from quarterdeck.tmux import Pane
+
+    pool = Pool("google", "antigravity")
+    spec = SeatSpec("scott", "bridge", "worker", "antigravity", ("google",), cwd=tmp_path)
+    ship = Ship(tmp_path, "enterprise", "admiral", tmp_path, {"google": pool}, {"bridge": Session("bridge", "qd")}, {"scott": spec})
+    idle_screen = "─" * 80 + "\n>\n" + "─" * 80 + "\n                                              Gemini 3.1 Pro · high\n"
+    working_screen = "─" * 80 + "\n>\n" + "─" * 80 + "\nesc to cancel                                 Gemini 3.1 Pro · high\n"
+    state_holder = {"screen": working_screen}
+
+    class FakeTmux:
+        def pane(self, pane_id: str):
+            return Pane("%1", "qd", "scott", 4242, 80, 24, False, False, None)
+
+        def capture(self, pane_id: str, history: int = 0) -> str:
+            return state_holder["screen"]
+
+    seat = Seat(ship, spec, FakeTmux())
+    seat.folder.mkdir(parents=True, exist_ok=True)
+    (seat.folder / "launch.json").write_text(json.dumps({
+        "pane": "%1", "pid": 4242, "at": datetime.now(timezone.utc).isoformat(),
+        "pool": "google", "resume": None, "argv": ["agy"], "version": "1.5.2",
+    }))
+
+    # 1. Corrupt record: activity is unknown, tokens_today is None, watch.full and watch.table say unknown, is_working falls back to screen
+    bad_record = tmp_path / "bad.db"
+    bad_record.write_text("not sqlite")
+    (seat.folder / "record").write_text(f"{bad_record}\n")
+    assert watch.activity(seat).state == "unknown"  # law: record-first
+    assert watch.tokens_today(seat) is None
+    assert seat.is_working() is True, "when record is unreadable, is_working falls back to screen"
+    state_holder["screen"] = idle_screen
+    assert seat.is_working() is False
+    assert "unknown" in "\n".join(watch.table(ship, FakeTmux()))
+    assert "unreadable" in "\n".join(watch.full(seat)) and "unknown tokens today" in "\n".join(watch.full(seat))
+
+    # 2. Valid Antigravity record with an ended turn: activity is idle, model is from record, tokens_today is None (cache_written unknown)
+    rec = AntigravityShape(seat.home, tmp_path, "conv-ok", "gemini-3.1-pro-high")
+    rec.begin("ping", "gemini-3.1-pro-high", "high")
+    rec.end("pong")
+    (seat.folder / "record").write_text(f"{rec.path}\n")
+    assert watch.activity(seat).state == "idle"
+    assert seat.is_working() is False
+    assert watch.tokens_today(seat) is None
+    full_lines = "\n".join(watch.full(seat))
+    assert "1 turns" in full_lines and "unknown tokens today" in full_lines
+
+    # 3. Unknown step status in record: turn_open is None and turns is None (turns() is empty, tokens_today must be None not 0)
+    with sqlite3.connect(rec.path) as con:
+        con.executescript(AGY_SCHEMA)
+        con.execute("UPDATE steps SET status = 0 WHERE idx = 0")
+    assert seat.harness.turns(rec.path) == []
+    assert watch.activity(seat) == watch.Activity("unknown", "turn state unknown in record")
+    assert watch.tokens_today(seat) is None, "empty turns() with unknown turn state must be None, never 0"
+    assert "unknown turns" in "\n".join(watch.full(seat)) and "unknown tokens today" in "\n".join(watch.full(seat))
+
+    # 4. Unknown earlier turn + completed later turn: even if a turn has all 4 token classes, incomplete record makes tokens_today None
+    from types import SimpleNamespace
+    from quarterdeck.harness.base import State, Tokens, Turn
+    now = datetime.now(timezone.utc)
+    partial_turn = Turn(1, now, now, "in", "out", "m", Tokens(10, 20, 30, 40))
+    seat.harness = SimpleNamespace(
+        record_confirms=True,
+        read=lambda r: (State(turn_open=False, turns=None, model="m"), [partial_turn]),
+        state=lambda r: State(turn_open=False, turns=None, model="m"),
+        turns=lambda r: [partial_turn],
+        records=lambda home: [rec.path],
+    )
+    assert watch.tokens_today(seat) is None, "incomplete record history must not report partial token sum as complete"
+
+
+def test_check_probe_handles_unknown_turns_without_crashing(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from quarterdeck import check, door as doormod, post
+    from quarterdeck.harness.base import State
+
+    store = post.Store(tmp_path)
+    fake_harness = SimpleNamespace(
+        record_confirms=True,
+        state=lambda r: State(turn_open=None, turns=None, model="gemini-3.1-pro-high"),
+    )
+    fake_seat = SimpleNamespace(
+        name="check-agy",
+        up=lambda resume=False: "up",
+        is_up=True,
+        launched=lambda: SimpleNamespace(pane="%1", pid=4242, at=datetime.now(timezone.utc).isoformat()),
+        record=lambda: tmp_path / "unknown.db",
+        harness=fake_harness,
+    )
+    fake_ship = SimpleNamespace(runtime=tmp_path)
+    monkeypatch.setattr(check, "Door", lambda s: SimpleNamespace(
+        reading=lambda: doormod.Reading(True, "empty box"),
+        deliver=lambda text: doormod.Delivery("delivered", "in the record"),
+    ))
+
+    def fake_wait_for(pred, timeout):
+        val = pred()
+        if val:
+            return val
+        for m in store.open_for("check-agy"):
+            (tmp_path / "check" / "check-agy.txt").write_text(" dummy \n")
+            return store.new("report", "check-agy", "ship", "written", re=m.id)
+        return False
+
+    monkeypatch.setattr(check, "wait_for", fake_wait_for)
+    checks = check.probe(fake_ship, fake_seat)
+    assert checks[-1].name == "record joined, the turn ended and read"
+    assert checks[-1].passed is False and "? turns" in checks[-1].detail

@@ -62,6 +62,8 @@ def activity(seat: Seat, now: datetime | None = None) -> Activity:
         state = seat.harness.state(join.record)
     except OSError as error:
         return Activity("unknown", f"record unreadable: {error}")
+    if state.turn_open is None:
+        return Activity("unknown", "turn state unknown in record")
     if not state.turn_open:
         return Activity("idle", f"{len(state.queued)} queued" if state.queued else "")
     where = f"in {state.open_tool} {_ago(state.open_tool_since, now)}".rstrip() if state.open_tool else ""
@@ -77,7 +79,7 @@ class SeatReading:
     activity: Activity
     door: Reading
     order: str | None
-    today: int
+    today: int | None
     pool: str
     model: str
     harness: str
@@ -116,24 +118,40 @@ def reading(seat: Seat, store: post.Store | None = None) -> SeatReading:
                        f"{seat.harness.name} {version}".strip() if version else seat.harness.name)
 
 
-def tokens_today(seat: Seat) -> int:
-    """Today's tokens from the Ledger, which outlives a fresh start; from the record while the Ledger has nothing."""
+def tokens_today(seat: Seat) -> int | None:
+    """Today's tokens from the Ledger, which outlives a fresh start; from the record while the Ledger has nothing; None when unknown."""
     book_path = seat.ship.runtime / "ledger.sqlite"
     day = date.today().isoformat()
+    counted: int | None = 0
     if book_path.exists():
         book = ledger.Ledger(book_path)
         try:
             counted = book.today(seat.name, day)
         finally:
             book.close()
-        if counted:
-            return counted
-    record = seat.record()
-    try:
-        turns = seat.harness.turns(record) if record else []
-    except OSError:
-        return 0
-    return sum(t.tokens.total for t in turns if t.ended.astimezone().date().isoformat() == day)
+        if counted is None:
+            return None
+    if not seat.harness.record_confirms:
+        return counted or None
+    join = seat.join()
+    if join.record is None and join.reason and join.reason.split(":")[0] in ("record missing", "ambiguous"):
+        return None
+    owned = list(dict.fromkeys([*seat.harness.records(seat.home), *([join.record] if join.record else [])]))
+    if not owned:
+        return counted or 0
+    uncounted = 0
+    for record in owned:
+        try:
+            state, turns = seat.harness.read(record)
+        except OSError:
+            return None
+        if state.turns is None or state.turn_open is None:
+            return None
+        today_turns = [t for t in turns if t.ended is None or t.ended.astimezone().date().isoformat() == day]
+        if any(t.ended is None or t.tokens.total is None for t in today_turns):
+            return None
+        uncounted += sum(t.tokens.total for t in today_turns)
+    return counted if counted else uncounted
 
 
 def running_settings(seat: Seat) -> dict[str, str]:
@@ -168,7 +186,8 @@ def table(ship: Ship, tmux: Tmux) -> list[str]:
     rows = [head, f"{'seat':<10} {'activity':<24} {'door':<40} {'order':<10} {'today':>8}  pool · model"]
     for seat in seats(ship, tmux):
         r = reading(seat, store)
-        rows.append(f"{r.name:<10} {str(r.activity):<24} {str(r.door):<40} {r.order or '-':<10} {r.today:>8}  {r.pool} · {r.model}")
+        today = str(r.today) if r.today is not None else "unknown"
+        rows.append(f"{r.name:<10} {str(r.activity):<24} {str(r.door):<40} {r.order or '-':<10} {today:>8}  {r.pool} · {r.model}")
     open_orders = [m for m in store.all() if m.kind == "order" and store.is_open(m)]
     rows.append(f"open orders: {len(open_orders)}")
     for m in open_orders:
@@ -179,12 +198,20 @@ def table(ship: Ship, tmux: Tmux) -> list[str]:
 def full(seat: Seat) -> list[str]:
     """``qd watch <seat>``: the whole reading, including the screen as the adapter parsed it."""
     r = reading(seat)
-    lines = [f"{r.name}: {r.activity} · door {r.door} · order {r.order or '-'} · {r.today} tokens today",
+    today = f"{r.today} tokens today" if r.today is not None else "unknown tokens today"
+    lines = [f"{r.name}: {r.activity} · door {r.door} · order {r.order or '-'} · {today}",
              f"  {r.harness} · pool {r.pool} · model {r.model}"]
     record = seat.record()
     if record:
-        state = seat.harness.state(record)
-        lines.append(f"  record {record} · {state.turns} turns · last input: {(state.last_input or '')[:60]!r}")
+        try:
+            state = seat.harness.state(record)
+        except OSError as error:
+            lines.append(f"  record {record} · unreadable: {error}")
+        else:
+            turns_shown = state.turns if state.turns is not None else "unknown"
+            lines.append(f"  record {record} · {turns_shown} turns · last input: {(state.last_input or '')[:60]!r}")
+    if note := getattr(seat.harness, "record_limits", None):
+        lines.append(f"  record limits: {note}")
     screen = Door(seat).screen()
     if screen:
         lines.append(f"  screen: box {screen.box!r} · working {screen.working} · queued {screen.queued} · shows {screen.shows}")

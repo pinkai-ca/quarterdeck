@@ -195,12 +195,15 @@ class Door:
         while True:
             record = self.seat.record()
             if record is not None:
-                state = self.harness.state(record)
-                if state.last_input and " ".join(state.last_input.split()) == wanted:
+                try:
+                    state = self.harness.state(record)
+                except OSError:
+                    state = None
+                if state and state.last_input and " ".join(state.last_input.split()) == wanted:
                     return Delivery("delivered", f"in the record {record.name}")
-                if any(" ".join(c.split()) == wanted for c in state.consumed):
+                if state and any(" ".join(c.split()) == wanted for c in state.consumed):
                     return Delivery("delivered", "queued and taken into the running turn")
-                if any(" ".join(q.split()) == wanted for q in state.queued):
+                if state and any(" ".join(q.split()) == wanted for q in state.queued):
                     return Delivery("queued", "queued in the record; read at the turn's end")
             if time.monotonic() > deadline:
                 break

@@ -360,7 +360,10 @@ def cmd_ledger(args: argparse.Namespace) -> list[str]:
     try:
         if args.tools:
             rows = [f"{'tool':<24} {'calls':>6} {'seconds':>9} {'failed':>6}"]
-            return rows + [f"{name:<24} {count:>6} {seconds:>9.1f} {failed:>6}" for name, count, seconds, failed in book.tools()]
+            return rows + [
+                f"{name:<24} {(str(count) if count is not None else 'unknown'):>6} {(f'{seconds:.1f}' if seconds is not None else 'unknown'):>9} {(str(failed) if failed is not None else 'unknown'):>6}"
+                for name, count, seconds, failed in book.tools()
+            ] + ledger.incomplete_notes(book)
         if args.by:
             return ledger.table(book, args.by)
         return ledger.pools_table(book, ship)

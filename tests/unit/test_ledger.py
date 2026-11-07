@@ -118,6 +118,66 @@ def test_turns_are_stored_in_local_time_so_today_is_the_local_day(tmp_path: Path
     book.close()
 
 
+def test_unknown_token_classes_and_tool_seconds_propagate_as_unknown_in_rollup_today_and_tools(tmp_path: Path):
+    from quarterdeck.harness.base import Tokens, ToolCall, Turn
+
+    book = Ledger(tmp_path / "ledger.sqlite")
+    store = Store(tmp_path)
+    ended = datetime.now(timezone.utc)
+    day = ended.astimezone().date().isoformat()
+    assert book.today("scott", day) == 0, "no turns on that day means 0 tokens"
+
+    # Turn 0 has known read_cached/read_uncached/written, but unknown cache_written (Antigravity shape)
+    t0 = Turn(0, ended - timedelta(seconds=10), ended - timedelta(seconds=5), "in0", "out0", "gemini-3.1-pro-high",
+              Tokens(read_cached=500, read_uncached=100, cache_written=None, written=40),
+              tools=(ToolCall("run_command", 1.5, False), ToolCall("run_command", None, True)), subagent_turns=None)
+    book.ingest("scott", "google", tmp_path / "agy.db", [t0], store)
+    row = book.rollup("seat")[0]
+    assert row.read_cached == 500 and row.read_uncached == 100 and row.written == 40
+    assert row.cache_written is None, "NULL token class must stay None, never 0"
+    assert book.today("scott", day) is None, "a turn with a NULL token class makes today's total unknown, not a partial sum"
+    assert book.tools() == [("run_command", 2, None, 1)], "a tool call with unknown duration makes total seconds unknown"
+    rendered = ledgermod.table(book, "seat")
+    assert "unknown" in rendered[1]
+
+    # Adding a second turn with completely unknown tokens makes read_cached/read_uncached/written None too (SUM must not drop NULL)
+    t1 = Turn(1, ended - timedelta(seconds=4), ended, "in1", "out1", "gemini-3.1-pro-high", Tokens.unknown())
+    book.ingest("scott", "google", tmp_path / "agy.db", [t0, t1], store)
+    row2 = book.rollup("seat")[0]
+    assert (row2.read_cached, row2.read_uncached, row2.cache_written, row2.written) == (None, None, None, None)
+    book.close()
+
+
+def test_incomplete_or_unreadable_record_is_persisted_and_surfaced_as_unknown(tmp_path: Path):
+    book = Ledger(tmp_path / "ledger.sqlite")
+    store = Store(tmp_path)
+    bad_rec = tmp_path / "corrupt.db"
+    day = datetime.now().astimezone().date().isoformat()
+
+    # 1. Fresh unreadable record with 0 ingested turns still surfaces seat/pool/order as unknown
+    book.mark_record(bad_rec, "scott", "google", "corrupt sqlite header")
+    book.close()
+    book = Ledger(tmp_path / "ledger.sqlite")
+    assert book.incomplete_records() == [(str(bad_rec), "scott", "google", "corrupt sqlite header")]
+    seat_rows = book.rollup("seat")
+    assert len(seat_rows) == 1 and seat_rows[0].key == "scott" and seat_rows[0].turns is None
+    assert (seat_rows[0].read_cached, seat_rows[0].read_uncached, seat_rows[0].cache_written, seat_rows[0].written) == (None, None, None, None)
+    assert seat_rows[0].tool_calls is None and seat_rows[0].minutes is None
+    assert book.today("scott", day) is None
+    seat_table = "\n".join(ledgermod.table(book, "seat"))
+    assert "unknown" in seat_table and "incomplete record: corrupt.db (scott, google) · corrupt sqlite header" in seat_table
+    assert "incomplete record: corrupt.db (scott, google) · corrupt sqlite header" in "\n".join(ledgermod.pools_table(book))
+
+    # 2. Clearing the mark when the record becomes readable restores normal accounting
+    now = datetime.now(timezone.utc)
+    t0 = claude.Turn(0, now - timedelta(seconds=5), now, "in", "out", "m", claude.Tokens(1, 2, 3, 4))
+    book.ingest("scott", "google", bad_rec, [t0], store)
+    book.mark_record(bad_rec, "scott", "google", None)
+    assert book.incomplete_records() == []
+    assert book.rollup("seat")[0].turns == 1 and book.today("scott", day) == 10
+    book.close()
+
+
 def test_the_meter_charges_a_turn_with_its_tree(tmp_path: Path):
     me = os.getpid()
     meter = machine.Meter(me)
@@ -129,3 +189,57 @@ def test_the_meter_charges_a_turn_with_its_tree(tmp_path: Path):
     result = meter.result()
     assert result.max_processes >= 1 and result.peak_rss > 0 and result.cpu_seconds >= 0 and busy
     assert machine.tree(me)[0].pid == me
+
+
+def test_late_metadata_refreshes_tools_and_times_without_moving_pool_or_machine(tmp_path):
+    from dataclasses import replace
+    from quarterdeck.harness.base import ToolCall, Tokens, Turn
+    from quarterdeck.ledger import Machine
+
+    record = tmp_path / 'synthetic.db'
+    book, store = Ledger(tmp_path / 'ledger.sqlite'), Store(tmp_path)
+    stamp = datetime.now(timezone.utc)
+    initial = Turn(8, stamp, None, 'question', 'answer', None, Tokens.unknown(),
+                   (ToolCall('run_command',None,False),))
+    sample = Machine(3.5,4096,2,800)
+    assert book.ingest('worker','pool-a',record,[initial],store,{8:sample}) == 1
+    duration = replace(initial,tools=(ToolCall('run_command',1.5,False),))
+    assert book.ingest('worker','pool-b',record,[duration],store,{8:Machine(99)}) == 1
+    assert book.tools() == [('run_command',1,1.5,0)]
+    renamed = replace(duration,tools=(ToolCall('shell',1.5,False),))
+    assert book.ingest('worker','pool-b',record,[renamed],store) == 1
+    assert book.tools() == [('shell',1,1.5,0)]
+    final = replace(renamed,ended=stamp+timedelta(seconds=4),tokens=Tokens(1,2,3,4),model='model')
+    assert book.ingest('worker','pool-b',record,[final],store) == 1
+    assert book.ingest('worker','pool-b',record,[final],store) == 0
+    row = book.db.execute('SELECT pool,seconds,read_uncached,cpu_seconds,peak_rss,max_processes,write_bytes FROM turns').fetchone()
+    assert row == ('pool-a',4,2,3.5,4096,2,800)
+    book.mark_record(record,'worker','pool-b','temporary failure')
+    assert book.incomplete_records()[0][2] == 'pool-a'
+    book.close()
+    book = Ledger(tmp_path / 'ledger.sqlite')
+    # A delayed earlier turn inherits the established record owner after service restart.
+    earlier = replace(final,index=0)
+    book.ingest('worker','pool-b',record,[earlier,final],store)
+    assert book.db.execute('SELECT DISTINCT pool FROM turns').fetchall() == [('pool-a',)]
+    book.close()
+
+
+def test_unknown_tool_failure_and_incomplete_history_stay_unknown(tmp_path):
+    from quarterdeck.harness.base import ToolCall, Tokens, Turn
+
+    book, store = Ledger(tmp_path / 'ledger.sqlite'), Store(tmp_path)
+    order = store.new('order','captain','worker','work')
+    stamp = datetime.now(timezone.utc)
+    t = Turn(0,stamp,stamp,'question','answer','m',Tokens(1,2,3,4),(ToolCall('tool',None,None),))
+    record = tmp_path / 'synthetic.db'
+    book.ingest('worker','pool-a',record,[t],store)
+    assert book.tools() == [('tool',1,None,None)]
+    assert book.rollup('order')[0].key == order.id
+    book.mark_record(record,'worker','pool-a','unknown earlier history')
+    assert all(r.turns is None for r in book.rollup('order'))
+    assert book.tools() == [('tool',None,None,None)]
+    assert all('unknown' in '\n'.join(ledgermod.table(book,by)) for by in ('seat','pool','order'))
+    book.mark_record(record,'worker','pool-a',None)
+    assert book.rollup('order')[0].turns == 1
+    book.close()
