@@ -17,13 +17,16 @@ def run(capsys, *argv: str) -> tuple[int, str, str]:
 
 def test_set_writes_the_ship_file_and_says_what_applies_it(example_ship: Path, capsys, monkeypatch):
     monkeypatch.setenv("QD_TMUX_SOCKET", "qd-test-nobody-here")
-    code, out, err = run(capsys, "--ship", str(example_ship), "set", "captain", "model=fake-2", "pool=fake")
+    code, out, err = run(capsys, "--ship", str(example_ship), "set", "captain", "model=fake-2", "pool=fake", "remote_control=true")
     assert code == 0 and err == ""
     lines = out.splitlines()
     assert lines[0].startswith('ship.toml: seats.captain.model = "fake-2" · written')
     assert lines[1] == "  model written; captain is down, so qd up captain applies it"
     assert lines[3] == "  pool written; qd restart captain applies it"
-    assert load(example_ship).seat("captain").model == "fake-2"
+    assert lines[4].startswith("ship.toml: seats.captain.remote_control = true")
+    assert lines[5] == "  remote_control written; qd restart captain applies it"
+    captain = load(example_ship).seat("captain")
+    assert captain.model == "fake-2" and captain.remote_control
 
 
 def test_set_takes_the_ship_from_the_environment_and_refuses_with_a_reason(example_ship: Path, capsys, monkeypatch):

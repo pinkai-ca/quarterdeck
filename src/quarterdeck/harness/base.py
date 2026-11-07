@@ -281,6 +281,7 @@ class Harness(ABC):
     brief_channel: str
     record_confirms: bool = True  # False where the record is opaque: the screen's echo confirms a delivery instead
     reads_usage: bool = False  # True where usage() reads the provider's windows; a pool of such a program is read before a move
+    remote_control: bool = False  # True where the program can open a seat to the operator's phone and claude.ai as well
 
     def queues_while_working(self, seat: SeatSpec) -> bool:
         """Whether a message typed during a turn is taken and queued, or refused until it ends."""

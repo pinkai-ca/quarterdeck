@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from quarterdeck.harness.base import State, same_name
@@ -160,6 +161,8 @@ def test_the_launch_carries_our_files_and_nothing_of_the_users(tmp_path: Path):
     assert launch.env == {"CLAUDE_CONFIG_DIR": str(home)}
     resumed = harness.launch(seat, pool, home, brief, "abc-123", None)
     assert resumed.argv[-2:] == ("--resume", "abc-123")
+    reachable = harness.launch(replace(seat, remote_control=True), pool, home, brief, None, "qd > briefed as pike")
+    assert reachable.argv[7:9] == ("--remote-control", "Pike") and reachable.argv[-1] == "qd > briefed as pike"
 
 
 def test_a_move_to_another_pool_replaces_the_link_and_copies_no_token(tmp_path: Path):

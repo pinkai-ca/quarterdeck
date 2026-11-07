@@ -255,6 +255,7 @@ class ClaudeHarness(Harness):
     keys = Keys(submit="Enter", send_now=("C-x", "C-s"), interrupt="Escape", empty=("C-c",))
     brief_channel = "system-prompt"
     reads_usage = True
+    remote_control = True
 
     def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None) -> Credential | None:
         home.mkdir(parents=True, exist_ok=True)
@@ -272,6 +273,8 @@ class ClaudeHarness(Harness):
 
     def launch(self, seat: SeatSpec, pool: Pool, home: Path, brief: Path, resume: str | None, first: str | None) -> Launch:
         argv = ["claude", "--setting-sources", "user", "--append-system-prompt-file", str(brief), "--name", seat.display]
+        if seat.remote_control:
+            argv += ["--remote-control", seat.display]  # the same session from the operator's phone, under the seat's name
         if seat.model:
             argv += ["--model", seat.model]
         if seat.effort:

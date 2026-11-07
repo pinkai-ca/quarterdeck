@@ -61,6 +61,7 @@ class SeatSpec:
     cwd: Path | None = None
     up: bool = True
     fresh: str | None = None
+    remote_control: bool = False  # the same session open from the operator's phone, where the program has it
     settings: dict = field(default_factory=dict)
 
     @property
@@ -181,11 +182,12 @@ def _seat(name: str, table: dict, folder: Path) -> SeatSpec:
         cwd=_path(table["cwd"], folder) if "cwd" in table else None,
         up=bool(table.get("up", True)),
         fresh=table.get("fresh"),
+        remote_control=bool(table.get("remote_control", False)),
         settings=dict(table.get("settings", {})),
     )
 
 
-SEAT_KEYS = frozenset({"session", "role", "harness", "pool", "model", "effort", "persona", "cwd", "up", "fresh"})
+SEAT_KEYS = frozenset({"session", "role", "harness", "pool", "model", "effort", "persona", "cwd", "up", "fresh", "remote_control"})
 """The keys of ``[seats.<name>]`` the framework reads; any other key belongs to the program, under ``.settings``."""
 
 

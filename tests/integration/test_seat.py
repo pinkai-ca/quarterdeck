@@ -6,6 +6,7 @@ import json
 import shutil
 import subprocess
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -183,3 +184,10 @@ def test_bring_down_closes_the_sessions(ship: shipmod.Ship, tmux: Tmux):
     seatmod.bring_up(ship, tmux)
     proofs = seatmod.bring_down(ship, tmux)
     assert all("down · pane" in p for p in proofs) and tmux.sessions() == []
+
+
+def test_remote_control_is_refused_by_name_on_a_program_without_it(ship: shipmod.Ship, tmux: Tmux):
+    seat = seatmod.Seat(ship, replace(ship.seat("captain"), remote_control=True), tmux)
+    with pytest.raises(ShipError, match="fake has no Remote Control; Claude Code is the program that offers it"):
+        seat.up()
+    assert not seat.is_up and tmux.sessions() == [], "refused before anything opened"

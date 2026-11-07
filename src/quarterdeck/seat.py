@@ -149,6 +149,9 @@ class Seat:
     def up(self, resume: bool = True) -> str:
         if self.is_up:
             raise ShipError(f"{self.name} is up in {self.pane().id}; qd restart {self.name} relaunches it")
+        if self.spec.remote_control and not self.harness.remote_control:
+            raise ShipError(f"{self.name}: remote_control = true, and {self.harness.name} has no Remote Control; "
+                            "Claude Code is the program that offers it, so change the harness or drop the key")
         shipmod.fence(self.ship)
         self.folder.mkdir(parents=True, exist_ok=True)
         left = self.pane()
