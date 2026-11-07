@@ -1,0 +1,59 @@
+"""qd doctor's checks on the drydock: what passes on a machine that runs the tests, and what a failure names."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from quarterdeck import cli, doctor
+from quarterdeck.ship import Pool, load
+
+
+def run(capsys, *argv: str) -> tuple[int, str]:
+    code = cli.main(list(argv))
+    out = capsys.readouterr()
+    return code, out.out
+
+
+def test_the_drydock_passes_every_check_on_a_machine_that_runs_the_tests(drydock: Path, capsys):
+    found = doctor.checks(load(drydock))
+    assert all(c.passed for c in found), [str(c) for c in found if not c.passed]
+    assert [c.name for c in found][:3] == ["ship file", "tmux", "git"]
+    assert next(c.detail for c in found if c.name == "program fake").startswith("qd-fakeharness")
+    assert next(c.detail for c in found if c.name == "pool fake") == "the program holds its own sign-in"
+    assert "service" not in [c.name for c in found], "no runtime yet, so nothing to say about its service"
+    code, out = run(capsys, "--ship", str(drydock), "doctor")
+    assert code == 0 and out.startswith("PASS  ship file · ship.toml: 3 seats, 1 pools, 3 sessions") and "FAIL" not in out
+
+
+def test_a_missing_working_directory_and_a_missing_program_fail_by_name(drydock: Path, tmp_path: Path, monkeypatch, capsys):
+    nowhere = tmp_path / "nowhere"
+    text = (drydock / "ship.toml").read_text().replace("[seats.captain]\n", f'[seats.captain]\ncwd = "{nowhere}"\n')
+    (drydock / "ship.toml").write_text(text)
+    failed = [c for c in doctor.checks(load(drydock)) if not c.passed]
+    assert [c.name for c in failed] == ["seat captain"] and "does not exist; qd creates nothing outside its folder" in failed[0].detail
+    code, out = run(capsys, "--ship", str(drydock), "doctor")
+    assert code == 1 and f"FAIL  seat captain · working directory {nowhere} does not exist" in out
+    monkeypatch.setattr(doctor.shutil, "which", lambda *args, **kwargs: None)
+    failed = {c.name: c.detail for c in doctor.checks(load(drydock)) if not c.passed}
+    assert failed["program fake"] == "qd-fakeharness is not on the PATH qd runs with; install it, or put it on that PATH"
+
+
+def test_a_pool_is_ready_when_its_credential_is_there(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("SYNTHETIC_KEY", raising=False)
+    absent = doctor.pool_check(Pool("claude-secondary", "claude", config_dir=tmp_path / "nowhere"))
+    assert not absent.passed and absent.detail.startswith("no credential at") and "sign in to the program there" in absent.detail
+    key = doctor.pool_check(Pool("api", "claude", api_key="env:SYNTHETIC_KEY"))
+    assert not key.passed and "SYNTHETIC_KEY is not set" in key.detail
+    monkeypatch.setenv("SYNTHETIC_KEY", "x")
+    assert doctor.pool_check(Pool("api", "claude", api_key="env:SYNTHETIC_KEY")).detail == "key present in env:SYNTHETIC_KEY"
+    signed = tmp_path / "signed"
+    signed.mkdir()
+    (signed / ".credentials.json").write_text('{"claudeAiOauth": {"refreshTokenExpiresAt": 4102444800000}}')
+    present = doctor.pool_check(Pool("claude-secondary", "claude", config_dir=signed))
+    assert present.passed and present.detail.startswith(f"signed in at {signed}; its grant expires ")
+    assert doctor.pool_check(Pool("google", "antigravity")).detail == "the program holds its own sign-in"
+
+
+def test_a_ship_file_that_does_not_load_is_the_first_failing_check(tmp_path: Path, capsys):
+    code, out = run(capsys, "--ship", str(tmp_path), "doctor")
+    assert code == 1 and out.startswith("FAIL  ship file · ") and "holds no ship.toml" in out

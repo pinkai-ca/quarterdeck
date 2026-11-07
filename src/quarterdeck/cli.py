@@ -12,7 +12,7 @@ import os
 import sys
 from typing import Any
 
-from . import (__version__, check, drill, harness as harnesses, ledger, post, seat as seatmod, service,
+from . import (__version__, check, doctor, drill, harness as harnesses, ledger, post, seat as seatmod, service,
                ship as shipmod, standing, watch)
 from .ship import ShipError
 from .tmux import Tmux, TmuxError
@@ -109,6 +109,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--keep", action="store_true", help="keep the temporary ship and its tmux server for a look")
     p = verb("check", cmd_check, "prove the installed version of a program live, on a throwaway seat (spends tokens)")
     p.add_argument("harness", choices=[n for n in harnesses.NAMES if n != "fake"])
+    p = verb("doctor", cmd_doctor, "is this machine ready to run the ship: tmux, git, programs, sign-ins, folders, the service, disk")
+    p.add_argument("--fix", action="store_true",
+                   help="hand the failures to a throwaway seat on the first pool whose program runs, then check again (spends tokens)")
     return parser
 
 
@@ -372,6 +375,23 @@ def cmd_check(args: argparse.Namespace) -> list[str]:
     checks = check.check(ship, args.harness, Tmux.default())
     args.exit_code = 0 if all(c.passed for c in checks) else 1
     return [str(c) for c in checks]
+
+
+def cmd_doctor(args: argparse.Namespace) -> list[str]:
+    try:
+        ship = load_ship(args)
+    except ShipError as error:
+        args.exit_code = 1
+        return [str(drill.Check("ship file", False, str(error)))]
+    found = doctor.checks(ship)
+    lines = [str(c) for c in found]
+    failed = [c for c in found if not c.passed]
+    if failed and args.fix:
+        lines += ["", "the failures handed to a seat:"] + [str(c) for c in doctor.fix(ship, failed, Tmux.default())]
+        found = doctor.checks(ship)
+        lines += ["", "checked again:"] + [str(c) for c in found]
+    args.exit_code = 0 if all(c.passed for c in found) else 1
+    return lines
 
 
 def cmd_drill(args: argparse.Namespace) -> list[str]:

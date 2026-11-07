@@ -52,6 +52,11 @@ def qd_bin() -> Path:
     return Path(found).parent if found else beside
 
 
+def program_path() -> str:
+    """The PATH a seat's program runs with, and the one its program is looked for on: the folder holding ``qd`` first, so the seat can post."""
+    return os.pathsep.join(filter(None, [str(qd_bin()), os.environ.get("PATH", "")]))
+
+
 def launch_script(seat: str, path: str, argv: list[str]) -> str:
     """The seat's command as a script for tmux to run: tmux refuses a window command over 16 KiB, and a
     brief or a first message can be longer. The PATH travels inside it, since the login shell resets the
@@ -273,8 +278,7 @@ class Seat:
 
     @staticmethod
     def _path() -> str:
-        """The PATH a seat's program runs with: the folder holding ``qd`` first, so the seat can post."""
-        return os.pathsep.join(filter(None, [str(qd_bin()), os.environ.get("PATH", "")]))
+        return program_path()
 
     def _open_window(self, argv: list[str], env: dict[str, str], path: str) -> Pane:
         session = self.session
