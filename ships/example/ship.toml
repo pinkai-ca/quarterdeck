@@ -1,0 +1,44 @@
+# The example ship: three seats on the fake harness, one in each kind of session.
+# It runs anywhere, needs no credential, and is what `qd drill` exercises.
+
+[ship]
+name = "example"
+operator = "operator"            # what this ship calls its human
+
+[pools.fake]
+provider = "fake"                # the fake harness needs no credential
+
+[sessions.bridge]
+title = "Bridge"
+
+[sessions.office]
+title = "Office"
+human = true                     # the human types here; the ship never does
+
+[sessions.crew]
+title = "Crew"
+
+[seats.captain]
+session = "bridge"
+role = "captain"
+persona = "Pike"
+harness = "fake"
+pool = "fake"
+model = "fake-1"
+effort = "high"
+
+[seats.desk]
+session = "office"
+role = "desk"
+persona = "Maeve"
+harness = "fake"
+pool = "fake"
+model = "fake-1"
+
+[seats.worker-1]
+session = "crew"
+role = "worker"
+harness = "fake"
+pool = "fake"
+model = "fake-1"
+fresh = "after-order"            # a clean context for every order

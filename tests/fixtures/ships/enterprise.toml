@@ -1,0 +1,77 @@
+[ship]
+name = "enterprise"
+operator = "Admiral"                 # what this ship calls its human
+workspace = "~/dev/quarterdeck"      # the default working directory of every seat
+
+[pools.claude-primary]
+provider = "claude"
+config_dir = "~/.claude"
+
+[pools.claude-secondary]
+provider = "claude"
+config_dir = "~/.config/helm/subscriptions/claude-max5x"
+
+[pools.codex]
+provider = "codex"
+home = "~/.codex"
+
+[pools.google]
+provider = "antigravity"
+config_dir = "~/.config/agy"
+
+[pools.anthropic-api]
+provider = "claude"
+api_key = "env:ANTHROPIC_API_KEY"     # the key is named, never written here
+budget = "200 USD/month"             # optional: a wall when spent
+
+[sessions.bridge]
+title = "Ship's Bridge"
+
+[sessions.office]
+title = "Admiral's Office"
+human = true                         # the human types here; the ship never does
+
+[sessions.crew]
+title = "Crew"
+
+[seats.pike]
+session = "bridge"
+role = "captain"
+persona = "Pike"
+harness = "claude"
+pool = "claude-secondary"
+model = "claude-opus-5-5"
+effort = "max"
+
+[seats.scott]
+session = "bridge"
+role = "engineering"
+persona = "Scott"
+harness = "codex"
+pool = "codex"
+model = "gpt-6-astra"
+effort = "xhigh"
+
+[seats.desk]
+session = "office"
+role = "desk"
+persona = "Maeve"
+harness = "claude"
+pool = ["claude-secondary", "claude-primary"]   # starts on the first; moves on at a wall and stays
+model = "claude-opus-5-5"
+effort = "max"
+cwd = "~/dev"                        # a seat may override the workspace
+remote_control = true
+
+[seats.worker-1]
+session = "crew"
+role = "worker"
+harness = "codex"
+pool = "codex"
+model = "gpt-6-astra"
+effort = "high"
+up = false                           # declared, brought up on demand
+fresh = "after-order"                # a clean context for every order
+
+[seats.worker-1.settings]            # the program's own keys, passed verbatim at launch
+model_auto_compact_token_limit = 200000

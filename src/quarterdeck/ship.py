@@ -1,0 +1,335 @@
+"""The Ship: one file, ``ship.toml``, declaring the sessions, the pools and the seats.
+
+The ship file is the only configuration a ship has (law: ship-file). It is written in a
+plain form, one key per line, so that ``qd set`` can edit the one line a change needs and
+keep everything else, comments included. A ship folder is its own git repository; the
+runtime inside it is a nested repository with no commits, a fence that keeps git run
+above it out of the ship's state.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import tomllib
+from dataclasses import dataclass, field
+from pathlib import Path
+
+RUNTIME = "runtime"
+
+
+class ShipError(Exception):
+    """A refusal: the reason, and what would lift it."""
+
+
+@dataclass(frozen=True)
+class Pool:
+    """One way of paying: a subscription, named by its credential directory, or an API key."""
+
+    name: str
+    provider: str
+    config_dir: Path | None = None
+    api_key: str | None = None
+    budget: str | None = None
+
+    @property
+    def kind(self) -> str:
+        return "key" if self.api_key else "subscription"
+
+
+@dataclass(frozen=True)
+class Session:
+    name: str
+    title: str
+    human: bool = False
+
+
+@dataclass(frozen=True)
+class SeatSpec:
+    """A seat as declared. What runs in it is the Seat module's business."""
+
+    name: str
+    session: str
+    role: str
+    harness: str
+    pools: tuple[str, ...]
+    model: str | None = None
+    effort: str | None = None
+    persona: str | None = None
+    cwd: Path | None = None
+    up: bool = True
+    fresh: str | None = None
+    remote_control: bool = False
+    settings: dict = field(default_factory=dict)
+
+    @property
+    def display(self) -> str:
+        return self.persona or self.name
+
+
+@dataclass(frozen=True)
+class Ship:
+    folder: Path
+    name: str
+    operator: str
+    workspace: Path
+    pools: dict[str, Pool]
+    sessions: dict[str, Session]
+    seats: dict[str, SeatSpec]
+
+    @property
+    def file(self) -> Path:
+        return self.folder / "ship.toml"
+
+    @property
+    def runtime(self) -> Path:
+        return self.folder / RUNTIME
+
+    @property
+    def is_repository(self) -> bool:
+        return (self.folder / ".git").exists()
+
+    def seat(self, name: str) -> SeatSpec:
+        if name not in self.seats:
+            raise ShipError(f"no seat {name!r} in {self.file}; declared: {', '.join(self.seats)}")
+        return self.seats[name]
+
+    def pool(self, name: str) -> Pool:
+        if name not in self.pools:
+            raise ShipError(f"no pool {name!r} in {self.file}; declared: {', '.join(self.pools)}")
+        return self.pools[name]
+
+    def session_of(self, seat: SeatSpec) -> Session:
+        return self.sessions[seat.session]
+
+    def seats_in(self, session: str) -> list[SeatSpec]:
+        return [s for s in self.seats.values() if s.session == session]
+
+    def cwd_of(self, seat: SeatSpec) -> Path:
+        return seat.cwd or self.workspace
+
+
+# -- reading --------------------------------------------------------------------------
+
+
+def find(argument: str | None = None) -> Path:
+    """The ship folder: ``--ship``, else ``QD_SHIP`` in the environment."""
+    chosen = argument or os.environ.get("QD_SHIP")
+    if not chosen:
+        raise ShipError("no ship named: pass --ship <folder> or set QD_SHIP")
+    folder = Path(chosen).expanduser().resolve()
+    if not (folder / "ship.toml").is_file():
+        raise ShipError(f"{folder} holds no ship.toml")
+    return folder
+
+
+def load(folder: Path) -> Ship:
+    folder = Path(folder).expanduser().resolve()
+    file = folder / "ship.toml"
+    try:
+        data = tomllib.loads(file.read_text())
+    except FileNotFoundError:
+        raise ShipError(f"{folder} holds no ship.toml") from None
+    except tomllib.TOMLDecodeError as error:
+        raise ShipError(f"{file}: {error}") from None
+    head = data.get("ship", {})
+    pools = {name: _pool(name, table) for name, table in data.get("pools", {}).items()}
+    sessions = {
+        name: Session(name, table.get("title", name), bool(table.get("human", False)))
+        for name, table in data.get("sessions", {}).items()
+    }
+    seats = {name: _seat(name, table, folder) for name, table in data.get("seats", {}).items()}
+    ship = Ship(
+        folder=folder,
+        name=head.get("name", folder.name),
+        operator=head.get("operator", "operator"),
+        workspace=_path(head.get("workspace", "."), folder),
+        pools=pools,
+        sessions=sessions,
+        seats=seats,
+    )
+    _validate(ship)
+    return ship
+
+
+def _pool(name: str, table: dict) -> Pool:
+    config_dir = table.get("config_dir", table.get("home"))
+    return Pool(
+        name=name,
+        provider=table["provider"],
+        config_dir=Path(config_dir).expanduser() if config_dir else None,
+        api_key=table.get("api_key"),
+        budget=table.get("budget"),
+    )
+
+
+def _seat(name: str, table: dict, folder: Path) -> SeatSpec:
+    pool = table.get("pool", [])
+    pools = tuple(pool) if isinstance(pool, list) else (pool,)
+    return SeatSpec(
+        name=name,
+        session=table["session"],
+        role=table.get("role", name),
+        harness=table["harness"],
+        pools=pools,
+        model=table.get("model"),
+        effort=table.get("effort"),
+        persona=table.get("persona"),
+        cwd=_path(table["cwd"], folder) if "cwd" in table else None,
+        up=bool(table.get("up", True)),
+        fresh=table.get("fresh"),
+        remote_control=bool(table.get("remote_control", False)),
+        settings=dict(table.get("settings", {})),
+    )
+
+
+def _path(value: str, folder: Path) -> Path:
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else (folder / path).resolve()
+
+
+def _validate(ship: Ship) -> None:
+    for seat in ship.seats.values():
+        if seat.session not in ship.sessions:
+            raise ShipError(f"seat {seat.name}: session {seat.session!r} is not declared")
+        for pool in seat.pools:
+            if pool not in ship.pools:
+                raise ShipError(f"seat {seat.name}: pool {pool!r} is not declared")
+        if seat.fresh not in (None, "after-order"):
+            raise ShipError(f"seat {seat.name}: fresh = {seat.fresh!r}; the one value is \"after-order\"")
+    for pool in ship.pools.values():
+        if pool.config_dir and pool.api_key:
+            raise ShipError(f"pool {pool.name}: declare config_dir (or home) or api_key, not both")
+
+
+# -- the line editor -------------------------------------------------------------------
+
+_HEADER = re.compile(r"^\s*\[([^\]]+)\]\s*(#.*)?$")
+
+
+def _key_line(key: str) -> re.Pattern[str]:
+    return re.compile(rf"^(\s*){re.escape(key)}\s*=\s*(.*?)(\s+#.*)?\s*$")
+
+
+def literal(value: object) -> str:
+    """A TOML literal for the values the ship file uses."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(literal(v) for v in value) + "]"
+    if isinstance(value, Path):
+        return json.dumps(str(value))
+    return json.dumps(str(value))
+
+
+def edit(text: str, table: str, key: str, value: object) -> str:
+    """Return ``text`` with ``key = value`` set in ``[table]``, every other line kept."""
+    lines = text.splitlines()
+    start, end = _table_span(lines, table)
+    rendered = literal(value)
+    if start is None:
+        tail = [] if not lines or lines[-1] == "" else [""]
+        return "\n".join(lines + tail + [f"[{table}]", f"{key} = {rendered}"]) + "\n"
+    pattern = _key_line(key)
+    for index in range(start + 1, end):
+        match = pattern.match(lines[index])
+        if match:
+            indent, _, comment = match.groups()
+            lines[index] = f"{indent}{key} = {rendered}{comment or ''}"
+            break
+    else:
+        last = end
+        while last > start + 1 and lines[last - 1].strip() == "":
+            last -= 1
+        lines.insert(last, f"{key} = {rendered}")
+    return "\n".join(lines) + "\n"
+
+
+def _table_span(lines: list[str], table: str) -> tuple[int | None, int]:
+    """Line index of ``[table]`` and of the next header (or the end); None when absent."""
+    start = None
+    for index, line in enumerate(lines):
+        match = _HEADER.match(line)
+        if not match:
+            continue
+        if start is not None:
+            return start, index
+        if match.group(1).strip() == table:
+            start = index
+    return start, len(lines)
+
+
+def set_value(ship: Ship, table: str, key: str, value: object) -> str:
+    """Write one line of the ship file and commit it when the ship folder is a repository.
+
+    Returns the proof line.
+    """
+    text = ship.file.read_text()
+    changed = edit(text, table, key, value)
+    if changed == text:
+        return f"{ship.file.name}: {table}.{key} = {literal(value)} already"
+    _write_atomically(ship.file, changed)
+    line = f"{ship.file.name}: {table}.{key} = {literal(value)}"
+    if ship.is_repository:
+        sha = commit(ship.folder, [ship.file.name], f"qd set {table}.{key} = {literal(value)}")
+        return f"{line} · committed {sha}"
+    return f"{line} · written; {ship.folder.name} is not a repository, so not committed"
+
+
+def _write_atomically(path: Path, text: str) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
+
+
+# -- git -------------------------------------------------------------------------------
+
+
+def _git(folder: Path, *args: str) -> str:
+    done = subprocess.run(["git", "-C", str(folder), *args], capture_output=True, text=True)
+    if done.returncode:
+        raise ShipError(f"git {' '.join(args)} in {folder}: {done.stderr.strip()}")
+    return done.stdout.strip()
+
+
+def commit(folder: Path, paths: list[str], message: str) -> str:
+    """Stage ``paths`` and commit them in ``folder``; the short sha, or 'nothing' when clean."""
+    _git(folder, "add", "--", *paths)
+    if not _git(folder, "status", "--porcelain", "--", *paths):
+        return "nothing"
+    _git(folder, "commit", "--quiet", "--only", "-m", message, "--", *paths)
+    return _git(folder, "rev-parse", "--short", "HEAD")
+
+
+def fence(ship: Ship) -> str:
+    """Make ``runtime/`` a repository of its own, so git run above it never enters it.
+
+    Refuses a ship whose own repository tracks the runtime (law: one-folder).
+    """
+    runtime = ship.runtime
+    if ship.is_repository:
+        if _git(ship.folder, "ls-files", "--", RUNTIME):
+            raise ShipError(
+                f"{ship.folder.name} tracks {RUNTIME}/ in git; "
+                f"`git -C {ship.folder} rm -r --cached {RUNTIME}` lifts it"
+            )
+        _ignore_runtime(ship)
+    runtime.mkdir(parents=True, exist_ok=True)
+    if (runtime / ".git").exists():
+        return f"{RUNTIME}/ fenced"
+    _git(runtime, "init", "--quiet")
+    (runtime / ".git" / "description").write_text("quarterdeck runtime: a fence, never committed to\n")
+    return f"{RUNTIME}/ fenced: nested repository created"
+
+
+def _ignore_runtime(ship: Ship) -> None:
+    ignore = ship.folder / ".gitignore"
+    lines = ignore.read_text().splitlines() if ignore.exists() else []
+    if f"{RUNTIME}/" in lines or RUNTIME in lines:
+        return
+    ignore.write_text("\n".join(lines + [f"{RUNTIME}/"]) + "\n")
+    commit(ship.folder, [".gitignore"], f"qd up: ignore {RUNTIME}/")
