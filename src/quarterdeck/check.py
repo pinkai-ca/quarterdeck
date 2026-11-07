@@ -2,10 +2,11 @@
 
 The seat opens in a tmux session of its own, named for this run, in a home of its own under
 the ship's runtime, on the ship's first pool for that provider. The contract probes run
-once: launch, an open door, a message pasted and matched in the box, submitted and found in
-the record, and one task the check can verify without reading prose: write a named file with
-a given line, and post a report on the order. When everything holds the version is marked
-proven in the runtime. It spends real tokens and runs only when asked.
+once: launch, an open door, a message long enough to fold in any program's box, pasted and
+matched as the program shows it, submitted and found in the record, and one task the check
+can verify without reading prose: write a named file with a given line, and post a report
+on the order. When everything holds the version is marked proven in the runtime. It spends
+real tokens and runs only when asked.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import secrets
 import shutil
 from dataclasses import replace
 
-from . import harness as harnesses, post
+from . import harness as harnesses, post, standing
 from .door import Door
 from .drill import Check, wait_for
 from .seat import Seat
@@ -73,15 +74,20 @@ def probe(ship: Ship, seat: Seat) -> list[Check]:
     if not opened:
         return checks
     store, attempts = post.Store(ship.runtime), post.Attempts(ship.runtime)
+    laws = (standing.FRAMEWORK_DIR / "laws.md").read_text().strip()
     order = store.new("order", "ship", seat.name,
                       f"Write the file {proof_file} containing exactly one line: {proof_line}\n"
-                      f"Then post your report on this order with the body: written", subject="qd check")
+                      f"Then post your report on this order with the body: written\n\n"
+                      f"The rest of this order is the laws you already run under, repeated so that the message is long "
+                      f"enough to fold in your box; nothing in it changes the task.\n\n{laws}", subject="qd check")
     launch = seat.launched()
     attempt = attempts.open(order, seat.name, launch.pane, launch.pid, launch.at)
-    delivery = door.deliver(post.typed([order]))
+    text = post.typed([order])
+    delivery = door.deliver(text)
     attempts.close(attempt, delivery.result, delivery.detail)
     taken = delivery.result in ("delivered", "queued")
-    checks.append(Check("paste matched the box, submitted, confirmed by the record", taken, str(delivery)))
+    checks.append(Check(f"a {len(text)}-character paste matched the box as the program shows it, submitted, confirmed",
+                        taken, str(delivery)))
     if not taken:
         return checks
     closed = wait_for(lambda: store.closing_report(order), PATIENCE)

@@ -5,8 +5,10 @@ no home switch: its state lives under ``~/.gemini`` and no variable moves it, so
 runs in the user's Antigravity state, with only its settings passed for the session
 (``--settings``). And its conversation record is a SQLite file of protobuf blobs the
 framework does not read, so a delivery is confirmed by the transcript's echo and the
-watch reads working from the screen; the Ledger gets no tokens from it. The brief goes as
-the first message (``--prompt-interactive``); a conversation resumes by its id.
+watch reads working from the screen; the Ledger gets no tokens from it. Every conversation
+lands in one shared folder, so a launch notes the ones already there and the seat's record
+is the one that appears after. The brief goes as the first message
+(``--prompt-interactive``); a conversation resumes by its id.
 """
 
 from __future__ import annotations
@@ -17,10 +19,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..ship import Pool, SeatSpec
-from .base import (Box, Control, Credential, Harness, Interruption, Keys, Launch, Screen, State, Turn,
+from .base import (Box, Control, Credential, Harness, Interruption, Join, Keys, Launch, Screen, State, Turn,
                    program_version)
 
 STATE_DIR = Path.home() / ".gemini" / "antigravity-cli"
+BEFORE = "conversations.before"  # written in the seat home at launch: the conversations that already existed
 RULE = re.compile(r"^─{20,}\s*$")
 STATUS_LINE = re.compile(r"(?:^|\s{2,})([A-Z][\w .-]*?) · (low|medium|high|xhigh|max)\s*$")
 WORKING = re.compile(r"esc to cancel|^[⠁-⣿]\s+\w+ing", re.M)
@@ -56,19 +59,36 @@ class AntigravityHarness(Harness):
         opening = "\n\n".join(filter(None, [brief.read_text().strip() if not resume else None, first]))
         if opening:
             argv += ["--prompt-interactive", opening]
+        if not resume:  # a new conversation is about to appear: note which ones are there already
+            (home / BEFORE).write_text("".join(f"{p.name}\n" for p in sorted(self._conversations())))
         return Launch(tuple(argv), {"AGY_CLI_DISABLE_AUTO_UPDATE": "true"})
 
     def version(self) -> str | None:
         return program_version(("agy", "--version"))
 
-    # -- record: the conversation databases, joined by creation time, otherwise opaque ---------
+    # -- record: the conversation that appeared after the launch, otherwise opaque -------------
+
+    @staticmethod
+    def _conversations() -> list[Path]:
+        return [p for p in (STATE_DIR / "conversations").glob("*.db") if p.is_file()]
 
     def records(self, home: Path) -> list[Path]:
-        files = [p for p in (STATE_DIR / "conversations").glob("*.db") if p.is_file()]
-        return sorted(files, key=lambda p: p.stat().st_ctime)
+        """The conversations the shared folder gained since the launch noted what was there."""
+        noted = set((home / BEFORE).read_text().split()) if (home / BEFORE).is_file() else set()
+        return sorted((p for p in self._conversations() if p.name not in noted), key=lambda p: p.stat().st_mtime)
 
     def first_timestamp(self, record: Path) -> datetime | None:
+        """The inode change time, which Linux moves on every write: not a creation time, so the join never compares it."""
         return datetime.fromtimestamp(record.stat().st_ctime, timezone.utc)
+
+    def join(self, home: Path, launched_at: datetime) -> Join:
+        """The one conversation that appeared since the launch; two are reported, never guessed."""
+        appeared = self.records(home)
+        if not appeared:
+            return Join(None, "no record yet")
+        if len(appeared) > 1:
+            return Join(None, f"ambiguous: {', '.join(p.name for p in appeared)} appeared since the launch")  # law: one-record
+        return Join(appeared[0])
 
     def session_id(self, record: Path) -> str | None:
         return record.stem
@@ -122,7 +142,10 @@ class AntigravityHarness(Harness):
         return tuple("\n".join(b).strip("\n") for b in found)
 
     def box(self, text: str) -> Box:
-        return Box(text)
+        """A long paste folds two ways (1.5.2): one of few lines to ``[Pasted text #N M chars]``, M the length less
+        one trailing newline; one of many lines to ``[Pasted text #N +k lines]``, k the newlines. The box takes either."""
+        chars, newlines = len(text.removesuffix("\n")), text.count("\n")
+        return Box(text, folded=rf"\[Pasted text #\d+ (?:{chars} chars|\+{newlines} lines)\]")
 
     def controls(self) -> tuple[Control, ...]:
         return (

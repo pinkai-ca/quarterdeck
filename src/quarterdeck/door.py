@@ -16,6 +16,7 @@ from .seat import Seat
 CONFIRM_SECONDS = 5.0
 BOX_SECONDS = 2.0
 SETTLE_SECONDS = 0.1
+TRANSCRIPT_LINES = 2000  # scrollback read for an echo: a long message's echo climbs above the screen
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,13 @@ class Door:
         if pane is None or pane.dead:
             return None
         return self.harness.screen(self.tmux.capture(pane.id))
+
+    def echoes(self) -> tuple[str, ...]:
+        """The inputs the transcript shows, read with scrollback, since a long message's echo reaches above the screen."""
+        pane = self.seat.pane()
+        if pane is None or pane.dead:
+            return ()
+        return self.harness.screen(self.tmux.capture(pane.id, history=TRANSCRIPT_LINES)).echoes
 
     def reading(self, screen: Screen | None = None) -> Reading:
         """The door from the screen alone; nothing is pressed."""
@@ -179,8 +187,7 @@ class Door:
         if not self.harness.record_confirms:
             deadline = time.monotonic() + seconds
             while time.monotonic() < deadline:
-                screen = self.screen()
-                if screen and any(echoed(e, wanted) for e in screen.echoes):
+                if any(echoed(e, wanted) for e in self.echoes()):
                     return Delivery("delivered", "echoed in the transcript; this program's record is not read")
                 time.sleep(0.2)
             return Delivery("blind", f"typed and submitted, not echoed in the transcript within {seconds:.0f}s")
@@ -199,6 +206,8 @@ class Door:
                 break
             time.sleep(0.2)
         screen = self.screen()
-        if screen and (screen.queued or any(echoed(e, wanted) for e in screen.echoes)):
+        if screen and (screen.queued or any(echoed(e, wanted) for e in self.echoes())):
             return Delivery("queued", "the screen shows it queued; the record will confirm")
+        if screen and screen.working and screen.box == "":
+            return Delivery("queued", "the box emptied and the program went to work; the record will confirm")
         return Delivery("blind", f"typed and submitted, not seen in the record within {seconds:.0f}s")

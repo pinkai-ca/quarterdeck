@@ -21,8 +21,8 @@ def screen(name: str):
 
 def test_every_fixture_set_has_the_screens_the_adapter_reads():
     names = {p.stem for p in SCREENS.glob("*.txt")}
-    assert {"start", "paste-3-lines-shown", "paste-4-lines-folded", "working-queued", "switch-model-dialog",
-            "effort-set", "interrupted"} <= names
+    assert {"start", "paste-3-lines-shown", "paste-4-lines-folded", "paste-long-one-line-folded", "working-queued",
+            "switch-model-dialog", "effort-set", "interrupted"} <= names
 
 
 def test_the_start_screen_is_an_open_door():
@@ -36,11 +36,23 @@ def test_a_short_paste_shows_in_full_and_a_long_one_folds():
     three = ("qd > order from desk · ord-7f3a · Spike\nAnswer MARKER-LOADED if you read a CLAUDE.md marker, else NO-MARKER. "
              "Then run exactly: qd --version\nqd > reply: qd post report --re ord-7f3a · inbox: post/inbox/captain.md")
     shown = screen("paste-3-lines-shown")
-    assert harness.box(three).pattern is None and harness.box(three).matches(shown.box), shown.box
+    assert harness.box(three).matches(shown.box), shown.box
     four = "qd > order from desk · ord-9abc · Four\na\nb\nqd > reply: qd post report --re ord-9abc"
     folded = screen("paste-4-lines-folded")
     assert folded.box == "[Pasted text #3 +3 lines]"
     assert harness.box(four).matches(folded.box) and not harness.box(four).matches("[Pasted text #3 +4 lines]")
+
+
+def test_a_long_paste_folds_however_few_its_lines():
+    """Probed 7 November 2026: 1,981 characters on one line fold to a placeholder with no line count at all."""
+    harness = ClaudeHarness()
+    one_line = "qd probe A: " + " ".join(f"word{i}" for i in range(260))
+    assert len(one_line) == 1981
+    folded = screen("paste-long-one-line-folded")
+    assert folded.box == "[Pasted text #6]" and harness.box(one_line).matches(folded.box)
+    assert harness.box(one_line + "\n").matches("[Pasted text #5 +1 lines]"), "a trailing newline is one line"
+    assert not harness.box(one_line + "\n").matches(folded.box) and not harness.box(one_line).matches("[Pasted text #6 +1 lines]")
+    assert harness.box("short").matches("short") and not harness.box("short").matches("[Pasted text #1 +2 lines]")
 
 
 def test_a_working_seat_with_a_queued_message():

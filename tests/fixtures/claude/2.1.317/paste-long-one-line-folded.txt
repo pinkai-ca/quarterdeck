@@ -1,0 +1,24 @@
+❯ qd > order from desk · ord-abcd · Four
+  line two
+  line three
+  qd > reply: qd post report --re ord-abcd · inbox: post/inbox/captain.md
+
+● DONE
+
+  The sleep check finished: sleep 12; echo slept printed slept.
+
+  Now the reply for ord-abcd, run exactly as given:
+
+  Ran 1 shell command
+
+● The reply to ord-abcd was not posted. qd post report --re ord-abcd failed with
+  exit code 2: qd: an empty body: give the text, --body-file, or '-' for stdin.
+  The order has no body text, so I haven't made one up. Send the report text
+  and I'll post it with --body-file or stdin.
+
+✻ Brewed for 20s · done 4:36 AM
+
+────────────────────────────────────────────────────────────── qd-spike-claude ─
+❯ [Pasted text #6]
+────────────────────────────────────────────────────────────────────────────────
+  paste again to expand

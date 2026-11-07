@@ -23,11 +23,12 @@ from .base import (Box, Control, Credential, Harness, Interruption, Keys, Launch
 ENDS_TURN = {"end_turn", "max_tokens", "stop_sequence"}
 LOCAL_TAGS = ("<command-name>", "<local-command", "<bash-input>", "<bash-stdout>", "<bash-stderr>")
 INTERRUPTED = "[Request interrupted"
-PASTED = re.compile(r'^<pasted_content id="[^"]*">\n?(.*?)\n?</pasted_content(?: id="[^"]*")?>\s*$', re.S)
+PASTED = re.compile(r'^\s*<pasted_content id="[^"]*">\n?(.*?)\n?</pasted_content(?: id="[^"]*")?>\s*$', re.S)
 
 
 def unwrap(text: str) -> str:
-    """A folded paste is recorded inside ``<pasted_content>`` tags; the message is what is inside."""
+    """A long paste is recorded inside ``<pasted_content>`` tags, queued or submitted, with blank lines around
+    them when submitted; the message is what is inside."""
     match = PASTED.match(text)
     return match.group(1) if match else text
 
@@ -218,7 +219,6 @@ def read(record: Path) -> tuple[State, list[Turn]]:
 
 # -- the adapter -----------------------------------------------------------------------------
 
-FOLD_NEWLINES = 3  # a paste with this many newlines or more folds in the box (2.1.317)
 RULE = re.compile(r"^─{10,}")
 BOX_START = re.compile(r"^❯[  ]?(.*)$")
 MODE_LINE = re.compile(r"[○◐●◑] (\w+) · /effort")
@@ -314,11 +314,11 @@ class ClaudeHarness(Harness):
                       queued=queued, shows={"effort": mode.group(1)} if mode else {})
 
     def box(self, text: str) -> Box:
-        """A paste with three newlines or more folds, and the count is of newlines: a trailing one counts."""
+        """A paste folds when it is long or has three newlines or more (2.1.317). The placeholder counts the
+        newlines, a trailing one too, and names no count at all for a paste without any."""
         newlines = text.count("\n")
-        if newlines >= FOLD_NEWLINES:
-            return Box(text, pattern=rf"\[Pasted text #\d+ \+{newlines} lines\]")
-        return Box(text)
+        lines = rf" \+{newlines} lines" if newlines else ""
+        return Box(text, folded=rf"\[Pasted text #\d+{lines}\]")
 
     def controls(self) -> tuple[Control, ...]:
         return (

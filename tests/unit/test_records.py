@@ -101,6 +101,8 @@ def test_claude_unwraps_a_folded_paste_and_keeps_what_a_turn_took_from_its_queue
     record.entry("user", {"role": "user", "content": wrapped})
     assert claude.state(record.path).last_input == "qd > order from ship · ord-70e2 · qd check\nWrite the file."
     assert claude.unwrap("plain text") == "plain text"
+    submitted = '\n\n<pasted_content id="24aa">\nqd > order from ship · ord-ab12 · qd check\nWrite the file.\n</pasted_content id="24aa">\n'
+    assert claude.unwrap(submitted) == "qd > order from ship · ord-ab12 · qd check\nWrite the file.", "a long paste submitted at idle is wrapped with blank lines around it"
 
 
 def test_a_resumed_record_continues_its_turn_count(tmp_path: Path):

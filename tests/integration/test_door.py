@@ -125,6 +125,42 @@ def test_the_door_never_types_into_a_human_session(example_ship: Path, tmux: Tmu
     assert desk.harness.screen(tmux.capture(desk.pane().id)).box == ""
 
 
+def test_a_paste_the_program_took_but_has_not_recorded_yet_is_queued_not_blind(example_ship: Path, tmux: Tmux):
+    """A fresh session can take longer than the confirm window to record its first prompt: the box emptied and the
+    program at work say it took the paste, so the attempt reads queued and the record confirms it later."""
+    ship = ship_with(example_ship, '\n[seats.captain.settings]\nstep_seconds = "0.05"\naccept_seconds = "7"\n')
+    captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
+    captain.up()
+    wait_for(lambda: Door(captain).reading().open)
+    delivery = Door(captain).deliver(post.typed([order(captain, "slow to accept")]))
+    assert delivery.result == "queued" and delivery.detail.startswith("the box emptied and the program went to work"), delivery
+    record = wait_for(captain.record, 15)
+    wait_for(lambda: "slow to accept" in (captain.harness.state(record).last_input or ""), 15)  # law: one-door
+
+
+def test_an_echo_longer_than_the_screen_is_read_from_the_scrollback(tmux: Tmux, tmp_path: Path):
+    """A long message's echo climbs above a 24-line pane; the door confirms it from the transcript, scrollback included."""
+    from types import SimpleNamespace
+
+    from quarterdeck.door import echoed
+    from quarterdeck.harness.codex import CodexHarness
+
+    body = "\n".join(f"line {i} of the long order" for i in range(40))
+    shown = [f"filler {i}" for i in range(60)] + ["› qd > order from desk · ord-1234 · Long"] + ["  " + line for line in body.splitlines()]
+    shown += ["", "• Working (3s • esc to interrupt)", "", "› Ask Codex to do anything", "", "  GPT-6-Astra low · /work · main"]
+    script = tmp_path / "transcript.sh"
+    script.write_text("cat <<'EOF'\n" + "\n".join(shown) + "\nEOF\nsleep 30\n")
+    tmux.new_session("Crew")
+    pane = tmux.new_window("Crew", "scott", tmp_path, ["sh", str(script)])
+    wait_for(lambda: "GPT-6-Astra" in tmux.capture(pane.id))
+    seat = SimpleNamespace(name="scott", pane=lambda: tmux.pane(pane.id), harness=CodexHarness(), tmux=tmux,
+                           session=SimpleNamespace(human=False))
+    door = Door(seat)
+    wanted = " ".join(f"qd > order from desk · ord-1234 · Long\n{body}".split())
+    assert not any(echoed(e, wanted) for e in door.screen().echoes), "the screen alone shows only the echo's tail"
+    assert any(echoed(e, wanted) for e in door.echoes()), "the scrollback holds the whole echo"  # law: one-door
+
+
 def test_a_scrolled_pane_is_delivered_through(captain: seatmod.Seat, tmux: Tmux):
     tmux.run("copy-mode", "-t", captain.pane().id)
     assert tmux.pane(captain.pane().id).in_mode

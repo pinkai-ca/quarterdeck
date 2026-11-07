@@ -118,9 +118,7 @@ class FakeHarness(Harness):
     def box(self, text: str) -> Box:
         """The fake folds any paste with a newline, counting newlines as Claude Code does, trailing ones too."""
         newlines = text.count("\n")
-        if newlines:
-            return Box(text, pattern=rf"\[Pasted text #\d+ \+{newlines} lines\]")
-        return Box(text)
+        return Box(text, folded=rf"\[Pasted text #\d+ \+{newlines} lines\]" if newlines else None)
 
     def controls(self) -> tuple[Control, ...]:
         return (

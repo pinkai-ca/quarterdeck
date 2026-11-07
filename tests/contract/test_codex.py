@@ -19,7 +19,7 @@ def screen(name: str):
 
 def test_every_fixture_set_has_the_screens_the_adapter_reads():
     names = {p.stem for p in SCREENS.glob("*.txt")}
-    assert {"idle", "paste-6-lines-shown", "working", "model-picker", "interrupted"} <= names
+    assert {"idle", "paste-6-lines-shown", "paste-long-folded", "working", "model-picker", "interrupted"} <= names
 
 
 def test_an_idle_seat_shows_its_placeholder_as_an_empty_box():
@@ -28,12 +28,18 @@ def test_an_idle_seat_shows_its_placeholder_as_an_empty_box():
     assert s.shows == {"model": "GPT-6-Astra", "effort": "low"}
 
 
-def test_a_paste_shows_in_full_with_no_fold():
+def test_a_short_paste_shows_whole_and_a_long_one_folds_to_its_length():
+    """Probed 7 November 2026: six short lines show whole; 2,003 characters fold to a placeholder counting every one."""
     harness = CodexHarness()
     six = "qd > order from desk · ord-5678 · Six\na\nb\nc\nd\nqd > reply: qd post report --re ord-5678"
     s = screen("paste-6-lines-shown")
     assert harness.box(six).matches(s.box), s.box
     assert not harness.box("something else").matches(s.box)
+    long = "qd probe B: first line\n" + " ".join(f"word{i}" for i in range(260)) + "\nlast line\n"
+    assert len(long) == 2003
+    folded = screen("paste-long-folded")
+    assert folded.box == "[Pasted Content 2003 chars]" and harness.box(long).matches(folded.box)
+    assert not harness.box(long + "x").matches(folded.box), "the count is this paste's own"
 
 
 def test_a_working_seat_is_open_and_queues():

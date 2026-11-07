@@ -149,17 +149,21 @@ class Screen:
 
 @dataclass(frozen=True)
 class Box:
-    """How a program shows ``text`` in its box: the text itself, or a placeholder pattern."""
+    """How a program may show ``text`` in its box: whole, or folded to a placeholder naming this paste's size.
+
+    Each program folds a long paste at a threshold of its own, so the door accepts either
+    form; the placeholder carries a count, of lines or of characters, that only this paste matches.
+    """
 
     text: str
-    pattern: str | None = None
+    folded: str | None = None
 
     def matches(self, shown: str | None) -> bool:
         if shown is None:
             return False
-        if self.pattern:
-            return re.fullmatch(self.pattern, shown.strip()) is not None
-        return " ".join(self.text.split()) == " ".join(shown.split())
+        if " ".join(self.text.split()) == " ".join(shown.split()):
+            return True
+        return bool(self.folded) and re.fullmatch(self.folded, shown.strip()) is not None
 
 
 @dataclass(frozen=True)
