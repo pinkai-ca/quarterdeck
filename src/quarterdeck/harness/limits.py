@@ -13,6 +13,7 @@ class Window:
     group: str | None = None
     bucket: str | None = None
     bucket_name: str | None = None
+    error: str | None = None
 
 
 @dataclass(frozen=True)

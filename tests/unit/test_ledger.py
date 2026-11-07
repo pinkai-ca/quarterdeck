@@ -77,7 +77,8 @@ def test_pool_windows_and_walls(tmp_path: Path):
     book.record_usage("claude-primary", Usage((Window("5h", 1.0, earlier),), datetime.now(timezone.utc)))
     assert book.walls() == [], "a spent window already reset is no wall"
     lines = ledgermod.pools_table(book)
-    assert lines[1].startswith("claude-primary       5h") and "WALL" not in lines[1]
+    assert lines[1].startswith("claude-primary 5h") and "WALL" not in lines[1]
+    assert "LAST KNOWN" in lines[1], "invalid reset retains the prior dated tuple"
     book.close()
 
 

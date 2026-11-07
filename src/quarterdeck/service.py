@@ -339,16 +339,22 @@ class Service:
     def known_open(self, seat: Seat, pool_name: str) -> bool:
         """A pool a seat may move to: not walled, and where its program reads usage, read within the hour first.
 
-        An unread pool is read before the move, never assumed; a program that reads no usage
+        Google uses the paced background cache; other unread pools are read before the move; a program that reads no usage
         has only the Ledger's walls to go by, and the move says so."""
         pool = self.ship.pools[pool_name]
-        if pool.kind == "key" or not seat.harness.reads_usage:
+        if pool.kind == "key":
+            return not self.ledger.walled(pool_name, self.ship)
+        if pool.provider == "antigravity":
+            return self.ledger.usage_known(pool_name) and not self.ledger.walled(pool_name, self.ship)
+        if not seat.harness.reads_usage:
             return not self.ledger.walled(pool_name, self.ship)
         windows = self.ledger.pool_windows(pool_name)
-        fresh = windows and all((post.now() - datetime.fromisoformat(w[4])).total_seconds() < 3600 for w in windows)
+        fresh = windows and all(w[4] is not None and (post.now() - datetime.fromisoformat(w[4])).total_seconds() < 3600 for w in windows)
         if not fresh:
             usage = seat.harness.usage(pool)
             if usage is None:
+                from .harness.limits import Usage
+                self.ledger.record_usage(pool_name, Usage((), post.now(), "provider usage unavailable"))
                 self.log("failover", seat=seat.name, pool=pool_name, skipped="its usage could not be read")
                 return False
             self.ledger.record_usage(pool_name, usage)

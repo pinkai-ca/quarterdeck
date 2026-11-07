@@ -39,7 +39,7 @@ def test_all_groups_visible_only_argon_weekly_blocks_and_missing_is_unknown(tmp_
     book.record_usage('google', agq.parse_usage(doc, AT))
     assert not book.usage_known('google') and book.walls(now=AT) == []
     assert 'Gemini 4 Argon weekly unavailable' in '\n'.join(pools_table(book))
-    assert book.db.execute("SELECT used FROM pools WHERE window='7d'").fetchone() == (None,)
+    assert book.db.execute("SELECT used FROM pools WHERE window='7d'").fetchone() == (0.75,)
     book.close()
 
 

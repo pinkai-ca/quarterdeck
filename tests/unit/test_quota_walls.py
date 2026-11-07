@@ -183,13 +183,13 @@ def test_background_refresh_cadence_restart_wall_trigger_and_failures(tmp_path, 
     assert svc.ledger.walled('google-a'), 'available numeric quota does not clear an observed wall'
     for _ in range(3): svc.account()
     assert len(calls)==2
-    # Failed refresh must show unknown instead of retaining an apparently current old percentage.
+    # Failed refresh retains the old percentage explicitly as LAST KNOWN, never current.
     monkeypatch.setattr(AntigravityHarness,'usage',lambda self,pool:unknown('synthetic timeout',datetime.now(timezone.utc)))
     svc.ledger.quota.usage_read('google-a',datetime.now(timezone.utc)-timedelta(seconds=301),None)
     svc.account()
     assert not svc.ledger.usage_known('google-a') and svc.ledger.walled('google-a')
     assert 'synthetic timeout' in svc.ledger.quota.usage_notes()[0]
-    assert 'usage unknown' in watch.ledger_usage(seat.ship)[0]
+    assert 'LAST KNOWN' in watch.ledger_usage(seat.ship)[0]
     svc.ledger.close()
 
 

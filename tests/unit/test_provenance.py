@@ -60,7 +60,7 @@ def test_account_same_record_failover_restart_and_delayed_metadata(tmp_path, mon
     svc.meters['worker'] = SimpleNamespace(root=1001, sample=lambda table: None,
                                            result=lambda: Machine(3.5, 4096, 2, 800))
     svc.account()
-    svc.ledger.record_usage('pool-a', Usage((Window('synthetic', 1.0, None),), datetime.now(timezone.utc)))
+    svc.ledger.record_usage('pool-a', Usage((Window('synthetic', 1.0, datetime.now(timezone.utc) + timedelta(hours=1)),), datetime.now(timezone.utc)))
     svc.failover()  # real Service.failover -> move_to -> Seat.restart/down/up, with only the program open mocked
     assert seat.pool.name == 'pool-b' and seat.record() == record
     assert '--resume' in launches[0] and 'synthetic-resume' in launches[0]

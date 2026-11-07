@@ -7,6 +7,7 @@ import json
 import math
 import os
 from pathlib import Path
+from dataclasses import replace
 import re
 import subprocess
 from datetime import datetime, timedelta, timezone
@@ -71,7 +72,7 @@ def _timestamp(value) -> datetime | None:
 
 
 def unknown(reason: str, at: datetime) -> Usage:
-    return Usage((Window("7d", None, None, group="Gemini 4 Argon", bucket=None),), at, reason)
+    return Usage((Window("7d", None, None, group="Gemini 4 Argon", bucket=None, error=reason),), at, reason)
 
 
 def parse_usage(doc, at: datetime) -> Usage:
@@ -108,14 +109,15 @@ def parse_usage(doc, at: datetime) -> Usage:
                 errors.append(f"{name}: fraction or reset unavailable")
             if name in identities:
                 errors.append(f"{name}: ambiguous duplicate bucket")
-                windows = [Window(w.name, None, None, w.blocks, w.group, w.bucket, w.bucket_name) if w.name == name else w for w in windows]
+                windows = [replace(w, used=None, resets_at=None, error="ambiguous duplicate bucket") if w.name == name else w for w in windows]
                 continue
             identities.add(name)
             windows.append(Window(name, 1 - fraction if valid else None, reset, headline, scope,
                                   bucket.get("id") if isinstance(bucket.get("id"), str) else None,
-                                  bucket.get("name") if isinstance(bucket.get("name"), str) else None))
+                                  bucket.get("name") if isinstance(bucket.get("name"), str) else None,
+                                  None if valid and reset is not None else "fraction or reset unavailable"))
     if "7d" not in identities:
-        windows.insert(0, Window("7d", None, None, group="Gemini 4 Argon", bucket=None))
+        windows.insert(0, Window("7d", None, None, group="Gemini 4 Argon", bucket=None, error="Gemini 4 Argon weekly unavailable"))
         errors.append("Gemini 4 Argon weekly unavailable")
     return Usage(tuple(windows), at, "; ".join(errors) or None)
 

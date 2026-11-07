@@ -73,8 +73,9 @@ unqualified timestamps remain unknown. Duplicate decision buckets are ambiguous.
 Gemini 4 Argon's weekly bucket is the Google pool's `7d` decision window. All other
 returned group/window buckets remain visible with their own identities and resets;
 exhaustion in Claude/GPT or the other Gemini group does not automatically block Argon.
-Missing/unknown Argon usage is visibly unknown and cannot establish a pool as available
-for automatic failover. Valid percentage evidence and reset availability are separate.
+Missing/unknown Argon usage cannot establish a pool as available for automatic
+failover. A complete real reading requires both a valid fraction and an aware reset
+after its aware reading time; a partial tuple is never a current measurement.
 
 The service refreshes every declared Google subscription pool every five minutes,
 including with only Codex seats, all seats down, or no seats. A new active wall adds
@@ -90,3 +91,36 @@ are not separate authenticated accounts. An explicit account directory yields vi
 unknown before any invocation rather than charging default-account usage to it. API-key
 and other-provider pools do not receive this subscription measurement. No account
 selector or credential-file mutation was qualified by the command audit.
+
+
+## Latest real readings and failed attempts
+
+The ledger keeps one latest complete real reading per pool/group/window, not a
+reading history. Its fraction, reset and reading time are replaced together only by
+a valid complete response. A missing group/bucket, invalid fraction/reset, failed
+command or ambiguous duplicate updates that window's latest attempt/error metadata
+without deleting or changing its prior measurement. Valid siblings update independently.
+A never-successful window stays unknown, without an invented zero or reading time.
+The schema migration preserves existing measurements and identities.
+
+A retained measurement is labelled **LAST KNOWN**, with its original reading date,
+age and latest failure reason, in the Google status/watch headline and ledger output.
+An expired reset or reading at least an hour old is also dated LAST KNOWN; reset times
+are never reanchored. A later valid reading replaces the complete tuple and clears its
+error. The one-hour availability bound is unchanged; it is separate from the five-minute
+background refresh cadence. Neither status nor automatic Google pool selection starts
+a provider query. Failed/partial results persist their attempt time and diagnostics once,
+so service restarts and selection cannot bypass cadence or overwrite per-window errors.
+
+A known bucket ID cannot be replaced by a different non-null ID for the same logical
+window. Such a response keeps the original tuple/ID as LAST KNOWN and reports that the
+new reading could not be attributed to that window. A later matching-ID reading can
+recover normally. Missing IDs never erase the established ID; a window without an ID
+can acquire one on its first unambiguous complete reading. Rejected numeric tuples are
+not stored. Genuine provider identity rotation needs evidence for a future identity
+rule; it is not guessed from different numbers or names.
+
+Only current, complete decision windows can establish automatic availability or a
+measured exhaustion wall. Last-known values cannot do so. Nondecision group failures
+do not make a valid Argon reading stale. Persisted observed quota walls remain separate:
+a failed read, positive value or expired cached reading cannot remove them.

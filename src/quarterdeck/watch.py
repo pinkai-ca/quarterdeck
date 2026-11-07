@@ -196,6 +196,7 @@ def table(ship: Ship, tmux: Tmux) -> list[str]:
     rows.append(f"open orders: {len(open_orders)}")
     for m in open_orders:
         rows.append(f"  {m.short} {m.sender} → {m.to} · {m.at.strftime('%m-%d %H:%M')}" + (f" · {m.subject}" if m.subject else ""))
+    rows.extend(ledger_usage(ship))
     return rows
 
 
@@ -223,6 +224,7 @@ def full(seat: Seat) -> list[str]:
         lines.append(f"  screen: box {screen.box!r} · working {screen.working} · queued {screen.queued} · shows {screen.shows}")
         if screen.interruption or screen.unknown:
             lines.append(f"  notice: {screen.interruption.name if screen.interruption else 'unknown: ' + screen.unknown}")
+    lines.extend(ledger_usage(seat.ship))
     return lines
 
 
@@ -284,12 +286,9 @@ def ledger_usage(ship: Ship) -> list[str]:
     if path.exists():
         book = ledger.Ledger(path)
         try:
-            errors = dict(book.db.execute("SELECT pool,error FROM usage_reads WHERE error IS NOT NULL"))
-            for pool, used, reset in book.db.execute("SELECT pool,used,resets_at FROM pools WHERE group_name='Gemini 4 Argon' AND blocks=1"):
-                expired = reset is not None and datetime.fromisoformat(reset) <= post.now()
-                value = f"{used:.0%} used" if used is not None and not expired else "usage unknown"
-                reason = f" · {errors[pool]}" if used is None and pool in errors else ""
-                found[pool] = f"{pool} 7d {value} · {reset_text(reset)}{reason}"
+            for reading in book.usage.rows():
+                if reading.group == 'Gemini 4 Argon' and reading.blocks:
+                    found[reading.pool] = reading.describe(post.now())
         finally:
             book.close()
     return [found.get(pool, f"{pool} usage unknown") for pool in sorted(google)]

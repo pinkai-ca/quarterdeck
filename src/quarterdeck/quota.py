@@ -6,7 +6,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 import time
 
-from .harness.limits import Wall
+from .harness.limits import Wall, Usage
 from .provenance import UNKNOWN
 
 GOOGLE_INTERVAL = 300
@@ -86,7 +86,7 @@ class Quotas:
         self.db.commit()
 
     def usage_notes(self) -> list[str]:
-        return [f"{pool} usage unknown: {error}" for pool, error in
+        return [f"{pool} latest usage read: {error}" for pool, error in
                 self.db.execute("SELECT pool,error FROM usage_reads WHERE error IS NOT NULL ORDER BY pool")]
 
 
@@ -144,8 +144,7 @@ def refresh_declared(service) -> None:
         usage = shared if pool.config_dir is None and shared is not None else AntigravityHarness().usage(pool)
         if pool.config_dir is None:
             shared = usage
-        service.ledger.record_usage(pool.name, usage)
-        service.ledger.quota.usage_read(pool.name, datetime.now(timezone.utc), usage.error)
+        service.ledger.record_usage(pool.name, usage, attempted_at=datetime.now(timezone.utc))
 
 
 def refresh(service, seat, live: bool, launched) -> None:
@@ -156,5 +155,5 @@ def refresh(service, seat, live: bool, launched) -> None:
     if pool.kind == "subscription" and time.monotonic() - service.usage_read.get(pool.name, -60) >= 60:
         service.usage_read[pool.name] = time.monotonic()
         usage = seat.harness.usage(pool)
-        if usage:
-            service.ledger.record_usage(pool.name, usage)
+        if usage is not None or seat.harness.reads_usage:
+            service.ledger.record_usage(pool.name, usage or Usage((), datetime.now(timezone.utc), "provider usage unavailable"))
