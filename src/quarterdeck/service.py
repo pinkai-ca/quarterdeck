@@ -18,7 +18,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-from . import credential, machine, post, ship as shipmod, standing
+from . import credential, machine, post, quota, ship as shipmod, standing
 from .door import CONFIRM_SECONDS, Door
 from .harness.base import record_fingerprint
 from .ledger import Ledger
@@ -32,7 +32,6 @@ from .ship import Ship, ShipError
 from .tmux import Tmux
 
 TICK = 1.0
-USAGE_SECONDS = 60.0
 SPEEDS = {None: 0, "now": 1, "interrupt": 2}
 
 
@@ -302,7 +301,7 @@ class Service:
 
     def account(self) -> None:
         """Ingest every ended turn of every record in each seat's home, sample a running seat's machine use,
-        and read its pool's usage once a minute. A record a relaunch left behind is still accounted
+        and refresh its pool usage at the provider cadence. A record a relaunch left behind is still accounted
         (law: every-turn-accounted); one whose file has not moved is not read again."""
         table = machine.processes()
         for seat in seats(self.ship, self.tmux):
@@ -327,6 +326,7 @@ class Service:
                     self.ledger.mark_record(record, seat.name, pool, str(error))
                     self.log("error", step="account", seat=seat.name, record=record.name, error=str(error))
                     continue
+                self.ledger.quota.record(record, seat.name, state.walls, self.ledger.provenance, post.now())
                 self.read_marks[record] = stamp
                 incomplete = "incomplete turn state in record" if (state.turns is None or state.turn_open is None) else None
                 self.ledger.mark_record(record, seat.name, pool, incomplete)
@@ -337,12 +337,7 @@ class Service:
                         if live and record == current:
                             self.meters[seat.name] = machine.Meter(pane.pid)
                         self.log("ledger", seat=seat.name, record=record.name, turns=written)
-            pool = self.ship.pools[launched.pool] if launched and launched.pool in self.ship.pools else seat.pool  # the one it runs on
-            if live and pool.kind == "subscription" and time.monotonic() - self.usage_read.get(pool.name, -USAGE_SECONDS) >= USAGE_SECONDS:
-                self.usage_read[pool.name] = time.monotonic()
-                usage = seat.harness.usage(pool)
-                if usage:
-                    self.ledger.record_usage(pool.name, usage)
+            quota.refresh(self, seat, live, launched)
 
     def failover(self) -> None:
         """A seat whose pool is walled moves on at its turn's end to the next pool of its list that is not, and stays."""
@@ -379,7 +374,7 @@ class Service:
                 self.log("failover", seat=seat.name, pool=pool_name, skipped="its usage could not be read")
                 return False
             self.ledger.record_usage(pool_name, usage)
-        return not self.ledger.walled(pool_name, self.ship)
+        return self.ledger.usage_known(pool_name) and not self.ledger.walled(pool_name, self.ship)
 
     def rebrief(self) -> None:
         """When the orders or a card change, every brief is rendered again and each seat is told."""

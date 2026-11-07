@@ -18,6 +18,7 @@ from pathlib import Path
 from .harness.base import Turn, Usage
 from .post import Store
 from .provenance import Provenance, UNKNOWN
+from .quota import Quotas, reset_text
 from .ship import Ship, ShipError
 
 UNATTRIBUTED = "-"
@@ -107,6 +108,12 @@ class Ledger:
         self.db = sqlite3.connect(path)
         self.db.executescript(SCHEMA)
         self.provenance = Provenance(self.db)
+        self.quota = Quotas(self.db)
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(pools)")}
+        for name, kind in (("blocks", "INTEGER NOT NULL DEFAULT 1"), ("group_name", "TEXT"), ("bucket", "TEXT"), ("bucket_name", "TEXT")):
+            if name not in columns:
+                self.db.execute(f"ALTER TABLE pools ADD COLUMN {name} {kind}")
+        self.db.commit()
 
     def close(self) -> None:
         self.db.close()
@@ -218,10 +225,12 @@ class Ledger:
     # -- pools -----------------------------------------------------------------------------
 
     def record_usage(self, pool: str, usage: Usage) -> None:
+        self.db.execute("DELETE FROM pools WHERE pool=?", (pool,))
         for window in usage.windows:
-            self.db.execute("INSERT OR REPLACE INTO pools VALUES (?,?,?,?,?)",
+            self.db.execute("INSERT OR REPLACE INTO pools VALUES (?,?,?,?,?,?,?,?,?)",
                             (pool, window.name, window.used, window.resets_at.isoformat() if window.resets_at else None,
-                             usage.read_at.isoformat()))
+                             usage.read_at.isoformat(), window.blocks, window.group, window.bucket, window.bucket_name))
+        self.quota.usage_read(pool, usage.read_at, usage.error)
         self.db.commit()
 
     def pool_windows(self, pool: str | None = None) -> list[tuple[str, str, float, str | None, str]]:
@@ -232,20 +241,27 @@ class Ledger:
         """Pools with a window spent and not yet reset, ``claude-primary 7d``, and key pools past their budget."""
         now = now or datetime.now().astimezone()
         found = []
-        for pool, window, used, resets_at, _ in self.pool_windows():
+        for pool, window, used, resets_at, group in self.db.execute(
+                "SELECT pool,window,used,resets_at,group_name FROM pools WHERE blocks=1 ORDER BY pool,window"):
             reset = datetime.fromisoformat(resets_at) if resets_at else None
             if used is not None and used >= 1.0 and (reset is None or reset > now):
-                found.append(f"{pool} {window}")
+                found.append(f"{pool} {window}" + (f" · {reset_text(resets_at)}" if group == "Gemini 4 Argon" else ""))
         for pool in (ship.pools.values() if ship else ()):
             budget = Budget.parse(pool.budget)
             if budget is not None:
                 spent, _ = self.spend(pool.name, budget.period_start(now))
                 if spent is not None and spent >= budget.amount:
                     found.append(f"{pool.name} budget")
-        return found
+        return found + self.quota.walls(now)
 
     def walled(self, pool: str, ship: Ship | None = None) -> bool:
         return any(w.split(" ")[0] == pool for w in self.walls(ship))
+
+    def usage_known(self, pool: str) -> bool:
+        rows = self.db.execute("SELECT used,resets_at,group_name FROM pools WHERE pool=? AND blocks=1", (pool,)).fetchall()
+        now = datetime.now().astimezone()
+        return bool(rows) and all(used is not None and (group != "Gemini 4 Argon" or
+                                 (reset is not None and datetime.fromisoformat(reset) > now)) for used, reset, group in rows)
 
 
 def attribution(store: Store, seat: str, turn: Turn) -> str:
@@ -298,11 +314,14 @@ def pools_table(ledger: Ledger, ship: Ship | None = None) -> list[str]:
     lines = [f"{'pool':<20} {'window':<8} {'used':>6} {'resets':<17} read"]
     walls = set(ledger.walls(ship))
     now = datetime.now().astimezone()
+    names = {(p, w): n for p, w, n in ledger.db.execute("SELECT pool,window,bucket_name FROM pools")}
     for pool, window, used, resets_at, read_at in ledger.pool_windows():
         reset = datetime.fromisoformat(resets_at).astimezone().strftime("%m-%d %H:%M") if resets_at else "-"
         age = int((now - datetime.fromisoformat(read_at)).total_seconds() // 60)
-        wall = "  WALL" if f"{pool} {window}" in walls else ""
-        lines.append(f"{pool:<20} {window:<8} {used * 100:>5.0f}% {reset:<17} {age}m ago{wall}")
+        wall = "  WALL" if any(w == f"{pool} {window}" or w.startswith(f"{pool} {window} ·") for w in walls) else ""
+        value = f"{used * 100:.0f}%" if used is not None else "unknown"
+        label = f"{window} ({names[pool, window]})" if names.get((pool, window)) else window
+        lines.append(f"{pool:<20} {label:<8} {value:>6} {reset:<17} {age}m ago{wall}")
     for pool in (p for p in (ship.pools.values() if ship else ()) if p.kind == "key"):
         budget = Budget.parse(pool.budget)
         spent, unpriced = ledger.spend(pool.name, budget.period_start(now) if budget else now.replace(day=1, hour=0, minute=0, second=0, microsecond=0))
@@ -312,5 +331,5 @@ def pools_table(ledger: Ledger, ship: Ship | None = None) -> list[str]:
         wall = "  WALL" if f"{pool.name} budget" in walls else ""
         lines.append(f"{pool.name:<20} {'spend':<8} {stated}{limit}{note}{wall}")
     if len(lines) == 1:
-        lines.append("no usage read yet: the service reads subscription pools once a minute while a seat runs on them")
-    return lines + incomplete_notes(ledger)
+        lines.append("no usage read yet: the service reads active subscription pools in the background")
+    return lines + ledger.quota.usage_notes() + ["wall: " + w for w in ledger.quota.walls()] + incomplete_notes(ledger)

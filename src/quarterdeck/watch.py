@@ -246,6 +246,7 @@ class Facts:
     login: list[tuple[str, str]] = field(default_factory=list)
     queued: int = 0
     oldest_queued: int = 0
+    usage: list[str] = field(default_factory=list)
 
     def line(self) -> str:  # law: nothing-waits-silently
         parts = ["SERVICE DOWN" if self.service == "down" else f"service {self.service}"]
@@ -257,9 +258,33 @@ class Facts:
         parts += [f"{name} needs a human" for name in self.needs_human]
         parts += [f"{name}: no watch armed" for name in self.unarmed]
         parts += [f"wall: {wall}" for wall in self.walls]
+        parts += self.usage
         parts += [f"disk: {name} {pct}%" for name, pct in self.disks]
         parts += [f"{pool} · login needed by {when}" for pool, when in self.login]
         return " · ".join(parts)
+
+
+def ledger_usage(ship: Ship) -> list[str]:
+    """The Google decision window already read by the service, never a provider request."""
+    from .quota import reset_text
+
+    path = ship.runtime / "ledger.sqlite"
+    google = {p.name for p in ship.pools.values() if p.provider == "antigravity"}
+    if not google:
+        return []
+    found = {}
+    if path.exists():
+        book = ledger.Ledger(path)
+        try:
+            errors = dict(book.db.execute("SELECT pool,error FROM usage_reads WHERE error IS NOT NULL"))
+            for pool, used, reset in book.db.execute("SELECT pool,used,resets_at FROM pools WHERE group_name='Gemini 4 Argon' AND blocks=1"):
+                expired = reset is not None and datetime.fromisoformat(reset) <= post.now()
+                value = f"{used:.0%} used" if used is not None and not expired else "usage unknown"
+                reason = f" · {errors[pool]}" if used is None and pool in errors else ""
+                found[pool] = f"{pool} 7d {value} · {reset_text(reset)}{reason}"
+        finally:
+            book.close()
+    return [found.get(pool, f"{pool} usage unknown") for pool in sorted(google)]
 
 
 def ledger_walls(ship: Ship) -> list[str]:
@@ -324,6 +349,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         needs_human=needs_human,
         unarmed=unarmed,
         walls=walls if walls is not None else ledger_walls(ship),
+        usage=ledger_usage(ship),
         disks=disks([ship.runtime, ship.workspace, Path(tempfile.gettempdir())]),
         login=login if login is not None else credential.login_needed(ship),
     )

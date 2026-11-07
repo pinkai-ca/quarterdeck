@@ -49,3 +49,15 @@ def git(folder: Path, *args: str) -> str:
                GIT_COMMITTER_NAME="test", GIT_COMMITTER_EMAIL="t@example.org")
     done = subprocess.run(["git", "-C", str(folder), *args], capture_output=True, text=True, env=env, check=True)
     return done.stdout.strip()
+
+
+@pytest.fixture(autouse=True)
+def no_real_antigravity_usage_in_nonlive_tests(monkeypatch, request):
+    """Service tests may read synthetic Google usage; never spend the operator's sign-in."""
+    if request.node.get_closest_marker("live"):
+        return
+    from datetime import datetime, timezone
+    from quarterdeck.harness import antigravity
+    from quarterdeck.harness.antigravity_quota import unknown
+
+    monkeypatch.setattr(antigravity, "fetch_usage", lambda: unknown("synthetic usage unavailable", datetime.now(timezone.utc)))

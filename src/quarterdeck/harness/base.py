@@ -16,6 +16,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from .limits import Usage, Wall, Window
 
 from ..ship import Pool, SeatSpec, ShipError
 
@@ -94,6 +95,7 @@ class State:
     queued: tuple[str, ...] = ()
     consumed: tuple[str, ...] = ()
     turns: int | None = 0
+    walls: tuple[Wall, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -155,6 +157,7 @@ class Screen:
     queued: int = 0
     shows: dict[str, str] = field(default_factory=dict)
     echoes: tuple[str, ...] = ()  # inputs the transcript shows above a running turn, possibly cut short with …
+    quota: str | None = None
 
 
 @dataclass(frozen=True)
@@ -188,19 +191,6 @@ class Credential:
 class Launch:
     argv: tuple[str, ...]
     env: dict[str, str] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class Window:
-    name: str
-    used: float
-    resets_at: datetime | None
-
-
-@dataclass(frozen=True)
-class Usage:
-    windows: tuple[Window, ...]
-    read_at: datetime
 
 
 def entries(record: Path) -> list[dict]:

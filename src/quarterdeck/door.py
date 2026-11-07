@@ -11,6 +11,7 @@ import time
 from dataclasses import dataclass
 
 from .harness.base import Screen
+from .quota import guard
 from .seat import Seat
 
 CONFIRM_SECONDS = 5.0
@@ -71,12 +72,14 @@ class Door:
         return self.harness.screen(self.tmux.capture(pane.id, history=TRANSCRIPT_LINES)).echoes
 
     def reading(self, screen: Screen | None = None) -> Reading:
-        """The door from the screen alone; nothing is pressed."""
+        """Persisted quota evidence and screen obstruction; nothing is pressed or fetched."""
         if self.seat.session.human:
             return Reading(False, "a human's session", "its watch delivers")  # law: one-door
         screen = screen or self.screen()
         if screen is None:
             return Reading(False, "no program in the pane", "qd up")
+        if wall := guard(self.seat, screen):
+            return Reading(False, wall, "quota reset or another pool")
         if screen.interruption is not None:
             return Reading(False, screen.interruption.name,
                            "dismissable" if screen.interruption.dismissable else "needs a human")
@@ -113,6 +116,8 @@ class Door:
         follows, since a local command leaves no input in the record.
         """
         screen = self.clear_known()  # law: one-door
+        if wall := guard(self.seat, screen):
+            return Delivery("withheld", wall)
         if speed == "interrupt" and screen is not None and screen.working and not self.seat.session.human:
             self.interrupt()
             screen = self.settled()

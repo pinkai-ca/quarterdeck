@@ -1,0 +1,128 @@
+"""Synthetic quota command contracts; no real binary, sign-in, conversation or log access."""
+
+import copy
+from datetime import datetime, timedelta, timezone
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+from types import SimpleNamespace
+
+import pytest
+
+from quarterdeck.harness import antigravity_quota as agq
+from quarterdeck.ledger import Ledger, pools_table
+
+AT = datetime(2030, 1, 1, tzinfo=timezone.utc)
+FIXTURE = Path(__file__).parents[1] / 'fixtures/antigravity/1.5.2/usage.json'
+
+
+def document():
+    return json.loads(FIXTURE.read_text())
+
+
+def test_all_groups_visible_only_argon_weekly_blocks_and_missing_is_unknown(tmp_path):
+    doc = document()
+    usage = agq.parse_usage(doc, AT)
+    assert len(usage.windows) == 5 and usage.error is None
+    assert [(w.name,w.used,w.bucket) for w in usage.windows if w.blocks] == [('7d',0.75,'synthetic-argon-week')]
+    book = Ledger(tmp_path/'ledger.sqlite')
+    book.record_usage('google',usage)
+    assert book.db.execute("SELECT group_name,bucket,bucket_name FROM pools WHERE window='7d'").fetchone() == (
+        'Gemini 4 Argon','synthetic-argon-week','Synthetic weekly allowance')
+    assert book.walls(now=AT) == [], 'exhausted Claude/GPT buckets cannot block Argon'
+    shown = '\n'.join(pools_table(book))
+    assert 'Claude and GPT models / weekly' in shown and '100%' in shown and '75%' in shown and 'Synthetic weekly allowance' in shown
+    assert book.usage_known('google')
+    del doc['command']['data']['groups'][-1]
+    book.record_usage('google', agq.parse_usage(doc, AT))
+    assert not book.usage_known('google') and book.walls(now=AT) == []
+    assert 'Gemini 4 Argon weekly unavailable' in '\n'.join(pools_table(book))
+    assert book.db.execute("SELECT used FROM pools WHERE window='7d'").fetchone() == (None,)
+    book.close()
+
+
+@pytest.mark.parametrize('fraction', [None, True, -0.1, 1.1, float('nan'), float('inf'), '0.2', 10**400])
+def test_invalid_or_amount_only_fraction_never_becomes_zero(fraction):
+    doc = document()
+    bucket = doc['command']['data']['groups'][-1]['buckets'][0]
+    bucket['remaining_amount'] = 42
+    if fraction is None:
+        del bucket['remaining_fraction']
+    else:
+        bucket['remaining_fraction'] = fraction
+    usage = agq.parse_usage(doc, AT)
+    headline = next(w for w in usage.windows if w.blocks)
+    assert headline.used is None and headline.resets_at is not None and usage.error
+
+
+def test_malformed_missing_and_duplicate_usage_data():
+    for doc in (None, {}, {'status':'ERROR'}, {'status':'SUCCESS','command':{'name':'usage'}}):
+        assert agq.parse_usage(doc, AT).windows[0].used is None
+    doc = document()
+    doc['command']['data']['groups'][-1]['buckets'].append(copy.deepcopy(doc['command']['data']['groups'][-1]['buckets'][0]))
+    usage = agq.parse_usage(doc, AT)
+    assert next(w for w in usage.windows if w.blocks).used is None and 'duplicate' in usage.error
+    for reset in (None, 'not-time', '2030-01-01T00:00:00'):
+        doc = document()
+        doc['command']['data']['groups'][-1]['buckets'][0]['reset_time'] = reset
+        assert next(w for w in agq.parse_usage(doc,AT).windows if w.blocks).resets_at is None
+
+
+def test_command_identity_checked_before_invocation_and_same_inode_executed(tmp_path, monkeypatch):
+    executable = tmp_path/'synthetic-agy'
+    executable.write_bytes(b'qualified synthetic binary')
+    monkeypatch.setattr(agq,'EXECUTABLE',executable)
+    calls = []
+    monkeypatch.setattr(agq.subprocess,'run',lambda *a,**k: calls.append((a,k)))
+    result = agq.fetch_usage()
+    assert not calls and 'unqualified' in result.error
+    monkeypatch.setattr(agq,'QUALIFIED_SHA256',hashlib.sha256(executable.read_bytes()).hexdigest())
+
+    def run(argv, **options):
+        calls.append((argv,options))
+        assert argv == [str(executable),'-p','/usage','--output-format','json']
+        assert options['env']['AGY_CLI_DISABLE_AUTO_UPDATE'] == 'true'
+        assert options['timeout'] == 20 and options['capture_output']
+        fd = options['pass_fds'][0]
+        assert options['executable'] == f'/proc/self/fd/{fd}'
+        # Replacing the pathname cannot redirect this already qualified invocation.
+        executable.rename(tmp_path/'old-image')
+        executable.write_bytes(b'unqualified replacement')
+        os.lseek(fd,0,0)
+        assert os.read(fd,100) == b'qualified synthetic binary'
+        return SimpleNamespace(returncode=0,stdout=json.dumps(document()).encode())
+
+    monkeypatch.setattr(agq.subprocess,'run',run)
+    assert agq.fetch_usage().error is None and len(calls) == 1
+    assert 'unqualified' in agq.fetch_usage().error and len(calls) == 1
+
+
+@pytest.mark.parametrize('case',['exit','timeout','bad-json','conversation','turn','tokens'])
+def test_command_failure_and_unexpected_work_produce_visible_unknown(tmp_path, monkeypatch, case):
+    binary=tmp_path/'synthetic-agy'
+    binary.write_bytes(b'synthetic')
+    monkeypatch.setattr(agq,'EXECUTABLE',binary)
+    monkeypatch.setattr(agq,'QUALIFIED_SHA256',hashlib.sha256(b'synthetic').hexdigest())
+    doc=document()
+    if case=='conversation': doc['conversation_id']='synthetic-unexpected-record'
+    if case=='turn': doc['num_turns']=1
+    if case=='tokens': doc['usage']['input_tokens']=1
+    def run(*args,**kwargs):
+        if case=='timeout': raise subprocess.TimeoutExpired(args[0],20)
+        return SimpleNamespace(returncode=1 if case=='exit' else 0,
+                               stdout=b'broken' if case=='bad-json' else json.dumps(doc).encode())
+    monkeypatch.setattr(agq.subprocess,'run',run)
+    result=agq.fetch_usage()
+    assert result.error and result.windows[0].used is None
+
+
+def test_banner_original_time_missing_reset_and_overflow():
+    text='Individual quota reached. Resets in 2h3m4s.\nError ID: synthetic-error'
+    event=agq.wall(text,'synthetic-step',AT)
+    assert event.resets_at == AT+timedelta(hours=2,minutes=3,seconds=4)
+    assert event.error_id == 'synthetic-error'
+    assert agq.wall(text,'synthetic-step',None).resets_at is None
+    for suffix in ('', ' Resets in nonsense.', ' Resets in 3hgarbage.', ' Resets in '+ '9'*100+'h.'):
+        assert agq.wall('Individual quota reached.'+suffix,'step',AT).resets_at is None

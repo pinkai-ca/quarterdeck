@@ -18,6 +18,7 @@ from ..ship import Pool, SeatSpec
 from .base import (Box, Control, Credential, Harness, Interruption, Join, Keys, Launch, RecordError, Screen, State,
                    Tokens, ToolCall, Turn, program_version, record_fingerprint)
 
+from .antigravity_quota import banner, fetch_usage, record_wall
 from .antigravity_wire import _bytes, _int, _proto, _snapshot_query, _str, _ts, _uints
 
 STATE_DIR, BEFORE, OWNED = Path.home() / ".gemini" / "antigravity-cli", "conversations.before", "conversations.owned"
@@ -122,6 +123,7 @@ def _decode(record: Path) -> _Decoded:
         if exec_id:
             ended_execs[exec_id] = (last_step, exec_model, reason)
     turns_out, consumed, current = [], [], None
+    walls = []
     last_input = last_input_at = first_step_ts = last_step_ts = None
     unclosed_prior = any_unknown_status = False
     for idx, step_type, status, _, mblob, err_blob, pblob in steps:
@@ -130,6 +132,8 @@ def _decode(record: Path) -> _Decoded:
         meta = meta or (_proto(_bytes(payload, 5)) if 5 in payload else {})
         created, viewable, finished = _ts(_bytes(meta, 1)), _ts(_bytes(meta, 6)), _ts(_bytes(meta, 7))
         completed, started = _ts(_bytes(meta, 8)), _ts(_bytes(meta, 32))
+        if step_type == STEP_ERROR_MESSAGE and (event := record_wall(idx, payload, created)):
+            walls.append(event)
         step_start, step_end, exec_id = started or created, completed, _str(meta, 12) or ""
         step_touch, first_step_ts = step_end or finished or viewable or step_start, first_step_ts or created or step_start
         last_step_ts = step_touch if step_touch and (last_step_ts is None or step_touch > last_step_ts) else last_step_ts
@@ -209,7 +213,7 @@ def _decode(record: Path) -> _Decoded:
     turns_count = None if (any_unknown_status or unclosed_prior or turn_open is None) else len(turns_out)
     file_write = datetime.fromtimestamp(m / 1e9, timezone.utc) if (m := max(fp[0][3], fp[1][3])) else None
     last_write = max(filter(None, (last_step_ts, file_write)), default=None)
-    state_out = State(turn_open, open_tool, open_tool_since, last_write, last_input, last_input_at, last_model, None, (), tuple(consumed), turns_count)
+    state_out = State(turn_open, open_tool, open_tool_since, last_write, last_input, last_input_at, last_model, None, (), tuple(consumed), turns_count, tuple(walls))
     _CACHE[record] = (fp, decoded := _Decoded(session, created_at or first_step_ts, state_out, turns_out))
     return decoded
 
@@ -232,6 +236,9 @@ class AntigravityHarness(Harness):
     name, home_variable, brief_channel, record_confirms = "antigravity", None, "first-message", True
     record_limits = ("cache-write tokens and cost are unknown unless explicitly reported; effort and child-turn counts "
                      "are not exposed; missing completion timestamps leave durations unknown")
+    reads_usage = True
+    def usage(self, pool): return fetch_usage()
+
     keys = Keys(submit="Enter", send_now=("M-m",), interrupt="Escape", empty=None)
 
     def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None) -> Credential | None:
@@ -287,7 +294,7 @@ class AntigravityHarness(Harness):
         status = STATUS_LINE.search(lines[-1]) if lines else None
         shows = {"model": status.group(1).strip(), "effort": status.group(2)} if status else {}
         return Screen(text, box=box, working=bool(WORKING.search(text)), interruption=self.recognize(text) if box is None else None,
-                      queued=queued, shows=shows, echoes=self.echoes(lines[:top]))
+                      queued=queued, shows=shows, echoes=self.echoes(lines[:top]), quota=banner(text))
 
     @staticmethod
     def echoes(lines: list[str]) -> tuple[str, ...]:
