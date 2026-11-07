@@ -33,7 +33,6 @@ def test_loads_the_design_example(enterprise_ship: Path):
     assert not worker.up and worker.fresh == "after-order" and worker.persona is None
     assert worker.display == "worker-1" and desk.display == "Maeve"
     assert worker.settings == {"model_auto_compact_token_limit": 200000}
-    assert [s.name for s in ship.seats_in("bridge")] == ["pike", "scott"]
 
 
 def test_the_example_ship_loads_and_runs_anywhere(example_ship: Path):

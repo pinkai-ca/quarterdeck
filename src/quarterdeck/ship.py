@@ -103,9 +103,6 @@ class Ship:
     def session_of(self, seat: SeatSpec) -> Session:
         return self.sessions[seat.session]
 
-    def seats_in(self, session: str) -> list[SeatSpec]:
-        return [s for s in self.seats.values() if s.session == session]
-
     def cwd_of(self, seat: SeatSpec) -> Path:
         return seat.cwd or self.workspace
 

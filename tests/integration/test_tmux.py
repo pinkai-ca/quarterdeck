@@ -36,7 +36,7 @@ def test_session_opens_with_the_ship_history_and_environment(tmux: Tmux, tmp_pat
     pane = tmux.new_window("Ship's Bridge", "Pike", tmp_path, ["cat"], env={"SEAT": "pike"})
     assert pane.id.startswith("%") and pane.session == "Ship's Bridge" and pane.window == "Pike"
     assert [p.window for p in tmux.panes("Ship's Bridge")] == ["Pike"], "the placeholder window is gone"
-    assert tmux.pane_environment(pane.id, "QD_SHIP") == str(tmp_path)
+    assert tmux.session_environment("Ship's Bridge", "QD_SHIP") == str(tmp_path)
     assert tmux.run("show-option", "-v", "-w", "-t", pane.id, "remain-on-exit").strip() == "failed"
 
 

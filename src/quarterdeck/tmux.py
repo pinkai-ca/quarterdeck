@@ -32,10 +32,6 @@ class Pane:
     dead: bool
     exit_status: int | None
 
-    @property
-    def target(self) -> str:
-        return self.id
-
 
 _FORMAT = "\t".join(
     [
@@ -135,8 +131,9 @@ class Tmux:
         """Open ``command`` in a new window of ``session``; the window stays when it fails.
 
         tmux runs the command through the user's login shell, whose profile resets PATH,
-        so a PATH the program needs travels in the command itself (``env PATH=…``), and
-        every other variable in ``env`` reaches it as given.
+        so a PATH the program needs travels in the command itself, and every other
+        variable in ``env`` reaches it as given. The command line is short: tmux refuses
+        one over 16 KiB, so a seat's long command goes in a script the command names.
         """
         args = ["new-window", "-d", "-P", "-F", _FORMAT, "-t", _session(session), "-n", name, "-c", str(cwd)]
         for key, value in (env or {}).items():
@@ -153,9 +150,6 @@ class Tmux:
 
     def kill_window(self, pane_id: str) -> None:
         self.run("kill-window", "-t", pane_id)
-
-    def rename_window(self, pane_id: str, name: str) -> None:
-        self.run("rename-window", "-t", pane_id, name)
 
     # -- panes -------------------------------------------------------------------------
 
@@ -179,10 +173,6 @@ class Tmux:
         except TmuxError:
             return None
         return out.strip().partition("=")[2] or None
-
-    def pane_environment(self, pane_id: str, name: str) -> str | None:
-        pane = self.pane(pane_id)
-        return self.session_environment(pane.session, name) if pane else None
 
     # -- typing ------------------------------------------------------------------------
 

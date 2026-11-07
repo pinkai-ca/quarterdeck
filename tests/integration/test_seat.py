@@ -107,6 +107,44 @@ def test_a_fresh_seat_receives_its_open_messages_in_full(ship: shipmod.Ship, tmu
     assert "briefed: " in tmux.capture(captain.pane().id, history=100)
 
 
+def test_a_launch_longer_than_tmux_allows_still_carries_every_open_message(ship: shipmod.Ship, tmux: Tmux):
+    """tmux refuses a window command over 16 KiB; a brief or an open order can be longer, so the command goes in a file."""
+    store = post.Store(ship.runtime)
+    body = "A long order.\n" + "\n".join(f"paragraph {i}: " + " ".join(["words"] * 40) for i in range(80))
+    assert len(body) > 16_384
+    order = store.new("order", "desk", "captain", body)
+    captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
+    assert captain.up(resume=False).endswith("1 open message carried")
+    script = (ship.runtime / "seats" / "captain" / "launch.sh").read_text()
+    assert script.startswith("#!/bin/sh\n") and "\nexec env PATH=" in script and order.short in script and body[-200:] in script
+    record = wait_for(captain.record)
+    wait_for(lambda: captain.harness.state(record).turns)
+    first = captain.harness.turns(record)[0]
+    assert order.short in first.input and body.splitlines()[-1] in first.input, "the whole order reached the program"  # law: context-is-cache
+
+
+def test_a_program_missing_from_the_path_is_refused_before_anything_opens(ship: shipmod.Ship, tmux: Tmux, monkeypatch):
+    monkeypatch.setattr(seatmod.shutil, "which", lambda *args, **kwargs: None)
+    captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
+    with pytest.raises(ShipError, match="is not on the PATH qd runs with; install it"):
+        captain.up()
+    assert captain.launched() is None and tmux.sessions() == [], "nothing opened"
+
+
+def test_a_program_that_exits_at_once_is_a_refusal_not_an_up(ship: shipmod.Ship, tmux: Tmux, monkeypatch):
+    from quarterdeck.harness.base import Launch
+
+    captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
+    monkeypatch.setattr(captain.harness, "launch", lambda *args, **kwargs: Launch(("sh", "-c", "echo no such model; exit 7")))
+    with pytest.raises(ShipError, match="sh exited 7 at once; its pane stays for a look.*It printed: no such model"):
+        captain.up()
+    pane = captain.pane()
+    assert pane is not None and pane.dead and pane.exit_status == 7, "the pane stays, and the seat knows whose it is"
+    monkeypatch.undo()
+    assert "captain up in %" in captain.up()
+    assert [p.window for p in tmux.panes("Bridge")] == ["Pike"], "the dead pane went when the seat came back"
+
+
 def test_identity_is_pane_and_process_not_name(ship: shipmod.Ship, tmux: Tmux):
     captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
     captain.up()

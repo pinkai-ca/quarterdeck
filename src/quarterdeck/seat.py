@@ -12,6 +12,7 @@ import os
 import shlex
 import shutil
 import sys
+import time
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,6 +47,14 @@ def qd_bin() -> Path:
         return beside
     found = shutil.which("qd")
     return Path(found).parent if found else beside
+
+
+def launch_script(seat: str, path: str, argv: list[str]) -> str:
+    """The seat's command as a script for tmux to run: tmux refuses a window command over 16 KiB, and a
+    brief or a first message can be longer. The PATH travels inside it, since the login shell resets the
+    one tmux passes."""
+    return (f"#!/bin/sh\n# {seat}: the command qd up ran, kept in a file because tmux's command line is short\n"
+            f"exec env {shlex.quote(f'PATH={path}')} {shlex.join(argv)}\n")
 
 
 class Seat:
@@ -142,6 +151,9 @@ class Seat:
             raise ShipError(f"{self.name} is up in {self.pane().id}; qd restart {self.name} relaunches it")
         shipmod.fence(self.ship)
         self.folder.mkdir(parents=True, exist_ok=True)
+        left = self.pane()
+        if left is not None and left.dead:
+            self.tmux.kill_window(left.id)  # the last launch's pane, kept for a look, goes when the seat comes back
         if self.launched() is not None:
             from . import credential  # the credential module reads seats, so it is imported here, not above
 
@@ -156,10 +168,14 @@ class Seat:
         if not resume_id:
             (self.folder / "record").unlink(missing_ok=True)
         launch = self.harness.launch(spec, pool, self.home, brief, resume_id, first)
+        path = self._path()
+        if shutil.which(launch.argv[0], path=path) is None:
+            raise ShipError(f"{self.name}: {launch.argv[0]} is not on the PATH qd runs with; install it, or put it on that PATH")
         at = datetime.now(timezone.utc).isoformat()  # before the program can write a record (law: one-record)
-        pane = self._open_window(list(launch.argv), launch.env)
+        pane = self._open_window(list(launch.argv), launch.env, path)
         launched = Launched(pane.id, pane.pid, at, pool.name, resume_id, list(launch.argv), self.harness.version())
         (self.folder / "launch.json").write_text(json.dumps(asdict(launched), indent=2) + "\n")
+        self._survives(pane.id, launch.argv[0])
         attempts = post.Attempts(self.ship.runtime)
         for message in carried:
             attempt = attempts.open(message, self.name, pane.id, pane.pid, launched.at)
@@ -198,7 +214,12 @@ class Seat:
         flat = " ".join(seen)
         return [m for m in store.for_seat(self.name) if m.id in queued and m.short not in flat]
 
-    def _open_window(self, argv: list[str], env: dict[str, str]) -> Pane:
+    @staticmethod
+    def _path() -> str:
+        """The PATH a seat's program runs with: the folder holding ``qd`` first, so the seat can post."""
+        return os.pathsep.join(filter(None, [str(qd_bin()), os.environ.get("PATH", "")]))
+
+    def _open_window(self, argv: list[str], env: dict[str, str], path: str) -> Pane:
         session = self.session
         ship_env = {"QD_SHIP": str(self.ship.folder)}
         if self.tmux.has_session(session.title):
@@ -210,12 +231,24 @@ class Seat:
             self.tmux.new_session(session.title, env=ship_env)
             status = shlex.join([str(qd_bin() / "qd"), "--ship", str(self.ship.folder), "status", "--line"])
             self.tmux.status_line(session.title, status)
-        path = os.pathsep.join(filter(None, [str(qd_bin()), os.environ.get("PATH", "")]))
         env = {**env, **ship_env, "QD_SEAT": self.name}
         cwd = self.ship.cwd_of(self.spec)
         if not cwd.is_dir():
             raise ShipError(f"{self.name}: working directory {cwd} does not exist; qd creates nothing outside its folder")  # law: one-folder
-        return self.tmux.new_window(session.title, self.spec.display, cwd, ["env", f"PATH={path}", *argv], env)
+        script = self.folder / "launch.sh"
+        script.write_text(launch_script(self.name, path, argv))
+        return self.tmux.new_window(session.title, self.spec.display, cwd, ["sh", str(script)], env)
+
+    def _survives(self, pane_id: str, program: str, seconds: float = 0.5) -> None:
+        """A program that exits as soon as it starts is a refusal, not an "up"; its pane stays for a look."""
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            time.sleep(0.05)
+            pane = self.tmux.pane(pane_id)
+            if pane is not None and pane.dead:
+                shown = " ".join(self.tmux.capture(pane_id, history=20).split())[-240:]  # its last words scroll above the death notice
+                raise ShipError(f"{self.name}: {program} exited {pane.exit_status} at once; its pane stays for a look, and "
+                                f"qd up {self.name} tries again. It printed: {shown}")
 
     def down(self) -> str:
         launched = self.launched()
