@@ -1,0 +1,35 @@
+# The laws
+
+What the framework itself guarantees, enforced in code and tests. A rule nothing enforces is an order, not a law. Each law is tagged where the code carries it (`# law: <id>`) and where a test tries to break it; `qd laws` lists both.
+
+## Ship
+
+- `ship-file` `qd` reads its configuration from the ship file alone; the ship file is the only configuration a ship has.
+- `nothing-leaks` Nothing from the runtime enters a repository: no ids, records, credentials or usage.
+- `one-folder` The `qd` program writes only inside its project folder: a ship's declaration, which it commits, and a ship's runtime, which git never tracks. The user's instruction files, program configuration and code are read, never written.
+
+## Harness
+
+- `one-record` A seat is joined to one record, the first written after its launch. An ambiguous join is reported, never guessed.
+
+## Seat
+
+- `identity` A seat's identity is its pane id, process id and record. Names and titles are display.
+- `one-door` Everything typed into a seat goes through one path, in one process: it clears what it knows how to clear, refuses what it does not, types once into an empty box, checks the box as the program shows it, submits, and confirms by the record. It never types into a session the human owns. Never resend what you cannot confirm.
+- `context-is-cache` After any restart or fresh start a seat receives its brief and every open message in full, so a seat may be relaunched at any time and the ship loses nothing it sent.
+
+## Watch
+
+- `record-first` Read a seat from its record first and its screen second. A reading that could not see something says so, and never reports a default as a fact.
+- `nothing-waits-silently` Every withheld or blind delivery, every seat needing a human, every wall, a filling disk, a grant about to expire and a dead service show in the status line of every ship session, refreshed by tmux itself and not by the service.
+
+## Post
+
+- `post-is-files` Messages are immutable files addressed to seats by name, whatever program a seat runs. The service renders inboxes and delivers each message once, in full, through the seat's door or its watch.
+- `open-until-closed` An order stays open until its addressee reports on it. Acknowledgments claim; they never close and never wake.
+- `events-not-clocks` No seat is asked to poll. The service wakes seats on arrivals and retries withheld deliveries on one tick.
+- `can-post` Every seat can run `qd post` from its launch: the adapter grants it through the program's own permissions and sandbox, and `qd check` proves it by posting once.
+
+## Ledger
+
+- `every-turn-accounted` Every turn is accounted, by pool, by seat and by order, from the harness's own record, or counted unattributed and reported.
