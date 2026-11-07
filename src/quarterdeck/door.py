@@ -7,12 +7,15 @@ never types into a session the human owns. Only the service calls ``deliver``.
 
 from __future__ import annotations
 
+import sqlite3
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
+from . import ledger as ledgermod, pending
+from .harness.antigravity_quota import wall as quota_banner
 from .harness.base import Screen
-from . import pending
-from .quota import guard
+from .quota import reset_text, stamp
 from .seat import Seat
 
 CONFIRM_SECONDS = 5.0
@@ -76,12 +79,37 @@ class Door:
             return ()
         return self.harness.screen(self.tmux.capture(pane.id, history=TRANSCRIPT_LINES)).echoes
 
+    def wall(self, screen: Screen | None) -> str | None:
+        """A quota wall on this seat's pool: the one the Ledger knows, or the banner on the screen.
+
+        A reading, so nothing is written: the service persists what the record and the screen show
+        on its own tick, and a banner the book already knows, even an expired one, is not news.
+        """
+        launched = self.seat.launched()
+        pool = launched.pool if launched else self.seat.pool.name
+        shown = quota_banner(screen.quota, "individual-quota", datetime.now(timezone.utc)) if screen and screen.quota else None
+        book = ledgermod.Ledger.reading(self.seat.ship.runtime / "ledger.sqlite")
+        if book is not None:
+            with book:
+                try:
+                    known = book.quota.blocked(self.seat.name, pool) or next(
+                        (w for w in book.walls(self.seat.ship) if w.split(" ")[0] == pool), None)
+                    if known:
+                        return known
+                    if shown is not None and book.quota.recognized(self.seat.name, shown):
+                        return None  # an old banner the record has already placed in time
+                except sqlite3.OperationalError:
+                    pass  # a book written by an older service: the screen still speaks
+        if shown is not None:
+            return f"{pool} {shown.reason} · {reset_text(stamp(shown.resets_at), from_screen=True)}"
+        return None
+
     def reading(self, screen: Screen | None = None) -> Reading:
-        """Persisted quota evidence and screen obstruction; nothing is pressed or fetched."""
+        """Can the typing path deliver, from the screen and the Ledger's walls; nothing is pressed, written or fetched."""
         if self.seat.session.human:
             return Reading(False, "a human's session", "its watch delivers")  # law: one-door
         screen = screen or self.screen()
-        wall = guard(self.seat, screen)
+        wall = self.wall(screen)
         if hold := pending.held(self.seat, screen, self.proof):
             return Reading(False, hold[0], hold[1], waiting=hold[2])
         if screen is None:
@@ -127,7 +155,7 @@ class Door:
         if any(ord(c) < 32 and c not in "\n\t" or ord(c) == 127 for c in text):
             return Delivery("withheld", "message contains unsupported terminal control characters; revise it")
         screen = self.clear_known()  # law: one-door
-        if wall := guard(self.seat, screen):
+        if wall := self.wall(screen):
             return Delivery("withheld", wall)
         if hold := pending.held(self.seat, screen, proof):
             return Delivery("withheld", hold[0])

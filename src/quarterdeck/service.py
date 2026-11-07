@@ -314,6 +314,8 @@ class Service:
                         if live and record == current:
                             self.meters[seat.name] = machine.Meter(pane.pid)
                         self.log("ledger", seat=seat.name, record=record.name, turns=written)
+            if live and seat.harness.name == "antigravity":
+                quota.observe_screen(self.ledger, seat, Door(seat).screen(), launched)  # the one place a screen's wall is written
             quota.refresh(self, seat, live, launched)
         quota.refresh_declared(self)
 

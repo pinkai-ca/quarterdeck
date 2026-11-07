@@ -49,6 +49,13 @@ def synthetic_seat(tmp_path, monkeypatch):
     return seat,rec,shown,actions
 
 
+def tick(seat):
+    """One accounting pass of the service, the only process that writes a wall into the book."""
+    svc = Service(seat.ship, seat.tmux)
+    svc.account()
+    svc.ledger.close()
+
+
 def append_error(rec, text, at, index=8):
     details = _pb_str(1,text) + _pb_str(3,text)
     payload = _pb_bytes(24,_pb_bytes(3,details))
@@ -70,6 +77,7 @@ def test_record_wall_survives_idle_later_input_restart_and_blocks_delivery(tmp_p
     door=Door(seat)
     assert not door.reading().open
     assert door.deliver('must remain queued',speed='interrupt').result == 'withheld' and actions == []
+    tick(seat)
     book=Ledger(seat.ship.runtime/'ledger.sqlite')
     original=book.db.execute('SELECT source,event,pool,at,resets_at,observed_at FROM wall_events').fetchall()
     assert original[0][:3] == (str(rec.path),'step:8','google-a')
@@ -90,7 +98,7 @@ def test_record_wall_survives_idle_later_input_restart_and_blocks_delivery(tmp_p
         monkeypatch.setenv('TMUX',f'synthetic-{session}')
         line=watch.line(seat.ship,seat.tmux)
         assert 'wall: google-a individual quota reached' in line and 'reset ' in line  # law: nothing-waits-silently
-        assert 'google-a usage unknown' in line
+        assert 'google-a 7d usage unknown' in line
 
 
 @pytest.mark.parametrize('expired', [True, False])
@@ -98,7 +106,8 @@ def test_screen_fallback_is_stable_then_yields_to_matching_record_time(tmp_path,
     seat,rec,shown,_=synthetic_seat(tmp_path,monkeypatch)
     shown['text']=TEXT+'\n'+IDLE
     reading = Door(seat).reading()
-    assert not reading.open and 'estimated from first screen observation' in reading.reason
+    assert not reading.open and 'estimated from first screen observation' in reading.reason, 'the banner alone holds the door, before anything is written'
+    tick(seat)
     assert 'estimated from first screen observation' in watch.line(seat.ship,seat.tmux)
     book=Ledger(seat.ship.runtime/'ledger.sqlite')
     first=book.db.execute('SELECT at,resets_at,observed_at FROM wall_events').fetchone()
@@ -111,6 +120,7 @@ def test_screen_fallback_is_stable_then_yields_to_matching_record_time(tmp_path,
     # Canonical time replaces the estimate, including when it proves expiration.
     at = datetime.now(timezone.utc) - (timedelta(hours=5) if expired else timedelta(minutes=5))
     append_error(rec,TEXT,at)
+    tick(seat)
     reading = Door(seat).reading()
     assert reading.open == expired
     assert 'estimated' not in reading.reason
@@ -133,6 +143,7 @@ def test_unknown_time_and_reset_stay_unknown_and_wrong_pool_is_never_charged(tmp
     seat,rec,shown,_=synthetic_seat(tmp_path,monkeypatch)
     assert quota.reset_text(None, from_screen=True) == 'reset unknown'
     append_error(rec,'Individual quota reached.',None)
+    tick(seat)
     assert not Door(seat).reading().open
     book=Ledger(seat.ship.runtime/'ledger.sqlite')
     assert book.db.execute('SELECT pool,at,resets_at FROM wall_events').fetchone() == ('-',None,None)
@@ -149,6 +160,7 @@ def test_launch_pool_at_event_time_survives_pool_switch_and_ambiguous_history(tm
     seat.move_to('google-b')
     (seat.folder/'launch.json').write_text(json.dumps(asdict(replace(first,at=(at+timedelta(minutes=1)).isoformat(),pool='google-b'))))
     append_error(rec,TEXT,at)
+    tick(seat)
     assert Door(seat).reading().open, 'current pool-b is not blocked by pool-a evidence'
     book=Ledger(seat.ship.runtime/'ledger.sqlite')
     assert book.walled('google-a') and not book.walled('google-b')
@@ -200,6 +212,7 @@ def test_ambiguous_join_never_decodes_foreign_records_for_wall_attribution(tmp_p
     monkeypatch.setattr(seat.harness,'state',lambda *a: (_ for _ in ()).throw(AssertionError('foreign record opened')))
     shown['text']=TEXT+'\n'+IDLE
     assert not Door(seat).reading().open
+    tick(seat)
     book=Ledger(seat.ship.runtime/'ledger.sqlite')
     rows=book.db.execute('SELECT source,pool FROM wall_events').fetchall()
     assert len(rows)==1 and rows[0][0].startswith('screen:') and rows[0][1]=='google-a'
@@ -209,6 +222,7 @@ def test_ambiguous_join_never_decodes_foreign_records_for_wall_attribution(tmp_p
 def test_expired_record_event_recognized_after_restart_and_record_failure(tmp_path, monkeypatch):
     seat, rec, shown, _ = synthetic_seat(tmp_path, monkeypatch)
     append_error(rec, TEXT, datetime.now(timezone.utc) - timedelta(hours=5))
+    tick(seat)
     assert Door(seat).reading().open
     prior = seat.launched()
     (seat.folder/'launch.json').write_text(json.dumps(asdict(replace(prior, at=datetime.now(timezone.utc).isoformat()))))
@@ -216,7 +230,7 @@ def test_expired_record_event_recognized_after_restart_and_record_failure(tmp_pa
     def unreadable(*args):
         raise OSError('synthetic record temporarily unreadable')
     monkeypatch.setattr(seat.harness, 'state', unreadable)
-    assert quota.guard(seat, seat.harness.screen(shown['text'])) is None
+    assert Door(seat).wall(seat.harness.screen(shown['text'])) is None, 'a banner the book already placed in time is not news'
     book = Ledger(seat.ship.runtime/'ledger.sqlite')
     assert book.db.execute('SELECT COUNT(*) FROM wall_events').fetchone() == (1,)
     assert not book.quota.active()
@@ -237,6 +251,7 @@ def test_wrapped_canonical_banner_keeps_identity_and_does_not_resurrect(tmp_path
     persisted = seat.harness.state(rec.path).walls[0]
     assert parsed.error_id == persisted.error_id == 'synthetic-wrapped'
     assert parsed.signature == persisted.signature and parsed.resets_at == at + timedelta(hours=2)
+    tick(seat)
     assert Door(seat).reading().open
     book = Ledger(seat.ship.runtime/'ledger.sqlite')
     assert book.db.execute('SELECT COUNT(*) FROM wall_events').fetchone() == (1,)
@@ -250,6 +265,7 @@ def test_wrapped_current_screen_has_fixed_reset_across_reflow_and_polls(tmp_path
                      'limits. Resets in 2h.\nError ID: synthetic-wrapped-current\n' + IDLE)
     before = datetime.now(timezone.utc)
     assert not Door(seat).reading().open
+    tick(seat)
     book = Ledger(seat.ship.runtime/'ledger.sqlite')
     initial = book.db.execute('SELECT at,resets_at,error_id,signature FROM wall_events').fetchone()
     started, reset = map(datetime.fromisoformat, initial[:2])

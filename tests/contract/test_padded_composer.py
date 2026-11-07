@@ -27,7 +27,7 @@ def capture(name, body, padding=0, width=80):
 
 def door_for(name, text, monkeypatch, width=80):
     # These are layout contracts, with no pool/session/provider state to inspect.
-    monkeypatch.setattr('quarterdeck.door.guard', lambda *args: None)
+    monkeypatch.setattr(Door, 'wall', lambda self, screen: None)
     seat = SimpleNamespace(harness=get(name), session=SimpleNamespace(human=False), spec=SimpleNamespace(),
                            pane=lambda:SimpleNamespace(id='%1', width=width, dead=False),
                            tmux=SimpleNamespace(capture=lambda *a,**k:text))

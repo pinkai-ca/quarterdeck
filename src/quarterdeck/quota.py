@@ -25,16 +25,17 @@ def reset_text(at: str | None, from_screen: bool = False) -> str:
 
 
 class Quotas:
-    def __init__(self, db):
+    def __init__(self, db, create: bool = True):
         self.db = db
-        db.executescript("""
-            CREATE TABLE IF NOT EXISTS wall_events (
-                source TEXT NOT NULL, event TEXT NOT NULL, seat TEXT NOT NULL, pool TEXT NOT NULL,
-                at TEXT, resets_at TEXT, observed_at TEXT NOT NULL, reason TEXT NOT NULL,
-                error_id TEXT, signature TEXT NOT NULL, superseded INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (source, event));
-            CREATE TABLE IF NOT EXISTS usage_reads (pool TEXT PRIMARY KEY, at TEXT NOT NULL, error TEXT);
-        """)
+        if create:  # a reading opens the book read-only and makes no table
+            db.executescript("""
+                CREATE TABLE IF NOT EXISTS wall_events (
+                    source TEXT NOT NULL, event TEXT NOT NULL, seat TEXT NOT NULL, pool TEXT NOT NULL,
+                    at TEXT, resets_at TEXT, observed_at TEXT NOT NULL, reason TEXT NOT NULL,
+                    error_id TEXT, signature TEXT NOT NULL, superseded INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (source, event));
+                CREATE TABLE IF NOT EXISTS usage_reads (pool TEXT PRIMARY KEY, at TEXT NOT NULL, error TEXT);
+            """)
 
     def observe(self, source: str, seat: str, pool: str, event: Wall, now: datetime) -> None:
         self.db.execute("INSERT OR IGNORE INTO wall_events VALUES (?,?,?,?,?,?,?,?,?,?,0)",
@@ -91,43 +92,22 @@ class Quotas:
                 self.db.execute("SELECT pool,error FROM usage_reads WHERE error IS NOT NULL ORDER BY pool")]
 
 
-def guard(seat, screen) -> str | None:
-    """Record first, durable events second, screen fallback last. No authenticated queries."""
-    from .ledger import Ledger
+def observe_screen(book, seat, screen, launched, now: datetime | None = None) -> None:
+    """A quota banner on a seat's screen, persisted once by the service under the launch it was seen on.
+
+    The record's own quota errors are persisted beside it when the record is read; a banner the
+    book already knows, from the record or from an earlier look, is not a new event.
+    """
     from .harness.antigravity_quota import wall
 
-    if not hasattr(seat, "ship"):
-        return None
-    path = seat.ship.runtime / "ledger.sqlite"
-    is_google = seat.harness.name == "antigravity"
-    if not is_google and not path.exists():
-        return None
-    book = Ledger(path)
-    try:
-        launched = seat.launched()
-        pool = launched.pool if launched else seat.pool.name
-        if is_google:
-            record = seat.record()
-            book.provenance.sync(seat, record, launched)
-            events = ()
-            if record is not None:
-                try:
-                    events = seat.harness.state(record).walls
-                    book.quota.record(record, seat.name, events, book.provenance, datetime.now(timezone.utc))
-                except OSError:
-                    pass  # a read failure cannot erase an already persisted wall
-            if screen and screen.quota:
-                now = datetime.now(timezone.utc)
-                event = wall(screen.quota, "individual-quota", now)
-                if not book.quota.recognized(seat.name, event):
-                    source = f"screen:{seat.name}:{launched.at if launched else 'unknown-launch'}"
-                    book.quota.observe(source, seat.name, launched.pool if launched else UNKNOWN,
-                                       replace(event, key=event.error_id or event.key), now)
-        observed = book.quota.blocked(seat.name, pool)
-        measured = next((w for w in book.walls(seat.ship) if w.split(" ")[0] == pool), None)
-        return observed or measured
-    finally:
-        book.close()
+    if screen is None or not screen.quota:
+        return
+    now = now or datetime.now(timezone.utc)
+    event = wall(screen.quota, "individual-quota", now)
+    if event is None or book.quota.recognized(seat.name, event):
+        return
+    source = f"screen:{seat.name}:{launched.at if launched else 'unknown-launch'}"
+    book.quota.observe(source, seat.name, launched.pool if launched else UNKNOWN, replace(event, key=event.error_id or event.key), now)
 
 
 def refresh_declared(service) -> None:

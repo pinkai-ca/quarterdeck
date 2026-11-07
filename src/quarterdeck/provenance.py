@@ -26,11 +26,12 @@ def remember_launch(folder: Path, record: Path, launched) -> None:
 
 
 class Provenance:
-    def __init__(self, db):
+    def __init__(self, db, create: bool = True):
         self.db = db
-        db.execute("""CREATE TABLE IF NOT EXISTS record_launches (
-            record TEXT NOT NULL, at TEXT NOT NULL, seat TEXT NOT NULL, pool TEXT NOT NULL,
-            PRIMARY KEY (record, at, seat, pool))""")
+        if create:  # a reading opens the book read-only and makes no table
+            db.execute("""CREATE TABLE IF NOT EXISTS record_launches (
+                record TEXT NOT NULL, at TEXT NOT NULL, seat TEXT NOT NULL, pool TEXT NOT NULL,
+                PRIMARY KEY (record, at, seat, pool))""")
 
     def remember(self, record: Path, seat: str, pool: str, at: datetime) -> bool:
         stamp = at.astimezone(timezone.utc).isoformat()

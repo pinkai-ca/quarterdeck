@@ -48,7 +48,7 @@ def test_real_private_capture_retains_padding_and_adapters_read_it(tmux, tmp_pat
     from types import SimpleNamespace
     from tests.contract.test_padded_composer import capture
 
-    monkeypatch.setattr('quarterdeck.door.guard',lambda *args:None)
+    monkeypatch.setattr(Door, 'wall', lambda self, screen: None)
     tmux.new_session('Padding')
     script = tmp_path/'padded.sh'
     output = '\x1b[2J\x1b[H'+capture(name,body,'full',80).replace('\n','\r\n')
