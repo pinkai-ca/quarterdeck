@@ -58,6 +58,28 @@ def test_a_law_named_in_prose_is_mentioned_not_carried(tmp_path: Path):
     assert found["identity"] == [(Path("src/a.py"), 2), (Path("tests/b.py"), 1)]
 
 
+def test_only_comment_tokens_carry_laws_even_next_to_quoted_tags(tmp_path: Path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tests").mkdir()
+    source = '\n'.join([
+        '"""# law: quoted-docstring',
+        '# law: triple-quoted',
+        '"""',
+        'text = "# law: quoted-string"',
+        "other = '# law: single-quoted'",
+        'text = "escaped \\" # law: escaped-quote"',
+        'value = "# law: not-carried"  # law: identity',
+        '# explanation; law: one-door',
+        '',
+    ])
+    (tmp_path / "src" / "source.py").write_text(source)
+    (tmp_path / "tests" / "test_source.py").write_text('text = "# law: identity"\n# law: one-door\n')
+    assert standing.carriers(tmp_path) == {
+        "identity": [(Path("src/source.py"), 7)],
+        "one-door": [(Path("src/source.py"), 8), (Path("tests/test_source.py"), 2)],
+    }
+
+
 def test_a_missing_card_is_said_not_hidden(drydock: Path):
     text = (drydock / "ship.toml").read_text().replace('role = "worker"', 'role = "navigator"')
     (drydock / "ship.toml").write_text(text)

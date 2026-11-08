@@ -10,6 +10,7 @@ own folder. ``qd brief <seat>`` prints exactly what a seat reads at boot, and
 from __future__ import annotations
 
 import re
+import tokenize
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -132,9 +133,11 @@ def carriers(root: Path | None = None) -> dict[str, list[tuple[Path, int]]]:
     for folder in folders:
         for path in sorted(folder.rglob("*.py")):
             shown = path.relative_to(root) if path.is_relative_to(root) else path.relative_to(folder.parent)
-            for number, line in enumerate(path.read_text().splitlines(), 1):
-                for tag in TAG.findall(line):
-                    found.setdefault(tag, []).append((shown, number))
+            with path.open("rb") as source:
+                for token in tokenize.tokenize(source.readline):
+                    if token.type == tokenize.COMMENT:
+                        for tag in TAG.findall(token.string):
+                            found.setdefault(tag, []).append((shown, token.start[0]))
     return found
 
 
