@@ -142,16 +142,22 @@ def test_partial_notice_failure_keeps_original_baseline_and_deduplicates_after_s
     assert {m.id for m in notices(s)}==ids
 
 
-def test_interruption_after_service_stop_and_install_before_queue_recovers(upgraded,monkeypatch):
+@pytest.mark.parametrize('stage',['install','queue'])
+def test_interruption_after_service_stop_and_install_before_queue_recovers(upgraded,monkeypatch,stage):
     s=upgraded;change_archive(s)
     original=install.queue_rebrief;failed=[]
     def queue(*args):
         if not failed:failed.append(True);raise OSError('synthetic before request')
         return original(*args)
     monkeypatch.setattr(install,'queue_rebrief',queue)
+    if stage=='install':
+        def run(argv,doing,**kwargs):
+            if doing.startswith('installing') and not failed:
+                failed.append(True);raise OSError('synthetic before request')
+        monkeypatch.setattr(install,'_run',run)
     with pytest.raises(OSError,match='before request'):
         install.upgrade(s.ship,'changed',s.tmux)
-    assert s.stops and install.installed(s.ship.runtime)['commit']==NEW
+    assert s.stops and install.installed(s.ship.runtime)['commit']==(OLD if stage=='install' else NEW)
     assert notices(s)==[]
     # Recovery preserves ordinary upgrade behavior: it does not start a previously down service.
     proofs=install.upgrade(s.ship,'changed',s.tmux)
@@ -257,8 +263,8 @@ def test_brief_updated_by_old_service_during_install_is_the_upgrade_baseline(upg
     old=Service(s.ship,s.tmux);s.started.append(old)
     stop=s.stop
     def stop_after_card_event(runtime):
-        # Installation replaced the shared cards while the old service was still alive.
-        monkeypatch.setattr(standing,'FRAMEWORK_DIR',s.venv/'share/quarterdeck/standing-orders')
+        # A genuine card edit just before stop must become the comparison baseline.
+        card=s.framework/'laws.md';card.write_text(card.read_text()+'\nChanged framework instruction.\n')
         old.rebrief()
         assert len(notices(s))==2
         return stop(runtime)
@@ -266,3 +272,13 @@ def test_brief_updated_by_old_service_during_install_is_the_upgrade_baseline(upg
     proofs=install.upgrade(s.ship,'changed',s.tmux)
     assert any('no brief changed' in line for line in proofs)
     assert len(notices(s))==2, 'preserve existing notices rather than post the same content again'
+
+
+def test_old_service_is_stopped_before_replacing_live_code_or_cards(upgraded,monkeypatch):
+    s=upgraded
+    def run(argv,doing,**kwargs):
+        if doing.startswith('installing'):
+            assert not s.active[0], 'the old mtime watcher must not observe replacement cards'
+    monkeypatch.setattr(install,'_run',run)
+    assert any('no brief changed' in line for line in install.upgrade(s.ship,'same-content',s.tmux))
+    assert notices(s)==[]

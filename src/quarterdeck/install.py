@@ -137,6 +137,10 @@ def upgrade(ship: Ship, ref: str = "HEAD", tmux: Tmux | None = None) -> list[str
     staging.mkdir(parents=True)
     with tarfile.open(fileobj=io.BytesIO(git(repo, "archive", "--format=tar", commit))) as archive:
         archive.extractall(staging, filter="data")
+    previous = installed(runtime)
+    was_running = servicectl.alive(runtime)
+    stopped = servicectl.stop(runtime) if was_running else None
+    snapshot = brief_snapshot(ship)  # last old-service offer, before live code/cards are replaced
     venv = runtime / "venv"
     if not (venv / "bin" / "python").exists():
         _run([sys.executable, "-m", "venv", "--system-site-packages", str(venv)], "making the ship's own venv")
@@ -153,10 +157,6 @@ def upgrade(ship: Ship, ref: str = "HEAD", tmux: Tmux | None = None) -> list[str
     except ShipError:
         shutil.rmtree(venv, ignore_errors=True)  # a copy that cannot answer is not left where every qd would hand off to it
         raise
-    previous = installed(runtime)
-    was_running = servicectl.alive(runtime)
-    stopped = servicectl.stop(runtime) if was_running else None
-    snapshot = brief_snapshot(ship)  # include any card event the old service handled during installation
     record = {"commit": commit, "ref": ref, "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
               "previous": previous["commit"] if previous else None}
     (runtime / RECORD).write_text(json.dumps(record, indent=2) + "\n")
