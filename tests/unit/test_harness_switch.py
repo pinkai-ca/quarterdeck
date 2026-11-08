@@ -14,7 +14,7 @@ from quarterdeck.harness.antigravity import AntigravityHarness
 from quarterdeck.harness.base import Launch, RecordError
 from quarterdeck.harness.codex import CodexHarness
 from quarterdeck.ledger import Count, table
-from quarterdeck.post import Store
+from quarterdeck.post import Store, Attempts, typed
 from quarterdeck.seat import Launched, Seat
 from quarterdeck.service import Service
 from quarterdeck.ship import Pool, SeatSpec, Session, Ship
@@ -190,11 +190,16 @@ def test_queued_history_uses_original_reader_and_conflicts_remain_unknown(tmp_pa
     seat,old,_ = setup_seat(tmp_path,monkeypatch)
     store = Store(seat.ship.runtime)
     message = store.new('order','desk','worker','synthetic queued task')
-    old.begin(message.short+' synthetic queued task','synthetic-model','high')
+    attempts = Attempts(seat.ship.runtime)
+    attempt = attempts.open(message, seat.name, '%1', 12345, seat.launched().at)
+    attempts.close(attempt, 'queued')
+    old.begin(typed([message]),'synthetic-model','high')
     old.end('synthetic reply')
     seat = switch(seat)
-    attempts = SimpleNamespace(last_results=lambda name:{message.id:'queued'})
     assert seat._queued_unread(store,attempts) == []
+    again = attempts.open(message, seat.name, '%2', 12346, None)
+    attempts.close(again, 'queued')
+    assert seat._queued_unread(store, attempts) == [message], 'an old identical input cannot consume a new queue attempt'
     record_owner.register(seat.folder,old.path,'codex')  # conflicting explicit history is not guessed
     assert record_owner.records(seat)[0].reader is None
     assert seat._queued_unread(store,attempts) == [message]

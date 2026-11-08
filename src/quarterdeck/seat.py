@@ -17,7 +17,7 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import harness as harnesses, post, record_owner, ship as shipmod, standing
+from . import harness as harnesses, input_receipt, post, record_owner, ship as shipmod, standing
 from .harness.base import Harness, Join
 from .provenance import remember_launch
 from .ship import Pool, SeatSpec, Ship, ShipError
@@ -270,19 +270,27 @@ class Seat:
         return post.briefed_header(self.name, self.spec.role, open_messages) + "\n" + post.typed(ordered), ordered
 
     def _queued_unread(self, store: post.Store, attempts: post.Attempts) -> list[post.Message]:
-        """Messages whose last attempt says queued and that no record of this seat, taken or typed, ever names."""
-        queued = {m for m, result in attempts.last_results(self.name).items() if result == "queued"}
+        """Carry queued messages whose exact input has not been consumed since their latest attempt."""
+        latest = {a.message: a for a in attempts.all() if a.seat == self.name}
+        queued = [m for m in store.for_seat(self.name) if m.id in latest and latest[m.id].result == "queued"]
         if not queued:
             return []
-        seen: list[str] = []
-        for owned in record_owner.records(self):
-            try:
-                state, turns = owned.read()
-            except OSError:
-                continue
-            seen += [" ".join(t.split()) for t in [*(x.input for x in turns), *state.consumed, state.last_input or ""]]
-        flat = " ".join(seen)
-        return [m for m in store.for_seat(self.name) if m.id in queued and m.short not in flat]
+        owned = record_owner.records(self)
+        unread = []
+        for message in queued:
+            consumed = False
+            for item in owned:
+                if item.reader is None:
+                    continue
+                try:
+                    if input_receipt.confirmed(item.reader, item.path, post.typed([message]), latest[message.id].when) == "delivered":
+                        consumed = True
+                        break
+                except OSError:
+                    continue
+            if not consumed:
+                unread.append(message)
+        return unread
 
     @staticmethod
     def _path() -> str:
