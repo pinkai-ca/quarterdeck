@@ -80,6 +80,7 @@ def test_an_ack_needs_no_body_and_wakes_nobody(drydock: Path, capsys, monkeypatc
 
     monkeypatch.setenv("QD_TMUX_SOCKET", "qd-test-nobody-here")
     monkeypatch.setenv("QD_SHIP", str(drydock))
+    monkeypatch.delenv("QD_SEAT", raising=False)  # run from inside a seat, this shell would post as that seat and refuse --from
     code, out, _ = run(capsys, "post", "order", "--to", "worker-1", "build it")
     short = out.split(" ")[0]
     code, out, err = run(capsys, "post", "ack", "--from", "worker-1", "--re", short)

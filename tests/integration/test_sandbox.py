@@ -13,7 +13,21 @@ from quarterdeck.tmux import Tmux
 
 from .test_seat import wait_for
 
-pytestmark = pytest.mark.skipif(not sandbox.available(), reason="bubblewrap is not installed on this machine")
+
+
+def namespaces_allowed() -> bool:
+    """Whether bubblewrap can make a namespace here: not inside a jail, whose kernel view denies nested ones."""
+    import subprocess
+
+    if not sandbox.available():
+        return False
+    try:
+        return subprocess.run(["bwrap", "--ro-bind", "/", "/", "true"], capture_output=True, timeout=20).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+pytestmark = pytest.mark.skipif(not namespaces_allowed(), reason="bubblewrap is not installed, or cannot make a namespace here (inside a jail)")
 
 
 def test_a_jailed_seat_writes_its_workspace_posts_from_inside_and_cannot_see_the_operators_home(drydock: Path, tmux: Tmux, tmp_path: Path):
