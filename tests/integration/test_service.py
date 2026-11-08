@@ -17,6 +17,8 @@ from quarterdeck.harness.base import Usage, Window
 from quarterdeck.tmux import Tmux
 
 from .test_seat import wait_for
+from .progress import service_progress
+from quarterdeck.harness.synthetic_control import Rendezvous, events
 
 
 @pytest.fixture
@@ -67,7 +69,7 @@ def test_a_seat_in_a_human_session_is_reached_by_its_watch_only(ship: shipmod.Sh
     qd(capsys, "up", "desk")
     proof = qd(capsys, "post", "question", "--to", "desk", "Which branch?")
     assert proof.endswith("no watch armed on desk; waits in the inbox")
-    time.sleep(2.5)
+    service_progress(ship)
     desk = seatmod.Seat(ship, ship.seat("desk"), tmux)
     assert desk.harness.screen(tmux.capture(desk.pane().id)).box == "", "never typed into"  # law: one-door
     text, opened = post.wait(ship.runtime, "desk", interval=0.1, stop_after=3)
@@ -181,10 +183,12 @@ def test_a_watch_attempt_is_judged_only_after_the_confirm_window(ship: shipmod.S
     store, attempts = post.Store(ship.runtime), post.Attempts(ship.runtime)
     question = store.new("question", "operator", "desk", "still printing")
     opened = attempts.open(question, "desk", None, None, None)  # a watch that is printing right now
-    time.sleep(2.5)
+    service_progress(ship)
+    assert (post.now() - opened.when).total_seconds() < CONFIRM_SECONDS
     assert attempts.for_message(question.id)[0].result is None, "left to the watch within the confirm window"
     post.printed(ship.runtime, [opened])
-    time.sleep(CONFIRM_SECONDS + 1.5)
+    wait_for(lambda: (post.now() - opened.when).total_seconds() > CONFIRM_SECONDS)
+    service_progress(ship)
     assert attempts.for_message(question.id)[0].result == "watch", "the watch's own result stands"  # law: one-door
     lost = store.new("question", "operator", "desk", "the watch died")
     attempts.open(lost, "desk", None, None, None)
@@ -214,7 +218,7 @@ def test_a_seat_that_needs_a_human_is_reported_to_the_desk_once(ship: shipmod.Sh
     store = post.Store(ship.runtime)
     report = wait_for(lambda: [m for m in store.all() if m.sender == "ship" and m.to == "desk"], seconds=15)[0]
     assert report.kind == "report" and report.body == "worker-1 obstructed, unknown dialog: Something else"
-    time.sleep(2.5)
+    service_progress(ship)
     assert len([m for m in store.all() if m.sender == "ship"]) == 1, "told once, not every tick"
 
 
@@ -273,7 +277,7 @@ def test_a_seat_moves_on_at_a_wall_and_stays(ship: shipmod.Ship, tmux: Tmux, cap
     notice = wait_for(lambda: [m for m in post.Store(ship.runtime).all() if m.sender == "ship" and "moved to pool" in m.body], seconds=10)[0]
     assert notice.body == "moved to pool fake-2 from fake at its wall"
     assert "wall: fake 5h" in qd(capsys, "status", "--line")  # law: nothing-waits-silently
-    time.sleep(2.5)
+    service_progress(ship)
     assert captain.pool.name == "fake-2", "it stays, even though the first pool is the one declared first"
 
 
@@ -283,7 +287,7 @@ def test_a_blocked_delivery_goes_in_on_the_tick_after_the_human_clears_the_box(s
     wait_for(lambda: captain.harness.screen(tmux.capture(captain.pane().id)).box == "")
     tmux.paste(captain.pane().id, "a human's half-written thought")  # the human at this keyboard
     qd(capsys, "post", "order", "--to", "captain", "waits behind the human's text")
-    time.sleep(2.5)
+    service_progress(ship)
     store, attempts = post.Store(ship.runtime), post.Attempts(ship.runtime)
     assert attempts.all() == [], "nothing typed, nothing attempted while a human's text is in the box"  # law: one-door
     assert "captain needs a human" in qd(capsys, "status", "--line")
@@ -293,17 +297,31 @@ def test_a_blocked_delivery_goes_in_on_the_tick_after_the_human_clears_the_box(s
 
 
 def test_a_message_once_queued_is_not_carried_again_once_read(ship: shipmod.Ship, tmux: Tmux, capsys):
-    text = (ship.folder / "ship.toml").read_text().replace('step_seconds = "0.05"', 'steps = "3"\nstep_seconds = "0.6"', 1)
-    (ship.folder / "ship.toml").write_text(text)
     qd(capsys, "up", "captain")
     captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
-    first = qd(capsys, "post", "order", "--to", "captain", "first\n$ qd post report --re {this} done-1").split(" ")[0]
-    wait_for(lambda: captain.record() and captain.harness.state(captain.record()).turn_open, seconds=15)
-    second = qd(capsys, "post", "order", "--to", "captain", "second, mid-turn\n$ qd post report --re {this} done-2").split(" ")[0]
-    store = post.Store(ship.runtime)
-    wait_for(lambda: not store.open_for("captain"), seconds=40)
-    attempts = post.Attempts(ship.runtime)
-    wait_for(lambda: attempts.last_results("captain").get(store.get(second).id) == "delivered", seconds=10), "queued, then read, then delivered"
+    store, attempts = post.Store(ship.runtime), post.Attempts(ship.runtime)
+    with Rendezvous(captain.home, "step", "first held turn") as first_step, \
+            Rendezvous(captain.home, "turn", "second, mid-turn") as second_turn:
+        qd(capsys, "post", "order", "--to", "captain", "first held turn\n$ qd post report --re {this} done-1")
+        wait_for(first_step.reached)
+        record = captain.record()
+        assert captain.harness.state(record).turn_open
+        ref = qd(capsys, "post", "order", "--to", "captain", "second, mid-turn\n$ qd post report --re {this} done-2").split(" ")[0]
+        message = store.get(ref)
+        payload = post.typed([message]).strip()
+        assert wait_for(lambda: attempts.latest("captain").get(message.id) == "queued")
+        assert captain.harness.state(record).queued == (payload,)
+        first_step.release()
+        wait_for(second_turn.reached)
+        service_progress(ship)
+        assert captain.harness.state(record).turns == 1, "preceding turn ended"
+        assert attempts.latest("captain")[message.id] == "queued", "completion is not consumption"
+        assert captain.harness.state(record).queued == (payload,)
+        second_turn.release()
+        assert wait_for(lambda: attempts.latest("captain").get(message.id) == "delivered")
+        wait_for(lambda: not store.open_for("captain"))
+    assert len(attempts.for_message(message.id)) == 1
+    assert sum(e == {"event": "submitted", "text": payload} for e in events(captain.home)) == 1
     assert "queued behind a turn" not in qd(capsys, "status", "--line")
     proof = qd(capsys, "fresh", "captain")
     assert "carried" not in proof, f"nothing is open or unread, so nothing is carried: {proof}"  # law: context-is-cache
@@ -329,7 +347,7 @@ def test_an_ack_wakes_nobody_and_a_resend_to_the_office_goes_to_its_watch(ship: 
     captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
     order = qd(capsys, "post", "order", "--from", "captain", "--to", "worker-1", "build it").split(" ")[0]
     qd(capsys, "post", "ack", "--from", "worker-1", "--re", order)
-    time.sleep(3)
+    service_progress(ship)
     assert post.Attempts(ship.runtime).all() == [], "an ack is never typed into the captain's pane"  # law: open-until-closed
     assert captain.record() is None, "and the captain was never woken"
     question = qd(capsys, "post", "question", "--to", "desk", "for the desk").split(" ")[0]
@@ -376,6 +394,6 @@ def test_the_service_reconciles_an_attempt_it_died_in_the_middle_of(ship: shipmo
     wait_for(lambda: all(a.result for a in attempts.all()), seconds=10)
     results = {a.message: a.result for a in attempts.all()}
     assert results[typed.id] == "delivered" and results[lost.id] == "blind"  # law: one-door
-    time.sleep(2.5)
+    service_progress(ship)
     assert len(attempts.for_message(lost.id)) == 1, "a blind message is never resent by the service"
     assert attempts.undelivered(store, "captain") == []
