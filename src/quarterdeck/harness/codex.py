@@ -27,6 +27,7 @@ from .base import (Box, ship_template, trimmed, Input, Control, Credential, Harn
 ENDS_TURN = {"task_complete", "turn_aborted"}
 CALLS = {"function_call", "custom_tool_call"}
 OUTPUTS = {"function_call_output", "custom_tool_call_output"}
+INPUT_IGNORED = ('token_usage_record', 'world_state')
 
 
 def records(home: Path) -> list[Path]:
@@ -84,6 +85,8 @@ def inputs(record: Path) -> list[Input]:
     seen = False
     for line, row in input_rows(record, _Reader.kinds, _Reader.label, found):
         kind = row.get('type')
+        if kind in INPUT_IGNORED:
+            continue  # normal metadata, not a program-format marker or receipt candidate
         if kind not in _Reader.kinds:
             found.skip(line, 'unknown', 'unknown row kind')
             continue

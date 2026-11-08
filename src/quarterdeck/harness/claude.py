@@ -25,6 +25,9 @@ from .base import (Box, ship_template, trimmed, Input, Control, Credential, Harn
 ENDS_TURN = {"end_turn", "max_tokens", "stop_sequence"}
 LOCAL_TAGS = ("<command-name>", "<local-command", "<bash-input>", "<bash-stdout>", "<bash-stderr>")
 INTERRUPTED = "[Request interrupted"
+INPUT_IGNORED = ('api-request', 'api-request-blob', 'attachment', 'bridge-session', 'custom-title',
+                 'agent-name', 'mode', 'permission-mode', 'session-owner', 'atis-latch', 'last-prompt',
+                 'file-history-delta', 'file-history-snapshot', 'tools-used', 'api-request-shape', 'cost-state')
 PASTED = re.compile(r'^\s*<pasted_content id="[^"]*">\n?(.*?)\n?</pasted_content(?: id="[^"]*")?>\s*$', re.S)
 
 
@@ -66,6 +69,8 @@ def inputs(record: Path) -> list[Input]:
     found, queued = Inputs(), []
     for line, row in input_rows(record, _Reader.kinds, _Reader.label, found):
         kind = row.get('type')
+        if kind in INPUT_IGNORED:
+            continue  # known non-input metadata does not establish the program format
         if kind not in _Reader.kinds:
             found.skip(line, 'unknown', 'unknown row kind')
             continue
@@ -84,27 +89,43 @@ def inputs(record: Path) -> list[Input]:
                     raise TypeError
             text = prompt_text(row)
             if text is not None:
-                found.append(Input(text, stamp))
+                matching = next((i for i, (item, _) in enumerate(queued) if item.text.strip() == text.strip()), None)
+                if matching is None:
+                    found.append(Input(text, stamp))
+                else:
+                    entry, phase = queued[matching]
+                    if stamp is not None and (entry.at is None or stamp >= entry.at):
+                        queued.pop(matching)
+                    else:
+                        queued[matching] = entry, 'pending' if phase != 'echo' else phase
+                    found.append(Input(entry.text, entry.at, 'consumed', stamp))
             if row.get("type") != "queue-operation":
                 continue
             operation = row.get("operation")
+            if operation == 'dequeue' and 'content' not in row:
+                # No identity is stated: retain FIFO slots, hold until readable input.
+                queued = [(entry, 'pending' if phase == 'queued' else phase) for entry, phase in queued]
+                continue
             content = row['content']
             if not isinstance(content, str):
                 raise TypeError
             text = unwrap(content)
             if operation not in ('enqueue', 'remove', 'dequeue'):
                 found.skip(line, 'queue-operation', 'unknown queue operation')
-                queued = [item for item in queued if item.text.strip() != text.strip()]
+                queued = [(entry, 'pending' if entry.text.strip() == text.strip() and phase != 'echo' else phase)
+                          for entry, phase in queued]
                 continue
-            matching = next((i for i, item in enumerate(queued) if item.text.strip() == text.strip()), None)
+            matching = next((i for i, (item, phase) in enumerate(queued)
+                             if phase != 'echo' and item.text.strip() == text.strip()), None)
             if operation == "enqueue":
-                queued.append(Input(text, stamp, "queued"))  # stale and untimed entries still occupy FIFO positions
+                queued.append((Input(text, stamp, "queued"), 'queued'))  # stale/untimed slots still occupy FIFO
             elif operation in ("remove", "dequeue") and matching is not None:
-                entry = queued.pop(matching)
+                entry, _ = queued[matching]
+                queued[matching] = entry, 'echo'  # a later user echo must retain this original acceptance time
                 found.append(Input(entry.text, entry.at, "consumed", stamp))
         except (TypeError, ValueError, AttributeError, KeyError):
             found.skip(line, kind, 'malformed input row')
-    found.extend(queued)
+    found.extend(entry for entry, phase in queued if phase == 'queued')
     return found
 
 

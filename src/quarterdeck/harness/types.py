@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -25,14 +26,24 @@ class Input:
 
 
 class Inputs(list[Input]):
-    """Input evidence with content-free skipped-row diagnostics for detailed readings."""
+    """Input evidence with exact skip counts and at most eight content-free examples."""
 
     def __init__(self):
         super().__init__()
         self.skipped = []
+        self.skip_counts = Counter()
 
     def skip(self, line: int, kind: str, reason: str) -> None:
+        self.skip_counts[kind, reason] += 1
         self.skipped.append(dict(line=line, kind=kind, reason=reason))
+        self.skipped.sort(key=lambda item: item['line'])
+        del self.skipped[8:]
+
+    def diagnostics(self) -> dict:
+        total = sum(self.skip_counts.values())
+        return dict(total=total, counts=[dict(kind=kind, reason=reason, count=count)
+                    for (kind, reason), count in sorted(self.skip_counts.items())],
+                    examples=self.skipped, omitted=total-len(self.skipped))
 
 
 @dataclass(frozen=True)

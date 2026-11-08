@@ -60,12 +60,12 @@ def test_readable_receipts_on_both_sides_of_bad_row_and_safe_watch_diagnostic(se
     evidence=harness.get(name).inputs(record)
     assert [item.kind for item in evidence]==(['accepted','consumed'] if name=='codex' else ['accepted','accepted'])
     data=watch.seat_reading(seat)
-    skips=data['receipt_skips']
+    skips=data['receipt_skips']['examples']
     assert len(skips)==1 and skips[0]['line']==2
     assert set(skips[0])=={'line','kind','reason'}
     assert data['receipt_error'] is None
     rendered='\n'.join(watch.render_full(data))
-    assert 'receipt skipped line 2' in rendered
+    assert 'receipt skipped 1 rows' in rendered and 'example lines 2' in rendered
     assert PRIVATE not in rendered and PRIVATE not in json.dumps(output.value(data))
     assert not data['seat'].needs_human
     assert (record.read_bytes(),record.stat().st_mtime_ns)==before

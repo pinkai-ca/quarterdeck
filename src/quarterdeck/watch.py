@@ -210,14 +210,16 @@ def seat_reading(seat: Seat) -> dict:
     r = reading(seat)
     record = seat.record()
     state, error = None, None
-    skips, receipt_error = [], None
+    skips, receipt_error = dict(total=0, counts=[], examples=[], omitted=0), None
     if record:
         try:
             state = seat.harness.state(record)
         except OSError as failure:
             error = str(failure)
         try:
-            skips = getattr(seat.harness.inputs(record), 'skipped', [])
+            evidence = seat.harness.inputs(record)
+            if hasattr(evidence, 'diagnostics'):
+                skips = evidence.diagnostics()
         except OSError as failure:
             receipt_error = str(failure)
     return {"seat": r, "record": record, "state": state, "record_error": error,
@@ -245,8 +247,11 @@ def render_full(data: dict) -> list[str]:
         lines.append(f"  record limits: {data['record_limits']}")
     if data.get('receipt_error'):
         lines.append(f"  receipt evidence unreadable: {data['receipt_error']}")
-    for skipped in data.get('receipt_skips', []):
-        lines.append(f"  receipt skipped line {skipped['line']} · {skipped['kind']} · {skipped['reason']}")
+    skips = data.get('receipt_skips')
+    if skips and skips['total']:
+        groups = '; '.join(f"{item['count']} {item['kind']}: {item['reason']}" for item in skips['counts'])
+        examples = ','.join(str(item['line']) for item in skips['examples'])
+        lines.append(f"  receipt skipped {skips['total']} rows · {groups} · example lines {examples} · {skips['omitted']} omitted")
     screen = data["screen"]
     if screen:
         lines.append(f"  screen: box {screen.box!r} · working {screen.working} · queued {screen.queued} · shows {screen.shows}")

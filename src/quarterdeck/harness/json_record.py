@@ -24,7 +24,7 @@ def entries(record: Path) -> list[dict]:
     return [entry for _, entry in object_lines(record)]
 
 
-def object_lines(record: Path, skipped=None) -> list[tuple[int, dict]]:
+def object_lines(record: Path, skip=None) -> list[tuple[int, dict]]:
     """Keep original line numbers; optional diagnostics contain no source values."""
     try:
         raw = record.read_text()
@@ -37,20 +37,20 @@ def object_lines(record: Path, skipped=None) -> list[tuple[int, dict]]:
         try:
             entry = json.loads(line)
         except json.JSONDecodeError:
-            if skipped is not None:
-                skipped.append(dict(line=number, kind='json', reason='invalid JSON'))
+            if skip is not None:
+                skip(number, 'json', 'invalid JSON')
             continue  # half written, or not JSON at all: not this reader's to interpret
         if isinstance(entry, dict):
             out.append((number, entry))
-        elif skipped is not None:
-            skipped.append(dict(line=number, kind='non-object', reason='expected JSON object'))
+        elif skip is not None:
+            skip(number, 'non-object', 'expected JSON object')
     if raw.strip() and not out:
         raise RecordError("no JSON object lines in this record: not a record this reader can read")
     return out
 
 
 def input_rows(record: Path, kinds: tuple[str, ...], label: str, evidence):
-    rows = object_lines(record, evidence.skipped)
+    rows = object_lines(record, evidence.skip)
     if rows and not any(row.get('type') in kinds for _, row in rows):
         raise RecordError(f"no {label} entries in this record: another program's file")
     return rows
