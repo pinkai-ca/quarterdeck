@@ -119,3 +119,14 @@ def test_a_jailed_seat_commits_as_the_workspace_would_outside(tmp_path: Path):
     assert args[args.index("GIT_AUTHOR_NAME") - 1] == "--setenv" and args[args.index("GIT_AUTHOR_NAME") + 1] == "A Shipwright"
     assert args.index("GIT_COMMITTER_EMAIL") < args.index("--unshare-pid"), "set before the program runs"
     assert sandbox.git_identity(tmp_path / "nowhere") == (), "no repository, no identity, and no refusal"
+
+
+def test_a_jailed_programs_scratch_is_the_jails_own_tmp(tmp_path: Path):
+    """pi 0.74.2 spooled a tool's output to the launch's TMPDIR, a filesystem the jail mounts read-only, and died."""
+    home = tmp_path / "home"
+    jail = sandbox.Jail(home=home, seat_home=home / "s" / "home", seat_folder=home / "s", workspace=tmp_path / "work",
+                        ship_folder=tmp_path / "ship", runtime=tmp_path / "ship" / "runtime")
+    args = sandbox.command(jail, ["pi"])
+    for variable in ("TMPDIR", "TMP", "TEMP"):
+        assert args[args.index(variable) - 1] == "--setenv" and args[args.index(variable) + 1] == "/tmp"
+    assert args.index("TMPDIR") < args.index("--unshare-pid")
