@@ -8,9 +8,6 @@ for the box and the dialogs.
 
 from __future__ import annotations
 
-import os
-import json
-import tomllib
 import re
 import subprocess
 from abc import ABC, abstractmethod
@@ -18,10 +15,10 @@ from datetime import datetime
 from pathlib import Path
 from .limits import Usage, Wall, Window
 
-from ..ship import Pool, SeatSpec, ShipError
-
+from ..ship import Pool, SeatSpec
 
 from .json_record import RecordError, entries, when
+from .home import credential, key_environment, merged, ship_template
 from .types import Box, Control, Credential, Input, Interruption, Join, Keys, Launch, Screen, State, Tokens, ToolCall, Turn
 
 
@@ -34,61 +31,6 @@ def record_fingerprint(record: Path) -> tuple:
             return (False, 0, 0, 0, 0, 0)
         return (True, s.st_ino, s.st_size, s.st_mtime_ns, s.st_dev, s.st_ctime_ns)
     return (stat_of(record), stat_of(Path(f"{record}-wal")))
-
-
-def credential(pool: Pool, link: Path, variable: str) -> Credential | None:
-    """How a pool's credential reaches a seat home: a key by environment, a subscription by one link.
-
-    A refreshed file in the link's place is left alone: the service reseeds the pool from it.
-    """
-    if pool.api_key:
-        link.unlink(missing_ok=True)  # a key pool shares no file: whatever a former pool left here goes
-        return Credential(variable=variable)
-    if pool.config_dir is None:
-        return None
-    source = pool.config_dir / link.name
-    link.unlink(missing_ok=True)  # a link to a former pool, or a refreshed file the service has reseeded from
-    link.symlink_to(source)
-    return Credential(link=(link, source))
-
-
-def key_environment(pool: Pool, variable: str) -> dict[str, str]:
-    """The variable a key pool's program reads, from ``env:NAME`` or ``file:PATH`` in the ship file."""
-    if not pool.api_key:
-        return {}
-    kind, _, where = pool.api_key.partition(":")
-    if kind == "env":
-        value = os.environ.get(where)
-        if not value:
-            raise ShipError(f"pool {pool.name}: {where} is not set in the environment")
-        return {variable: value}
-    if kind == "file":
-        try:
-            return {variable: Path(where).expanduser().read_text().strip()}
-        except OSError as error:
-            raise ShipError(f"pool {pool.name}: cannot read {where}: {error}") from None
-    raise ShipError(f"pool {pool.name}: api_key must be env:NAME or file:PATH, not {pool.api_key!r}")
-
-
-def merged(base: dict, layer: dict) -> dict:
-    """``layer`` over ``base``, table by table; lists are joined so a permission added never removes one."""
-    out = dict(base)
-    for key, value in layer.items():
-        if isinstance(value, dict) and isinstance(out.get(key), dict):
-            out[key] = merged(out[key], value)
-        elif isinstance(value, list) and isinstance(out.get(key), list):
-            out[key] = out[key] + [v for v in value if v not in out[key]]
-        else:
-            out[key] = value
-    return out
-
-
-def ship_template(home: Path | None, name: str) -> dict:
-    """The ship's optional settings file; never the user's template."""
-    path = home / name if home else None
-    if path is None or not path.is_file():
-        return {}
-    return tomllib.loads(path.read_text()) if path.suffix == ".toml" else json.loads(path.read_text())
 
 
 def trimmed(lines: list[str]) -> list[str]:
