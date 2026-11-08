@@ -18,7 +18,7 @@ import tempfile
 from dataclasses import replace
 from pathlib import Path
 
-from . import credential, harness as harnesses, install, post, servicectl, watch
+from . import credential, endpoint, harness as harnesses, install, post, sandbox, servicectl, watch
 from .drill import Check, wait_for
 from .harness.base import key_environment, program_version
 from .seat import Seat, program_path
@@ -26,7 +26,7 @@ from .ship import Pool, SeatSpec, Session, Ship, ShipError
 from .tmux import Tmux
 
 PATIENCE = 600.0  # a fix is a turn of real work
-PROGRAMS = {"claude": "claude", "codex": "codex", "antigravity": "agy", "fake": "qd-fakeharness"}
+PROGRAMS = {"claude": "claude", "codex": "codex", "antigravity": "agy", "opencode": "opencode", "pi": "pi", "fake": "qd-fakeharness"}
 
 
 def checks(ship: Ship) -> list[Check]:
@@ -47,6 +47,10 @@ def checks(ship: Ship) -> list[Check]:
         note = "the fake harness" if name == "fake" else ("proven by qd check" if proven else f"unproven: qd check {name} proves it")
         found.append(Check(f"program {name}", True, f"{program} {version or 'version unknown'} · {note}"))
     found += [pool_check(pool) for pool in ship.pools.values()]
+    if any(ship.jailed(seat) for seat in ship.seats.values()):
+        version = program_version((sandbox.PROGRAM, "--version"))
+        found.append(Check("sandbox", version is not None, f"bubblewrap {version}: jailed seats run in it" if version
+                           else f"{sandbox.PROGRAM} is not on the PATH, and a seat is jailed; install bubblewrap, or set sandbox = false on it"))
     for seat in ship.seats.values():
         cwd = ship.cwd_of(seat)
         found.append(Check(f"seat {seat.name}", cwd.is_dir(), f"works in {cwd}" if cwd.is_dir()
@@ -75,7 +79,12 @@ def framework_check(ship: Ship) -> Check:
 
 
 def pool_check(pool: Pool) -> Check:
-    """A pool is ready when the credential it names is there; expiry is read as metadata, never a token."""
+    """A pool is ready when the credential it names is there, or its endpoint answers; expiry is read as metadata, never a token."""
+    if pool.kind == "endpoint":
+        try:
+            return Check(f"pool {pool.name}", True, endpoint.describe(pool))
+        except ShipError as error:
+            return Check(f"pool {pool.name}", False, f"{error}; start the server, or point the pool at one that answers")
     if pool.kind == "key":
         try:
             key_environment(pool, "KEY")

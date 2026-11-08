@@ -27,9 +27,9 @@ PATIENCE = 180.0
 
 def check(ship: Ship, name: str, tmux: Tmux) -> list[Check]:
     harness = harnesses.get(name)
-    pool = next((p for p in ship.pools.values() if p.provider == name), None)
+    pool = next((p for p in ship.pools.values() if harness.accepts(p) is None), None)
     if pool is None:
-        raise ShipError(f"no pool of provider {name!r} in {ship.file}; declare one to check it against")
+        raise ShipError(f"no pool in {ship.file} that {name} runs on; declare one to check it against")
     version = harness.version()
     checks = [Check("installed", version is not None, f"{name} {version or 'not found on the PATH'}")]
     if version is None:
@@ -38,7 +38,7 @@ def check(ship: Ship, name: str, tmux: Tmux) -> list[Check]:
     run = secrets.token_hex(2)
     seat_name, session_name = f"check-{name}-{run}", f"qd-check-{name}-{run}"
     spec = SeatSpec(seat_name, session_name, "worker", name, (pool.name,), model=like.model if like else None,
-                    effort=like.effort if like else None, cwd=ship.workspace)
+                    effort=like.effort if like else None, cwd=ship.workspace, sandbox=like.sandbox if like else None)
     checked = replace(ship, sessions={**ship.sessions, session_name: Session(session_name, session_name)},
                       seats={**ship.seats, seat_name: spec})
     seat = Seat(checked, spec, tmux)

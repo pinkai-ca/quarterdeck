@@ -118,7 +118,11 @@ class Join:
 
 @dataclass(frozen=True)
 class Keys:
-    """The keys a version uses, as tmux key names; None where the program lacks one."""
+    """The keys a version uses, as tmux key names; None where the program lacks one.
+
+    ``interrupt`` may name a sequence, space-separated, where the program wants a key pressed twice
+    in quick succession: the door sends the sequence in one command.
+    """
 
     submit: str = "Enter"
     send_now: tuple[str, ...] | None = None
@@ -181,11 +185,11 @@ class Box:
     text: str
     folded: str | None = None
 
-    def matches(self, shown: str | None, columns: int | None = None) -> bool:
+    def matches(self, shown: str | None, columns: int | None = None, slack: int = 0) -> bool:
         if shown is None:
             return False
         from ..composer import matches
-        if matches(self.text, shown, columns):
+        if matches(self.text, shown, columns, slack):
             return True
         return bool(self.folded) and re.fullmatch(self.folded, shown.strip()) is not None
 
@@ -249,6 +253,19 @@ def key_environment(pool: Pool, variable: str) -> dict[str, str]:
     raise ShipError(f"pool {pool.name}: api_key must be env:NAME or file:PATH, not {pool.api_key!r}")
 
 
+def merged(base: dict, layer: dict) -> dict:
+    """``layer`` over ``base``, table by table; lists are joined so a permission added never removes one."""
+    out = dict(base)
+    for key, value in layer.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = merged(out[key], value)
+        elif isinstance(value, list) and isinstance(out.get(key), list):
+            out[key] = out[key] + [v for v in value if v not in out[key]]
+        else:
+            out[key] = value
+    return out
+
+
 def same_name(shown: str, wanted: str) -> bool:
     """``Sonnet 5.5`` and ``GPT-6-Astra`` name ``claude-sonnet-5-5`` and ``gpt-6-astra``: compare letters and digits only."""
 
@@ -279,10 +296,23 @@ class Harness(ABC):
     record_confirms: bool = True  # False where the record is opaque: the screen's echo confirms a delivery instead
     reads_usage: bool = False  # True where usage() reads the provider's windows; a pool of such a program is read before a move
     remote_control: bool = False  # True where the program can open a seat to the operator's phone and claude.ai as well
+    wrap_slack: int = 0  # columns the program keeps clear at the right when it wraps at a word, under the width where it breaks a word
 
     def queues_while_working(self, seat: SeatSpec) -> bool:
         """Whether a message typed during a turn is taken and queued, or refused until it ends."""
         return True
+
+    def accepts(self, pool: Pool) -> str | None:
+        """Why this program cannot run on a pool, or None when it can.
+
+        By default a program runs on the pools of its own provider, a subscription or a key; a
+        program that speaks to any OpenAI-compatible endpoint says so by taking endpoint pools instead.
+        """
+        if pool.kind == "endpoint":
+            return f"pool {pool.name} is an endpoint, and {self.name} runs on a {self.name} subscription or key"
+        if pool.provider != self.name:
+            return f"pool {pool.name} pays {pool.provider}, and this seat runs {self.name}"
+        return None
     # -- launch ------------------------------------------------------------------------
 
     @abstractmethod

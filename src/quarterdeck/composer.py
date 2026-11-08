@@ -18,7 +18,9 @@ def cells(text: str) -> int | None:
     return total
 
 
-def matches(text: str, shown: str, columns: int | None = None) -> bool:
+def matches(text: str, shown: str, columns: int | None = None, slack: int = 0) -> bool:
+    # ``slack``: columns a program keeps clear at the right when it wraps at a word, below the
+    # width at which it breaks a word that has no space (pi 0.74.2 keeps one).
     # Adapters omit the trailing blank composer rows; no interior whitespace is
     # normalized. In particular "a b", "ab", and "a\nb" are different inputs.
     wanted, shown = text.rstrip('\n'), shown.rstrip('\n')
@@ -61,7 +63,7 @@ def matches(text: str, shown: str, columns: int | None = None) -> bool:
         spaces = len(tail) - len(tail.lstrip(' '))
         word = re.match(r'[^\s-]+-?', tail[spaces:])
         piece = cells(word[0]) if word else None
-        if (spaces or row.endswith('-')) and piece and width + spaces + piece > columns:
+        if (spaces or row.endswith('-')) and piece and width + spaces + piece > columns - slack:
             pos += spaces  # the expected separator hangs off the rendered row
             continue
         return False

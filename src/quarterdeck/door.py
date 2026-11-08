@@ -202,7 +202,7 @@ class Door:
         # The ordinary Codex composer has two prefix cells and one right margin.
         # The other adapters use a two-cell prompt/continuation prefix.
         columns = self.harness.box_columns(pane.width) if pane else None
-        return box.matches(screen.box, columns)
+        return box.matches(screen.box, columns, self.harness.wrap_slack)
 
     def box_shows(self, box, seconds: float = BOX_SECONDS) -> Screen | None:
         """The screen once the box shows the paste as the program folds it, or the last screen seen."""
@@ -233,7 +233,7 @@ class Door:
             return f"{self.seat.name} is not up"
         if key is None:
             return f"{self.harness.name} has no interrupt key"
-        self.tmux.keys(pane.id, key)
+        self.tmux.keys(pane.id, *key.split())  # a program that wants the key twice names the sequence
         return f"{self.seat.name} interrupted with {key} in {pane.id}"
 
     def confirm(self, text: str, seconds: float = CONFIRM_SECONDS) -> Delivery:

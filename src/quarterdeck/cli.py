@@ -343,7 +343,11 @@ def delivery_note(ship: shipmod.Ship, to: str) -> str:
     if seat.session.human:
         armed = post.watch_armed(ship.runtime, to)
         return "watch armed, prints it" if armed else f"no watch armed on {to}; waits in the inbox"
-    if not seat.is_up:
+    try:
+        up = seat.is_up
+    except TmuxError:
+        return "the service types it when the seat is up; tmux is out of reach from here, as it is from a jailed seat"
+    if not up:
         return f"{to} is down; carried as its first message at qd up"
     if not service.alive(ship.runtime):
         return "service down; qd up restarts it, then it is typed"

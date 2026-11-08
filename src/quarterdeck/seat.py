@@ -225,9 +225,16 @@ class Seat:
         path = self._path()
         if shutil.which(launch.argv[0], path=path) is None:
             raise ShipError(f"{self.name}: {launch.argv[0]} is not on the PATH qd runs with; install it, or put it on that PATH")
+        argv = list(launch.argv)
+        jailed = self.ship.jailed(self.spec, pool)
+        if jailed:
+            from . import sandbox  # the sandbox reads the ship and the standing orders, so it is imported here, not above
+
+            jail = sandbox.plan(self.ship, self.name, self.folder, self.home, self.ship.cwd_of(self.spec), launch.argv[0], path)
+            argv = sandbox.command(jail, argv)
         at = datetime.now(timezone.utc).isoformat()  # before the program can write a record (law: one-record)
-        pane = self._open_window(list(launch.argv), launch.env, path)
-        launched = Launched(pane.id, pane.pid, at, pool.name, resume_id, list(launch.argv), self.harness.version(), self.spec.harness, sorted(map(str, prior)))
+        pane = self._open_window(argv, launch.env, path)
+        launched = Launched(pane.id, pane.pid, at, pool.name, resume_id, argv, self.harness.version(), self.spec.harness, sorted(map(str, prior)))
         (self.folder / "launch.json").write_text(json.dumps(asdict(launched), indent=2) + "\n")
         if resume_id:
             self.record()  # retain the resumed record's new pool boundary immediately
@@ -238,7 +245,8 @@ class Seat:
             attempts.close(attempt, "launch", "carried as the first message of the launch")
         how = f"resumed {resume_id[:8]}" if resume_id else "fresh"
         carried_note = f" · {len(carried)} open message{'s' if len(carried) != 1 else ''} carried" if carried else ""
-        return f"{self.name} up in {pane.id} · {self.harness.name} {launched.version or ''} · pool {pool.name} · {how}{carried_note}"
+        jail_note = " · jailed: the operator's home hidden, the workspace writable" if jailed else ""
+        return f"{self.name} up in {pane.id} · {self.harness.name} {launched.version or ''} · pool {pool.name} · {how}{carried_note}{jail_note}"
 
     def _resume_id(self) -> str | None:
         record = self.record()

@@ -361,7 +361,7 @@ class Service:
         Google uses the paced background cache; other unread pools are read before the move; a program that reads no usage
         has only the Ledger's walls to go by, and the move says so."""
         pool = self.ship.pools[pool_name]
-        if pool.kind == "key":
+        if pool.kind in ("key", "endpoint"):  # no usage windows to read: a key is measured by spend, an endpoint has no quota
             return not self.ledger.walled(pool_name, self.ship)
         if pool.provider == "antigravity":
             return self.ledger.usage_known(pool_name) and not self.ledger.walled(pool_name, self.ship)

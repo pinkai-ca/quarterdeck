@@ -26,16 +26,25 @@ class ShipError(Exception):
 
 @dataclass(frozen=True)
 class Pool:
-    """One way of paying: a subscription, named by its credential directory, or an API key."""
+    """One way of paying: a subscription, named by its credential directory; an API key; or an endpoint.
+
+    An endpoint pool is a model served at an OpenAI-compatible URL, local or remote. It has no
+    credential of its own and no quota wall: a local server is paid for by the machine that runs
+    it, and a remote one by a key named beside the URL, by ``api_key`` as for a key pool.
+    """
 
     name: str
     provider: str
     config_dir: Path | None = None
     api_key: str | None = None
     budget: str | None = None
+    endpoint: str | None = None  # such as http://127.0.0.1:8000/v1
+    context: int | None = None  # the context window of what the endpoint serves, where the endpoint does not say
 
     @property
     def kind(self) -> str:
+        if self.endpoint:
+            return "endpoint"
         return "key" if self.api_key else "subscription"
 
 
@@ -62,6 +71,7 @@ class SeatSpec:
     up: bool = True
     fresh: str | None = None
     remote_control: bool = False  # the same session open from the operator's phone, where the program has it
+    sandbox: bool | None = None  # None: a seat on an endpoint pool is jailed, every other seat runs open; true or false says
     settings: dict = field(default_factory=dict)
 
     @property
@@ -106,6 +116,16 @@ class Ship:
 
     def cwd_of(self, seat: SeatSpec) -> Path:
         return seat.cwd or self.workspace
+
+    def jailed(self, seat: SeatSpec, pool: Pool | None = None) -> bool:
+        """Whether a seat runs its program in a sandbox: as the ship says, else when its pool is an endpoint.
+
+        A model served locally is trusted less than the subscription programs, so a seat on an endpoint
+        pool is jailed unless the ship says ``sandbox = false``; any seat is jailed with ``sandbox = true``.
+        """
+        if seat.sandbox is not None:
+            return seat.sandbox
+        return (pool or self.pool(seat.pools[0])).kind == "endpoint"
 
 
 # -- reading --------------------------------------------------------------------------
@@ -158,12 +178,15 @@ def _from_text(text: str, folder: Path) -> Ship:
 
 def _pool(name: str, table: dict) -> Pool:
     config_dir = table.get("config_dir", table.get("home"))
+    endpoint = table.get("endpoint")
     return Pool(
         name=name,
         provider=table["provider"],
         config_dir=Path(config_dir).expanduser() if config_dir else None,
         api_key=table.get("api_key"),
         budget=table.get("budget"),
+        endpoint=str(endpoint).rstrip("/") if endpoint else None,
+        context=table.get("context"),
     )
 
 
@@ -183,11 +206,12 @@ def _seat(name: str, table: dict, folder: Path) -> SeatSpec:
         up=bool(table.get("up", True)),
         fresh=table.get("fresh"),
         remote_control=bool(table.get("remote_control", False)),
+        sandbox=None if "sandbox" not in table else bool(table["sandbox"]),
         settings=dict(table.get("settings", {})),
     )
 
 
-SEAT_KEYS = frozenset({"session", "role", "harness", "pool", "model", "effort", "persona", "cwd", "up", "fresh", "remote_control"})
+SEAT_KEYS = frozenset({"session", "role", "harness", "pool", "model", "effort", "persona", "cwd", "up", "fresh", "remote_control", "sandbox"})
 """The keys of ``[seats.<name>]`` the framework reads; any other key belongs to the program, under ``.settings``."""
 
 
@@ -197,17 +221,31 @@ def _path(value: str, folder: Path) -> Path:
 
 
 def _validate(ship: Ship) -> None:
+    from . import harness as harnesses  # the adapters import this module, so it is imported here, not above
+
+    for pool in ship.pools.values():
+        if pool.config_dir and pool.api_key:
+            raise ShipError(f"pool {pool.name}: declare config_dir (or home) or api_key, not both")
+        if pool.endpoint and pool.config_dir:
+            raise ShipError(f"pool {pool.name}: an endpoint pool names no config_dir; a key beside the endpoint is api_key")
+        if pool.endpoint and not re.match(r"^https?://\S+$", pool.endpoint):
+            raise ShipError(f"pool {pool.name}: endpoint must be an http or https URL such as http://127.0.0.1:8000/v1, not {pool.endpoint!r}")
+        if pool.context is not None and (isinstance(pool.context, bool) or not isinstance(pool.context, int) or pool.context <= 0):
+            raise ShipError(f"pool {pool.name}: context must be a count of tokens, not {pool.context!r}")
     for seat in ship.seats.values():
         if seat.session not in ship.sessions:
             raise ShipError(f"seat {seat.name}: session {seat.session!r} is not declared")
         for pool in seat.pools:
             if pool not in ship.pools:
                 raise ShipError(f"seat {seat.name}: pool {pool!r} is not declared")
+        if not seat.pools:
+            raise ShipError(f"seat {seat.name}: declare a pool")
+        harness = harnesses.get(seat.harness)
+        for pool in seat.pools:
+            if reason := harness.accepts(ship.pools[pool]):
+                raise ShipError(f"seat {seat.name}: {reason}")
         if seat.fresh not in (None, "after-order"):
             raise ShipError(f"seat {seat.name}: fresh = {seat.fresh!r}; the one value is \"after-order\"")
-    for pool in ship.pools.values():
-        if pool.config_dir and pool.api_key:
-            raise ShipError(f"pool {pool.name}: declare config_dir (or home) or api_key, not both")
 
 
 # -- the line editor -------------------------------------------------------------------

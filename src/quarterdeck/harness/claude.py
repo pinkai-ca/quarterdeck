@@ -18,7 +18,7 @@ from pathlib import Path
 
 from ..ship import Pool, SeatSpec
 from .base import (Box, Control, Credential, Harness, Interruption, Keys, Launch, RecordError, Screen, State, Tokens,
-                   ToolCall, Turn, Usage, Window, credential, entries, key_environment, program_version, same_name, when)
+                   ToolCall, Turn, Usage, Window, credential, entries, key_environment, merged, program_version, same_name, when)
 
 ENDS_TURN = {"end_turn", "max_tokens", "stop_sequence"}
 LOCAL_TAGS = ("<command-name>", "<local-command", "<bash-input>", "<bash-stdout>", "<bash-stderr>")
@@ -242,19 +242,6 @@ SETTINGS = {
     "skipDangerousModePermissionPrompt": True,
     "permissions": {"allow": ["Bash(qd *)", "Bash(qd:*)"], "defaultMode": "bypassPermissions"},  # law: can-post
 }
-
-
-def merged(base: dict, layer: dict) -> dict:
-    """``layer`` over ``base``, table by table; lists are joined so a permission added never removes one."""
-    out = dict(base)
-    for key, value in layer.items():
-        if isinstance(value, dict) and isinstance(out.get(key), dict):
-            out[key] = merged(out[key], value)
-        elif isinstance(value, list) and isinstance(out.get(key), list):
-            out[key] = out[key] + [v for v in value if v not in out[key]]
-        else:
-            out[key] = value
-    return out
 
 
 def pool_account(pool: Pool) -> dict | None:

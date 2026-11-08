@@ -388,6 +388,8 @@ def pools_table(ledger: Ledger, ship: Ship | None = None) -> list[str]:
         limit = f" of {budget.amount:.0f} {budget.currency}/{budget.period}" if budget else ""
         wall = "  WALL" if f"{pool.name} budget" in walls else ""
         lines.append(f"{pool.name:<20} {'spend':<8} {stated}{limit}{note}{wall}")
+    for pool in (p for p in (ship.pools.values() if ship else ()) if p.kind == "endpoint"):
+        lines.append(f"{pool.name:<20} {'endpoint':<8} {pool.endpoint} · no quota, no wall")
     if len(lines) == 1:
         lines.append("no usage read yet: the service reads active subscription pools in the background")
     return lines + ledger.quota.usage_notes() + ["wall: " + w for w in ledger.quota.walls()] + incomplete_notes(ledger)
