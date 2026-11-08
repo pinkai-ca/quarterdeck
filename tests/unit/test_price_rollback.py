@@ -166,24 +166,3 @@ with Ledger(Path(sys.argv[1])/'ledger.sqlite') as b:
         book.ingest('worker', 'a', record, [replace(turn, tokens=Tokens(read_uncached=2))], Store(tmp_path))
         assert book.costs.get(record, 0) == (0, 'record', 1)
         assert book.rollup('pool')[0].cost == 0 and book.rollup('pool')[0].unpriced == 0
-
-
-def test_unlanded_expanded_checkpoint_moves_evidence_without_rewriting_values(tmp_path, old):
-    import sqlite3
-    from quarterdeck.ledger import SCHEMA
-
-    with sqlite3.connect(tmp_path / 'ledger.sqlite') as con:
-        con.executescript(SCHEMA)
-        con.execute('ALTER TABLE turns ADD COLUMN recorded_cost REAL')
-        con.execute('ALTER TABLE turns ADD COLUMN cost_basis TEXT')
-        con.execute('''INSERT INTO turns (record,turn,seat,pool,order_id,cost,recorded_cost,cost_basis)
-                       VALUES ('checkpoint',0,'worker','a','-',0,0,'stated launch rates')''')
-        con.execute('''CREATE TABLE record_launches (record TEXT,at TEXT,seat TEXT,pool TEXT,price TEXT,
-                       PRIMARY KEY(record,at,seat,pool))''')
-        price = Price.parse(RATES).snapshot('m')
-        con.execute('INSERT INTO record_launches VALUES (?,?,?,?,?)', ('checkpoint', AT.isoformat(), 'worker', 'a', json.dumps(price)))
-    with Ledger(tmp_path / 'ledger.sqlite') as book:
-        assert book.costs.get('checkpoint', 0) == (0, 'stated launch rates', 1)
-        assert book.rollup('pool')[0].cost == 0
-        assert book.provenance.price(Path('checkpoint'), AT, AT) == price
-    old(OLD_WRITE, tmp_path)

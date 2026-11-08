@@ -9,12 +9,6 @@ class CostEvidence:
         db.execute('''CREATE TABLE IF NOT EXISTS turn_costs (
             record TEXT NOT NULL, turn INTEGER NOT NULL, recorded_cost REAL, cost_basis TEXT,
             valid INTEGER NOT NULL, PRIMARY KEY(record,turn))''')
-        columns = {r[1] for r in db.execute('PRAGMA table_info(turns)')}
-        # Accept the unlanded proposal's checkpoint too, preserving its evidence.
-        if 'cost_basis' in columns:
-            db.execute('INSERT OR IGNORE INTO turn_costs SELECT record,turn,recorded_cost,cost_basis,1 FROM turns')
-            db.execute('ALTER TABLE turns DROP COLUMN recorded_cost')
-            db.execute('ALTER TABLE turns DROP COLUMN cost_basis')
         for event in ('INSERT', 'UPDATE'):
             db.execute(f'''CREATE TRIGGER IF NOT EXISTS cost_after_{event.lower()} AFTER {event} ON turns
                 BEGIN UPDATE turn_costs SET valid=0 WHERE record=NEW.record AND turn=NEW.turn; END''')

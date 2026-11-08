@@ -35,10 +35,6 @@ class Provenance:
             db.execute("""CREATE TABLE IF NOT EXISTS launch_prices (
                 record TEXT NOT NULL, at TEXT NOT NULL, seat TEXT NOT NULL, pool TEXT NOT NULL, price TEXT,
                 PRIMARY KEY (record, at, seat, pool))""")
-            columns = {row[1] for row in db.execute("PRAGMA table_info(record_launches)")}
-            if "price" in columns:
-                db.execute("INSERT OR IGNORE INTO launch_prices SELECT record,at,seat,pool,price FROM record_launches")
-                db.execute("ALTER TABLE record_launches DROP COLUMN price")
 
     def remember(self, record: Path, seat: str, pool: str, at: datetime, price: dict | None = None) -> bool:
         stamp = at.astimezone(timezone.utc).isoformat()

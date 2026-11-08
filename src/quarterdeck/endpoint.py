@@ -84,7 +84,6 @@ class Choice:
     def read(cls, home: Path) -> "Choice":
         try:
             data = json.loads((home / CHOICE_FILE).read_text())
-            data.pop("price", None)
             return cls(**data, price=saved_price(home / CHOICE_FILE))
         except (OSError, ValueError, TypeError):
             raise ShipError(f"{home} holds no model choice; a seat home is built before its launch") from None

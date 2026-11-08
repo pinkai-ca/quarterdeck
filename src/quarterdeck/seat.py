@@ -106,7 +106,6 @@ class Seat:
         if not path.is_file():
             return None
         data = json.loads(path.read_text())
-        data.pop("price", None)  # an unlanded inline snapshot is not bound evidence
         return Launched(**data, price=saved_price(path))
 
     def pane(self) -> Pane | None:
