@@ -33,6 +33,7 @@ from .ship import Ship, ShipError
 from .tmux import Tmux
 
 TICK = 1.0
+BLIND_INTERVAL = 60.0  # how often the blind attempts are read against the records
 SPEEDS = {None: 0, "now": 1, "interrupt": 2}
 
 
@@ -50,7 +51,7 @@ class Service:
         self.meters: dict[str, machine.Meter] = {}
         self.usage_read: dict[str, float] = {}
         self.read_marks: dict[Path, tuple] = {}  # record -> the fingerprint it was last read at
-
+        self.blind_checked = -BLIND_INTERVAL  # when the blind attempts were last read against the records
 
     def run(self) -> None:
         self.lock = acquire_lock(self.runtime)  # one service per ship, for its whole life
@@ -113,6 +114,22 @@ class Service:
                 seat = self.seat(attempt.seat)
                 if seat.harness.record_confirms and seat.record() and self.read_now(seat, self.store.get(attempt.message)):
                     self.attempts.close(attempt, "delivered", "queued, then read: the record names it")
+        self.rejudge_blind()
+
+    def rejudge_blind(self) -> None:
+        """A blind attempt whose message the record later shows is judged delivered; one that never shows stays
+        blind, waiting for a hand (law: one-door). The records are read for this once a minute."""
+        if time.monotonic() - self.blind_checked < BLIND_INTERVAL:
+            return
+        self.blind_checked = time.monotonic()
+        blind = self.attempts.blind_ids()
+        for attempt in self.attempts.all():
+            if attempt.result != "blind" or attempt.message not in blind or attempt.seat not in self.ship.seats:
+                continue
+            seat, message = self.seat(attempt.seat), self.store.get(attempt.message)
+            if delivery_record.taken_anywhere(seat, message, attempt.when):
+                self.attempts.close(attempt, "delivered", "found in the record later")
+                self.log("reconciled", message=message.id, seat=seat.name, result="delivered", detail="a blind attempt, found in the record later")
 
     read_now = staticmethod(delivery_record.read_now)
     taken = staticmethod(delivery_record.taken)

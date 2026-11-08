@@ -163,3 +163,39 @@ def test_account_keeps_sparse_ids_and_missing_owned_records_visible(tmp_path, mo
     assert 'record missing' in '\n'.join(table(svc.ledger,'seat'))
     assert svc.ledger.rollup('seat')[0].unmeasured >= 1
     svc.ledger.close()
+
+
+def test_a_blind_attempt_is_judged_delivered_once_a_record_shows_the_message(tmp_path: Path, monkeypatch):
+    import json
+
+    from quarterdeck.fakerecord import ClaudeShape
+    from quarterdeck.ship import Pool, SeatSpec, Session, Ship
+    from quarterdeck.tmux import Pane
+
+    pool = Pool("claude-secondary", "claude", config_dir=tmp_path / "pool")
+    spec = SeatSpec("scott", "bridge", "worker", "claude", ("claude-secondary",), cwd=tmp_path)
+    ship = Ship(tmp_path, "t", "operator", tmp_path, {"claude-secondary": pool}, {"bridge": Session("bridge", "qd")}, {"scott": spec})
+    fake_tmux = SimpleNamespace(pane=lambda pane_id: Pane("%1", "qd", "scott", 4242, 80, 24, False, False, None), capture=lambda *a, **k: "")
+    svc = Service(ship, fake_tmux)
+    seat = svc.seat("scott")
+    seat.folder.mkdir(parents=True, exist_ok=True)
+    launched_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+    (seat.folder / "launch.json").write_text(json.dumps({"pane": "%1", "pid": 4242, "at": launched_at.isoformat(),
+                                                         "pool": "claude-secondary", "resume": None, "argv": ["claude"], "version": "2.1.317"}))
+    record = ClaudeShape(seat.home, tmp_path, "s1", "claude-opus-5-5")
+    (seat.folder / "record").write_text(f"{record.path}\n")
+    message = svc.store.new("order", "desk", "scott", "Count the stars.")
+    attempt = svc.attempts.open(message, "scott", "%1", 4242, launched_at.isoformat())
+    svc.attempts.close(attempt, "blind", "typed and submitted, not seen in the record within 5s")
+    assert svc.attempts.blind_ids() == {message.id}
+    svc.rejudge_blind()
+    assert svc.attempts.blind_ids() == {message.id}, "the record does not show it yet: still blind, and never resent"  # law: one-door
+    record.begin(post.typed([message]), "claude-opus-5-5", "high")
+    record.end("counted")
+    svc.rejudge_blind()
+    assert svc.attempts.blind_ids() == {message.id}, "the records are read for this once a minute, not every tick"
+    svc.blind_checked = -1e9
+    svc.rejudge_blind()
+    assert svc.attempts.blind_ids() == set()
+    assert svc.attempts.for_message(message.id)[-1].detail == "found in the record later"
+    svc.ledger.close()
