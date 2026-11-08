@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .synthetic_record import ClaudeShape, CodexShape
+from .synthetic_control import event, pause
 
 RULE = "─" * 40
 PASTE_START, PASTE_END = "\x1b[200~", "\x1b[201~"
@@ -212,6 +213,8 @@ class Program:
         self.box = ""
         if not text:
             return
+        event(self.home, "submitted", text)
+        pause(self.home, "accept", text, self.wait)
         if text.startswith("/"):
             self.command(text)
         elif self.working:
@@ -238,6 +241,7 @@ class Program:
         self.say(f"> {first}" + (f"  … (+{extra} lines)" if extra else ""))
         self.wait(self.accept_seconds)
         self.record.begin(text, self.model, self.effort)
+        event(self.home, "accepted", text)
         commands = self.commands(text)
         for command in commands or [None] * self.steps:
             if self.interrupted:

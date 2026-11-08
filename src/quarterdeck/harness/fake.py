@@ -39,7 +39,7 @@ class FakeHarness(Harness):
         return str(seat.settings.get("as", "claude"))
 
     def drill_settings(self, slow_acceptance: bool = False) -> dict:
-        return {"step_seconds": "0.05", **({"accept_seconds": "1.5"} if slow_acceptance else {})}
+        return {"step_seconds": "0.05"}
 
     def queues_while_working(self, seat: SeatSpec) -> bool:
         return str(seat.settings.get("queues", "1")) not in ("0", "False", "false")

@@ -15,10 +15,13 @@ import signal
 import tempfile
 import time
 from dataclasses import dataclass
+from contextlib import nullcontext
 from pathlib import Path
 
 from . import harness as harnesses, post, seat as seatmod, service, ship as shipmod, standing, watch
 from .post import Attempts, Store
+from .pending import journals
+from .harness.synthetic_control import Rendezvous, events
 from .seat import Seat
 from .tmux import Tmux
 
@@ -123,27 +126,56 @@ class Drill:
             if received:
                 self.store.new("report", name, order.sender, "drill-done", re=order.id)
 
+    def crash_attempt(self, captain: Seat, order: post.Message, gate) -> bool:
+        """This order is submitted durably, still open, and not yet in its record."""
+        attempts = self.attempts.for_message(order.id)
+        if len(attempts) != 1 or attempts[0].result is not None:
+            return False
+        proofs, errors = journals(captain)
+        proof = next((p for p in proofs if attempts[0].path.name in p.data["attempts"]), None)
+        if errors or proof is None or proof.data["phase"] != "submitted" or proof.confirmed(captain):
+            return False
+        reached = gate.reached() if gate else None
+        return gate is None or bool(reached and reached["text"] == post.typed([order]).strip() and
+                                    reached["pid"] == captain.pane().pid)
+
     def crash(self) -> None:
-        """Kill the service with an attempt open; after it restarts, the message is delivered once or visibly not."""
+        """Catch a submitted, unconfirmed transport; kill its owner and recover it exactly once."""
         captain = next(s for s in self.seats() if not s.session.human)
-        order = self.store.new("order", "ship", captain.name, "drill: the service dies mid-delivery\n$ qd post report --re {this} survived")
-        beat = service.read_heartbeat(self.ship.runtime)
-        caught = wait_for(self.attempts.unfinished, 10, step=0.02)
-        os.kill(beat[0], signal.SIGKILL)
-        time.sleep(0.5)
-        service.heartbeat_path(self.ship.runtime).unlink(missing_ok=True)
-        restarted = service.start(self.ship)
-        settled = wait_for(lambda: all(a.result for a in self.attempts.for_message(order.id)) and
-                           self.attempts.for_message(order.id), self.patience)
-        results = [a.result for a in self.attempts.for_message(order.id)]
-        delivered = [r for r in results if r in post.ACCEPTED]
-        record = captain.record()
-        typed = sum(order.short in t.input for t in captain.harness.turns(record)) if record else 0
-        once = len(delivered) == 1 and typed <= 1
-        visibly_not = not delivered and "blind" in results and watch.facts(self.ship, self.tmux).blind >= 1
-        self.check("service killed mid-delivery, recovered", bool(settled) and (once or visibly_not),
-                   f"{'caught with an attempt open' if caught else 'killed between attempts'}; attempts {results}; "
-                   f"in the record {typed} time(s); {restarted}")
+        marker = "drill: the service dies mid-delivery"
+        gate = Rendezvous(captain.home, "accept", marker, self.patience * 2) if captain.harness.synthetic else None
+        with gate or nullcontext():
+            ready = wait_for(lambda: (pane := captain.pane()) and
+                             not captain.harness.screen(self.tmux.capture(pane.id)).working, self.patience)
+            if not ready:
+                self.check("service killed mid-delivery, recovered", False, "seat never became idle; no crash claimed")
+                return
+            order = self.store.new("order", "ship", captain.name, marker + "\n$ qd post report --re {this} survived")
+            caught = wait_for(lambda: self.crash_attempt(captain, order, gate), self.patience, step=0.02)
+            if not caught:
+                self.check("service killed mid-delivery, recovered", False,
+                           "no submitted open attempt caught before confirmation; no crash claimed")
+                return
+            beat = service.read_heartbeat(self.ship.runtime)
+            os.kill(beat[0], signal.SIGKILL)
+            if not wait_for(lambda: not service.alive(self.ship.runtime), self.patience):
+                self.check("service killed mid-delivery, recovered", False, "killed service still owns its lock")
+                return
+            service.heartbeat_path(self.ship.runtime).unlink(missing_ok=True)
+            restarted = service.start(self.ship)
+            if gate:
+                gate.release()
+            settled = wait_for(lambda: self.store.closing_report(order) and
+                               [a.result for a in self.attempts.for_message(order.id)] == ["delivered"], self.patience)
+            results = [a.result for a in self.attempts.for_message(order.id)]
+            record = captain.record()
+            typed = sum(i.kind == "accepted" and i.text == post.typed([order]).strip()
+                        for i in captain.harness.inputs(record)) if record else 0
+            submits = sum(e == {"event": "submitted", "text": post.typed([order]).strip()} for e in events(captain.home)) if gate else None
+            once = typed == 1 and (submits == 1 if gate else True)
+            self.check("service killed mid-delivery, recovered", bool(settled) and once,
+                       f"caught submitted open attempt before record acceptance; attempts {results}; "
+                       f"in the record {typed} time(s); submissions {submits}; {restarted}")
 
     def fresh_all(self) -> None:
         """Every seat relaunched fresh receives its brief and every open message in full."""
@@ -198,15 +230,19 @@ def run(ship: shipmod.Ship | None, keep: bool = False) -> tuple[bool, list[str]]
     else:
         ship, folder = temporary_copy(ship)
         tmux = Tmux.default()
-    checks = Drill(ship, tmux).run()
-    passed = all(c.passed for c in checks)
-    lines = [str(c) for c in checks]
-    lines.append(f"{'all' if passed else sum(not c.passed for c in checks)} {'passed' if passed else 'failed'} of {len(checks)} checks")
-    if not keep:
-        seatmod.bring_down(ship, tmux)
-        if tmux.socket:
-            tmux.kill_server()
-        shutil.rmtree(folder, ignore_errors=True)
-    else:
+    try:
+        checks = Drill(ship, tmux).run()
+        passed = all(c.passed for c in checks)
+        lines = [str(c) for c in checks]
+        lines.append(f"{'all' if passed else sum(not c.passed for c in checks)} {'passed' if passed else 'failed'} of {len(checks)} checks")
+    finally:
+        if not keep:
+            try:
+                seatmod.bring_down(ship, tmux)
+            finally:
+                if tmux.socket:
+                    tmux.kill_server()
+                shutil.rmtree(folder, ignore_errors=True)
+    if keep:
         lines.append(f"kept: ship {ship.folder}" + (f" on tmux -L {tmux.socket}" if tmux.socket else " in its qd-drill sessions"))
     return passed, lines
