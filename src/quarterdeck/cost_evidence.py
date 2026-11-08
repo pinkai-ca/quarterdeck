@@ -1,6 +1,20 @@
 """Cost evidence beside the old turn layout, invalidated by an older writer's edits."""
 
 
+from typing import NamedTuple
+
+
+class CostReading(NamedTuple):
+    recorded_cost: float | None
+    cost_basis: str | None
+    valid: int
+
+
+class CostDetails(NamedTuple):
+    unpriced_steps: int
+    steps: str | None
+
+
 class CostEvidence:
     def __init__(self, db, create=True):
         self.db = db
@@ -16,16 +30,19 @@ class CostEvidence:
     def present(self):
         return self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='turn_costs'").fetchone() is not None
 
-    def get(self, record, index):
-        return self.db.execute('SELECT recorded_cost,cost_basis,valid FROM turn_costs WHERE record=? AND turn=?',
-                               (str(record), index)).fetchone()
+    def get(self, record, index) -> CostReading | None:
+        row = self.db.execute("SELECT recorded_cost,cost_basis,valid FROM turn_costs WHERE record=? AND turn=?",
+                              (str(record), index)).fetchone()
+        return CostReading(*row) if row is not None else None
 
-    def details(self, record, index):
-        return self.db.execute('SELECT unpriced_steps,steps FROM turn_costs WHERE record=? AND turn=?',
-                               (str(record), index)).fetchone()
+    def details(self, record, index) -> CostDetails | None:
+        row = self.db.execute("SELECT unpriced_steps,steps FROM turn_costs WHERE record=? AND turn=?",
+                              (str(record), index)).fetchone()
+        return CostDetails(*row) if row is not None else None
 
     def put(self, record, index, recorded, basis, unpriced=0, steps=None):
-        self.db.execute('INSERT OR REPLACE INTO turn_costs VALUES (?,?,?,?,1,?,?)',
+        self.db.execute("INSERT OR REPLACE INTO turn_costs (record,turn,recorded_cost,cost_basis,valid,unpriced_steps,steps) "
+                        "VALUES (?,?,?,?,1,?,?)",
                         (str(record), index, recorded, basis, unpriced, steps))
 
     def known(self):

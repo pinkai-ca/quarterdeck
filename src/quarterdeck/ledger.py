@@ -90,6 +90,10 @@ ADDED_COLUMNS = {
 }
 # A turn whose tokens are not wholly known: a step without usage, or a class an older row left null.
 PARTLY_UNMEASURED = "unmeasured > 0 OR read_cached IS NULL OR read_uncached IS NULL OR cache_written IS NULL OR written IS NULL"
+TURN_COLUMNS = ("record", "turn", "seat", "pool", "order_id", "started", "ended", "seconds", "model",
+                "read_cached", "read_uncached", "cache_written", "written", "cost", "tool_calls", "tool_failures",
+                "subagent_turns", "cpu_seconds", "peak_rss", "max_processes", "write_bytes", "unmeasured")
+TOOL_COLUMNS = ("record", "turn", "name", "seconds", "failed")
 
 
 @dataclass(frozen=True)
@@ -205,7 +209,10 @@ class Ledger:
     def ingest(self, seat: str, pool: str, record: Path, turns: list[Turn], store: Store,
                machine: dict[int, Machine] | None = None) -> int:
         """Write the turns of a record not yet written, or changed since; the count written. Reading twice counts once."""
-        known = {r[1]: r for r in self.db.execute("SELECT * FROM turns WHERE record = ?", (str(record),))}
+        stored = self.db.cursor()
+        stored.row_factory = sqlite3.Row  # only stored source rows use names; public query tuples stay unchanged
+        known = {row["turn"]: dict(row) for row in stored.execute(
+            f"SELECT {', '.join(TURN_COLUMNS)} FROM turns WHERE record = ?", (str(record),))}
         changed = 0
         for turn in turns:
             previous = known.get(turn.index)
@@ -213,38 +220,45 @@ class Ledger:
             detail = self.costs.details(record, turn.index)
             unpriced = turn.unpriced_steps
             steps = json.dumps([asdict(step) for step in turn.cost_steps], sort_keys=True) if turn.cost_steps is not None else None
-            owner, charged_pool = (previous[2:4] if previous and previous[3] != UNKNOWN else
+            owner, charged_pool = ((previous["seat"], previous["pool"]) if previous and previous["pool"] != UNKNOWN else
                                    self.provenance.resolve(record, turn.started, turn.ended, seat, pool))
             if previous:
-                owner = previous[2]  # an unknown pool does not undo an established seat identity
-            used = Machine(*previous[17:21]) if previous else (machine or {}).get(turn.index, Machine())
+                owner = previous["seat"]  # an unknown pool does not undo an established seat identity
+            used = (Machine(previous["cpu_seconds"], previous["peak_rss"], previous["max_processes"], previous["write_bytes"])
+                    if previous else (machine or {}).get(turn.index, Machine()))
             started = turn.started.astimezone().isoformat() if turn.started else None
             ended = turn.ended.astimezone().isoformat() if turn.ended else None
             failures = sum(bool(t.failed) for t in turn.tools) if all(t.failed is not None for t in turn.tools) else None
             cost = amount(turn.cost)
             basis = (turn.cost_basis or "record") if cost is not None else None
             recorded = amount(turn.recorded_cost) if turn.recorded_cost is not None or turn.cost_steps is not None else cost
-            prior_record = ((evidence[2] and evidence[1] == "record") if evidence else previous and previous[13] is not None and previous[13] > 0)
+            prior_record = ((evidence.valid and evidence.cost_basis == "record") if evidence else previous and previous["cost"] is not None and previous["cost"] > 0)
             if previous and cost is None and prior_record and turn.cost_steps is None:
-                cost, basis = previous[13], "record"
-                unpriced = max(unpriced, detail[0] if detail else 0)
+                cost, basis = previous["cost"], "record"
+                unpriced = max(unpriced, detail.unpriced_steps if detail else 0)
             if previous and recorded is None:
-                recorded = evidence[0] if evidence else previous[13]
-            row = (str(record), turn.index, owner, charged_pool, attribution(store, owner, turn), started, ended,
-                   turn.seconds, turn.model, turn.tokens.read_cached, turn.tokens.read_uncached,
-                   turn.tokens.cache_written, turn.tokens.written, cost, len(turn.tools), failures,
-                   turn.subagent_turns, used.cpu_seconds, used.peak_rss, used.max_processes, used.write_bytes,
-                   turn.tokens.unmeasured)
-            tool_rows = [(str(record), turn.index, t.name, t.seconds, t.failed) for t in turn.tools]
-            previous_tools = self.db.execute("SELECT * FROM tool_calls WHERE record = ? AND turn = ? ORDER BY rowid",
-                                             (str(record), turn.index)).fetchall()
+                recorded = evidence.recorded_cost if evidence else previous["cost"]
+            row = dict(record=str(record), turn=turn.index, seat=owner, pool=charged_pool,
+                       order_id=attribution(store, owner, turn), started=started, ended=ended,
+                       seconds=turn.seconds, model=turn.model, read_cached=turn.tokens.read_cached,
+                       read_uncached=turn.tokens.read_uncached, cache_written=turn.tokens.cache_written,
+                       written=turn.tokens.written, cost=cost, tool_calls=len(turn.tools), tool_failures=failures,
+                       subagent_turns=turn.subagent_turns, cpu_seconds=used.cpu_seconds, peak_rss=used.peak_rss,
+                       max_processes=used.max_processes, write_bytes=used.write_bytes, unmeasured=turn.tokens.unmeasured)
+            tool_rows = [dict(record=str(record), turn=turn.index, name=t.name, seconds=t.seconds, failed=t.failed)
+                         for t in turn.tools]
+            previous_tools = [dict(row) for row in stored.execute(
+                f"SELECT {', '.join(TOOL_COLUMNS)} FROM tool_calls WHERE record = ? AND turn = ? ORDER BY rowid",
+                (str(record), turn.index))]
             if previous == row and previous_tools == tool_rows and evidence == (recorded, basis, 1) and detail == (unpriced, steps):
                 continue
             changed += 1
-            self.db.execute("INSERT OR REPLACE INTO turns VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
+            self.db.execute(f"INSERT OR REPLACE INTO turns ({', '.join(TURN_COLUMNS)}) "
+                            f"VALUES ({', '.join(':' + name for name in TURN_COLUMNS)})", row)
             self.costs.put(record, turn.index, recorded, basis, unpriced, steps)
             self.db.execute("DELETE FROM tool_calls WHERE record = ? AND turn = ?", (str(record), turn.index))
-            self.db.executemany("INSERT INTO tool_calls VALUES (?,?,?,?,?)", tool_rows)
+            self.db.executemany(f"INSERT INTO tool_calls ({', '.join(TOOL_COLUMNS)}) "
+                                f"VALUES ({', '.join(':' + name for name in TOOL_COLUMNS)})", tool_rows)
         self.db.commit()
         return changed
 
