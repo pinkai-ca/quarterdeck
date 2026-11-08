@@ -159,7 +159,6 @@ class PiHarness(EndpointHarness):
     program = "pi"
     home_variable = "PI_CODING_AGENT_DIR"
     keys = Keys(submit="Enter", send_now=None, interrupt="Escape")
-    wrap_slack = 1  # probed on 0.74.2: a word wraps one column short of where a word without spaces breaks
 
     def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None) -> Credential | None:
         agent, sessions = home / "agent", home / "sessions"
@@ -254,7 +253,7 @@ class PiHarness(EndpointHarness):
 
     def box(self, text: str) -> Box:
         """Probed on 0.74.2: a short paste shows whole; a long one folds to its count of lines, or of characters when few."""
-        return Box(text, folded=rf"\[paste #\d+ (?:\+{text.count(chr(10)) + 1} lines|{len(text)} chars)\]")
+        return Box(text, folded=rf"\[paste #\d+ (?:\+{text.count(chr(10)) + 1} lines|{len(text)} chars)\]", pi_word_wrap=True)
 
     def controls(self) -> tuple[Control, ...]:
         return (

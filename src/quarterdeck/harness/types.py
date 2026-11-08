@@ -307,7 +307,35 @@ def _textwrap_piece(text: str, position: int) -> int | None:
     return _cells(line[offset:unknown].rstrip(" "))
 
 
-def _box_matches(text: str, shown: str, columns: int | None = None, slack: int = 0, textwrap_ascii: bool = False) -> bool:
+def _pi_wrap(line: str, columns: int) -> list[str] | None:
+    """pi-tui 0.74.2 wordWrapLine: whitespace boundaries, then hard word splits.
+
+    Only printable ASCII wrapping is established here. Short Unicode lines need
+    no wrapping; grapheme/control layouts on wrapped lines remain unsupported.
+    """
+    width = _cells(line)
+    if width is not None and width <= columns:
+        return [line]
+    if any(not ' ' <= char <= '~' for char in line):
+        return None
+    rows, start, width, boundary, boundary_width = [], 0, 0, -1, 0
+    for index, char in enumerate(line):
+        if width + 1 > columns:
+            if boundary >= 0 and width - boundary_width + 1 <= columns:
+                rows.append(line[start:boundary])
+                start, width = boundary, width - boundary_width
+            elif start < index:
+                rows.append(line[start:index])
+                start, width = index, 0
+            boundary = -1
+        width += 1
+        if char == ' ' and index + 1 < len(line) and line[index + 1] != ' ':
+            boundary, boundary_width = index + 1, width
+    return rows + [line[start:]]
+
+
+def _box_matches(text: str, shown: str, columns: int | None = None, slack: int = 0,
+                 textwrap_ascii: bool = False, pi_word_wrap: bool = False) -> bool:
     # ``slack``: columns a program keeps clear at the right when it wraps at a word, below the
     # width at which it breaks a word that has no space (the adapter supplies that margin).
     # Adapters omit the trailing blank box rows; no interior whitespace is
@@ -329,6 +357,14 @@ def _box_matches(text: str, shown: str, columns: int | None = None, slack: int =
     rows = [row.rstrip(" ") for row in rows]
     if "\n".join(rows) == wanted:
         return True
+    if pi_word_wrap:
+        expected = []
+        for line in wanted.split('\n'):
+            wrapped = _pi_wrap(line, columns)
+            if wrapped is None:
+                return False
+            expected.extend(row.rstrip(' ') for row in wrapped)
+        return rows == expected
     pos = 0
     for index, row in enumerate(rows):
         if not wanted.startswith(row, pos):
@@ -378,11 +414,12 @@ class Box:
     text: str
     folded: str | None = None
     textwrap_ascii: bool = False
+    pi_word_wrap: bool = False
 
     def matches(self, shown: str | None, columns: int | None = None, slack: int = 0) -> bool:
         if shown is None:
             return False
-        if _box_matches(self.text, shown, columns, slack, self.textwrap_ascii):
+        if _box_matches(self.text, shown, columns, slack, self.textwrap_ascii, self.pi_word_wrap):
             return True
         return bool(self.folded) and re.fullmatch(self.folded, shown.strip()) is not None
 

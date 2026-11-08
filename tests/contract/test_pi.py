@@ -73,9 +73,8 @@ def test_a_short_paste_shows_whole_a_long_one_folds_to_its_lines_or_its_characte
     assert len(wrapped) == 245 and harness.box(wrapped).matches(screen("paste-one-line-wrapped").box, columns, slack)
     assert not harness.box(wrapped.replace("w29", "w29x")).matches(screen("paste-one-line-wrapped").box, columns, slack)
     words = " ".join(["a"] * 150)
-    assert columns == 119 and slack == 1
-    assert harness.box(words).matches(screen("paste-words-wrapped").box, columns, slack), "a word wraps a column short of a broken word"
-    assert not harness.box(words).matches(screen("paste-words-wrapped").box, columns), "which a plain width cannot explain"
+    assert columns == 119 and slack == 0
+    assert harness.box(words).matches(screen("paste-words-wrapped").box, columns), "overflowing whitespace backtracks to the previous word boundary"
     assert harness.box("x" * 300).matches(screen("paste-long-word-wrapped").box, columns, slack), "a word with no space breaks at 119 columns of 120"
     assert not harness.box("x" * 299).matches(screen("paste-long-word-wrapped").box, columns, slack)
 

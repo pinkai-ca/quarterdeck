@@ -1,0 +1,10 @@
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+qd > order from pilot · ord-1234 · re ord-5678
+In /srv/ship/work/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx run exactly one final full suite on the committed correction: .venv/bin/python -m pytest -q -rs -n 8 > work/full-suite-card-recovery.log 2>&1. First report git rev-parse HEAD. No other suite is running; Pilot owns the sole slot. Report command exit status and raw tail -n 120
+work/full-suite-card-recovery.log including summary. No edits, installs, live runtime inspection, repairs, retry, restart or upgrade. Focused lifecycle/standing/service/guards/private-tmux checks pass 47 tests. Done is the raw final result.
+qd > reply: qd post report --re ord-1234 · inbox: post/inbox/samplehand.md
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+/srv/ship/xxxxxxxxxxxxxxxxx (main)
+?.?%/??k (auto)                                                                                                                                                                                                                                                                                                                         synthetic-m • medium
