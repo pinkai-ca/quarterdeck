@@ -106,7 +106,7 @@ def render_rollup(data: dict) -> list[str]:
     if by == "order":
         lines.append(f"{UNATTRIBUTED!r}: no association; [shared]: several changes counted once; [unresolved]: evidence gap; pending: service replay needed")
         for item in data.get("attribution", []):
-            if item['status'] in ('shared', 'unresolved', 'pending') or any(e.get('retained') for e in item.get('evidence', [])):
+            if item['status'] in ('shared', 'unresolved', 'pending', 'unassociated') or any(e.get('retained') for e in item.get('evidence', [])):
                 label = f"{item.get('seat', '?')} turn {item.get('turn', '?')}"
                 orders = ', '.join(item.get('orders', [])) or 'none proved'
                 lines.append(f"attribution {item['status']}: {label} · {orders} · {item['reason']}")

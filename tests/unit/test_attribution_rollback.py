@@ -24,8 +24,10 @@ def test_preceding_cli_reads_then_refreshes_existing_and_inserts_new_turn_then_s
     message(store,'rep-child','report','worker','captain',15,implementation.id)
     message(store,'ans-followup','answer','worker','captain',35,root.id)
     record=runtime/'record';record.write_text('synthetic source')
+    monkeypatch.setattr(FakeHarness,'attribution_inputs',lambda self,path:[])
     with Ledger(runtime/'ledger.sqlite') as book:
         book.ingest('worker','pool',record,[turn()],store)
+        book.attributions.replay(store,runtime,{str(record):{'fake'}})
         assert book.rollup('order')[0].key==root.id
         assert len(book.db.execute('PRAGMA table_info(turns)').fetchall())==22
         assert len(book.db.execute('PRAGMA table_info(tool_calls)').fetchall())==5
@@ -52,7 +54,6 @@ with Ledger(r/'ledger.sqlite') as book:
 print('preceding read, existing replacement and new insert passed')
 ''',tmp_path)
     assert text.endswith('preceding read, existing replacement and new insert passed\n')
-    monkeypatch.setattr(FakeHarness,'attribution_inputs',lambda self,path:[])
     with Ledger(runtime/'ledger.sqlite') as book:
         before=measurement_snapshot(book)
         assert [r['status'] for r in book.attributions.details()]==['pending','pending']

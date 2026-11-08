@@ -237,6 +237,7 @@ def test_an_unjudged_tool_call_and_an_unread_record_are_marked_not_hidden(tmp_pa
     t = Turn(0,stamp,stamp,'question','answer','m',Tokens(1,2,3,4),(ToolCall('tool',None,None),))
     record = tmp_path / 'synthetic.db'
     book.ingest('worker','pool-a',record,[t],store)
+    book.attributions.replay(store,tmp_path)
     assert book.tools() == [('tool',1,0.0,0,1,1)], "a call with no duration and no verdict is counted, and both figures carry its mark"
     assert book.rollup('order')[0].key == order.id and book.rollup('order')[0].unjudged == 1
     book.mark_record(record,'worker','pool-a','unknown earlier history')

@@ -24,7 +24,6 @@ from .post import Store
 from .pricing import amount
 from .cost_evidence import CostEvidence
 from .attribution_cache import Attribution
-from .order_attribution import Threads
 from .provenance import Provenance, UNKNOWN
 from .quota import Quotas, reset_text
 from .ship import Ship, ShipError
@@ -218,7 +217,6 @@ class Ledger:
         known = {row["turn"]: dict(row) for row in stored.execute(
             f"SELECT {', '.join(TURN_COLUMNS)} FROM turns WHERE record = ?", (str(record),))}
         changed = 0
-        graph = Threads(store)
         for turn in turns:
             previous = known.get(turn.index)
             evidence = self.costs.get(record, turn.index)
@@ -264,7 +262,6 @@ class Ledger:
             self.db.execute("DELETE FROM tool_calls WHERE record = ? AND turn = ?", (str(record), turn.index))
             self.db.executemany(f"INSERT INTO tool_calls ({', '.join(TOOL_COLUMNS)}) "
                                 f"VALUES ({', '.join(':' + name for name in TOOL_COLUMNS)})", tool_rows)
-            self.attributions.ingest(row, turn, graph)
         self.db.commit()
         return changed
 

@@ -47,7 +47,8 @@ def test_rollups_and_tools_keep_partial_measurements_and_never_write(invoke, dry
     with Ledger(path) as book:
         turn = Turn(0, order.at, order.at + timedelta(seconds=12), "input", "reply", "model",
                     Tokens(10, 20, 0, 3, 1), (ToolCall("lookup", None, None),), None)
-        book.ingest("captain", "fake", drydock / "synthetic.jsonl", [turn], store)
+        book.ingest("captain", "fake", drydock / "runtime" / "synthetic.jsonl", [turn], store)
+        book.attributions.replay(store,drydock / "runtime")
         book.mark_record(drydock / "missing.jsonl", "captain", "fake", "synthetic unreadable")
     before = path.read_bytes(), path.stat().st_mtime_ns
     for by, key in (("seat", "captain"), ("pool", "fake"), ("order", order.id)):

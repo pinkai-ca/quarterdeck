@@ -176,11 +176,13 @@ def test_received_proof_survives_missing_record_but_old_writer_change_invalidate
     book.close()
 
 
-def test_shared_measurements_are_counted_once_and_side_replay_does_not_invalidate_cost(tmp_path):
+def test_shared_measurements_are_counted_once_and_side_replay_does_not_invalidate_cost(tmp_path,monkeypatch):
     store=post.Store(tmp_path)
     a=message(store,'ord-first',sender='worker',second=11)
     b=message(store,'ord-second',sender='worker',second=12)
     book,path=seed_book(tmp_path,store)
+    monkeypatch.setattr(FakeHarness,'attribution_inputs',lambda self,path:[])
+    book.attributions.replay(store,tmp_path,{str(path):{'fake'}})
     row=book.rollup('order')[0]
     assert row.key=='[shared]' and row.turns==1 and row.read_cached+row.read_uncached+row.cache_written+row.written==10
     assert row.cost==2 and book.costs.get(path,0).valid==1

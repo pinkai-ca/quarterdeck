@@ -1,12 +1,15 @@
-"""Service-written attribution beside unchanged turn rows; old writes invalidate it."""
+"""Service-written attribution beside unchanged turn rows; all turn writes invalidate it."""
 
 from collections import defaultdict
 import json
+from os.path import abspath
 from pathlib import Path
 
 from . import harness, record_owner
 from .harness.base import record_fingerprint
 from .order_attribution import Threads, Verdict, moment
+
+OUTSIDE_RUNTIME = 'legacy binding outside the runtime, no saved fingerprint'
 
 
 class Attribution:
@@ -52,10 +55,6 @@ class Attribution:
         self.db.execute('INSERT OR REPLACE INTO turn_attribution VALUES (?,?,?,?,?,?,?,?,?,?)', values)
         return 1
 
-    def ingest(self, row, turn, graph):
-        received = graph.received(turn.input, turn.started, row['seat'])
-        return self.put(row, received, graph.decide(row['seat'], row['started'], row['ended'], received))
-
     def replay(self, store, runtime, bindings=None):
         """All stored keys, including retired seats; called by the service, never a reading.
 
@@ -80,8 +79,15 @@ class Attribution:
         for row in rows:
             by_record[row['record']].append(row)
             by_seat[row['seat']].append(row)
+        excluded = {record for record in by_record
+                    if not Path(abspath(record)).is_relative_to(Path(abspath(runtime)))}
         changed = False
         for record in by_record:
+            if record in excluded:
+                stamp = (None, OUTSIDE_RUNTIME)
+                changed |= record not in self.sources or self.sources[record][0] != stamp
+                self.sources[record] = stamp, [], OUTSIDE_RUNTIME
+                continue  # a saved reader/path is not permission to stat or open an external source
             names = bindings.get(record, set())
             reader = next(iter(names)) if len(names) == 1 else None
             stamp = (reader, None)
@@ -105,6 +111,10 @@ class Attribution:
         self.last = stamp
         written = 0
         for record, turns in by_record.items():
+            if record in excluded:
+                for row in turns:
+                    written += self.put(row, [], Verdict('unassociated', (), OUTSIDE_RUNTIME))
+                continue
             _, inputs, error = self.sources[record]
             for row in turns:
                 received = []
