@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from tests.antigravity_shapes import AntigravityShape
-from quarterdeck.harness import antigravity, antigravity_wire as wire
+from quarterdeck.harness import antigravity
 from quarterdeck.harness.base import RecordError, record_fingerprint
 from quarterdeck.harness.sqlite_snapshot import _apply_wal
 
