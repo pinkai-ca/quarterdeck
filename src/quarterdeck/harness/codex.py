@@ -202,9 +202,14 @@ check_for_update_on_startup = false
 [projects.{cwd}]
 trust_level = "trusted"
 
+[features]
+memories = false
+
 [tui]
 notifications = false
 """
+# features.memories: the program's own memory across conversations, off: a seat keeps nothing of its own
+# between conversations, and what must survive is a post or a file of the ship's.
 
 
 def config_text(config: dict) -> str:

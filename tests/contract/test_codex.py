@@ -207,6 +207,7 @@ env = { EXAMPLE = "preserved" }
     for scope in (parsed,parsed['profiles']['legacy']):
         assert scope['sandbox_mode'] == 'danger-full-access' and scope['approval_policy'] == 'never'  # law: can-post
         assert 'sandbox_workspace_write' not in scope
+    assert parsed['features']['memories'] is False, "the program's own memory is off: a seat keeps nothing of its own between conversations"
     expected = tomllib.loads(original)
     assert parsed['model'] == 'chosen-model' and parsed['profile'] == 'legacy'
     assert parsed['tui'] == expected['tui'] and parsed['mcp_servers'] == expected['mcp_servers']
