@@ -1,6 +1,6 @@
 # Working on Quarterdeck
 
-For whoever works on the framework itself, person or agent. The design is `docs/DESIGN.md`; read its sections 2, 11, 13 and 16 before changing anything.
+For whoever works on the framework itself, person or agent. The design is `docs/DESIGN.md`; read its sections 2, 11, 13 and 15 before changing anything.
 
 ## Shape
 
