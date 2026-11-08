@@ -9,6 +9,8 @@ view: open obligations first, oldest first, then what was already delivered.
 from __future__ import annotations
 
 import json
+import fcntl
+from contextlib import contextmanager
 import os
 import secrets
 import time
@@ -270,28 +272,52 @@ class Attempts:
     def __init__(self, runtime: Path):
         self.dir = runtime / "post" / "attempts"
 
-    def open(self, message: Message, seat: str, pane: str | None, pid: int | None, launched_at: str | None) -> Attempt:
+    @contextmanager
+    def _locked(self):
         self.dir.mkdir(parents=True, exist_ok=True)
-        at = now()
-        number = len(list(self.dir.glob(f"{message.id}-*.json"))) + 1
-        attempt = Attempt(message.id, seat, at.isoformat(timespec="seconds"), pane, pid, launched_at,
-                          path=self.dir / f"{message.id}-{number}.json")
-        self._write(attempt)
+        with (self.dir / ".lock").open("a") as stream:
+            fcntl.flock(stream, fcntl.LOCK_EX)
+            yield
+
+    def open(self, message: Message, seat: str, pane: str | None, pid: int | None, launched_at: str | None) -> Attempt:
+        with self._locked():
+            at = now()
+            number = len(list(self.dir.glob(f"{message.id}-*.json"))) + 1
+            attempt = Attempt(message.id, seat, at.isoformat(timespec="seconds"), pane, pid, launched_at,
+                              path=self.dir / f"{message.id}-{number}.json")
+            self._write(attempt)
         return attempt
 
     def close(self, attempt: Attempt, result: str, detail: str = "") -> Attempt:
-        done = replace(attempt, result=result, detail=detail)
-        self._write(done)
-        return done
+        with self._locked():
+            current = Attempt(**json.loads(attempt.path.read_text()), path=attempt.path)
+            if current.result == "abandoned":
+                return current  # terminal even if an old door/watch finishes after cleanup
+            done = replace(attempt, result=result, detail=detail)
+            self._write(done)
+            return done
 
     def judge(self, attempt: Attempt, result: str, detail: str = "") -> bool:
-        """The service's verdict on an attempt nobody finished, written only while the file still has no
-        result, so a result the door or a watch wrote in the meantime stands."""
-        current = Attempt(**json.loads(attempt.path.read_text()), path=attempt.path)
-        if current.result is not None:
-            return False
-        self.close(attempt, result, detail)
-        return True
+        """Judge only an unfinished attempt; an intervening door/watch verdict stands."""
+        with self._locked():
+            current = Attempt(**json.loads(attempt.path.read_text()), path=attempt.path)
+            if current.result is not None:
+                return False
+            self._write(replace(current, result=result, detail=detail))
+            return True
+
+    def abandon(self, seat: str, detail: str) -> list[Attempt]:
+        """Retire uncertainty, never a confirmed receipt; keep every historical file."""
+        changed = []
+        with self._locked():
+            for attempt in self.all():
+                if attempt.seat != seat or attempt.result in ("delivered", "launch", "watch", "abandoned"):
+                    continue
+                done = replace(attempt, result="abandoned",
+                               detail=f"{detail}; previous result: {attempt.result or 'unfinished'}")
+                self._write(done)
+                changed.append(done)
+        return changed
 
     def _write(self, attempt: Attempt) -> None:
         data = {k: v for k, v in asdict(attempt).items() if k != "path"}
@@ -341,7 +367,7 @@ class Attempts:
         neither is sent again by the service (law: one-door); an acknowledgment claims and
         never wakes, so it is never delivered at all (law: open-until-closed).
         """
-        skip = self.delivered_ids() | self.blind_ids() | {m for m, r in self.latest().items() if r in (None, "pending")}
+        skip = self.delivered_ids() | self.blind_ids() | {m for m, r in self.latest().items() if r in (None, "pending", "abandoned")}
         return [m for m in store.for_seat(seat) if m.id not in skip and m.kind != "ack"]  # law: open-until-closed
 
 

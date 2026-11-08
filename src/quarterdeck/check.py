@@ -15,7 +15,7 @@ import secrets
 import shutil
 from dataclasses import replace
 
-from . import harness as harnesses, post, standing
+from . import harness as harnesses, pending, post, standing
 from .door import Door
 from .drill import Check, wait_for
 from .seat import Seat
@@ -47,12 +47,19 @@ def check(ship: Ship, name: str, tmux: Tmux) -> list[Check]:
     try:
         checks += probe(checked, seat)
     finally:
-        seat.down()
-        if opened_session and tmux.has_session(session_name):
-            tmux.kill_session(session_name)  # only what this run opened
-        for order in store.open_for(seat_name):  # the check closes what it opened, in the seat's name
-            store.new("report", seat_name, order.sender, "qd check ended; closed by the check itself", re=order.id)
-        shutil.rmtree(seat.folder, ignore_errors=True)
+        # The transient seat is absent from the persisted declaration. Retire its
+        # unresolved transport before deleting its home, even if the probe/stop fails.
+        pending.abandon(ship.runtime, seat_name, 'qd check ended; submission unconfirmed and never resent')
+        try:
+            seat.down()
+        finally:
+            try:
+                if opened_session and tmux.has_session(session_name):
+                    tmux.kill_session(session_name)  # only what this run opened
+            finally:
+                for order in store.open_for(seat_name):
+                    store.new("report", seat_name, order.sender, "qd check ended; closed by the check itself", re=order.id)
+                shutil.rmtree(seat.folder, ignore_errors=True)
     if all(c.passed for c in checks):
         proven = ship.runtime / "proven"
         proven.mkdir(parents=True, exist_ok=True)

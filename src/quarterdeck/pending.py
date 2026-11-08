@@ -16,7 +16,7 @@ from . import input_receipt
 from .harness.json_record import RecordError
 
 WAIT_SECONDS = 600  # intervention policy, not a claim about normal program latency
-TERMINAL = {'delivered', 'cancelled', 'carried'}
+TERMINAL = {'delivered', 'cancelled', 'carried', 'abandoned'}
 
 
 def identity(seat) -> dict:
@@ -99,13 +99,17 @@ class Proof:
 
 def journals(seat):
     runtime = getattr(getattr(seat, 'ship', None), 'runtime', None)
+    return _journals(runtime, seat.name) if runtime is not None else ([], [])
+
+
+def _journals(runtime, name):
     found, errors = [], []
     if runtime is None:
         return found, errors
-    for path in sorted((runtime / 'post' / 'pending' / seat.name).glob('*.json')):
+    for path in sorted((runtime / 'post' / 'pending' / name).glob('*.json')):
         try:
             data = json.loads(path.read_text())
-            validate(data, seat.name)
+            validate(data, name)
             if any(not (runtime / 'post' / 'attempts' / n).is_file() for n in data['attempts']):
                 raise ValueError('pending attempt receipt missing')
             found.append(Proof(path, data))
@@ -153,9 +157,31 @@ def held(seat, screen, ignored=None):
     return None
 
 
+def abandon(runtime: Path, name: str, reason: str) -> None:
+    """Retain the history, but retire unresolved transport for a seat that is gone."""
+    proofs, _ = _journals(runtime, name)
+    for proof in proofs:
+        if proof.data['phase'] not in TERMINAL:
+            proof.save(phase='abandoned', resolution=reason)
+    changed = post.Attempts(runtime).abandon(name, reason)
+    if changed:
+        path = runtime / 'log' / 'service.jsonl'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open('a') as stream:
+            for attempt in changed:
+                stream.write(json.dumps({'at': post.now().isoformat(timespec='seconds'), 'event': 'abandoned',
+                                         'message': attempt.message, 'seat': name, 'result': 'abandoned',
+                                         'detail': reason}) + '\n')
+
+
 def reconcile(service) -> set[Path]:
     paths = set()
     attempts = {a.path.name: a for a in service.attempts.all()}
+    names = {a.seat for a in attempts.values()}
+    names.update(p.name for p in (service.runtime / 'post' / 'pending').glob('*') if p.is_dir())
+    for name in names - service.ship.seats.keys():
+        abandon(service.runtime, name, 'seat no longer declared; submission unconfirmed and never resent')
+        paths.update(a.path for a in attempts.values() if a.seat == name)
     for name in service.ship.seats:
         seat = service.seat(name)
         proofs, errors = journals(seat)
@@ -187,7 +213,7 @@ def reconcile(service) -> set[Path]:
                 if result and attempt.result != result:
                     service.attempts.close(attempt, result, 'exact payload found in owned record after paste')
                 elif attempt.result is None:
-                    recovered = {'submitted': 'pending', 'queued': 'queued', 'cancelled': 'withheld'}.get(proof.data['phase'], 'blind')
+                    recovered = {'submitted': 'pending', 'queued': 'queued', 'cancelled': 'withheld', 'abandoned': 'abandoned'}.get(proof.data['phase'], 'blind')
                     service.attempts.close(attempt, recovered, 'recovered durable paste/submit phase; never resent')
     return paths
 
