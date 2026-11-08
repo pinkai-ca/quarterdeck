@@ -1,0 +1,40 @@
+
+ qd > briefed as spike. Say READY and nothing else.
+
+
+ Warning: tmux extended-keys-format is xterm. Pi works best with csi-u. Add `set -g extended-keys-format csi-u` to
+ ~/.tmux.conf and restart tmux.
+
+ briefed as spike. Say READY. Say READY and nothing else.
+
+ READY
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[paste #1 +44 lines]
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+/srv/ship/work
+↑1.6k ↓19 1.6%/98k (auto)                                                                           qwen3.8-27b • medium
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

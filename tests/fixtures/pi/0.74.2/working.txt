@@ -1,0 +1,40 @@
+ paragraph 23: words words words words words words words words words words words words
+ paragraph 24: words words words words words words words words words words words words
+ paragraph 25: words words words words words words words words words words words words
+ paragraph 26: words words words words words words words words words words words words
+ paragraph 27: words words words words words words words words words words words words
+ paragraph 28: words words words words words words words words words words words words
+ paragraph 29: words words words words words words words words words words words words
+ paragraph 30: words words words words words words words words words words words words
+ paragraph 31: words words words words words words words words words words words words
+ paragraph 32: words words words words words words words words words words words words
+ paragraph 33: words words words words words words words words words words words words
+ paragraph 34: words words words words words words words words words words words words
+ paragraph 35: words words words words words words words words words words words words
+ paragraph 36: words words words words words words words words words words words words
+ paragraph 37: words words words words words words words words words words words words
+ paragraph 38: words words words words words words words words words words words words
+ paragraph 39: words words words words words words words words words words words words
+ qd > reply: qd post report --re ord-1234
+
+
+ The order is asking me to run a command. The command is as follows: echo a text containing a "counted" header and 40
+ paragraphs. Let me try executing it as-is.
+
+ The command is a multi-line echo. I'll run it exactly as specified.
+
+
+ bash
+
+ <parameter=command
+
+ {}
+
+
+ ⠧ Working...
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+/srv/ship/work
+↑1.6k ↓19 2.5%/98k (auto)                                                                           qwen3.8-27b • medium

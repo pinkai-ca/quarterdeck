@@ -64,3 +64,11 @@ def test_a_missing_card_is_said_not_hidden(drydock: Path):
     ship = shipmod.load(drydock)
     brief = standing.brief(ship, ship.seat("worker-1"))
     assert "(no role card for navigator)" in brief.text and dict(brief.sources)["role card"] is None
+
+
+def test_every_harness_has_a_card():
+    from quarterdeck.harness import NAMES
+
+    for name in NAMES:
+        card = standing.FRAMEWORK_DIR / "harnesses" / f"{name}.md"
+        assert card.is_file() and card.read_text().startswith("# Program: "), name

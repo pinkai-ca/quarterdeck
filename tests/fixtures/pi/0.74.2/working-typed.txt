@@ -1,0 +1,40 @@
+
+ Command output:
+
+ ```
+   counted
+   paragraph 0: words words words words words words words words words words words words
+   paragraph 1: words words words words words words words words words words words words
+   paragraph 2: words words words words words words words words words words words words
+   ... (identical "paragraph N: " + 12× "words" lines, N = 0..39) ...
+   paragraph 39: words words words words words words words words words words words words
+ ```
+
+ First run: unquoted multiline input — echo printed counted, then bash tried to execute each paragraph N: line as a
+ command → command not found ×40, exit 127. Second run: wrapped the whole block in quotes so echo prints it verbatim →
+ output above, exit 0.
+
+ Count: 40 paragraphs, paragraphs 0–39, each 12 "words".
+
+
+ qd > order from desk · ord-5678 · Sleep
+ Run exactly this command and nothing else: sleep 20; echo slept
+
+
+ I'll just run sleep 20; echo slept and then output slept.
+
+
+ $ sleep 20; echo slept
+
+ Elapsed 6.0s
+
+
+ ⠧ Working...
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+qd > question from desk · que-9999 · Ping
+Say pong.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+/srv/ship/work
+↑21k ↓2.9k 5.9%/98k (auto)                                                                          qwen3.8-27b • medium

@@ -1,0 +1,40 @@
+
+ $ sleep 20; echo slept
+
+ slept
+
+
+
+ qd > question from desk · que-9999 · Ping
+ Say pong.
+
+
+ The user is saying "say pong".
+
+ pong
+
+ pong
+
+
+ qd > order from desk · ord-7777 · Long
+ Run exactly this command and nothing else: sleep 60; echo done
+
+
+ I'll execute this command exactly as instructed. I just need to run sleep 60; echo done.
+
+
+ $ sleep 60; echo done
+
+ Command aborted
+
+
+ Operation aborted
+
+ Warning: tmux extended-keys-format is xterm. Pi works best with csi-u. Add `set -g extended-keys-format csi-u` to
+ ~/.tmux.conf and restart tmux.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+/srv/ship/work
+↑33k ↓2.9k 6.1%/98k (auto)                                                                          qwen3.8-27b • medium

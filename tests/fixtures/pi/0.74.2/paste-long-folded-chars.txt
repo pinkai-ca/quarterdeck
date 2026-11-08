@@ -1,0 +1,40 @@
+
+ Warning: tmux extended-keys-format is xterm. Pi works best with csi-u. Add `set -g extended-keys-format csi-u` to      
+ ~/.tmux.conf and restart tmux.                                                                                         
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[paste #1 2003 chars]                                                                                                   
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+/srv/ship/work
+0.0%/98k (auto)                                                                                     qwen3.8-27b • medium
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

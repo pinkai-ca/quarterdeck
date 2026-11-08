@@ -1,0 +1,40 @@
+  ┃   24 /bin/bash: line 24: paragraph: command not found
+  ┃   25 /bin/bash: line 25: paragraph: command not found
+  ┃   26 /bin/bash: line 26: paragraph: command not found
+  ┃   27 /bin/bash: line 27: paragraph: command not found
+  ┃   28 /bin/bash: line 28: paragraph: command not found
+  ┃   29 /bin/bash: line 29: paragraph: command not found
+  ┃   30 /bin/bash: line 30: paragraph: command not found
+  ┃   31 /bin/bash: line 31: paragraph: command not found
+  ┃   32 /bin/bash: line 32: paragraph: command not found
+  ┃   33 /bin/bash: line 33: paragraph: command not found
+  ┃   34 /bin/bash: line 34: paragraph: command not found
+  ┃   35 /bin/bash: line 35: paragraph: command not found
+  ┃   36 /bin/bash: line 36: paragraph: command not found
+  ┃   37 /bin/bash: line 37: paragraph: command not found
+  ┃   38 /bin/bash: line 38: paragraph: command not found
+  ┃   39 /bin/bash: line 39: paragraph: command not found
+  ┃   40 /bin/bash: line 40: paragraph: command not found
+  ┃   41 /bin/bash: line 41: paragraph: command not found
+  ┃
+
+  ┃
+  ┃  $ cd /tmp && qd post report --re ord-1234
+  ┃
+  ┃  /bin/bash: line 1: qd: command not found
+  ┃
+
+     Output captured to /tmp/ord1234_out.txt. qd not found in PATH.
+
+     counted
+     paragraph 0..40 (40 lines) command not found
+
+     ▣  Build · Qwen3.8 27B · 14.1s
+
+  ┃
+  ┃
+  ┃
+  ┃  Build auto · Qwen3.8 27B local vLLM
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   /srv/ship/work                                                            19.6K (20%)  ctrl+p commands
+

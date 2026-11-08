@@ -1,0 +1,40 @@
+
+ First run: unquoted multiline input — echo printed counted, then bash tried to execute each paragraph N: line as a
+ command → command not found ×40, exit 127. Second run: wrapped the whole block in quotes so echo prints it verbatim →
+ output above, exit 0.
+
+ Count: 40 paragraphs, paragraphs 0–39, each 12 "words".
+
+
+ qd > order from desk · ord-5678 · Sleep
+ Run exactly this command and nothing else: sleep 20; echo slept
+
+
+ I'll just run sleep 20; echo slept and then output slept.
+
+
+ $ sleep 20; echo slept
+
+ slept
+
+ Took 20.0s
+
+
+
+ qd > question from desk · que-9999 · Ping
+ Say pong.
+
+
+ The user is saying "say pong".
+
+ pong
+
+ pong
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+/srv/ship/work
+↑27k ↓2.9k 6.0%/98k (auto)                                                                          qwen3.8-27b • medium
+
+

@@ -24,6 +24,10 @@ provider = "claude"
 api_key = "env:ANTHROPIC_API_KEY"     # the key is named, never written here
 budget = "200 USD/month"             # optional: a wall when spent
 
+[pools.local]
+provider = "local"
+endpoint = "http://127.0.0.1:8000/v1"  # a model served on this machine: no credential, no quota; a seat on it is jailed
+
 [sessions.bridge]
 title = "Ship's Bridge"
 
@@ -75,3 +79,12 @@ fresh = "after-order"                # a clean context for every order
 
 [seats.worker-1.settings]            # the program's own keys, passed verbatim at launch
 model_auto_compact_token_limit = 200000
+
+[seats.worker-2]
+session = "crew"
+role = "worker"
+harness = "opencode"
+pool = "local"
+model = "qwen3.8-27b"
+up = false
+sandbox = true                       # what a seat on an endpoint pool gets anyway; written to say so, or false to lift it

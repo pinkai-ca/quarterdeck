@@ -1,0 +1,40 @@
+  ┃
+  ┃
+
+     pong
+
+     ▣  Build · Qwen3.8 27B · 14.0s
+
+  ┃
+  ┃  qd > order from desk · ord-7777 · Long
+  ┃  Run exactly this command and nothing else: sleep 60; echo done
+  ┃
+  ┃
+
+     $ sleep>
+       60
+       echo>
+       done
+
+  ┃
+  ┃  $ sleep>
+  ┃  60
+  ┃  ; echo done
+  ┃
+  ┃  /bin/bash: -c: line 1: syntax error near unexpected token `newline'
+  ┃  /bin/bash: -c: line 1: `sleep>'
+  ┃
+
+  ┃
+  ┃  ⠸ sleep 60; echo done
+  ┃
+
+     ▣  Build · Qwen3.8 27B
+
+  ┃
+  ┃
+  ┃
+  ┃  Build auto · Qwen3.8 27B local vLLM
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   ⬝⬝■■■■■■  esc interrupt                                                                20.0K (20%)  ctrl+p commands
+

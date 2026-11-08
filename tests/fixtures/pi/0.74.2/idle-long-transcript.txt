@@ -1,0 +1,40 @@
+
+ qd post report --re ord-1234
+
+ Command output (echo printed the full text verbatim, exit 0):
+
+ ```
+   counted
+   paragraph 0: words words words words words words words words words words words words
+   ...
+   paragraph 39: words words words words words words words words words words words words
+ ```
+
+ All 40 paragraphs (paragraph 0–39) lines echoed as-is. Note: a literal first run treated each line as a command
+ (missing) command and failed with exit 127, so I quoted the multi-line string so the echo would behave as intended;
+ the quoted run succeeded.
+
+ Command output:
+
+ ```
+   counted
+   paragraph 0: words words words words words words words words words words words words
+   paragraph 1: words words words words words words words words words words words words
+   paragraph 2: words words words words words words words words words words words words
+   ... (identical "paragraph N: " + 12× "words" lines, N = 0..39) ...
+   paragraph 39: words words words words words words words words words words words words
+ ```
+
+ First run: unquoted multiline input — echo printed counted, then bash tried to execute each paragraph N: line as a
+ command → command not found ×40, exit 127. Second run: wrapped the whole block in quotes so echo prints it verbatim →
+ output above, exit 0.
+
+ Count: 40 paragraphs, paragraphs 0–39, each 12 "words".
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+/srv/ship/work
+↑15k ↓2.8k 5.8%/98k (auto)                                                                          qwen3.8-27b • medium
+
+

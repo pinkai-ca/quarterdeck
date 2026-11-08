@@ -22,8 +22,22 @@ def confirmed(name: str, record: Path, text: str, since: datetime) -> str | None
             return claude(record, wanted, since)
         if name == 'antigravity':
             return antigravity(record, wanted, since)
+        if name in ('opencode', 'pi'):
+            return by_inputs(name, record, wanted, since)
     except (TypeError, ValueError, AttributeError, KeyError) as error:
         raise RecordError('malformed input receipt fields') from error
+    return None
+
+
+def by_inputs(name, record, wanted, since):
+    """A program whose adapter lists every user input with the time it entered the record: OpenCode writes a
+    queued message the moment it is taken, pi a steered one when it is injected after the current tool call."""
+    from .harness import opencode, pi
+
+    inputs = (opencode if name == 'opencode' else pi).inputs(record)
+    for text, stamp in inputs:
+        if stamp and stamp >= since and text.strip() == wanted:
+            return 'delivered'
     return None
 
 

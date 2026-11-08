@@ -190,3 +190,84 @@ def test_fence_in_a_folder_that_is_not_a_repository(drydock: Path):
     shipmod.fence(ship)
     assert (ship.runtime / ".git").is_dir()
     assert subprocess.run(["git", "-C", str(ship.runtime), "rev-parse", "HEAD"], capture_output=True).returncode
+
+
+# -- endpoint pools and the sandbox ----------------------------------------------------------------
+
+
+LOCAL = '''[pools.local-a]
+provider = "local"
+endpoint = "http://127.0.0.1:8000/v1/"
+context = 98304
+
+[pools.fake]
+provider = "fake"
+
+[sessions.crew]
+title = "Crew"
+'''
+
+
+def test_an_endpoint_pool_is_a_third_kind_and_its_seats_are_jailed_unless_the_ship_says_otherwise(tmp_path: Path):
+    (tmp_path / "ship.toml").write_text(LOCAL + '''
+[seats.local]
+session = "crew"
+harness = "opencode"
+pool = "local-a"
+model = "qwen3.8-27b"
+
+[seats.open]
+session = "crew"
+harness = "pi"
+pool = "local-a"
+sandbox = false
+
+[seats.worker]
+session = "crew"
+harness = "fake"
+pool = "fake"
+sandbox = true
+
+[seats.plain]
+session = "crew"
+harness = "fake"
+pool = "fake"
+''')
+    ship = shipmod.load(tmp_path)
+    pool = ship.pools["local-a"]
+    assert pool.kind == "endpoint" and pool.endpoint == "http://127.0.0.1:8000/v1" and pool.context == 98304
+    assert pool.config_dir is None and pool.api_key is None
+    assert ship.seat("local").sandbox is None and ship.jailed(ship.seat("local")), "a seat on an endpoint pool is jailed by default"
+    assert ship.seat("open").sandbox is False and not ship.jailed(ship.seat("open")), "unless the ship says otherwise"
+    assert ship.seat("worker").sandbox is True and ship.jailed(ship.seat("worker")), "any seat is jailed when asked"
+    assert not ship.jailed(ship.seat("plain"))
+    assert "sandbox" in shipmod.SEAT_KEYS
+
+
+def test_a_seat_whose_program_cannot_run_on_its_pool_is_refused_at_load(tmp_path: Path):
+    codex = LOCAL + '[pools.codex]\nprovider = "codex"\nhome = "~/.codex"\n'
+    for seat, reason in (
+        ('harness = "claude"\npool = "local-a"', "seat a: pool local-a is an endpoint, and claude runs on a claude subscription or key"),
+        ('harness = "opencode"\npool = "codex"', "seat a: pool codex names no endpoint, and opencode runs on an endpoint pool"),
+        ('harness = "pi"\npool = "fake"', "seat a: pool fake names no endpoint, and pi runs on an endpoint pool"),
+        ('harness = "fake"\npool = "codex"', "seat a: pool codex pays codex, and this seat runs fake"),
+        ('harness = "fake"\npool = []', "seat a: declare a pool"),
+    ):
+        (tmp_path / "ship.toml").write_text(codex + f'[seats.a]\nsession = "crew"\n{seat}\n')
+        with pytest.raises(ShipError, match=reason):
+            shipmod.load(tmp_path)
+
+
+def test_an_endpoint_pool_names_no_credential_directory_and_is_an_http_url(tmp_path: Path):
+    for pool, reason in (
+        ('endpoint = "http://127.0.0.1:8000/v1"\nconfig_dir = "~/.x"', "an endpoint pool names no config_dir"),
+        ('endpoint = "127.0.0.1:8000/v1"', "endpoint must be an http or https URL"),
+        ('endpoint = "http://127.0.0.1:8000/v1"\ncontext = "big"', "context must be a count of tokens"),
+        ('endpoint = "http://127.0.0.1:8000/v1"\ncontext = 0', "context must be a count of tokens"),
+    ):
+        (tmp_path / "ship.toml").write_text(f'[pools.local]\nprovider = "local"\n{pool}\n')
+        with pytest.raises(ShipError, match=reason):
+            shipmod.load(tmp_path)
+    (tmp_path / "ship.toml").write_text('[pools.remote]\nprovider = "openrouter"\nendpoint = "https://example.invalid/v1"\napi_key = "env:ROUTER_KEY"\n')
+    pool = shipmod.load(tmp_path).pools["remote"]
+    assert pool.kind == "endpoint" and pool.api_key == "env:ROUTER_KEY", "a key beside an endpoint pays a remote service"

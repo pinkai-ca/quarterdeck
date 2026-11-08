@@ -1,0 +1,40 @@
+
+  ┃
+  ┃  qd > order from desk · ord-7777 · Long
+  ┃  Run exactly this command and nothing else: sleep 60; echo done
+  ┃
+  ┃
+
+     $ sleep>
+       60
+       echo>
+       done
+
+  ┃
+  ┃  $ sleep>
+  ┃  60
+  ┃  ; echo done
+  ┃
+  ┃  /bin/bash: -c: line 1: syntax error near unexpected token `newline'
+  ┃  /bin/bash: -c: line 1: `sleep>'
+  ┃
+
+  ┃
+  ┃  $ sleep 60; echo done
+  ┃
+  ┃  (no output)
+  ┃
+  ┃  <shell_metadata>
+  ┃  User aborted the command
+  ┃  </shell_metadata>
+  ┃
+
+     ▣  Build · Qwen3.8 27B · interrupted
+
+  ┃
+  ┃
+  ┃
+  ┃  Build auto · Qwen3.8 27B local vLLM
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   /srv/ship/work                                                            20.0K (20%)  ctrl+p commands
+

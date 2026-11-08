@@ -1,0 +1,40 @@
+     ▣  Build · Qwen3.8 27B · 14.1s
+
+  ┃
+  ┃  qd > order from desk · ord-5678 · Sleep
+  ┃  Run exactly this command and nothing else: sleep 20; echo slept
+  ┃
+  ┃
+
+  ┃
+  ┃  $ sleep>
+  ┃  20
+  ┃  ; echo slept
+  ┃
+  ┃  /bin/bash: -c: line 1: syntax error near unexpected token `newline'
+  ┃  /bin/bash: -c: line 1: `sleep>'
+  ┃
+
+  ┃
+  ┃  $ sleep 20; echo slept
+  ┃
+  ┃  slept
+  ┃
+
+  ┃
+  ┃  qd > question from desk · que-9999 · Ping
+  ┃  Say pong.
+  ┃
+  ┃
+
+     pong
+
+     ▣  Build · Qwen3.8 27B · 14.0s
+
+  ┃
+  ┃
+  ┃
+  ┃  Build auto · Qwen3.8 27B local vLLM
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   /srv/ship/work                                                            19.8K (20%)  ctrl+p commands
+

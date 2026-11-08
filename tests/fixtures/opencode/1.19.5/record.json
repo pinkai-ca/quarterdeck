@@ -1,0 +1,613 @@
+{
+ "session": {
+  "id": "ses_0001",
+  "project_id": "global",
+  "slug": "clever-circuit",
+  "directory": "/srv/ship/work",
+  "title": "Ready",
+  "version": "1.19.5",
+  "time_created": 1794099615942,
+  "time_updated": 1794099895813,
+  "model": "{\"id\":\"qwen3.8-27b\",\"providerID\":\"vllm\"}",
+  "agent": "build",
+  "parent_id": null
+ },
+ "messages": [
+  {
+   "id": "msg_0001",
+   "session_id": "ses_0001",
+   "time_created": 1794099616029,
+   "time_updated": 1794099618622,
+   "data": "{\"role\":\"user\",\"time\":{\"created\":1794099616029},\"agent\":\"build\",\"model\":{\"providerID\":\"vllm\",\"modelID\":\"qwen3.8-27b\"},\"summary\":{\"diffs\":[]}}"
+  },
+  {
+   "id": "msg_0002",
+   "session_id": "ses_0001",
+   "time_created": 1794099616305,
+   "time_updated": 1794099618618,
+   "data": "{\"parentID\":\"msg_0001\",\"role\":\"assistant\",\"mode\":\"build\",\"agent\":\"build\",\"path\":{\"cwd\":\"/srv/ship/work\",\"root\":\"/\"},\"cost\":0,\"tokens\":{\"total\":14183,\"input\":14181,\"output\":2,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":0}},\"modelID\":\"qwen3.8-27b\",\"providerID\":\"vllm\",\"time\":{\"created\":1794099616305,\"completed\":1794099618617},\"finish\":\"stop\"}"
+  },
+  {
+   "id": "msg_0003",
+   "session_id": "ses_0001",
+   "time_created": 1794099727510,
+   "time_updated": 1794099741654,
+   "data": "{\"role\":\"user\",\"time\":{\"created\":1794099727510},\"agent\":\"build\",\"model\":{\"providerID\":\"vllm\",\"modelID\":\"qwen3.8-27b\"},\"summary\":{\"diffs\":[]}}"
+  },
+  {
+   "id": "msg_0004",
+   "session_id": "ses_0001",
+   "time_created": 1794099727514,
+   "time_updated": 1794099731275,
+   "data": "{\"parentID\":\"msg_0003\",\"role\":\"assistant\",\"mode\":\"build\",\"agent\":\"build\",\"path\":{\"cwd\":\"/srv/ship/work\",\"root\":\"/\"},\"cost\":0,\"tokens\":{\"total\":15681,\"input\":14949,\"output\":732,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":0}},\"modelID\":\"qwen3.8-27b\",\"providerID\":\"vllm\",\"time\":{\"created\":1794099727514,\"completed\":1794099731275},\"finish\":\"tool-calls\"}"
+  },
+  {
+   "id": "msg_0005",
+   "session_id": "ses_0001",
+   "time_created": 1794099731276,
+   "time_updated": 1794099735146,
+   "data": "{\"parentID\":\"msg_0003\",\"role\":\"assistant\",\"mode\":\"build\",\"agent\":\"build\",\"path\":{\"cwd\":\"/srv/ship/work\",\"root\":\"/\"},\"cost\":0,\"tokens\":{\"total\":17986,\"input\":17249,\"output\":737,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":0}},\"modelID\":\"qwen3.8-27b\",\"providerID\":\"vllm\",\"time\":{\"created\":1794099731276,\"completed\":1794099735146},\"finish\":\"tool-calls\"}"
+  },
+  {
+   "id": "msg_0006",
+   "session_id": "ses_0001",
+   "time_created": 1794099735147,
+   "time_updated": 1794099735743,
+   "data": "{\"parentID\":\"msg_0003\",\"role\":\"assistant\",\"mode\":\"build\",\"agent\":\"build\",\"path\":{\"cwd\":\"/srv/ship/work\",\"root\":\"/\"},\"cost\":0,\"tokens\":{\"total\":18596,\"input\":18557,\"output\":39,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":0}},\"modelID\":\"qwen3.8-27b\",\"providerID\":\"vllm\",\"time\":{\"created\":1794099735147,\"completed\":1794099735743},\"finish\":\"tool-calls\"}"
+  },
+  {
+   "id": "msg_0007",
+   "session_id": "ses_0001",
+   "time_created": 1794099735744,
+   "time_updated": 1794099736058,
+   "data": "{\"parentID\":\"msg_0003\",\"role\":\"assistant\",\"mode\":\"build\",\"agent\":\"build\",\"path\":{\"cwd\":\"/srv/ship/work\",\"root\":\"/\"},\"cost\":0,\"tokens\":{\"total\":18671,\"input\":18645,\"output\":26,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":0}},\"modelID\":\"qwen3.8-27b\",\"providerID\":\"vllm\",\"time\":{\"created\":1794099735744,\"completed\":1794099736058},\"finish\":\"tool-calls\"}"
+  },
+  {
+   "id": "msg_0008",
+   "session_id": "ses_0001",
+   "time_created": 1794099736059,
+   "time_updated": 1794099736362,
+   "data": "{\"parentID\":\"msg_0003\",\"role\":\"assistant\",\"mode\":\"build\",\"agent\":\"build\",\"path\":{\"cwd\":\"/srv/ship/work\",\"root\":\"/\"},\"cost\":0,\"tokens\":{\"total\":18717,\"input\":18691,\"output\":26,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":0}},\"modelID\":\"qwen3.8-27b\",\"providerID\":\"vllm\",\"time\":{\"created\":1794099736059,\"completed\":1794099736362},\"finish\":\"tool-calls\"}"
+  },
+  {
+   "id": "msg_0009",
+   "session_id": "ses_0001",
+   "time_created": 1794099736363,
+   "time_updated": 1794099736812,
+   "data": "{\"parentID\":\"msg_0003\",\"role\":\"assistant\",\"mode\":\"build\",\"agent\":\"build\",\"path\":{\"cwd\":\"/srv/ship/work\",\"root\":\"/\"},\"cost\":0,\"tokens\":{\"total\":18767,\"input\":18737,\"output\":30,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":0}},\"modelID\":\"qwen3.8-27b\",\"providerID\":\"vllm\",\"time\":{\"created\":1794099736363,\"completed\":1794099736812},\"finish\":\"tool-calls\"}"
+  },
+  {
+   "id": "msg_0010",
+   "session_id": "ses_0001",
+   "time_created": 1794099736813,
+   "time_updated": 1794099737212,
+   "data": "{\"parentID\":\"msg_0003\",\"role\":\"assistant\",\"mode\":\"build\",\"agent\":\"build\",\"path\":{\"cwd\":\"/srv/ship/work\",\"root\":\"/\"},\"cost\":0,\"tokens\":{\"total\":18815,\"input\":18785,\"output\":30,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":0}},\"modelID\":\"qwen3.8-27b\",\"providerID\":\"vllm\",\"time\":{\"created\":1794099736813,\"completed\":1794099737212},\"finish\":\"tool-calls\"}"
+  },
+  {
+   "id": "msg_0011",
+   "session_id": "ses_0001",
+   "time_created": 1794099737213,
+   "time_updated": 1794099740444,
+   "data": "{\"parentID\":\"msg_0003\",\"role\":\"assistant\",\"mode\":\"build\",\"agent\":\"build\",\"path\":{\"cwd\":\"/srv/ship/work\",\"root\":\"/\"},\"cost\":0,\"tokens\":{\"total\":19434,\"input\":18835,\"output\":599,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":0}},\"modelID\":\"qwen3.8-27b\",\"providerID\":\"vllm\",\"time\":{\"created\":1794099737213,\"completed\":1794099740444},\"finish\":\"tool-calls\"}"
+  },
+  {
+   "id": "msg_0012",
+   "session_id": "ses_0001",
+   "time_created": 1794099740445,
+   "time_updated": 1794099740954,
+   "data": "{\"parentID\":\"msg_0003\",\"role\":\"assistant\",\"mode\":\"build\",\"agent\":\"build\",\"path\":{\"cwd\":\"/srv/ship/work\",\"root\":\"/\"},\"cost\":0,\"tokens\":{\"total\":19497,\"input\":19456,\"output\":41,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":0}},\"modelID\":\"qwen3.8-27b\",\"providerID\":\"vllm\",\"time\":{\"created\":1794099740445,\"completed\":1794099740954},\"finish\":\"tool-calls\"}"
+  },
+  {
+   "id": "msg_0013",
+   "session_id": "ses_0001",
+   "time_created": 1794099740955,
+   "time_updated": 1794099741649,
+   "data": "{\"parentID\":\"msg_0003\",\"role\":\"assistant\",\"mode\":\"build\",\"agent\":\"build\",\"path\":{\"cwd\":\"/srv/ship/work\",\"root\":\"/\"},\"cost\":0,\"tokens\":{\"total\":19570,\"input\":19527,\"output\":43,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":0}},\"modelID\":\"qwen3.8-27b\",\"providerID\":\"vllm\",\"time\":{\"created\":1794099740955,\"completed\":1794099741649},\"finish\":\"stop\"}"
+  },
+  {
+   "id": "msg_0014",
+   "session_id": "ses_0001",
+   "time_created": 1794099804598,
+   "time_updated": 1794099825514,
+   "data": "{\"role\":\"user\",\"time\":{\"created\":1794099804598},\"agent\":\"build\",\"model\":{\"providerID\":\"vllm\",\"modelID\":\"qwen3.8-27b\"},\"summary\":{\"diffs\":[]}}"
+  },
+  {
+   "id": "msg_0015",
+   "session_id": "ses_0001",
+   "time_created": 1794099804602,
+   "time_updated": 1794099805013,
+   "data": "{\"parentID\":\"msg_0014\",\"role\":\"assistant\",\"mode\":\"build\",\"agent\":\"build\",\"path\":{\"cwd\":\"/srv/ship/work\",\"root\":\"/\"},\"cost\":0,\"tokens\":{\"total\":19647,\"input\":19613,\"output\":34,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":0}},\"modelID\":\"qwen3.8-27b\",\"providerID\":\"vllm\",\"time\":{\"created\":1794099804602,\"completed\":1794099805013},\"finish\":\"tool-calls\"}"
+  },
+  {
+   "id": "msg_0016",
+   "session_id": "ses_0001",
+   "time_created": 1794099805014,
+   "time_updated": 1794099825510,
+   "data": "{\"parentID\":\"msg_0014\",\"role\":\"assistant\",\"mode\":\"build\",\"agent\":\"build\",\"path\":{\"cwd\":\"/srv/ship/work\",\"root\":\"/\"},\"cost\":0,\"tokens\":{\"total\":19744,\"input\":19696,\"output\":48,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":0}},\"modelID\":\"qwen3.8-27b\",\"providerID\":\"vllm\",\"time\":{\"created\":1794099805014,\"completed\":1794099825510},\"finish\":\"tool-calls\"}"
+  },
+  {
+   "id": "msg_0017",
+   "session_id": "ses_0001",
+   "time_created": 1794099811605,
+   "time_updated": 1794099825649,
+   "data": "{\"role\":\"user\",\"time\":{\"created\":1794099811605},\"agent\":\"build\",\"model\":{\"providerID\":\"vllm\",\"modelID\":\"qwen3.8-27b\"},\"summary\":{\"diffs\":[]}}"
+  },
+  {
+   "id": "msg_0018",
+   "session_id": "ses_0001",
+   "time_created": 1794099825511,
+   "time_updated": 1794099825646,
+   "data": "{\"parentID\":\"msg_0017\",\"role\":\"assistant\",\"mode\":\"build\",\"agent\":\"build\",\"path\":{\"cwd\":\"/srv/ship/work\",\"root\":\"/\"},\"cost\":0,\"tokens\":{\"total\":19789,\"input\":19787,\"output\":2,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":0}},\"modelID\":\"qwen3.8-27b\",\"providerID\":\"vllm\",\"time\":{\"created\":1794099825511,\"completed\":1794099825646},\"finish\":\"stop\"}"
+  },
+  {
+   "id": "msg_0019",
+   "session_id": "ses_0001",
+   "time_created": 1794099894773,
+   "time_updated": 1794099895815,
+   "data": "{\"role\":\"user\",\"time\":{\"created\":1794099894773},\"agent\":\"build\",\"model\":{\"providerID\":\"vllm\",\"modelID\":\"qwen3.8-27b\"},\"summary\":{\"diffs\":[]}}"
+  },
+  {
+   "id": "msg_0020",
+   "session_id": "ses_0001",
+   "time_created": 1794099894779,
+   "time_updated": 1794099895357,
+   "data": "{\"parentID\":\"msg_0019\",\"role\":\"assistant\",\"mode\":\"build\",\"agent\":\"build\",\"path\":{\"cwd\":\"/srv/ship/work\",\"root\":\"/\"},\"cost\":0,\"tokens\":{\"total\":19884,\"input\":19832,\"output\":52,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":0}},\"modelID\":\"qwen3.8-27b\",\"providerID\":\"vllm\",\"time\":{\"created\":1794099894779,\"completed\":1794099895357},\"finish\":\"tool-calls\"}"
+  },
+  {
+   "id": "msg_0021",
+   "session_id": "ses_0001",
+   "time_created": 1794099895358,
+   "time_updated": 1794099895810,
+   "data": "{\"parentID\":\"msg_0019\",\"role\":\"assistant\",\"mode\":\"build\",\"agent\":\"build\",\"path\":{\"cwd\":\"/srv/ship/work\",\"root\":\"/\"},\"cost\":0,\"tokens\":{\"total\":19995,\"input\":19945,\"output\":50,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":0}},\"modelID\":\"qwen3.8-27b\",\"providerID\":\"vllm\",\"time\":{\"created\":1794099895358,\"completed\":1794099895810},\"finish\":\"tool-calls\"}"
+  },
+  {
+   "id": "msg_0022",
+   "session_id": "ses_0001",
+   "time_created": 1794099895811,
+   "time_updated": 1794099944903,
+   "data": "{\"parentID\":\"msg_0019\",\"role\":\"assistant\",\"mode\":\"build\",\"agent\":\"build\",\"path\":{\"cwd\":\"/srv/ship/work\",\"root\":\"/\"},\"cost\":0,\"tokens\":{\"input\":0,\"output\":0,\"reasoning\":0,\"cache\":{\"read\":0,\"write\":0}},\"modelID\":\"qwen3.8-27b\",\"providerID\":\"vllm\",\"time\":{\"created\":1794099895811,\"completed\":1794099944903},\"error\":{\"name\":\"MessageAbortedError\",\"data\":{\"message\":\"Aborted\"}}}"
+  }
+ ],
+ "parts": [
+  {
+   "id": "prt_0001",
+   "message_id": "msg_0001",
+   "session_id": "ses_0001",
+   "time_created": 1794099616032,
+   "time_updated": 1794099616033,
+   "data": "{\"type\":\"text\",\"text\":\"qd > briefed as spike. Say READY and nothing else.\"}"
+  },
+  {
+   "id": "prt_0002",
+   "message_id": "msg_0002",
+   "session_id": "ses_0001",
+   "time_created": 1794099618515,
+   "time_updated": 1794099618516,
+   "data": "{\"type\":\"step-start\"}"
+  },
+  {
+   "id": "prt_0003",
+   "message_id": "msg_0002",
+   "session_id": "ses_0001",
+   "time_created": 1794099618516,
+   "time_updated": 1794099618612,
+   "data": "{\"type\":\"text\",\"text\":\"READY\",\"time\":{\"start\":1794099618516,\"end\":1794099618611}}"
+  },
+  {
+   "id": "prt_0004",
+   "message_id": "msg_0002",
+   "session_id": "ses_0001",
+   "time_created": 1794099618613,
+   "time_updated": 1794099618614,
+   "data": "{\"reason\":\"stop\",\"type\":\"step-finish\",\"tokens\":{\"total\":14183,\"input\":14181,\"output\":2,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":0}},\"cost\":0}"
+  },
+  {
+   "id": "prt_0005",
+   "message_id": "msg_0003",
+   "session_id": "ses_0001",
+   "time_created": 1794099727511,
+   "time_updated": 1794099727512,
+   "data": "{\"type\":\"text\",\"text\":\"qd > order from desk · ord-1234 · Stars\\nRun exactly this command and report its output: echo counted\\nparagraph 0: words words words words words words words words words words words words\\nparagraph 1: words words words words words words words words words words words words\\nparagraph 2: words words words words words words words words words words words words\\nparagraph 3: words words words words words words words words words words words words\\nparagraph 4: words words words words words words words words words words words words\\nparagraph 5: words words words words words words words words words words words words\\nparagraph 6: words words words words words words words words words words words words\\nparagraph 7: words words words words words words words words words words words words\\nparagraph 8: words words words words words words words words words words words words\\nparagraph 9: words words words words words words words words words words words words\\nparagraph 10: words words words words words words words words words words words words\\nparagraph 11: words words words words words words words words words words words words\\nparagraph 12: words words words words words words words words words words words words\\nparagraph 13: words words words words words words words words words words words words\\nparagraph 14: words words words words words words words words words words words words\\nparagraph 15: words words words words words words words words words words words words\\nparagraph 16: words words words words words words words words words words words words\\nparagraph 17: words words words words words words words words words words words words\\nparagraph 18: words words words words words words words words words words words words\\nparagraph 19: words words words words words words words words words words words words\\nparagraph 20: words words words words words words words words words words words words\\nparagraph 21: words words words words words words words words words words words words\\nparagraph 22: words words words words words words words words words words words words\\nparagraph 23: words words words words words words words words words words words words\\nparagraph 24: words words words words words words words words words words words words\\nparagraph 25: words words words words words words words words words words words words\\nparagraph 26: words words words words words words words words words words words words\\nparagraph 27: words words words words words words words words words words words words\\nparagraph 28: words words words words words words words words words words words words\\nparagraph 29: words words words words words words words words words words words words\\nparagraph 30: words words words words words words words words words words words words\\nparagraph 31: words words words words words words words words words words words words\\nparagraph 32: words words words words words words words words words words words words\\nparagraph 33: words words words words words words words words words words words words\\nparagraph 34: words words words words words words words words words words words words\\nparagraph 35: words words words words words words words words words words words words\\nparagraph 36: words words words words words words words words words words words words\\nparagraph 37: words words words words words words words words words words words words\\nparagraph 38: words words words words words words words words words words words words\\nparagraph 39: words words words words words words words words words words words words\\nqd > reply: qd post report --re ord-1234 \"}"
+  },
+  {
+   "id": "prt_0006",
+   "message_id": "msg_0004",
+   "session_id": "ses_0001",
+   "time_created": 1794099727869,
+   "time_updated": 1794099727869,
+   "data": "{\"type\":\"step-start\"}"
+  },
+  {
+   "id": "prt_0007",
+   "message_id": "msg_0004",
+   "session_id": "ses_0001",
+   "time_created": 1794099731267,
+   "time_updated": 1794099731273,
+   "data": "{\"type\":\"tool\",\"tool\":\"invalid\",\"callID\":\"chatcmpl-tool-0001\",\"state\":{\"status\":\"completed\",\"input\":{\"tool\":\"bash(command=\\\"echo counted\\nparagraph 0: words words words words words words words words words words words words\\nparagraph 1: words words words words words words words words words words words words\\nparagraph 2: words words words words words words words words words words words words\\nparagraph 3: words words words words words words words words words words words words\\nparagraph 4: words words words words words words words words words words words words\\nparagraph 5: words words words words words words words words words words words words\\nparagraph 6: words words words words words words words words words words words words\\nparagraph 7: words words words words words words words words words words words words\\nparagraph 8: words words words words words words words words words words words words\\nparagraph 9: words words words words words words words words words words words words\\nparagraph 10: words words words words words words words words words words words words\\nparagraph 11: words words words words words words words words words words words words\\nparagraph 12: words words words words words words words words words words words words\\nparagraph 13: words words words words words words words words words words words words\\nparagraph 14: words words words words words words words words words words words words\\nparagraph 15: words words words words words words words words words words words words\\nparagraph 16: words words words words words words words words words words words words\\nparagraph 17: words words words words words words words words words words words words\\nparagraph 18: words words words words words words words words words words words words\\nparagraph 19: words words words words words words words words words words words words\\nparagraph 20: words words words words words words words words words words words words\\nparagraph 21: words words words words words words words words words words words words\\nparagraph 22: words words words words words words words words words words words words\\nparagraph 23: words words words words words words words words words words words words\\nparagraph 24: words words words words words words words words words words words words\\nparagraph 25: words words words words words words words words words words words words\\nparagraph 26: words words words words words words words words words words words words\\nparagraph 27: words words words words words words words words words words words words\\nparagraph 28: words words words words words words words words words words words words\\nparagraph 29: words words words words words words words words words words words words\\nparagraph 30: words words words words words words words words words words words words\\nparagraph 31: words words words words words words words words words words words words\\nparagraph 32: words words words words words words words words words words words words\\nparagraph 33: words words words words words words words words words words words words\\nparagraph 34: words words words words words words words words words words words words\\nparagraph 35: words words words words words words words words words words words words\\nparagraph 36: words words words words words words words words words words words words\\nparagraph 37: words words words words words words words words words words words words\\nparagraph 38: words words words words words words words words words words words words\\nparagraph 39: words words words words words words words words words words words words\\\")\\n</parameter>\\n\",\"error\":\"Model tried to call unavailable tool 'bash(command=\\\"echo counted\\nparagraph 0: words words words words words words words words words words words words\\nparagraph 1: words words words words words words words words words words words words\\nparagraph 2: words words words words words words words words words words words words\\nparagraph 3: words words words words words words words words words words words words\\nparagraph 4: words words words words words words words words words words words words\\nparagraph 5: words words words words words words words words words words words words\\nparagraph 6: words words words words words words words words words words words words\\nparagraph 7: words words words words words words words words words words words words\\nparagraph 8: words words words words words words words words words words words words\\nparagraph 9: words words words words words words words words words words words words\\nparagraph 10: words words words words words words words words words words words words\\nparagraph 11: words words words words words words words words words words words words\\nparagraph 12: words words words words words words words words words words words words\\nparagraph 13: words words words words words words words words words words words words\\nparagraph 14: words words words words words words words words words words words words\\nparagraph 15: words words words words words words words words words words words words\\nparagraph 16: words words words words words words words words words words words words\\nparagraph 17: words words words words words words words words words words words words\\nparagraph 18: words words words words words words words words words words words words\\nparagraph 19: words words words words words words words words words words words words\\nparagraph 20: words words words words words words words words words words words words\\nparagraph 21: words words words words words words words words words words words words\\nparagraph 22: words words words words words words words words words words words words\\nparagraph 23: words words words words words words words words words words words words\\nparagraph 24: words words words words words words words words words words words words\\nparagraph 25: words words words words words words words words words words words words\\nparagraph 26: words words words words words words words words words words words words\\nparagraph 27: words words words words words words words words words words words words\\nparagraph 28: words words words words words words words words words words words words\\nparagraph 29: words words words words words words words words words words words words\\nparagraph 30: words words words words words words words words words words words words\\nparagraph 31: words words words words words words words words words words words words\\nparagraph 32: words words words words words words words words words words words words\\nparagraph 33: words words words words words words words words words words words words\\nparagraph 34: words words words words words words words words words words words words\\nparagraph 35: words words words words words words words words words words words words\\nparagraph 36: words words words words words words words words words words words words\\nparagraph 37: words words words words words words words words words words words words\\nparagraph 38: words words words words words words words words words words words words\\nparagraph 39: words words words words words words words words words words words words\\\")\\n</parameter>\\n'. Available tools: bash, edit, glob, grep, invalid, question, read, skill, task, todowrite, webfetch, write.\"},\"output\":\"The arguments provided to the tool are invalid: Model tried to call unavailable tool 'bash(command=\\\"echo counted\\nparagraph 0: words words words words words words words words words words words words\\nparagraph 1: words words words words words words words words words words words words\\nparagraph 2: words words words words words words words words words words words words\\nparagraph 3: words words words words words words words words words words words words\\nparagraph 4: words words words words words words words words words words words words\\nparagraph 5: words words words words words words words words words words words words\\nparagraph 6: words words words words words words words words words words words words\\nparagraph 7: words words words words words words words words words words words words\\nparagraph 8: words words words words words words words words words words words words\\nparagraph 9: words words words words words words words words words words words words\\nparagraph 10: words words words words words words words words words words words words\\nparagraph 11: words words words words words words words words words words words words\\nparagraph 12: words words words words words words words words words words words words\\nparagraph 13: words words words words words words words words words words words words\\nparagraph 14: words words words words words words words words words words words words\\nparagraph 15: words words words words words words words words words words words words\\nparagraph 16: words words words words words words words words words words words words\\nparagraph 17: words words words words words words words words words words words words\\nparagraph 18: words words words words words words words words words words words words\\nparagraph 19: words words words words words words words words words words words words\\nparagraph 20: words words words words words words words words words words words words\\nparagraph 21: words words words words words words words words words words words words\\nparagraph 22: words words words words words words words words words words words words\\nparagraph 23: words words words words words words words words words words words words\\nparagraph 24: words words words words words words words words words words words words\\nparagraph 25: words words words words words words words words words words words words\\nparagraph 26: words words words words words words words words words words words words\\nparagraph 27: words words words words words words words words words words words words\\nparagraph 28: words words words words words words words words words words words words\\nparagraph 29: words words words words words words words words words words words words\\nparagraph 30: words words words words words words words words words words words words\\nparagraph 31: words words words words words words words words words words words words\\nparagraph 32: words words words words words words words words words words words words\\nparagraph 33: words words words words words words words words words words words words\\nparagraph 34: words words words words words words words words words words words words\\nparagraph 35: words words words words words words words words words words words words\\nparagraph 36: words words words words words words words words words words words words\\nparagraph 37: words words words words words words words words words words words words\\nparagraph 38: words words words words words words words words words words words words\\nparagraph 39: words words words words words words words words words words words words\\\")\\n</parameter>\\n'. Available tools: bash, edit, glob, grep, invalid, question, read, skill, task, todowrite, webfetch, write.\",\"metadata\":{\"truncated\":false},\"title\":\"Invalid Tool\",\"time\":{\"start\":1794099731271,\"end\":1794099731272}}}"
+  },
+  {
+   "id": "prt_0008",
+   "message_id": "msg_0004",
+   "session_id": "ses_0001",
+   "time_created": 1794099731274,
+   "time_updated": 1794099731274,
+   "data": "{\"reason\":\"tool-calls\",\"type\":\"step-finish\",\"tokens\":{\"total\":15681,\"input\":14949,\"output\":732,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":0}},\"cost\":0}"
+  },
+  {
+   "id": "prt_0009",
+   "message_id": "msg_0005",
+   "session_id": "ses_0001",
+   "time_created": 1794099731670,
+   "time_updated": 1794099731671,
+   "data": "{\"type\":\"step-start\"}"
+  },
+  {
+   "id": "prt_0010",
+   "message_id": "msg_0005",
+   "session_id": "ses_0001",
+   "time_created": 1794099731716,
+   "time_updated": 1794099735143,
+   "data": "{\"type\":\"tool\",\"tool\":\"bash\",\"callID\":\"chatcmpl-tool-0002\",\"state\":{\"status\":\"completed\",\"input\":{\"command\":\"echo counted\\nparagraph 0: words words words words words words words words words words words words\\nparagraph 1: words words words words words words words words words words words words\\nparagraph 2: words words words words words words words words words words words words\\nparagraph 3: words words words words words words words words words words words words\\nparagraph 4: words words words words words words words words words words words words\\nparagraph 5: words words words words words words words words words words words words\\nparagraph 6: words words words words words words words words words words words words\\nparagraph 7: words words words words words words words words words words words words\\nparagraph 8: words words words words words words words words words words words words\\nparagraph 9: words words words words words words words words words words words words\\nparagraph 10: words words words words words words words words words words words words\\nparagraph 11: words words words words words words words words words words words words\\nparagraph 12: words words words words words words words words words words words words\\nparagraph 13: words words words words words words words words words words words words\\nparagraph 14: words words words words words words words words words words words words\\nparagraph 15: words words words words words words words words words words words words\\nparagraph 16: words words words words words words words words words words words words\\nparagraph 17: words words words words words words words words words words words words\\nparagraph 18: words words words words words words words words words words words words\\nparagraph 19: words words words words words words words words words words words words\\nparagraph 20: words words words words words words words words words words words words\\nparagraph 21: words words words words words words words words words words words words\\nparagraph 22: words words words words words words words words words words words words\\nparagraph 23: words words words words words words words words words words words words\\nparagraph 24: words words words words words words words words words words words words\\nparagraph 25: words words words words words words words words words words words words\\nparagraph 26: words words words words words words words words words words words words\\nparagraph 27: words words words words words words words words words words words words\\nparagraph 28: words words words words words words words words words words words words\\nparagraph 29: words words words words words words words words words words words words\\nparagraph 30: words words words words words words words words words words words words\\nparagraph 31: words words words words words words words words words words words words\\nparagraph 32: words words words words words words words words words words words words\\nparagraph 33: words words words words words words words words words words words words\\nparagraph 34: words words words words words words words words words words words words\\nparagraph 35: words words words words words words words words words words words words\\nparagraph 36: words words words words words words words words words words words words\\nparagraph 37: words words words words words words words words words words words words\\nparagraph 38: words words words words words words words words words words words words\\nparagraph 39: words words words words words words words words words words words words\"},\"output\":\"counted\\n/bin/bash: line 2: paragraph: command not found\\n/bin/bash: line 3: paragraph: command not found\\n/bin/bash: line 4: paragraph: command not found\\n/bin/bash: line 5: paragraph: command not found\\n/bin/bash: line 6: paragraph: command not found\\n/bin/bash: line 7: paragraph: command not found\\n/bin/bash: line 8: paragraph: command not found\\n/bin/bash: line 9: paragraph: command not found\\n/bin/bash: line 10: paragraph: command not found\\n/bin/bash: line 11: paragraph: command not found\\n/bin/bash: line 12: paragraph: command not found\\n/bin/bash: line 13: paragraph: command not found\\n/bin/bash: line 14: paragraph: command not found\\n/bin/bash: line 15: paragraph: command not found\\n/bin/bash: line 16: paragraph: command not found\\n/bin/bash: line 17: paragraph: command not found\\n/bin/bash: line 18: paragraph: command not found\\n/bin/bash: line 19: paragraph: command not found\\n/bin/bash: line 20: paragraph: command not found\\n/bin/bash: line 21: paragraph: command not found\\n/bin/bash: line 22: paragraph: command not found\\n/bin/bash: line 23: paragraph: command not found\\n/bin/bash: line 24: paragraph: command not found\\n/bin/bash: line 25: paragraph: command not found\\n/bin/bash: line 26: paragraph: command not found\\n/bin/bash: line 27: paragraph: command not found\\n/bin/bash: line 28: paragraph: command not found\\n/bin/bash: line 29: paragraph: command not found\\n/bin/bash: line 30: paragraph: command not found\\n/bin/bash: line 31: paragraph: command not found\\n/bin/bash: line 32: paragraph: command not found\\n/bin/bash: line 33: paragraph: command not found\\n/bin/bash: line 34: paragraph: command not found\\n/bin/bash: line 35: paragraph: command not found\\n/bin/bash: line 36: paragraph: command not found\\n/bin/bash: line 37: paragraph: command not found\\n/bin/bash: line 38: paragraph: command not found\\n/bin/bash: line 39: paragraph: command not found\\n/bin/bash: line 40: paragraph: command not found\\n/bin/bash: line 41: paragraph: command not found\\n\",\"metadata\":{\"output\":\"counted\\n/bin/bash: line 2: paragraph: command not found\\n/bin/bash: line 3: paragraph: command not found\\n/bin/bash: line 4: paragraph: command not found\\n/bin/bash: line 5: paragraph: command not found\\n/bin/bash: line 6: paragraph: command not found\\n/bin/bash: line 7: paragraph: command not found\\n/bin/bash: line 8: paragraph: command not found\\n/bin/bash: line 9: paragraph: command not found\\n/bin/bash: line 10: paragraph: command not found\\n/bin/bash: line 11: paragraph: command not found\\n/bin/bash: line 12: paragraph: command not found\\n/bin/bash: line 13: paragraph: command not found\\n/bin/bash: line 14: paragraph: command not found\\n/bin/bash: line 15: paragraph: command not found\\n/bin/bash: line 16: paragraph: command not found\\n/bin/bash: line 17: paragraph: command not found\\n/bin/bash: line 18: paragraph: command not found\\n/bin/bash: line 19: paragraph: command not found\\n/bin/bash: line 20: paragraph: command not found\\n/bin/bash: line 21: paragraph: command not found\\n/bin/bash: line 22: paragraph: command not found\\n/bin/bash: line 23: paragraph: command not found\\n/bin/bash: line 24: paragraph: command not found\\n/bin/bash: line 25: paragraph: command not found\\n/bin/bash: line 26: paragraph: command not found\\n/bin/bash: line 27: paragraph: command not found\\n/bin/bash: line 28: paragraph: command not found\\n/bin/bash: line 29: paragraph: command not found\\n/bin/bash: line 30: paragraph: command not found\\n/bin/bash: line 31: paragraph: command not found\\n/bin/bash: line 32: paragraph: command not found\\n/bin/bash: line 33: paragraph: command not found\\n/bin/bash: line 34: paragraph: command not found\\n/bin/bash: line 35: paragraph: command not found\\n/bin/bash: line 36: paragraph: command not found\\n/bin/bash: line 37: paragraph: command not found\\n/bin/bash: line 38: paragraph: command not found\\n/bin/bash: line 39: paragraph: command not found\\n/bin/bash: line 40: paragraph: command not found\\n/bin/bash: line 41: paragraph: command not found\\n\",\"exit\":127,\"truncated\":false},\"title\":\"echo counted\\nparagraph 0: words words words words words words words words words words words words\\nparagraph 1: words words words words words words words words words words words words\\nparagraph 2: words words words words words words words words words words words words\\nparagraph 3: words words words words words words words words words words words words\\nparagraph 4: words words words words words words words words words words words words\\nparagraph 5: words words words words words words words words words words words words\\nparagraph 6: words words words words words words words words words words words words\\nparagraph 7: words words words words words words words words words words words words\\nparagraph 8: words words words words words words words words words words words words\\nparagraph 9: words words words words words words words words words words words words\\nparagraph 10: words words words words words words words words words words words words\\nparagraph 11: words words words words words words words words words words words words\\nparagraph 12: words words words words words words words words words words words words\\nparagraph 13: words words words words words words words words words words words words\\nparagraph 14: words words words words words words words words words words words words\\nparagraph 15: words words words words words words words words words words words words\\nparagraph 16: words words words words words words words words words words words words\\nparagraph 17: words words words words words words words words words words words words\\nparagraph 18: words words words words words words words words words words words words\\nparagraph 19: words words words words words words words words words words words words\\nparagraph 20: words words words words words words words words words words words words\\nparagraph 21: words words words words words words words words words words words words\\nparagraph 22: words words words words words words words words words words words words\\nparagraph 23: words words words words words words words words words words words words\\nparagraph 24: words words words words words words words words words words words words\\nparagraph 25: words words words words words words words words words words words words\\nparagraph 26: words words words words words words words words words words words words\\nparagraph 27: words words words words words words words words words words words words\\nparagraph 28: words words words words words words words words words words words words\\nparagraph 29: words words words words words words words words words words words words\\nparagraph 30: words words words words words words words words words words words words\\nparagraph 31: words words words words words words words words words words words words\\nparagraph 32: words words words words words words words words words words words words\\nparagraph 33: words words words words words words words words words words words words\\nparagraph 34: words words words words words words words words words words words words\\nparagraph 35: words words words words words words words words words words words words\\nparagraph 36: words words words words words words words words words words words words\\nparagraph 37: words words words words words words words words words words words words\\nparagraph 38: words words words words words words words words words words words words\\nparagraph 39: words words words words words words words words words words words words\",\"time\":{\"start\":1794099735108,\"end\":1794099735143}}}"
+  },
+  {
+   "id": "prt_0011",
+   "message_id": "msg_0005",
+   "session_id": "ses_0001",
+   "time_created": 1794099735144,
+   "time_updated": 1794099735145,
+   "data": "{\"reason\":\"tool-calls\",\"type\":\"step-finish\",\"tokens\":{\"total\":17986,\"input\":17249,\"output\":737,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":0}},\"cost\":0}"
+  },
+  {
+   "id": "prt_0012",
+   "message_id": "msg_0006",
+   "session_id": "ses_0001",
+   "time_created": 1794099735490,
+   "time_updated": 1794099735490,
+   "data": "{\"type\":\"step-start\"}"
+  },
+  {
+   "id": "prt_0013",
+   "message_id": "msg_0006",
+   "session_id": "ses_0001",
+   "time_created": 1794099735518,
+   "time_updated": 1794099735741,
+   "data": "{\"type\":\"tool\",\"tool\":\"bash\",\"callID\":\"chatcmpl-tool-0003\",\"state\":{\"status\":\"completed\",\"input\":{\"command\":\"printf>\\nqd post report --re ord-1234\"},\"output\":\"/bin/bash: -c: line 1: syntax error near unexpected token `newline'\\n/bin/bash: -c: line 1: `printf>'\\n\",\"metadata\":{\"output\":\"/bin/bash: -c: line 1: syntax error near unexpected token `newline'\\n/bin/bash: -c: line 1: `printf>'\\n\",\"exit\":2,\"truncated\":false},\"title\":\"printf>\\nqd post report --re ord-1234\",\"time\":{\"start\":1794099735736,\"end\":1794099735741}}}"
+  },
+  {
+   "id": "prt_0014",
+   "message_id": "msg_0006",
+   "session_id": "ses_0001",
+   "time_created": 1794099735742,
+   "time_updated": 1794099735742,
+   "data": "{\"reason\":\"tool-calls\",\"type\":\"step-finish\",\"tokens\":{\"total\":18596,\"input\":18557,\"output\":39,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":0}},\"cost\":0}"
+  },
+  {
+   "id": "prt_0015",
+   "message_id": "msg_0007",
+   "session_id": "ses_0001",
+   "time_created": 1794099735898,
+   "time_updated": 1794099735899,
+   "data": "{\"type\":\"step-start\"}"
+  },
+  {
+   "id": "prt_0016",
+   "message_id": "msg_0007",
+   "session_id": "ses_0001",
+   "time_created": 1794099735927,
+   "time_updated": 1794099736056,
+   "data": "{\"type\":\"tool\",\"tool\":\"bash\",\"callID\":\"chatcmpl-tool-0004\",\"state\":{\"status\":\"completed\",\"input\":{\"command\":\"cd\"},\"output\":\"(no output)\",\"metadata\":{\"output\":\"(no output)\",\"exit\":0,\"truncated\":false},\"title\":\"cd\",\"time\":{\"start\":1794099736053,\"end\":1794099736056}}}"
+  },
+  {
+   "id": "prt_0017",
+   "message_id": "msg_0007",
+   "session_id": "ses_0001",
+   "time_created": 1794099736057,
+   "time_updated": 1794099736057,
+   "data": "{\"reason\":\"tool-calls\",\"type\":\"step-finish\",\"tokens\":{\"total\":18671,\"input\":18645,\"output\":26,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":0}},\"cost\":0}"
+  },
+  {
+   "id": "prt_0018",
+   "message_id": "msg_0008",
+   "session_id": "ses_0001",
+   "time_created": 1794099736230,
+   "time_updated": 1794099736231,
+   "data": "{\"type\":\"step-start\"}"
+  },
+  {
+   "id": "prt_0019",
+   "message_id": "msg_0008",
+   "session_id": "ses_0001",
+   "time_created": 1794099736259,
+   "time_updated": 1794099736359,
+   "data": "{\"type\":\"tool\",\"tool\":\"bash\",\"callID\":\"chatcmpl-tool-0005\",\"state\":{\"status\":\"completed\",\"input\":{\"command\":\"cd\"},\"output\":\"(no output)\",\"metadata\":{\"output\":\"(no output)\",\"exit\":0,\"truncated\":false},\"title\":\"cd\",\"time\":{\"start\":1794099736356,\"end\":1794099736359}}}"
+  },
+  {
+   "id": "prt_0020",
+   "message_id": "msg_0008",
+   "session_id": "ses_0001",
+   "time_created": 1794099736361,
+   "time_updated": 1794099736361,
+   "data": "{\"reason\":\"tool-calls\",\"type\":\"step-finish\",\"tokens\":{\"total\":18717,\"input\":18691,\"output\":26,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":0}},\"cost\":0}"
+  },
+  {
+   "id": "prt_0021",
+   "message_id": "msg_0009",
+   "session_id": "ses_0001",
+   "time_created": 1794099736556,
+   "time_updated": 1794099736557,
+   "data": "{\"type\":\"step-start\"}"
+  },
+  {
+   "id": "prt_0022",
+   "message_id": "msg_0009",
+   "session_id": "ses_0001",
+   "time_created": 1794099736585,
+   "time_updated": 1794099736811,
+   "data": "{\"type\":\"tool\",\"tool\":\"bash\",\"callID\":\"chatcmpl-tool-0006\",\"state\":{\"status\":\"completed\",\"input\":{\"command\":\"cd /tmp && pwd\"},\"output\":\"/tmp\\n\",\"metadata\":{\"output\":\"/tmp\\n\",\"exit\":0,\"truncated\":false},\"title\":\"cd /tmp && pwd\",\"time\":{\"start\":1794099736787,\"end\":1794099736811}}}"
+  },
+  {
+   "id": "prt_0023",
+   "message_id": "msg_0009",
+   "session_id": "ses_0001",
+   "time_created": 1794099736811,
+   "time_updated": 1794099736811,
+   "data": "{\"reason\":\"tool-calls\",\"type\":\"step-finish\",\"tokens\":{\"total\":18767,\"input\":18737,\"output\":30,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":0}},\"cost\":0}"
+  },
+  {
+   "id": "prt_0024",
+   "message_id": "msg_0010",
+   "session_id": "ses_0001",
+   "time_created": 1794099736996,
+   "time_updated": 1794099736997,
+   "data": "{\"type\":\"step-start\"}"
+  },
+  {
+   "id": "prt_0025",
+   "message_id": "msg_0010",
+   "session_id": "ses_0001",
+   "time_created": 1794099737024,
+   "time_updated": 1794099737210,
+   "data": "{\"type\":\"tool\",\"tool\":\"bash\",\"callID\":\"chatcmpl-tool-0007\",\"state\":{\"status\":\"completed\",\"input\":{\"command\":\"cd /tmp && cat\"},\"output\":\"(no output)\",\"metadata\":{\"output\":\"(no output)\",\"exit\":0,\"truncated\":false},\"title\":\"cd /tmp && cat\",\"time\":{\"start\":1794099737186,\"end\":1794099737210}}}"
+  },
+  {
+   "id": "prt_0026",
+   "message_id": "msg_0010",
+   "session_id": "ses_0001",
+   "time_created": 1794099737211,
+   "time_updated": 1794099737211,
+   "data": "{\"reason\":\"tool-calls\",\"type\":\"step-finish\",\"tokens\":{\"total\":18815,\"input\":18785,\"output\":30,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":0}},\"cost\":0}"
+  },
+  {
+   "id": "prt_0027",
+   "message_id": "msg_0011",
+   "session_id": "ses_0001",
+   "time_created": 1794099737406,
+   "time_updated": 1794099737406,
+   "data": "{\"type\":\"step-start\"}"
+  },
+  {
+   "id": "prt_0028",
+   "message_id": "msg_0011",
+   "session_id": "ses_0001",
+   "time_created": 1794099737449,
+   "time_updated": 1794099740442,
+   "data": "{\"type\":\"tool\",\"tool\":\"write\",\"callID\":\"chatcmpl-tool-0008\",\"state\":{\"status\":\"completed\",\"input\":{\"filePath\":\"/tmp/ord1234_out.txt\",\"content\":\"counted\\n/bin/bash: line 2: paragraph: command not found\\n/bin/bash: line 3: paragraph: command not found\\n/bin/bash: line 4: paragraph: command not found\\n/bin/bash: line 5: paragraph: command not found\\n/bin/bash: line 6: paragraph: command not found\\n/bin/bash: line 7: paragraph: command not found\\n/bin/bash: line 8: paragraph: command not found\\n/bin/bash: line 9: paragraph: command not found\\n/bin/bash: line 10: paragraph: command not found\\n/bin/bash: line 11: paragraph: command not found\\n/bin/bash: line 12: paragraph: command not found\\n/bin/bash: line 13: paragraph: command not found\\n/bin/bash: line 14: paragraph: command not found\\n/bin/bash: line 15: paragraph: command not found\\n/bin/bash: line 16: paragraph: command not found\\n/bin/bash: line 17: paragraph: command not found\\n/bin/bash: line 18: paragraph: command not found\\n/bin/bash: line 19: paragraph: command not found\\n/bin/bash: line 20: paragraph: command not found\\n/bin/bash: line 21: paragraph: command not found\\n/bin/bash: line 22: paragraph: command not found\\n/bin/bash: line 23: paragraph: command not found\\n/bin/bash: line 24: paragraph: command not found\\n/bin/bash: line 25: paragraph: command not found\\n/bin/bash: line 26: paragraph: command not found\\n/bin/bash: line 27: paragraph: command not found\\n/bin/bash: line 28: paragraph: command not found\\n/bin/bash: line 29: paragraph: command not found\\n/bin/bash: line 30: paragraph: command not found\\n/bin/bash: line 31: paragraph: command not found\\n/bin/bash: line 32: paragraph: command not found\\n/bin/bash: line 33: paragraph: command not found\\n/bin/bash: line 34: paragraph: command not found\\n/bin/bash: line 35: paragraph: command not found\\n/bin/bash: line 36: paragraph: command not found\\n/bin/bash: line 37: paragraph: command not found\\n/bin/bash: line 38: paragraph: command not found\\n/bin/bash: line 39: paragraph: command not found\\n/bin/bash: line 40: paragraph: command not found\\n/bin/bash: line 41: paragraph: command not found\"},\"output\":\"Wrote file successfully.\",\"metadata\":{\"diagnostics\":{},\"filepath\":\"/tmp/ord1234_out.txt\",\"exists\":false,\"truncated\":false},\"title\":\"tmp/ord1234_out.txt\",\"time\":{\"start\":1794099740437,\"end\":1794099740442}}}"
+  },
+  {
+   "id": "prt_0029",
+   "message_id": "msg_0011",
+   "session_id": "ses_0001",
+   "time_created": 1794099740443,
+   "time_updated": 1794099740443,
+   "data": "{\"reason\":\"tool-calls\",\"type\":\"step-finish\",\"tokens\":{\"total\":19434,\"input\":18835,\"output\":599,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":0}},\"cost\":0}"
+  },
+  {
+   "id": "prt_0030",
+   "message_id": "msg_0012",
+   "session_id": "ses_0001",
+   "time_created": 1794099740712,
+   "time_updated": 1794099740712,
+   "data": "{\"type\":\"step-start\"}"
+  },
+  {
+   "id": "prt_0031",
+   "message_id": "msg_0012",
+   "session_id": "ses_0001",
+   "time_created": 1794099740741,
+   "time_updated": 1794099740951,
+   "data": "{\"type\":\"tool\",\"tool\":\"bash\",\"callID\":\"chatcmpl-tool-0009\",\"state\":{\"status\":\"completed\",\"input\":{\"command\":\"cd /tmp && qd post report --re ord-1234\"},\"output\":\"/bin/bash: line 1: qd: command not found\\n\",\"metadata\":{\"output\":\"/bin/bash: line 1: qd: command not found\\n\",\"exit\":127,\"truncated\":false},\"title\":\"cd /tmp && qd post report --re ord-1234\",\"time\":{\"start\":1794099740927,\"end\":1794099740951}}}"
+  },
+  {
+   "id": "prt_0032",
+   "message_id": "msg_0012",
+   "session_id": "ses_0001",
+   "time_created": 1794099740952,
+   "time_updated": 1794099740952,
+   "data": "{\"reason\":\"tool-calls\",\"type\":\"step-finish\",\"tokens\":{\"total\":19497,\"input\":19456,\"output\":41,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":0}},\"cost\":0}"
+  },
+  {
+   "id": "prt_0033",
+   "message_id": "msg_0013",
+   "session_id": "ses_0001",
+   "time_created": 1794099741063,
+   "time_updated": 1794099741063,
+   "data": "{\"type\":\"step-start\"}"
+  },
+  {
+   "id": "prt_0034",
+   "message_id": "msg_0013",
+   "session_id": "ses_0001",
+   "time_created": 1794099741064,
+   "time_updated": 1794099741647,
+   "data": "{\"type\":\"text\",\"text\":\"Output captured to `/tmp/ord1234_out.txt`. `qd` not found in PATH.\\n\\ncounted\\nparagraph 0..40 (40 lines) `command not found`\",\"time\":{\"start\":1794099741064,\"end\":1794099741646}}"
+  },
+  {
+   "id": "prt_0035",
+   "message_id": "msg_0013",
+   "session_id": "ses_0001",
+   "time_created": 1794099741647,
+   "time_updated": 1794099741648,
+   "data": "{\"reason\":\"stop\",\"type\":\"step-finish\",\"tokens\":{\"total\":19570,\"input\":19527,\"output\":43,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":0}},\"cost\":0}"
+  },
+  {
+   "id": "prt_0036",
+   "message_id": "msg_0014",
+   "session_id": "ses_0001",
+   "time_created": 1794099804599,
+   "time_updated": 1794099804599,
+   "data": "{\"type\":\"text\",\"text\":\"qd > order from desk · ord-5678 · Sleep\\nRun exactly this command and nothing else: sleep 20; echo slept\\n\"}"
+  },
+  {
+   "id": "prt_0037",
+   "message_id": "msg_0015",
+   "session_id": "ses_0001",
+   "time_created": 1794099804718,
+   "time_updated": 1794099804719,
+   "data": "{\"type\":\"step-start\"}"
+  },
+  {
+   "id": "prt_0038",
+   "message_id": "msg_0015",
+   "session_id": "ses_0001",
+   "time_created": 1794099804749,
+   "time_updated": 1794099805011,
+   "data": "{\"type\":\"tool\",\"tool\":\"bash\",\"callID\":\"chatcmpl-tool-0010\",\"state\":{\"status\":\"completed\",\"input\":{\"command\":\"sleep>\\n20\\n; echo slept\"},\"output\":\"/bin/bash: -c: line 1: syntax error near unexpected token `newline'\\n/bin/bash: -c: line 1: `sleep>'\\n\",\"metadata\":{\"output\":\"/bin/bash: -c: line 1: syntax error near unexpected token `newline'\\n/bin/bash: -c: line 1: `sleep>'\\n\",\"exit\":2,\"truncated\":false},\"title\":\"sleep>\\n20\\n; echo slept\",\"time\":{\"start\":1794099805006,\"end\":1794099805011}}}"
+  },
+  {
+   "id": "prt_0039",
+   "message_id": "msg_0015",
+   "session_id": "ses_0001",
+   "time_created": 1794099805012,
+   "time_updated": 1794099805012,
+   "data": "{\"reason\":\"tool-calls\",\"type\":\"step-finish\",\"tokens\":{\"total\":19647,\"input\":19613,\"output\":34,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":0}},\"cost\":0}"
+  },
+  {
+   "id": "prt_0040",
+   "message_id": "msg_0016",
+   "session_id": "ses_0001",
+   "time_created": 1794099805143,
+   "time_updated": 1794099805144,
+   "data": "{\"type\":\"step-start\"}"
+  },
+  {
+   "id": "prt_0041",
+   "message_id": "msg_0016",
+   "session_id": "ses_0001",
+   "time_created": 1794099805172,
+   "time_updated": 1794099825508,
+   "data": "{\"type\":\"tool\",\"tool\":\"bash\",\"callID\":\"chatcmpl-tool-0011\",\"state\":{\"status\":\"completed\",\"input\":{\"command\":\"sleep 20; echo slept\",\"timeout\":30000},\"output\":\"slept\\n\",\"metadata\":{\"output\":\"slept\\n\",\"exit\":0,\"truncated\":false},\"title\":\"sleep 20; echo slept\",\"time\":{\"start\":1794099805501,\"end\":1794099825508}}}"
+  },
+  {
+   "id": "prt_0042",
+   "message_id": "msg_0017",
+   "session_id": "ses_0001",
+   "time_created": 1794099811606,
+   "time_updated": 1794099811606,
+   "data": "{\"type\":\"text\",\"text\":\"qd > question from desk · que-9999 · Ping\\nSay pong.\\n\"}"
+  },
+  {
+   "id": "prt_0043",
+   "message_id": "msg_0016",
+   "session_id": "ses_0001",
+   "time_created": 1794099825509,
+   "time_updated": 1794099825509,
+   "data": "{\"reason\":\"tool-calls\",\"type\":\"step-finish\",\"tokens\":{\"total\":19744,\"input\":19696,\"output\":48,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":0}},\"cost\":0}"
+  },
+  {
+   "id": "prt_0044",
+   "message_id": "msg_0018",
+   "session_id": "ses_0001",
+   "time_created": 1794099825633,
+   "time_updated": 1794099825634,
+   "data": "{\"type\":\"step-start\"}"
+  },
+  {
+   "id": "prt_0045",
+   "message_id": "msg_0018",
+   "session_id": "ses_0001",
+   "time_created": 1794099825634,
+   "time_updated": 1794099825644,
+   "data": "{\"type\":\"text\",\"text\":\"pong\",\"time\":{\"start\":1794099825634,\"end\":1794099825644}}"
+  },
+  {
+   "id": "prt_0046",
+   "message_id": "msg_0018",
+   "session_id": "ses_0001",
+   "time_created": 1794099825645,
+   "time_updated": 1794099825645,
+   "data": "{\"reason\":\"stop\",\"type\":\"step-finish\",\"tokens\":{\"total\":19789,\"input\":19787,\"output\":2,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":0}},\"cost\":0}"
+  },
+  {
+   "id": "prt_0047",
+   "message_id": "msg_0019",
+   "session_id": "ses_0001",
+   "time_created": 1794099894775,
+   "time_updated": 1794099894776,
+   "data": "{\"type\":\"text\",\"text\":\"qd > order from desk · ord-7777 · Long\\nRun exactly this command and nothing else: sleep 60; echo done\\n\"}"
+  },
+  {
+   "id": "prt_0048",
+   "message_id": "msg_0020",
+   "session_id": "ses_0001",
+   "time_created": 1794099894911,
+   "time_updated": 1794099894912,
+   "data": "{\"type\":\"step-start\"}"
+  },
+  {
+   "id": "prt_0049",
+   "message_id": "msg_0020",
+   "session_id": "ses_0001",
+   "time_created": 1794099894940,
+   "time_updated": 1794099895355,
+   "data": "{\"type\":\"tool\",\"tool\":\"bash\",\"callID\":\"chatcmpl-tool-0012\",\"state\":{\"status\":\"error\",\"input\":{\"command\":\"sleep>\\n60\\necho>\\ndone\",\"timeout\":\"90000>\\n\"},\"error\":\"The bash tool was called with invalid arguments: SchemaError(Expected number | undefined, got \\\"90000>\\\\n\\\"\\n  at [\\\"timeout\\\"]).\\nPlease rewrite the input so it satisfies the expected schema.\",\"time\":{\"start\":1794099895352,\"end\":1794099895354}}}"
+  },
+  {
+   "id": "prt_0050",
+   "message_id": "msg_0020",
+   "session_id": "ses_0001",
+   "time_created": 1794099895355,
+   "time_updated": 1794099895356,
+   "data": "{\"reason\":\"tool-calls\",\"type\":\"step-finish\",\"tokens\":{\"total\":19884,\"input\":19832,\"output\":52,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":0}},\"cost\":0}"
+  },
+  {
+   "id": "prt_0051",
+   "message_id": "msg_0021",
+   "session_id": "ses_0001",
+   "time_created": 1794099895516,
+   "time_updated": 1794099895517,
+   "data": "{\"type\":\"step-start\"}"
+  },
+  {
+   "id": "prt_0052",
+   "message_id": "msg_0021",
+   "session_id": "ses_0001",
+   "time_created": 1794099895538,
+   "time_updated": 1794099895808,
+   "data": "{\"type\":\"tool\",\"tool\":\"bash\",\"callID\":\"chatcmpl-tool-0013\",\"state\":{\"status\":\"completed\",\"input\":{\"command\":\"sleep>\\n60\\n; echo done\",\"timeout\":90000},\"output\":\"/bin/bash: -c: line 1: syntax error near unexpected token `newline'\\n/bin/bash: -c: line 1: `sleep>'\\n\",\"metadata\":{\"output\":\"/bin/bash: -c: line 1: syntax error near unexpected token `newline'\\n/bin/bash: -c: line 1: `sleep>'\\n\",\"exit\":2,\"truncated\":false},\"title\":\"sleep>\\n60\\n; echo done\",\"time\":{\"start\":1794099895802,\"end\":1794099895807}}}"
+  },
+  {
+   "id": "prt_0053",
+   "message_id": "msg_0021",
+   "session_id": "ses_0001",
+   "time_created": 1794099895808,
+   "time_updated": 1794099895809,
+   "data": "{\"reason\":\"tool-calls\",\"type\":\"step-finish\",\"tokens\":{\"total\":19995,\"input\":19945,\"output\":50,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":0}},\"cost\":0}"
+  },
+  {
+   "id": "prt_0054",
+   "message_id": "msg_0022",
+   "session_id": "ses_0001",
+   "time_created": 1794099895977,
+   "time_updated": 1794099895978,
+   "data": "{\"type\":\"step-start\"}"
+  },
+  {
+   "id": "prt_0055",
+   "message_id": "msg_0022",
+   "session_id": "ses_0001",
+   "time_created": 1794099895994,
+   "time_updated": 1794099944903,
+   "data": "{\"type\":\"tool\",\"tool\":\"bash\",\"callID\":\"chatcmpl-tool-0014\",\"state\":{\"status\":\"completed\",\"input\":{\"command\":\"sleep 60; echo done\",\"timeout\":90000},\"output\":\"(no output)\\n\\n<shell_metadata>\\nUser aborted the command\\n</shell_metadata>\",\"metadata\":{\"output\":\"(no output)\\n\\n<shell_metadata>\\nUser aborted the command\\n</shell_metadata>\",\"exit\":null,\"truncated\":false},\"title\":\"sleep 60; echo done\",\"time\":{\"start\":1794099896221,\"end\":1794099944902}}}"
+  }
+ ]
+}

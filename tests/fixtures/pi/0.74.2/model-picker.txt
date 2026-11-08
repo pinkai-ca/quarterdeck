@@ -1,0 +1,40 @@
+ qd > question from desk · que-9999 · Ping
+ Say pong.
+
+
+ The user is saying "say pong".
+
+ pong
+
+ pong
+
+
+ qd > order from desk · ord-7777 · Long
+ Run exactly this command and nothing else: sleep 60; echo done
+
+
+ I'll execute this command exactly as instructed. I just need to run sleep 60; echo done.
+
+
+ $ sleep 60; echo done
+
+ Command aborted
+
+ Took 5.4s
+
+
+ Operation aborted
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Only showing models from configured providers. Use /login to add providers.
+
+>
+
+→ qwen3.8-27b [vllm] ✓
+
+  Model Name: Qwen3.8 27B
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+/srv/ship/work
+↑33k ↓2.9k 6.1%/98k (auto)                                                                          qwen3.8-27b • medium

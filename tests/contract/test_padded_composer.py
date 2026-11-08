@@ -7,21 +7,26 @@ import pytest
 from quarterdeck.door import Door
 from quarterdeck.harness import get
 
-NAMES = ('codex', 'claude', 'antigravity', 'fake')
+NAMES = ('codex', 'claude', 'antigravity', 'fake', 'opencode', 'pi')
 
 
 def capture(name, body, padding=0, width=80):
     def pad(line):
         return line.ljust(width) if padding == 'full' else line + ' '*padding
-    prompt = {'codex':'› ', 'claude':'❯ ', 'antigravity':'> ', 'fake':'> '}[name]
     rows = body.split('\n')
-    content = [prompt+rows[0], *['  '+r for r in rows[1:]]]
-    if name == 'codex':
-        lines = [*content, '', '  TestModel low · /work', '  ? for shortcuts']
+    if name == 'opencode':
+        lines = ['  ┃', *['  ┃  ' + r for r in rows], '  ┃', '  ┃  Build auto · TestModel pool', '  ╹' + '▀'*(width-3), '  /work   ctrl+p commands']
+    elif name == 'pi':
+        lines = ['─'*width, *rows, '─'*width, '/work', '0.0%/98k (auto)  TestModel • low']
     else:
-        status = {'claude':'  ○ low · /effort', 'antigravity':'  TestModel · low',
-                  'fake':'fake claude · model TestModel · effort low · idle'}[name]
-        lines = ['─'*60, *content, '─'*60, status]
+        prompt = {'codex':'› ', 'claude':'❯ ', 'antigravity':'> ', 'fake':'> '}[name]
+        content = [prompt+rows[0], *['  '+r for r in rows[1:]]]
+        if name == 'codex':
+            lines = [*content, '', '  TestModel low · /work', '  ? for shortcuts']
+        else:
+            status = {'claude':'  ○ low · /effort', 'antigravity':'  TestModel · low',
+                      'fake':'fake claude · model TestModel · effort low · idle'}[name]
+            lines = ['─'*60, *content, '─'*60, status]
     return '\n'.join(map(pad, lines))+'\n'
 
 
@@ -43,7 +48,8 @@ def test_empty_padded_prompt_rows_open_every_adapter(name, padding, monkeypatch)
 
 
 @pytest.mark.parametrize('name,placeholder',[('codex','Ask Codex to do anything'),
-    ('claude','Press up to edit queued messages'),('antigravity','Press up to edit queued messages')])
+    ('claude','Press up to edit queued messages'),('antigravity','Press up to edit queued messages'),
+    ('opencode','Ask anything… "What is the tech stack of this project?"')])
 @pytest.mark.parametrize('padding',[3,4,'full'])
 def test_recognized_placeholder_padding_is_empty_not_an_obstruction(name, placeholder, padding, monkeypatch):
     door = door_for(name,capture(name,placeholder,padding),monkeypatch)

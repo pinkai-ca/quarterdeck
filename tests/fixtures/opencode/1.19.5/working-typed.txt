@@ -1,0 +1,40 @@
+  ┃  /bin/bash: line 1: qd: command not found
+  ┃
+
+     Output captured to /tmp/ord1234_out.txt. qd not found in PATH.
+
+     counted
+     paragraph 0..40 (40 lines) command not found
+
+     ▣  Build · Qwen3.8 27B · 14.1s
+
+  ┃
+  ┃  qd > order from desk · ord-5678 · Sleep
+  ┃  Run exactly this command and nothing else: sleep 20; echo slept
+  ┃
+  ┃
+
+  ┃
+  ┃  $ sleep>
+  ┃  20
+  ┃  ; echo slept
+  ┃
+  ┃  /bin/bash: -c: line 1: syntax error near unexpected token `newline'
+  ┃  /bin/bash: -c: line 1: `sleep>'
+  ┃
+
+  ┃
+  ┃  ⠴ sleep 20; echo slept
+  ┃
+
+     ▣  Build · Qwen3.8 27B
+
+  ┃
+  ┃  qd > question from desk · que-9999 · Ping
+  ┃  Say pong.
+  ┃
+  ┃
+  ┃  Build auto · Qwen3.8 27B local vLLM
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   ⬝⬝⬝⬝⬝■■■  esc interrupt                                                                19.6K (20%)  ctrl+p commands
+

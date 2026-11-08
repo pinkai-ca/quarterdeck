@@ -1,0 +1,40 @@
+  ┃  paragraph 12: words words words words words words words words words words words words
+  ┃  paragraph 13: words words words words words words words words words words words words
+  ┃  paragraph 14: words words words words words words words words words words words words
+  ┃  paragraph 15: words words words words words words words words words words words words
+  ┃  paragraph 16: words words words words words words words words words words words words
+  ┃  paragraph 17: words words words words words words words words words words words words
+  ┃  paragraph 18: words words words words words words words words words words words words
+  ┃  paragraph 19: words words words words words words words words words words words words
+  ┃  paragraph 20: words words words words words words words words words words words words
+  ┃  paragraph 21: words words words words words words words words words words words words
+  ┃  paragraph 22: words words words words words words words words words words words words
+  ┃  paragraph 23: words words words words words words words words words words words words
+  ┃  paragraph 24: words words words words words words words words words words words words
+  ┃  paragraph 25: words words words words words words words words words words words words
+  ┃  paragraph 26: words words words words words words words words words words words words
+  ┃  paragraph 27: words words words words words words words words words words words words
+  ┃  paragraph 28: words words words words words words words words words words words words
+  ┃  paragraph 29: words words words words words words words words words words words words
+  ┃  paragraph 30: words words words words words words words words words words words words
+  ┃  paragraph 31: words words words words words words words words words words words words
+  ┃  paragraph 32: words words words words words words words words words words words words
+  ┃  paragraph 33: words words words words words words words words words words words words
+  ┃  paragraph 34: words words words words words words words words words words words words
+  ┃  paragraph 35: words words words words words words words words words words words words
+  ┃  paragraph 36: words words words words words words words words words words words words
+  ┃  paragraph 37: words words words words words words words words words words words words
+  ┃  paragraph 38: words words words words words words words words words words words words
+  ┃  paragraph 39: words words words words words words words words words words words words
+  ┃  qd > reply: qd post report --re ord-1234
+  ┃
+
+     ▣  Build · Qwen3.8 27B
+
+  ┃
+  ┃
+  ┃
+  ┃  Build auto · Qwen3.8 27B local vLLM
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   ⬝⬝⬝■■■■■  esc interrupt                                                                14.2K (14%)  ctrl+p commands
+

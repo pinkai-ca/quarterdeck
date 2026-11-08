@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from quarterdeck import cli, doctor
-from quarterdeck.ship import Pool, load
+from quarterdeck.ship import Pool, ShipError, load
 
 
 def run(capsys, *argv: str) -> tuple[int, str]:
@@ -57,3 +57,30 @@ def test_a_pool_is_ready_when_its_credential_is_there(tmp_path: Path, monkeypatc
 def test_a_ship_file_that_does_not_load_is_the_first_failing_check(tmp_path: Path, capsys):
     code, out = run(capsys, "--ship", str(tmp_path), "doctor")
     assert code == 1 and out.startswith("FAIL  ship file · ") and "holds no ship.toml" in out
+
+
+def test_an_endpoint_pool_is_ready_when_it_answers_and_names_the_server_when_it_does_not(monkeypatch):
+    monkeypatch.setattr(doctor.endpoint, "models", lambda url, timeout=0: [doctor.endpoint.Served("a", 4096)])
+    ready = doctor.pool_check(Pool("local", "local", endpoint="http://127.0.0.1:8000/v1"))
+    assert ready.passed and ready.detail == "http://127.0.0.1:8000/v1 answers; serves a (4,096 tokens)"
+
+    def down(url, timeout=0):
+        raise ShipError(f"{url} does not answer: connection refused")
+
+    monkeypatch.setattr(doctor.endpoint, "models", down)
+    check = doctor.pool_check(Pool("local", "local", endpoint="http://127.0.0.1:1/v1"))
+    assert not check.passed
+    assert check.detail == "http://127.0.0.1:1/v1 does not answer: connection refused; start the server, or point the pool at one that answers"
+
+
+def test_a_jailed_seat_adds_a_bubblewrap_check(drydock: Path, monkeypatch):
+    from quarterdeck import ship as shipmod
+
+    (drydock / "ship.toml").write_text(shipmod.edit((drydock / "ship.toml").read_text(), "seats.worker-1", "sandbox", True))
+    ship = shipmod.load(drydock)
+    monkeypatch.setattr(doctor, "program_version", lambda argv: "0.11.1" if argv[0] == "bwrap" else "1.0")
+    check = next(c for c in doctor.checks(ship) if c.name == "sandbox")
+    assert check.passed and check.detail == "bubblewrap 0.11.1: jailed seats run in it"
+    monkeypatch.setattr(doctor, "program_version", lambda argv: None if argv[0] == "bwrap" else "1.0")
+    check = next(c for c in doctor.checks(ship) if c.name == "sandbox")
+    assert not check.passed and "install bubblewrap, or set sandbox = false" in check.detail
