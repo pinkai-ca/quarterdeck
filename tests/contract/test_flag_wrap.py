@@ -39,7 +39,7 @@ def test_flag_word_wrap_passes_through_screen_and_door(name, padding, monkeypatc
     payload, rows = example(name)
     door = door_for(name, capture(name, rows, padding, 318), monkeypatch, width=318)
     assert door.harness.box_columns(318) == (315 if name == "codex" else 317)
-    assert door.harness.wrap_slack == (0 if name == "codex" else 1)
+    assert door.harness.wrap_slack == 0  # pi now uses its editor's word-wrap rule, not a one-column heuristic
     screen = door.screen()
     assert door.matches(door.harness.box(payload), screen)  # law: one-door
     assert not door.reading().open, "matching our transport is not permission to overwrite an existing draft"
