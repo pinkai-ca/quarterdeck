@@ -435,6 +435,7 @@ quarterdeck/                       the project folder: the framework repository
     harness/       base.py types.py home.py claude.py codex.py antigravity.py opencode.py pi.py fake.py; json_record.py limits.py sqlite_snapshot.py costs.py
                    opencode_record.py antigravity_record.py antigravity_wire.py antigravity_quota.py; simulator.py synthetic_record.py synthetic_control.py,
                    the fake program the drill runs, its records in Claude Code's or Codex's shape, and the rendezvous a test holds it at
+    harness/codex_usage.py   Codex usage windows from the newest eligible snapshot in current launch records
     endpoint.py    endpoint pools: what a server serves, the model a seat takes from it, the key beside it
     sandbox.py     the bubblewrap jail around a sandboxed seat's program
     post.py        messages: store, inbox, the typed form, the watch
