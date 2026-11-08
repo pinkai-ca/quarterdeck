@@ -199,8 +199,6 @@ class Door:
 
     def matches(self, box, screen: Screen) -> bool:
         pane = self.seat.pane()
-        # The ordinary Codex composer has two prefix cells and one right margin.
-        # The other adapters use a two-cell prompt/continuation prefix.
         columns = self.harness.box_columns(pane.width) if pane else None
         return box.matches(screen.box, columns, self.harness.wrap_slack)
 
