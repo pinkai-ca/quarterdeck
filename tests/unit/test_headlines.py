@@ -40,7 +40,7 @@ def seed(ship):
                                           Window('other', 1, AT + timedelta(days=7), False, 'Other')), AT))
 
 
-@pytest.mark.parametrize('state', ['fresh', 'stale', 'failed', 'never'])
+@pytest.mark.parametrize('state', ['fresh', 'stale', 'failed', 'never', 'first-failure'])
 def test_no_seat_headlines_are_read_only_complete_data_in_text_and_json(tmp_path, monkeypatch, capsys, state):
     ship = ship_at(tmp_path)
     monkeypatch.delenv('QD_SHIP', raising=False)
@@ -52,7 +52,10 @@ def test_no_seat_headlines_are_read_only_complete_data_in_text_and_json(tmp_path
         def forbidden(*args):
             raise AssertionError('a reading must not fetch provider usage')
         monkeypatch.setattr(harness.get(name), 'usage', forbidden)
-    if state != 'never':
+    if state == 'first-failure':
+        with Ledger(ship.runtime / 'ledger.sqlite') as book:
+            book.record_usage('claude', Usage((), now, 'synthetic initial failure'))
+    elif state != 'never':
         seed(ship)
         if state == 'failed':
             with Ledger(ship.runtime / 'ledger.sqlite') as book:
@@ -61,9 +64,11 @@ def test_no_seat_headlines_are_read_only_complete_data_in_text_and_json(tmp_path
     before = (path.read_bytes(), path.stat().st_mtime_ns) if path.exists() else None
     rows = watch.headline_readings(ship)
     assert [r['pool'] for r in rows] == ['claude', 'google']
-    if state == 'never':
+    if state in ('never', 'first-failure'):
         assert all(r['reading'] is None for r in rows)
         assert [r['window'] for r in rows] == ['5h', '7d']
+        if state == 'first-failure':
+            assert rows[0]['attempted_at'] is not None and 'synthetic initial failure' in rows[0]['reason']
     else:
         assert rows[0]['reading'].used == .25 and rows[0]['reading'].read_at == AT.isoformat()
         assert rows[0]['current'] == (state == 'fresh')
@@ -71,7 +76,7 @@ def test_no_seat_headlines_are_read_only_complete_data_in_text_and_json(tmp_path
         assert cli.main(['--ship', str(tmp_path), '--json', *verb]) == 0
         data = json.loads(capsys.readouterr().out)
         assert len(data['usage']) == 2
-        if state != 'never':
+        if state not in ('never', 'first-failure'):
             assert data['usage'][0]['reading']['used'] == .25
             assert data['usage'][0]['current'] == (state == 'fresh')
         assert cli.main(['--ship', str(tmp_path), *verb]) == 0
@@ -84,7 +89,7 @@ def test_no_seat_headlines_are_read_only_complete_data_in_text_and_json(tmp_path
     if before:
         assert (path.read_bytes(), path.stat().st_mtime_ns) == before
         with Ledger.reading(path) as book:
-            assert len(book.usage.rows()) == 4, 'non-headline windows remain available'
+            assert len(book.usage.rows()) == (0 if state == 'first-failure' else 4), 'non-headline windows remain available'
     else:
         assert not path.exists()
 

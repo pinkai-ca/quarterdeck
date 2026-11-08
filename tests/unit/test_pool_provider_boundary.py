@@ -50,12 +50,12 @@ def test_endpoint_labels_and_valid_siblings_work_across_generic_metadata(tmp_pat
     assert credential.freshness(endpoint, tmp_path / "not-a-credential") is None
     assert credential.grant_expiry(endpoint) is None
     assert credential.login_needed(ship) == []
-    assert watch.ledger_usage(ship) == []
+    assert watch.ledger_usage(ship) == ['valid 5h usage unknown']
     svc = Service(ship, SimpleNamespace())
     try:
         svc.account()  # includes the declared-pool refresh metadata scan, with no active seats
         assert svc.known_open(SimpleNamespace(), "local")
         assert svc.known_open(SimpleNamespace(), "valid-key")
-        assert credential.login_needed(ship) == [] and watch.ledger_usage(ship) == []
+        assert credential.login_needed(ship) == [] and watch.ledger_usage(ship) == ['valid 5h usage unknown']
     finally:
         svc.ledger.close()

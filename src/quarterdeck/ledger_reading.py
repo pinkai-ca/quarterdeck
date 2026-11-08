@@ -108,7 +108,8 @@ def render_rollup(data: dict) -> list[str]:
     if any(r.unmeasured or r.untimed or r.unjudged or (r.unpriced and r.cost is not None) for r in rows):
         lines.append(PLUS_NOTE)
     if any(r.unpriced for r in rows):
-        lines.append("cost with + is a partial total; - means no established cost; unpriced turns are counted in JSON")
+        partial = "cost with + is a partial total; " if any(r.unpriced and r.cost is not None for r in rows) else ""
+        lines.append(partial + "- means no established cost; unpriced turns are counted in JSON")
     return lines
 
 

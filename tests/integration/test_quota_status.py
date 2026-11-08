@@ -33,7 +33,7 @@ def test_each_session_uses_shipwide_wall_and_cached_google_headline(drydock, tmu
         env.pop('QD_SEAT',None)
         result=subprocess.run([qd,'--ship',str(drydock),'status','--line'],env=env,capture_output=True,text=True,check=True)
         assert 'wall: google individual quota reached' in result.stdout and 'reset ' in result.stdout
-        assert 'google 7d 75% used' in result.stdout
+        assert 'google 7d 75% reset ' in result.stdout
 
 
 def test_last_known_and_recovery_reach_status_watch_and_ledger_without_query(drydock, tmux):
@@ -53,9 +53,12 @@ def test_last_known_and_recovery_reach_status_watch_and_ledger_without_query(dry
     for args in commands:
         result = subprocess.run([qd, '--ship', str(drydock), *args], env=env,
                                 capture_output=True, text=True, check=True)
-        assert 'google 7d 75% used' in result.stdout
-        assert 'LAST KNOWN' in result.stdout and 'synthetic provider timeout' in result.stdout
-        assert good_at.isoformat() in result.stdout and '(12m ago)' in result.stdout
+        assert 'google 7d 75%' in result.stdout and 'LAST KNOWN' in result.stdout
+        if args == ('status', '--line'):
+            assert 'LAST KNOWN 12m reset ' in result.stdout and len(result.stdout.rstrip('\n')) <= 160
+        else:
+            assert '75% used' in result.stdout and 'synthetic provider timeout' in result.stdout
+            assert good_at.isoformat() in result.stdout and '(12m ago)' in result.stdout
     assert book.db.execute('SELECT * FROM usage_reads').fetchall() == before
     recovered_at = datetime.now(timezone.utc)
     doc = document()
@@ -64,8 +67,11 @@ def test_last_known_and_recovery_reach_status_watch_and_ledger_without_query(dry
     for args in commands:
         result = subprocess.run([qd, '--ship', str(drydock), *args], env=env,
                                 capture_output=True, text=True, check=True)
-        assert 'google 7d 50% used' in result.stdout
+        assert 'google 7d 50%' in result.stdout
         assert 'LAST KNOWN' not in result.stdout and 'synthetic provider timeout' not in result.stdout
-        assert recovered_at.isoformat() in result.stdout
+        if args == ('status', '--line'):
+            assert '50% reset ' in result.stdout
+        else:
+            assert '50% used' in result.stdout and recovered_at.isoformat() in result.stdout
     assert book.db.execute('SELECT count(*) FROM pools').fetchone() == (5,)
     book.close()

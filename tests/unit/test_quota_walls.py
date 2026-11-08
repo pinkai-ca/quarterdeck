@@ -97,7 +97,7 @@ def test_record_wall_survives_idle_later_input_restart_and_blocks_delivery(tmp_p
         monkeypatch.setenv('TMUX',f'synthetic-{session}')
         line=watch.line(seat.ship,seat.tmux)
         assert 'wall: google-a individual quota reached' in line and 'reset ' in line  # law: nothing-waits-silently
-        assert 'google-a 7d usage unknown' in line
+        assert 'google-a 7d unknown reset ?' in line
 
 
 @pytest.mark.parametrize('expired', [True, False])

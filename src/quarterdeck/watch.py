@@ -308,6 +308,9 @@ def headline_readings(ship: Ship) -> list[dict]:
     if not selected:
         return []
     found = {}
+    missing = {pool: {"pool": pool, "group": reader.headline_window[0], "window": reader.headline_window[1],
+                      "reading": None, "reason": "usage unknown", "attempted_at": None, "error": None}
+               for pool, reader in selected.items()}
     book = ledger.Ledger.reading(ship.runtime / "ledger.sqlite")
     if book is not None:
         with book:
@@ -315,16 +318,18 @@ def headline_readings(ship: Ship) -> list[dict]:
                 for row in book.usage.rows():
                     if row.pool in selected and selected[row.pool].is_headline(row.group, row.window):
                         found[row.pool] = window_reading(row, post.now())
+                for pool, at, error in book.db.execute("SELECT pool,at,error FROM usage_reads"):
+                    if pool in missing:
+                        missing[pool].update(attempted_at=at, error=error,
+                                             reason=f"usage unknown: {error}" if error else "headline window missing from usage read")
             except sqlite3.OperationalError:
                 return [{"pool": None, "reading": None, "reason": SCHEMA_BEHIND}]
-    return [found.get(pool, {"pool": pool, "group": selected[pool].headline_window[0],
-                             "window": selected[pool].headline_window[1], "reading": None,
-                             "reason": "usage unknown"}) for pool in sorted(selected)]
+    return [found.get(pool, missing[pool]) for pool in sorted(selected)]
 
 
 def render_headlines(rows: list[dict]) -> list[str]:
     return [row["reading"].describe(row["observed_at"]) if row["reading"] else
-            (f"{row['pool']} {row['reason']}" if row["pool"] else row["reason"]) for row in rows]
+            (f"{row['pool']} {row.get('window', '')} {row['reason']}" if row["pool"] else row["reason"]) for row in rows]
 
 
 def ledger_usage(ship: Ship) -> list[str]:
