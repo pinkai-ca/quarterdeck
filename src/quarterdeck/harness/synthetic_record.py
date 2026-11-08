@@ -1,4 +1,4 @@
-"""The fake harness's records, written in the shape of each real program.
+"""The fake harness's records, written in Claude Code's or Codex's shape; the Antigravity shape here serves the contract tests.
 
 The control plane reads them with the real adapters' readers, so the fake drill exercises
 the same code the real seats are read with.

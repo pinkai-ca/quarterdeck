@@ -1,4 +1,4 @@
-"""qd-fakeharness: a small terminal program that behaves like each real agent program.
+"""qd-fakeharness: a small terminal program in the shape of Claude Code or Codex.
 
 It shows a box that folds a long paste, a dialog, a program that queues while working and
 one that does not; it takes a message, works through steps, writes the record in the
