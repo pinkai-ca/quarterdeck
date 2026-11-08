@@ -188,3 +188,18 @@ def test_the_home_is_built_from_the_endpoint_and_the_launch_carries_the_brief_an
     assert json.loads((home / "agent" / "models.json").read_text())["providers"]["remote"]["apiKey"] == "QD_ENDPOINT_KEY", "a variable's name, as pi reads it"
     assert "secret-value" not in (home / "agent" / "models.json").read_text()
     assert harness.launch(plain, keyed, home, brief, None, None).env["QD_ENDPOINT_KEY"] == "secret-value"
+
+
+def test_the_version_is_read_from_the_error_stream_where_pi_prints_it(monkeypatch):
+    """Probed 7 November 2026: ``pi --version`` prints 0.74.2 on stderr and nothing on stdout; the first live check missed it."""
+    import subprocess
+
+    from quarterdeck.harness import base
+
+    def run(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="0.74.2\n")
+
+    monkeypatch.setattr(base.subprocess, "run", run)
+    assert PiHarness().version() == "0.74.2"
+    monkeypatch.setattr(base.subprocess, "run", lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0, stdout="2.1.317 (Claude Code)\n", stderr="warning 3\n"))
+    assert base.program_version(("claude", "--version")) == "2.1.317", "the standard output is read first"

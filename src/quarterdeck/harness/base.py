@@ -277,13 +277,19 @@ def same_name(shown: str, wanted: str) -> bool:
 
 
 def program_version(argv: tuple[str, ...]) -> str | None:
-    """The installed version a program prints for ``--version``, read every time: programs update under a running ship."""
+    """The installed version a program prints for ``--version``, read every time: programs update under a running ship.
+
+    Read from the standard output first and the error stream second: pi 0.74.2 prints its version on the latter.
+    """
     try:
-        out = subprocess.run(list(argv), capture_output=True, text=True, timeout=20).stdout
+        done = subprocess.run(list(argv), capture_output=True, text=True, timeout=20)
     except (OSError, subprocess.TimeoutExpired):
         return None
-    match = re.search(r"\d+\.\d+(\.\d+)?", out)
-    return match.group(0) if match else None
+    for stream in (done.stdout, done.stderr):
+        match = re.search(r"\d+\.\d+(\.\d+)?", stream)
+        if match:
+            return match.group(0)
+    return None
 
 
 class Harness(ABC):
