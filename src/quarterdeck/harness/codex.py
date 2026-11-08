@@ -182,6 +182,50 @@ BOX_START = re.compile(r"^› (.*)$")
 PLACEHOLDER = "Ask Codex to do anything"
 STATUS_LINE = re.compile(r"^\s+(\S+) (low|medium|high|xhigh|max) · ")
 WORKING = re.compile(r"• Working \([^)]*esc to interrupt")  # the elapsed time reads 10s, then 1m 05s
+# Complete logo captured on 0.166.0, not a Braille character class. Its position
+# varies with pane size; a ready composer may still have this logo above it.
+STARTUP_LOGO = (
+    '⣀⣤⣤⣤⣀⣀',
+    '⣠⣶⣿⣿⣿⣿⣿⣿⣿⣿⣦⣤⣤⣤⣤⣤⣤⡀',
+    '⢀⣾⣿⣿⠿⠋⠉⠉⢉⣭⣿⣿⣿⣿⣿⠿⣿⣿⣿⣿⣷⣄',
+    '⣀⣾⣿⣿⠃ ⣀⣴⣾⣿⣿⡿⠟⠋ ⣀⡀ ⠈⠙⢿⣿⣿⣧',
+    '⣀⣶⣿⣿⣿⣿⡇ ⢸⣿⣿⡿⠛⠉⢀⣠⣴⣿⣿⣿⣷⣦⣀⠈⢻⣿⣿⡇',
+    '⣰⣿⣿⡿⢿⣿⣿⡇ ⢸⣿⣿⢀⣤⣶⣿⣿⣿⠟⠛⠻⣿⣿⣿⣿⣮⣿⣿⡷',
+    '⢰⣿⣿⡟⠁⢸⣿⣿⡇ ⢸⣿⣿⣿⣿⠿⠿⣿⣿⣿⣦⣄⡀⠈⠛⠿⣿⣿⣿⣧⡀',
+    '⣾⣿⣿⠃ ⢸⣿⣿⡇ ⢸⣿⣿⠋⠁  ⠈⠙⢻⣿⣿⣿⣶⣤⡀ ⠹⢿⣿⣷⡄',
+    '⢸⣿⣿⣇ ⠸⣿⣿⣷⣦⣼⣿⣿      ⢸⣿⣿⠻⢿⣿⣿⡇ ⠘⣿⣿⣿',
+    '⠈⢿⣿⣿⣦⡀⠈⠛⠿⣿⣿⣿⣿⣄⡀  ⢀⣠⣼⣿⣿  ⣿⣿⡇  ⣿⣿⣿⠇',
+    '⢻⣿⣿⣿⣷⣦⣀⠈⠙⠻⣿⣿⣿⣶⣶⣿⣿⣿⣿⣿  ⣿⣿⡇ ⣠⣿⣿⣿',
+    '⢸⣿⣿⡿⢿⣿⣿⣿⣦⣠⣴⣿⣿⣿⡿⠟⠋⢸⣿⣿  ⣿⣿⣷⣴⣿⣿⣿⠃',
+    '⠘⣿⣿⣷ ⠈⠛⢿⣿⣿⣿⠿⠋⠉ ⣠⣴⣿⣿⣿  ⣿⣿⣿⣿⣿⠟⠁',
+    '⠻⣿⣿⣿⣤⣀ ⠈⠉ ⢀⣤⣶⣿⣿⣿⠿⠟⠁ ⣰⣿⣿⡟⠋⠁',
+    '⠈⠿⣿⣿⣿⣿⣶⣾⣿⣿⣿⣿⠟⠋⠁  ⣠⣼⣿⣿⡟',
+    '⠙⠛⠛⠛⠻⠛⢿⣿⣿⣿⣿⣷⣾⣿⣿⣿⡿⠏',
+    '⠈⠙⠛⠿⠿⠿⠿⠛⠉',
+)
+
+
+def _starting(lines: list[str]) -> bool:
+    """The observed initial header, logo and untouched placeholder, before a ready footer."""
+    rows = [line.rstrip() for line in lines if line.strip()]
+    if len(rows) < 21 or rows[0] != "  >_ OpenAI Codex (v0.166.0)" or not rows[1].startswith("     "):
+        return False
+    cwd = rows[1][5:]
+    if not cwd.startswith(("/", "~/")):
+        return False
+    body = rows[2:]
+    if body[0] == "  permissions: YOLO mode":
+        body = body[1:]
+    if tuple(line.strip() for line in body[:len(STARTUP_LOGO)]) != STARTUP_LOGO:
+        return False
+    tail = body[len(STARTUP_LOGO):]
+    if not tail or tail[0] != "› " + PLACEHOLDER:
+        return False
+    return (tail[1:] == ["  ? for shortcuts"] or
+            len(tail) == 3 and tail[2] == "  ? for shortcuts" and
+            re.fullmatch(r"  \S+ default · " + re.escape(cwd), tail[1]) is not None)
+
+
 CONFIG = """\
 model = {model}
 model_reasoning_effort = {effort}
@@ -297,6 +341,8 @@ class CodexHarness(Harness):
         """The box is the last ``› `` block above the status line, blank lines inside it and all."""
         lines = text.rstrip("\n").split("\n")
         status_at = next((i for i in range(len(lines) - 1, -1, -1) if STATUS_LINE.match(lines[i])), None)
+        if status_at is None and _starting(lines):
+            return Screen(text, box=None, starting=True)
         shows = {}
         if status_at is not None:
             status = STATUS_LINE.match(lines[status_at])

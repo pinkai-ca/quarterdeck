@@ -224,6 +224,8 @@ class PiHarness(EndpointHarness):
 
     def screen(self, text: str) -> Screen:
         """The box is between two rules above the working directory and the footer with the model and thinking level."""
+        if not text.strip():
+            return Screen(text, box=None, starting=True)
         lines = text.rstrip("\n").split("\n")
         working = bool(WORKING.search(text))
         queued = 1 if QUEUED_HINT in text else 0

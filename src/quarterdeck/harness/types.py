@@ -204,6 +204,7 @@ class Screen:
     shows: dict[str, str] = field(default_factory=dict)
     echoes: tuple[str, ...] = ()  # inputs the transcript shows above a running turn, possibly cut short with …
     quota: str | None = None
+    starting: bool = False  # a recognized drawing/loading frame, never permission to type or clear
 
 
 def _cells(text: str) -> int | None:

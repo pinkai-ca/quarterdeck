@@ -34,6 +34,14 @@ def screen(name: str):
     return OpenCodeHarness().screen((SCREENS / f"{name}.txt").read_text())
 
 
+def test_captured_blank_startup_is_drawing_not_an_unknown_dialog():
+    """8 Nov 2026, isolated 1.19.5 launch at 80x24: blank at 0.38s, ready at 2.16s."""
+    s = screen("startup-blank")
+    assert s.starting and s.box is None and s.unknown is None and s.interruption is None
+    unknown = OpenCodeHarness().screen("Unfamiliar loading dialog\n")
+    assert not unknown.starting and unknown.unknown is not None
+
+
 HELD: list[sqlite3.Connection] = []  # a connection kept open per record, as the running program keeps its own: closing the last one would fold the log into the file
 
 

@@ -27,6 +27,17 @@ def screen(name: str):
     return PiHarness().screen((SCREENS / f"{name}.txt").read_text())
 
 
+def test_captured_blank_startup_is_drawing_not_an_unknown_dialog():
+    """8 Nov 2026, isolated 0.74.2 launch carrying an order, 80x24: blank at 0.06s, ready at 0.44s.
+
+    This does not establish what the historical minute-long missing-footer interval showed.
+    """
+    s = screen("startup-blank")
+    assert s.starting and s.box is None and s.unknown is None and s.interruption is None
+    assert not PiHarness().screen("Unfamiliar loading dialog\n").starting
+    assert PiHarness().screen("Unfamiliar loading dialog\n").unknown is not None
+
+
 def test_every_fixture_set_has_the_screens_the_adapter_reads():
     names = {p.stem for p in SCREENS.glob("*.txt")}
     assert {"fresh", "idle", "paste-6-lines-shown", "paste-4-lines-shown", "paste-44-lines-folded", "paste-long-folded-chars",

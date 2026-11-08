@@ -12,6 +12,7 @@ from quarterdeck.door import Door
 from quarterdeck.tmux import Tmux
 
 from .test_seat import wait_for
+from tests.conftest import FIXTURES
 
 
 def ship_with(drydock: Path, extra: str) -> shipmod.Ship:
@@ -43,6 +44,46 @@ def test_a_message_is_typed_once_and_confirmed_by_the_record(captain: seatmod.Se
     screen = tmux.capture(captain.pane().id, history=100)
     assert f"qd > order from desk · {message.short} · Stars" in screen and "⎿ counted" in screen
     assert door.reading().open and str(door.reading()) == "open"
+
+
+@pytest.mark.parametrize("program,version,frame", [("pi", "0.74.2", "startup-blank"),
+                                                  ("opencode", "1.19.5", "startup-blank"),
+                                                  ("codex", "0.166.0", "startup-logo")])
+def test_startup_holds_without_keys_then_ready_delivers_once_with_a_receipt(captain, tmux, monkeypatch, program, version, frame):
+    """Replay the captured frame over the real fake pane, then release its ordinary box."""
+    from quarterdeck import harness
+
+    raw = (FIXTURES / program / version / f"{frame}.txt").read_text()
+    startup = harness.get(program).screen(raw)
+    native_screen, capture = captain.harness.screen, tmux.capture
+    holding = [True]
+    monkeypatch.setattr(captain.harness, "screen", lambda text: startup if text == raw else native_screen(text))
+    monkeypatch.setattr(tmux, "capture", lambda *args, **kwargs: raw if holding[0] else capture(*args, **kwargs))
+    sent, pressed = [], []
+    paste, keys = tmux.paste, tmux.keys
+
+    def tracked_paste(*args, **kwargs):
+        sent.append(args)
+        return paste(*args, **kwargs)
+
+    def tracked_keys(*args, **kwargs):
+        pressed.append(args)
+        return keys(*args, **kwargs)
+
+    monkeypatch.setattr(tmux, "paste", tracked_paste)
+    monkeypatch.setattr(tmux, "keys", tracked_keys)
+    door = Door(captain)
+    message = order(captain, "After startup")
+    payload = post.typed([message])
+    for _ in range(2):
+        delivery = door.deliver(payload)
+        assert delivery.result == "withheld" and "starting" in delivery.detail
+    assert sent == pressed == [] and captain.record() is None
+    holding[0] = False
+    assert door.reading().open
+    assert door.deliver(payload).result == "delivered"
+    assert len(sent) == len(pressed) == 1
+    assert captain.harness.inputs(captain.record())[-1].text == payload.strip()
 
 
 def test_text_in_the_box_is_an_obstruction_and_nothing_more_is_done(captain: seatmod.Seat, tmux: Tmux):

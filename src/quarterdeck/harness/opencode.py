@@ -121,6 +121,8 @@ class OpenCodeHarness(EndpointHarness):
 
     def screen(self, text: str) -> Screen:
         """The box is the bar block straight above the status row, a pad row above and below its text."""
+        if not text.strip():
+            return Screen(text, box=None, starting=True)
         lines = text.rstrip("\n").split("\n")
         rule_at = next((i for i in range(len(lines) - 1, 0, -1) if RULE.match(lines[i]) and STATUS.match(lines[i - 1])), None)
         working = bool(WORKING.search(text))

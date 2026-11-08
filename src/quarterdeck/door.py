@@ -121,6 +121,8 @@ class Door:
                            "dismissable" if screen.interruption.dismissable else "needs a human")
         if screen.unknown is not None:
             return Reading(False, f"unknown dialog: {screen.unknown}", "needs a human")
+        if screen.starting:
+            return Reading(False, "starting, waiting for the input box", "time")
         if screen.box is None and not screen.text.strip():
             return Reading(False, "blank screen, the program is starting or drawing", "time")
         if screen.box is None:

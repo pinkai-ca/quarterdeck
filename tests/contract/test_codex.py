@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from quarterdeck.harness.codex import CodexHarness
 from quarterdeck.ship import Pool, SeatSpec
 
@@ -15,6 +17,43 @@ SCREENS = FIXTURES / "codex" / VERSION
 
 def screen(name: str):
     return CodexHarness().screen((SCREENS / f"{name}.txt").read_text())
+
+
+@pytest.mark.parametrize("name", ["startup-logo", "startup-default"])
+def test_captured_logo_startup_waits_for_the_ready_footer(name):
+    """8 Nov 2026, isolated 0.166.0 launch at 320x120, synthetic auth, no request submitted.
+
+    Header/logo/placeholder at 0.38s, default-effort footer at 0.66s, ready at 0.83s.
+    Paths scrubbed; the complete 17-row logo and its placement are retained.
+    """
+    s = screen(name)
+    assert s.starting and s.box is None and s.unknown is None and s.interruption is None
+
+
+@pytest.mark.parametrize("name", ["startup-ready", "startup-residual"])
+def test_residual_startup_logo_does_not_hold_a_ready_box(name):
+    """Ready probe frame, plus the supplied 8 Nov residual capture with its workspace scrubbed."""
+    s = screen(name)
+    assert not s.starting and s.box == "" and s.interruption is None
+
+
+@pytest.mark.parametrize("change", [
+    lambda s: s.replace("› Ask Codex to do anything", "› a human draft"),
+    lambda s: s.replace("⣀⣤⣤⣤⣀⣀", "⠁⠂⠃⠄⠅⠆"),
+    lambda s: s + "Unfamiliar loading dialog\n",
+    lambda s: s.replace("  ? for shortcuts", "  Sign in with ChatGPT"),
+    lambda s: s.replace("  >_ OpenAI Codex (v0.166.0)", "An unrelated program"),
+])
+def test_logo_like_unknown_screens_and_drafts_are_not_starting(change):
+    raw = (SCREENS / "startup-logo.txt").read_text()
+    s = CodexHarness().screen(change(raw))
+    assert not s.starting
+
+
+def test_braille_typed_in_a_ready_composer_is_preserved():
+    raw = (SCREENS / "startup-ready.txt").read_text()
+    s = CodexHarness().screen(raw.replace("› Ask Codex to do anything", "› ⣀⣤⣤⣤⣀⣀"))
+    assert not s.starting and s.box == "⣀⣤⣤⣤⣀⣀"
 
 
 def test_every_fixture_set_has_the_screens_the_adapter_reads():
