@@ -282,3 +282,135 @@ def test_old_service_is_stopped_before_replacing_live_code_or_cards(upgraded,mon
     monkeypatch.setattr(install,'_run',run)
     assert any('no brief changed' in line for line in install.upgrade(s.ship,'same-content',s.tmux))
     assert notices(s)==[]
+
+
+@pytest.mark.parametrize('return_to_baseline',[False,True])
+@pytest.mark.parametrize('replace_desk',[False,True])
+def test_card_edit_during_partial_upgrade_gets_one_new_notice(upgraded,monkeypatch,return_to_baseline,replace_desk):
+    s=upgraded;change_archive(s)
+    original_brief=(s.ship.runtime/'brief/captain.md').read_text()
+    original=post.Store.write;failed=[]
+    def write(self,message):
+        if message.sender==post.SHIP and message.to=='desk' and not failed:
+            failed.append(True);raise OSError('synthetic desk post interruption')
+        return original(self,message)
+    monkeypatch.setattr(post.Store,'write',write)
+    with pytest.raises(OSError,match='desk post interruption'):
+        install.upgrade(s.ship,'changed',s.tmux)
+    svc=s.started[-1]
+    first=notices(s)[0]
+    first_brief=(s.ship.runtime/'brief/captain.md').read_text()
+    assert first.to=='captain' and first_brief!=original_brief
+    assert 'Changed framework instruction.' in first_brief  # first version/file and immutable notice were offered
+    if replace_desk:
+        launch=s.ship.runtime/'seats/desk/launch.json'
+        data=json.loads(launch.read_text());data['resume']='replacement';launch.write_text(json.dumps(data))
+    if return_to_baseline:
+        laws=standing.FRAMEWORK_DIR/'laws.md'
+        laws.write_text(laws.read_text().replace('\nChanged framework instruction.\n',''))
+    else:
+        card=standing.FRAMEWORK_DIR/'roles/captain.md'
+        card.write_text(card.read_text()+'\nLater independent instruction.\n')
+    svc.requests();svc.rebrief()
+    captain=[m for m in notices(s) if m.to=='captain']
+    assert len(captain)==2 and len({m.id for m in captain})==2
+    current=(s.ship.runtime/'brief/captain.md').read_text()
+    assert current==original_brief if return_to_baseline else 'Later independent instruction.' in current
+    assert len([m for m in notices(s) if m.to=='desk'])==(0 if replace_desk or return_to_baseline else 1)
+    assert not [m for m in notices(s) if m.to=='worker-1']
+    ids={m.id for m in notices(s)}
+    svc.requests();svc.rebrief()
+    restarted=Service(s.ship,s.tmux);s.started.append(restarted)
+    restarted.requests();restarted.rebrief()
+    assert {m.id for m in notices(s)}==ids
+
+
+def test_repeated_content_changes_during_one_pending_request_each_get_one_notice(upgraded,monkeypatch):
+    s=upgraded;change_archive(s)
+    original=post.Store.write;hold=[True]
+    def write(self,message):
+        if message.sender==post.SHIP and message.to=='desk' and hold[0]:
+            raise OSError('synthetic desk held')
+        return original(self,message)
+    monkeypatch.setattr(post.Store,'write',write)
+    with pytest.raises(OSError):install.upgrade(s.ship,'changed',s.tmux)
+    svc=s.started[-1]
+    card=standing.FRAMEWORK_DIR/'roles/captain.md';base=card.read_text()
+    for index,text in enumerate((base+'\nLater edit.\n',base,base+'\nLater edit.\n'),2):
+        card.write_text(text)
+        with pytest.raises(OSError):svc.requests()
+        svc.rebrief()
+        captain=[m for m in notices(s) if m.to=='captain']
+        assert len(captain)==index and len({m.id for m in captain})==index
+    hold[0]=False;svc.requests();svc.rebrief()
+    ids={m.id for m in notices(s)}
+    assert len(ids)==5
+    svc.requests();svc.rebrief()
+    assert {m.id for m in notices(s)}==ids
+
+
+def test_unposted_intermediate_content_is_not_a_new_offered_baseline(upgraded,monkeypatch):
+    s=upgraded;change_archive(s)
+    original=post.Store.write;captain_calls=[];desk_failed=[]
+    def write(self,message):
+        if message.sender==post.SHIP and message.to=='captain':
+            captain_calls.append(True)
+            if len(captain_calls)==2:raise OSError('synthetic later failure')
+        if message.sender==post.SHIP and message.to=='desk' and not desk_failed:
+            desk_failed.append(True);raise OSError('synthetic first failure')
+        return original(self,message)
+    monkeypatch.setattr(post.Store,'write',write)
+    with pytest.raises(OSError):install.upgrade(s.ship,'changed',s.tmux)
+    svc=s.started[-1]
+    card=standing.FRAMEWORK_DIR/'roles/captain.md';base=card.read_text()
+    card.write_text(base+'\nUnposted version.\n')
+    with pytest.raises(OSError):svc.requests()
+    assert len([m for m in notices(s) if m.to=='captain'])==1
+    card.write_text(base+'\nFinal version.\n')
+    svc.requests();svc.rebrief()
+    assert len([m for m in notices(s) if m.to=='captain'])==2
+    assert 'Final version.' in (s.ship.runtime/'brief/captain.md').read_text()
+    assert len(notices(s))==3
+
+
+def test_intent_write_failure_does_not_duplicate_a_later_edit_via_ordinary_rebrief(upgraded,monkeypatch):
+    s=upgraded;change_archive(s)
+    original=post.Store.write;failed=[]
+    def write(self,message):
+        if message.sender==post.SHIP and message.to=='desk' and not failed:
+            failed.append(True);raise OSError('synthetic partial')
+        return original(self,message)
+    monkeypatch.setattr(post.Store,'write',write)
+    with pytest.raises(OSError):install.upgrade(s.ship,'changed',s.tmux)
+    svc=s.started[-1]
+    card=standing.FRAMEWORK_DIR/'roles/captain.md';card.write_text(card.read_text()+'\nLater edit.\n')
+    persist=install.write_rebrief;interrupted=[]
+    def save(*args):
+        if not interrupted:
+            interrupted.append(True);raise OSError('synthetic intent failure')
+        return persist(*args)
+    monkeypatch.setattr(install,'write_rebrief',save)
+    with pytest.raises(OSError):svc.requests()
+    svc.rebrief()
+    svc.requests();svc.rebrief()
+    assert len([m for m in notices(s) if m.to=='captain'])==2
+    assert len(notices(s))==3
+
+
+def test_edit_arriving_during_recovery_remains_visible_to_ordinary_rebrief(upgraded,monkeypatch):
+    s=upgraded;change_archive(s)
+    render=standing.render;edited=[]
+    def render_then_edit(ship,spec,**kwargs):
+        path=render(ship,spec,**kwargs)
+        if spec.name=='worker-1' and not edited:
+            edited.append(True)
+            card=standing.FRAMEWORK_DIR/'roles/captain.md'
+            card.write_text(card.read_text()+'\nEdit after captain rendering.\n')
+        return path
+    monkeypatch.setattr(standing,'render',render_then_edit)
+    install.upgrade(s.ship,'changed',s.tmux)
+    svc=s.started[-1]
+    assert len([m for m in notices(s) if m.to=='captain'])==2
+    assert 'Edit after captain rendering.' in (s.ship.runtime/'brief/captain.md').read_text()
+    ids={m.id for m in notices(s)};svc.requests();svc.rebrief()
+    assert {m.id for m in notices(s)}==ids

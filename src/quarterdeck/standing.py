@@ -169,9 +169,9 @@ def laws_table(root: Path | None = None) -> list[str]:
     return render_laws(law_reading(root))
 
 
-def render(ship: Ship, seat: SeatSpec) -> Path:
+def render(ship: Ship, seat: SeatSpec, *, text: str | None = None) -> Path:
     folder = ship.runtime / "brief"
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{seat.name}.md"
-    path.write_text(brief(ship, seat).text)
+    path.write_text(brief(ship, seat).text if text is None else text)
     return path

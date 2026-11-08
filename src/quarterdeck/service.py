@@ -402,6 +402,8 @@ class Service:
 
     def rebrief(self) -> None:
         """When the orders or a card change, every brief is rendered again and each seat is told."""
+        if self.framework_commit and (self.runtime / 'requests' / f'upgrade-rebrief-{self.framework_commit}.json').exists():
+            return  # the durable upgrade publisher owns these edits until its request completes
         stamp = self._brief_stamp()
         if stamp == self.brief_stamp:
             return
@@ -416,6 +418,7 @@ class Service:
 
     def upgrade_rebrief(self, data: dict) -> str | None:
         """A durable baseline survives rendering and retries; posting is not proof of reading."""
+        stamp = self._brief_stamp()
         affected, changed = [], []
         for seat in seats(self.ship, self.tmux):
             launch = seat.folder / 'launch.json'
@@ -423,14 +426,13 @@ class Service:
                     and install.launch_stamp(launch) == data['launches'][seat.name] and seat.is_up)
             if same and data['before'].get(seat.name) is None:
                 return None  # no known prior brief to compare; never overwrite that unknown baseline
-            path = standing.render(self.ship, seat.spec)
-            if hashlib.sha256(path.read_bytes()).hexdigest() == data['before'].get(seat.name):
-                continue
-            changed.append(seat.name)
-            if same:
-                key = hashlib.sha256(f"{data['token']}:{seat.name}".encode()).hexdigest()[:16]
-                notice = post.Message(f'rep-upgrade-{key}', 'report', post.SHIP, seat.name,
-                    datetime.fromisoformat(data['at']), f"brief changed · read runtime/brief/{seat.name}.md")
+            text = standing.brief(self.ship, seat.spec).text
+            digest = hashlib.sha256(text.encode()).hexdigest()
+            notice = self.upgrade_notice(data, seat.name, digest) if same else None
+            standing.render(self.ship, seat.spec, text=text)
+            if notice is not None or (not same and digest != data['before'].get(seat.name)):
+                changed.append(seat.name)
+            if notice is not None:
                 target = self.store.dir / f'{notice.id}.json'
                 if target.exists():
                     if post.Message.from_json(target.read_text()) != notice:
@@ -438,10 +440,36 @@ class Service:
                 else:
                     self.store.write(notice)
                 affected.append(seat.name)
-        self.brief_stamp = self._brief_stamp()
+        self.brief_stamp = stamp  # edits arriving during this pass still belong to ordinary rebrief
         if changed:
             proof = 'rebrief complete · changed briefs: ' + ', '.join(changed)
             proof += ' · notices posted: ' + (', '.join(affected) or 'none') + ' · delivery/read unconfirmed'
         else:
             proof = 'rebrief complete · no brief changed'
         return json.dumps(dict(token=data['token'], status='complete', proof=proof))
+
+    def upgrade_notice(self, data: dict, name: str, digest: str) -> post.Message | None:
+        """Advance from offered content, retaining one recoverable notice intent per seat."""
+        body = f"brief changed · read runtime/brief/{name}.md"
+        notices = data.setdefault('notices', {})
+        pending = notices.get(name)
+        before, previous = data['before'][name], f"{data['token']}:{name}"
+        if pending:
+            target = self.store.dir / f"{pending['id']}.json"
+            if target.exists():
+                expected = post.Message(pending['id'], 'report', post.SHIP, name,
+                                        datetime.fromisoformat(pending['at']), body)
+                if post.Message.from_json(target.read_text()) != expected:
+                    raise ShipError('upgrade brief notice identity conflicts with an immutable post')
+                before, previous = pending['hash'], pending['id']
+            else:
+                previous = pending['previous']
+        if digest == before:
+            return None
+        key = hashlib.sha256(f'{previous}:{digest}'.encode()).hexdigest()[:16]
+        identity = f'rep-upgrade-{key}'
+        at = pending['at'] if pending and pending['id'] == identity else post.now().isoformat()
+        data['before'][name] = before
+        notices[name] = dict(hash=digest, id=identity, at=at, previous=previous)
+        install.write_rebrief(self.runtime / 'requests' / f"upgrade-rebrief-{data['commit']}.json", data)
+        return post.Message(identity, 'report', post.SHIP, name, datetime.fromisoformat(at), body)

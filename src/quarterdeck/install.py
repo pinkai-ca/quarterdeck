@@ -63,10 +63,15 @@ def queue_rebrief(ship: Ship, commit: str, previous: dict | None, snapshot: dict
         data = dict(kind='rebrief', commit=commit, token=uuid4().hex,
                     at=datetime.now(timezone.utc).isoformat(), **snapshot)
     path.with_suffix('.done').unlink(missing_ok=True)  # an old unknown-kind answer is not completion
+    write_rebrief(path, data)
+    return path, data
+
+
+def write_rebrief(path: Path, data: dict) -> None:
+    """Persist notice intent before rendering/posting; reuse the existing request file."""
     tmp = path.with_suffix('.tmp')
     tmp.write_text(json.dumps(data) + '\n')
     os.replace(tmp, path)
-    return path, data
 
 
 def rebrief_result(path: Path, data: dict, timeout: float = servicectl.ANSWER_SECONDS) -> str:
