@@ -267,6 +267,38 @@ def test_unreadable_pending_journal_holds_without_touching_box(setup) -> None:
     assert live["pasted"] == live["submitted"] == 1
 
 
+@pytest.mark.parametrize("filename", [None, "receipt.json", "receipt-1.json", "receipt-other-1.json", "ord-invalid-abcd-1.json"])
+def test_unrecognized_attempt_names_hold_the_door_without_inventing_message_ids(setup, filename) -> None:
+    svc, seat, live, record = setup
+    message, proof = send(svc, seat)
+    attempt = svc.attempts.for_message(message.id)[0]
+    original = attempt.path.read_bytes()
+    path = attempt.path
+    if filename is not None:
+        path = attempt.path.with_name(filename)
+        attempt.path.rename(path)
+        proof.save(attempts=[filename])
+    # Only the name changed: the actual attempt and journal still read and validate.
+    assert svc.attempts.all() == [replace(attempt, path=path)]
+    pending.validate(proof.data, seat.name)
+    assert pending.active(seat)[0].data == proof.data
+    live["box"] = "edited"
+    reading = Door(seat).reading()
+    assert not reading.open and not reading.waiting and reading.clears == "needs a human"
+    assert reading.reason.endswith("inspect with qd watch worker")
+    assert "qd post resend" not in reading.reason
+    if filename is None:
+        assert message.short in reading.reason and "message ID unknown" not in reading.reason
+    else:
+        assert f"attempt {filename!r}" in reading.reason and "message ID unknown" in reading.reason
+        assert message.short not in reading.reason
+    svc.reconcile()
+    svc.deliveries()
+    assert path.read_bytes() == original and proof.path.is_file()
+    assert svc.attempts.latest()[message.id] == "pending"
+    assert live["pasted"] == live["submitted"] == 1  # law: one-door
+
+
 def test_explicit_resend_requires_empty_box_and_never_claims_prior_delivery(setup) -> None:
     svc, seat, live, record = setup
     message, proof = send(svc, seat)

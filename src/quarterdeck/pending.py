@@ -11,6 +11,7 @@ from contextlib import contextmanager
 import fcntl
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Iterator, Sequence, TYPE_CHECKING
 
@@ -34,9 +35,13 @@ def identity(seat: Seat) -> dict[str, str | int | None]:
 
 
 def inspection(seat: Seat, reason: str, attempts: Sequence[str] = ()) -> str:
-    """Name the owned attempt without reading or reconstructing its payload."""
-    messages = ", ".join(dict.fromkeys(post.short_of(Path(name).stem.rsplit("-", 1)[0]) for name in attempts))
-    identity = f"{seat.name}, {messages}" if messages else seat.name
+    """Only a generated attempt name supplies a short ID; other basenames remain unknown."""
+    labels = []
+    for name in attempts:
+        match = re.fullmatch(r"((?:ord|rep|que|ans|ack)-[0-9]{8}-[0-9]{4}-.+-[0-9a-f]{4})-[1-9][0-9]*\.json", name)
+        labels.append(post.short_of(match[1]) if match else f"attempt {name!r}: message ID unknown")
+    references = ", ".join(dict.fromkeys(labels))
+    identity = f"{seat.name}, {references}" if references else seat.name
     return f"{reason} ({identity}); inspect with qd watch {seat.name}"
 
 
