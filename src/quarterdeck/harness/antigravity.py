@@ -39,7 +39,6 @@ class AntigravityHarness(Harness):
     reads_usage = True
     usage_interval = 300
     background_usage = True
-    status_usage = True
     headline_window = ("Gemini 4 Argon", "7d")
     screen_walls = True
     record_limits = ("cost is unknown unless the record states it; effort and child-turn counts are not exposed; "

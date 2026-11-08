@@ -289,22 +289,22 @@ class Facts:
         parts += [f"{name}: no watch armed" for name in self.unarmed]
         parts += [f"wall: {wall}" for wall in self.walls]
         parts += self.pending
-        parts += render_headlines(self.usage)
         parts += [f"disk: {name} {pct}%" for name, pct in self.disks]
         parts += [f"{pool} · login needed by {when}" for pool, when in self.login]
-        return " · ".join(parts)
+        from .headlines import status_line
+        return status_line(self, parts)
 
 
 SCHEMA_BEHIND = "ledger written by an older service; qd up restarts it"
 
 
 def headline_readings(ship: Ship) -> list[dict]:
-    """Only the enabled headline windows; never a provider request or a new headline policy."""
+    """Every supported subscription headline, from the cache only."""
     from . import harness as harnesses
     from .ledger_reading import window_reading
 
     readers = {p.name: harnesses.get(p.provider) for p in ship.pools.values() if p.kind == "subscription"}
-    selected = {name: reader for name, reader in readers.items() if reader.status_usage}
+    selected = {name: reader for name, reader in readers.items() if reader.reads_usage and reader.headline_window is not None}
     if not selected:
         return []
     found = {}
@@ -313,11 +313,13 @@ def headline_readings(ship: Ship) -> list[dict]:
         with book:
             try:
                 for row in book.usage.rows():
-                    if row.pool in selected and selected[row.pool].is_headline(row.group, row.window) and row.blocks:
+                    if row.pool in selected and selected[row.pool].is_headline(row.group, row.window):
                         found[row.pool] = window_reading(row, post.now())
             except sqlite3.OperationalError:
                 return [{"pool": None, "reading": None, "reason": SCHEMA_BEHIND}]
-    return [found.get(pool, {"pool": pool, "reading": None, "reason": "usage unknown"}) for pool in sorted(selected)]
+    return [found.get(pool, {"pool": pool, "group": selected[pool].headline_window[0],
+                             "window": selected[pool].headline_window[1], "reading": None,
+                             "reason": "usage unknown"}) for pool in sorted(selected)]
 
 
 def render_headlines(rows: list[dict]) -> list[str]:

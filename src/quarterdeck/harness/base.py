@@ -134,7 +134,6 @@ class Harness(ABC):
     credential_file: str | None = None
     usage_interval: int = 60
     background_usage: bool = False
-    status_usage: bool = False
     headline_window: tuple[str | None, str] | None = None
     screen_walls: bool = False
     home_variable: str | None
