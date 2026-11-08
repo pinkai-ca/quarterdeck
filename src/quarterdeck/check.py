@@ -12,14 +12,12 @@ real tokens and runs only when asked.
 from __future__ import annotations
 
 import secrets
-import shutil
-from dataclasses import replace
 
-from . import harness as harnesses, pending, post, standing
+from . import harness as harnesses, post, standing
 from .door import Door
 from .drill import Check, wait_for
-from .seat import Seat
-from .ship import SeatSpec, Session, Ship, ShipError
+from .seat import Seat, temporary_seat
+from .ship import SeatSpec, Ship, ShipError
 from .tmux import Tmux
 
 PATIENCE = 180.0
@@ -39,30 +37,9 @@ def check(ship: Ship, name: str, tmux: Tmux) -> list[Check]:
     seat_name, session_name = f"check-{name}-{run}", f"qd-check-{name}-{run}"
     spec = SeatSpec(seat_name, session_name, "worker", name, (pool.name,), model=like.model if like else None,
                     effort=like.effort if like else None, cwd=ship.workspace, sandbox=like.sandbox if like else None)
-    checked = replace(ship, sessions={**ship.sessions, session_name: Session(session_name, session_name)},
-                      seats={**ship.seats, seat_name: spec})
-    seat = Seat(checked, spec, tmux)
-    store = post.Store(ship.runtime)
-    opened_session = not tmux.has_session(session_name)
-    with pending.transient_lock(ship.runtime, seat_name) as owned:
-        if not owned:
-            raise ShipError(f"{seat_name}: temporary seat ownership is busy; retry qd check")
-        try:
-            checks += probe(checked, seat)
-        finally:
-            # The transient seat is absent from the persisted declaration. Retire its
-            # unresolved transport before deleting its home, even if the probe/stop fails.
-            pending.abandon(ship.runtime, seat_name, 'qd check ended; submission unconfirmed and never resent')
-            try:
-                seat.down()
-            finally:
-                try:
-                    if opened_session and tmux.has_session(session_name):
-                        tmux.kill_session(session_name)  # only what this run opened
-                finally:
-                    for order in store.open_for(seat_name):
-                        store.new("report", seat_name, order.sender, "qd check ended; closed by the check itself", re=order.id)
-                    shutil.rmtree(seat.folder, ignore_errors=True)
+    orders: list[post.Message] = []
+    with temporary_seat(ship, tmux, spec, orders, "qd check") as seat:
+        checks += probe(seat.ship, seat, orders)
     if all(c.passed for c in checks):
         proven = ship.runtime / "proven"
         proven.mkdir(parents=True, exist_ok=True)
@@ -72,7 +49,7 @@ def check(ship: Ship, name: str, tmux: Tmux) -> list[Check]:
     return checks
 
 
-def probe(ship: Ship, seat: Seat) -> list[Check]:
+def probe(ship: Ship, seat: Seat, orders: list[post.Message] | None = None) -> list[Check]:
     checks: list[Check] = []
     proof_line = f"qd-check-{secrets.token_hex(4)}"
     proof_file = ship.runtime / "check" / f"{seat.name}.txt"
@@ -91,6 +68,8 @@ def probe(ship: Ship, seat: Seat) -> list[Check]:
                       f"Then post your report on this order with the body: written\n\n"
                       f"The rest of this order is the laws you already run under, repeated so that the message is long "
                       f"enough to fold in your box; nothing in it changes the task.\n\n{laws}", subject="qd check")
+    if orders is not None:
+        orders.append(order)
     launch = seat.launched()
     attempt = attempts.open(order, seat.name, launch.pane, launch.pid, launch.at)
     text = post.typed([order])

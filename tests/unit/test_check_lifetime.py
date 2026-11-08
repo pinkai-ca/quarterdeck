@@ -38,6 +38,8 @@ def test_service_leaves_live_check_to_owner_and_teardown_retires_only_uncertaint
     sessions = set()
     tmux = SimpleNamespace(has_session=lambda name: name in sessions,
                            kill_session=lambda name: sessions.remove(name),
+                           new_session=lambda name, **kwargs: (sessions.add(name) or name),
+                           status_line=lambda *args: None, kill_session_id=lambda name: sessions.discard(name),
                            pane=lambda ident: Pane(ident, "Synthetic", "worker", 111 if ident == "%1" else 222,
                                                    80, 24, False, False, None), keys=no_keys, paste=no_keys)
     svc = Service(ship, tmux)
@@ -50,11 +52,12 @@ def test_service_leaves_live_check_to_owner_and_teardown_retires_only_uncertaint
     observed = {}
     monkeypatch.setattr(FakeHarness, "version", lambda self: "synthetic")
 
-    def probe(checked, seat):
+    def probe(checked, seat, orders):
         assert seat.name in checked.seats and seat.name not in svc.ship.seats
         sessions.add(seat.session.title)
         record = seed(seat, "synthetic-check", "%2", 222)
         message = svc.store.new("order", "ship", seat.name, "Synthetic check input")
+        orders.append(message)
         attempt = svc.attempts.open(message, seat.name, "%2", 222, seat.launched().at)
         proof = pending.Proof.begin(seat, [attempt], post.typed([message]))
         proof.save(phase="submitted", shown=proof.data["payload"])
@@ -113,18 +116,22 @@ DEAD_OWNER = """
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from quarterdeck import check, pending, post
+from quarterdeck import check, doctor, pending, post
+from quarterdeck.drill import Check
+from quarterdeck.seat import Seat
 from quarterdeck.harness.fake import FakeHarness
 from tests.unit.test_check_lifetime import synthetic_ship
 from tests.unit.test_removed_delivery import launch
 ship = synthetic_ship(Path(sys.argv[1]))
 tmux = SimpleNamespace(has_session=lambda name: False,
+                       new_session=lambda name, **kwargs: name, status_line=lambda *args: None,
                        pane=lambda name: SimpleNamespace(id='%1', pid=111))
 FakeHarness.version = lambda self: 'synthetic'
-def probe(checked, seat):
+def probe(checked, seat, orders):
     launch(seat)
     store, attempts = post.Store(ship.runtime), post.Attempts(ship.runtime)
     message = store.new('order', 'ship', seat.name, 'Synthetic killed-owner input')
+    orders.append(message)
     attempt = attempts.open(message, seat.name, '%1', 111, seat.launched().at)
     proof = pending.Proof.begin(seat, [attempt], post.typed([message]))
     proof.save(phase='submitted', shown=proof.data['payload'])
@@ -132,13 +139,19 @@ def probe(checked, seat):
     sys.stdin.read()
     raise AssertionError('owner should be killed while holding its lifetime lock')
 check.probe = probe
-check.check(ship, 'fake', tmux)
+if sys.argv[2] == 'check':
+    check.check(ship, 'fake', tmux)
+else:
+    doctor.shutil.which = lambda *args, **kwargs: 'synthetic-program'
+    Seat.up = lambda self, **kwargs: probe(self.ship, self, [])
+    doctor.fix(ship, [Check('synthetic', False)], tmux)
 """
 
 
-def test_killed_check_owner_releases_kernel_lock_and_is_abandoned_once(tmp_path: Path) -> None:
+@pytest.mark.parametrize("caller", ["check", "doctor"])
+def test_killed_temporary_owner_releases_kernel_lock_and_is_abandoned_once(tmp_path: Path, caller) -> None:
     svc = Service(synthetic_ship(tmp_path), SimpleNamespace())
-    process = subprocess.Popen([sys.executable, "-c", DEAD_OWNER, str(tmp_path)], stdin=subprocess.PIPE,
+    process = subprocess.Popen([sys.executable, "-c", DEAD_OWNER, str(tmp_path), caller], stdin=subprocess.PIPE,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
         assert select.select([process.stdout], [], [], 10)[0], "synthetic owner failed to become ready"

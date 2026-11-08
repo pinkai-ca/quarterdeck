@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import itertools
 import os
+import secrets
 import shlex
 import subprocess
 from dataclasses import dataclass
@@ -18,6 +19,12 @@ HISTORY_LINES = 50_000
 
 class TmuxError(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class SessionIdentity:
+    id: str
+    token: str
 
 
 @dataclass(frozen=True)
@@ -104,17 +111,33 @@ class Tmux:
     def has_session(self, name: str) -> bool:
         return name in self.sessions()
 
-    def new_session(self, name: str, env: dict[str, str] | None = None) -> None:
+    def new_session(self, name: str, env: dict[str, str] | None = None) -> SessionIdentity:
         """A detached session, holding its history for days, with the ship in its environment.
 
         It opens on a placeholder window that the first seat replaces, because the
         history limit must be set before any seat's window exists.
         """
-        self.run("new-session", "-d", "-s", name, "-n", "qd")
-        self.run("set-option", "-t", _session(name), "history-limit", str(HISTORY_LINES))
-        self.run("set-option", "-t", _session(name), "renumber-windows", "on")
-        for key, value in (env or {}).items():
-            self.run("set-environment", "-t", _session(name), key, value)
+        token = secrets.token_hex(16)
+        ident = self.run("new-session", "-d", "-P", "-F", "#{session_id}", "-e", f"QD_SESSION_OWNER={token}",
+                         "-s", name, "-n", "qd").strip()
+        identity = SessionIdentity(ident, token)
+        try:
+            self.run("set-option", "-t", ident, "history-limit", str(HISTORY_LINES))
+            self.run("set-option", "-t", ident, "renumber-windows", "on")
+            for key, value in (env or {}).items():
+                self.run("set-environment", "-t", ident, key, value)
+        except BaseException:
+            self.kill_session_id(identity)
+            raise
+        return identity
+
+    def kill_session_id(self, identity: SessionIdentity) -> None:
+        """A server restart can reuse IDs: both the ID and creation token must match."""
+        if not self.running() or identity.id not in self.run("list-sessions", "-F", "#{session_id}").splitlines():
+            return
+        environment = self.run("show-environment", "-t", identity.id).splitlines()
+        if f"QD_SESSION_OWNER={identity.token}" in environment:
+            self.run("kill-session", "-t", identity.id)
 
     def kill_session(self, name: str) -> None:
         self.run("kill-session", "-t", _session(name))

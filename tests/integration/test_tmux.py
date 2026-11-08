@@ -100,3 +100,47 @@ def test_an_immediately_successful_program_is_not_retained(tmux: Tmux, tmp_path:
     assert pane.pid > 0 and pane.id != anchor.id
     wait_for(lambda: tmux.pane(pane.id) is None)
     assert tmux.pane(anchor.id) is not None
+
+
+def test_temporary_session_cleanup_uses_identity_when_a_name_is_reused(tmux: Tmux):
+    tmux.new_session("Anchor")
+    old = tmux.new_session("Temporary")
+    tmux.kill_session("Temporary")
+    current = tmux.new_session("Temporary")
+    assert old != current
+    tmux.kill_session_id(old)
+    assert tmux.has_session("Temporary"), "old ownership cannot kill a replacement session"
+    tmux.kill_session_id(current)
+    assert not tmux.has_session("Temporary")
+
+
+def test_failed_session_setup_cleans_only_the_session_it_created(tmux: Tmux, monkeypatch):
+    from quarterdeck.tmux import TmuxError
+    import pytest
+
+    tmux.new_session("Existing")
+    run = tmux.run
+
+    def fail_option(*args, **kwargs):
+        if args[0] == "set-option":
+            raise TmuxError("synthetic configuration failure")
+        return run(*args, **kwargs)
+
+    monkeypatch.setattr(tmux, "run", fail_option)
+    with pytest.raises(TmuxError, match="synthetic configuration failure"):
+        tmux.new_session("Temporary")
+    assert tmux.sessions() == ["Existing"]
+
+
+def test_reused_ids_on_another_server_do_not_transfer_ownership(tmux: Tmux):
+    other = Tmux(socket=tmux.socket + "-replacement")
+    try:
+        old = tmux.new_session("Temporary")
+        current = other.new_session("Temporary")
+        assert old.id == current.id and old.token != current.token
+        other.kill_session_id(old)
+        assert other.has_session("Temporary")
+        other.kill_session_id(current)
+        assert not other.has_session("Temporary")
+    finally:
+        other.kill_server()

@@ -13,11 +13,13 @@ import shlex
 import shutil
 import sys
 import time
+from contextlib import contextmanager, ExitStack
+from typing import Iterator
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import harness as harnesses, input_receipt, post, record_owner, ship as shipmod, standing
+from . import harness as harnesses, input_receipt, pending, post, record_owner, ship as shipmod, standing
 from .harness.base import Harness, Join
 from .provenance import remember_launch
 from .pricing import save_price, saved_price
@@ -355,6 +357,56 @@ class Seat:
     def fresh(self) -> str:
         """Relaunch without resume: a new conversation that begins with the brief and the open messages."""
         return self.down() + "\n" + self.up(resume=False)
+
+
+@contextmanager
+def temporary_seat(ship: Ship, tmux: Tmux, spec: SeatSpec, orders: list[post.Message], purpose: str) -> Iterator[Seat]:
+    """Own a fresh temporary seat through transport retirement and every teardown stage.
+
+    Callers register only orders this operation opened. Posts and receipts remain;
+    a failure to retire transport leaves its home intact for later inspection.
+    """
+    session = shipmod.Session(spec.session, spec.session)
+    treated = replace(ship, sessions={**ship.sessions, spec.session: session}, seats={**ship.seats, spec.name: spec})
+    seat = Seat(treated, spec, tmux)
+    store = post.Store(ship.runtime)
+    with pending.transient_lock(ship.runtime, seat.name) as owned:
+        if not owned:
+            raise ShipError(f"{seat.name}: temporary seat ownership is busy; retry {purpose}")
+        if (spec.name in ship.seats or spec.session in ship.sessions or tmux.has_session(session.title)
+                or seat.folder.exists() or store.for_seat(seat.name)
+                or any(a.seat == seat.name for a in post.Attempts(ship.runtime).all())):
+            raise ShipError(f"{seat.name}: temporary seat/session/history already exists; retry {purpose}")
+        seat.folder.mkdir(parents=True, exist_ok=False)
+        retired = False
+        session_id = None
+
+        def retire() -> None:
+            nonlocal retired
+            pending.abandon(ship.runtime, seat.name, f"{purpose} ended; submission unconfirmed and never resent")
+            retired = True
+
+        def close_orders() -> None:
+            with ExitStack() as closing:
+                for order in orders:
+                    if order.kind == "order" and order.to == seat.name and store.is_open(order):
+                        closing.callback(store.new, "report", seat.name, order.sender,
+                                         f"{purpose} ended; closed by the temporary operation", re=order.id)
+
+        def remove_home() -> None:
+            if retired:
+                shutil.rmtree(seat.folder)
+
+        with ExitStack() as cleanup:
+            cleanup.callback(remove_home)
+            cleanup.callback(close_orders)
+            cleanup.callback(lambda: tmux.kill_session_id(session_id) if session_id is not None else None)
+            cleanup.callback(seat.down)
+            cleanup.callback(retire)
+            session_id = tmux.new_session(session.title, env={"QD_SHIP": str(ship.folder)})
+            status = shlex.join([str(qd_bin() / "qd"), "--ship", str(ship.folder), "status", "--line"])
+            tmux.status_line(session.title, status)
+            yield seat
 
 
 # -- the ship ------------------------------------------------------------------------------

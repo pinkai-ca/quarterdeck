@@ -107,17 +107,20 @@ def test_check_retires_all_unresolved_attempts_and_journals_before_deleting_seat
     state = {"session": False, "seat": None, "messages": []}
     tmux = SimpleNamespace(has_session=lambda name: state["session"],
                            kill_session=lambda name: state.update(session=False),
+                           new_session=lambda name, **kwargs: (state.update(session=True) or name),
+                           status_line=lambda *args: None, kill_session_id=lambda name: state.update(session=False),
                            pane=lambda ident: Pane(ident, "Synthetic", "worker", 111, 80, 24, False, False, None),
                            keys=no_keys, paste=no_keys)
     monkeypatch.setattr(FakeHarness, "version", lambda self: "synthetic")
 
-    def probe(checked, seat):
+    def probe(checked, seat, orders):
         state.update(session=True, seat=seat)
         launch(seat)
         store, attempts = post.Store(ship.runtime), post.Attempts(ship.runtime)
         for result in (None, "queued", "pending", "blind", "withheld", "delivered"):
             msg = store.new("order", "ship", seat.name, f"Synthetic {result} check delivery")
             state["messages"].append(msg)
+            orders.append(msg)
             attempt = attempts.open(msg, seat.name, "%1", 111, seat.launched().at)
             proof = pending.Proof.begin(seat, [attempt], post.typed([msg]))
             proof.save(phase="delivered" if result == "delivered" else "submitted", shown=proof.data["payload"])

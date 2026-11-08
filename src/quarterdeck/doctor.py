@@ -15,14 +15,13 @@ from __future__ import annotations
 import secrets
 import shutil
 import tempfile
-from dataclasses import replace
 from pathlib import Path
 
 from . import credential, endpoint, harness as harnesses, install, post, sandbox, servicectl, watch
 from .drill import Check, wait_for
 from .harness.base import key_environment, program_version
-from .seat import Seat, program_path
-from .ship import Pool, SeatSpec, Session, Ship, ShipError
+from .seat import program_path, temporary_seat
+from .ship import Pool, SeatSpec, Ship, ShipError
 from .tmux import Tmux
 
 PATIENCE = 600.0  # a fix is a turn of real work
@@ -114,27 +113,18 @@ def fix(ship: Ship, failed: list[Check], tmux: Tmux) -> list[Check]:
     run = secrets.token_hex(2)
     seat_name, session_name = f"doctor-{run}", f"qd-doctor-{run}"
     spec = SeatSpec(seat_name, session_name, "engineering", reader.name, (pool.name,), persona="McCoy", cwd=ship.folder)
-    treated = replace(ship, sessions={**ship.sessions, session_name: Session(session_name, session_name)},
-                      seats={**ship.seats, seat_name: spec})
-    seat = Seat(treated, spec, tmux)
     store = post.Store(ship.runtime)
     body = ("qd doctor ran its checks on this machine, and these failed:\n"
             + "\n".join(f"- {check.name}: {check.detail}" for check in failed)
             + "\n\nFix what can be fixed from this machine: install or sign in to what is missing, make what is absent, "
               "free what is full. Change nothing of the ship's declaration without saying so. Then report on this order, "
               "saying what you changed and what you could not.")
-    order = store.new("order", post.SHIP, seat_name, body, subject="qd doctor")
-    opened = not tmux.has_session(session_name)
-    try:
+    orders: list[post.Message] = []
+    with temporary_seat(ship, tmux, spec, orders, "qd doctor") as seat:
+        order = store.new("order", post.SHIP, seat_name, body, subject="qd doctor")
+        orders.append(order)
         proof = seat.up(resume=False)  # the order travels as the seat's first message
         closed = wait_for(lambda: store.closing_report(order), PATIENCE)
         found = [Check("seat opened", True, proof),
                  Check("seat reported", closed is not None, closed.body[:160] if closed else f"no report within {PATIENCE:.0f}s")]
-    finally:
-        seat.down()
-        if opened and tmux.has_session(session_name):
-            tmux.kill_session(session_name)  # only what this run opened
-        if store.closing_report(order) is None:
-            store.new("report", seat_name, post.SHIP, "qd doctor ended; closed by the doctor itself", re=order.id)
-        shutil.rmtree(seat.folder, ignore_errors=True)
     return found
