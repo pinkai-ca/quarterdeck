@@ -250,3 +250,19 @@ def test_existing_edited_card_path_only_notifies_changed_running_briefs(upgraded
     svc.rebrief()
     assert [m.to for m in notices(s)]==['captain']
     assert notices(s)[0].body=="ship's orders changed · read runtime/brief/captain.md"
+
+
+def test_brief_updated_by_old_service_during_install_is_the_upgrade_baseline(upgraded,monkeypatch):
+    s=upgraded;change_archive(s)
+    old=Service(s.ship,s.tmux);s.started.append(old)
+    stop=s.stop
+    def stop_after_card_event(runtime):
+        # Installation replaced the shared cards while the old service was still alive.
+        monkeypatch.setattr(standing,'FRAMEWORK_DIR',s.venv/'share/quarterdeck/standing-orders')
+        old.rebrief()
+        assert len(notices(s))==2
+        return stop(runtime)
+    monkeypatch.setattr(install.servicectl,'stop',stop_after_card_event)
+    proofs=install.upgrade(s.ship,'changed',s.tmux)
+    assert any('no brief changed' in line for line in proofs)
+    assert len(notices(s))==2, 'preserve existing notices rather than post the same content again'

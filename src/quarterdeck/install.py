@@ -132,7 +132,6 @@ def upgrade(ship: Ship, ref: str = "HEAD", tmux: Tmux | None = None) -> list[str
     repo = source_repo(ship)
     commit = git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}").decode().strip()
     runtime = ship.runtime
-    snapshot = brief_snapshot(ship)
     staging = runtime / "upgrade" / commit
     shutil.rmtree(staging, ignore_errors=True)
     staging.mkdir(parents=True)
@@ -157,6 +156,7 @@ def upgrade(ship: Ship, ref: str = "HEAD", tmux: Tmux | None = None) -> list[str
     previous = installed(runtime)
     was_running = servicectl.alive(runtime)
     stopped = servicectl.stop(runtime) if was_running else None
+    snapshot = brief_snapshot(ship)  # include any card event the old service handled during installation
     record = {"commit": commit, "ref": ref, "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
               "previous": previous["commit"] if previous else None}
     (runtime / RECORD).write_text(json.dumps(record, indent=2) + "\n")
