@@ -246,7 +246,7 @@ def _cells(text: str) -> int | None:
 _LINE_CLASSES = {"SP": " ", "BA": "|", "HY": "-", "CL": "}", "CP": ")]", "EX": "!?",
                  "OP": "([{", "QU": "\"'", "IS": ",.:;", "NU": "0123456789", "PO": "%", "PR": "$+\\", "SY": "/"}
 _BREAK_BEFORE = {
-    "SP": {"BA", "HY", "OP", "QU", "NU", "PO", "PR", "AL"},
+    "SP": {"BA", "HY", "OP", "QU", "NU", "PO", "PR", "AL", "IN"},
     "BA": {"OP", "NU", "PO", "PR", "AL"},
     "CL": {"OP", "NU", "AL"},
     "CP": {"OP"},
@@ -255,13 +255,20 @@ _BREAK_BEFORE = {
     "PO": {"PO", "PR"},
     "PR": {"PO", "PR"},
     "SY": {"OP", "PO", "PR", "AL"},
-    "QU-SP": {"BA", "HY", "QU", "NU", "PO", "PR", "AL"},
+    "IN": {"OP", "NU", "PO", "PR", "AL"},
+    "QU-SP": {"BA", "HY", "QU", "NU", "PO", "PR", "AL", "IN"},
 }
 
 
 def _line_class(char: str) -> str | None:
     if " " <= char <= "~":
         return next((name for name, chars in _LINE_CLASSES.items() if char in chars), "AL")
+    # unicode-linebreak 0.1.5 resolves these specific AI symbols as AL; U+2026
+    # is IN (inseparable). Neither is permission to classify other punctuation.
+    if char in "\u00b7\u2192":
+        return "AL"
+    if char == "\u2026":
+        return "IN"
     # Latin-1 and Extended-A/B letters are AL in unicode-linebreak 0.1.5.
     # Do not infer that other letters/scripts have the same line-break class.
     if "\u00c0" <= char <= "\u024f" and unicodedata.category(char).startswith("L"):
