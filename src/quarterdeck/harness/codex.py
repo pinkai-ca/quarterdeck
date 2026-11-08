@@ -17,6 +17,7 @@ from datetime import date, datetime, time, timezone
 from pathlib import Path
 
 from .json_record import JsonLinesReader
+from . import codex_usage
 
 from ..ship import Pool, SeatSpec, literal
 from .base import (Box, ship_template, trimmed, Input, Control, Credential, Harness, Interruption, Keys, Launch, RecordError, Screen, State, Tokens,
@@ -281,6 +282,12 @@ def config_text(config: dict) -> str:
 
 class CodexHarness(Harness):
     """Codex, proven on 0.166.0. Model and effort change only at launch: ``/model`` opens a picker."""
+
+    reads_usage = background_usage = True
+    usage_from_records = staticmethod(codex_usage.read)
+
+    def headline_windows(self):
+        return ((None, "5h"), (None, "7d"))
 
     name = "codex"
     program = "codex"

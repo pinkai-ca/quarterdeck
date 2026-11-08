@@ -76,6 +76,7 @@ class Harness(ABC):
     credential_file: str | None = None
     usage_interval: int = 60
     background_usage: bool = False
+    usage_from_records = None  # optional reader of (joined record, saved launch time) sources
     headline_window: tuple[str | None, str] | None = None
     screen_walls: bool = False
     home_variable: str | None
@@ -134,8 +135,11 @@ class Harness(ABC):
         """A record's stated cost by default; adapters that synthesize costs qualify theirs."""
         return turn
 
+    def headline_windows(self) -> tuple[tuple[str | None, str], ...]:
+        return (self.headline_window,) if self.headline_window else ()
+
     def is_headline(self, group: str | None, window: str) -> bool:
-        return self.headline_window == (group, window)
+        return (group, window) in self.headline_windows()
 
     def quota_wall(self, text: str, at: datetime) -> Wall | None:
         return None

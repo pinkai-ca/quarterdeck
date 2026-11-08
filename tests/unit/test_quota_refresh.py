@@ -37,13 +37,13 @@ def test_declared_pool_refresh_without_live_google_seats_and_restart(tmp_path, m
     svc.account()
     assert calls == ['default-sign-in']
     assert svc.ledger.usage_known('google')
-    assert not svc.ledger.pool_windows('codex'), 'Google results never populate the Codex pool'
+    assert all(row.used is None for row in svc.ledger.usage.rows('codex')), 'Google results never populate the Codex pool'
     svc.account()
     svc.ledger.close()
     svc = Service(ship, SimpleNamespace())
     svc.account()
     assert calls == ['default-sign-in'], 'service restart preserves cadence with no Google seats'
-    assert 'google 7d 75% used' in watch.ledger_usage(ship)[0]
+    assert 'google 7d 75% used' in '\n'.join(watch.ledger_usage(ship))
     assert calls == ['default-sign-in'], 'status reads only the cache'
     svc.ledger.quota.usage_read('google', datetime.now(timezone.utc)-timedelta(seconds=301), None)
     svc.account()
@@ -65,7 +65,7 @@ def test_declared_pool_failure_pacing_and_new_wall_refresh_without_seat(tmp_path
     svc = Service(ship, SimpleNamespace())
     svc.account()
     assert calls == ['attempt'] and not svc.ledger.usage_known('google')
-    assert 'synthetic command failure' in watch.ledger_usage(ship)[0]
+    assert 'synthetic command failure' in '\n'.join(watch.ledger_usage(ship))
     now = datetime.now(timezone.utc)
     event = wall('Individual quota reached. Resets in 2h.', 'synthetic-event', now)
     svc.ledger.quota.observe('synthetic-record', 'former-worker', 'google', event, now)
@@ -93,6 +93,7 @@ def test_default_account_aliases_share_one_read_other_accounts_and_keys_stay_sep
     assert calls == ['default-sign-in'], 'aliases must not multiply authenticated requests'
     assert svc.ledger.usage_known('google') and svc.ledger.usage_known('google-alias')
     assert not svc.ledger.usage_known('different-account')
-    assert not svc.ledger.pool_windows('key-pool') and not svc.ledger.pool_windows('codex')
+    assert not svc.ledger.pool_windows('key-pool')
+    assert all(row.used is None for row in svc.ledger.usage.rows('codex'))
     assert 'account directory is not read' in '\n'.join(svc.ledger.quota.usage_notes())
     svc.ledger.close()

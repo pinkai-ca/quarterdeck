@@ -21,7 +21,7 @@ provider="claude"
 [pools.google]
 provider="antigravity"
 [pools.unsupported]
-provider="codex"
+provider="pi"
 [pools.key]
 provider="claude"
 api_key="env:SYNTHETIC_UNUSED"

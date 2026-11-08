@@ -323,7 +323,9 @@ def test_new_launch_empty_door_progresses_but_old_uncertainty_remains_visible(se
     (seat.folder / "launch.json").write_text(json.dumps(data))
     live["box"] = ""
     assert Door(seat).reading().open
-    assert "prior launch" in watch.facts(svc.ship, svc.tmux, walls=[], login=[]).line()
+    facts = watch.facts(svc.ship, svc.tmux, walls=[], login=[])
+    assert any("prior launch" in reason for reason in facts.pending)
+    assert "pending" in facts.line() and "details: qd status" in facts.line()
     assert old.short in pending.detached(seat)[0]
     assert pending.detached(seat)[0].endswith("inspect with qd watch worker")
     assert svc.attempts.latest()[old.id] == "pending"

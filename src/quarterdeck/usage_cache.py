@@ -122,6 +122,11 @@ class UsageCache:
                     error = usage.error
                 if old and old.bucket is not None and new.bucket is not None and old.bucket != new.bucket:
                     error = "bucket identity changed; new reading could not be attributed to this window"
+                if not error and old:
+                    if parse(old.read_at) is not None and usage.read_at < parse(old.read_at):
+                        error = "source observation older than retained reading"
+                    elif old.error and parse(old.attempted_at) is not None and usage.read_at <= parse(old.attempted_at):
+                        error = old.error  # recovery needs an observation newer than the failed attempt
                 if not error and old and old.group is not None and new.group != old.group:
                     error = "group identity changed; new reading could not be attributed to this window"
             if error:

@@ -304,27 +304,28 @@ def headline_readings(ship: Ship) -> list[dict]:
     from .ledger_reading import window_reading
 
     readers = {p.name: harnesses.get(p.provider) for p in ship.pools.values() if p.kind == "subscription"}
-    selected = {name: reader for name, reader in readers.items() if reader.reads_usage and reader.headline_window is not None}
+    selected = {name: reader for name, reader in readers.items() if reader.reads_usage and reader.headline_windows()}
     if not selected:
         return []
     found = {}
-    missing = {pool: {"pool": pool, "group": reader.headline_window[0], "window": reader.headline_window[1],
-                      "reading": None, "reason": "usage unknown", "attempted_at": None, "error": None}
-               for pool, reader in selected.items()}
+    missing = {(pool, group, window): {"pool": pool, "group": group, "window": window,
+                                      "reading": None, "reason": "usage unknown", "attempted_at": None, "error": None}
+               for pool in sorted(selected) for group, window in selected[pool].headline_windows()}
     book = ledger.Ledger.reading(ship.runtime / "ledger.sqlite")
     if book is not None:
         with book:
             try:
                 for row in book.usage.rows():
                     if row.pool in selected and selected[row.pool].is_headline(row.group, row.window):
-                        found[row.pool] = window_reading(row, post.now())
+                        found[(row.pool, row.group, row.window)] = window_reading(row, post.now())
                 for pool, at, error in book.db.execute("SELECT pool,at,error FROM usage_reads"):
-                    if pool in missing:
-                        missing[pool].update(attempted_at=at, error=error,
-                                             reason=f"usage unknown: {error}" if error else "headline window missing from usage read")
+                    for key, item in missing.items():
+                        if key[0] == pool:
+                            item.update(attempted_at=at, error=error,
+                                        reason=f"usage unknown: {error}" if error else "headline window missing from usage read")
             except sqlite3.OperationalError:
                 return [{"pool": None, "reading": None, "reason": SCHEMA_BEHIND}]
-    return [found.get(pool, missing[pool]) for pool in sorted(selected)]
+    return [found.get(key, item) for key, item in missing.items()]
 
 
 def render_headlines(rows: list[dict]) -> list[str]:

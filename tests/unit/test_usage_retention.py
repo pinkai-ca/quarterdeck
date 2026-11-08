@@ -38,7 +38,7 @@ def tuple_of(row):
 def test_first_failure_then_good_failure_restart_and_recovery(tmp_path: Path) -> None:
     path = tmp_path / "ledger.sqlite"
     book = Ledger(path)
-    book.record_usage("google", unknown("synthetic first failure", AT))
+    book.record_usage("google", unknown("synthetic first failure", AT - timedelta(seconds=1)))
     first = rows(book)["7d"]
     assert tuple_of(first)[:3] == (None, None, None)
     assert "usage unknown" in first.describe(AT) and "LAST KNOWN" not in first.describe(AT)
@@ -166,10 +166,11 @@ def test_never_read_ambiguous_duplicates_do_not_establish_measurement_or_identit
     ambiguous = rows(book)["7d"]
     assert (ambiguous.used, ambiguous.resets_at, ambiguous.read_at, ambiguous.bucket) == (None, None, None, None)
     assert "ambiguous duplicate" in ambiguous.error
-    # A first unambiguous complete reading can establish the identity.
-    book.record_usage("google", Usage((reading(bucket=None),), AT))
-    assert rows(book)["7d"].bucket is None and rows(book)["7d"].current(AT)
-    book.record_usage("google", Usage((reading(),), AT))
+    # A newer unambiguous complete reading can establish the identity.
+    fresh_at = AT + timedelta(seconds=1)
+    book.record_usage("google", Usage((reading(fresh_at, bucket=None),), fresh_at))
+    assert rows(book)["7d"].bucket is None and rows(book)["7d"].current(fresh_at)
+    book.record_usage("google", Usage((reading(fresh_at),), fresh_at))
     assert rows(book)["7d"].bucket == "synthetic-original"
     book.close()
 
@@ -227,10 +228,10 @@ def test_service_retention_partial_cadence_selection_presentation_and_observed_w
     svc.ledger.quota.usage_read("google", datetime.now(timezone.utc) - timedelta(seconds=301), None)
     svc.account()
     assert tuple_of(rows(svc.ledger)["7d"]) == original
-    assert "bucket identity changed" in svc.ledger.quota.usage_notes()[0], "caller must not overwrite cache diagnostics"
+    assert "bucket identity changed" in "; ".join(svc.ledger.quota.usage_notes()), "caller must not overwrite cache diagnostics"
     assert not svc.known_open(seat, "google")
-    assert "LAST KNOWN" in watch.ledger_usage(ship)[0]
-    assert original[2] in watch.ledger_usage(ship)[0]
+    assert "LAST KNOWN" in next(line for line in watch.ledger_usage(ship) if line.startswith("google "))
+    assert original[2] in next(line for line in watch.ledger_usage(ship) if line.startswith("google "))
     assert "LAST KNOWN" in "\n".join(pools_table(svc.ledger))
     assert len(calls) == 2
     svc.ledger.close()
@@ -242,7 +243,7 @@ def test_service_retention_partial_cadence_selection_presentation_and_observed_w
     doc["command"]["data"]["groups"][0]["buckets"][0]["remaining_fraction"] = None
     svc.ledger.quota.usage_read("google", datetime.now(timezone.utc) - timedelta(seconds=301), None)
     svc.account()
-    assert svc.known_open(seat, "google") and "LAST KNOWN" not in watch.ledger_usage(ship)[0]
+    assert svc.known_open(seat, "google") and "LAST KNOWN" not in next(line for line in watch.ledger_usage(ship) if line.startswith("google "))
     assert "LAST KNOWN" in "\n".join(pools_table(svc.ledger))
     now = datetime.now(timezone.utc)
     event = wall("Individual quota reached. Resets in 2h.", "synthetic-event", now)
@@ -254,8 +255,9 @@ def test_service_retention_partial_cadence_selection_presentation_and_observed_w
     assert {k: tuple_of(v) for k, v in rows(svc.ledger).items()} == prior_tuples
     assert not svc.known_open(seat, "google") and svc.ledger.walled("google")
     assert svc.ledger.db.execute("SELECT * FROM wall_events").fetchall() == observed
-    assert len(rows(svc.ledger)) == 5 and not svc.ledger.pool_windows("codex")
-    assert "synthetic timeout" in watch.ledger_usage(ship)[0]
+    assert len(rows(svc.ledger)) == 5
+    assert all(row.used is None for row in svc.ledger.usage.rows("codex"))
+    assert "synthetic timeout" in next(line for line in watch.ledger_usage(ship) if line.startswith("google "))
     svc.ledger.close()
 
 
@@ -320,3 +322,34 @@ def test_fallback_key_and_no_usage_cases_do_not_query_provider(tmp_path: Path) -
     assert svc.known_open(seat, "unmeasured")
     assert not svc.ledger.pool_windows()
     svc.ledger.close()
+
+
+@pytest.mark.parametrize('provider', ['claude', 'antigravity', 'codex'])
+@pytest.mark.parametrize('had_measurement', [True, False])
+def test_failed_attempt_cannot_be_cleared_by_older_or_equal_observations_and_newer_recovers(tmp_path, provider, had_measurement):
+    from quarterdeck import harness
+    selected = harness.get(provider).headline_windows()
+    def snapshot(at, used=.25, error=None):
+        return Usage(tuple(Window(name, used, AT+timedelta(days=7), group=group, error=error)
+                           for group, name in selected), at)
+    with Ledger(tmp_path/'ledger.sqlite') as book:
+        if had_measurement:
+            book.record_usage(provider, snapshot(AT), attempted_at=AT)
+        failed_at = AT+timedelta(seconds=10)
+        book.record_usage(provider, snapshot(failed_at, None, 'synthetic failure'), attempted_at=failed_at)
+        original = [tuple_of(row) for row in book.usage.rows(provider)]
+        for index, offset in enumerate((-1, 0, 5, 10)):
+            attempted = AT+timedelta(seconds=20+index)
+            book.record_usage(provider, snapshot(AT+timedelta(seconds=offset)), attempted_at=attempted)
+            rows = book.usage.rows(provider)
+            assert [tuple_of(row) for row in rows] == original
+            assert all(row.error and not row.current(attempted) and row.attempted_at == attempted.isoformat() for row in rows)
+        # Even equal to the most recent failed attempt is not newer evidence.
+        book.record_usage(provider, snapshot(attempted), attempted_at=attempted+timedelta(seconds=1))
+        assert [tuple_of(row) for row in book.usage.rows(provider)] == original
+        assert all(row.error for row in book.usage.rows(provider))
+        fresh_at = AT+timedelta(seconds=30)
+        book.record_usage(provider, snapshot(fresh_at, .5), attempted_at=fresh_at+timedelta(seconds=1))
+        assert all(row.used == .5 and row.read_at == fresh_at.isoformat() and row.current(fresh_at)
+                   for row in book.usage.rows(provider))
+        assert book.quota.usage_notes() == []

@@ -118,7 +118,18 @@ def refresh_declared(service) -> None:
         if not reader.background_usage or not service.ledger.quota.due(pool.name, datetime.now(timezone.utc), reader.usage_interval):
             continue
         key = reader.shared_usage_key(pool)
-        usage = shared[key] if key is not None and key in shared else reader.usage(pool)
+        if reader.usage_from_records is not None:
+            from .seat import seats
+            from .record_owner import launch_reader
+            sources = []
+            for seat in seats(service.ship, service.tmux):
+                launched = seat.launched()
+                if (launched is not None and launched.pool == pool.name
+                        and launch_reader(launched) == pool.provider and seat.spec.harness == pool.provider):
+                    sources.append((seat.record(), launched.when))
+            usage = reader.usage_from_records(sources, datetime.now(timezone.utc))
+        else:
+            usage = shared[key] if key is not None and key in shared else reader.usage(pool)
         usage = usage or Usage((), datetime.now(timezone.utc), "provider usage unavailable")
         if key is not None:
             shared[key] = usage
