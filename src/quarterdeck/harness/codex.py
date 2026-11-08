@@ -229,8 +229,7 @@ class CodexHarness(Harness):
     program = "codex"
     credential_file = "auth.json"
     home_variable = "CODEX_HOME"
-    keys = Keys(submit="Enter", send_now=None, interrupt="Escape", empty=("C-c",))
-    brief_channel = "override"
+    keys = Keys(submit="Enter", send_now=None, interrupt="Escape")
 
     def freshness(self, path: Path) -> tuple[float, float] | None:
         try:

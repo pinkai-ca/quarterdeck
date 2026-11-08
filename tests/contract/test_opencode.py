@@ -110,7 +110,7 @@ def test_the_model_picker_is_dismissed_with_escape_and_the_compact_layout_is_sai
 
 def test_the_keys_the_controls_and_the_pool_it_runs_on():
     harness = OpenCodeHarness()
-    assert harness.keys.submit == "Enter" and harness.keys.interrupt == "Escape Escape" and harness.keys.empty is None
+    assert harness.keys.submit == "Enter" and harness.keys.interrupt == "Escape Escape"
     assert not harness.reads_usage and not harness.remote_control
     assert [c.name for c in harness.controls()] == ["model"] and harness.control("model").session is None
     assert harness.accepts(Pool("local", "local", endpoint="http://127.0.0.1:8000/v1")) is None

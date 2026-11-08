@@ -126,7 +126,6 @@ class Keys:
     submit: str = "Enter"
     send_now: tuple[str, ...] | None = None
     interrupt: str | None = None
-    empty: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)

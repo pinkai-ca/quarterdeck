@@ -36,7 +36,6 @@ class AntigravityHarness(Harness):
     name = "antigravity"
     program = "agy"
     home_variable = None  # no home switch: the seat runs in the program's own state directory
-    brief_channel = "first-message"
     reads_usage = True
     usage_interval = 300
     background_usage = True
@@ -45,7 +44,7 @@ class AntigravityHarness(Harness):
     screen_walls = True
     record_limits = ("cost is unknown unless the record states it; effort and child-turn counts are not exposed; "
                      "a step without a completion time leaves its duration unknown")
-    keys = Keys(submit="Enter", send_now=("M-m",), interrupt="Escape", empty=None)
+    keys = Keys(submit="Enter", send_now=("M-m",), interrupt="Escape")
 
     def usage(self, pool: Pool) -> Usage:
         if pool.config_dir is not None:

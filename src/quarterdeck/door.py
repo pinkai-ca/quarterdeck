@@ -220,11 +220,6 @@ class Door:
         else:
             self.tmux.keys(pane_id, self.harness.keys.submit)
 
-    def empty_box(self) -> None:
-        pane = self.seat.pane()
-        if pane and self.harness.keys.empty:
-            self.tmux.keys(pane.id, *self.harness.keys.empty)
-
     def interrupt(self) -> str:
         pane = self.seat.pane()
         key = self.harness.keys.interrupt

@@ -139,7 +139,6 @@ class Harness(ABC):
     screen_walls: bool = False
     home_variable: str | None
     keys: Keys
-    brief_channel: str
     reads_usage: bool = False  # True where usage() reads the provider's windows; a pool of such a program is read before a move
     remote_control: bool = False  # True where the program can open a seat to the operator's phone and claude.ai as well
     wrap_slack: int = 0  # columns the program keeps clear at the right when it wraps at a word, under the width where it breaks a word

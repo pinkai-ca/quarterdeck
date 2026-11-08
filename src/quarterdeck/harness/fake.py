@@ -27,8 +27,7 @@ class FakeHarness(Harness):
     program = sys.executable
     synthetic = True
     home_variable = "QD_FAKE_HOME"
-    keys = Keys(submit="Enter", send_now=("C-x", "C-s"), interrupt="Escape", empty=("C-u",))
-    brief_channel = "system-prompt"
+    keys = Keys(submit="Enter", send_now=("C-x", "C-s"), interrupt="Escape")
 
     def owns_launch(self, argv) -> bool:
         return bool(argv) and (Path(argv[0]).name in ("fake", "qd-fakeharness") or

@@ -153,8 +153,7 @@ class PiHarness(EndpointHarness):
     name = "pi"
     program = "pi"
     home_variable = "PI_CODING_AGENT_DIR"
-    keys = Keys(submit="Enter", send_now=None, interrupt="Escape", empty=None)
-    brief_channel = "system-prompt"
+    keys = Keys(submit="Enter", send_now=None, interrupt="Escape")
     wrap_slack = 1  # probed on 0.74.2: a word wraps one column short of where a word without spaces breaks
 
     def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None) -> Credential | None:

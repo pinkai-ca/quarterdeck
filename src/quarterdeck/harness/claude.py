@@ -243,8 +243,7 @@ class ClaudeHarness(Harness):
     name = "claude"
     program = "claude"
     home_variable = "CLAUDE_CONFIG_DIR"
-    keys = Keys(submit="Enter", send_now=("C-x", "C-s"), interrupt="Escape", empty=("C-c",))
-    brief_channel = "system-prompt"
+    keys = Keys(submit="Enter", send_now=("C-x", "C-s"), interrupt="Escape")
     reads_usage = True
     credential_file = ".credentials.json"
     headline_window = (None, "5h")

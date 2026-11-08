@@ -58,8 +58,7 @@ class OpenCodeHarness(EndpointHarness):
     name = "opencode"
     program = "opencode"
     home_variable = "XDG_DATA_HOME"
-    keys = Keys(submit="Enter", send_now=None, interrupt="Escape Escape", empty=None)  # Escape once opens nothing; twice, quickly, interrupts
-    brief_channel = "instructions"
+    keys = Keys(submit="Enter", send_now=None, interrupt="Escape Escape")  # Escape once opens nothing; twice, quickly, interrupts
 
     def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None) -> Credential | None:
         home.mkdir(parents=True, exist_ok=True)

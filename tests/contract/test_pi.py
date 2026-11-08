@@ -87,7 +87,7 @@ def test_the_model_picker_is_dismissed_with_escape():
 
 def test_the_keys_the_controls_and_the_pool_it_runs_on():
     harness = PiHarness()
-    assert harness.keys.submit == "Enter" and harness.keys.interrupt == "Escape" and harness.keys.send_now is None and harness.keys.empty is None
+    assert harness.keys.submit == "Enter" and harness.keys.interrupt == "Escape" and harness.keys.send_now is None
     assert harness.queues_while_working(SeatSpec("w", "crew", "worker", "pi", ("local",)))
     assert [(c.name, c.launch, c.session, c.confirmed_by) for c in harness.controls()] == [
         ("model", "--model <value>", None, "record"), ("effort", "--thinking <value>", None, "record")]

@@ -180,7 +180,6 @@ def test_an_echo_keeps_a_paragraph_break_and_stops_at_the_programs_own_line():
 def test_the_controls_are_launch_only():
     harness = AntigravityHarness()
     assert harness.home_variable is None
-    assert harness.keys.empty is None, "no key empties the whole box: the door says what it leaves behind"
     assert all(c.session is None for c in harness.controls()), "model and effort change at launch"
 
 
