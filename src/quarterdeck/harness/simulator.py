@@ -251,11 +251,11 @@ class Program:
             self.record.dequeued(text)
         self.record.begin(text, self.model, self.effort)
         event(self.home, "accepted", text)
+        self.turn_text = text
         commands = self.commands(text)
         for command in commands or [None] * self.steps:
             if self.interrupted:
                 break
-            pause(self.home, "step", text, self.wait)
             self.step(command)
             self.consume_now()
         reply = next((l[7:] for l in text.splitlines() if l.startswith("reply: ")), f"done: {first}")
@@ -298,11 +298,13 @@ class Program:
         """One tool call: opened in the record, run or waited through, then closed with its result."""
         if command is None:
             self.record.tool_start("Read", "a file")
+            pause(self.home, "step", self.turn_text, self.wait)
             self.wait(self.step_seconds)
             self.record.tool_end("contents", False)
             return
         self.say(f"⏺ Bash({command})")
         self.record.tool_start("Bash", command)
+        pause(self.home, "step", self.turn_text, self.wait)
         done = subprocess.run(command, shell=True, capture_output=True, text=True)
         output = (done.stdout + done.stderr).strip()
         self.say(f"  ⎿ {output.splitlines()[0] if output else '(no output)'}")

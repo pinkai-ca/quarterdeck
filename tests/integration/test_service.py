@@ -306,6 +306,7 @@ def test_a_message_once_queued_is_not_carried_again_once_read(ship: shipmod.Ship
         wait_for(first_step.reached)
         record = captain.record()
         assert captain.harness.state(record).turn_open
+        assert captain.harness.state(record).open_tool is not None
         ref = qd(capsys, "post", "order", "--to", "captain", "second, mid-turn\n$ qd post report --re {this} done-2").split(" ")[0]
         message = store.get(ref)
         payload = post.typed([message]).strip()
