@@ -185,6 +185,7 @@ class _Session:
 class _Reader:
     def __init__(self, record: Path):
         rows = _Rows(record)
+        self.empty = not (rows.sessions or rows.messages or rows.parts)
         self.session = _active_session(rows)
         parts: dict[tuple[str, str], list[dict]] = {}
         for _, mid, sid, _, _, data in rows.parts:
@@ -213,7 +214,7 @@ class _Reader:
 
     def state(self) -> State:
         active = self.active
-        return State(turn_open=active.open if self.session else None, open_tool=active.open_tool,
+        return State(turn_open=active.open if self.session or self.empty else None, open_tool=active.open_tool,
                      open_tool_since=active.open_tool_since, last_write=self.last_write, last_input=active.last_input,
                      last_input_at=active.last_input_at, model=active.model, queued=tuple(active.queued), turns=len(self.turns))
 
