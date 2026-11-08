@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,6 +44,24 @@ class Jail:
     runtime: Path
     read_only: tuple[Path, ...] = ()  # the program's own folders under the operator's home, bound back
     writable: tuple[Path, ...] = ()  # the post store, and the check's proof folder when there is one
+    environment: tuple[tuple[str, str], ...] = ()  # set inside the jail: the git identity a commit from the seat carries
+
+
+def git_identity(workspace: Path) -> tuple[tuple[str, str], ...]:
+    """The name and address git would sign a commit with in the workspace, read outside the jail.
+
+    Inside, the operator's home is gone and with it the global git configuration, so a commit from
+    the seat would have no author. The workspace's identity travels in as the author and committer
+    variables, and the commit reads as every other commit of the repository does.
+    """
+    found = []
+    for key, variables in (("user.name", ("GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME")), ("user.email", ("GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"))):
+        try:
+            value = subprocess.run(["git", "-C", str(workspace), "config", "--get", key], capture_output=True, text=True, timeout=10).stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            value = ""
+        found += [(variable, value) for variable in variables if value]
+    return tuple(found)
 
 
 def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspace: Path, program: str, path: str,
@@ -60,7 +79,7 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
                if f != workspace and workspace not in f.parents and ship.folder not in f.parents and f != ship.folder]
     (ship.runtime / "post").mkdir(parents=True, exist_ok=True)  # bound writable, so it must exist before the launch, first post or not
     return Jail(home, seat_home, seat_folder, workspace, ship.folder, ship.runtime, tuple(folders),
-                (ship.runtime / "post", ship.runtime / "check"))
+                (ship.runtime / "post", ship.runtime / "check"), git_identity(workspace))
 
 
 def program_folders(programs: tuple[str, ...], path: str, home: Path) -> list[Path]:
@@ -106,4 +125,6 @@ def command(jail: Jail, argv: list[str]) -> list[str]:
     mounts += [("--bind-try", folder) for folder in jail.writable]
     for flag, folder in sorted(mounts, key=lambda m: (len(m[1].parts), str(m[1]))):  # parents first: a child mount is never hidden by its parent's
         args += [flag, str(folder)] if flag == "--tmpfs" else [flag, str(folder), str(folder)]
+    for variable, value in jail.environment:
+        args += ["--setenv", variable, value]
     return args + ["--setenv", "HOME", str(jail.seat_home), "--unshare-pid", "--die-with-parent", "--", *argv]

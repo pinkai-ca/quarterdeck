@@ -98,3 +98,24 @@ def test_ancestor_workspace_cannot_rebind_the_hidden_home(tmp_path, drydock, mon
     with pytest.raises(ShipError, match='contains the operator home'):
         sandbox.plan(ship, 'worker', ship.runtime/'seats'/'worker', ship.runtime/'seats'/'worker'/'home',
                      workspace, '/usr/bin/python3', '/usr/bin', home=home)
+
+
+def test_a_jailed_seat_commits_as_the_workspace_would_outside(tmp_path: Path):
+    """The operator's home, and with it the global git configuration, is gone inside the jail; the identity travels in."""
+    import subprocess
+
+    workspace = tmp_path / "work"
+    workspace.mkdir()
+    subprocess.run(["git", "-C", str(workspace), "init", "-q"], check=True)
+    subprocess.run(["git", "-C", str(workspace), "config", "user.name", "A Shipwright"], check=True)
+    subprocess.run(["git", "-C", str(workspace), "config", "user.email", "shipwright@example.org"], check=True)
+    identity = sandbox.git_identity(workspace)
+    assert identity == (("GIT_AUTHOR_NAME", "A Shipwright"), ("GIT_COMMITTER_NAME", "A Shipwright"),
+                        ("GIT_AUTHOR_EMAIL", "shipwright@example.org"), ("GIT_COMMITTER_EMAIL", "shipwright@example.org"))
+    home = tmp_path / "home"
+    jail = sandbox.Jail(home=home, seat_home=home / "s" / "home", seat_folder=home / "s", workspace=workspace, ship_folder=tmp_path / "ship",
+                        runtime=tmp_path / "ship" / "runtime", environment=identity)
+    args = sandbox.command(jail, ["pi"])
+    assert args[args.index("GIT_AUTHOR_NAME") - 1] == "--setenv" and args[args.index("GIT_AUTHOR_NAME") + 1] == "A Shipwright"
+    assert args.index("GIT_COMMITTER_EMAIL") < args.index("--unshare-pid"), "set before the program runs"
+    assert sandbox.git_identity(tmp_path / "nowhere") == (), "no repository, no identity, and no refusal"
