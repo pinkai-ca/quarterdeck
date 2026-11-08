@@ -214,7 +214,61 @@ def _cells(text: str) -> int | None:
     return total
 
 
-def _box_matches(text: str, shown: str, columns: int | None = None, slack: int = 0) -> bool:
+# Printable-ASCII projection of Unicode 15 line-break classes and allowed pairs.
+# Codex 0.166.0 uses textwrap 0.16.2 / unicode-linebreak 0.1.5, FirstFit.
+# Parentheses, quotes, numbers and leading hyphens retain their context rules;
+# punctuation is not a blanket permission to break. Other scripts fail closed
+# at semantic breaks; exact text and established full-cell wraps remain usable.
+_LINE_CLASSES = {"SP": " ", "BA": "|", "HY": "-", "CL": "}", "CP": ")]", "EX": "!?",
+                 "OP": "([{", "QU": "\"'", "IS": ",.:;", "NU": "0123456789", "PO": "%", "PR": "$+\\", "SY": "/"}
+_BREAK_BEFORE = {
+    "SP": {"BA", "HY", "OP", "QU", "NU", "PO", "PR", "AL"},
+    "BA": {"OP", "NU", "PO", "PR", "AL"},
+    "CL": {"OP", "NU", "AL"},
+    "CP": {"OP"},
+    "EX": {"OP", "NU", "PO", "PR", "AL"},
+    "IS": {"OP", "PO", "PR"},
+    "PO": {"PO", "PR"},
+    "PR": {"PO", "PR"},
+    "SY": {"OP", "PO", "PR", "AL"},
+    "QU-SP": {"BA", "HY", "QU", "NU", "PO", "PR", "AL"},
+}
+
+
+def _textwrap_breaks(line: str) -> list[int] | None:
+    """Source positions of the established ASCII textwrap boundaries, including its hyphen splitter."""
+    if any(not " " <= char <= "~" for char in line):
+        return None
+    breaks = []
+    state = "START"
+    for index, char in enumerate(line):
+        kind = next((name for name, chars in _LINE_CLASSES.items() if char in chars), "AL")
+        if kind in _BREAK_BEFORE.get(state, ()):
+            breaks.append(index)
+        # textwrap suppresses Unicode HY breaks, then splits only alphanumeric-surrounded hyphens.
+        if index > 1 and line[index - 1] == "-" and line[index - 2].isalnum() and char.isalnum():
+            breaks.append(index)
+        if kind == "SP" and state in ("OP", "OP-SP", "QU", "QU-SP"):
+            state = "OP-SP" if state.startswith("OP") else "QU-SP"
+        else:
+            state = kind
+    return sorted(set(breaks)) + [len(line)]
+
+
+def _textwrap_piece(text: str, position: int) -> int | None:
+    """Width to the next supported semantic boundary, preserving the logical line's context."""
+    start = text.rfind("\n", 0, position) + 1
+    end = text.find("\n", position)
+    line = text[start:end if end >= 0 else len(text)]
+    breaks = _textwrap_breaks(line)
+    offset = position - start
+    if breaks is None or offset not in breaks:
+        return None
+    following = next((stop for stop in breaks if stop > offset), len(line))
+    return _cells(line[offset:following].rstrip(" "))
+
+
+def _box_matches(text: str, shown: str, columns: int | None = None, slack: int = 0, textwrap_ascii: bool = False) -> bool:
     # ``slack``: columns a program keeps clear at the right when it wraps at a word, below the
     # width at which it breaks a word that has no space (the adapter supplies that margin).
     # Adapters omit the trailing blank box rows; no interior whitespace is
@@ -257,6 +311,12 @@ def _box_matches(text: str, shown: str, columns: int | None = None, slack: int =
         # layout break when the following piece cannot fit on this row.
         tail = wanted[pos:]
         spaces = len(tail) - len(tail.lstrip(" "))
+        if textwrap_ascii:
+            piece = _textwrap_piece(wanted, pos + spaces)
+            if piece and width + spaces + piece > columns:
+                pos += spaces
+                continue
+            return False
         # Leading hyphens belong to the next piece (for example a command
         # flag); they do not make it an empty word that could fit anywhere.
         word = re.match(r"-*[^\s-]+-?|-+", tail[spaces:])
@@ -278,11 +338,12 @@ class Box:
 
     text: str
     folded: str | None = None
+    textwrap_ascii: bool = False
 
     def matches(self, shown: str | None, columns: int | None = None, slack: int = 0) -> bool:
         if shown is None:
             return False
-        if _box_matches(self.text, shown, columns, slack):
+        if _box_matches(self.text, shown, columns, slack, self.textwrap_ascii):
             return True
         return bool(self.folded) and re.fullmatch(self.folded, shown.strip()) is not None
 

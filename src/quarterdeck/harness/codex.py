@@ -336,7 +336,7 @@ class CodexHarness(Harness):
 
     def box(self, text: str) -> Box:
         """A long paste folds to ``[Pasted Content N chars]``, N its whole length (0.166.0); a short one shows whole."""
-        return Box(text, folded=rf"\[Pasted Content {len(text)} chars\]")
+        return Box(text, folded=rf"\[Pasted Content {len(text)} chars\]", textwrap_ascii=True)
 
     def controls(self) -> tuple[Control, ...]:
         return (
