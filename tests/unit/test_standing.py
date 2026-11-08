@@ -72,3 +72,11 @@ def test_every_harness_has_a_card():
     for name in NAMES:
         card = standing.FRAMEWORK_DIR / "harnesses" / f"{name}.md"
         assert card.is_file() and card.read_text().startswith("# Program: "), name
+
+
+def test_the_generic_role_cards_include_a_hand_for_small_models():
+    for role in ("captain", "desk", "engineering", "worker", "hand"):
+        card = standing.FRAMEWORK_DIR / "roles" / f"{role}.md"
+        assert card.is_file() and card.read_text().startswith(f"# Role: {role}"), role
+    hand = (standing.FRAMEWORK_DIR / "roles" / "hand.md").read_text()
+    assert "qd post question --re" in hand and "qd post report --re" in hand and "Never report done for work you did not check" in hand

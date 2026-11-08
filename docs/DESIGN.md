@@ -298,7 +298,7 @@ Three tiers of document, each in its own file, each growing at its own pace, non
 
 - **Laws**, `laws.md`: what the framework itself guarantees, enforced in code and tests. One page, few by construction. They change rarely.
 - **Ship's orders**, the ship's own `orders.md`: how this crew behaves. The ship changes them at will. The framework carries them to every seat and does not read them.
-- **Cards**, `roles/<role>.md` and `harnesses/<name>.md`: facts a seat needs about its role (accountable for, may change, call when, never) and about its own program. They change with the crew and with program versions.
+- **Cards**, `roles/<role>.md` and `harnesses/<name>.md`: facts a seat needs about its role (accountable for, may change, call when, never) and about its own program. They change with the crew and with program versions. The generic role cards are captain, desk, engineering, worker and hand; the hand is a worker on a small model served locally, told how to work an order step by step, to verify before it reports, and to ask rather than guess.
 
 A seat's boot read is the laws, its ship's orders, its role card, its harness card and its inbox. Target: under 3,000 words, against about 21,000 today. `qd brief <seat>` prints exactly what that seat reads at boot, so a human can read what the agent read.
 
