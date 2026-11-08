@@ -46,10 +46,13 @@ def session_id(record: Path) -> str | None:
 def usage_tokens(usage: dict) -> Tokens:
     measured = Tokens.from_usage(usage, ("cached_input_tokens", "input_tokens", "cache_write_input_tokens", "output_tokens"),
                                  total="total_tokens")
-    if not measured.complete or measured.read_cached > measured.read_uncached:
+    if not measured.complete:
+        return Tokens.unknown()
+    uncached = measured.read_uncached - measured.read_cached if "input_tokens" in usage else 0
+    if uncached < 0:
         return Tokens.unknown()
     return Tokens.measured(read_cached=measured.read_cached,
-                           read_uncached=measured.read_uncached - measured.read_cached,
+                           read_uncached=uncached,
                            cache_written=measured.cache_written, written=measured.written)
 
 

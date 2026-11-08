@@ -36,6 +36,14 @@ def test_measured_zero_is_complete_and_unreported_classes_are_zero(reader, input
     assert reader({"total": 3, input_key: 3}) == Tokens(read_uncached=3)
 
 
+def test_cache_only_measurement_keeps_omitted_classes_zero():
+    assert claude.usage_tokens({'cache_read_input_tokens': 7}) == Tokens(read_cached=7)
+    assert codex.usage_tokens({'cached_input_tokens': 7}) == Tokens(read_cached=7)
+    assert pi._tokens({'usage': {'cacheRead': 7}}) == Tokens(read_cached=7)
+    assert opencode_record._tokens({'tokens': {'total': 7, 'cache': {'read': 7}}}) == Tokens(read_cached=7)
+    assert codex.usage_tokens({'input_tokens': 2, 'cached_input_tokens': 7}) == Tokens.unknown()
+
+
 def test_proto_presence_proves_zero_but_absence_and_bad_wire_measurements_do_not():
     assert antigravity_record._parse_usage(None) == Tokens.unknown()
     assert antigravity_record._parse_usage(b"") == Tokens(), "present proto3 scalar defaults are zero"
