@@ -145,7 +145,7 @@ class _Reader(JsonLinesReader):
             if text in self.queued:
                 self.queued.remove(text)
             if self.open is not None:
-                self.end(self.last_input_at)  # a prompt while a turn is open ends it: nothing else will
+                self.end(self.last_input_at, completed=False)  # a later prompt bounds accounting, not terminal evidence
             self.start_turn({"started": self.last_input_at, "input": text, "usage": {}, "tools": [],
                          "reply": "", "model": None, "subagents": self.subagent_turns})
             return
@@ -176,10 +176,10 @@ class _Reader(JsonLinesReader):
             elif block.get("type") == "text" and block.get("text"):
                 self.open["reply"] = (self.open["reply"] + "\n\n" + block["text"]).strip()
 
-    def end(self, at: datetime | None) -> None:
+    def end(self, at: datetime | None, *, completed: bool = True) -> None:
         turn = self.close_turn()
         tokens = sum(turn["usage"].values(), Tokens()) if turn["usage"] else Tokens.unknown()
-        self.turns.append(
+        self.record_turn(
             Turn(
                 index=len(self.turns),
                 started=turn["started"] or at,
@@ -190,7 +190,7 @@ class _Reader(JsonLinesReader):
                 tokens=tokens,
                 tools=tuple(turn["tools"]),
                 subagent_turns=self.subagent_turns - turn["subagents"],
-            )
+            ), at if completed else None
         )
 
 state = _Reader.read_state

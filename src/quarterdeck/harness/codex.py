@@ -119,7 +119,7 @@ class _Reader(JsonLinesReader):
     def event(self, sub: str | None, payload: dict, at: datetime | None) -> None:
         if sub == "task_started":
             if self.open is not None:
-                self.end(at)
+                self.end(at, completed=False)
             self.start_turn({"started": at, "input": "", "tokens": Tokens(), "measurements": 0, "response": False, "tools": [], "reply": ""})
         elif sub == "token_count" and self.open is not None:
             info = payload.get("info")
@@ -155,9 +155,9 @@ class _Reader(JsonLinesReader):
                 self.open["response"] = False
             self.close_tool(payload.get("call_id"), at, _failed(payload.get("output")))
 
-    def end(self, at: datetime | None) -> None:
+    def end(self, at: datetime | None, *, completed: bool = True) -> None:
         turn = self.close_turn()
-        self.turns.append(
+        self.record_turn(
             Turn(
                 index=len(self.turns),
                 started=turn["started"] or at,
@@ -167,7 +167,7 @@ class _Reader(JsonLinesReader):
                 model=self.model,
                 tokens=turn["tokens"] + (Tokens.unknown() if turn["response"] or not turn["measurements"] else Tokens()),
                 tools=tuple(turn["tools"]),
-            )
+            ), at if completed else None
         )
 
 state = _Reader.read_state

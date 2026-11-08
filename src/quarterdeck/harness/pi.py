@@ -31,6 +31,7 @@ SETTINGS = {
     "enableInstallTelemetry": False,
 }
 UNMEASURED_STOPS = {"aborted", "error"}
+ENDS_TURN = {"stop", "length", *UNMEASURED_STOPS}
 THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh")
 
 
@@ -108,15 +109,15 @@ class _Reader(JsonLinesReader):
                 elif block.get("type") == "toolCall":
                     name = " ".join(str(block.get("name") or "").split()) or "?"  # a malformed call may carry a name with line breaks
                     self.pending[block.get("id")] = (name, at)
-            if message.get("stopReason") != "toolUse":
+            if message.get("stopReason") in ENDS_TURN:
                 self.end(at)
         elif role == "toolResult":
             self.close_tool(message.get("toolCallId"), at, bool(message.get("isError")), message.get("toolName") or "?")
 
     def end(self, at: datetime | None) -> None:
         turn = self.close_turn()
-        self.turns.append(costed(Turn(len(self.turns), turn["started"] or at, at or turn["started"], turn["input"], turn["reply"],
-                                     self.model, turn["tokens"], tuple(turn["tools"]), cost_steps=tuple(turn["costs"]))))
+        self.record_turn(costed(Turn(len(self.turns), turn["started"] or at, at or turn["started"], turn["input"], turn["reply"],
+                                    self.model, turn["tokens"], tuple(turn["tools"]), cost_steps=tuple(turn["costs"]))), at)
 
 state = _Reader.read_state
 turns = _Reader.read_turns
@@ -135,7 +136,7 @@ def inputs(record: Path) -> list[Input]:
                 found.append(Input(_text(message.get("content")), at, "consumed" if opened else "accepted", at if opened else None))
                 opened = True
             elif entry.get("type") == "message" and isinstance(message, dict) and message.get("role") == "assistant":
-                opened = message.get("stopReason") == "toolUse"
+                opened = message.get("stopReason") not in ENDS_TURN
         except (TypeError, ValueError, AttributeError, KeyError):
             continue
     return found

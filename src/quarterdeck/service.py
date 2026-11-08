@@ -271,11 +271,20 @@ class Service:
             if seat.spec.fresh != "after-order" or not seat.is_up or self.store.open_for(seat.name):
                 continue
             launched = seat.launched()
-            closed_since_launch = any(
-                m.kind == "report" and m.sender == seat.name and m.re and m.at > launched.when
-                for m in self.store.all()
-            )
-            if closed_since_launch and not seat.is_working():
+            if launched is None:
+                continue
+            closed = max((report.at for order in self.store.for_seat(seat.name)
+                          if order.kind == "order" and (report := self.store.closing_report(order))
+                          and report.at > launched.when), default=None)
+            if closed is None or (record := seat.record()) is None:
+                continue
+            try:
+                state = seat.harness.state(record)
+            except OSError:
+                continue  # no screen or default idle reading can prove a recorded closing turn
+            if (state.turn_open is False and not state.queued
+                    and any(turn.timed and turn.started is not None and turn.ended is not None
+                            and turn.started <= closed <= turn.ended for turn in state.completed_turns)):
                 proof = seat.fresh()  # law: context-is-cache
                 self.log("fresh", seat=seat.name, proof=proof)
 

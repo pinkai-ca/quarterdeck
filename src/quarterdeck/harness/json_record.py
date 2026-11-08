@@ -78,6 +78,7 @@ class JsonLinesReader(RecordReader):
         self.record = record
         self.turns = []
         self.open = None
+        self.completed_turns = []
         self.pending = {}
         self.queued = []
         self.consumed = []
@@ -100,6 +101,11 @@ class JsonLinesReader(RecordReader):
         self.pending.clear()  # unfinished calls belong to the turn that ended
         return turn
 
+    def record_turn(self, turn: "Turn", completed_at: datetime | None) -> None:
+        self.turns.append(turn)
+        if completed_at is not None:
+            self.completed_turns.append(turn)  # accounting fallbacks are not completion evidence
+
     def close_tool(self, call: str, at: datetime | None, failed: bool | None, default: str = "?") -> None:
         from .base import ToolCall
 
@@ -119,4 +125,5 @@ class JsonLinesReader(RecordReader):
         return State(turn_open=self.open is not None, open_tool=tool[0] if tool else None,
                      open_tool_since=tool[1] if tool else None, last_write=last_write,
                      last_input=self.last_input, last_input_at=self.last_input_at, model=self.model,
-                     effort=self.effort, queued=tuple(self.queued), consumed=tuple(self.consumed), turns=len(self.turns))
+                     effort=self.effort, queued=tuple(self.queued), consumed=tuple(self.consumed), turns=len(self.turns),
+                     completed_turns=tuple(self.completed_turns))

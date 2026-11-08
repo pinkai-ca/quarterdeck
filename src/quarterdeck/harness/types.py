@@ -138,6 +138,7 @@ class State:
     consumed: tuple[str, ...] = ()
     turns: int | None = 0
     walls: tuple[Wall, ...] = ()
+    completed_turns: tuple[Turn, ...] = ()  # explicit completions in the active conversation, never children or inferred ends
 
 
 @dataclass(frozen=True)

@@ -21,7 +21,7 @@ from .json_record import RecordReader
 DATA_PREFIX = "data-"
 RECORD = Path("opencode") / "opencode.db"
 RUNNING = {"pending", "running"}
-MORE_STEPS = "tool-calls"  # a finish reason that says another step follows in the same turn
+ENDS_TURN = ("stop", "length", "content-filter")
 
 
 def _ms(value) -> datetime | None:
@@ -129,6 +129,7 @@ class _Session:
         self.queued: list[str] = []
         self.inputs: list[Input] = []
         self.ended_at: datetime | None = None
+        self.completed_turns: list[Turn] = []
         self.model = self.last_input = self.last_input_at = self.open_tool = self.open_tool_since = None
         for pos, (index, mid, data, own) in enumerate(users):
             moved_on = any(answers.get(later[1]) for later in users[pos + 1:])
@@ -177,7 +178,8 @@ class _Session:
         timed = True
         # A turn ends with a step that finished for good, or with an error; it also ends when the program answered a
         # later message, since a queued message is taken as the next turn straight after a tool result, with no closing step.
-        closed = bool(steps) and ended is not None and running is None and (last.get("finish") != MORE_STEPS or bool(last.get("error")))
+        completed = bool(steps) and ended is not None and running is None and (last.get("finish") in ENDS_TURN or bool(last.get("error")))
+        closed = completed
         if moved_on and not closed:
             closed, timed = True, ended is not None
             ended = ended or _ms(_object(last.get("time")).get("created")) or at
@@ -187,6 +189,8 @@ class _Session:
             self.ended_at = ended if timed else None
             self.turns.append(costed(Turn(index, at, ended, text, reply, model, tokens, tuple(tools), timed=timed,
                                           cost_steps=tuple(costs))))
+            if completed:
+                self.completed_turns.append(self.turns[-1])
         else:
             self.open = True
             self.open_tool, self.open_tool_since = running or (None, None)
@@ -226,7 +230,8 @@ class _Reader(RecordReader):
         active = self.active
         return State(turn_open=active.open if self.session or self.empty else None, open_tool=active.open_tool,
                      open_tool_since=active.open_tool_since, last_write=self.last_write, last_input=active.last_input,
-                     last_input_at=active.last_input_at, model=active.model, queued=tuple(active.queued), turns=len(self.turns))
+                     last_input_at=active.last_input_at, model=active.model, queued=tuple(active.queued), turns=len(self.turns),
+                     completed_turns=tuple(active.completed_turns))
 
 
 def first_timestamp(record: Path) -> datetime | None:
