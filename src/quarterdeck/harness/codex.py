@@ -228,7 +228,6 @@ class CodexHarness(Harness):
     name = "codex"
     program = "codex"
     credential_file = "auth.json"
-    headline_window = (None, "5h")
     home_variable = "CODEX_HOME"
     keys = Keys(submit="Enter", send_now=None, interrupt="Escape", empty=("C-c",))
     brief_channel = "override"

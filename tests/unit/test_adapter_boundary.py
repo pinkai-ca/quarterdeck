@@ -23,6 +23,7 @@ def test_every_saved_program_binding_is_resolved_by_the_adapter():
             SimpleNamespace(settings={}, model=None, effort=None), Pool("synthetic", name), Path("home"), Path("brief"), None, None).argv)
         assert record_owner.launch_reader(SimpleNamespace(argv=argv)) == name
     assert FakeHarness().program == sys.executable
+    assert not CodexHarness().reads_usage and CodexHarness().headline_window is None
     assert record_owner.launch_reader(SimpleNamespace(argv=["unrecognized-synthetic-program"])) is None
 
 

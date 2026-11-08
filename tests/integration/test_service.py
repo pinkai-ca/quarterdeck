@@ -367,10 +367,10 @@ def test_the_service_reconciles_an_attempt_it_died_in_the_middle_of(ship: shipmo
     launched = captain.launched()
     typed = store.new("order", "desk", "captain", "this one was typed")
     lost = store.new("order", "desk", "captain", "this one never was")
-    tmux.paste(captain.pane().id, post.typed([typed]))
-    tmux.keys(captain.pane().id, "Enter")
     attempts.open(typed, "captain", launched.pane, launched.pid, launched.at)
     attempts.open(lost, "captain", launched.pane, launched.pid, launched.at)
+    tmux.paste(captain.pane().id, post.typed([typed]))
+    tmux.keys(captain.pane().id, "Enter")
     wait_for(lambda: captain.record() and captain.harness.state(captain.record()).turns)
     assert "service started" in qd(capsys, "up").splitlines()[-1], "qd up restarts a dead service"
     wait_for(lambda: all(a.result for a in attempts.all()), seconds=10)
