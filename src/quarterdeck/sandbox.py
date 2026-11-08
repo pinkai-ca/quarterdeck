@@ -127,7 +127,7 @@ def command(jail: Jail, argv: list[str]) -> list[str]:
         args += [flag, str(folder)] if flag == "--tmpfs" else [flag, str(folder), str(folder)]
     for variable, value in jail.environment:
         args += ["--setenv", variable, value]
-    # The program inherits the launch's TMPDIR, which may name a filesystem the jail mounts read-only (pi 0.74.2
-    # died on it, spooling a tool's output); the jail's own /tmp is the only scratch a jailed program has.
+    # The launch's TMPDIR may name a filesystem the jail mounts read-only; the program
+    # uses the jail's own /tmp for scratch, including spooled tool output.
     args += ["--setenv", "TMPDIR", "/tmp", "--setenv", "TMP", "/tmp", "--setenv", "TEMP", "/tmp"]
     return args + ["--setenv", "HOME", str(jail.seat_home), "--unshare-pid", "--die-with-parent", "--", *argv]
