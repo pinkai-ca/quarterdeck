@@ -106,7 +106,7 @@ def test_an_attempt_still_open_holds_its_message_back(tmp_path: Path):
     again = store.new("order", "desk", "scott", "a second")
     assert attempts.undelivered(store, "scott") == [again]
     attempts.close(attempts.open(again, "scott", "%1", 42, None), "delivered")
-    assert attempts.undelivered(store, "scott") == [] and attempts.delivered_ids() == {again.id}
+    assert attempts.undelivered(store, "scott") == [] and attempts.accepted_ids() == {again.id}
 
 
 def test_queued_is_a_state_of_its_own_and_an_ack_is_never_delivered(tmp_path: Path):

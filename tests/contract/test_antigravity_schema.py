@@ -124,6 +124,7 @@ def test_new_input_reports_its_model_before_generation_and_confirms_exact_text(t
     rec = AntigravityShape(tmp_path/'home',tmp_path,'synthetic','older-model')
     rec.begin('old question','older-model','high')
     rec.end('answer')
+    door = Door(SimpleNamespace(harness=agy.AntigravityHarness(),record=lambda:rec.path,tmux=None))
     rec.begin('new question\nwith a second line','new-model','high')
     config = _pb_bytes(1,_pb_str(28,'new-model'))
     with sqlite3.connect(rec.path) as con:
@@ -134,4 +135,4 @@ def test_new_input_reports_its_model_before_generation_and_confirms_exact_text(t
     assert state.last_input == 'new question\nwith a second line'
     harness = agy.AntigravityHarness()
     seat = SimpleNamespace(harness=harness,record=lambda:rec.path,tmux=None)
-    assert Door(seat).confirm('new question\nwith a second line',seconds=0).result == 'delivered'
+    assert door.confirm('new question\nwith a second line',seconds=0).result == 'delivered'

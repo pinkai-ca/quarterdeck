@@ -51,9 +51,6 @@ def activity(seat: Seat, now: datetime | None = None) -> Activity:
         return Activity("off", "no pane" if seat.launched() else "down")
     if pane.dead:
         return Activity("off", f"exited {pane.exit_status}")
-    if not seat.harness.record_confirms:  # an opaque record: the screen is all there is, and the reading says so
-        screen = Door(seat).screen()
-        return Activity("working", "by the screen") if screen and screen.working else Activity("idle", "by the screen")  # law: record-first
     join = seat.join()
     if join.record is None:
         if join.reason and join.reason.split(":")[0] in ("record missing", "ambiguous", "record reader unknown", "record reader changed", "record unreadable"):
@@ -135,8 +132,6 @@ def tokens_today(seat: Seat) -> ledger.Count:
                 counted = ledger.Count()
         if counted.known or counted.unmeasured:
             return counted
-    if not seat.harness.record_confirms:
-        return ledger.Count()
     found = ledger.Count()
     for item in record_owner.records(seat):
         try:

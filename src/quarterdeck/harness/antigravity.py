@@ -20,7 +20,7 @@ from pathlib import Path
 from ..ship import Pool, SeatSpec
 from .antigravity_quota import banner, fetch_usage, record_wall, unknown
 from .antigravity_wire import _bytes, _int, _proto, _snapshot_query, _str, _ts, _uints
-from .base import (Box, Control, Credential, Harness, Interruption, Join, Keys, Launch, RecordError, Screen, State,
+from .base import (Box, Input, Control, Credential, Harness, Interruption, Join, Keys, Launch, RecordError, Screen, State,
                    Tokens, ToolCall, Turn, program_version, record_fingerprint)
 from .limits import Usage
 
@@ -312,11 +312,22 @@ def read(record: Path) -> tuple[State, list[Turn]]:
     return decoded.state, list(decoded.turns)
 
 
+def inputs(record: Path) -> list[Input]:
+    # USER_INPUT.created_at is its receipt time, including repeated inputs in one execution.
+    found = []
+    for _, kind, _, _, metadata, _, payload in _snapshot_query(record)[3]:
+        if kind == 14:
+            ui = _proto(_bytes(_proto(payload), 19))
+            text = _str(ui, 2) or _str(ui, 1)
+            if text is not None:
+                found.append(Input(text, _ts(_bytes(_proto(metadata), 1))))
+    return found
+
+
 class AntigravityHarness(Harness):
     name = "antigravity"
     home_variable = None  # no home switch: the seat runs in the program's own state directory
     brief_channel = "first-message"
-    record_confirms = True
     reads_usage = True
     record_limits = ("cost is unknown unless the record states it; effort and child-turn counts are not exposed; "
                      "a step without a completion time leaves its duration unknown")
@@ -376,6 +387,7 @@ class AntigravityHarness(Harness):
             return Join(None, f"ambiguous: {', '.join(p.name for p in appeared)} appeared since the launch")  # law: one-record
         return Join(appeared[0])
 
+    inputs = staticmethod(inputs)
     records = staticmethod(records)
     first_timestamp = staticmethod(first_timestamp)
     session_id = staticmethod(session_id)

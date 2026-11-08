@@ -111,7 +111,7 @@ def test_watch_and_seat_count_what_was_read_and_mark_what_was_not(tmp_path: Path
             raise OSError("not this record")
         return State(turn_open=False, turns=None, model="m"), [partial_turn]
 
-    seat.harness = SimpleNamespace(record_confirms=True, home_variable=None, read=read,
+    seat.harness = SimpleNamespace(home_variable=None, read=read,
                                    state=lambda r: State(turn_open=False, turns=None, model="m"),
                                    turns=lambda r: [partial_turn], records=lambda home: [rec.path])
     assert str(watch.tokens_today(seat)) == "100+", "what was read is counted; the uncertainty is marked, not spread"
@@ -125,7 +125,6 @@ def test_check_probe_handles_unknown_turns_without_crashing(tmp_path: Path, monk
 
     store = post.Store(tmp_path)
     fake_harness = SimpleNamespace(
-        record_confirms=True,
         state=lambda r: State(turn_open=None, turns=None, model="gemini-3.1-pro-high"),
     )
     fake_seat = SimpleNamespace(

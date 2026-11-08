@@ -17,7 +17,7 @@ from pathlib import Path
 
 from .. import endpoint
 from ..ship import Pool, SeatSpec, ShipError
-from .base import (Box, Control, Credential, Harness, Interruption, Keys, Launch, RecordError, Screen, State, Tokens,
+from .base import (Box, Input, Control, Credential, Harness, Interruption, Keys, Launch, RecordError, Screen, State, Tokens,
                    ToolCall, Turn, entries, merged, program_version, when)
 
 SETTINGS = {
@@ -152,13 +152,13 @@ def read(record: Path) -> tuple[State, list[Turn]]:
     return reader.state(), reader.turns
 
 
-def inputs(record: Path) -> list[tuple[str, datetime | None]]:
+def inputs(record: Path) -> list[Input]:
     """Every user message with the time it entered the record, for the delivery receipt."""
     found = []
     for entry in entries(record):
         message = entry.get("message")
         if entry.get("type") == "message" and isinstance(message, dict) and message.get("role") == "user":
-            found.append((_text(message.get("content")), when(entry.get("timestamp"))))
+            found.append(Input(_text(message.get("content")), when(entry.get("timestamp"))))
     return found
 
 
@@ -230,6 +230,7 @@ class PiHarness(Harness):
     def version(self) -> str | None:
         return program_version(("pi", "--version"))
 
+    inputs = staticmethod(inputs)
     records = staticmethod(records)
     first_timestamp = staticmethod(first_timestamp)
     session_id = staticmethod(session_id)

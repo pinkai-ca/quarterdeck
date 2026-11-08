@@ -242,7 +242,7 @@ def render_inbox(runtime: Path, store: Store, seat: str) -> Path:
 
 # -- delivery attempts -----------------------------------------------------------------------
 
-DELIVERED = ("delivered", "queued", "launch", "watch")
+ACCEPTED = ("delivered", "queued", "launch", "watch")
 
 
 @dataclass(frozen=True)
@@ -260,8 +260,8 @@ class Attempt:
     path: Path | None = None
 
     @property
-    def delivered(self) -> bool:
-        return self.result in DELIVERED
+    def accepted(self) -> bool:
+        return self.result in ACCEPTED
 
     @property
     def when(self) -> datetime:
@@ -345,8 +345,8 @@ class Attempts:
     def last_results(self, seat: str) -> dict[str, str | None]:
         return self.latest(seat)
 
-    def delivered_ids(self) -> set[str]:
-        return {m for m, result in self.latest().items() if result in DELIVERED}
+    def accepted_ids(self) -> set[str]:
+        return {m for m, result in self.latest().items() if result in ACCEPTED}
 
     def blind_ids(self) -> set[str]:
         """Messages whose latest attempt is blind: typed, unconfirmed, waiting for a hand (``qd post resend``)."""
@@ -367,7 +367,7 @@ class Attempts:
         neither is sent again by the service (law: one-door); an acknowledgment claims and
         never wakes, so it is never delivered at all (law: open-until-closed).
         """
-        skip = self.delivered_ids() | self.blind_ids() | {m for m, r in self.latest().items() if r in (None, "pending", "abandoned")}
+        skip = self.accepted_ids() | self.blind_ids() | {m for m, r in self.latest().items() if r in (None, "pending", "abandoned")}
         return [m for m in store.for_seat(seat) if m.id not in skip and m.kind != "ack"]  # law: open-until-closed
 
 

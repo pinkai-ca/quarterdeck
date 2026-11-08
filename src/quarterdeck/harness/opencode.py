@@ -116,6 +116,7 @@ class OpenCodeHarness(Harness):
     def version(self) -> str | None:
         return program_version(("opencode", "--version"))
 
+    inputs = staticmethod(inputs)
     records = staticmethod(records)
     first_timestamp = staticmethod(first_timestamp)
     session_id = staticmethod(session_id)

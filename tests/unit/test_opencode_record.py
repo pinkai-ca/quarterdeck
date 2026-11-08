@@ -1,3 +1,4 @@
+from quarterdeck.harness.base import Input
 """Synthetic OpenCode sessions and unfamiliar rows, through watch and service accounting."""
 
 from dataclasses import asdict
@@ -137,7 +138,7 @@ def test_latest_root_owns_state_even_when_an_older_roots_child_is_newer(tmp_path
     assert state.last_input == 'Fresh root input' and state.model == 'next-root-model'
     assert state.last_write == AT+timedelta(milliseconds=110)
     assert len(turns) == 2 and all('task' in t.input.lower() or 'child' in t.input.lower() for t in turns)
-    assert opencode.inputs(record) == [('Fresh root input', AT+timedelta(milliseconds=110))]
+    assert opencode.inputs(record) == [Input('Fresh root input', AT+timedelta(milliseconds=110))]
     con.close()
 
 
@@ -196,5 +197,5 @@ def test_other_unfamiliar_nested_fields_do_not_hide_valid_text_or_turns(tmp_path
     assert state.last_input == 'Readable input' and not state.turn_open
     assert turns[0].cost is None and turns[0].seconds is None
     assert turns[1].tokens.total == 5
-    assert opencode.inputs(record)[-1] == ('Readable input', AT+timedelta(milliseconds=30))
+    assert opencode.inputs(record)[-1] == Input('Readable input', AT+timedelta(milliseconds=30))
     con.close()

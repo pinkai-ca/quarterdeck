@@ -175,11 +175,11 @@ class Seat:
         return False
 
     def is_working(self) -> bool:
-        """Whether a turn is open: from the record first, from the screen where the record is opaque or unknown."""
+        """Whether a turn is open: from the record first, from the screen when its state is unknown."""
         pane = self.pane()
         if pane is None or pane.dead:
             return False
-        if self.harness.record_confirms and (record := self.record()) is not None:
+        if (record := self.record()) is not None:
             try:
                 turn_open = self.harness.state(record).turn_open
             except OSError:
@@ -272,7 +272,7 @@ class Seat:
     def _queued_unread(self, store: post.Store, attempts: post.Attempts) -> list[post.Message]:
         """Messages whose last attempt says queued and that no record of this seat, taken or typed, ever names."""
         queued = {m for m, result in attempts.last_results(self.name).items() if result == "queued"}
-        if not queued or not self.harness.record_confirms:
+        if not queued:
             return []
         seen: list[str] = []
         for owned in record_owner.records(self):

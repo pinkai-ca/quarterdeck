@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from . import ledger as ledgermod, pending
+from . import ledger as ledgermod, pending, input_receipt
 from .harness.antigravity_quota import wall as quota_banner
 from .harness.base import Screen
 from .quota import reset_text, stamp
@@ -65,6 +65,7 @@ class Door:
         self.harness = seat.harness
         self.tmux = seat.tmux
         self.proof = None
+        self.since = datetime.now(timezone.utc)
 
     def screen(self) -> Screen | None:
         pane = self.seat.pane()
@@ -152,6 +153,7 @@ class Door:
         follows, since a local command leaves no input in the record.
         """
         self.proof = proof
+        self.since = datetime.now(timezone.utc)
         if any(ord(c) < 32 and c not in "\n\t" or ord(c) == 127 for c in text):
             return Delivery("withheld", "message contains unsupported terminal control characters; revise it")
         screen = self.clear_known()  # law: one-door
@@ -235,47 +237,19 @@ class Door:
         return f"{self.seat.name} interrupted with {key} in {pane.id}"
 
     def confirm(self, text: str, seconds: float = CONFIRM_SECONDS) -> Delivery:
-        """Delivered when the record shows the text as an input or queued; blind when it never does.
-
-        A program whose record the framework cannot read is confirmed by its transcript: the
-        text echoed above the box, as the adapter reads it.
-        """
-        if self.proof:
-            deadline = time.monotonic() + seconds
-            while True:
-                if result := self.proof.confirmed(self.seat):
-                    return Delivery(result, "exact payload in the record after paste")
-                if time.monotonic() >= deadline:
-                    return Delivery("pending", "submitted once; waiting for record confirmation (600s intervention bound)")
-                time.sleep(0.2)
-        wanted = text.strip()
-        if not self.harness.record_confirms:
-            deadline = time.monotonic() + seconds
-            while time.monotonic() < deadline:
-                if any(echoed(e, " ".join(text.split())) for e in self.echoes()):
-                    return Delivery("delivered", "echoed in the transcript; this program's record is not read")
-                time.sleep(0.2)
-            return Delivery("blind", f"typed and submitted, not echoed in the transcript within {seconds:.0f}s")
+        """Only a fresh exact input in the owned record confirms acceptance."""
         deadline = time.monotonic() + seconds
         while True:
-            record = self.seat.record()
-            if record is not None:
+            result = None
+            if self.proof:
+                result = self.proof.confirmed(self.seat)
+            elif (record := self.seat.record()) is not None:
                 try:
-                    state = self.harness.state(record)
+                    result = input_receipt.confirmed(self.harness, record, text, self.since)
                 except OSError:
-                    state = None
-                if state and state.last_input and state.last_input.strip() == wanted:
-                    return Delivery("delivered", f"in the record {record.name}")
-                if state and any(c.strip() == wanted for c in state.consumed):
-                    return Delivery("delivered", "queued and taken into the running turn")
-                if state and any(q.strip() == wanted for q in state.queued):
-                    return Delivery("queued", "queued in the record; read at the turn's end")
-            if time.monotonic() > deadline:
-                break
+                    pass
+            if result:
+                return Delivery(result, "exact payload in the record after paste")
+            if time.monotonic() >= deadline:
+                return Delivery("pending" if self.proof else "blind", "submitted once; waiting for record confirmation")
             time.sleep(0.2)
-        screen = self.screen()
-        if screen and (screen.queued or any(echoed(e, wanted) for e in self.echoes())):
-            return Delivery("queued", "the screen shows it queued; the record will confirm")
-        if screen and screen.working and screen.box == "":
-            return Delivery("queued", "the box emptied and the program went to work; the record will confirm")
-        return Delivery("blind", f"typed and submitted, not seen in the record within {seconds:.0f}s")

@@ -13,7 +13,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .base import RecordError, State, Tokens, ToolCall, Turn
+from .base import Input, RecordError, State, Tokens, ToolCall, Turn
 from .sqlite_snapshot import snapshot
 
 DATA_PREFIX = "data-"
@@ -241,7 +241,7 @@ def read(record: Path) -> tuple[State, list[Turn]]:
     return reader.state(), reader.turns
 
 
-def inputs(record: Path) -> list[tuple[str, datetime | None]]:
+def inputs(record: Path) -> list[Input]:
     """Every user message with its time, for the delivery receipt: a queued message is in the record the moment it is taken."""
     rows = _Rows(record)
     active = _active_session(rows)
@@ -249,5 +249,5 @@ def inputs(record: Path) -> list[tuple[str, datetime | None]]:
     for _, mid, sid, _, _, data in rows.parts:
         if sid == active and data.get("type") == "text" and isinstance(data.get("text"), str):
             texts.setdefault(mid, []).append(data["text"])
-    return [("\n".join(texts.get(mid, [])), _ms(_object(data.get("time")).get("created")))
+    return [Input("\n".join(texts.get(mid, [])), _ms(_object(data.get("time")).get("created")))
             for mid, sid, _, _, data in rows.messages if sid == active and data.get("role") == "user"]

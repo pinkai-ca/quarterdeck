@@ -17,7 +17,7 @@ from datetime import date, datetime, time, timezone
 from pathlib import Path
 
 from ..ship import Pool, SeatSpec, literal
-from .base import (Box, Control, Credential, Harness, Interruption, Keys, Launch, RecordError, Screen, State, Tokens,
+from .base import (Box, Input, Control, Credential, Harness, Interruption, Keys, Launch, RecordError, Screen, State, Tokens,
                    ToolCall, Turn, credential, entries, key_environment, program_version, when)
 
 ENDS_TURN = {"task_complete", "turn_aborted"}
@@ -70,6 +70,23 @@ def _failed(output: str | list | None) -> bool:
     except (json.JSONDecodeError, AttributeError):
         match = EXIT_CODE.search(text)
         return bool(match and int(match.group(1)))
+
+
+def inputs(record: Path) -> list[Input]:
+    found = []
+    for row in entries(record):
+        try:
+            payload = row.get("payload", {})
+            if row.get("type") != "response_item" or payload.get("role") != "user":
+                continue
+            content = payload.get("content")
+            if not isinstance(content, list):
+                continue
+            text = "\n".join(c.get("text", "") for c in content if c.get("type") == "input_text")
+            found.append(Input(text, when(row.get("timestamp"))))
+        except (TypeError, ValueError, AttributeError, KeyError):
+            continue
+    return found
 
 
 class _Reader:
@@ -290,6 +307,7 @@ class CodexHarness(Harness):
     def version(self) -> str | None:
         return program_version(("codex", "--version"))
 
+    inputs = staticmethod(inputs)
     records = staticmethod(records)
     first_timestamp = staticmethod(first_timestamp)
     session_id = staticmethod(session_id)

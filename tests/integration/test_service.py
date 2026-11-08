@@ -288,7 +288,7 @@ def test_a_blocked_delivery_goes_in_on_the_tick_after_the_human_clears_the_box(s
     assert attempts.all() == [], "nothing typed, nothing attempted while a human's text is in the box"  # law: one-door
     assert "captain needs a human" in qd(capsys, "status", "--line")
     tmux.keys(captain.pane().id, "C-u")  # the human clears their own box
-    done = wait_for(lambda: [a for a in attempts.all() if a.delivered], seconds=6)  # law: events-not-clocks
+    done = wait_for(lambda: [a for a in attempts.all() if a.accepted], seconds=6)  # law: events-not-clocks
     assert done[0].message == store.all()[0].id and done[0].result == "delivered"
 
 

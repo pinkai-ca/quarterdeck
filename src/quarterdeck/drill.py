@@ -93,12 +93,12 @@ class Drill:
                 self.play_human_seat(name, [o for (_, to), o in orders.items() if to == name])
         # A program can post its report before the service finishes writing its
         # receipt. Wait for both observable facts, keeping the exact-once check.
-        wait_for(lambda: all(not self.store.is_open(o) and any(a.delivered for a in self.attempts.for_message(o.id))
+        wait_for(lambda: all(not self.store.is_open(o) and any(a.accepted for a in self.attempts.for_message(o.id))
                              for o in orders.values()), self.patience * 2)
         closed = all(not self.store.is_open(o) for o in orders.values())
         for (sender, to), order in orders.items():
             report = self.store.closing_report(order)
-            results = [a.result for a in self.attempts.for_message(order.id) if a.delivered]
+            results = [a.result for a in self.attempts.for_message(order.id) if a.accepted]
             ok = report is not None and len(results) == 1
             how = f"{results[0]}" if results else "never delivered"
             self.check(f"{label}: {sender} → {to}", ok, f"delivered once by {how}; closed by {report.short if report else 'nobody'}")
@@ -137,7 +137,7 @@ class Drill:
         settled = wait_for(lambda: all(a.result for a in self.attempts.for_message(order.id)) and
                            self.attempts.for_message(order.id), self.patience)
         results = [a.result for a in self.attempts.for_message(order.id)]
-        delivered = [r for r in results if r in post.DELIVERED]
+        delivered = [r for r in results if r in post.ACCEPTED]
         record = captain.record()
         typed = sum(order.short in t.input for t in captain.harness.turns(record)) if record else 0
         once = len(delivered) == 1 and typed <= 1

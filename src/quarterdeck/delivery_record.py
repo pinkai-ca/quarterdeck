@@ -1,59 +1,39 @@
-"""What a record says about a delivery: whether this very message was taken, and whether a queued one was read."""
+"""Receipt checks for attempts recorded before the durable paste journal."""
 
 from datetime import datetime
 
-from . import post, record_owner
-from .door import Door
+from . import input_receipt, post, record_owner
 from .seat import Seat
 
 
 def read_now(seat: Seat, message: post.Message) -> bool:
-    """Whether a message once queued has been read: it is an input or a consumed entry, no longer only queued."""
+    """An accepted queue has been consumed only when its timestamped record proves it."""
+    return receipt(seat.harness, seat.record(), message, message.at) == "delivered"
+
+
+def receipt(reader, record, message: post.Message, since: datetime) -> str | None:
+    if record is None:
+        return None
     try:
-        state, turns = seat.harness.read(seat.record())
+        return input_receipt.confirmed(reader, record, post.typed([message]), since)
     except OSError:
-        return False
-    flat = " ".join(" ".join(t.split()) for t in [*(x.input for x in turns), *state.consumed, state.last_input or ""])
-    return message.short in flat and message.short not in " ".join(state.queued)
-
-
-def _carries(message: post.Message, text: str | None) -> bool:
-    flat = " ".join((text or "").split())
-    return message.short in flat and " ".join(message.body.split()) in flat
+        return None
 
 
 def taken(seat: Seat, message: post.Message, since: datetime) -> bool:
-    """Whether the record shows this very message, by its id and body, as an input after ``since``;
-    for a program whose record is opaque, whether its transcript echoes it."""
-    if not seat.harness.record_confirms:
-        return any(_carries(message, e) for e in Door(seat).echoes())
-    record = seat.record()
-    if record is None:
-        return False
-    try:
-        state, turns = seat.harness.read(record)
-    except OSError:
-        return False
-    inputs = [t.input for t in turns if t.started and t.started >= since]
-    if state.turn_open and state.last_input_at and state.last_input_at >= since:
-        inputs.append(state.last_input)
-    return any(_carries(message, text) for text in inputs + list(state.queued) + list(state.consumed))
+    """Whether the exact transport was accepted since this attempt began."""
+    return receipt(seat.harness, seat.record(), message, since) is not None
 
 
-def taken_anywhere(seat: Seat, message: post.Message, since: datetime) -> bool:
-    """``taken``, over every record the seat has owned: a message typed before a fresh start or a change
-    of program may stand in an older record than the one the seat runs now."""
-    if taken(seat, message, since):
-        return True
-    current = seat.record()
+def receipt_anywhere(seat: Seat, message: post.Message, since: datetime) -> str | None:
+    """Acceptance in the current or a historically owned record, read by its saved reader."""
+    queued = None
     for owned in record_owner.records(seat):
-        if owned.path == current:
+        if owned.reader is None:
             continue
-        try:
-            state, turns = owned.read()
-        except OSError:
-            continue
-        inputs = [t.input for t in turns if t.started and t.started >= since] + list(state.consumed)
-        if any(_carries(message, text) for text in inputs):
-            return True
-    return False
+        result = receipt(owned.reader, owned.path, message, since)
+        if result == "delivered":
+            return result
+        if result == "queued":
+            queued = result
+    return queued

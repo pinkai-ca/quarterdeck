@@ -24,6 +24,20 @@ from .json_record import RecordError, entries, when
 
 
 @dataclass(frozen=True)
+class Input:
+    """An input accepted by a record, waiting in its queue, or consumed from it.
+
+    ``at`` is its original acceptance time, never a later poll or dequeue time.
+    A consumed queue entry also needs a valid ``consumed_at`` to prove it was taken.
+    """
+
+    text: str
+    at: datetime | None
+    kind: str = "accepted"
+    consumed_at: datetime | None = None
+
+
+@dataclass(frozen=True)
 class Tokens:
     """As many classes as the provider bills; four for Anthropic. A class a provider never reports is zero.
 
@@ -299,7 +313,6 @@ class Harness(ABC):
     home_variable: str | None
     keys: Keys
     brief_channel: str
-    record_confirms: bool = True  # False where the record is opaque: the screen's echo confirms a delivery instead
     reads_usage: bool = False  # True where usage() reads the provider's windows; a pool of such a program is read before a move
     remote_control: bool = False  # True where the program can open a seat to the operator's phone and claude.ai as well
     wrap_slack: int = 0  # columns the program keeps clear at the right when it wraps at a word, under the width where it breaks a word
@@ -358,6 +371,10 @@ class Harness(ABC):
     def read(self, record: Path) -> tuple[State, list[Turn]]:
         """The live state and the ended turns from one reading of the record."""
         return self.state(record), self.turns(record)
+
+    def inputs(self, record: Path) -> list[Input]:
+        """Timestamped evidence from an already owned record; never from a screen."""
+        raise NotImplementedError
 
     def join(self, home: Path, launched_at: datetime, excluded: tuple[Path, ...] = ()) -> Join:
         """The first record written after the launch; ambiguity reported, never guessed."""

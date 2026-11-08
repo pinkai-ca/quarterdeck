@@ -15,7 +15,7 @@ from pathlib import Path
 
 from ..ship import Pool, SeatSpec
 from . import claude, codex
-from .base import Box, Control, Credential, Harness, Interruption, Keys, Launch, Screen, State, Turn
+from .base import Box, Input, Control, Credential, Harness, Interruption, Keys, Launch, Screen, State, Turn
 
 RULE = re.compile(r"^─{8,}\s*$")
 STATUS = re.compile(r"^fake (\w+) · model (\S+) · effort (\S+) · (idle|working)(?: · queued (\d+))?")
@@ -78,6 +78,9 @@ class FakeHarness(Harness):
 
     def session_id(self, record: Path) -> str | None:
         return self._reader(record).session_id(record)
+
+    def inputs(self, record: Path) -> list[Input]:
+        return self._reader(record).inputs(record)
 
     def state(self, record: Path) -> State:
         return self._reader(record).state(record)

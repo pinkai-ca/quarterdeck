@@ -81,7 +81,7 @@ def test_removed_seat_is_abandoned_once_and_survivor_confirms_on_same_tick(tmp_p
     assert svc.attempts.latest()[old.id] == 'abandoned'
     assert svc.attempts.latest()[good.id] == 'delivered'
     assert confirmed_attempt.path.read_bytes() == confirmed_before
-    assert not svc.attempts.for_message(old.id)[0].delivered
+    assert not svc.attempts.for_message(old.id)[0].accepted
     assert svc.store.get(old.id).body == old.body and len(svc.attempts.for_message(old.id)) == 1
     if proof:
         assert json.loads(proof.path.read_text())['phase'] == 'abandoned'
@@ -143,7 +143,7 @@ def test_check_retires_all_unresolved_attempts_and_journals_before_deleting_seat
     seat = state['seat']
     assert not seat.folder.exists() and not state['session']
     attempts = post.Attempts(ship.runtime)
-    assert len(attempts.all()) == 6 and len(attempts.delivered_ids()) == 1
+    assert len(attempts.all()) == 6 and len(attempts.accepted_ids()) == 1
     assert len(pending.active(seat, include_terminal=True)) == 6, 'terminal journal history stays in post'
     store = post.Store(ship.runtime)
     for message in state['messages']:

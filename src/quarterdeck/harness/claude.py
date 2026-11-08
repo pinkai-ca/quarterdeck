@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..ship import Pool, SeatSpec
-from .base import (Box, Control, Credential, Harness, Interruption, Keys, Launch, RecordError, Screen, State, Tokens,
+from .base import (Box, Input, Control, Credential, Harness, Interruption, Keys, Launch, RecordError, Screen, State, Tokens,
                    ToolCall, Turn, Usage, Window, credential, entries, key_environment, merged, program_version, same_name, when)
 
 ENDS_TURN = {"end_turn", "max_tokens", "stop_sequence"}
@@ -58,6 +58,33 @@ def prompt_text(entry: dict) -> str | None:
     if not isinstance(content, str) or content.startswith(LOCAL_TAGS):
         return None
     return unwrap(content)
+
+
+def inputs(record: Path) -> list[Input]:
+    found, queued = [], []
+    for row in entries(record):
+        if row.get("isSidechain"):
+            continue
+        try:
+            stamp = when(row.get("timestamp"))
+            text = prompt_text(row)
+            if text is not None:
+                found.append(Input(text, stamp))
+            if row.get("type") != "queue-operation":
+                continue
+            text = unwrap(row.get("content") or "")
+            operation = row.get("operation")
+            matching = next((i for i, item in enumerate(queued) if item.text.strip() == text.strip()), None)
+            if operation == "enqueue":
+                queued.append(Input(text, stamp, "queued"))  # stale and untimed entries still occupy FIFO positions
+            elif operation in ("remove", "dequeue") and matching is not None:
+                entry = queued.pop(matching)
+                found.append(Input(entry.text, entry.at, "consumed", stamp))
+            else:
+                queued = [item for item in queued if item.text.strip() != text.strip()]
+        except (TypeError, ValueError, AttributeError, KeyError):
+            continue
+    return found + queued
 
 
 def usage_tokens(usage: dict) -> Tokens:
@@ -112,7 +139,7 @@ class _Reader:
         text = unwrap(entry.get("content") or "")
         if entry.get("operation") == "enqueue":
             self.queued.append(text)
-        elif text in self.queued:
+        elif entry.get("operation") in ("remove", "dequeue") and text in self.queued:
             self.queued.remove(text)
             self.consumed.append(text)
 
@@ -305,6 +332,7 @@ class ClaudeHarness(Harness):
     def version(self) -> str | None:
         return program_version(("claude", "--version"))
 
+    inputs = staticmethod(inputs)
     records = staticmethod(records)
     first_timestamp = staticmethod(first_timestamp)
     session_id = staticmethod(session_id)
