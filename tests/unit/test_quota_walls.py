@@ -1,6 +1,6 @@
 """Persistent observed walls, actual launch provenance, delivery and status, all synthetic."""
 
-from dataclasses import asdict, replace
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import json
 from types import SimpleNamespace
@@ -39,7 +39,7 @@ def synthetic_seat(tmp_path, monkeypatch):
     seat.home.mkdir(parents=True)
     now = datetime.now(timezone.utc)
     launched = Launched('%1',4242,(now-timedelta(hours=1)).isoformat(),'google-a',None,['synthetic-agy'],'synthetic', harness='antigravity')
-    (seat.folder/'launch.json').write_text(json.dumps(asdict(launched)))
+    launched.write(seat.folder/'launch.json')
     rec = AntigravityShape(seat.home,tmp_path,'synthetic-conversation','synthetic-model')
     rec.begin('synthetic input','synthetic-model','high')
     rec.end('synthetic reply')
@@ -157,7 +157,7 @@ def test_launch_pool_at_event_time_survives_pool_switch_and_ambiguous_history(tm
     at=datetime.now(timezone.utc)-timedelta(minutes=5)
     seat.record()  # preserve the first proven launch
     seat.move_to('google-b')
-    (seat.folder/'launch.json').write_text(json.dumps(asdict(replace(first,at=(at+timedelta(minutes=1)).isoformat(),pool='google-b'))))
+    replace(first,at=(at+timedelta(minutes=1)).isoformat(),pool='google-b').write(seat.folder/'launch.json')
     append_error(rec,TEXT,at)
     tick(seat)
     assert Door(seat).reading().open, 'current pool-b is not blocked by pool-a evidence'
@@ -224,7 +224,7 @@ def test_expired_record_event_recognized_after_restart_and_record_failure(tmp_pa
     tick(seat)
     assert Door(seat).reading().open
     prior = seat.launched()
-    (seat.folder/'launch.json').write_text(json.dumps(asdict(replace(prior, at=datetime.now(timezone.utc).isoformat()))))
+    replace(prior, at=datetime.now(timezone.utc).isoformat()).write(seat.folder/'launch.json')
     shown['text'] = TEXT + '\n' + IDLE
     def unreadable(*args):
         raise OSError('synthetic record temporarily unreadable')

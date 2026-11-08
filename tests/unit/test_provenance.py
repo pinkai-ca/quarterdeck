@@ -1,6 +1,6 @@
 """Pool provenance on actual same-record restart paths, with synthetic records and no launches."""
 
-from dataclasses import asdict, replace
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import json
 from types import SimpleNamespace
@@ -29,7 +29,7 @@ def test_account_same_record_failover_restart_and_delayed_metadata(tmp_path, mon
     (seat.folder / 'record').write_text(str(record))
     origin = datetime.now(timezone.utc) - timedelta(minutes=10)
     initial_launch = Launched('%1', 1001, origin.isoformat(), 'pool-a', None, ['fake'], 'synthetic')
-    (seat.folder / 'launch.json').write_text(json.dumps(asdict(initial_launch)))
+    initial_launch.write(seat.folder / 'launch.json')
     old = Turn(0, origin + timedelta(seconds=1), origin + timedelta(seconds=2),
                'old input', 'old reply', 'synthetic-model', Tokens(1, 10, 0, 2),
                (ToolCall('run_command', None, False),))

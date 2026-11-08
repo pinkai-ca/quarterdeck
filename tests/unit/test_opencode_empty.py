@@ -1,6 +1,5 @@
 """An empty recognized database is not a missing turn; bad or orphaned records remain uncertain."""
 
-from dataclasses import asdict
 from datetime import timedelta
 import json
 import sqlite3
@@ -35,7 +34,7 @@ def setup(tmp_path, monkeypatch):
     con.close()
     launched = Launched('%1', 1, (AT-timedelta(seconds=1)).isoformat(), 'local', None,
                         ['opencode'], 'synthetic', harness='opencode')
-    (seat.folder/'launch.json').write_text(json.dumps(asdict(launched)))
+    launched.write(seat.folder/'launch.json')
     (seat.folder/'record').write_text(str(history))
     monkeypatch.setattr(service.machine, 'processes', lambda: {})
     svc = Service(ship, tmux)

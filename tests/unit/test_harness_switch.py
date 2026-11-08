@@ -1,6 +1,6 @@
 """Synthetic retained-record ownership across a down seat's program change."""
 
-from dataclasses import asdict, replace
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
@@ -37,7 +37,7 @@ def setup_seat(tmp_path, monkeypatch):
     old.end('synthetic old reply')
     launch = Launched('%1',12345,(datetime.now(timezone.utc)-timedelta(minutes=5)).isoformat(),
                       'google',None,['agy'],'synthetic',harness='antigravity')
-    (seat.folder/'launch.json').write_text(json.dumps(asdict(launch)))
+    launch.write(seat.folder/'launch.json')
     (seat.folder/'record').write_text(str(old.path))
     monkeypatch.setattr(service.machine,'processes',lambda:{})
     return seat,old,active
@@ -118,7 +118,7 @@ def test_down_switch_fresh_join_and_history_use_original_reader_pool_and_quota(t
 
 def test_legacy_launch_proves_reader_but_untyped_down_history_does_not_guess(tmp_path, monkeypatch):
     seat,old,_ = setup_seat(tmp_path,monkeypatch)
-    launch = asdict(seat.launched())
+    launch = json.loads((seat.folder/'launch.json').read_text())
     launch.pop('harness')  # old launch.json still has exact argv evidence
     (seat.folder/'launch.json').write_text(json.dumps(launch))
     spec = replace(seat.spec,harness='codex',pools=('codex',))
@@ -212,7 +212,7 @@ def test_saved_launch_disagreement_cannot_add_a_wrong_pool_boundary(tmp_path, mo
     assert seat.record() == old.path
     previous = (seat.folder/'record-launches.jsonl').read_bytes()
     changed = replace(seat.launched(),harness='codex',pool='codex',argv=['codex'])
-    (seat.folder/'launch.json').write_text(json.dumps(asdict(changed)))
+    changed.write(seat.folder/'launch.json')
     assert seat.record() is None and 'disagree' in seat.join().reason
     svc = Service(seat.ship,seat.tmux)
     svc.account()
@@ -233,7 +233,7 @@ def test_stale_sibling_pin_does_not_resolve_shared_record_ambiguity(tmp_path, mo
     record_owner.register(sibling.folder,stale,'codex')
     (sibling.folder/'record').write_text(str(stale))
     launch = replace(seat.launched(),pane='%2',pid=45678)
-    (sibling.folder/'launch.json').write_text(json.dumps(asdict(launch)))
+    launch.write(sibling.folder/'launch.json')
     seat.tmux.pane = lambda ident: Pane('%2','crew','neighbor',45678,80,24,False,False,None)
     monkeypatch.setattr(AntigravityHarness,'_appeared',lambda *a:pytest.fail('ambiguous shared candidates enumerated'))
     monkeypatch.setattr(AntigravityHarness,'state',lambda *a:pytest.fail('foreign candidate decoded'))
@@ -245,7 +245,7 @@ def test_new_program_without_a_joined_record_has_nothing_to_count_yet(tmp_path, 
     fresh = Seat(seat.ship,seat.ship.seats['neighbor'],seat.tmux)
     fresh.home.mkdir(parents=True)
     launch = replace(seat.launched(),harness='codex',pool='codex',argv=['codex'])
-    (fresh.folder/'launch.json').write_text(json.dumps(asdict(launch)))
+    launch.write(fresh.folder/'launch.json')
     assert fresh.join().reason == 'no record yet'
     assert watch.tokens_today(fresh) == Count(), 'no record, nothing spent, nothing unmeasured'
     assert 'record absent: no record yet' in '\n'.join(watch.full(fresh))

@@ -1,6 +1,5 @@
 """Removed seats retire uncertainty without blocking another seat or inventing delivery."""
 
-from dataclasses import asdict
 from datetime import timedelta
 import json
 from types import SimpleNamespace
@@ -23,7 +22,7 @@ def launch(seat, pane='%1', pid=111):
     seat.home.mkdir(parents=True, exist_ok=True)
     launched = Launched(pane, pid, (post.now()-timedelta(minutes=1)).isoformat(), seat.pool.name,
                         None, [seat.harness.name], 'synthetic', harness=seat.harness.name)
-    (seat.folder/'launch.json').write_text(json.dumps(asdict(launched)))
+    launched.write(seat.folder/'launch.json')
     return launched
 
 

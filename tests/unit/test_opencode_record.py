@@ -1,6 +1,5 @@
 """Synthetic OpenCode sessions and unfamiliar rows, through watch and service accounting."""
 
-from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
@@ -164,7 +163,7 @@ def test_unknown_nested_usage_is_unmeasured_with_siblings_through_watch_and_acco
     con.close()
     (seat.folder/'record').write_text(str(record))
     launched = Launched('%999', 999, AT.isoformat(), 'local', 'root', ['opencode'], 'synthetic', harness='opencode')
-    (seat.folder/'launch.json').write_text(json.dumps(asdict(launched)))
+    launched.write(seat.folder/'launch.json')
     observed = SimpleNamespace(pane=lambda: SimpleNamespace(dead=False), harness=seat.harness, join=lambda: Join(record))
     assert watch.activity(observed, AT+timedelta(seconds=1)).state == 'idle'
     turns = seat.harness.turns(record)
