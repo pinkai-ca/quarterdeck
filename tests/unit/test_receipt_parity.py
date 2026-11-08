@@ -15,7 +15,7 @@ from .test_pending_delivery import setup, input_row
 
 @pytest.mark.parametrize("operation, result", [("enqueue", "queued"), ("remove", "delivered"),
                                                ("dequeue", "delivered"), ("future-operation", None)])
-def test_check_and_journal_match_the_same_timestamped_queue(tmp_path, operation, result):
+def test_check_and_journal_match_the_same_timestamped_queue(tmp_path: Path, operation, result) -> None:
     at = datetime(2030, 1, 1, tzinfo=timezone.utc)
     record = tmp_path / "synthetic.jsonl"
     text = "exact  transport\nsecond line"
@@ -38,9 +38,10 @@ def test_check_and_journal_match_the_same_timestamped_queue(tmp_path, operation,
 
 
 @pytest.mark.parametrize("fresh", [True, False])
-def test_real_check_probe_and_service_delivery_use_adapter_inputs(setup, monkeypatch, fresh):
+def test_real_check_probe_and_service_delivery_use_adapter_inputs(setup, monkeypatch: pytest.MonkeyPatch, fresh) -> None:
     svc, seat, live, record = setup
     original_keys = svc.tmux.keys
+
     def keys(*args):
         original_keys(*args)
         at = post.now() if fresh else post.now() - timedelta(days=1)
@@ -58,13 +59,14 @@ def test_real_check_probe_and_service_delivery_use_adapter_inputs(setup, monkeyp
     assert live["pasted"] == live["submitted"] == 2
 
 
-def test_fifo_queue_receipts_keep_untimed_slots_and_unknown_operations_prove_nothing(tmp_path):
+def test_fifo_queue_receipts_keep_untimed_slots_and_unknown_operations_prove_nothing(tmp_path: Path) -> None:
     at = datetime(2030, 1, 1, tzinfo=timezone.utc)
     record = tmp_path / "queue.jsonl"
     text = "exact  input"
+
     def event(operation, stamp):
         return {"type": "queue-operation", "operation": operation,
-                "content": '<pasted_content id="synthetic">\n' + text + '\n</pasted_content>',
+                "content": '<pasted_content id="synthetic">\n' + text + "\n</pasted_content>",
                 "timestamp": stamp.isoformat() if stamp else None}
     rows = [event("enqueue", None), event("enqueue", at), event("dequeue", at + timedelta(seconds=1))]
     record.write_text("\n".join(map(json.dumps, rows)))
@@ -79,7 +81,7 @@ def test_fifo_queue_receipts_keep_untimed_slots_and_unknown_operations_prove_not
 
 
 @pytest.mark.parametrize("name", ["claude", "codex", "pi"])
-def test_unreadable_input_shapes_do_not_hide_fresh_siblings_or_confirm_untimed_history(tmp_path, name):
+def test_unreadable_input_shapes_do_not_hide_fresh_siblings_or_confirm_untimed_history(tmp_path: Path, name) -> None:
     at = datetime(2030, 1, 1, tzinfo=timezone.utc)
     make = {
         "claude": lambda value: {"type": "user", "message": {"content": value}},
@@ -96,7 +98,7 @@ def test_unreadable_input_shapes_do_not_hide_fresh_siblings_or_confirm_untimed_h
     assert input_receipt.confirmed(name, record, "exact input", at) == "delivered"
 
 
-def test_attempt_receipts_preserve_precision_and_refuse_ambiguous_old_seconds(tmp_path, monkeypatch):
+def test_attempt_receipts_preserve_precision_and_refuse_ambiguous_old_seconds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from quarterdeck.post import Attempt, Attempts, Store
 
     start = datetime(2030, 1, 1, tzinfo=timezone.utc)
@@ -110,6 +112,7 @@ def test_attempt_receipts_preserve_precision_and_refuse_ambiguous_old_seconds(tm
     assert old.when == start and old.receipt_since == start + timedelta(seconds=1)
     record = tmp_path / "synthetic.jsonl"
     text = post.typed([message])
+
     def write(at):
         record.write_text(json.dumps({"type": "user", "timestamp": at.isoformat(), "message": {"content": text}}))
     write(start + timedelta(microseconds=500000))

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,7 +19,7 @@ def seat_with(record: Path):
     return SimpleNamespace(record=lambda: record, harness=FakeHarness())
 
 
-def test_taken_matches_the_message_id_not_a_look_alike_body(tmp_path: Path):
+def test_taken_matches_the_message_id_not_a_look_alike_body(tmp_path: Path) -> None:
     store = Store(tmp_path)
     earlier = store.new("order", "desk", "scott", "done")
     record = ClaudeShape(tmp_path / "home", Path("/work"), "s1", "fake-1")
@@ -35,12 +37,12 @@ def test_taken_matches_the_message_id_not_a_look_alike_body(tmp_path: Path):
     assert Service.taken(seat_with(record.path), later, since) is True
 
 
-def test_taken_without_a_record_is_false(tmp_path: Path):
+def test_taken_without_a_record_is_false(tmp_path: Path) -> None:
     message = Message("ord-1-d-0001", "order", "desk", "scott", post.now(), "x")
     assert Service.taken(SimpleNamespace(record=lambda: None, harness=FakeHarness()), message, post.now()) is False
 
 
-def test_account_tracks_wal_fingerprint_and_retries_after_transient_read_error(tmp_path: Path, monkeypatch):
+def test_account_tracks_wal_fingerprint_and_retries_after_transient_read_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import json
     import sqlite3
 
@@ -123,49 +125,49 @@ def test_account_tracks_wal_fingerprint_and_retries_after_transient_read_error(t
     svc.ledger.close()
 
 
-def test_account_keeps_sparse_ids_and_missing_owned_records_visible(tmp_path, monkeypatch):
+def test_account_keeps_sparse_ids_and_missing_owned_records_visible(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from quarterdeck.harness.antigravity import AntigravityHarness
     from quarterdeck.harness.base import State, Tokens, Turn
     from quarterdeck.ledger import table
 
-    record = tmp_path / 'synthetic.db'
-    record.write_bytes(b'placeholder')
+    record = tmp_path / "synthetic.db"
+    record.write_bytes(b"placeholder")
     stamp = datetime.now(timezone.utc)
-    later = Turn(4,stamp,stamp,'later','reply','m',Tokens(0,11,0,1))
-    earlier = Turn(0,stamp,stamp,'earlier','reply','m',Tokens(0,10,0,1))
-    data = {'turns':[later], 'state':State(turns=None)}
-    home = tmp_path / 'home'
+    later = Turn(4, stamp, stamp, "later", "reply", "m", Tokens(0, 11, 0, 1))
+    earlier = Turn(0, stamp, stamp, "earlier", "reply", "m", Tokens(0, 10, 0, 1))
+    data = {"turns": [later], "state": State(turns=None)}
+    home = tmp_path / "home"
     home.mkdir()
-    (home / 'conversations.owned').write_text(str(record)+'\n')
+    (home / "conversations.owned").write_text(str(record) + "\n")
     harness = AntigravityHarness()
-    monkeypatch.setattr(harness,'read',lambda r: (data['state'],data['turns']) if r.exists() else
-                        (_ for _ in ()).throw(OSError('record missing')))
-    seat = SimpleNamespace(name='worker',home=home,harness=harness,pane=lambda:None,launched=lambda:None,
-                           pool=SimpleNamespace(name='pool-a'), record=lambda: None, spec=SimpleNamespace(harness='antigravity'))
+    monkeypatch.setattr(harness, "read", lambda r: (data["state"], data["turns"]) if r.exists() else
+                        (_ for _ in ()).throw(OSError("record missing")))
+    seat = SimpleNamespace(name="worker", home=home, harness=harness, pane=lambda: None, launched=lambda: None,
+                           pool=SimpleNamespace(name="pool-a"), record=lambda: None, spec=SimpleNamespace(harness="antigravity"))
     from quarterdeck import service
-    monkeypatch.setattr(service,'seats',lambda *a:[seat])
+    monkeypatch.setattr(service, "seats", lambda *a: [seat])
     from quarterdeck.record_owner import register
-    register(home.parent, record, 'antigravity')
-    ship = SimpleNamespace(runtime=tmp_path/'runtime',folder=tmp_path,pools={})
-    svc = Service(ship,None)
+    register(home.parent, record, "antigravity")
+    ship = SimpleNamespace(runtime=tmp_path / "runtime", folder=tmp_path, pools={})
+    svc = Service(ship, None)
     svc.account()
     assert svc.ledger.ingested(record) == 1
-    data.update(turns=[earlier,later],state=State(turns=2))
-    record.write_bytes(b'placeholder changed')
+    data.update(turns=[earlier, later], state=State(turns=2))
+    record.write_bytes(b"placeholder changed")
     svc.account()
-    assert svc.ledger.db.execute('SELECT turn,read_uncached FROM turns ORDER BY turn').fetchall() == [(0,10),(4,11)]
+    assert svc.ledger.db.execute("SELECT turn,read_uncached FROM turns ORDER BY turn").fetchall() == [(0, 10), (4, 11)]
     assert svc.ledger.incomplete_records() == []
     svc.account()
     assert svc.ledger.ingested(record) == 2
     record.unlink()
-    assert harness.records(home) == [record], 'missing owned record must remain enumerable'
+    assert harness.records(home) == [record], "missing owned record must remain enumerable"
     svc.account()
-    assert 'record missing' in '\n'.join(table(svc.ledger,'seat'))
-    assert svc.ledger.rollup('seat')[0].unmeasured >= 1
+    assert "record missing" in "\n".join(table(svc.ledger, "seat"))
+    assert svc.ledger.rollup("seat")[0].unmeasured >= 1
     svc.ledger.close()
 
 
-def test_a_blind_attempt_is_judged_delivered_once_a_record_shows_the_message(tmp_path: Path, monkeypatch):
+def test_a_blind_attempt_is_judged_delivered_once_a_record_shows_the_message(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import json
 
     from quarterdeck.harness.synthetic_record import ClaudeShape

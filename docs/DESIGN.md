@@ -411,7 +411,7 @@ quarterdeck/                       the project folder: the framework repository
     tmux.py        the only module that runs tmux
     seat.py        seat identity, lifecycle and controls: up, down, restart, fresh, stop, set
     door.py        the one typing path: clear, type, check, submit, confirm; three speeds; the wall it reads
-    pending.py composer.py delivery_queue.py delivery_record.py   the door's evidence of one paste, and the transport around it
+    pending.py delivery_queue.py delivery_record.py   the door's evidence of one paste, and the transport around it
     input_receipt.py   the one rule that matches a delivery to the record's evidence of its input
     service.py     the ship's one long-running process: inboxes, deliveries, attempts, deferred controls, the heartbeat,
                    the machine sample; the one writer of the Ledger
