@@ -131,26 +131,27 @@ class Seat:
             try:
                 owner = record_owner.pinned_reader(self, record)
             except OSError as error:
-                return Join(None, f"record reader unknown: {error}")
+                return Join(None, f"record reader unknown: {error}; inspect with qd watch {self.name}")
             if owner != self.spec.harness:
-                return Join(None, f"record reader {'unknown' if owner is None else 'changed'}: retained {owner or 'untyped'} record; fresh {self.spec.harness} launch required")
+                return Join(None, f"record reader {'unknown' if owner is None else 'changed'}: retained {owner or 'untyped'} record {record.name}; "
+                            f"historical reader evidence is unchanged by a new launch; inspect with qd watch {self.name}")
             if self.launched() is not None and record_owner.launch_reader(self.launched()) != owner:
-                return Join(None, "record reader changed: pin and saved launch disagree; fresh launch required")
+                return Join(None, f"record reader changed: {record.name} and saved launch disagree; inspect with qd watch {self.name}")
             if record.exists():
                 self._note_owned(record)
                 return Join(record)
-            return Join(None, f"record missing: {record.name}")
+            return Join(None, f"record missing: {record.name}; restore the owned record if available; inspect with qd watch {self.name}")
         launched = self.launched()
         if launched is None:
             return Join(None, "not up")
         if record_owner.launch_reader(launched) != self.spec.harness:
-            return Join(None, "record reader changed: launch belongs to another or unknown harness; fresh launch required")
+            return Join(None, f"record reader changed: launch belongs to another or unknown harness; inspect with qd watch {self.name}")
         if self.harness.home_variable is None and self._shared_state_contended():
             return Join(None, f"ambiguous: another {self.harness.name} seat is up without a record of its own")  # law: one-record
         try:
             found = self.harness.join(self.home, launched.when, tuple(Path(p) for p in launched.records_before))
         except OSError as error:
-            return Join(None, f"record unreadable: {error}")
+            return Join(None, f"record unreadable: {error}; inspect with qd watch {self.name}")
         if found.record is not None:
             pinned.write_text(str(found.record) + "\n")  # law: one-record
             self._note_owned(found.record)

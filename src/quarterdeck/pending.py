@@ -12,7 +12,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
-from typing import Any, Iterator, TYPE_CHECKING
+from typing import Any, Iterator, Sequence, TYPE_CHECKING
 
 from . import post
 from . import input_receipt
@@ -31,6 +31,13 @@ def identity(seat: Seat) -> dict[str, str | int | None]:
     launch, pane = seat.launched(), seat.pane()
     return {"pane": pane.id if pane else None, "pid": pane.pid if pane else None,
             "launch": launch.at if launch else None, "harness": seat.harness.name}
+
+
+def inspection(seat: Seat, reason: str, attempts: Sequence[str] = ()) -> str:
+    """Name the owned attempt without reading or reconstructing its payload."""
+    messages = ", ".join(dict.fromkeys(post.short_of(Path(name).stem.rsplit("-", 1)[0]) for name in attempts))
+    identity = f"{seat.name}, {messages}" if messages else seat.name
+    return f"{reason} ({identity}); inspect with qd watch {seat.name}"
 
 
 class Proof:
@@ -86,21 +93,25 @@ class Proof:
     def reading(self, seat: Seat, screen: Screen | None, now: datetime | None = None) -> tuple[str, str, bool] | None:
         """Return (reason, remedy, quiet) or None for a proven accepted queue."""
         phase = self.data["phase"]
+
+        def uncertain(reason: str) -> tuple[str, str, bool]:
+            return inspection(seat, reason, self.data["attempts"]), "needs a human", False
+
         if phase == "queued" and (not self.same_launch(seat) or (screen and screen.box == "")):
             return None
         if not self.same_launch(seat):
-            return ("pending delivery belongs to a different pane/process/launch", "needs a human", False)
+            return uncertain("pending delivery belongs to a different pane/process/launch")
         if phase not in ("submitted", "queued"):
-            return ("paste/submit outcome uncertain; never resent", "needs a human", False)
+            return uncertain("paste/submit outcome uncertain; never resent")
         if screen is None or screen.box is None or screen.interruption or screen.unknown:
-            return ("pending delivery; composer cannot be verified", "needs a human", False)
+            return uncertain("pending delivery; box cannot be verified")
         if screen.box and screen.box != self.data["shown"]:
-            return ("pending composer changed or is foreign; untouched", "needs a human", False)
+            return uncertain("pending box changed or is foreign; untouched")
         if screen.box and screen.box.startswith("[Pasted"):
-            return ("pending folded composer is ambiguous; untouched", "needs a human", False)
+            return uncertain("pending folded box is ambiguous; untouched")
         age = ((now or post.now()) - datetime.fromisoformat(self.data["at"])).total_seconds()
         if age >= WAIT_SECONDS:
-            return ("pending delivery exceeded 600s; inspect composer and record before explicit resend", "needs a human", False)
+            return uncertain("pending delivery exceeded 600s; not resent; box and record need inspection")
         reason = "waiting to be taken" if screen.box else "waiting for record confirmation"
         return (f"{reason} ({int(max(0, age))}s of 600s)", "record confirmation", True)
 
@@ -146,7 +157,7 @@ def validate(data: Any, seat: str) -> None:
 def active(seat: Seat, include_terminal: bool = False) -> list[Proof]:
     found, errors = journals(seat)
     if errors:
-        raise RecordError("pending delivery journal unreadable; never resent")
+        raise RecordError(inspection(seat, "pending delivery journal unreadable; never resent"))
     return [p for p in found if include_terminal or p.data["phase"] not in TERMINAL]
 
 
@@ -154,7 +165,7 @@ def held(seat: Seat, screen: Screen | None, ignored: Proof | None = None) -> tup
     try:
         proofs = active(seat)
     except (OSError, ValueError, KeyError):
-        return ("pending delivery journal unreadable; never resent", "needs a human", False)
+        return (inspection(seat, "pending delivery journal unreadable; never resent"), "needs a human", False)
     for proof in proofs:
         if ignored is not None and proof.path == ignored.path and proof.data["phase"] == "prepared":
             continue  # only this delivery's pre-paste check may ignore its own reservation
@@ -219,11 +230,11 @@ def reconcile(service: Service) -> set[Path]:
             # Attempts without journals cannot reconstruct this seat's unreadable evidence.
             # Other intact journals (including this seat's) still get their receipts.
             paths.update(a.path for a in attempts.values() if a.seat == name)
-            service.log("error", step="reconcile", seat=name, error="pending journal unreadable; never resent", files=errors)
+            service.log("error", step="reconcile", seat=name, error=inspection(seat, "pending journal unreadable; never resent"), files=errors)
         for proof in proofs:
             if any(n not in attempts for n in proof.data["attempts"]):
                 paths.update(a.path for a in attempts.values() if a.seat == name)
-                service.log("error", step="reconcile", seat=name, error="pending attempt receipt missing; never resent")
+                service.log("error", step="reconcile", seat=name, error=inspection(seat, "pending attempt receipt missing; never resent", proof.data["attempts"]))
                 continue
             phase = proof.data["phase"]
             carried = [attempts[n] for n in proof.data["attempts"]]
@@ -264,7 +275,7 @@ def explicit_resend(service: Service, seat: Seat, messages: list[post.Message]) 
     for proof in active(seat):
         carried = [attempts[name] for name in proof.data["attempts"]]
         if {a.message for a in carried} <= requested:
-            proof.save(phase="cancelled", resolution="explicit resend requested with empty composer")
+            proof.save(phase="cancelled", resolution="explicit resend requested with empty box")
             for attempt in carried:
                 service.attempts.close(attempt, "blind", "explicit resend superseded this unconfirmed submission")
 
@@ -272,7 +283,7 @@ def explicit_resend(service: Service, seat: Seat, messages: list[post.Message]) 
 def detached(seat: Seat) -> list[str]:
     """Old unresolved submissions remain visible without owning a different door."""
     try:
-        return ["prior launch has an unconfirmed delivery; inspect its record" for p in active(seat)
-                if not p.same_launch(seat) and p.data["phase"] != "queued"]
+        return [inspection(seat, "prior launch has an unconfirmed delivery; historical record evidence required", proof.data["attempts"])
+                for proof in active(seat) if not proof.same_launch(seat) and proof.data["phase"] != "queued"]
     except (OSError, ValueError, KeyError):
-        return ["pending delivery journal unreadable; never resent"]
+        return [inspection(seat, "pending delivery journal unreadable; never resent")]

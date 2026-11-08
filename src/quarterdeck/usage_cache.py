@@ -77,12 +77,13 @@ class Reading:
         label = f"{self.pool} {self.window}"
         reason = self.reason(now)
         if not self.complete:
-            return f"{label} usage unknown · {reason}"
+            return f"{label} usage unknown · {reason}; inspect with qd ledger"
         age = max(0, int((now - parse(self.read_at)).total_seconds() // 60))
         value = f"{self.used:.0%} used" + (f" ({self.bucket_name})" if self.bucket_name else "")
         reading = f"read {self.read_at} ({age}m ago)"
         stale = f" · LAST KNOWN · {reason}" if reason else ""
-        return f"{label} {value}{stale} · {reset_text(self.resets_at)} · {reading}"
+        next_step = "; inspect with qd ledger" if reason else ""
+        return f"{label} {value}{stale} · {reset_text(self.resets_at)} · {reading}{next_step}"
 
 
 class UsageCache:

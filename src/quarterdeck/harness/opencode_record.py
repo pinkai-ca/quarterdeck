@@ -121,7 +121,7 @@ def _active_session(rows: _Rows) -> str | None:
 
 
 class _Session:
-    """Turn boundaries and composer state for one session only."""
+    """Turn boundaries and box state for one session only."""
 
     def __init__(self, users, answers):
         self.turns: list[Turn] = []

@@ -96,7 +96,7 @@ class Owned:
 
     def read(self) -> tuple[State, list[Turn]]:
         if self.reader is None:
-            raise RecordError(self.reason or "record reader unknown")
+            raise RecordError(self.reason or f"record reader unknown: {self.path.name}; inspect with qd ledger")
         return self.reader.read(self.path)
 
 
@@ -105,7 +105,7 @@ def records(seat: Seat) -> list[Owned]:
     try:
         found = bindings(seat)
     except OSError as error:
-        return [Owned(seat.home.parent / REGISTRY, None, None, str(error))]
+        return [Owned(seat.home.parent / REGISTRY, None, None, f"{error}; inspect ownership for {seat.name} with qd watch {seat.name}")]
     known = {name for names in found.values() for name in names if name in harnesses.NAMES}
     if name := launch_reader(seat.launched()):
         known.add(name)
@@ -124,5 +124,5 @@ def records(seat: Seat) -> list[Owned]:
         name = next(iter(names)) if len(names) == 1 and names <= set(harnesses.NAMES) else None
         register(seat.home.parent, path, name)
         result.append(Owned(path, name, readers.get(name),
-                            "record reader unknown or conflicting; historical harness evidence required" if name is None else None))
+                            f"record reader unknown or conflicting for {seat.name}, {path.name}; historical harness evidence required; inspect with qd watch {seat.name}" if name is None else None))
     return sorted(result, key=lambda item: str(item.path))

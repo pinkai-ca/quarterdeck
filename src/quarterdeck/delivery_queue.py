@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from . import pending
 from .door import Door
 from .post import Message
 
 if TYPE_CHECKING:
     from .seat import Seat
     from .service import Service
-from . import pending
 
 
 def deliver(service: Service, seat: Seat, messages: list[Message], resend: bool = False) -> str:

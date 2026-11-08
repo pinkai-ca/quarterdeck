@@ -135,8 +135,13 @@ def test_saved_argv_proves_reader_but_untyped_down_history_does_not_guess(tmp_pa
     monkeypatch.setattr(AntigravityHarness, "read", lambda *args: pytest.fail("unproven reader invoked"))
     monkeypatch.setattr(CodexHarness, "read", lambda *args: pytest.fail("foreign record decoded"))
     assert changed.record() is None and "reader unknown" in changed.join().reason
+    assert changed.join().reason.endswith("inspect with qd watch worker")
+    assert "qd fresh" not in changed.join().reason
     owned = record_owner.records(changed)
     assert len(owned) == 1 and owned[0].reader is None
+    assert old.path.name in owned[0].reason
+    assert "historical harness evidence required" in owned[0].reason
+    assert owned[0].reason.endswith("inspect with qd watch worker")
     seat.ship.seats[seat.name] = spec
     svc = Service(seat.ship, seat.tmux)
     svc.account()

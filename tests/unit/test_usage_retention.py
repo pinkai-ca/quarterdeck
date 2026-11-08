@@ -56,6 +56,7 @@ def test_first_failure_then_good_failure_restart_and_recovery(tmp_path: Path) ->
         assert retained.error == f"synthetic failure {index}"
         assert not retained.current(failed_at)
         text = retained.describe(failed_at)
+        assert "inspect with qd ledger" in text
         assert "LAST KNOWN" in text and f"({5 * index}m ago)" in text and AT.isoformat() in text
         assert book.db.execute("SELECT count(*) FROM pools").fetchone() == (1,)
         assert book.db.execute("SELECT count(*) FROM usage_reads").fetchone() == (1,)

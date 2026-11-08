@@ -195,7 +195,7 @@ class Harness(ABC):
         pass
 
     def box_columns(self, pane_width: int) -> int | None:
-        """Text-area columns for a recognized ordinary composer, never a guessed width."""
+        """Text-area columns for a recognized ordinary box, never a guessed width."""
         return pane_width - 2
 
     @abstractmethod

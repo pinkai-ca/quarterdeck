@@ -100,6 +100,9 @@ def test_owned_pending_restart_original_deadline_and_record_only_confirmation(se
         assert Door(seat).reading().waiting
         monkeypatch.setattr(pending.post, "now", lambda: deadline)
         assert Door(seat).reading().clears == "needs a human"
+        reason = Door(seat).reading().reason
+        assert message.short in reason and "exceeded 600s" in reason
+        assert reason.endswith("inspect with qd watch worker") and "qd post resend" not in reason
         assert watch.facts(svc.ship, svc.tmux, walls=[], login=[]).needs_human == ["worker"]
         input_row(record, proof.data["payload"].strip(), deadline)
         restarted.reconcile()
@@ -113,7 +116,7 @@ def test_owned_pending_restart_original_deadline_and_record_only_confirmation(se
 @pytest.mark.parametrize("change", ["foreign", "edited", "partial", "pane", "pid", "launch"])
 def test_pending_ownership_rejects_changed_text_and_identity(setup, change) -> None:
     svc, seat, live, record = setup
-    _, proof = send(svc, seat)
+    message, proof = send(svc, seat)
     if change == "foreign":
         live["box"] = "a person typing"
     elif change == "edited":
@@ -129,6 +132,8 @@ def test_pending_ownership_rejects_changed_text_and_identity(setup, change) -> N
         path.write_text(json.dumps(data))
     reading = Door(seat).reading()
     assert not reading.waiting and reading.clears == "needs a human"
+    assert message.short in reading.reason and reading.reason.endswith("inspect with qd watch worker")
+    assert "qd post resend" not in reading.reason and "qd fresh" not in reading.reason
     assert svc.deliver(seat, [svc.store.new("order", "desk", "worker", "later")])
     assert live["pasted"] == live["submitted"] == 1
     assert proof.data["phase"] == "submitted"
@@ -257,6 +262,7 @@ def test_unreadable_pending_journal_holds_without_touching_box(setup) -> None:
     proof.path.write_text("{ broken")
     reading = Door(seat).reading()
     assert reading.clears == "needs a human" and "journal unreadable" in reading.reason
+    assert reading.reason.endswith("inspect with qd watch worker")
     svc.deliveries()
     assert live["pasted"] == live["submitted"] == 1
 
@@ -286,6 +292,8 @@ def test_new_launch_empty_door_progresses_but_old_uncertainty_remains_visible(se
     live["box"] = ""
     assert Door(seat).reading().open
     assert "prior launch" in watch.facts(svc.ship, svc.tmux, walls=[], login=[]).line()
+    assert old.short in pending.detached(seat)[0]
+    assert pending.detached(seat)[0].endswith("inspect with qd watch worker")
     assert svc.attempts.latest()[old.id] == "pending"
     later = svc.store.new("order", "desk", "worker", "new launch order")
     svc.deliver(seat, [later])
