@@ -247,6 +247,10 @@ class ClaudeHarness(Harness):
     headline_window = (None, "5h")
     remote_control = True
 
+    def attribution_inputs(self, record: Path) -> list[Input]:
+        from .claude_watch import inputs as watch_inputs
+        return self.inputs(record) + watch_inputs(record)
+
     def freshness(self, path: Path) -> tuple[float, float] | None:
         try:
             oauth = json.loads(path.read_text()).get("claudeAiOauth")

@@ -48,7 +48,7 @@ def collect(book: Ledger, ship: Ship | None = None, *, by: str | None = None, to
     if tools:
         return {**data, "rows": [ToolRow(*r) for r in book.tools()]}
     if by:
-        return {**data, "rows": book.rollup(by)}
+        return {**data, "rows": book.rollup(by), **({"attribution": book.attributions.details()} if by == "order" else {})}
     now = datetime.now().astimezone()
     walls = book.walls(ship, now)
     pools = []
@@ -104,7 +104,12 @@ def render_rollup(data: dict) -> list[str]:
                      f"{figure(r.cache_written, r.unmeasured):>9} {figure(r.written, r.unmeasured):>8} {cost:>8} {r.tool_calls:>7} "
                      f"{figure(r.tool_failures, r.unjudged):>7} {figure(r.minutes, r.untimed, '.1f'):>7} {r.cpu_seconds:>7.1f} {r.write_bytes / 1e6:>10.1f}")
     if by == "order":
-        lines.append(f"unattributed turns are shown as {UNATTRIBUTED!r}")
+        lines.append(f"{UNATTRIBUTED!r}: no association; [shared]: several changes counted once; [unresolved]: evidence gap; pending: service replay needed")
+        for item in data.get("attribution", []):
+            if item['status'] in ('shared', 'unresolved', 'pending') or any(e.get('retained') for e in item.get('evidence', [])):
+                label = f"{item.get('seat', '?')} turn {item.get('turn', '?')}"
+                orders = ', '.join(item.get('orders', [])) or 'none proved'
+                lines.append(f"attribution {item['status']}: {label} · {orders} · {item['reason']}")
     if any(r.unmeasured or r.untimed or r.unjudged or (r.unpriced and r.cost is not None) for r in rows):
         lines.append(PLUS_NOTE)
     if any(r.unpriced for r in rows):

@@ -23,6 +23,8 @@ from .harness.base import Turn, Usage
 from .post import Store
 from .pricing import amount
 from .cost_evidence import CostEvidence
+from .attribution_cache import Attribution
+from .order_attribution import Threads
 from .provenance import Provenance, UNKNOWN
 from .quota import Quotas, reset_text
 from .ship import Ship, ShipError
@@ -154,6 +156,7 @@ class Ledger:
         self.path = path
         if readonly:
             self.db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+            self.attributions = Attribution(self.db, create=False)
             self.costs = CostEvidence(self.db, create=False)
             self.provenance = Provenance(self.db, create=False)
             self.quota = Quotas(self.db, create=False)
@@ -167,6 +170,7 @@ class Ledger:
             for name, kind in columns:
                 if name not in present:
                     self.db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
+        self.attributions = Attribution(self.db)
         self.costs = CostEvidence(self.db)
         self.provenance = Provenance(self.db)
         self.quota = Quotas(self.db)
@@ -214,6 +218,7 @@ class Ledger:
         known = {row["turn"]: dict(row) for row in stored.execute(
             f"SELECT {', '.join(TURN_COLUMNS)} FROM turns WHERE record = ?", (str(record),))}
         changed = 0
+        graph = Threads(store)
         for turn in turns:
             previous = known.get(turn.index)
             evidence = self.costs.get(record, turn.index)
@@ -259,12 +264,13 @@ class Ledger:
             self.db.execute("DELETE FROM tool_calls WHERE record = ? AND turn = ?", (str(record), turn.index))
             self.db.executemany(f"INSERT INTO tool_calls ({', '.join(TOOL_COLUMNS)}) "
                                 f"VALUES ({', '.join(':' + name for name in TOOL_COLUMNS)})", tool_rows)
+            self.attributions.ingest(row, turn, graph)
         self.db.commit()
         return changed
 
     def rollup(self, by: str) -> list[Row]:
         """Turns summed by ``seat``, ``order`` (order_id) or ``pool``, each sum with the count of turns it could not measure."""
-        column = {"seat": "seat", "order": "order_id", "pool": "pool"}[by]
+        column = {"seat": "seat", "order": self.attributions.grouping(), "pool": "pool"}[by]
         known_cost = self.known_cost()
         rows = self.db.execute(
             f"SELECT {column}, COUNT(*), SUM(COALESCE(read_cached, 0)), SUM(COALESCE(read_uncached, 0)), "
@@ -290,8 +296,8 @@ class Ledger:
             return {s for _, s, _, _ in incomplete}
         if by == "pool":
             return {p for _, _, p, _ in incomplete}
-        orders = self.db.execute("SELECT DISTINCT order_id FROM turns WHERE record IN (SELECT record FROM records)")
-        return {UNATTRIBUTED} | {r[0] for r in orders}
+        orders = self.db.execute(f"SELECT DISTINCT {self.attributions.grouping()} FROM turns WHERE record IN (SELECT record FROM records)")
+        return {"[unresolved]"} | {r[0] for r in orders}
 
     def today(self, seat: str, day: str) -> Count:
         """Tokens of every class a seat used in turns that ended on ``day``, a local ISO date, and how many of them were not measured."""

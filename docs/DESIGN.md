@@ -152,6 +152,7 @@ One class per agent program, on one interface, `Harness` in `harness/base.py`. A
 | `records(home)`, `first_timestamp(record)`, `session_id(record)` | The record files in a home, oldest first; when one was begun; the session a resume names |
 | `reader` | One pass over a record, giving the live state (the last input, whether a turn is open, the open tool call, the last write) and the ended turns (reply, tokens by class, tool calls with their durations and failures, the turn's duration, its subagent turns). A JSON-lines format writes only its `take` and `end` on the shared `JsonLinesReader` |
 | `inputs(record)` | The record's evidence of each input, with its time: accepted, queued, or consumed. It is the only evidence a delivery is confirmed by, and one matching rule in `input_receipt.py` reads it for the door, the service and `qd check` alike |
+| `attribution_inputs(record)` | Timestamped record evidence for order attribution, normally the ordinary inputs. A program may add structured watch-output consumption here; it never becomes a delivery receipt. Complete post envelopes still have to match the immutable store |
 | `screen(text)` | What a capture of the pane shows: the input box and its text, whether the program is working, a dialog or a notice, and the settings the program displays |
 | `box(text)` | How the program shows `text` in its box before it is sent: the text itself, or the placeholder it folds a long paste into; with `box_columns(width)` where the box is narrower than the pane by other than two columns |
 | `keys` | The keys this version uses: submit, send now while working, interrupt; or that it lacks one |
@@ -250,7 +251,13 @@ Only an exact, fresh, timestamped input in the owned record confirms transport. 
 
 An unresolved submission on an old launch stays visible without owning a different launch's empty, recognized door. If an explicit lifecycle operation carries the message into a later launch, its distinct `launch` receipt supersedes the old hold without declaring the old submission delivered. A changed launch alone proves nothing. After inspecting the box and owned record with `qd watch <seat>`, the Desk may deliberately request `qd post resend <id>`. That request can retire prior uncertainty only with an empty, recognized box; it cannot clear a draft, repair historical evidence or declare the earlier attempt delivered. Ordinary ticks never resend an unconfirmed submission.
 
-**Attribution.** The Ledger charges each of a seat's turns to the order the seat has claimed with an ack; failing a claim, to its only open order; failing that, the turn is unattributed and `qd ledger --by order` says how many were. The turn in which a closing report is sent is charged to the order it closes.
+**Attribution.** One change has one concrete order. Its implementation, test and correction orders refer to that order with `re`; reports still refer to the assigned order they close, and answers to their question. Review and merge messages remain in that same explicit reply thread. An umbrella campaign is not the anchor for its separate changes. The framework follows the links, never subjects, quoted ids, role names or an inferred parent. Historical messages without links remain independent or unassociated; semantic grouping of that history is evaluation work outside the framework.
+
+For each recorded turn, the Ledger collects valid posts made by that seat within the turn and exact complete post envelopes consumed in its record. A consumed queue entry needs its consumption time. Acknowledgments must claim the sender's own open order; only the first actual closing report supplies closing evidence. Duplicate/foreign reports and invalid claims do not create work. Missing, conflicting, cyclic or time-inconsistent threads are unresolved. Direct evidence takes priority over fallback context: with no direct order evidence, use a valid claim active at turn start, else the sole open-order interval overlapping the turn. Tied latest claims or several competing open orders are uncertainty, not proof that each was served.
+
+Several directly evidenced change roots in one turn are shared work. The turn's measurements are counted once under `[shared]`, with the candidate roots and evidence in the reading; no token fractions are invented and no last message wins. `-` means no association in available evidence; `[unresolved]` means an evidence gap or competing candidates. `qd ledger --by order --json` gives the basis for every turn, including fallback context. These labels describe attribution, independently of the measured/unknown usage figures.
+
+Claude's watch route is separate from transport receipts: a recorded `qd inbox --wait` command names an output file, and a uniquely linked recorded `cat` or complete `Read` result supplies the full envelope at the read-result time. The output file itself is never opened for attribution. Arbitrary stdout, compound shell reads, conflicting/reused output origins and truncated envelopes do not prove that route. Launching a watcher or its completion notification alone does not charge a later message to that launch turn. Incoming evidence that overlaps turn intervals, or a posted message that could belong to overlapping records of the same seat, remains unresolved.
 
 ## 8. Watch
 
@@ -320,6 +327,10 @@ What a record did not hold is counted and marked, never guessed and never hidden
 Machine: the service samples each seat's process tree every tick and charges the turn with the CPU seconds it used, its peak memory, the most processes it had running at once, and the bytes it wrote to disk, read from the processes' own I/O counters. Tokens say what a seat cost the provider; this says what it cost the machine, which is the shared thing on a box where five seats running a test suite at once have frozen the desktop, and where disk has filled more than once with nobody able to say which seat was writing. The status line shows the free space on every filesystem the ship writes to, the runtime's, the workspace's and the system's temporary space, and when one runs low it names the seat that wrote most in the last hour, so the question "who is filling the disk" has an answer before the disk is full.
 
 Seats and orders: the same rows, rolled up by seat and by the order each turn was charged to.
+
+Order attribution is cached in `turn_attribution`, keyed by record and turn, beside the unchanged 22-column turn and five-column tool layouts. The legacy `order_id` remains for preceding readers/writers; replay never updates turn rows, cost evidence, tools, usage or launch provenance merely to change attribution. The side row records verified message ids/times, the seat/turn bounds they belonged to, verdict, roots and evidence routes. Old-version insert/update writes invalidate the verdict with triggers. New readings display pending/legacy until service replay; the preceding version ignores the side table and retains its older attribution behavior.
+
+The service revisits every stored turn on startup, changed post evidence, changed source evidence or invalidated verdicts, including retired seats and records whose files have not changed. Saved reader bindings choose the adapter; unknown bindings are never guessed from record content. Missing records do not delete measurements or established provenance. Previously verified incoming evidence may be retained only for unchanged seat and turn bounds, and is marked retained, not a fresh source read. Changed bounds require fresh evidence. Reconciliation is idempotent. Status, watch and ledger readings open the book read-only, never migrate it or run replay.
 
 `qd ledger` prints the pools; `qd ledger --by seat` and `--by order` print the rollups, with tokens, cost, tool calls, minutes, machine load and bytes written side by side. The Ledger is one SQLite file in the runtime; ingestion is idempotent, so a turn read twice is counted once.
 
@@ -436,6 +447,7 @@ quarterdeck/                       the project folder: the framework repository
                    opencode_record.py antigravity_record.py antigravity_wire.py antigravity_quota.py; simulator.py synthetic_record.py synthetic_control.py,
                    the fake program the drill runs, its records in Claude Code's or Codex's shape, and the rendezvous a test holds it at
     harness/codex_usage.py   Codex usage windows from the newest eligible snapshot in current launch records
+    harness/claude_watch.py  structured watch-output consumption for attribution, never delivery receipts
     endpoint.py    endpoint pools: what a server serves, the model a seat takes from it, the key beside it
     sandbox.py     the bubblewrap jail around a sandboxed seat's program
     post.py        messages: store, inbox, the typed form, the watch
@@ -443,6 +455,8 @@ quarterdeck/                       the project folder: the framework repository
     output.py      one shape for every reading: rendered for a person, or serialized as JSON for a caller
     ledger.py      turns, tokens, tool calls, machine load, by pool, seat and order; opened read-only by every reading
     ledger_reading.py   the Ledger's rows and usage windows as a reading takes them, and their tables
+    order_attribution.py   explicit reply threads and timestamped whole-turn attribution rules
+    attribution_cache.py   service replay and compatible side verdicts, invalidated by older turn writes
     pricing.py cost_evidence.py   a pool's stated rates and the price saved beside a launch; a turn's cost evidence,
                    kept beside the Ledger's turns
     provenance.py record_owner.py quota.py usage_cache.py   which launch and which program a record belongs to; quota walls,

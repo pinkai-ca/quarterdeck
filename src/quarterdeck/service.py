@@ -345,6 +345,7 @@ class Service:
                 quota.observe_screen(self.ledger, seat, Door(seat).screen(), launched)  # the one place a screen's wall is written
             quota.refresh(self, seat, live, launched)
         quota.refresh_declared(self)
+        self.ledger.attributions.replay(self.store, self.runtime)
 
     def failover(self) -> None:
         """A seat whose pool is walled moves on at its turn's end to the next pool of its list that is not, and stays."""

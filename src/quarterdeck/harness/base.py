@@ -176,6 +176,10 @@ class Harness(ABC):
         """Timestamped evidence from an already owned record; never from a screen."""
         raise NotImplementedError
 
+    def attribution_inputs(self, record: Path) -> list[Input]:
+        """Recorded message consumption for attribution; never broadens delivery receipts."""
+        return self.inputs(record)
+
     def join(self, home: Path, launched_at: datetime, excluded: tuple[Path, ...] = ()) -> Join:
         """The first record written after the launch; ambiguity reported, never guessed."""
         after = []
