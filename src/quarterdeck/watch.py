@@ -210,12 +210,18 @@ def seat_reading(seat: Seat) -> dict:
     r = reading(seat)
     record = seat.record()
     state, error = None, None
+    skips, receipt_error = [], None
     if record:
         try:
             state = seat.harness.state(record)
         except OSError as failure:
             error = str(failure)
+        try:
+            skips = getattr(seat.harness.inputs(record), 'skipped', [])
+        except OSError as failure:
+            receipt_error = str(failure)
     return {"seat": r, "record": record, "state": state, "record_error": error,
+            "receipt_skips": skips, "receipt_error": receipt_error,
             "record_absent": seat.join().reason if record is None else None,
             "record_limits": getattr(seat.harness, "record_limits", None),
             "screen": Door(seat).screen(), "usage": headline_readings(seat.ship)}
@@ -237,6 +243,10 @@ def render_full(data: dict) -> list[str]:
         lines.append(f"  record absent: {data['record_absent']}")
     if data["record_limits"]:
         lines.append(f"  record limits: {data['record_limits']}")
+    if data.get('receipt_error'):
+        lines.append(f"  receipt evidence unreadable: {data['receipt_error']}")
+    for skipped in data.get('receipt_skips', []):
+        lines.append(f"  receipt skipped line {skipped['line']} · {skipped['kind']} · {skipped['reason']}")
     screen = data["screen"]
     if screen:
         lines.append(f"  screen: box {screen.box!r} · working {screen.working} · queued {screen.queued} · shows {screen.shows}")

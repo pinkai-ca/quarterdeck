@@ -15,7 +15,8 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .json_record import JsonLinesReader
+from .json_record import JsonLinesReader, input_rows
+from .types import Inputs
 
 from ..ship import Pool, SeatSpec
 from .base import (Box, ship_template, trimmed, Input, Control, Credential, Harness, Interruption, Keys, Launch, Screen, Tokens,
@@ -62,30 +63,43 @@ def prompt_text(entry: dict) -> str | None:
 
 
 def inputs(record: Path) -> list[Input]:
-    found, queued = [], []
-    for row in entries(record):
+    found, queued = Inputs(), []
+    for line, row in input_rows(record, _Reader.kinds, _Reader.label, found):
+        kind = row.get('type')
+        if kind not in _Reader.kinds:
+            found.skip(line, 'unknown', 'unknown row kind')
+            continue
         if row.get("isSidechain"):
             continue
         try:
             stamp = when(row.get("timestamp"))
+            if kind == 'user':
+                content = row.get('message', {}).get('content')
+                if not isinstance(content, (str, list)):
+                    raise TypeError
+                if isinstance(content, list) and not any(block.get('type') in ('text', 'tool_result') for block in content):
+                    found.skip(line, 'user', 'no known prompt text')
+                    continue
             text = prompt_text(row)
             if text is not None:
                 found.append(Input(text, stamp))
             if row.get("type") != "queue-operation":
                 continue
-            text = unwrap(row.get("content") or "")
             operation = row.get("operation")
+            if operation not in ('enqueue', 'remove', 'dequeue'):
+                found.skip(line, 'queue-operation', 'unknown queue operation')
+                continue
+            text = unwrap(row.get("content") or "")
             matching = next((i for i, item in enumerate(queued) if item.text.strip() == text.strip()), None)
             if operation == "enqueue":
                 queued.append(Input(text, stamp, "queued"))  # stale and untimed entries still occupy FIFO positions
             elif operation in ("remove", "dequeue") and matching is not None:
                 entry = queued.pop(matching)
                 found.append(Input(entry.text, entry.at, "consumed", stamp))
-            else:
-                queued = [item for item in queued if item.text.strip() != text.strip()]
         except (TypeError, ValueError, AttributeError, KeyError):
-            continue
-    return found + queued
+            found.skip(line, kind, 'malformed input row')
+    found.extend(queued)
+    return found
 
 
 def usage_tokens(usage: dict) -> Tokens:

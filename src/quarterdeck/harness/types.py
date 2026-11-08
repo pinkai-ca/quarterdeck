@@ -24,6 +24,17 @@ class Input:
     consumed_at: datetime | None = None
 
 
+class Inputs(list[Input]):
+    """Input evidence with content-free skipped-row diagnostics for detailed readings."""
+
+    def __init__(self):
+        super().__init__()
+        self.skipped = []
+
+    def skip(self, line: int, kind: str, reason: str) -> None:
+        self.skipped.append(dict(line=line, kind=kind, reason=reason))
+
+
 @dataclass(frozen=True)
 class Tokens:
     """As many classes as the provider bills; four for Anthropic. A class a provider never reports is zero.

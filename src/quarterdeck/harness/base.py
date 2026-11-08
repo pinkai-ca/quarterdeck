@@ -173,7 +173,7 @@ class Harness(ABC):
         return cls.reader(record)
 
     def inputs(self, record: Path) -> list[Input]:
-        """Timestamped evidence from an already owned record; never from a screen."""
+        """Timestamped owned-record evidence; optional ``skipped`` diagnostics contain no row contents."""
         raise NotImplementedError
 
     def attribution_inputs(self, record: Path) -> list[Input]:

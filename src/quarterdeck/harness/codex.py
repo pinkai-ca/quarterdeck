@@ -16,7 +16,8 @@ import tomllib
 from datetime import date, datetime, time, timezone
 from pathlib import Path
 
-from .json_record import JsonLinesReader
+from .json_record import JsonLinesReader, input_rows
+from .types import Inputs
 from . import codex_usage
 
 from ..ship import Pool, SeatSpec, literal
@@ -79,24 +80,34 @@ def _failed(output: str | list | None) -> bool:
 
 
 def inputs(record: Path) -> list[Input]:
-    found = []
+    found = Inputs()
     seen = False
-    for row in entries(record):
+    for line, row in input_rows(record, _Reader.kinds, _Reader.label, found):
+        kind = row.get('type')
+        if kind not in _Reader.kinds:
+            found.skip(line, 'unknown', 'unknown row kind')
+            continue
         try:
             payload = row.get("payload", {})
             if row.get("type") == "event_msg" and payload.get("type") in {"task_started", *ENDS_TURN}:
                 seen = False
             if row.get("type") != "response_item" or payload.get("role") != "user":
                 continue
+            if payload.get('type') != 'message':
+                found.skip(line, 'response_item', 'unknown user-message subtype')
+                continue
             content = payload.get("content")
             if not isinstance(content, list):
+                raise TypeError
+            if not any(c.get('type') == 'input_text' for c in content):
+                found.skip(line, 'response_item', 'no known input text')
                 continue
             text = "\n".join(c.get("text", "") for c in content if c.get("type") == "input_text")
             at = when(row.get("timestamp"))
             found.append(Input(text, at, "consumed" if seen else "accepted", at if seen else None))
             seen = True
         except (TypeError, ValueError, AttributeError, KeyError):
-            continue
+            found.skip(line, kind, 'malformed input row')
     return found
 
 
