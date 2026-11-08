@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import sqlite3
-import struct
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .base import RecordError
-from .sqlite_snapshot import _apply_wal, _wal_cksum, snapshot  # the two helpers stay importable here for their tests
+from .sqlite_snapshot import snapshot
 
 def _varint(buf: bytes, pos: int) -> tuple[int, int]:
     result = shift = 0

@@ -7,12 +7,13 @@ import pytest
 from tests.antigravity_shapes import AntigravityShape
 from quarterdeck.harness import antigravity, antigravity_wire as wire
 from quarterdeck.harness.base import RecordError, record_fingerprint
+from quarterdeck.harness.sqlite_snapshot import _apply_wal
 
 
 def contents(db, wal):
     con = sqlite3.connect(':memory:')
     try:
-        con.deserialize(wire._apply_wal('synthetic', db, wal))
+        con.deserialize(_apply_wal('synthetic', db, wal))
         assert con.execute('PRAGMA integrity_check').fetchone() == ('ok',)
         return con.execute('SELECT count(*) FROM samples').fetchone()[0]
     finally:
