@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from quarterdeck.harness.synthetic_record import AntigravityShape, ClaudeShape, CodexShape, tokens_for
+from quarterdeck.harness.synthetic_record import ClaudeShape, CodexShape, tokens_for
+from tests.antigravity_shapes import AntigravityShape
 from quarterdeck.harness import antigravity, claude, codex
 from quarterdeck.harness.base import Tokens
 

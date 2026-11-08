@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from quarterdeck.harness.synthetic_record import AntigravityShape
+from tests.antigravity_shapes import AntigravityShape
 from quarterdeck.harness import antigravity, antigravity_wire as wire
 from quarterdeck.harness.base import RecordError, record_fingerprint
 

@@ -8,7 +8,7 @@ import json
 import pytest
 
 from quarterdeck import input_receipt, pending, post, watch
-from quarterdeck.harness.synthetic_record import AntigravityShape
+from tests.antigravity_shapes import AntigravityShape
 from quarterdeck.record_owner import register
 from quarterdeck.service import Service
 from .test_pending_delivery import setup, send, input_row  # shared synthetic seat fixture
@@ -92,11 +92,11 @@ def test_service_restart_reconciles_claude_consumed_exactly_once(setup):
 
 
 def test_antigravity_every_same_execution_input_has_its_own_time(setup, monkeypatch):
-    from quarterdeck.harness import synthetic_record as fakerecord
+    from tests import antigravity_shapes
     from quarterdeck.harness import antigravity
 
     svc, original, live, _ = setup
-    monkeypatch.setattr(fakerecord,'now',lambda:T0)
+    monkeypatch.setattr(antigravity_shapes,'now',lambda:T0)
     shape = AntigravityShape(original.home,original.ship.folder,'synthetic','synthetic-model')
     shape.begin('initial','synthetic-model','high')
     seat = bind(svc,original,'antigravity',shape.path)
@@ -105,9 +105,9 @@ def test_antigravity_every_same_execution_input_has_its_own_time(setup, monkeypa
     shape.consumed(proof.data['payload'])
     svc.reconcile()
     assert svc.attempts.latest()[message.id] == 'pending'
-    monkeypatch.setattr(fakerecord,'now',lambda:T0+timedelta(seconds=2))
+    monkeypatch.setattr(antigravity_shapes,'now',lambda:T0+timedelta(seconds=2))
     shape.consumed(proof.data['payload'])
-    monkeypatch.setattr(fakerecord,'now',lambda:T0+timedelta(seconds=3))
+    monkeypatch.setattr(antigravity_shapes,'now',lambda:T0+timedelta(seconds=3))
     shape.consumed('later unrelated input in the same execution')
     state = antigravity.state(shape.path)
     assert state.last_input != proof.data['payload'] and proof.data['payload'] in state.consumed

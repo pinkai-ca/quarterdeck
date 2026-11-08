@@ -42,7 +42,7 @@ def test_watch_and_seat_count_what_was_read_and_mark_what_was_not(tmp_path: Path
     import json
     import sqlite3
 
-    from quarterdeck.harness.synthetic_record import AGY_SCHEMA, AntigravityShape
+    from tests.antigravity_shapes import AGY_SCHEMA, AntigravityShape
     from quarterdeck.seat import Seat
     from quarterdeck.ship import Pool, SeatSpec, Session, Ship
     from quarterdeck.tmux import Pane

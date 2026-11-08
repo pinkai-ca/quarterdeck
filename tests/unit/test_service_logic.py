@@ -44,7 +44,7 @@ def test_account_tracks_wal_fingerprint_and_retries_after_transient_read_error(t
     import json
     import sqlite3
 
-    from quarterdeck.harness.synthetic_record import AntigravityShape, _pb_bytes, _pb_str, _pb_ts, _pb_uint
+    from tests.antigravity_shapes import AntigravityShape, _pb_bytes, _pb_str, _pb_ts, _pb_uint
     from quarterdeck.harness import antigravity
     from quarterdeck.harness.base import RecordError, record_fingerprint
     from quarterdeck.ship import Pool, SeatSpec, Session, Ship
