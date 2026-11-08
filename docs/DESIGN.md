@@ -323,20 +323,20 @@ The connection to code is a comment and a command. Wherever code carries a law, 
 ```python
 # src/quarterdeck/door.py
 def deliver(seat, text):
-    clear_known(seat)                       # law: one-door
-    shown = screen(seat).composer           # law: one-door
-    if not harness(seat).box(text).matches(shown):
-        empty_box(seat)
+    clear_known(seat)                                # law: one-door
+    paste(seat, text)
+    shown = screen(seat).box
+    if not matches(harness(seat).box(text), shown):  # law: one-door
         return Withheld(seat, text, shown)
     submit(seat)
-    return confirmed_by_record(seat, text)  # law: one-door
+    return confirm(seat, text)                       # law: one-door
 ```
 
 The same tag goes on the tests that prove it, and the test tagged with a law tries to break it and fails to. `qd laws` finds every tag and prints each law with the lines that carry it:
 
 ```
-one-door   Everything typed into a seat goes through one path: it clears what it ...
-           src/quarterdeck/door.py:141, 142, 148   tests/unit/test_door.py:88
+one-door   Everything typed into a seat goes through one path, in one process: it clears what it ...
+           src/quarterdeck/door.py:158, 176, 190   tests/integration/test_door.py:40
 ```
 
 A test fails when a law has no carrier, or a tag names a law that does not exist. Reading the law, you can jump to the code that enforces it. Reading the code, you know why a check is there.
