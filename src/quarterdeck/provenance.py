@@ -32,25 +32,30 @@ class Provenance:
             db.execute("""CREATE TABLE IF NOT EXISTS record_launches (
                 record TEXT NOT NULL, at TEXT NOT NULL, seat TEXT NOT NULL, pool TEXT NOT NULL,
                 PRIMARY KEY (record, at, seat, pool))""")
+            db.execute("""CREATE TABLE IF NOT EXISTS launch_prices (
+                record TEXT NOT NULL, at TEXT NOT NULL, seat TEXT NOT NULL, pool TEXT NOT NULL, price TEXT,
+                PRIMARY KEY (record, at, seat, pool))""")
             columns = {row[1] for row in db.execute("PRAGMA table_info(record_launches)")}
-            if "price" not in columns:
-                db.execute("ALTER TABLE record_launches ADD COLUMN price TEXT")
+            if "price" in columns:
+                db.execute("INSERT OR IGNORE INTO launch_prices SELECT record,at,seat,pool,price FROM record_launches")
+                db.execute("ALTER TABLE record_launches DROP COLUMN price")
 
     def remember(self, record: Path, seat: str, pool: str, at: datetime, price: dict | None = None) -> bool:
         stamp = at.astimezone(timezone.utc).isoformat()
         key = (str(record), stamp, seat, pool)
         saved = json.dumps(price, sort_keys=True) if price is not None else None
-        changed = self.db.execute("INSERT OR IGNORE INTO record_launches (record,at,seat,pool,price) VALUES (?,?,?,?,?)",
-                                  (*key, saved)).rowcount
-        if not changed and saved is not None:
-            previous = self.db.execute("SELECT price FROM record_launches WHERE record=? AND at=? AND seat=? AND pool=?", key).fetchone()[0]
+        changed = self.db.execute("INSERT OR IGNORE INTO record_launches VALUES (?,?,?,?)", key).rowcount
+        inserted = self.db.execute("INSERT OR IGNORE INTO launch_prices VALUES (?,?,?,?,?)", (*key, saved)).rowcount
+        if not inserted and saved is not None:
+            previous = self.db.execute("SELECT price FROM launch_prices WHERE record=? AND at=? AND seat=? AND pool=?", key).fetchone()[0]
             if previous != saved:
                 # Contradictory snapshots at one launch are unknown, never last-writer-wins.
                 saved = saved if previous is None else "{}"
-                changed = previous != saved
-                self.db.execute("UPDATE record_launches SET price=? WHERE record=? AND at=? AND seat=? AND pool=?", (saved, *key))
+                if previous != saved:
+                    changed = True
+                    self.db.execute("UPDATE launch_prices SET price=? WHERE record=? AND at=? AND seat=? AND pool=?", (saved, *key))
         self.db.commit()
-        return bool(changed)
+        return bool(changed or inserted)
 
     def sync(self, seat, current: Path | None, launched) -> set[Path]:
         """Import the journal and current proven join, even if record bytes have not changed."""
@@ -94,10 +99,9 @@ class Provenance:
         """One unambiguous launch interval, never the pool's current preference."""
         if started is None:
             return None
-        columns = {r[1] for r in self.db.execute("PRAGMA table_info(record_launches)")}
-        if "price" not in columns:
+        if not self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='launch_prices'").fetchone():
             return None
-        rows = self.db.execute("SELECT at,seat,pool,price FROM record_launches WHERE record=? ORDER BY at", (str(record),)).fetchall()
+        rows = self.db.execute("SELECT l.at,l.seat,l.pool,p.price FROM record_launches l LEFT JOIN launch_prices p USING(record,at,seat,pool) WHERE l.record=? ORDER BY l.at", (str(record),)).fetchall()
         eligible = [r for r in rows if datetime.fromisoformat(r[0]) <= started]
         if not eligible:
             return None

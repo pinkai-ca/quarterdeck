@@ -21,6 +21,7 @@ from pathlib import Path
 from .harness.base import Turn, Usage
 from .post import Store
 from .pricing import amount
+from .cost_evidence import CostEvidence
 from .provenance import Provenance, UNKNOWN
 from .quota import Quotas, reset_text
 from .ship import Ship, ShipError
@@ -83,7 +84,7 @@ CREATE TABLE IF NOT EXISTS records (
 """
 # Columns added since a table was first written; an older file gains them when the service opens it.
 ADDED_COLUMNS = {
-    "turns": (("unmeasured", "INTEGER NOT NULL DEFAULT 0"), ("recorded_cost", "REAL"), ("cost_basis", "TEXT")),
+    "turns": (("unmeasured", "INTEGER NOT NULL DEFAULT 0"),),
     "pools": (("blocks", "INTEGER NOT NULL DEFAULT 1"), ("group_name", "TEXT"), ("bucket", "TEXT"), ("bucket_name", "TEXT")),
 }
 # A turn whose tokens are not wholly known: a step without usage, or a class an older row left null.
@@ -148,6 +149,7 @@ class Ledger:
         self.path = path
         if readonly:
             self.db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+            self.costs = CostEvidence(self.db, create=False)
             self.provenance = Provenance(self.db, create=False)
             self.quota = Quotas(self.db, create=False)
             self.usage = UsageCache(self.db, create=False)
@@ -160,6 +162,7 @@ class Ledger:
             for name, kind in columns:
                 if name not in present:
                     self.db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
+        self.costs = CostEvidence(self.db)
         self.provenance = Provenance(self.db)
         self.quota = Quotas(self.db)
         self.usage = UsageCache(self.db)
@@ -205,6 +208,7 @@ class Ledger:
         changed = 0
         for turn in turns:
             previous = known.get(turn.index)
+            evidence = self.costs.get(record, turn.index)
             owner, charged_pool = (previous[2:4] if previous and previous[3] != UNKNOWN else
                                    self.provenance.resolve(record, turn.started, turn.ended, seat, pool))
             if previous:
@@ -216,22 +220,24 @@ class Ledger:
             cost = amount(turn.cost)
             basis = (turn.cost_basis or "record") if cost is not None else None
             recorded = amount(turn.recorded_cost) if turn.recorded_cost is not None else cost
-            if previous and cost is None and previous[13] is not None and (previous[13] > 0 or previous[23] == "record") and previous[23] in (None, "record"):
+            prior_record = ((evidence[2] and evidence[1] == "record") if evidence else previous and previous[13] is not None and previous[13] > 0)
+            if previous and cost is None and prior_record:
                 cost, basis = previous[13], "record"
             if previous and recorded is None:
-                recorded = previous[22] if previous[22] is not None else previous[13]
+                recorded = evidence[0] if evidence else previous[13]
             row = (str(record), turn.index, owner, charged_pool, attribution(store, owner, turn), started, ended,
                    turn.seconds, turn.model, turn.tokens.read_cached, turn.tokens.read_uncached,
                    turn.tokens.cache_written, turn.tokens.written, cost, len(turn.tools), failures,
                    turn.subagent_turns, used.cpu_seconds, used.peak_rss, used.max_processes, used.write_bytes,
-                   turn.tokens.unmeasured, recorded, basis)
+                   turn.tokens.unmeasured)
             tool_rows = [(str(record), turn.index, t.name, t.seconds, t.failed) for t in turn.tools]
             previous_tools = self.db.execute("SELECT * FROM tool_calls WHERE record = ? AND turn = ? ORDER BY rowid",
                                              (str(record), turn.index)).fetchall()
-            if previous == row and previous_tools == tool_rows:
+            if previous == row and previous_tools == tool_rows and evidence == (recorded, basis, 1):
                 continue
             changed += 1
-            self.db.execute("INSERT OR REPLACE INTO turns VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
+            self.db.execute("INSERT OR REPLACE INTO turns VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
+            self.costs.put(record, turn.index, recorded, basis)
             self.db.execute("DELETE FROM tool_calls WHERE record = ? AND turn = ?", (str(record), turn.index))
             self.db.executemany("INSERT INTO tool_calls VALUES (?,?,?,?,?)", tool_rows)
         self.db.commit()
@@ -280,10 +286,7 @@ class Ledger:
         return Count(int(known or 0), int(unmeasured or 0) + unreadable)
 
     def known_cost(self) -> str:
-        """Old zeros have no price evidence. Leave the stored value untouched, but do not certify it."""
-        columns = {r[1] for r in self.db.execute("PRAGMA table_info(turns)")}
-        evidence = " OR cost_basis IS NOT NULL" if "cost_basis" in columns else ""
-        return f"cost IS NOT NULL AND (cost > 0{evidence})"
+        return self.costs.known()
 
     def spend(self, pool: str, since: datetime) -> tuple[float | None, int]:
         """A pool's stated cost since a moment, and how many of its turns stated no cost."""

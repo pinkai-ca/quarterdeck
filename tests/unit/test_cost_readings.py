@@ -76,12 +76,12 @@ def test_legacy_rows_migrate_without_rewriting_costs_and_refresh_with_evidence(t
                         ("record", index, "worker", "pool", "-", AT.isoformat(), AT.isoformat(), 0, "m",
                          0, 1, 0, 0, cost, 0, 0, 0, 2, 100, 1, 9, 0))
     with Ledger(path) as book:
-        assert book.db.execute("SELECT cost,recorded_cost,cost_basis FROM turns ORDER BY turn").fetchall() == [(0, None, None), (3, None, None)]
+        assert book.db.execute("SELECT t.cost,c.recorded_cost,c.cost_basis FROM turns t LEFT JOIN turn_costs c USING(record,turn) ORDER BY turn").fetchall() == [(0, None, None), (3, None, None)]
         assert book.rollup("pool")[0].cost == 3 and book.rollup("pool")[0].unpriced == 1
         zero = Turn(0, AT, AT, "in", "out", "m", Tokens(read_uncached=1), recorded_cost=0)
         priced = replace(zero, index=1, recorded_cost=None)
         book.ingest("worker", "other-pool", Path("record"), [zero, priced], post.Store(tmp_path))
-        rows = book.db.execute("SELECT pool,cost,recorded_cost,cost_basis,cpu_seconds FROM turns ORDER BY turn").fetchall()
+        rows = book.db.execute("SELECT t.pool,t.cost,c.recorded_cost,c.cost_basis,t.cpu_seconds FROM turns t JOIN turn_costs c USING(record,turn) ORDER BY turn").fetchall()
         assert rows == [("pool", None, 0, None, 2), ("pool", 3, 3, "record", 2)]
         assert book.ingest("worker", "other-pool", Path("record"), [zero, priced], post.Store(tmp_path)) == 0
         # A subsequent explicit stated zero can improve the same row without moving its pool or machine data.

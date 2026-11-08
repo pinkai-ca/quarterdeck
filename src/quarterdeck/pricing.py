@@ -1,7 +1,29 @@
 """Explicit pool rates, in one supported currency and token unit; never a catalogue."""
 
 from dataclasses import asdict, dataclass
+import hashlib
+import json
 import math
+from pathlib import Path
+
+
+def binding(path: Path) -> list:
+    """An old writer replacing even identical JSON invalidates its adjacent evidence."""
+    stat = path.stat()
+    return [stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns,
+            hashlib.sha256(path.read_bytes()).hexdigest()]
+
+
+def save_price(path: Path, price: dict | None) -> None:
+    path.with_name(path.stem + '-price.json').write_text(json.dumps({'binding': binding(path), 'price': price}) + '\n')
+
+
+def saved_price(path: Path) -> dict | None:
+    try:
+        extra = json.loads(path.with_name(path.stem + '-price.json').read_text())
+        return extra['price'] if extra['binding'] == binding(path) else None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
 
 
 def amount(value: object) -> float | None:

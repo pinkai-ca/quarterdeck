@@ -20,6 +20,7 @@ from pathlib import Path
 from . import harness as harnesses, input_receipt, post, record_owner, ship as shipmod, standing
 from .harness.base import Harness, Join
 from .provenance import remember_launch
+from .pricing import save_price, saved_price
 from .ship import Pool, SeatSpec, Ship, ShipError
 from .tmux import Pane, Tmux
 
@@ -38,6 +39,12 @@ class Launched:
     harness: str | None = None
     records_before: list[str] = field(default_factory=list)
     price: dict | None = None
+
+    def write(self, path: Path) -> None:
+        data = asdict(self)
+        price = data.pop("price")
+        path.write_text(json.dumps(data, indent=2) + "\n")
+        save_price(path, price)
 
     @property
     def when(self) -> datetime:
@@ -98,7 +105,9 @@ class Seat:
         path = self.folder / "launch.json"
         if not path.is_file():
             return None
-        return Launched(**json.loads(path.read_text()))
+        data = json.loads(path.read_text())
+        data.pop("price", None)  # an unlanded inline snapshot is not bound evidence
+        return Launched(**data, price=saved_price(path))
 
     def pane(self) -> Pane | None:
         """The live pane of this seat's launch, by pane id and process id, or None."""
@@ -236,7 +245,7 @@ class Seat:
         at = datetime.now(timezone.utc).isoformat()  # before the program can write a record (law: one-record)
         pane = self._open_window(argv, launch.env, path)
         launched = Launched(pane.id, pane.pid, at, pool.name, resume_id, argv, self.harness.version(), self.spec.harness, sorted(map(str, prior)), launch.price)
-        (self.folder / "launch.json").write_text(json.dumps(asdict(launched), indent=2) + "\n")
+        launched.write(self.folder / "launch.json")
         if resume_id:
             self.record()  # retain the resumed record's new pool boundary immediately
         self._survives(pane.id, launch.argv[0])

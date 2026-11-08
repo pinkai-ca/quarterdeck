@@ -1,6 +1,6 @@
 """Real accounting uses saved endpoint launches, not the seat's latest pool settings."""
 
-from dataclasses import asdict, replace
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import json
 from types import SimpleNamespace
@@ -40,7 +40,7 @@ def test_account_prices_resume_fresh_pool_edit_and_restart_from_launch_evidence(
 
     def pin(path, launch):
         (seat.folder / 'record').write_text(str(path))
-        (seat.folder / 'launch.json').write_text(json.dumps(asdict(launch)))
+        launch.write(seat.folder / 'launch.json')
         remember_launch(seat.folder, path, launch)
 
     pin(record, launched)  # old launch had no stated price
@@ -55,7 +55,7 @@ def test_account_prices_resume_fresh_pool_edit_and_restart_from_launch_evidence(
     svc.ledger.close()
     svc = Service(ship, seat.tmux)
     svc.account()
-    assert svc.ledger.db.execute('SELECT cost,recorded_cost FROM turns').fetchall() == [(None, 0)]
+    assert svc.ledger.db.execute('SELECT t.cost,c.recorded_cost FROM turns t JOIN turn_costs c USING(record,turn)').fetchall() == [(None, 0)]
     resumed = replace(launched, at=(AT + timedelta(minutes=2)).isoformat(), resume='synthetic',
                       price=Price.parse(RATES).snapshot('m'))
     pin(record, resumed)
@@ -74,7 +74,7 @@ def test_account_prices_resume_fresh_pool_edit_and_restart_from_launch_evidence(
     svc.ledger.close()
     svc = Service(ship, seat.tmux)
     svc.account()
-    assert svc.ledger.db.execute('SELECT pool,cost,recorded_cost FROM turns ORDER BY record,turn').fetchall() == [
+    assert svc.ledger.db.execute('SELECT t.pool,t.cost,c.recorded_cost FROM turns t JOIN turn_costs c USING(record,turn) ORDER BY record,turn').fetchall() == [
         ('a',None,0),('a',2,0),('b',0,0),('b',None,0)]
     before = svc.ledger.db.total_changes
     svc.account()

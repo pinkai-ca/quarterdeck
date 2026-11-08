@@ -18,6 +18,7 @@ from pathlib import Path
 
 from .harness.base import key_environment
 from .ship import Pool, ShipError
+from .pricing import save_price, saved_price
 
 KEY_VARIABLE = "QD_ENDPOINT_KEY"  # the variable a keyed endpoint's program reads; the key itself is never written
 DEFAULT_CONTEXT = 32768
@@ -73,12 +74,18 @@ class Choice:
     price: dict | None = None  # the effective stated rates for this model, captured before launch
 
     def write(self, home: Path) -> None:
-        (home / CHOICE_FILE).write_text(json.dumps(asdict(self), indent=2) + "\n")
+        data = asdict(self)
+        price = data.pop('price')
+        path = home / CHOICE_FILE
+        path.write_text(json.dumps(data, indent=2) + "\n")
+        save_price(path, price)
 
     @classmethod
     def read(cls, home: Path) -> "Choice":
         try:
-            return cls(**json.loads((home / CHOICE_FILE).read_text()))
+            data = json.loads((home / CHOICE_FILE).read_text())
+            data.pop("price", None)
+            return cls(**data, price=saved_price(home / CHOICE_FILE))
         except (OSError, ValueError, TypeError):
             raise ShipError(f"{home} holds no model choice; a seat home is built before its launch") from None
 

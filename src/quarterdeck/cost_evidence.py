@@ -1,0 +1,38 @@
+"""Cost evidence beside the old turn layout, invalidated by an older writer's edits."""
+
+
+class CostEvidence:
+    def __init__(self, db, create=True):
+        self.db = db
+        if not create:
+            return
+        db.execute('''CREATE TABLE IF NOT EXISTS turn_costs (
+            record TEXT NOT NULL, turn INTEGER NOT NULL, recorded_cost REAL, cost_basis TEXT,
+            valid INTEGER NOT NULL, PRIMARY KEY(record,turn))''')
+        columns = {r[1] for r in db.execute('PRAGMA table_info(turns)')}
+        # Accept the unlanded proposal's checkpoint too, preserving its evidence.
+        if 'cost_basis' in columns:
+            db.execute('INSERT OR IGNORE INTO turn_costs SELECT record,turn,recorded_cost,cost_basis,1 FROM turns')
+            db.execute('ALTER TABLE turns DROP COLUMN recorded_cost')
+            db.execute('ALTER TABLE turns DROP COLUMN cost_basis')
+        for event in ('INSERT', 'UPDATE'):
+            db.execute(f'''CREATE TRIGGER IF NOT EXISTS cost_after_{event.lower()} AFTER {event} ON turns
+                BEGIN UPDATE turn_costs SET valid=0 WHERE record=NEW.record AND turn=NEW.turn; END''')
+
+    def present(self):
+        return self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='turn_costs'").fetchone() is not None
+
+    def get(self, record, index):
+        return self.db.execute('SELECT recorded_cost,cost_basis,valid FROM turn_costs WHERE record=? AND turn=?',
+                               (str(record), index)).fetchone()
+
+    def put(self, record, index, recorded, basis):
+        self.db.execute('INSERT OR REPLACE INTO turn_costs VALUES (?,?,?,?,1)', (str(record), index, recorded, basis))
+
+    def known(self):
+        if not self.present():
+            return 'cost > 0'  # an old zero has no evidence proving a genuine zero
+        same = 'c.record=turns.record AND c.turn=turns.turn'
+        return f'''cost IS NOT NULL AND (
+            EXISTS (SELECT 1 FROM turn_costs c WHERE {same} AND c.valid=1 AND c.cost_basis IS NOT NULL)
+            OR (cost > 0 AND NOT EXISTS (SELECT 1 FROM turn_costs c WHERE {same})))'''
