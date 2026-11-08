@@ -35,7 +35,9 @@ class Rendezvous:
     def __enter__(self):
         self.folder.mkdir(parents=True, exist_ok=True)
         self.arrived.unlink(missing_ok=True)
-        self.request.write_text(json.dumps({"contains": self.contains, "seconds": self.seconds}))
+        pending = self.request.with_suffix(".tmp")
+        pending.write_text(json.dumps({"contains": self.contains, "seconds": self.seconds}))
+        pending.replace(self.request)
         return self
 
     def reached(self) -> dict | None:

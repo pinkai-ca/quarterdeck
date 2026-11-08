@@ -133,7 +133,8 @@ class Drill:
             return False
         proofs, errors = journals(captain)
         proof = next((p for p in proofs if attempts[0].path.name in p.data["attempts"]), None)
-        if errors or proof is None or proof.data["phase"] != "submitted" or proof.confirmed(captain):
+        if (errors or proof is None or proof.data["phase"] != "submitted" or not proof.same_launch(captain)
+                or proof.data["payload"] != post.typed([order]) or proof.confirmed(captain)):
             return False
         reached = gate.reached() if gate else None
         return gate is None or bool(reached and reached["text"] == post.typed([order]).strip() and
