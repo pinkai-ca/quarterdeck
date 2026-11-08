@@ -3,7 +3,6 @@
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 import json
-import sqlite3
 from types import SimpleNamespace
 
 import pytest
@@ -59,7 +58,7 @@ def tick(seat):
 def append_error(rec, text, at, index=8):
     details = _pb_str(1,text) + _pb_str(3,text)
     payload = _pb_bytes(24,_pb_bytes(3,details))
-    with sqlite3.connect(rec.path) as db:
+    with rec._conn() as db:  # close the writer before source-unchanged assertions
         last = db.execute('SELECT MAX(idx) FROM steps').fetchone()[0]
         executor = _pb_uint(1,1) + _pb_uint(2,1) + _pb_uint(3,last) + _pb_str(9,rec.exec_id)
         db.execute('UPDATE executor_metadata SET data=? WHERE idx=(SELECT MAX(idx) FROM executor_metadata)', (executor,))

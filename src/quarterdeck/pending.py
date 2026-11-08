@@ -7,6 +7,8 @@ clocks or marking delivery. The original attempt time survives every restart.
 from __future__ import annotations
 
 from datetime import datetime
+from contextlib import contextmanager
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -157,6 +159,26 @@ def held(seat, screen, ignored=None):
     return None
 
 
+@contextmanager
+def transient_lock(runtime: Path, name: str):
+    """Hold a temporary seat's explicit lifetime, or guard its orphan cleanup.
+
+    A check owns this lock from before its first attempt through teardown. The
+    non-inheritable descriptor releases on owner exit, including a killed check.
+    Keep the empty file: unlinking could let two processes lock different inodes.
+    Names alone (including check-*) and stale unlocked files establish no owner.
+    """
+    path = runtime / 'post' / 'transient' / f'{name}.lock'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('a') as stream:
+        try:
+            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+        else:
+            yield True
+
+
 def abandon(runtime: Path, name: str, reason: str) -> None:
     """Retain the history, but retire unresolved transport for a seat that is gone."""
     proofs, _ = _journals(runtime, name)
@@ -180,7 +202,9 @@ def reconcile(service) -> set[Path]:
     names = {a.seat for a in attempts.values()}
     names.update(p.name for p in (service.runtime / 'post' / 'pending').glob('*') if p.is_dir())
     for name in names - service.ship.seats.keys():
-        abandon(service.runtime, name, 'seat no longer declared; submission unconfirmed and never resent')
+        with transient_lock(service.runtime, name) as unowned:
+            if unowned:
+                abandon(service.runtime, name, 'seat no longer declared; submission unconfirmed and never resent')
         paths.update(a.path for a in attempts.values() if a.seat == name)
     for name in service.ship.seats:
         seat = service.seat(name)

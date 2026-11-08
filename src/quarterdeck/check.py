@@ -44,22 +44,25 @@ def check(ship: Ship, name: str, tmux: Tmux) -> list[Check]:
     seat = Seat(checked, spec, tmux)
     store = post.Store(ship.runtime)
     opened_session = not tmux.has_session(session_name)
-    try:
-        checks += probe(checked, seat)
-    finally:
-        # The transient seat is absent from the persisted declaration. Retire its
-        # unresolved transport before deleting its home, even if the probe/stop fails.
-        pending.abandon(ship.runtime, seat_name, 'qd check ended; submission unconfirmed and never resent')
+    with pending.transient_lock(ship.runtime, seat_name) as owned:
+        if not owned:
+            raise ShipError(f"{seat_name}: temporary seat ownership is busy; retry qd check")
         try:
-            seat.down()
+            checks += probe(checked, seat)
         finally:
+            # The transient seat is absent from the persisted declaration. Retire its
+            # unresolved transport before deleting its home, even if the probe/stop fails.
+            pending.abandon(ship.runtime, seat_name, 'qd check ended; submission unconfirmed and never resent')
             try:
-                if opened_session and tmux.has_session(session_name):
-                    tmux.kill_session(session_name)  # only what this run opened
+                seat.down()
             finally:
-                for order in store.open_for(seat_name):
-                    store.new("report", seat_name, order.sender, "qd check ended; closed by the check itself", re=order.id)
-                shutil.rmtree(seat.folder, ignore_errors=True)
+                try:
+                    if opened_session and tmux.has_session(session_name):
+                        tmux.kill_session(session_name)  # only what this run opened
+                finally:
+                    for order in store.open_for(seat_name):
+                        store.new("report", seat_name, order.sender, "qd check ended; closed by the check itself", re=order.id)
+                    shutil.rmtree(seat.folder, ignore_errors=True)
     if all(c.passed for c in checks):
         proven = ship.runtime / "proven"
         proven.mkdir(parents=True, exist_ok=True)
