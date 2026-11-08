@@ -413,7 +413,9 @@ quarterdeck/                       the project folder: the framework repository
     sandbox.py     the bubblewrap jail around a sandboxed seat's program
     post.py        messages: store, inbox, the typed form, the watch
     watch.py       reading a seat: activity and door; the status line
+    output.py      one shape for every reading: rendered for a person, or serialized as JSON for a caller
     ledger.py      turns, tokens, tool calls, machine load, by pool, seat and order; opened read-only by every reading
+    ledger_reading.py   the Ledger's rows and usage windows as a reading takes them, and their tables
     provenance.py record_owner.py quota.py usage_cache.py   which launch and which program a record belongs to; quota walls,
                    the usage refresh, and the latest real reading of each usage window
     credential.py  the one link a seat shares with its pool, reseeded and relinked on the tick
