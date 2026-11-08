@@ -144,3 +144,24 @@ def test_reused_ids_on_another_server_do_not_transfer_ownership(tmux: Tmux):
         assert not other.has_session("Temporary")
     finally:
         other.kill_server()
+
+
+def test_cleanup_checks_ownership_in_the_server_that_performs_the_kill(tmux: Tmux, monkeypatch):
+    other = Tmux(socket=tmux.socket + "-replacement")
+    try:
+        old = tmux.new_session("Temporary")
+        current = other.new_session("Temporary")
+        assert old.id == current.id and old.token != current.token
+        run = tmux.run
+        def switch_server(*args, **kwargs):
+            # The earlier existence checks saw the owned session. The action reaches a replacement server.
+            if args[0] == "if-shell":
+                return other.run(*args, **kwargs)
+            return run(*args, **kwargs)
+        monkeypatch.setattr(tmux, "run", switch_server)
+        tmux.kill_session_id(old)
+        assert other.has_session("Temporary")
+        other.kill_session_id(current)
+        assert not other.has_session("Temporary")
+    finally:
+        other.kill_server()

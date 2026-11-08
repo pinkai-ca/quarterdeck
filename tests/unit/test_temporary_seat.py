@@ -147,7 +147,7 @@ def test_both_callers_retire_transport_and_finish_cleanup_after_exceptions(tmp_p
         svc.ledger.close()
 
 
-@pytest.mark.parametrize("existing", ["seat", "session", "tmux", "folder", "message", "attempt"])
+@pytest.mark.parametrize("existing", ["seat", "session", "tmux", "folder", "journal", "message", "attempt"])
 def test_temporary_names_never_claim_existing_resources(tmp_path, existing):
     ship, tmux = synthetic_ship(tmp_path), Sessions()
     spec = SeatSpec("temporary", "temporary-session", "worker", "fake", ("fake",))
@@ -158,6 +158,10 @@ def test_temporary_names_never_claim_existing_resources(tmp_path, existing):
         ship.sessions[spec.session] = Session(spec.session, "unrelated")
     elif existing == "tmux":
         tmux.names[spec.session] = "$2"
+    elif existing == "journal":
+        journal = ship.runtime / "post" / "pending" / spec.name / "retained.json"
+        journal.parent.mkdir(parents=True)
+        journal.write_text("unreadable retained evidence")
     elif existing == "folder":
         folder.mkdir(parents=True)
         (folder / "marker").write_text("keep")
@@ -170,5 +174,45 @@ def test_temporary_names_never_claim_existing_resources(tmp_path, existing):
         with seatmod.temporary_seat(ship, tmux, spec, [], "synthetic check"):
             pytest.fail("a pre-existing resource was claimed")
     assert tmux.names == before and not tmux.killed
+    if existing == "journal":
+        assert journal.read_text() == "unreadable retained evidence"
     if existing == "folder":
         assert (folder / "marker").read_text() == "keep"
+
+
+@pytest.mark.parametrize("caller", ["check", "doctor"])
+@pytest.mark.parametrize("stage", ["create", "status", "up"])
+def test_setup_and_launch_failure_still_release_only_the_owned_resources(tmp_path, monkeypatch, caller, stage):
+    ship, tmux = synthetic_ship(tmp_path), Sessions()
+    stopped = []
+    monkeypatch.setattr(FakeHarness, "version", lambda self: "synthetic")
+    monkeypatch.setattr(doctor.shutil, "which", lambda *args, **kwargs: "synthetic-program")
+
+    def fail(*args, **kwargs):
+        raise RuntimeError(stage)
+
+    def up(seat, **kwargs):
+        with pending.transient_lock(ship.runtime, seat.name) as available:
+            assert not available
+        fail()
+
+    monkeypatch.setattr(seatmod.Seat, "up", up)
+    monkeypatch.setattr(seatmod.Seat, "down", lambda seat: stopped.append(seat))
+    if stage == "create":
+        monkeypatch.setattr(tmux, "new_session", fail)
+    elif stage == "status":
+        monkeypatch.setattr(tmux, "status_line", fail)
+    with pytest.raises(RuntimeError, match=stage):
+        if caller == "check":
+            check.check(ship, "fake", tmux)
+        else:
+            doctor.fix(ship, [Check("synthetic", False)], tmux)
+    assert len(stopped) == 1 and not stopped[0].folder.exists()
+    assert tmux.names == {"pre-existing": "$0"}
+    assert tmux.killed == ([] if stage == "create" else ["$1"])
+    store = post.Store(ship.runtime)
+    orders = [m for m in store.all() if m.kind == "order"]
+    assert len(orders) == int(caller == "doctor" and stage == "up")
+    assert all(not store.is_open(m) for m in orders)
+    with pending.transient_lock(ship.runtime, stopped[0].name) as available:
+        assert available

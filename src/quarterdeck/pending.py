@@ -184,8 +184,8 @@ def held(seat: Seat, screen: Screen | None, ignored: Proof | None = None) -> tup
 def transient_lock(runtime: Path, name: str) -> Iterator[bool]:
     """Hold a temporary seat's explicit lifetime, or guard its orphan cleanup.
 
-    A check owns this lock from before its first attempt through teardown. The
-    non-inheritable descriptor releases on owner exit, including a killed check.
+    A temporary operation owns this lock before transport through teardown. The
+    non-inheritable descriptor releases on owner exit, including a killed owner.
     Keep the empty file: unlinking could let two processes lock different inodes.
     Names alone (including check-*) and stale unlocked files establish no owner.
     """

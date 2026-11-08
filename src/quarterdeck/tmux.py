@@ -135,9 +135,8 @@ class Tmux:
         """A server restart can reuse IDs: both the ID and creation token must match."""
         if not self.running() or identity.id not in self.run("list-sessions", "-F", "#{session_id}").splitlines():
             return
-        environment = self.run("show-environment", "-t", identity.id).splitlines()
-        if f"QD_SESSION_OWNER={identity.token}" in environment:
-            self.run("kill-session", "-t", identity.id)
+        self.run("if-shell", "-F", "-t", identity.id, f"#{{==:#{{QD_SESSION_OWNER}},{identity.token}}}",
+                 f"kill-session -t {identity.id}")
 
     def kill_session(self, name: str) -> None:
         self.run("kill-session", "-t", _session(name))

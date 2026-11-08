@@ -374,7 +374,8 @@ def temporary_seat(ship: Ship, tmux: Tmux, spec: SeatSpec, orders: list[post.Mes
         if not owned:
             raise ShipError(f"{seat.name}: temporary seat ownership is busy; retry {purpose}")
         if (spec.name in ship.seats or spec.session in ship.sessions or tmux.has_session(session.title)
-                or seat.folder.exists() or store.for_seat(seat.name)
+                or seat.folder.exists() or (ship.runtime / "post" / "pending" / seat.name).exists()
+                or store.for_seat(seat.name)
                 or any(a.seat == seat.name for a in post.Attempts(ship.runtime).all())):
             raise ShipError(f"{seat.name}: temporary seat/session/history already exists; retry {purpose}")
         seat.folder.mkdir(parents=True, exist_ok=False)
