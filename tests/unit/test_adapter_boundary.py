@@ -28,10 +28,10 @@ def test_every_saved_program_binding_is_resolved_by_the_adapter():
 
 def test_credential_shape_is_selected_by_pool_not_guessed_from_contents(tmp_path):
     path = tmp_path / "auth.json"
-    path.write_text(json.dumps({"claudeAiOauth": {"refreshToken": "synthetic", "expiresAt": 1900000000000}}))
+    path.write_text(json.dumps({"claudeAiOauth": {"refreshToken": "x", "expiresAt": 1900000000000}}))
     assert CodexHarness().freshness(path) is None
     assert ClaudeHarness().freshness(path)[0] == 1900000000
-    path.write_text(json.dumps({"tokens": {"refresh_token": "synthetic"}}))
+    path.write_text(json.dumps({"tokens": {"refresh_token": "x"}}))
     assert CodexHarness().freshness(path)[0] == 0
     assert ClaudeHarness().freshness(path) is None
     assert credential.pool_file(Pool("endpoint", "endpoint", endpoint="http://synthetic.invalid/v1")) is None

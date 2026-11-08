@@ -105,7 +105,7 @@ class Service:
                 self.attempts.judge(attempt, "blind", "a watch opened it and never reported printing it; qd post resend")
                 continue
             seat, message = self.seat(attempt.seat), self.store.get(attempt.message)
-            seen = delivery_record.receipt(seat.harness, seat.record(), message, attempt.when)
+            seen = delivery_record.receipt(seat.harness, seat.record(), message, attempt.receipt_since)
             result = seen or "blind"
             if self.attempts.judge(attempt, result, "found in the record on reconciliation" if seen else
                                    "the service died mid-delivery and the record does not show it; qd post resend"):  # law: one-door
@@ -113,7 +113,7 @@ class Service:
         for attempt in self.attempts.all():  # a queued message is delivered once the record shows it read
             if attempt.path not in tracked and attempt.result == "queued" and attempt.message in self.attempts.queued_ids():
                 seat = self.seat(attempt.seat)
-                if seat.record() and self.read_now(seat, self.store.get(attempt.message), attempt.when):
+                if seat.record() and self.read_now(seat, self.store.get(attempt.message), attempt.receipt_since):
                     self.attempts.close(attempt, "delivered", "queued, then read: the record names it")
         self.rejudge_blind()
 
@@ -128,7 +128,7 @@ class Service:
             if attempt.result != "blind" or attempt.message not in blind or attempt.seat not in self.ship.seats:
                 continue
             seat, message = self.seat(attempt.seat), self.store.get(attempt.message)
-            if result := delivery_record.receipt_anywhere(seat, message, attempt.when):
+            if result := delivery_record.receipt_anywhere(seat, message, attempt.receipt_since):
                 self.attempts.close(attempt, result, "found in the record later")
                 self.log("reconciled", message=message.id, seat=seat.name, result=result, detail="a blind attempt, found in the record later")
 

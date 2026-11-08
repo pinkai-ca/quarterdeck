@@ -15,7 +15,7 @@ import os
 import secrets
 import time
 from dataclasses import asdict, dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .ship import ShipError
@@ -267,6 +267,11 @@ class Attempt:
     def when(self) -> datetime:
         return datetime.fromisoformat(self.at)
 
+    @property
+    def receipt_since(self) -> datetime:
+        """Old second-only attempts cannot distinguish inputs within that same second."""
+        return self.when if "." in self.at else self.when + timedelta(seconds=1)
+
 
 class Attempts:
     def __init__(self, runtime: Path):
@@ -283,7 +288,7 @@ class Attempts:
         with self._locked():
             at = now()
             number = len(list(self.dir.glob(f"{message.id}-*.json"))) + 1
-            attempt = Attempt(message.id, seat, at.isoformat(timespec="seconds"), pane, pid, launched_at,
+            attempt = Attempt(message.id, seat, at.isoformat(timespec="microseconds"), pane, pid, launched_at,
                               path=self.dir / f"{message.id}-{number}.json")
             self._write(attempt)
         return attempt

@@ -94,3 +94,27 @@ def test_unreadable_input_shapes_do_not_hide_fresh_siblings_or_confirm_untimed_h
     rows.append(dict(make(content), timestamp=at.isoformat()))
     record.write_text("\n".join(map(json.dumps, rows)))
     assert input_receipt.confirmed(name, record, "exact input", at) == "delivered"
+
+
+def test_attempt_receipts_preserve_precision_and_refuse_ambiguous_old_seconds(tmp_path, monkeypatch):
+    from quarterdeck.post import Attempt, Attempts, Store
+
+    start = datetime(2030, 1, 1, tzinfo=timezone.utc)
+    monkeypatch.setattr(post, "now", lambda: start + timedelta(microseconds=750000))
+    store, attempts = Store(tmp_path), Attempts(tmp_path)
+    message = store.new("order", "ship", "worker", "exact input")
+    attempt = attempts.open(message, "worker", "%1", 123, None)
+    assert attempt.when == start + timedelta(microseconds=750000)
+    assert attempts.all()[0].receipt_since == attempt.when
+    old = Attempt(message.id, "worker", start.isoformat(timespec="seconds"))
+    assert old.when == start and old.receipt_since == start + timedelta(seconds=1)
+    record = tmp_path / "synthetic.jsonl"
+    text = post.typed([message])
+    def write(at):
+        record.write_text(json.dumps({"type": "user", "timestamp": at.isoformat(), "message": {"content": text}}))
+    write(start + timedelta(microseconds=500000))
+    assert input_receipt.confirmed("claude", record, text, attempt.receipt_since) is None
+    assert input_receipt.confirmed("claude", record, text, old.receipt_since) is None
+    write(start + timedelta(seconds=1))
+    assert input_receipt.confirmed("claude", record, text, old.receipt_since) == "delivered"
+    assert old.when == start, "receipt uncertainty must not move the original deadline"

@@ -105,12 +105,15 @@ def pool_check(pool: Pool) -> Check:
 def fix(ship: Ship, failed: list[Check], tmux: Tmux) -> list[Check]:
     """Open a throwaway seat on the first pool whose program runs, hand it the failures as an order, and wait for its report."""
     searched = program_path()
-    pool = next((p for p in ship.pools.values() if p.provider in PROGRAMS and shutil.which(PROGRAMS[p.provider], path=searched)), None)
-    if pool is None:
+    available = next(((pool, reader) for pool in ship.pools.values() for name in harnesses.NAMES
+                      if (reader := harnesses.get(name)).accepts(pool) is None
+                      and shutil.which(reader.program, path=searched)), None)
+    if available is None:
         return [Check("seat opened", False, "no declared pool's program is on the PATH, so no seat can be asked; install one first")]
+    pool, reader = available
     run = secrets.token_hex(2)
     seat_name, session_name = f"doctor-{run}", f"qd-doctor-{run}"
-    spec = SeatSpec(seat_name, session_name, "engineering", pool.provider, (pool.name,), persona="McCoy", cwd=ship.folder)
+    spec = SeatSpec(seat_name, session_name, "engineering", reader.name, (pool.name,), persona="McCoy", cwd=ship.folder)
     treated = replace(ship, sessions={**ship.sessions, session_name: Session(session_name, session_name)},
                       seats={**ship.seats, seat_name: spec})
     seat = Seat(treated, spec, tmux)
