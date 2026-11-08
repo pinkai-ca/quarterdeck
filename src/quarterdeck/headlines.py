@@ -29,6 +29,14 @@ def status_line(facts, alerts: list[str]) -> str:
     usage = [compact(item) for item in facts.usage]
     if not usage or len(SEPARATOR.join(parts + usage)) <= WIDTH:
         return SEPARATOR.join(parts + usage)
+    def priority(item: dict) -> int:
+        row = item["reading"]
+        if row is None or not row.complete:
+            return 2
+        return 0 if item["current"] else 1
+
+    # Sorting is stable and local to the overflowing text, never the source reading.
+    usage = [compact(item) for item in sorted(facts.usage, key=priority)]
     # Long names/reasons or many simultaneous alerts: retain every affected category
     # as an explicit count and direct the reader to the complete status reading.
     if len(SEPARATOR.join(parts + [f"{len(usage)} usage: qd status"])) > WIDTH:
@@ -40,11 +48,14 @@ def status_line(facts, alerts: list[str]) -> str:
         parts += [f"{count} {label}" for count, label in counts if count]
         parts.append("details: qd status")
     suffix = "" if "details: qd status" in parts else ": qd status"
-    for index, value in enumerate(usage):
-        remaining = len(usage) - index - 1
+    shown = 0
+    for value in usage:
+        remaining = len(usage) - shown - 1
         tail = [f"+{remaining} usage{suffix}"] if remaining else []
         if len(SEPARATOR.join(parts + [value] + tail)) > WIDTH:
-            parts.append(f"+{remaining + 1} usage{suffix}")
-            break
+            continue  # an oversized name must not hide a later fitting reading
         parts.append(value)
+        shown += 1
+    if shown < len(usage):
+        parts.append(f"+{len(usage) - shown} usage{suffix}")
     return SEPARATOR.join(parts)
