@@ -68,6 +68,8 @@ def collect(book: Ledger, ship: Ship | None = None, *, by: str | None = None, to
         item["wall"] = any(w == f"{row.pool} {row.window}" or w.startswith(f"{row.pool} {row.window} ·") for w in walls)
         windows.append(item)
     return {**data, "observed_at": now, "windows": windows, "pools": pools,
+            "usage_absent_reason": "no usage read yet: the service reads active subscription pools in the background"
+            if not windows and not any(p["kind"] in ("key", "endpoint") for p in pools) else None,
             "usage_attempts": [dict(zip(("pool", "at", "error"), row)) for row in
                                book.db.execute("SELECT pool,at,error FROM usage_reads ORDER BY pool")],
             "wall_events": [dict(zip(("seat", "pool", "reason", "resets_at", "observed_at", "source"), row))
@@ -134,6 +136,6 @@ def render_pools(data: dict) -> list[str]:
         if pool["kind"] == "endpoint":
             lines.append(f"{pool['name']:<20} {'endpoint':<8} {pool['endpoint']} · no quota, no wall")
     if len(lines) == 1:
-        lines.append("no usage read yet: the service reads active subscription pools in the background")
+        lines.append(data["usage_absent_reason"])
     return lines + [f"{a['pool']} latest usage read: {a['error']}" for a in data["usage_attempts"] if a["error"]] + [
         "wall: " + w for w in data["observed_walls"]]

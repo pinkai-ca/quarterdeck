@@ -82,6 +82,13 @@ def test_watch_keeps_null_state_and_full_screen_fields(invoke, drydock, monkeypa
     data = invoke("watch", "captain")
     assert data["state"] is None and data["record_error"] == "synthetic unreadable"
     assert data["seat"]["activity"]["state"] == "unknown"
+    def empty_error(self, record):
+        raise OSError()
+    monkeypatch.setattr(type(reader), "state", empty_error)
+    data = invoke("watch", "captain")
+    assert data["state"] is None and data["record_error"] == ""
+    assert "unreadable:" in invoke("watch", "captain", json_output=False)
+
 
 
 def test_empty_watch_has_absence_reasons(invoke):

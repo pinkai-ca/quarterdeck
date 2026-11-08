@@ -228,7 +228,7 @@ def render_full(data: dict) -> list[str]:
              f"  {r.harness_text} · pool {r.pool} · model {r.model_text}"]
     record, state = data["record"], data["state"]
     if record:
-        if data["record_error"]:
+        if data["record_error"] is not None:
             lines.append(f"  record {record} · unreadable: {data['record_error']}")
         else:
             turns_shown = state.turns if state.turns is not None else "unknown"

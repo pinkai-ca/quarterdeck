@@ -36,11 +36,12 @@ def test_missing_and_empty_ledger_are_distinct(invoke, drydock, options):
     assert data["available"] is True and data["reason"] is None
     assert data.get("rows", data.get("windows")) == []
     assert data["incomplete_records"] == [] and data["unknown_pool_turns"] == 0
+    if not options:
+        assert data["usage_absent_reason"].startswith("no usage read yet")
 
 
 def test_rollups_and_tools_keep_partial_measurements_and_never_write(invoke, drydock):
     path = drydock / "runtime" / "ledger.sqlite"
-    at = datetime.now(timezone.utc) - timedelta(minutes=2)
     store = post.Store(drydock / "runtime")
     order = store.new("order", "desk", "captain", "synthetic accounting")
     with Ledger(path) as book:
