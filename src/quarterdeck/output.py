@@ -7,6 +7,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable
 import json
+import sys
 
 
 @dataclass(frozen=True)
@@ -43,4 +44,7 @@ def emit(result: Any, *, json_output: bool = False) -> None:
     else:
         rendered = result
     text = rendered if isinstance(rendered, str) else "\n".join(rendered)
-    print(text, flush=True)
+    document = text + "\n"
+    if sys.stdout.write(document) != len(document):
+        raise OSError("incomplete reading output; receipt withheld")
+    sys.stdout.flush()

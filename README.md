@@ -39,6 +39,41 @@ qd upgrade                          # install the checkout's HEAD as the ship's 
 
 Every verb prints a proof line saying what was done and how it was confirmed; every refusal names the reason and what would lift it; every reading is available as `--json`. The command is written for an agent at the keyboard as much as for a person: the human's word reaches the ship through a desk seat that runs `qd`.
 
+### Reading as JSON
+
+Put `--json` before the verb, for example `qd --json status` or
+`qd --json ledger --by seat`. Each invocation emits one JSON document, followed
+by a newline. No table or Markdown wrapper is used for structured readings:
+
+- `status` and `watch` without a seat: seat readings, open order messages, and
+  status facts. `status --line`: the facts themselves, including waiting counts,
+  warnings and the enabled cached usage windows.
+- `watch <seat>`: the seat reading, full record state and parsed screen, with
+  separate record absence/error fields. Observed model, declared model, harness
+  and version remain separate; an unobserved value is `null`.
+- `ledger`: stored windows and their freshness, declared pools, key-pool spend,
+  usage attempts and active wall events. `ledger --by seat|order|pool` and
+  `ledger --tools`: named row fields with their unmeasured/untimed/unjudged
+  counts. A missing book has `available: false` and a reason; an empty book is
+  available with empty collections. These commands neither write the book nor
+  request usage from a provider.
+- `controls`: adapter control definitions and the ship's relaunch controls.
+  `laws`: each law's id, part, text and comment-token carrier paths/line numbers.
+  `brief`, including `--sources`: the brief text, source files and word count.
+  `doctor` without `--fix`: checks with names, boolean results and details.
+- `inbox`: open and received message objects plus closing-report references.
+  `inbox --wait`: one object with `seat` and a `messages` array, then exit. This
+  is one batch, not JSON Lines or a continuing stream. The complete document is
+  serialized, printed and flushed before watch receipts are recorded. An output
+  failure leaves attempts unresolved; emitted messages do not assert a receipt.
+
+Dataclass fields retain numbers, booleans, `null` and collections; timestamps use
+ISO 8601 and paths are strings. Stored usage keeps its original reading/reset
+pair and latest error; `current`, `complete`, `reason` and `age_seconds` describe
+freshness at `observed_at`. Unknown token/price semantics and headline selection
+are the same as in text. Mutating commands, including `watch --save-screen` and
+`doctor --fix`, retain their proof output.
+
 ## What is proven, and what is not
 
 Claude Code 2.1.317 and Codex 0.166.0 were proven live by `qd check` on 7 November 2026: each launched, took a long paste its record confirmed, wrote a named file, posted a report and had its turn read. What their adapters know of each program's record, screen, keys, dialogs and controls is pinned separately, by the contract tests' fixtures under `tests/fixtures/`. Antigravity 1.5.2 has no home switch, so its seat runs in the user's Antigravity state; its record, a SQLite database of protobuf messages, is read from a snapshot of its bytes, so deliveries are confirmed and turns accounted like the others, and what the record does not hold is marked rather than guessed. The fields read are in `docs/ANTIGRAVITY.md`; its live check is still to run. OpenCode 1.19.5 and pi 0.74.2 run on endpoint pools, a model served at an OpenAI-compatible URL; both were spiked against a local vLLM server on 7 November 2026, and their records, screens, folds and wraps are pinned by fixtures. A seat on an endpoint pool runs in a bubblewrap jail unless the ship says otherwise: the operator's home hidden, the workspace writable, `qd post` working from inside. A newer version of any program runs with the newest known facts and is reported as unproven until `qd check` proves it.

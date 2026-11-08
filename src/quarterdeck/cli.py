@@ -284,7 +284,7 @@ def render_sources(data: dict) -> list[str]:
 def cmd_status(args: argparse.Namespace) -> Reading:
     ship = load_ship(args)
     if args.line:
-        return Reading(watch.facts_reading(ship, Tmux.default()), watch.render_facts)
+        return Reading(watch.facts(ship, Tmux.default()), watch.Facts.line)
     return Reading(watch.status_reading(ship, Tmux.default()), watch.render_table)
 
 

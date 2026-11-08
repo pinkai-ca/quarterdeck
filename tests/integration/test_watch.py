@@ -45,7 +45,7 @@ def test_activity_and_door_from_record_and_screen(ship: shipmod.Ship, tmux: Tmux
     wait_for(lambda: watch.activity(captain).state == "idle", seconds=15)
     assert watch.activity(captain) == watch.Activity("idle")
     r = watch.reading(captain)
-    assert r.today.known > 0 and r.today.unmeasured == 0 and r.model == "fake-1" and r.pool == "fake" and r.harness == "fake fake"
+    assert r.today.known > 0 and r.today.unmeasured == 0 and r.model == "fake-1" and r.pool == "fake" and r.harness == "fake" and r.version == "fake"
     captain.down()
     tmux.new_session("Bridge") if not tmux.has_session("Bridge") else None
     pane = tmux.new_window("Bridge", "Pike", ship.folder, ["sh", "-c", "exit 7"])

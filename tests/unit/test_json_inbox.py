@@ -36,7 +36,7 @@ def test_inbox_contains_messages_open_state_and_closing_references(inbox, capsys
 
 
 @pytest.mark.parametrize("json_output", [False, True])
-@pytest.mark.parametrize("failure", [None, "serialize", "write", "flush"])
+@pytest.mark.parametrize("failure", [None, "serialize", "write", "short write", "flush"])
 def test_wait_batch_receipts_follow_successful_output_only(inbox, monkeypatch, json_output, failure):  # law: one-door
     folder, store, messages = inbox
     attempts = post.Attempts(folder / "runtime")
@@ -52,6 +52,8 @@ def test_wait_batch_receipts_follow_successful_output_only(inbox, monkeypatch, j
             events.append("write")
             if failure == "write":
                 raise OSError("synthetic output failure")
+            if failure == "short write":
+                return super().write(text[:1])
             return super().write(text)
 
         def flush(self):
@@ -90,7 +92,7 @@ def test_wait_batch_receipts_follow_successful_output_only(inbox, monkeypatch, j
     with monkeypatch.context() as capture:
         capture.setattr(cli.sys, "stdout", target)
         if failure:
-            with pytest.raises((ValueError, OSError), match="synthetic"):
+            with pytest.raises((ValueError, OSError), match="synthetic|incomplete reading output"):
                 cli.main(args)
         else:
             assert cli.main(args) == 0

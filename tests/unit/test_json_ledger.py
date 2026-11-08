@@ -98,3 +98,28 @@ def test_windows_spend_endpoints_failures_and_walls_are_source_data(invoke, dryd
     text = invoke("ledger", text=True)
     assert "LAST KNOWN" in text and "synthetic timeout" in text and "no cost stated" in text
     assert "estimated from first screen observation" in text
+
+
+def test_headline_window_data_reaches_status_line_without_new_headline_policy(invoke, drydock, monkeypatch):
+    from quarterdeck.harness.fake import FakeHarness
+
+    monkeypatch.setattr(FakeHarness, "status_usage", True)
+    monkeypatch.setattr(FakeHarness, "is_headline", lambda self, group, window: window == "7d")
+    at = datetime.now(timezone.utc)
+    reset = at + timedelta(days=7)
+    with Ledger(drydock / "runtime" / "ledger.sqlite") as book:
+        book.record_usage("fake", Usage((Window("7d", .25, reset), Window("5h", .1, reset)), at))
+    for command in (("status",), ("status", "--line"), ("watch", "captain")):
+        data = invoke(*command)
+        assert len(data["usage"]) == 1
+        assert data["usage"][0]["reading"]["used"] == .25
+        assert data["usage"][0]["reading"]["window"] == "7d"
+        assert data["usage"][0]["current"] is True
+        assert "fake 7d 25% used" in invoke(*command, text=True)
+    with Ledger(drydock / "runtime" / "ledger.sqlite") as book:
+        book.record_usage("fake", Usage((), at + timedelta(seconds=5), "synthetic timeout"))
+    data = invoke("status", "--line")
+    assert data["usage"][0]["reading"]["used"] == .25
+    assert data["usage"][0]["current"] is False
+    assert "synthetic timeout" in data["usage"][0]["reason"]
+    assert "LAST KNOWN" in invoke("status", "--line", text=True)

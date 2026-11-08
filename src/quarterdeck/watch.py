@@ -79,11 +79,26 @@ class SeatReading:
     order: str | None
     today: ledger.Count
     pool: str
-    model: str
+    model: str | None
     harness: str
-    observed_model: str | None = None
     declared_model: str | None = None
     version: str | None = None
+
+    @property
+    def model_text(self) -> str:
+        if self.model is None:
+            return f"- (ship file: {self.declared_model})" if self.declared_model else "-"
+        if self.declared_model is None or same_name(self.model, self.declared_model):
+            return self.model
+        return f"{self.model} (ship file: {self.declared_model})"
+
+    @property
+    def harness_text(self) -> str:
+        return f"{self.harness} {self.version}".strip() if self.version else self.harness
+
+    @property
+    def order_text(self) -> str:
+        return post.short_of(self.order) if self.order else "-"
 
     @property
     def needs_human(self) -> bool:
@@ -102,22 +117,14 @@ def reading(seat: Seat, store: post.Store | None = None) -> SeatReading:
     door = Door(seat).reading() if act.state not in ("off",) else Reading(False, act.detail or "off", "qd up")
     observed = running_settings(seat) if act.state != "off" else {}
     running = observed.get("model")
-    if running is None:
-        model = f"- (ship file: {seat.spec.model})" if seat.spec.model else "-"  # law: record-first
-    elif seat.spec.model is None or same_name(running, seat.spec.model):
-        model = running
-    else:
-        model = f"{running} (ship file: {seat.spec.model})"
     open_orders = [m for m in store.open_for(seat.name) if m.kind == "order"]
     claimed = store.claimed(seat.name, post.now())
     order = claimed or (open_orders[0].id if len(open_orders) == 1 else None)
-    short = post.short_of(order) if order else None
     launched = seat.launched()
     version = launched.version if launched else None
     pool = launched.pool if launched and launched.pool in seat.ship.pools else seat.pool.name
-    return SeatReading(seat.name, act, door, short, tokens_today(seat), pool, model,
-                       f"{seat.harness.name} {version}".strip() if version else seat.harness.name,
-                       running, seat.spec.model, version)
+    return SeatReading(seat.name, act, door, order, tokens_today(seat), pool, running,
+                       seat.harness.name, seat.spec.model, version)
 
 
 def tokens_today(seat: Seat) -> ledger.Count:
@@ -188,7 +195,7 @@ def render_table(data: dict) -> list[str]:
     head = f"service {state}" + ("; qd up restarts it" if state == "down" else "")
     rows = [head, f"{'seat':<10} {'activity':<24} {'door':<40} {'order':<10} {'today':>8}  pool · model"]
     for r in data["seats"]:
-        rows.append(f"{r.name:<10} {str(r.activity):<24} {str(r.door):<40} {r.order or '-':<10} {str(r.today):>8}  {r.pool} · {r.model}")
+        rows.append(f"{r.name:<10} {str(r.activity):<24} {str(r.door):<40} {r.order_text:<10} {str(r.today):>8}  {r.pool} · {r.model_text}")
     rows.append(f"open orders: {len(data['open_orders'])}")
     for m in data["open_orders"]:
         rows.append(f"  {m.short} {m.sender} → {m.to} · {m.at.strftime('%m-%d %H:%M')}" + (f" · {m.subject}" if m.subject else ""))
@@ -217,8 +224,8 @@ def seat_reading(seat: Seat) -> dict:
 def render_full(data: dict) -> list[str]:
     r = data["seat"]
     today = f"{r.today} tokens today" + (" (+: some turns were not measured)" if r.today.unmeasured else "")
-    lines = [f"{r.name}: {r.activity} · door {r.door} · order {r.order or '-'} · {today}",
-             f"  {r.harness} · pool {r.pool} · model {r.model}"]
+    lines = [f"{r.name}: {r.activity} · door {r.door} · order {r.order_text} · {today}",
+             f"  {r.harness_text} · pool {r.pool} · model {r.model_text}"]
     record, state = data["record"], data["state"]
     if record:
         if data["record_error"]:
@@ -399,11 +406,3 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
 
 def line(ship: Ship, tmux: Tmux) -> str:
     return facts(ship, tmux).line()
-
-
-def facts_reading(ship: Ship, tmux: Tmux) -> Facts:
-    return facts(ship, tmux)
-
-
-def render_facts(data: Facts) -> str:
-    return data.line()

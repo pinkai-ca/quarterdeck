@@ -36,8 +36,9 @@ def test_status_and_line_expose_seats_orders_and_facts(invoke, drydock):
     captain = data["seats"][0]
     assert captain["activity"] == {"state": "off", "detail": "down"}
     assert captain["door"]["open"] is False and captain["today"] == {"known": 0, "unmeasured": 0}
-    assert captain["observed_model"] is None and captain["declared_model"] == "fake-1"
-    assert captain["version"] is None
+    assert captain["model"] is None and captain["declared_model"] == "fake-1"
+    assert captain["version"] is None and captain["harness"] == "fake"
+    assert captain["order"] == order.id
     assert data["open_orders"][0]["id"] == order.id
     assert data["open_orders"][0]["body"] == order.body
     assert datetime.fromisoformat(data["open_orders"][0]["at"]) == order.at
@@ -73,7 +74,7 @@ def test_watch_keeps_null_state_and_full_screen_fields(invoke, drydock, monkeypa
     assert data["state"]["consumed"] == ["earlier"]
     assert data["screen"]["box"] is None and data["screen"]["working"] is True
     assert data["screen"]["queued"] == 1 and data["screen"]["unknown"] == "unrecognized layout"
-    assert data["seat"]["observed_model"] == "synthetic-model"
+    assert data["seat"]["model"] == "synthetic-model"
     assert "unknown turns" in invoke("watch", "captain", json_output=False)
     def broken(self, record):
         raise OSError("synthetic unreadable")
@@ -126,3 +127,27 @@ def test_no_reading_creates_a_ledger(invoke, drydock):  # law: record-first
                     ("ledger", "--tools"), ("ledger", "--by", "seat"), ("inbox",)):
         invoke(*command)
     assert not (drydock / "runtime" / "ledger.sqlite").exists()
+
+
+def test_json_does_not_accept_an_opaque_object_as_a_string(capsys):
+    from quarterdeck.output import Reading, emit
+
+    with pytest.raises(TypeError):
+        emit(Reading({"unknown": object()}, lambda data: "text"), json_output=True)
+    assert capsys.readouterr().out == "", "serialization completes before output begins"
+
+
+def test_model_and_version_are_observations_not_table_labels():
+    from quarterdeck.door import Reading
+    from quarterdeck.ledger import Count
+    from quarterdeck.output import value
+    from quarterdeck.watch import Activity, SeatReading
+
+    row = SeatReading("seat", Activity("idle"), Reading(True), None, Count(), "pool", "observed",
+                      "fake", "declared", "synthetic-version")
+    assert row.model_text == "observed (ship file: declared)"
+    assert row.harness_text == "fake synthetic-version"
+    data = value(row)
+    assert data["model"] == "observed" and data["declared_model"] == "declared"
+    assert data["harness"] == "fake" and data["version"] == "synthetic-version"
+    assert "model_text" not in data and "harness_text" not in data
