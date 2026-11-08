@@ -89,51 +89,42 @@ class Service:
 
 
     def reconcile(self) -> None:
-        """Attempts left without a result: the record says delivered, else blind, never resent.
+        """Reconcile journals first, then unjournaled attempts through the same fresh receipt rule.
 
-        An attempt younger than the door's confirm window is left to whoever opened it, a
-        door still confirming or a watch still printing. The verdict is written only while
-        the file still has no result, so a result they write in the meantime stands.
+        Live owners keep their confirm window; queued inputs need consumption.
+        Blind attempts are re-read at their existing minute cadence, never resent.
         """
         tracked = pending_delivery.reconcile(self)
-        for attempt in self.attempts.unfinished():
-            if attempt.path in tracked:
-                continue
-            if time.time() < attempt.when.timestamp() + CONFIRM_SECONDS:
-                continue
-            if attempt.pane is None:
-                self.attempts.judge(attempt, "blind", "a watch opened it and never reported printing it; qd post resend")
-                continue
-            seat, message = self.seat(attempt.seat), self.store.get(attempt.message)
-            seen = delivery_record.receipt(seat.harness, seat.record(), message, attempt.receipt_since)
-            result = seen or "blind"
-            if self.attempts.judge(attempt, result, "found in the record on reconciliation" if seen else
-                                   "the service died mid-delivery and the record does not show it; qd post resend"):  # law: one-door
-                self.log("reconciled", message=message.id, seat=seat.name, result=result)
-        for attempt in self.attempts.all():  # a queued message is delivered once the record shows it read
-            if attempt.path not in tracked and attempt.result == "queued" and attempt.message in self.attempts.queued_ids():
-                seat = self.seat(attempt.seat)
-                if seat.record() and self.read_now(seat, self.store.get(attempt.message), attempt.receipt_since):
-                    self.attempts.close(attempt, "delivered", "queued, then read: the record names it")
-        self.rejudge_blind()
-
-    def rejudge_blind(self) -> None:
-        """A blind attempt whose message the record later shows is judged delivered; one that never shows stays
-        blind, waiting for a hand (law: one-door). The records are read for this once a minute."""
-        if time.monotonic() - self.blind_checked < BLIND_INTERVAL:
-            return
-        self.blind_checked = time.monotonic()
-        blind = self.attempts.blind_ids()
+        retry_blind = time.monotonic() - self.blind_checked >= BLIND_INTERVAL
+        if retry_blind:
+            self.blind_checked = time.monotonic()
+        queued, blind = self.attempts.queued_ids(), self.attempts.blind_ids()
         for attempt in self.attempts.all():
-            if attempt.result != "blind" or attempt.message not in blind or attempt.seat not in self.ship.seats:
+            if attempt.path in tracked or attempt.seat not in self.ship.seats:
+                continue
+            result = attempt.result
+            if result is None:
+                if time.time() < attempt.when.timestamp() + CONFIRM_SECONDS:
+                    continue
+                if attempt.pane is None:
+                    self.attempts.judge(attempt, "blind", "a watch opened it and never reported printing it; qd post resend")
+                    continue
+            elif not (result == "queued" and attempt.message in queued
+                      or result == "blind" and retry_blind and attempt.message in blind):
                 continue
             seat, message = self.seat(attempt.seat), self.store.get(attempt.message)
-            if result := delivery_record.receipt_anywhere(seat, message, attempt.receipt_since):
-                self.attempts.close(attempt, result, "found in the record later")
-                self.log("reconciled", message=message.id, seat=seat.name, result=result, detail="a blind attempt, found in the record later")
-
-    read_now = staticmethod(delivery_record.read_now)
-    taken = staticmethod(delivery_record.taken)
+            seen = delivery_record.receipt_anywhere(seat, message, attempt.receipt_since)
+            if result is None:
+                if self.attempts.judge(attempt, seen or "blind", "found in the record on reconciliation" if seen else
+                                      "the service died mid-delivery and the record does not show it; qd post resend"):  # law: one-door
+                    self.log("reconciled", message=message.id, seat=seat.name, result=seen or "blind")
+            elif result == "queued":
+                if seen == "delivered":
+                    self.attempts.close(attempt, "delivered", "queued, then read: the record names it")
+            elif seen:
+                self.attempts.close(attempt, seen, "found in the record later")
+                self.log("reconciled", message=message.id, seat=seat.name, result=seen,
+                         detail="a blind attempt, found in the record later")
 
     def deliveries(self) -> None:
         for seat in seats(self.ship, self.tmux):

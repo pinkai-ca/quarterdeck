@@ -6,11 +6,6 @@ from . import input_receipt, post, record_owner
 from .seat import Seat
 
 
-def read_now(seat: Seat, message: post.Message, since: datetime) -> bool:
-    """An accepted queue has been consumed only when its timestamped record proves it."""
-    return receipt(seat.harness, seat.record(), message, since) == "delivered"
-
-
 def receipt(reader, record, message: post.Message, since: datetime) -> str | None:
     if record is None:
         return None
@@ -18,11 +13,6 @@ def receipt(reader, record, message: post.Message, since: datetime) -> str | Non
         return input_receipt.confirmed(reader, record, post.typed([message]), since)
     except OSError:
         return None
-
-
-def taken(seat: Seat, message: post.Message, since: datetime) -> bool:
-    """Whether the exact transport was accepted since this attempt began."""
-    return receipt(seat.harness, seat.record(), message, since) is not None
 
 
 def receipt_anywhere(seat: Seat, message: post.Message, since: datetime) -> str | None:

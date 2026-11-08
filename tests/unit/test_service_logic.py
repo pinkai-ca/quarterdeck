@@ -8,18 +8,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from quarterdeck import post
+from quarterdeck import delivery_record, post
 from quarterdeck.harness.synthetic_record import ClaudeShape
 from quarterdeck.harness.fake import FakeHarness
 from quarterdeck.post import Message, Store
 from quarterdeck.service import Service
 
 
-def seat_with(record: Path):
-    return SimpleNamespace(record=lambda: record, harness=FakeHarness())
-
-
-def test_taken_matches_the_message_id_not_a_look_alike_body(tmp_path: Path) -> None:
+def test_receipt_matches_the_message_id_and_distinguishes_queue_acceptance(tmp_path: Path) -> None:
     store = Store(tmp_path)
     earlier = store.new("order", "desk", "scott", "done")
     record = ClaudeShape(tmp_path / "home", Path("/work"), "s1", "fake-1")
@@ -27,19 +23,19 @@ def test_taken_matches_the_message_id_not_a_look_alike_body(tmp_path: Path) -> N
     record.end("ok")
     since = datetime.now(timezone.utc) - timedelta(seconds=1)
     later = store.new("order", "desk", "scott", "done")  # the same body, another id
-    assert Service.taken(seat_with(record.path), earlier, since) is True
-    assert Service.taken(seat_with(record.path), later, since) is False  # law: one-door
+    assert delivery_record.receipt(FakeHarness(), record.path, earlier, since) == "delivered"
+    assert delivery_record.receipt(FakeHarness(), record.path, later, since) is None  # law: one-door
     # an input older than the attempt proves nothing about it
-    assert Service.taken(seat_with(record.path), earlier, datetime.now(timezone.utc) + timedelta(seconds=5)) is False
+    assert delivery_record.receipt(FakeHarness(), record.path, earlier, datetime.now(timezone.utc) + timedelta(seconds=5)) is None
     # queued, not yet an input: still taken
     record.begin("something else", "fake-1", "low")
     record.queued(post.typed([later]))
-    assert Service.taken(seat_with(record.path), later, since) is True
+    assert delivery_record.receipt(FakeHarness(), record.path, later, since) == "queued"
 
 
-def test_taken_without_a_record_is_false(tmp_path: Path) -> None:
+def test_receipt_without_a_record_is_unknown(tmp_path: Path) -> None:
     message = Message("ord-1-d-0001", "order", "desk", "scott", post.now(), "x")
-    assert Service.taken(SimpleNamespace(record=lambda: None, harness=FakeHarness()), message, post.now()) is False
+    assert delivery_record.receipt(FakeHarness(), None, message, post.now()) is None
 
 
 def test_account_tracks_wal_fingerprint_and_retries_after_transient_read_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -190,14 +186,14 @@ def test_a_blind_attempt_is_judged_delivered_once_a_record_shows_the_message(tmp
     attempt = svc.attempts.open(message, "scott", "%1", 4242, launched_at.isoformat())
     svc.attempts.close(attempt, "blind", "typed and submitted, not seen in the record within 5s")
     assert svc.attempts.blind_ids() == {message.id}
-    svc.rejudge_blind()
+    svc.reconcile()
     assert svc.attempts.blind_ids() == {message.id}, "the record does not show it yet: still blind, and never resent"  # law: one-door
     record.begin(post.typed([message]), "claude-opus-5-5", "high")
     record.end("counted")
-    svc.rejudge_blind()
+    svc.reconcile()
     assert svc.attempts.blind_ids() == {message.id}, "the records are read for this once a minute, not every tick"
     svc.blind_checked = -1e9
-    svc.rejudge_blind()
+    svc.reconcile()
     assert svc.attempts.blind_ids() == set()
     assert svc.attempts.for_message(message.id)[-1].detail == "found in the record later"
     svc.ledger.close()

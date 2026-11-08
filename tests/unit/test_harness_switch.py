@@ -205,9 +205,18 @@ def test_queued_history_uses_original_reader_and_conflicts_remain_unknown(tmp_pa
     old.end("synthetic reply")
     seat = switch(seat)
     assert seat._queued_unread(store, attempts) == []
+    svc = Service(seat.ship, seat.tmux)
+    svc.reconcile()
+    assert attempts.latest()[message.id] == "delivered", "the common reconciliation path uses the retained reader"
+    svc.ledger.close()
     again = attempts.open(message, seat.name, "%2", 12346, None)
     attempts.close(again, "queued")
     assert seat._queued_unread(store, attempts) == [message], "an old identical input cannot consume a new queue attempt"
+    svc = Service(seat.ship, seat.tmux)
+    svc.reconcile()
+    svc.reconcile()
+    assert attempts.latest()[message.id] == "queued", "a restart does not reset the original receipt time"
+    svc.ledger.close()
     record_owner.register(seat.folder, old.path, "codex")  # conflicting explicit history is not guessed
     assert record_owner.records(seat)[0].reader is None
     assert seat._queued_unread(store, attempts) == [message]
