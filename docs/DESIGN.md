@@ -401,7 +401,7 @@ quarterdeck/                       the project folder: the framework repository
                    the machine sample; the one writer of the Ledger
     servicectl.py  the service's lock, heartbeat, start, stop and requests
     harness/       base.py claude.py codex.py antigravity.py opencode.py pi.py fake.py; json_record.py limits.py sqlite_snapshot.py
-                   antigravity_wire.py antigravity_quota.py
+                   opencode_record.py antigravity_wire.py antigravity_quota.py
     endpoint.py    endpoint pools: what a server serves, the model a seat takes from it, the key beside it
     sandbox.py     the bubblewrap jail around a sandboxed seat's program
     post.py        messages: store, inbox, the typed form, the watch
