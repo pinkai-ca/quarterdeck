@@ -102,7 +102,7 @@ def test_the_record_reads_four_turns_a_steered_message_tools_and_the_aborted_ste
     assert state.turn_open is False and state.turns == 4 and state.model == "qwen3.8-27b" and state.effort == "medium"
     assert state.consumed == (PING,), "a message steered into a running turn"
     assert state.last_input.startswith("qd > order from desk · ord-7777 · Long") and state.open_tool is None
-    assert len(turns) == 4 and all(t.cost == 0.0 for t in turns)
+    assert len(turns) == 4 and all(t.cost is None and t.recorded_cost == 0.0 for t in turns)
     assert turns[0].input == "qd > briefed as spike. Say READY and nothing else." and turns[0].reply.strip() == "READY"
     assert turns[0].tokens == pi.Tokens(read_uncached=1565, written=19) and turns[0].seconds == pytest.approx(0.877)
     stars = turns[1]
@@ -161,7 +161,7 @@ def test_the_home_is_built_from_the_endpoint_and_the_launch_carries_the_brief_an
     provider = models["providers"]["local-a"]
     assert provider["baseUrl"] == "http://127.0.0.1:8000/v1" and provider["api"] == "openai-completions" and provider["apiKey"] == "local"
     assert provider["models"] == [{"id": "qwen3.8-27b", "name": "qwen3.8-27b", "reasoning": True, "input": ["text"], "contextWindow": 98304,
-                                   "maxTokens": 8192, "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}}]
+                                   "maxTokens": 8192}]
     settings = json.loads((home / "agent" / "settings.json").read_text())
     assert settings == {"defaultProjectTrust": "always", "quietStartup": True, "enableInstallTelemetry": False, "theme": "dark"}
     brief = tmp_path / "ship" / "runtime" / "brief" / "w.md"

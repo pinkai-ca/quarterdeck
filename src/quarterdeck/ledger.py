@@ -20,6 +20,7 @@ from pathlib import Path
 
 from .harness.base import Turn, Usage
 from .post import Store
+from .pricing import amount
 from .provenance import Provenance, UNKNOWN
 from .quota import Quotas, reset_text
 from .ship import Ship, ShipError
@@ -82,7 +83,7 @@ CREATE TABLE IF NOT EXISTS records (
 """
 # Columns added since a table was first written; an older file gains them when the service opens it.
 ADDED_COLUMNS = {
-    "turns": (("unmeasured", "INTEGER NOT NULL DEFAULT 0"),),
+    "turns": (("unmeasured", "INTEGER NOT NULL DEFAULT 0"), ("recorded_cost", "REAL"), ("cost_basis", "TEXT")),
     "pools": (("blocks", "INTEGER NOT NULL DEFAULT 1"), ("group_name", "TEXT"), ("bucket", "TEXT"), ("bucket_name", "TEXT")),
 }
 # A turn whose tokens are not wholly known: a step without usage, or a class an older row left null.
@@ -132,6 +133,7 @@ class Row:
     unmeasured: int = 0  # turns with tokens the record did not hold, and records that could not be read
     untimed: int = 0  # turns without a duration
     unjudged: int = 0  # turns with a tool call whose failure is unknown
+    unpriced: int = 0  # turns whose cost is not established, plus unreadable records
 
 
 def figure(value, flagged: int, form: str = "") -> str:
@@ -211,18 +213,25 @@ class Ledger:
             started = turn.started.astimezone().isoformat() if turn.started else None
             ended = turn.ended.astimezone().isoformat() if turn.ended else None
             failures = sum(bool(t.failed) for t in turn.tools) if all(t.failed is not None for t in turn.tools) else None
+            cost = amount(turn.cost)
+            basis = (turn.cost_basis or "record") if cost is not None else None
+            recorded = amount(turn.recorded_cost) if turn.recorded_cost is not None else cost
+            if previous and cost is None and previous[13] is not None and (previous[13] > 0 or previous[23] == "record") and previous[23] in (None, "record"):
+                cost, basis = previous[13], "record"
+            if previous and recorded is None:
+                recorded = previous[22] if previous[22] is not None else previous[13]
             row = (str(record), turn.index, owner, charged_pool, attribution(store, owner, turn), started, ended,
                    turn.seconds, turn.model, turn.tokens.read_cached, turn.tokens.read_uncached,
-                   turn.tokens.cache_written, turn.tokens.written, turn.cost, len(turn.tools), failures,
+                   turn.tokens.cache_written, turn.tokens.written, cost, len(turn.tools), failures,
                    turn.subagent_turns, used.cpu_seconds, used.peak_rss, used.max_processes, used.write_bytes,
-                   turn.tokens.unmeasured)
+                   turn.tokens.unmeasured, recorded, basis)
             tool_rows = [(str(record), turn.index, t.name, t.seconds, t.failed) for t in turn.tools]
             previous_tools = self.db.execute("SELECT * FROM tool_calls WHERE record = ? AND turn = ? ORDER BY rowid",
                                              (str(record), turn.index)).fetchall()
             if previous == row and previous_tools == tool_rows:
                 continue
             changed += 1
-            self.db.execute("INSERT OR REPLACE INTO turns VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
+            self.db.execute("INSERT OR REPLACE INTO turns VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
             self.db.execute("DELETE FROM tool_calls WHERE record = ? AND turn = ?", (str(record), turn.index))
             self.db.executemany("INSERT INTO tool_calls VALUES (?,?,?,?,?)", tool_rows)
         self.db.commit()
@@ -231,18 +240,20 @@ class Ledger:
     def rollup(self, by: str) -> list[Row]:
         """Turns summed by ``seat``, ``order`` (order_id) or ``pool``, each sum with the count of turns it could not measure."""
         column = {"seat": "seat", "order": "order_id", "pool": "pool"}[by]
+        known_cost = self.known_cost()
         rows = self.db.execute(
             f"SELECT {column}, COUNT(*), SUM(COALESCE(read_cached, 0)), SUM(COALESCE(read_uncached, 0)), "
-            f"SUM(COALESCE(cache_written, 0)), SUM(COALESCE(written, 0)), SUM(cost), SUM(tool_calls), "
+            f"SUM(COALESCE(cache_written, 0)), SUM(COALESCE(written, 0)), SUM(CASE WHEN {known_cost} THEN cost END), SUM(tool_calls), "
             f"SUM(COALESCE(tool_failures, 0)), SUM(COALESCE(seconds, 0)) / 60.0, SUM(cpu_seconds), SUM(write_bytes), "
-            f"SUM(CASE WHEN {PARTLY_UNMEASURED} THEN 1 ELSE 0 END), SUM(seconds IS NULL), SUM(tool_failures IS NULL) "
+            f"SUM(CASE WHEN {PARTLY_UNMEASURED} THEN 1 ELSE 0 END), SUM(seconds IS NULL), SUM(tool_failures IS NULL), "
+            f"SUM(CASE WHEN {known_cost} THEN 0 ELSE 1 END) "
             f"FROM turns GROUP BY {column} ORDER BY {column}"
         ).fetchall()
         by_key = {r[0]: Row(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9], r[10] or 0.0, r[11] or 0,
-                            r[12], r[13], r[14]) for r in rows}
+                            r[12], r[13], r[14], r[15]) for r in rows}
         for key in self.affected(by):  # a record that could not be read: its figures are at least what was read
             prev = by_key.get(key) or Row(key, 0, 0, 0, 0, 0, None, 0, 0, 0.0, 0.0, 0)
-            by_key[key] = replace(prev, unmeasured=prev.unmeasured + 1, untimed=prev.untimed + 1, unjudged=prev.unjudged + 1)
+            by_key[key] = replace(prev, unmeasured=prev.unmeasured + 1, untimed=prev.untimed + 1, unjudged=prev.unjudged + 1, unpriced=prev.unpriced + 1)
         return [by_key[k] for k in sorted(by_key)]
 
     def affected(self, by: str) -> set[str]:
@@ -268,9 +279,17 @@ class Ledger:
         unreadable = sum(1 for _, owner, _, _ in self.incomplete_records() if owner == seat)
         return Count(int(known or 0), int(unmeasured or 0) + unreadable)
 
+    def known_cost(self) -> str:
+        """Old zeros have no price evidence. Leave the stored value untouched, but do not certify it."""
+        columns = {r[1] for r in self.db.execute("PRAGMA table_info(turns)")}
+        evidence = " OR cost_basis IS NOT NULL" if "cost_basis" in columns else ""
+        return f"cost IS NOT NULL AND (cost > 0{evidence})"
+
     def spend(self, pool: str, since: datetime) -> tuple[float | None, int]:
         """A pool's stated cost since a moment, and how many of its turns stated no cost."""
-        row = self.db.execute("SELECT SUM(cost), SUM(cost IS NULL) FROM turns WHERE pool = ? AND ended >= ?",
+        known_cost = self.known_cost()
+        row = self.db.execute(f"SELECT SUM(CASE WHEN {known_cost} THEN cost END), "
+                              f"SUM(CASE WHEN {known_cost} THEN 0 ELSE 1 END) FROM turns WHERE pool = ? AND ended >= ?",
                               (pool, since.astimezone().isoformat())).fetchone()
         return row[0], row[1] or 0
 

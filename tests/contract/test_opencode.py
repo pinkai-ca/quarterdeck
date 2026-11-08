@@ -127,7 +127,7 @@ def test_the_record_reads_five_turns_their_tools_and_tokens_and_marks_the_aborte
     assert state.turn_open is False and state.turns == 5 and state.model == "qwen3.8-27b" and state.queued == () and state.effort is None
     assert state.last_input.startswith("qd > order from desk · ord-7777 · Long") and state.last_input_at == datetime(2026, 11, 8, 1, 4, 54, 773000, tzinfo=UTC)
     assert state.last_write == datetime(2026, 11, 8, 1, 5, 44, 903000, tzinfo=UTC)
-    assert len(turns) == 5 and all(t.cost == 0.0 for t in turns), "a local endpoint states a cost of nothing, which is a figure, not an unknown"
+    assert len(turns) == 5 and all(t.cost is None and t.recorded_cost == 0.0 for t in turns), "default endpoint zeros do not establish a stated price"
     first = turns[0]
     assert first.input == "qd > briefed as spike. Say READY and nothing else." and first.reply == "READY" and first.model == "qwen3.8-27b"
     assert first.tokens == opencode.Tokens(read_uncached=14181, written=2) and first.seconds == pytest.approx(2.588)

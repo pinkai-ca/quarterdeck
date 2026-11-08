@@ -8,11 +8,11 @@ Unknown nested fields never discard readable siblings or turn malformed usage in
 from __future__ import annotations
 
 import json
-import math
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ..pricing import amount
 from .base import Input, RecordError, State, Tokens, ToolCall, Turn
 from .sqlite_snapshot import snapshot
 from .json_record import RecordReader
@@ -86,15 +86,6 @@ def _text(value) -> str | None:
     return value if isinstance(value, str) else None
 
 
-def _cost(value) -> float | None:
-    if type(value) not in (int, float):
-        return None
-    try:
-        return float(value) if value >= 0 and math.isfinite(value) else None
-    except OverflowError:
-        return None
-
-
 def _tokens(step: dict) -> Tokens:
     tokens = step.get("tokens")
     if not isinstance(tokens, dict) or "total" not in tokens:
@@ -160,11 +151,13 @@ class _Session:
         model = _text(_object(data.get("model")).get("modelID"))
         tokens, tools, reply, cost = Tokens(), [], "", 0.0
         running = None
+        models = set()
         for step, step_parts in steps:
             tokens = tokens + _tokens(step)
             model = _text(step.get("modelID")) or model
-            amount = _cost(step.get("cost", 0))
-            cost = cost + amount if cost is not None and amount is not None else None
+            models.add(model)
+            stated = amount(step.get("cost"))
+            cost = amount(cost + stated) if cost is not None and stated is not None else None
             for part in step_parts:
                 kind = part.get("type")
                 if kind == "text" and isinstance(part.get("text"), str):
@@ -178,6 +171,7 @@ class _Session:
         self.model = model or self.model
         if not steps:
             tokens = Tokens.unknown()
+            cost = None
         last = steps[-1][0] if steps else {}
         ended = _ms(_object(last.get("time")).get("completed"))
         timed = True
@@ -191,7 +185,9 @@ class _Session:
                 tools.append(ToolCall(running[0], None, None))  # left running when the program moved on: its end unknown
         if closed:
             self.ended_at = ended if timed else None
-            self.turns.append(Turn(index, at, ended, text, reply, model, tokens, tuple(tools), cost=cost, timed=timed))
+            self.turns.append(Turn(index, at, ended, text, reply, model, tokens, tuple(tools), cost=cost if cost else None, timed=timed,
+                                   recorded_cost=cost, cost_basis="record" if cost else None,
+                                   price_model=next(iter(models)) if len(models) == 1 else None))
         else:
             self.open = True
             self.open_tool, self.open_tool_since = running or (None, None)

@@ -98,6 +98,10 @@ class Turn:
     subagent_turns: int | None = 0
     timed: bool = True  # False where the end is the last step's time, not a completion the record stated: the duration is unknown
 
+    recorded_cost: float | None = None  # raw cost stated by a reader whose default zero cannot establish a price
+    cost_basis: str | None = None
+    price_model: str | None = None  # one model established for every measured step, for stated rates
+
     @property
     def seconds(self) -> float | None:
         if not self.timed or self.started is None or self.ended is None:
@@ -220,3 +224,4 @@ class Credential:
 class Launch:
     argv: tuple[str, ...]
     env: dict[str, str] = field(default_factory=dict)
+    price: dict | None = None

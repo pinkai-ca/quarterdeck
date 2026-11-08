@@ -99,14 +99,16 @@ def render_rollup(data: dict) -> list[str]:
     by, rows = data["by"], data["rows"]
     lines = [f"{by:<30} {'turns':>5} {'cached':>10} {'uncached':>9} {'cache-w':>9} {'written':>8} {'cost':>8} {'tools':>7} {'fail':>7} {'min':>7} {'cpu-s':>7} {'written-MB':>10}"]
     for r in rows:
-        cost = f"{r.cost:.2f}" if r.cost is not None else "-"
+        cost = figure(r.cost, r.unpriced, ".2f") if r.cost is not None else "-"
         lines.append(f"{r.key:<30} {r.turns:>5} {figure(r.read_cached, r.unmeasured):>10} {figure(r.read_uncached, r.unmeasured):>9} "
                      f"{figure(r.cache_written, r.unmeasured):>9} {figure(r.written, r.unmeasured):>8} {cost:>8} {r.tool_calls:>7} "
                      f"{figure(r.tool_failures, r.unjudged):>7} {figure(r.minutes, r.untimed, '.1f'):>7} {r.cpu_seconds:>7.1f} {r.write_bytes / 1e6:>10.1f}")
     if by == "order":
         lines.append(f"unattributed turns are shown as {UNATTRIBUTED!r}")
-    if any(r.unmeasured or r.untimed or r.unjudged for r in rows):
+    if any(r.unmeasured or r.untimed or r.unjudged or (r.unpriced and r.cost is not None) for r in rows):
         lines.append(PLUS_NOTE)
+    if any(r.unpriced for r in rows):
+        lines.append("cost with + is a partial total; - means no established cost; unpriced turns are counted in JSON")
     return lines
 
 
@@ -127,7 +129,7 @@ def render_pools(data: dict) -> list[str]:
         if pool["kind"] != "key":
             continue
         budget, spent, unpriced = pool["budget"], pool["spent"], pool["unpriced"]
-        stated = f"{spent:.2f} {budget.currency if budget else ''}".strip() if spent is not None else "no cost stated"
+        stated = f"{figure(spent, unpriced, '.2f')} {budget.currency if budget else ''}".strip() if spent is not None else "no cost stated"
         note = f" ({unpriced} turns with no price: the program states none and no table is carried)" if unpriced else ""
         limit = f" of {budget.amount:.0f} {budget.currency}/{budget.period}" if budget else ""
         wall = "  WALL" if pool["wall"] else ""

@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .antigravity_quota import record_wall
 from .antigravity_wire import _bytes, _int, _proto, _snapshot_query, _str, _ts, _uints
+from ..pricing import amount
 from .base import Input, RecordError, State, Tokens, ToolCall, Turn, record_fingerprint
 
 OWNED = "conversations.owned"  # written in the seat home at every join: the conversations that are the seat's own
@@ -104,7 +105,7 @@ def _finalize_turn(turn: dict, ended_execs: dict[str, tuple[int | None, str | No
     usages, costs = turn["usages"], turn["costs"]
     tokens = Tokens.unknown() if not usages else sum(usages[1:], start=usages[0])
     still_open = [ToolCall(name, None, None) for name, _ in turn["pending"].values()]
-    cost = sum(costs) if costs and len(costs) == len(usages) else None
+    cost = amount(sum(costs)) if costs and len(costs) == len(usages) and all(c is not None for c in costs) else None
     return Turn(turn["index"], turn["started"], ended, turn["input"], "\n\n".join(turn["replies"]).strip(),
                 model, tokens, tuple(turn["tools"] + still_open), cost=cost, subagent_turns=None,
                 timed=turn["ended"] is not None)
@@ -218,7 +219,7 @@ def _decode(record: Path) -> _Decoded:
             cost_bytes = _bytes(meta, 10)
             if cost_bytes is None or len(cost_bytes) != 4:
                 raise RecordError("invalid model_cost")
-            current["costs"].append(struct.unpack("<f", cost_bytes)[0])
+            current["costs"].append(amount(struct.unpack("<f", cost_bytes)[0]))
         if step_type == STEP_PLANNER_RESPONSE:
             planner = _proto(_bytes(payload, 20))
             if reply_text := (_str(planner, 8) or _str(planner, 1)):

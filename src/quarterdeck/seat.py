@@ -37,6 +37,7 @@ class Launched:
     version: str | None
     harness: str | None = None
     records_before: list[str] = field(default_factory=list)
+    price: dict | None = None
 
     @property
     def when(self) -> datetime:
@@ -234,7 +235,7 @@ class Seat:
             argv = sandbox.command(jail, argv)
         at = datetime.now(timezone.utc).isoformat()  # before the program can write a record (law: one-record)
         pane = self._open_window(argv, launch.env, path)
-        launched = Launched(pane.id, pane.pid, at, pool.name, resume_id, argv, self.harness.version(), self.spec.harness, sorted(map(str, prior)))
+        launched = Launched(pane.id, pane.pid, at, pool.name, resume_id, argv, self.harness.version(), self.spec.harness, sorted(map(str, prior)), launch.price)
         (self.folder / "launch.json").write_text(json.dumps(asdict(launched), indent=2) + "\n")
         if resume_id:
             self.record()  # retain the resumed record's new pool boundary immediately

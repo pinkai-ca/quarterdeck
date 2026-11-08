@@ -70,6 +70,7 @@ class Choice:
     context: int
     output: int
     note: str | None = None  # why the context is what it is, where the endpoint did not state it
+    price: dict | None = None  # the effective stated rates for this model, captured before launch
 
     def write(self, home: Path) -> None:
         (home / CHOICE_FILE).write_text(json.dumps(asdict(self), indent=2) + "\n")
@@ -103,7 +104,7 @@ def choose(pool: Pool, wanted: str | None) -> Choice:
     note = None
     if not pool.context and not model.context:
         note = f"the endpoint states no context length; {DEFAULT_CONTEXT} assumed, or declare context = N in the pool"
-    return Choice(pool.name, model.id, context, min(DEFAULT_OUTPUT, max(context // 4, 1024)), note)
+    return Choice(pool.name, model.id, context, min(DEFAULT_OUTPUT, max(context // 4, 1024)), note=note)
 
 
 def key(pool: Pool) -> dict[str, str]:

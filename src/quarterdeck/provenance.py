@@ -16,7 +16,7 @@ def remember_launch(folder: Path, record: Path, launched) -> None:
         return
     from .record_owner import launch_reader
 
-    event = {"record": str(record), "at": launched.at, "pool": launched.pool, "harness": launch_reader(launched)}
+    event = {"record": str(record), "at": launched.at, "pool": launched.pool, "harness": launch_reader(launched), "price": getattr(launched, "price", None)}
     with (folder / "record-launches.jsonl").open("a+") as stream:
         fcntl.flock(stream, fcntl.LOCK_EX)
         stream.seek(0)
@@ -32,11 +32,23 @@ class Provenance:
             db.execute("""CREATE TABLE IF NOT EXISTS record_launches (
                 record TEXT NOT NULL, at TEXT NOT NULL, seat TEXT NOT NULL, pool TEXT NOT NULL,
                 PRIMARY KEY (record, at, seat, pool))""")
+            columns = {row[1] for row in db.execute("PRAGMA table_info(record_launches)")}
+            if "price" not in columns:
+                db.execute("ALTER TABLE record_launches ADD COLUMN price TEXT")
 
-    def remember(self, record: Path, seat: str, pool: str, at: datetime) -> bool:
+    def remember(self, record: Path, seat: str, pool: str, at: datetime, price: dict | None = None) -> bool:
         stamp = at.astimezone(timezone.utc).isoformat()
-        changed = self.db.execute("INSERT OR IGNORE INTO record_launches VALUES (?,?,?,?)",
-                                  (str(record), stamp, seat, pool)).rowcount
+        key = (str(record), stamp, seat, pool)
+        saved = json.dumps(price, sort_keys=True) if price is not None else None
+        changed = self.db.execute("INSERT OR IGNORE INTO record_launches (record,at,seat,pool,price) VALUES (?,?,?,?,?)",
+                                  (*key, saved)).rowcount
+        if not changed and saved is not None:
+            previous = self.db.execute("SELECT price FROM record_launches WHERE record=? AND at=? AND seat=? AND pool=?", key).fetchone()[0]
+            if previous != saved:
+                # Contradictory snapshots at one launch are unknown, never last-writer-wins.
+                saved = saved if previous is None else "{}"
+                changed = previous != saved
+                self.db.execute("UPDATE record_launches SET price=? WHERE record=? AND at=? AND seat=? AND pool=?", (saved, *key))
         self.db.commit()
         return bool(changed)
 
@@ -46,10 +58,10 @@ class Provenance:
         path = seat.home.parent / "record-launches.jsonl"
         events = [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path.is_file() else []
         if current is not None and launched is not None:
-            events.append({"record": str(current), "at": launched.at, "pool": launched.pool})
+            events.append({"record": str(current), "at": launched.at, "pool": launched.pool, "price": getattr(launched, "price", None)})
         for event in events:
             record = Path(event["record"])
-            if self.remember(record, seat.name, event["pool"], datetime.fromisoformat(event["at"])):
+            if self.remember(record, seat.name, event["pool"], datetime.fromisoformat(event["at"]), event.get("price")):
                 changed.add(record)
         return changed
 
@@ -77,6 +89,30 @@ class Provenance:
                 if not crosses:
                     return owner
         return seat, UNKNOWN
+
+    def price(self, record: Path, started: datetime | None, ended: datetime | None) -> dict | None:
+        """One unambiguous launch interval, never the pool's current preference."""
+        if started is None:
+            return None
+        columns = {r[1] for r in self.db.execute("PRAGMA table_info(record_launches)")}
+        if "price" not in columns:
+            return None
+        rows = self.db.execute("SELECT at,seat,pool,price FROM record_launches WHERE record=? ORDER BY at", (str(record),)).fetchall()
+        eligible = [r for r in rows if datetime.fromisoformat(r[0]) <= started]
+        if not eligible:
+            return None
+        latest = eligible[-1][0]
+        choices = {tuple(r[1:]) for r in eligible if r[0] == latest}
+        if len(choices) != 1:
+            return None
+        chosen = choices.pop()
+        if any(datetime.fromisoformat(r[0]) > started and (ended is None or datetime.fromisoformat(r[0]) <= ended)
+               and tuple(r[1:]) != chosen for r in rows):
+            return None
+        try:
+            return json.loads(chosen[2]) if chosen[2] is not None else None
+        except (TypeError, ValueError):
+            return None
 
     def owners(self, record: str, seat: str, pool: str) -> list[tuple[str, str]]:
         """Every known pool may have missing turns, including a launch with none decoded yet."""

@@ -40,6 +40,7 @@ class Pool:
     budget: str | None = None
     endpoint: str | None = None  # such as http://127.0.0.1:8000/v1
     context: int | None = None  # the context window of what the endpoint serves, where the endpoint does not say
+    price: dict | None = None  # explicit USD rates per million tokens; validated on load
 
     @property
     def kind(self) -> str:
@@ -179,6 +180,16 @@ def _from_text(text: str, folder: Path) -> Ship:
 def _pool(name: str, table: dict) -> Pool:
     config_dir = table.get("config_dir", table.get("home"))
     endpoint = table.get("endpoint")
+    price = table.get("price")
+    if price is not None:
+        from dataclasses import asdict
+        from .pricing import Price
+        try:
+            price = asdict(Price.parse(price))
+        except ValueError as error:
+            raise ShipError(f"pool {name}: {error}") from None
+        if not endpoint:
+            raise ShipError(f"pool {name}: stated price is supported only for an endpoint pool")
     return Pool(
         name=name,
         provider=table["provider"],
@@ -186,7 +197,7 @@ def _pool(name: str, table: dict) -> Pool:
         api_key=table.get("api_key"),
         budget=table.get("budget"),
         endpoint=str(endpoint).rstrip("/") if endpoint else None,
-        context=table.get("context"),
+        context=table.get("context"), price=price,
     )
 
 

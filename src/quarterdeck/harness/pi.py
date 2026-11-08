@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .. import endpoint
+from ..pricing import Price, amount
 from .endpoint import EndpointHarness
 from .json_record import JsonLinesReader
 
@@ -88,17 +89,17 @@ class _Reader(JsonLinesReader):
             if self.open is not None:
                 self.consumed.append(text)  # steered into the running turn after its current tool call
             else:
-                self.start_turn({"started": at, "input": text, "tokens": Tokens(), "tools": [], "reply": "", "cost": 0.0})
+                self.start_turn({"started": at, "input": text, "tokens": Tokens(), "tools": [], "reply": "", "costs": [], "models": []})
         elif role == "assistant":
             if self.open is None:
-                self.start_turn({"started": at, "input": "", "tokens": Tokens(), "tools": [], "reply": "", "cost": 0.0})
+                self.start_turn({"started": at, "input": "", "tokens": Tokens(), "tools": [], "reply": "", "costs": [], "models": []})
             self.model = message.get("model") or self.model
             self.open["tokens"] = self.open["tokens"] + _tokens(message)
+            self.open["models"].append(self.model)
             usage = message.get("usage")
             costs = usage.get("cost") if isinstance(usage, dict) else None
             cost = costs.get("total") if isinstance(costs, dict) else None
-            if isinstance(cost, (int, float)):
-                self.open["cost"] += cost
+            self.open["costs"].append(amount(cost))
             for block in message.get("content") or []:
                 if block.get("type") == "text" and block.get("text"):
                     self.open["reply"] = block["text"]
@@ -112,8 +113,13 @@ class _Reader(JsonLinesReader):
 
     def end(self, at: datetime | None) -> None:
         turn = self.close_turn()
+        costs = turn["costs"]
+        models = set(turn["models"])
+        price_model = next(iter(models)) if len(models) == 1 else None
+        recorded = amount(sum(costs)) if costs and all(c is not None for c in costs) else None
         self.turns.append(Turn(len(self.turns), turn["started"] or at, at or turn["started"], turn["input"], turn["reply"],
-                               self.model, turn["tokens"], tuple(turn["tools"]), cost=turn["cost"]))
+                               self.model, turn["tokens"], tuple(turn["tools"]), cost=recorded if recorded else None,
+                               recorded_cost=recorded, cost_basis="record" if recorded else None, price_model=price_model))
 
 state = _Reader.read_state
 turns = _Reader.read_turns
@@ -165,18 +171,35 @@ class PiHarness(EndpointHarness):
             raise ShipError(f"{seat.name}: effort {seat.effort!r} is not a pi thinking level; the levels are {', '.join(THINKING_LEVELS)}")
         choice, secret = self.endpoint_home(home, seat, pool)
         model = {"id": choice.model, "name": choice.model, "reasoning": seat.effort is not None, "input": ["text"],
-                 "contextWindow": choice.context, "maxTokens": choice.output,
-                 "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}}
+                 "contextWindow": choice.context, "maxTokens": choice.output}
         provider = {"baseUrl": pool.endpoint, "api": "openai-completions",
                     "apiKey": endpoint.KEY_VARIABLE if secret else "local",  # a variable's name, read by the program; never the key
                     "models": [model]}
         models = {"$schema": "https://pi.dev/schemas/models.schema.json", "providers": {pool.name: provider}}
-        models = merged(models, ship_template(ship_home, "models.json"))
+        layered = ship_template(ship_home, "models.json")
+        custom = layered.get("providers", {}).get(pool.name, {}).get("models", [])
+        matching = [m for m in custom if isinstance(m, dict) and m.get("id") == choice.model]
+        if len(matching) > 1:
+            raise ShipError(f"pool {pool.name}: template repeats the selected model; price target is ambiguous")
+        if matching:
+            # The generic list merge appends. Merge this known model identity instead
+            # of generating two conflicting definitions for the program to choose from.
+            provider["models"] = []
+            matching[0].update(merged(model, matching[0]))
+        models = merged(models, layered)
+        price = Price.parse(pool.price) if pool.price is not None else None
+        selected = [m for m in models["providers"][pool.name]["models"] if m["id"] == choice.model]
+        if len(selected) != 1:
+            raise ShipError(f"pool {pool.name}: generated model does not identify one price target")
+        selected[0].pop("cost", None)  # omission is supported; null rates are not
+        if price:
+            selected[0]["cost"] = {"input": price.input, "output": price.output,
+                                    "cacheRead": price.cache_read, "cacheWrite": price.cache_write}
         settings = merged(SETTINGS, ship_template(ship_home, "settings.json"))
         settings = merged(settings, seat.settings)
         (agent / "models.json").write_text(json.dumps(models, indent=2) + "\n")
         (agent / "settings.json").write_text(json.dumps(settings, indent=2) + "\n")
-        return self.endpoint_ready(home, choice, secret)
+        return self.endpoint_ready(home, choice, secret, price)
 
     def launch(self, seat: SeatSpec, pool: Pool, home: Path, brief: Path, resume: str | None, first: str | None) -> Launch:
         choice = endpoint.Choice.read(home)
@@ -193,7 +216,7 @@ class PiHarness(EndpointHarness):
         if first:
             argv.append(first)
         env = {self.home_variable: str(home / "agent"), "PI_SKIP_VERSION_CHECK": "1", **endpoint.key(pool)}
-        return Launch(tuple(argv), env)
+        return Launch(tuple(argv), env, choice.price)
 
     inputs = staticmethod(inputs)
     records = staticmethod(records)

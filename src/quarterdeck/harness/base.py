@@ -189,6 +189,10 @@ class Harness(ABC):
     def shared_usage_key(self, pool: Pool) -> tuple | None:
         return None
 
+    def price_turn(self, turn: Turn, snapshot: dict | None) -> Turn:
+        """A record's stated cost by default; adapters that synthesize costs qualify theirs."""
+        return turn
+
     def is_headline(self, group: str | None, window: str) -> bool:
         return self.headline_window == (group, window)
 

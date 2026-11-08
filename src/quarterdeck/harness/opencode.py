@@ -17,6 +17,7 @@ import re
 from pathlib import Path
 
 from .. import endpoint
+from ..pricing import Price
 from .endpoint import EndpointHarness
 from ..ship import Pool, SeatSpec, ShipError
 from .base import (Box, ship_template, trimmed, Control, Credential, Interruption, Keys, Launch, Screen, Tokens,
@@ -74,10 +75,16 @@ class OpenCodeHarness(EndpointHarness):
                   "instructions": [str(runtime / "brief" / f"{seat.name}.md")]}  # the brief, and no instruction file of the user's
         layered = ship_template(ship_home, "opencode.json")
         config = merged(merged(config, layered), seat.settings)
+        price = Price.parse(pool.price) if pool.price is not None else None
+        model = config["provider"][pool.name]["models"][choice.model]
+        model.pop("cost", None)
+        if price:
+            model["cost"] = {"input": price.input, "output": price.output,
+                             "cache_read": price.cache_read, "cache_write": price.cache_write}
         folder = home / "config" / "opencode"
         folder.mkdir(parents=True, exist_ok=True)
         (folder / "opencode.json").write_text(json.dumps(config, indent=2) + "\n")
-        return self.endpoint_ready(home, choice, secret)
+        return self.endpoint_ready(home, choice, secret, price)
 
     def launch(self, seat: SeatSpec, pool: Pool, home: Path, brief: Path, resume: str | None, first: str | None) -> Launch:
         choice = endpoint.Choice.read(home)
@@ -89,7 +96,7 @@ class OpenCodeHarness(EndpointHarness):
             argv += ["--prompt", first]
         env = {"XDG_CONFIG_HOME": str(home / "config"), self.home_variable: str(data), "XDG_CACHE_HOME": str(home / "cache"),
                "XDG_STATE_HOME": str(home / "state"), "OPENCODE_DISABLE_AUTOUPDATE": "1", **endpoint.key(pool)}
-        return Launch(tuple(argv), env)
+        return Launch(tuple(argv), env, choice.price)
 
     @staticmethod
     def _data_dir(home: Path, resume: str | None, seat_name: str) -> Path:

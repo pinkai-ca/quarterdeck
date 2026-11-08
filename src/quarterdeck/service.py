@@ -326,6 +326,8 @@ class Service:
                 incomplete = "incomplete turn state in record" if (state.turns is None or state.turn_open is None) else None
                 self.ledger.mark_record(record, seat.name, pool, incomplete)
                 if turns:
+                    qualify = getattr(owned.reader, "price_turn", lambda turn, price: turn)
+                    turns = [qualify(t, self.ledger.provenance.price(record, t.started, t.ended)) for t in turns]
                     figures = {turns[-1].index: meter.result()} if live and record == current and meter and state.turn_open is False else {}
                     written = self.ledger.ingest(seat.name, UNKNOWN, record, turns, self.store, figures)
                     if written:
