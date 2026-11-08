@@ -237,7 +237,9 @@ SETTINGS = {
     "promptSuggestionEnabled": False,
     "includeCoAuthoredBy": False,
     "autoMemoryEnabled": False,  # a seat keeps nothing of its own between conversations: what must survive is a post or a ship file
-    # No approval prompts: a seat runs its program open, and a ship that wants a sandbox asks for one seat by seat.
+    # No approval prompts: a seat runs its program open, and a ship that wants a sandbox asks for one seat by seat. The
+    # dialog that asks a person to accept that mode once is answered here, in the settings the program reads it from.
+    "skipDangerousModePermissionPrompt": True,
     "permissions": {"allow": ["Bash(qd *)", "Bash(qd:*)"], "defaultMode": "bypassPermissions"},  # law: can-post
 }
 

@@ -155,6 +155,7 @@ def test_the_launch_carries_our_files_and_nothing_of_the_users(tmp_path: Path):
     settings = json.loads((home / "settings.json").read_text())
     assert settings["promptSuggestionEnabled"] is False and settings["env"]["DISABLE_AUTOUPDATER"] == "1"
     assert settings["permissions"]["defaultMode"] == "bypassPermissions", "no approval prompts unless a ship asks for a sandbox"
+    assert settings["skipDangerousModePermissionPrompt"] is True, "and no dialog asking a person to accept that, either"
     assert settings["autoMemoryEnabled"] is False, "nothing of the seat's own survives a conversation but posts and ship files"
     assert settings["autoCompactWindow"] == "auto", "the seat's own keys pass through verbatim"
     assert "Bash(qd *)" in settings["permissions"]["allow"]
