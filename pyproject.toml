@@ -25,5 +25,3 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["live: real programs and real tokens; runs only with -m live"]
-addopts = "-m 'not live'"

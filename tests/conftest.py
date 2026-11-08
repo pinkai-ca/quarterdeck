@@ -52,10 +52,8 @@ def git(folder: Path, *args: str) -> str:
 
 
 @pytest.fixture(autouse=True)
-def no_real_antigravity_usage_in_nonlive_tests(monkeypatch, request):
+def no_real_antigravity_usage(monkeypatch):
     """Service tests may read synthetic Google usage; never spend the operator's sign-in."""
-    if request.node.get_closest_marker("live"):
-        return
     from datetime import datetime, timezone
     from quarterdeck.harness import antigravity
     from quarterdeck.harness.antigravity_quota import unknown
