@@ -54,7 +54,7 @@ def test_an_endpoint_that_does_not_answer_or_answers_badly_is_a_refusal_naming_i
 
 
 def test_choose_takes_the_named_model_or_the_first_and_says_where_the_context_comes_from(monkeypatch):
-    monkeypatch.setattr(endpoint, "models", lambda url, timeout=0: [endpoint.Served("a", 4096), endpoint.Served("b", None)])
+    monkeypatch.setattr(endpoint, "models", lambda url, timeout=0, **kwargs: [endpoint.Served("a", 4096), endpoint.Served("b", None)])
     pool = Pool("local", "local", endpoint="http://127.0.0.1:8000/v1")
     assert endpoint.choose(pool, "a") == endpoint.Choice("local", "a", 4096, 1024, None)
     first = endpoint.choose(pool, None)
@@ -65,7 +65,7 @@ def test_choose_takes_the_named_model_or_the_first_and_says_where_the_context_co
     assert declared.context == 200000 and declared.output == 8192 and declared.note is None
     with pytest.raises(ShipError, match="does not serve 'c'; it serves a, b"):
         endpoint.choose(pool, "c")
-    monkeypatch.setattr(endpoint, "models", lambda url, timeout=0: [])
+    monkeypatch.setattr(endpoint, "models", lambda url, timeout=0, **kwargs: [])
     with pytest.raises(ShipError, match="serves no model"):
         endpoint.choose(pool, None)
     with pytest.raises(ShipError, match="names no endpoint"):
@@ -73,7 +73,7 @@ def test_choose_takes_the_named_model_or_the_first_and_says_where_the_context_co
 
 
 def test_a_refusal_from_the_server_names_the_pool_and_what_would_lift_it(monkeypatch):
-    def down(url, timeout=0):
+    def down(url, timeout=0, **kwargs):
         raise ShipError(f"{url} does not answer: connection refused")
     monkeypatch.setattr(endpoint, "models", down)
     with pytest.raises(ShipError, match="pool local: http://127.0.0.1:1/v1 does not answer: connection refused; start the server"):
@@ -92,5 +92,5 @@ def test_the_key_beside_an_endpoint_travels_by_environment_and_describe_lists_wh
     assert endpoint.key(Pool("local", "local", endpoint="http://127.0.0.1:8000/v1")) == {}
     monkeypatch.setenv("SOME_KEY", "value")
     assert endpoint.key(Pool("remote", "x", endpoint="https://example.invalid/v1", api_key="env:SOME_KEY")) == {"QD_ENDPOINT_KEY": "value"}
-    monkeypatch.setattr(endpoint, "models", lambda url, timeout=0: [endpoint.Served("a", 98304), endpoint.Served("b", None)])
+    monkeypatch.setattr(endpoint, "models", lambda url, timeout=0, **kwargs: [endpoint.Served("a", 98304), endpoint.Served("b", None)])
     assert endpoint.describe(Pool("local", "local", endpoint="http://127.0.0.1:8000/v1")) == "http://127.0.0.1:8000/v1 answers; serves a (98,304 tokens), b"

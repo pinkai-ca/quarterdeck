@@ -271,3 +271,11 @@ def test_an_endpoint_pool_names_no_credential_directory_and_is_an_http_url(tmp_p
     (tmp_path / "ship.toml").write_text('[pools.remote]\nprovider = "openrouter"\nendpoint = "https://example.invalid/v1"\napi_key = "env:ROUTER_KEY"\n')
     pool = shipmod.load(tmp_path).pools["remote"]
     assert pool.kind == "endpoint" and pool.api_key == "env:ROUTER_KEY", "a key beside an endpoint pays a remote service"
+
+
+@pytest.mark.parametrize('value', ['0', '1', '[]', '{}', '"false"', '"true"', '0.0'])
+def test_sandbox_policy_rejects_non_boolean_toml(tmp_path, value):
+    (tmp_path/'ship.toml').write_text(LOCAL + '\n[seats.worker]\nsession="crew"\nharness="pi"\npool="local-a"\n'
+                                    + f'sandbox={value}\n')
+    with pytest.raises(ShipError, match='seat worker: sandbox must be true or false'):
+        shipmod.load(tmp_path)

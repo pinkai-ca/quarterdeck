@@ -183,7 +183,7 @@ def test_a_database_of_another_shape_or_no_database_is_a_record_error(tmp_path: 
 
 @pytest.fixture
 def served(monkeypatch):
-    monkeypatch.setattr(endpoint, "models", lambda url, timeout=0: [endpoint.Served("qwen3.8-27b", 98304), endpoint.Served("small", None)])
+    monkeypatch.setattr(endpoint, "models", lambda url, timeout=0, **kwargs: [endpoint.Served("qwen3.8-27b", 98304), endpoint.Served("small", None)])
 
 
 def test_the_home_is_built_from_the_endpoint_and_each_launch_gets_a_data_directory_of_its_own(tmp_path: Path, served, monkeypatch):

@@ -14,206 +14,21 @@ from __future__ import annotations
 
 import json
 import re
-import sqlite3
-from datetime import datetime, timezone
 from pathlib import Path
 
 from .. import endpoint
 from ..ship import Pool, SeatSpec, ShipError
 from .base import (Box, Control, Credential, Harness, Interruption, Keys, Launch, RecordError, Screen, State, Tokens,
                    ToolCall, Turn, merged, program_version)
-from .sqlite_snapshot import snapshot
 
-DATA_PREFIX = "data-"
-RECORD = Path("opencode") / "opencode.db"
-RUNNING = {"pending", "running"}
-MORE_STEPS = "tool-calls"  # a finish reason that says another step follows in the same turn
+from .opencode_record import (DATA_PREFIX, RECORD, _Rows, _launch_number, data_dir_of, first_timestamp,
+                              inputs, read, records, session_id, state, turns)
+
 CONFIG = {
     "$schema": "https://opencode.ai/config.json",
     "autoupdate": False,  # versions change when the operator says, and the status table says so
     "share": "disabled",  # a seat's conversation is the ship's, never a public link
 }
-
-
-# -- the record ---------------------------------------------------------------------------------
-
-
-def _ms(value) -> datetime | None:
-    return datetime.fromtimestamp(value / 1000, timezone.utc) if isinstance(value, (int, float)) and value > 0 else None
-
-
-def _json(text) -> dict:
-    try:
-        value = json.loads(text) if isinstance(text, str) else None
-    except json.JSONDecodeError:
-        value = None
-    return value if isinstance(value, dict) else {}  # a row this reader cannot parse is skipped, never fatal
-
-
-def records(home: Path) -> list[Path]:
-    """Every launch's database, oldest first: the data directories are numbered in launch order."""
-    found = [p for p in home.glob(f"{DATA_PREFIX}*/{RECORD}") if p.is_file()]
-    return sorted(found, key=lambda p: (_launch_number(p), str(p)))
-
-
-def _launch_number(record: Path) -> int:
-    try:
-        return int(record.parents[1].name.removeprefix(DATA_PREFIX))
-    except ValueError:
-        return 0
-
-
-def data_dir_of(record: Path) -> Path:
-    return record.parents[1]
-
-
-class _Rows:
-    """The three tables a reading needs, from one snapshot of the database."""
-
-    def __init__(self, record: Path):
-        _, merged_bytes = snapshot(record)
-        try:
-            con = sqlite3.connect(":memory:")
-            try:
-                con.deserialize(merged_bytes)
-                tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-                if not {"session", "message", "part"} <= tables:
-                    raise RecordError(f"{record.name}: not an OpenCode database")
-                self.sessions = con.execute("SELECT id, time_created, time_updated FROM session ORDER BY time_created, id").fetchall()
-                self.messages = [(mid, sid, created, updated, _json(data)) for mid, sid, created, updated, data in con.execute(
-                    "SELECT id, session_id, time_created, time_updated, data FROM message ORDER BY time_created, id")]
-                self.parts = [(pid, mid, created, updated, _json(data)) for pid, mid, created, updated, data in con.execute(
-                    "SELECT id, message_id, time_created, time_updated, data FROM part ORDER BY time_created, id")]
-            finally:
-                con.close()
-        except sqlite3.Error as error:
-            raise RecordError(f"{record.name}: {error}") from error
-
-
-def _tokens(step: dict) -> Tokens:
-    tokens = step.get("tokens") or {}
-    if "total" not in tokens:
-        return Tokens.unknown()  # a step the program never measured: aborted before the usage arrived
-    cache = tokens.get("cache") or {}
-    return Tokens(read_cached=cache.get("read") or 0, read_uncached=tokens.get("input") or 0,
-                  cache_written=cache.get("write") or 0, written=(tokens.get("output") or 0) + (tokens.get("reasoning") or 0))
-
-
-def _tool_call(part: dict, state: dict) -> ToolCall:
-    time = state.get("time") or {}
-    start, end = time.get("start"), time.get("end")
-    seconds = (end - start) / 1000 if isinstance(start, (int, float)) and isinstance(end, (int, float)) else None
-    exit_code = (state.get("metadata") or {}).get("exit")
-    name = part.get("tool") or "?"
-    failed = state.get("status") == "error" or name == "invalid" or (isinstance(exit_code, int) and exit_code != 0)
-    return ToolCall(name, seconds, failed)
-
-
-class _Reader:
-    def __init__(self, record: Path):
-        rows = _Rows(record)
-        self.first = _ms(rows.sessions[0][1]) if rows.sessions else None
-        self.session = rows.sessions[-1][0] if rows.sessions else None
-        updated = [m[3] for m in rows.messages] + [p[3] for p in rows.parts] + [s[2] for s in rows.sessions]
-        self.last_write = _ms(max(updated)) if updated else None
-        parts: dict[str, list[dict]] = {}
-        for _, mid, _, _, data in rows.parts:
-            parts.setdefault(mid, []).append(data)
-        users: list[tuple[str, dict, list[dict]]] = []
-        answers: dict[str, list[tuple[dict, list[dict]]]] = {}
-        for mid, _, _, _, data in rows.messages:
-            if data.get("role") == "user":
-                users.append((mid, data, parts.get(mid, [])))
-            elif data.get("role") == "assistant" and data.get("parentID"):
-                answers.setdefault(data["parentID"], []).append((data, parts.get(mid, [])))
-        self.turns: list[Turn] = []
-        self.open = False
-        self.queued: list[str] = []
-        self.model = self.last_input = self.last_input_at = self.open_tool = self.open_tool_since = None
-        for index, (mid, data, own) in enumerate(users):
-            moved_on = any(answers.get(later[0]) for later in users[index + 1:])  # a later message answered: this turn is over
-            self.user(data, own, answers.get(mid, []), moved_on)
-
-    def user(self, data: dict, own: list[dict], steps: list[tuple[dict, list[dict]]], moved_on: bool) -> None:
-        text = "\n".join(p.get("text", "") for p in own if p.get("type") == "text")
-        if self.open:
-            self.queued.append(text)  # typed while an earlier turn runs: taken, shown, read when that turn ends
-            return
-        at = _ms((data.get("time") or {}).get("created"))
-        self.last_input, self.last_input_at = text, at
-        model = (data.get("model") or {}).get("modelID")
-        tokens, tools, reply, cost = Tokens(), [], "", 0.0
-        running = None
-        for step, step_parts in steps:
-            tokens = tokens + _tokens(step)
-            model = step.get("modelID") or model
-            cost += step.get("cost") or 0
-            for part in step_parts:
-                kind = part.get("type")
-                if kind == "text" and part.get("text"):
-                    reply = part["text"]
-                elif kind == "tool":
-                    state = part.get("state") or {}
-                    if state.get("status") in RUNNING:
-                        running = (part.get("tool") or "?", _ms((state.get("time") or {}).get("start")))
-                    else:
-                        tools.append(_tool_call(part, state))
-        self.model = model or self.model
-        last = steps[-1][0] if steps else {}
-        ended = _ms((last.get("time") or {}).get("completed"))
-        timed = True
-        # A turn ends with a step that finished for good, or with an error; it also ends when the program answered a
-        # later message, since a queued message is taken as the next turn straight after a tool result, with no closing step.
-        closed = bool(steps) and ended is not None and running is None and (last.get("finish") != MORE_STEPS or bool(last.get("error")))
-        if moved_on and not closed:
-            closed, timed = True, ended is not None
-            ended = ended or _ms((last.get("time") or {}).get("created")) or at
-            if running:
-                tools.append(ToolCall(running[0], None, None))  # left running when the program moved on: its end unknown
-        if closed:
-            self.turns.append(Turn(len(self.turns), at, ended, text, reply, model, tokens, tuple(tools), cost=cost, timed=timed))
-        else:
-            self.open = True
-            self.open_tool, self.open_tool_since = running or (None, None)
-
-    def state(self) -> State:
-        return State(turn_open=self.open, open_tool=self.open_tool, open_tool_since=self.open_tool_since, last_write=self.last_write,
-                     last_input=self.last_input, last_input_at=self.last_input_at, model=self.model, queued=tuple(self.queued),
-                     turns=len(self.turns))
-
-
-def first_timestamp(record: Path) -> datetime | None:
-    rows = _Rows(record).sessions
-    return _ms(rows[0][1]) if rows else None
-
-
-def session_id(record: Path) -> str | None:
-    rows = _Rows(record).sessions
-    return rows[-1][0] if rows else None  # the live session: the one the program opened last
-
-
-def state(record: Path) -> State:
-    return _Reader(record).state()
-
-
-def turns(record: Path) -> list[Turn]:
-    return _Reader(record).turns
-
-
-def read(record: Path) -> tuple[State, list[Turn]]:
-    reader = _Reader(record)
-    return reader.state(), reader.turns
-
-
-def inputs(record: Path) -> list[tuple[str, datetime | None]]:
-    """Every user message with its time, for the delivery receipt: a queued message is in the record the moment it is taken."""
-    rows = _Rows(record)
-    texts: dict[str, list[str]] = {}
-    for _, mid, _, _, data in rows.parts:
-        if data.get("type") == "text":
-            texts.setdefault(mid, []).append(data.get("text", ""))
-    return [("\n".join(texts.get(mid, [])), _ms((data.get("time") or {}).get("created")))
-            for mid, _, _, _, data in rows.messages if data.get("role") == "user"]
 
 
 # -- the adapter --------------------------------------------------------------------------------

@@ -52,8 +52,8 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
         raise ShipError(f"{seat_name}: sandboxed, and {PROGRAM} is not on the PATH; install bubblewrap, or set sandbox = false on the seat")
     home = (home or Path.home()).resolve()
     workspace = workspace.resolve()
-    if workspace in (home, Path("/")):
-        raise ShipError(f"{seat_name}: sandboxed with its working directory at {workspace}, which jails nothing; give the seat a cwd inside it")
+    if home.is_relative_to(workspace):
+        raise ShipError(f"{seat_name}: sandboxed with its working directory at {workspace}, which contains the operator home and jails nothing; give the seat a cwd below the home or outside its ancestors")
     if workspace == ship.folder.resolve():
         raise ShipError(f"{seat_name}: sandboxed with the ship folder as its working directory; a jailed seat reads the ship folder and cannot write it")
     folders = [f for f in program_folders((program, *FRAMEWORK_TOOLS), path, home)

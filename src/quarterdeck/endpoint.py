@@ -34,16 +34,22 @@ class Served:
     context: int | None = None
 
 
-def models(url: str, timeout: float = TIMEOUT) -> list[Served]:
+def models(url: str, timeout: float = TIMEOUT, *, api_key: str | None = None) -> list[Served]:
     """What an endpoint serves, from its ``/models`` listing; a ShipError names why it cannot be read."""
-    request = urllib.request.Request(f"{url.rstrip('/')}/models", headers={"User-Agent": "quarterdeck"})
+    headers = {"User-Agent": "quarterdeck"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    request = urllib.request.Request(f"{url.rstrip('/')}/models", headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             data = json.load(response)
     except urllib.error.HTTPError as error:
         raise ShipError(f"{url} answered {error.code} to /models") from None
     except (OSError, ValueError) as error:
-        raise ShipError(f"{url} does not answer: {getattr(error, 'reason', None) or error}") from None
+        # Header validation errors can quote the Authorization value. Never echo
+        # exception payloads from an authenticated request into doctor or a post.
+        detail = type(error).__name__ if api_key else (getattr(error, "reason", None) or error)
+        raise ShipError(f"{url} does not answer: {detail}") from None
     rows = data.get("data") if isinstance(data, dict) else None
     if not isinstance(rows, list):
         raise ShipError(f"{url}/models answered with something other than a model listing")
@@ -81,7 +87,7 @@ def choose(pool: Pool, wanted: str | None) -> Choice:
     if not pool.endpoint:
         raise ShipError(f"pool {pool.name} names no endpoint")
     try:
-        served = models(pool.endpoint)
+        served = models(pool.endpoint, api_key=key(pool).get(KEY_VARIABLE))
     except ShipError as error:
         raise ShipError(f"pool {pool.name}: {error}; start the server, or point the pool at one that answers") from None
     if not served:
@@ -107,6 +113,6 @@ def key(pool: Pool) -> dict[str, str]:
 
 def describe(pool: Pool) -> str:
     """What an endpoint pool serves, for ``qd doctor``; a ShipError says why it cannot be read."""
-    served = models(pool.endpoint or "")
+    served = models(pool.endpoint or "", api_key=key(pool).get(KEY_VARIABLE))
     names = ", ".join(f"{m.id} ({m.context:,} tokens)" if m.context else m.id for m in served) or "nothing"
     return f"{pool.endpoint} answers; serves {names}"

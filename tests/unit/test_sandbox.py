@@ -83,3 +83,18 @@ def test_plan_refuses_a_jail_that_jails_nothing_or_one_without_bubblewrap(tmp_pa
     jail = sandbox.plan(ship, "w", ship.runtime / "seats" / "w", ship.runtime / "seats" / "w" / "home", home / "work", "pi", path, home=home)
     assert jail.workspace == (home / "work").resolve() and jail.ship_folder == ship.folder and jail.seat_home == ship.runtime / "seats" / "w" / "home"
     assert home / ".local" / "node" in jail.read_only and jail.writable == (ship.runtime / "post", ship.runtime / "check")
+
+
+@pytest.mark.parametrize('location', ['parent', 'home', 'root', 'alias', 'parent-through-link'])
+def test_ancestor_workspace_cannot_rebind_the_hidden_home(tmp_path, drydock, monkeypatch, location):
+    home = tmp_path/'operator'/'home'
+    home.mkdir(parents=True)
+    alias = tmp_path/'alias'
+    alias.symlink_to(home.parent, target_is_directory=True)
+    workspace = {'parent': home.parent, 'home': home, 'root': Path('/'),
+                 'alias': alias, 'parent-through-link': alias/'home'/'..'}[location]
+    ship = shipmod.load(drydock)
+    monkeypatch.setattr(sandbox, 'available', lambda: True)
+    with pytest.raises(ShipError, match='contains the operator home'):
+        sandbox.plan(ship, 'worker', ship.runtime/'seats'/'worker', ship.runtime/'seats'/'worker'/'home',
+                     workspace, '/usr/bin/python3', '/usr/bin', home=home)

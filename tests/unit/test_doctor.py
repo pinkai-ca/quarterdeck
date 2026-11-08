@@ -60,11 +60,11 @@ def test_a_ship_file_that_does_not_load_is_the_first_failing_check(tmp_path: Pat
 
 
 def test_an_endpoint_pool_is_ready_when_it_answers_and_names_the_server_when_it_does_not(monkeypatch):
-    monkeypatch.setattr(doctor.endpoint, "models", lambda url, timeout=0: [doctor.endpoint.Served("a", 4096)])
+    monkeypatch.setattr(doctor.endpoint, "models", lambda url, timeout=0, **kwargs: [doctor.endpoint.Served("a", 4096)])
     ready = doctor.pool_check(Pool("local", "local", endpoint="http://127.0.0.1:8000/v1"))
     assert ready.passed and ready.detail == "http://127.0.0.1:8000/v1 answers; serves a (4,096 tokens)"
 
-    def down(url, timeout=0):
+    def down(url, timeout=0, **kwargs):
         raise ShipError(f"{url} does not answer: connection refused")
 
     monkeypatch.setattr(doctor.endpoint, "models", down)

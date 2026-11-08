@@ -58,3 +58,44 @@ def test_a_jailed_seat_writes_its_workspace_posts_from_inside_and_cannot_see_the
         secret.unlink(missing_ok=True)
         marker.unlink(missing_ok=True)
         seat.down()
+
+
+def test_nested_synthetic_home_stays_hidden_while_allowed_mounts_work(tmp_path):
+    import json
+    import subprocess
+
+    home = tmp_path/'operator-home'
+    workspace = home/'project'
+    folder = workspace/'ships'/'test'
+    ship = shipmod.Ship(folder, 'synthetic', 'operator', workspace, {}, {}, {})
+    own = ship.runtime/'seats'/'worker'
+    program_home = own/'home'
+    other = ship.runtime/'seats'/'other'
+    for directory in (program_home, other):
+        directory.mkdir(parents=True)
+    (home/'operator-marker').write_text('synthetic operator marker')
+    (other/'other-marker').write_text('synthetic other seat marker')
+    jail = sandbox.plan(ship, 'worker', own, program_home, workspace, '/usr/bin/python3', '/usr/bin', home=home)
+    probe = '''
+import json, sys
+from pathlib import Path
+home, workspace, own, other, ship, post = map(Path, sys.argv[1:])
+def write(path):
+    try:
+        path.write_text('synthetic')
+        return True
+    except OSError:
+        return False
+print(json.dumps(dict(operator_read=(home/'operator-marker').exists(),
+                      other_read=(other/'other-marker').exists(),
+                      workspace=write(workspace/'written'), own=write(own/'written'),
+                      post=write(post/'written'), ship=write(ship/'written'),
+                      hidden_home=write(home/'escape-marker'))))
+'''
+    result = subprocess.run(sandbox.command(jail, ['/usr/bin/python3', '-c', probe, *map(str, (
+        home, workspace, own, other, folder, ship.runtime/'post'))]), capture_output=True, text=True, check=True)
+    values = json.loads(result.stdout)
+    assert not values['operator_read'] and not values['other_read']
+    assert values['workspace'] and values['own'] and values['post'] and not values['ship']
+    assert not (home/'escape-marker').exists(), 'the writable empty home must never reach the host home'
+    assert (workspace/'written').exists() and (own/'written').exists() and (ship.runtime/'post'/'written').exists()

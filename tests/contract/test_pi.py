@@ -148,7 +148,7 @@ def test_another_programs_file_is_a_record_error(tmp_path: Path):
 
 @pytest.fixture
 def served(monkeypatch):
-    monkeypatch.setattr(endpoint, "models", lambda url, timeout=0: [endpoint.Served("qwen3.8-27b", 98304)])
+    monkeypatch.setattr(endpoint, "models", lambda url, timeout=0, **kwargs: [endpoint.Served("qwen3.8-27b", 98304)])
 
 
 def test_the_home_is_built_from_the_endpoint_and_the_launch_carries_the_brief_and_nothing_of_the_projects(tmp_path: Path, served, monkeypatch):

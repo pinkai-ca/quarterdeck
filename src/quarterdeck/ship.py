@@ -191,6 +191,8 @@ def _pool(name: str, table: dict) -> Pool:
 
 
 def _seat(name: str, table: dict, folder: Path) -> SeatSpec:
+    if "sandbox" in table and type(table["sandbox"]) is not bool:
+        raise ShipError(f"seat {name}: sandbox must be true or false (a TOML boolean)")
     pool = table.get("pool", [])
     pools = tuple(pool) if isinstance(pool, list) else (pool,)
     return SeatSpec(
@@ -206,7 +208,7 @@ def _seat(name: str, table: dict, folder: Path) -> SeatSpec:
         up=bool(table.get("up", True)),
         fresh=table.get("fresh"),
         remote_control=bool(table.get("remote_control", False)),
-        sandbox=None if "sandbox" not in table else bool(table["sandbox"]),
+        sandbox=table.get("sandbox"),
         settings=dict(table.get("settings", {})),
     )
 
