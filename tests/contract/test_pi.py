@@ -203,3 +203,14 @@ def test_the_version_is_read_from_the_error_stream_where_pi_prints_it(monkeypatc
     assert PiHarness().version() == "0.74.2"
     monkeypatch.setattr(base.subprocess, "run", lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0, stdout="2.1.317 (Claude Code)\n", stderr="warning 3\n"))
     assert base.program_version(("claude", "--version")) == "2.1.317", "the standard output is read first"
+
+
+def test_a_model_without_a_thinking_level_shows_only_its_name_and_blank_rows_below_the_footer_are_skipped():
+    """Probed 7 November 2026 on the first live check: a model declared without reasoning shows no thinking level, and
+    pi draws top-down, so the rows below its footer stay blank when the pane is taller than the conversation."""
+    s = screen("fresh-no-thinking")
+    assert s.box == "" and not s.working and s.interruption is None and s.unknown is None
+    assert s.shows == {"model": "qwen3.8"}, "no effort to show, none claimed"
+    padded = (SCREENS / "fresh-no-thinking.txt").read_text().rstrip("\n") + ("\n" + " " * 120) * 5 + "\n"
+    s = PiHarness().screen(padded)
+    assert s.box == "" and s.shows == {"model": "qwen3.8"}

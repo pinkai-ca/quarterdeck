@@ -165,7 +165,8 @@ def inputs(record: Path) -> list[tuple[str, datetime | None]]:
 # -- the adapter --------------------------------------------------------------------------------
 
 RULE = re.compile(r"^─{20,}\s*$")
-FOOTER = re.compile(r"^(?P<stats>\S.*?)\s{2,}(?P<model>\S+) • (?P<level>\w+)\s*$")  # "↑1.6k ↓19 1.6%/98k (auto)    qwen3.8-27b • medium"
+# "↑1.6k ↓19 1.6%/98k (auto)    qwen3.8-27b • medium"; a model declared without reasoning shows no thinking level
+FOOTER = re.compile(r"^(?P<stats>\S.*?)\s{2,}(?P<model>\S+)(?: • (?P<level>\w+))?\s*$")
 WORKING = re.compile(r"^\s*[⠁-⣿] Working\.\.\.", re.M)
 QUEUED_HINT = "Alt+Up to edit all queued messages"
 STEERING = re.compile(r"^\s*Steering: (.*?)\s*$", re.M)
@@ -242,14 +243,17 @@ class PiHarness(Harness):
         working = bool(WORKING.search(text))
         queued = 1 if QUEUED_HINT in text else 0
         echoes = tuple(m.group(1) for m in STEERING.finditer(text))
-        footer = FOOTER.match(lines[-1]) if lines else None
-        shows = {"model": footer.group("model"), "effort": footer.group("level")} if footer else {}
+        footer_at = next((i for i in range(len(lines) - 1, -1, -1) if lines[i].strip()), None)  # the program draws top-down: rows below it stay blank
+        footer = FOOTER.match(lines[footer_at]) if footer_at is not None else None
+        shows = {}
+        if footer:
+            shows = {"model": footer.group("model"), **({"effort": footer.group("level")} if footer.group("level") else {})}
         interruption = self.recognize(text)
         if footer is None or interruption is not None:
             unknown = None if footer or interruption else "no footer drawn as 0.74.2 draws it"
             return Screen(text, box=None, working=working, interruption=interruption, unknown=unknown, queued=queued, shows=shows, echoes=echoes)
-        bottom = next((i for i in range(len(lines) - 2, -1, -1) if RULE.match(lines[i])), None)
-        if bottom is None or len(lines) - 1 - bottom > 3:  # the working directory sits between the bottom rule and the footer
+        bottom = next((i for i in range(footer_at - 1, -1, -1) if RULE.match(lines[i])), None)
+        if bottom is None or footer_at - bottom > 3:  # the working directory sits between the bottom rule and the footer
             return Screen(text, box=None, working=working, unknown="no box drawn as 0.74.2 draws it", queued=queued, shows=shows, echoes=echoes)
         top = next((i for i in range(bottom - 1, -1, -1) if RULE.match(lines[i])), None)
         if top is None:
