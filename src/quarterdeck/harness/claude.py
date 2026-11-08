@@ -287,7 +287,9 @@ class ClaudeHarness(Harness):
         (home / "settings.json").write_text(json.dumps(settings, indent=2) + "\n")
         state_file = home / ".claude.json"
         state = json.loads(state_file.read_text()) if state_file.is_file() else {}
-        state.update({"hasCompletedOnboarding": True, "theme": state.get("theme", "dark")})
+        # The trust dialog and the one that asks a person to accept running without approval prompts, both answered
+        # before the first launch: a fresh home opens without a dialog.
+        state.update({"hasCompletedOnboarding": True, "bypassPermissionsModeAccepted": True, "theme": state.get("theme", "dark")})
         if account := pool_account(pool):
             state["oauthAccount"] = account  # whose credential this is, known before the first launch
         cwd = str(seat.cwd) if seat.cwd else None

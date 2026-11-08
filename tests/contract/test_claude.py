@@ -160,6 +160,7 @@ def test_the_launch_carries_our_files_and_nothing_of_the_users(tmp_path: Path):
     assert "Bash(qd *)" in settings["permissions"]["allow"]
     state = json.loads((home / ".claude.json").read_text())
     assert state["hasCompletedOnboarding"] and state["projects"][str(tmp_path / "work")]["hasTrustDialogAccepted"]
+    assert state["bypassPermissionsModeAccepted"], "the dialog that asks a person to accept bypass mode is answered before the first launch"
     assert state["oauthAccount"] == {"accountUuid": "acc", "organizationUuid": "org"} and state["theme"] == "dark", \
         "the pool's account record, nothing else of its state"
     brief = tmp_path / "brief.md"
