@@ -88,8 +88,8 @@ def started(runtime: Path) -> bool:
     return alive(runtime) and read_heartbeat(runtime) is not None
 
 
-def start(ship: Ship) -> str:
-    """Start the service detached, logging under the runtime; a proof line."""
+def start(ship: Ship, qd: Path | None = None) -> str:
+    """Start the service detached, logging under the runtime; a proof line. It runs the ``qd`` given, else this one."""
     if alive(ship.runtime):
         beat, late = read_heartbeat(ship.runtime), stale(ship.runtime)
         return f"service alive · pid {beat[0] if beat else '?'}" + (f" · busy, last tick {int(late)}s ago" if late else "")
@@ -97,7 +97,7 @@ def start(ship: Ship) -> str:
     log_dir.mkdir(parents=True, exist_ok=True)
     out = (log_dir / "service.out").open("ab")
     process = subprocess.Popen(
-        [str(qd_bin() / "qd"), "--ship", str(ship.folder), "service"],
+        [str(qd or qd_bin() / "qd"), "--ship", str(ship.folder), "service"],
         stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True, cwd=str(ship.folder),
     )
     deadline = time.monotonic() + 5

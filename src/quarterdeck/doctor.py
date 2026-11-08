@@ -18,7 +18,7 @@ import tempfile
 from dataclasses import replace
 from pathlib import Path
 
-from . import credential, harness as harnesses, post, servicectl, watch
+from . import credential, harness as harnesses, install, post, servicectl, watch
 from .drill import Check, wait_for
 from .harness.base import key_environment, program_version
 from .seat import Seat, program_path
@@ -35,6 +35,7 @@ def checks(ship: Ship) -> list[Check]:
     for program, flag in (("tmux", "-V"), ("git", "--version")):
         version = program_version((program, flag))
         found.append(Check(program, version is not None, f"{program} {version}" if version else f"{program} is not on the PATH; install it"))
+    found.append(framework_check(ship))
     searched = program_path()
     for name in sorted({seat.harness for seat in ship.seats.values()}):
         program = PROGRAMS[name]
@@ -59,6 +60,18 @@ def checks(ship: Ship) -> list[Check]:
     found.append(Check("disk", not low, "room on every filesystem the ship writes to" if not low
                        else "nearly full: " + ", ".join(f"{mount} {pct}%" for mount, pct in low)))
     return found
+
+
+def framework_check(ship: Ship) -> Check:
+    """Which framework the ship runs: its own installed copy, or the checkout it sits in."""
+    copy = install.installed(ship.runtime)
+    if copy:
+        return Check("framework", True, f"the ship runs its installed copy, commit {copy['commit'][:7]} since {copy['at'][:16]}; qd upgrade adopts another")
+    try:
+        head = install.git(install.source_repo(ship), "rev-parse", "--short", "HEAD").decode().strip()
+    except ShipError as error:
+        return Check("framework", True, f"the ship runs this qd; {error}")
+    return Check("framework", True, f"the ship runs the checkout at {head}; qd upgrade makes it an installed copy")
 
 
 def pool_check(pool: Pool) -> Check:

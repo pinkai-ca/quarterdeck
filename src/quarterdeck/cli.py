@@ -12,7 +12,7 @@ import os
 import sys
 from typing import Any
 
-from . import (__version__, check, doctor, drill, harness as harnesses, ledger, post, seat as seatmod, service,
+from . import (__version__, check, doctor, drill, harness as harnesses, install, ledger, post, seat as seatmod, service,
                ship as shipmod, standing, watch)
 from .ship import ShipError
 from .tmux import Tmux, TmuxError
@@ -26,6 +26,8 @@ def main(argv: list[str] | None = None) -> int:
     if not hasattr(args, "run"):
         parser.print_help()
         return 0
+    if args.run is not cmd_upgrade:
+        handoff(args, argv if argv is not None else sys.argv[1:])
     try:
         result = args.run(args)
     except (ShipError, TmuxError) as error:
@@ -33,6 +35,17 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     emit(args, result)
     return getattr(args, "exit_code", 0)
+
+
+def handoff(args: argparse.Namespace, argv: list[str]) -> None:
+    """A ship with an installed copy of the framework is run by that copy, whichever qd was typed."""
+    if not (args.ship or os.environ.get("QD_SHIP")):
+        return
+    try:
+        folder = shipmod.find(args.ship)
+    except ShipError:
+        return  # the verb says what is wrong with the ship folder
+    install.handoff(folder, argv)
 
 
 def emit(args: argparse.Namespace, result: Any) -> None:
@@ -105,13 +118,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--by", choices=("seat", "order", "pool"), help="roll the turns up by this")
     p.add_argument("--tools", action="store_true", help="tool calls by name: count, seconds, failures")
     verb("service", cmd_service, "run the ship's service in the foreground (qd up starts it detached)")
-    p = verb("drill", cmd_drill, "the all-hands drill: on the example ship's fake harness, or on --ship with real programs")
+    p = verb("drill", cmd_drill, "the all-hands drill: on the drydock's fake harness, or on --ship with real programs")
     p.add_argument("--keep", action="store_true", help="keep the temporary ship and its tmux server for a look")
     p = verb("check", cmd_check, "prove the installed version of a program live, on a throwaway seat (spends tokens)")
     p.add_argument("harness", choices=[n for n in harnesses.NAMES if n != "fake"])
     p = verb("doctor", cmd_doctor, "is this machine ready to run the ship: tmux, git, programs, sign-ins, folders, the service, disk")
     p.add_argument("--fix", action="store_true",
                    help="hand the failures to a throwaway seat on the first pool whose program runs, then check again (spends tokens)")
+    p = verb("upgrade", cmd_upgrade, "install the framework at a commit as the ship's own copy and run the service on it")
+    p.add_argument("ref", nargs="?", default="HEAD", help="the commit to install (default: the checkout's HEAD); the previous one rolls back")
     return parser
 
 
@@ -392,6 +407,10 @@ def cmd_doctor(args: argparse.Namespace) -> list[str]:
         lines += ["", "checked again:"] + [str(c) for c in found]
     args.exit_code = 0 if all(c.passed for c in found) else 1
     return lines
+
+
+def cmd_upgrade(args: argparse.Namespace) -> list[str]:
+    return install.upgrade(load_ship(args), args.ref, Tmux.default())
 
 
 def cmd_drill(args: argparse.Namespace) -> list[str]:

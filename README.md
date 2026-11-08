@@ -34,6 +34,7 @@ qd set scott model=gpt-6-astra      # writes the ship file, commits it, applies 
 qd fresh worker-1                   # a new conversation, briefed, with its open messages
 qd ledger --by order                # what each order cost
 qd check claude                     # prove the installed Claude Code on a throwaway seat (spends tokens)
+qd upgrade                          # install the checkout's HEAD as the ship's own copy and run on it; qd upgrade <commit> rolls back
 ```
 
 Every verb prints a proof line saying what was done and how it was confirmed; every refusal names the reason and what would lift it; every reading is available as `--json`. The command is written for an agent at the keyboard as much as for a person: the human's word reaches the ship through a desk seat that runs `qd`.
