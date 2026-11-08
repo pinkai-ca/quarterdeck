@@ -23,7 +23,11 @@ python3 -m venv --system-site-packages .venv && .venv/bin/pip install -e .
 .venv/bin/qd doctor                     # is this machine ready: programs, versions, sign-ins, tmux, disk
 ```
 
-A ship of your own is a folder under `ships/`, its own git repository, holding a `ship.toml` and an `orders.md`. `ships/default/` is the smallest crew on real programs, a desk on Claude Code with a captain and an engineer on Codex, using the sign-ins already on the machine; copy it and change what differs. Point `qd` at a ship with `--ship` or `QD_SHIP`. Then:
+A ship of your own is a folder under `ships/`, its own git repository, holding a `ship.toml` and an `orders.md`. `ships/default/` is the smallest crew on real programs, a desk on Claude Code with a captain and an engineer on Codex, using the sign-ins already on the machine; copy it and change what differs.
+
+The example ship's names follow its Star Trek theme. Scott, the engineer, is addressed as `scott` in the commands below.
+
+Point `qd` at a ship with `--ship` or `QD_SHIP`. Then:
 
 ```
 qd up                               # the service and every seat marked up, resuming what has a record
@@ -103,10 +107,10 @@ The [full test](tests/integration/test_door.py#L89) starts with an occupied box 
 Both tags can be found from the checkout:
 
 ```sh
-rg -n 'law: one-door' src/quarterdeck/door.py tests/integration/test_door.py
+grep -rn 'law: one-door' src/quarterdeck/door.py tests/integration/test_door.py
 ```
 
-Run `env -u QD_SHIP -u QD_SEAT .venv/bin/qd laws` from the checkout. Two verbatim entries from one-door's carrier line are shown below on separate lines; the other carrier entries and the law statement are omitted here. A checkout lists repository tests; an installed package does not ship them.
+Run `.venv/bin/qd laws` from the checkout. Two verbatim entries from one-door's carrier line are shown below on separate lines; the other carrier entries and the law statement are omitted here. A checkout lists repository tests; an installed package does not ship them.
 
 ```text
 src/quarterdeck/door.py:110, 160, 178, 192
@@ -116,5 +120,9 @@ tests/integration/test_door.py:41, 96, 163, 179, 203
 ## Working on it
 
 `AGENTS.md` is for whoever works on the framework itself. The tests run with `.venv/bin/python -m pytest -q`: unit tests, contract tests against recorded screens, and integration tests on a private tmux server with the fake harness. Nothing from a runtime may be tracked, and every law must be carried in code and tried by a test; two tests guard those.
+
+## Authorship
+
+Quarterdeck was designed and directed by Tyler Dwyer. Its code was written by coding agents (Claude Code, Codex, and local models under pi and OpenCode) under this repository's standing orders. Each change is reviewed once by a second agent and its tests pass before merge; the history records what changed.
 
 MIT licence. Copyright (c) 2026 Tyler Dwyer.

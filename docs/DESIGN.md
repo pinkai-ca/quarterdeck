@@ -34,13 +34,15 @@ One verb is for the machine the ship runs on. `qd doctor` (`doctor.py`) checks t
 
 ## 3. What the human sees
 
-Three tmux sessions in the flagship ship: "Ship's Bridge" for the command seats, "Admiral's Office" for the human's own seats, and "Crew" for the workers. One window per seat, named by persona. Every ship session carries one status line, refreshed by tmux on its own timer: whether the service is alive, the oldest undelivered message and its age, the seats that need a human, the walls, and each subscription pool's headline usage window with its reset. `qd status` fits on one screen: every seat's activity, door, current order and tokens today, then the open orders. On the Bridge and in the Crew every message is typed in full into its addressee's pane, so a pane's scrollback is the log of the seat's traffic, read by scrolling up. Everything else is a file a person can read: TOML for the ship, Markdown for inboxes and standing orders, JSON lines for messages, and one SQLite file for the Ledger.
+The Admiral, the human operator, has "Admiral's Office". The flagship's other two tmux sessions are "Ship's Bridge" for command seats and "Crew" for workers. One window per seat, named by persona. Every ship session carries one status line, refreshed by tmux on its own timer: whether the service is alive, the oldest undelivered message and its age, the seats that need a human, the walls, and each subscription pool's headline usage window with its reset. `qd status` fits on one screen: every seat's activity, door, current order and tokens today, then the open orders. On the Bridge and in the Crew every message is typed in full into its addressee's pane, so a pane's scrollback is the log of the seat's traffic, read by scrolling up. Everything else is a file a person can read: TOML for the ship, Markdown for inboxes and standing orders, JSON lines for messages, and one SQLite file for the Ledger.
 
 The human rarely types `qd` at all. Their word goes to the Desk, an agent seat in the Office, and the Desk runs the ship with `qd`. So `qd` is written for an agent at the keyboard as much as for a person: one verb per act; every reading available as `--json`; every act followed by a proof line saying what was done and how it was confirmed; every refusal naming the reason and what would lift it; `qd --help` complete enough to be the Desk's manual, with the desk role card teaching the rest. What the human watches is the Desk's pane, where the commands and their proof lines appear, and the other panes, where each change lands as a typed line a person can read.
 
 Two words the rest of this document leans on. A **turn** is everything from one input to the next idle: the program takes a message, the model works through its steps, and the program stops and waits again. A **step** is one entry in the record along the way: a reply, a tool call, a tool result. The Ledger counts by turn, summing steps. The Watch calls a seat working while a turn is open and steps keep coming.
 
 ## 4. The ship file
+
+The example gives names to roles: Pike, the captain; Scott, the engineer; and Maeve, the desk.
 
 ```toml
 [ship]
