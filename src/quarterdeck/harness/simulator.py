@@ -57,6 +57,8 @@ class Program:
         self.record = shape(self.home, Path.cwd(), args.resume or str(uuid.uuid4()), self.model)
         self.box = ""
         self.queue: list[str] = []
+        self.enqueued: list[str] = []
+        self.take_now = False
         self.working = False
         self.interrupted = False
         self.box_lines = 0
@@ -203,9 +205,11 @@ class Program:
             return
         if self.box.strip():
             self.queue.insert(0, self.box.strip())
+            self.enqueued.append(self.queue[0])
             self.record.queued(self.queue[0])
             self.box = ""
         if self.queue:
+            self.take_now = True
             self.say(f"· sent now: {self.queue[0].splitlines()[0]}")
 
     def submit(self) -> None:
@@ -219,6 +223,7 @@ class Program:
             self.command(text)
         elif self.working:
             self.queue.append(text)
+            self.enqueued.append(text)
             self.record.queued(text)
             self.say(f"queued: {text.splitlines()[0]}")
         else:
@@ -240,13 +245,19 @@ class Program:
         first, extra = text.splitlines()[0], text.count("\n")
         self.say(f"> {first}" + (f"  … (+{extra} lines)" if extra else ""))
         self.wait(self.accept_seconds)
+        pause(self.home, "turn", text, self.wait)
+        if text in self.enqueued:
+            self.enqueued.remove(text)
+            self.record.dequeued(text)
         self.record.begin(text, self.model, self.effort)
         event(self.home, "accepted", text)
         commands = self.commands(text)
         for command in commands or [None] * self.steps:
             if self.interrupted:
                 break
+            pause(self.home, "step", text, self.wait)
             self.step(command)
+            self.consume_now()
         reply = next((l[7:] for l in text.splitlines() if l.startswith("reply: ")), f"done: {first}")
         if self.interrupted:
             self.record.abort()
@@ -254,6 +265,21 @@ class Program:
             self.say(f"⏺ {reply}")
             self.record.end(reply)
         self.working = False
+        self.draw()
+
+    def consume_now(self) -> None:
+        """A requested queue entry is consumed once, at a tool boundary in this turn."""
+        if not self.take_now or not self.queue or self.interrupted:
+            return
+        self.take_now = False
+        text = self.queue.pop(0)
+        self.enqueued.remove(text)
+        self.record.consumed(text)
+        event(self.home, "consumed", text)
+        pause(self.home, "consumed", text, self.wait)
+        for command in self.commands(text):
+            if not self.interrupted:
+                self.step(command)
         self.draw()
 
     @staticmethod

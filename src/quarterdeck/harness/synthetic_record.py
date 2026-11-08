@@ -96,6 +96,12 @@ class ClaudeShape(_Writer):
         self.write({"type": "queue-operation", "operation": "enqueue", "content": text,
                     "sessionId": self.session, "timestamp": now().isoformat()})
 
+    def dequeued(self, text: str) -> None:
+        self.write({"type": "queue-operation", "operation": "dequeue", "content": text,
+                    "sessionId": self.session, "timestamp": now().isoformat()})
+
+    consumed = dequeued
+
     def command(self, text: str, output: str) -> None:
         """A local command, as Claude Code records one: the echo, then its output."""
         name, _, args = text[1:].partition(" ")
@@ -169,6 +175,12 @@ class CodexShape(_Writer):
 
     def queued(self, text: str) -> None:
         pass
+
+    def dequeued(self, text: str) -> None:
+        pass
+
+    def consumed(self, text: str) -> None:
+        self.line("response_item", {"type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]})
 
     def command(self, text: str, output: str) -> None:
         pass

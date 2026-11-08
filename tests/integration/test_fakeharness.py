@@ -145,7 +145,7 @@ def test_a_slash_command_changes_the_program_and_the_screen_confirms_it(tmux: Tm
     assert "· model set to fake-2" in tmux.capture(seat.pane.id)
 
 
-def test_interrupt_and_send_now_keys(tmux: Tmux, tmp_path: Path):
+def test_interrupt_key_stops_the_open_turn(tmux: Tmux, tmp_path: Path):
     seat = Seat(tmux, tmp_path, steps="5", step_seconds="1")
     seat.send("slow one")
     wait_for(lambda: seat.screen().working)
