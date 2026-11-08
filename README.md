@@ -76,7 +76,42 @@ are the same as in text. Mutating commands, including `watch --save-screen` and
 
 ## What is proven, and what is not
 
-Claude Code 2.1.317 and Codex 0.166.0 were proven live by `qd check` on 7 November 2026: each launched, took a long paste its record confirmed, wrote a named file, posted a report and had its turn read. What their adapters know of each program's record, screen, keys, dialogs and controls is pinned separately, by the contract tests' fixtures under `tests/fixtures/`. Antigravity 1.5.2 has no home switch, so its seat runs in the user's Antigravity state; its record, a SQLite database of protobuf messages, is read from a snapshot of its bytes, so deliveries are confirmed and turns accounted like the others, and what the record does not hold is marked rather than guessed. The fields read are in `docs/ANTIGRAVITY.md`; its live check is still to run. OpenCode 1.19.5 and pi 0.74.2 run on endpoint pools, a model served at an OpenAI-compatible URL; both were spiked against a local vLLM server on 7 November 2026, and their records, screens, folds and wraps are pinned by fixtures. A seat on an endpoint pool runs in a bubblewrap jail unless the ship says otherwise: the operator's home hidden, the workspace writable, `qd post` working from inside. A newer version of any program runs with the newest known facts and is reported as unproven until `qd check` proves it.
+Claude Code 2.1.317 and Codex 0.166.0 were proven live by `qd check` on 7 November 2026: each launched, took a long paste its record confirmed, wrote a named file, posted a report and had its turn read. What their adapters know of each program's record, screen, keys, dialogs and controls is pinned separately, by the contract tests' fixtures under `tests/fixtures/`. Antigravity 1.5.2 has no home switch, so its seat runs in the user's Antigravity state; its record, a SQLite database of protobuf messages, is read from a snapshot of its bytes, so deliveries are confirmed and turns accounted like the others, and what the record does not hold is marked rather than guessed. The fields read are in `docs/ANTIGRAVITY.md`; its live check is still to run. OpenCode 1.19.5 and pi 0.74.2 run on endpoint pools, a model served at an OpenAI-compatible URL; both were spiked against a local vLLM server on 7 November 2026, and their records, screens, folds and wraps are pinned by fixtures. A seat on an endpoint pool runs in a bubblewrap jail unless the ship says otherwise: the operator's home hidden, the workspace writable, `qd post` working from inside.
+
+The readings keep uncertainty visible. A trailing `+` marks an incomplete measured total: at least what was read, with unmeasured contributions counted separately. An unreadable or unavailable reading says what could not be seen, and an unknown measurement remains distinct from measured zero. New or unproven program versions run with the newest known adapter facts and remain unproven until `qd check` proves the installed program live.
+
+## A law from statement to test
+
+The complete **one-door** law, from [the framework's laws](standing-orders/laws.md#seat):
+
+> Everything typed into a seat goes through one path, in one process: it clears what it knows how to clear, refuses what it does not, types once into an empty box, checks the box as the program shows it, submits, and confirms by the record. It never types into a session the human owns. Never resend what you cannot confirm.
+
+A tagged carrier excerpt from [Door.deliver](src/quarterdeck/door.py#L192):
+
+```python
+return self.confirm(text)  # law: one-door
+```
+
+A tagged assertion excerpt from [the foreign-draft test](tests/integration/test_door.py#L96):
+
+```python
+assert delivery.result == "withheld" and "text in the box" in delivery.detail  # law: one-door
+```
+
+The [full test](tests/integration/test_door.py#L89) starts with an occupied box and checks that the original draft stays untouched and nothing is submitted. Box verification permits submission; exact, fresh record evidence confirms delivery. Queue acceptance remains queued until consumption is established, and uncertain submissions are not automatically resent.
+
+Both tags can be found from the checkout:
+
+```sh
+rg -n 'law: one-door' src/quarterdeck/door.py tests/integration/test_door.py
+```
+
+Run `env -u QD_SHIP -u QD_SEAT .venv/bin/qd laws` from the checkout. Two verbatim entries from one-door's carrier line are shown below on separate lines; the other carrier entries and the law statement are omitted here. A checkout lists repository tests; an installed package does not ship them.
+
+```text
+src/quarterdeck/door.py:110, 160, 178, 192
+tests/integration/test_door.py:41, 96, 163, 179, 203
+```
 
 ## Working on it
 
