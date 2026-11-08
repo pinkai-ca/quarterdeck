@@ -15,13 +15,15 @@ import signal
 import tempfile
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from contextlib import nullcontext
 from pathlib import Path
 
-from . import harness as harnesses, post, seat as seatmod, service, ship as shipmod, standing, watch
+from . import harness as harnesses, input_receipt, post, seat as seatmod, service, ship as shipmod, standing, watch
 from .post import Attempts, Store
 from .pending import journals
 from .harness.synthetic_control import Rendezvous, events
+from .harness.types import Input
 from .seat import Seat
 from .tmux import Tmux
 
@@ -47,6 +49,23 @@ def wait_for(predicate, seconds: float, step: float = 0.1):
             return value
         time.sleep(step)
     return None
+
+
+def acceptances(inputs: list[Input], text: str, since: datetime) -> int:
+    """Count fresh acceptance evidence; dequeue and echo can share one enqueue time.
+
+    This cannot distinguish separate enqueues with identical timestamps. The crash
+    check also requires one attempt and, on the simulator, one actual submission.
+    """
+    accepted, consumed = 0, set()
+    for item in inputs:
+        if item.at is None or item.at < since or item.text.strip() != text.strip():
+            continue
+        if item.kind == 'accepted':
+            accepted += 1
+        elif item.kind == 'consumed' and item.consumed_at is not None and item.consumed_at >= item.at:
+            consumed.add(item.at)  # original acceptance time, never the later consumption time
+    return accepted + len(consumed)
 
 
 class Drill:
@@ -157,6 +176,7 @@ class Drill:
                 self.check("service killed mid-delivery, recovered", False,
                            "no submitted open attempt caught before confirmation; no crash claimed")
                 return
+            attempt, = self.attempts.for_message(order.id)
             beat = service.read_heartbeat(self.ship.runtime)
             os.kill(beat[0], signal.SIGKILL)
             if not wait_for(lambda: not service.alive(self.ship.runtime), self.patience):
@@ -170,10 +190,12 @@ class Drill:
                                [a.result for a in self.attempts.for_message(order.id)] == ["delivered"], self.patience)
             results = [a.result for a in self.attempts.for_message(order.id)]
             record = captain.record()
-            typed = sum(i.kind == "accepted" and i.text == post.typed([order]).strip()
-                        for i in captain.harness.inputs(record)) if record else 0
+            payload = post.typed([order])
+            typed = acceptances(captain.harness.inputs(record), payload, attempt.receipt_since) if record else 0
+            delivered = record is not None and input_receipt.confirmed(
+                captain.harness, record, payload, attempt.receipt_since) == 'delivered'
             submits = sum(e == {"event": "submitted", "text": post.typed([order]).strip()} for e in events(captain.home)) if gate else None
-            once = typed == 1 and (submits == 1 if gate else True)
+            once = delivered and typed == 1 and (submits == 1 if gate else True)
             self.check("service killed mid-delivery, recovered", bool(settled) and once,
                        f"caught submitted open attempt before record acceptance; attempts {results}; "
                        f"in the record {typed} time(s); submissions {submits}; {restarted}")
