@@ -160,7 +160,7 @@ One class per agent program, on one interface, `Harness` in `harness/base.py`. A
 | `interruptions()` | The dialogs and notices this version shows: how each is recognized on the screen, and the key that dismisses it, or that it needs a human |
 | `accepts(pool)` | Why the program cannot run on a pool, or nothing when it can: by default a subscription or key of its own provider. An endpoint program takes endpoint pools instead, on `EndpointHarness`, which adds `endpoint_home` and `endpoint_ready` |
 | `credential_file`, `freshness(path)`, `grant_expiry(path)` | Where the program keeps its sign-in in its home, how a fresher copy of it is told, and when its grant expires |
-| `usage(pool)`, with `reads_usage`, `usage_interval`, `background_usage`, `headline_window` and `shared_usage_key(pool)` | A subscription pool's usage windows and their resets; how often they are read; whether the service reads them on its own with no seat up, or only while a seat runs on the pool; whether the pool shows in the status line, and by which window; and which pools share one reading. A program without a usage reading leaves its pools' usage unknown, and a key pool is measured by spend |
+| `usage(pool)`, with `reads_usage`, `usage_interval`, `background_usage`, `headline_window` and `shared_usage_key(pool)` | A subscription pool's usage windows and their resets; how often they are read; whether the service reads them on its own with no seat up, or only while a seat runs on the pool; which window the status line shows; and which pools share one reading. A program without a usage reading leaves its pools' usage unknown, and a key pool is measured by spend |
 | `quota_wall(text, at)`, with `screen_walls` | A wall the program shows on its screen, with its reset, where the record may not carry it; and whether the service reads a live seat's screen for one |
 | `remote_control`, `wrap_slack`, `drill_settings()` | Smaller facts: whether a seat can also be opened from the operator's phone; the columns the program keeps clear when it wraps at a word; the settings of the synthetic drill, which only the fake supplies |
 
@@ -295,7 +295,7 @@ Pi and OpenCode default omitted model rates to zero internally, so a zero cost i
 
 Compatibility: the preceding service keeps the original 22-column `turns` and four-column `record_launches` layouts, so its reads and writes still work after the new service. `turn_costs` and `launch_prices` hold the added evidence. Insert/update triggers invalidate cost evidence when an older writer refreshes a turn; the next owned-source read can establish it again. Raw evidence is retained while invalid; it cannot certify current cost. Old numeric nonzero costs without side evidence remain recorded costs, while old zeros without evidence remain uncertified. Older readings cannot display these new uncertainty semantics.
 
-`launch.json` and endpoint `model.json` retain their preceding keys. Adjacent `launch-price.json` and `model-price.json` bind price evidence to the file's publication (inode, size, modification/change times and content digest); a rewrite by the previous version, or a missing/malformed side file, leaves price unknown. Copying those files to different inodes also fails closed; the durable owned-record launch journal preserves previously established historical prices. Pool price declarations and extra fields in the record launch journal are ignored safely by the preceding version; generated program price fields use the programs' existing supported configuration. No old code is modified. Compatibility targets the landed layouts only; no decoder or migration is carried for unlanded proposal checkpoints.
+`launch.json` and endpoint `model.json` retain their preceding keys. Adjacent `launch-price.json` and `model-price.json` bind price evidence to the file's publication (inode, size, modification/change times and content digest); a rewrite by the previous version, or a missing/malformed side file, leaves price unknown. Copying those files to different inodes also fails closed; the durable owned-record launch journal preserves previously established historical prices. Pool price declarations and extra fields in the record launch journal are ignored safely by the preceding version; generated program price fields use the programs' existing supported configuration.
 
 Turns: a row per ended turn, from the record. Tokens in as many classes as the provider bills, four for Anthropic: read cached, read uncached, cache written, written; cost where the program states it; the tool calls made, by tool, each with its duration and whether it failed; the turn's duration; and the turns of any subagents the seat spawned, charged to the seat. The three headline measures, read cached, read uncached and written, stay the display; the rest is a column away.
 
@@ -416,7 +416,7 @@ quarterdeck/                       the project folder: the framework repository
     service.py     the ship's one long-running process: inboxes, deliveries, attempts, deferred controls, the heartbeat,
                    the machine sample; the one writer of the Ledger
     servicectl.py  the service's lock, heartbeat, start, stop and requests
-    harness/       base.py types.py claude.py codex.py antigravity.py opencode.py pi.py fake.py; json_record.py limits.py sqlite_snapshot.py
+    harness/       base.py types.py claude.py codex.py antigravity.py opencode.py pi.py fake.py; json_record.py limits.py sqlite_snapshot.py costs.py
                    opencode_record.py antigravity_record.py antigravity_wire.py antigravity_quota.py; simulator.py synthetic_record.py synthetic_control.py,
                    the fake program the drill runs, its records in Claude Code's or Codex's shape, and the rendezvous a test holds it at
     endpoint.py    endpoint pools: what a server serves, the model a seat takes from it, the key beside it
@@ -426,8 +426,11 @@ quarterdeck/                       the project folder: the framework repository
     output.py      one shape for every reading: rendered for a person, or serialized as JSON for a caller
     ledger.py      turns, tokens, tool calls, machine load, by pool, seat and order; opened read-only by every reading
     ledger_reading.py   the Ledger's rows and usage windows as a reading takes them, and their tables
+    pricing.py cost_evidence.py   a pool's stated rates and the price saved beside a launch; a turn's cost evidence,
+                   kept beside the Ledger's turns
     provenance.py record_owner.py quota.py usage_cache.py   which launch and which program a record belongs to; quota walls,
                    the usage refresh, and the latest real reading of each usage window
+    headlines.py   each subscription pool's usage headline for the status line, from its latest reading
     credential.py  the one link a seat shares with its pool, reseeded and relinked on the tick
     machine.py     a seat's process tree, sampled for the Ledger
     standing.py    standing orders: laws, the ship's orders, cards, the brief
