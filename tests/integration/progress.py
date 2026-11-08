@@ -14,18 +14,30 @@ def service_progress(ship, seconds=8):
     is therefore answered on a later tick, after reconciliation and deliveries.
     Duties after requests (including failover) also ran between the two answers.
     A heartbeat before a blocked duty cannot satisfy either acknowledgment.
+    The service owns a published request until it removes it, after writing the
+    full answer. On timeout or failure, leave that request and any partial answer
+    to the service; the enclosing test tears down its temporary runtime afterward.
     """
     folder = ship.runtime / "requests"
     folder.mkdir(parents=True, exist_ok=True)
     for _ in range(2):
         path = folder / f"test-progress-{time.monotonic_ns()}.json"
         pending = path.with_suffix(".tmp")
-        pending.write_text(json.dumps({"kind": "test-progress"}))
-        pending.replace(path)
         done = path.with_suffix(".done")
+
+        def acknowledged():
+            if path.exists():
+                return False
+            try:
+                return done.read_text() == "unknown request 'test-progress'\n"
+            except FileNotFoundError:
+                return False
+
         try:
-            assert wait_for(done.exists, seconds=seconds), "service did not finish its duties"
-            assert done.read_text().strip() == "unknown request 'test-progress'"
+            pending.write_text(json.dumps({"kind": "test-progress"}))
+            pending.replace(path)
+            assert wait_for(acknowledged, seconds=seconds), "service did not finish its duties"
         finally:
-            path.unlink(missing_ok=True)
-            done.unlink(missing_ok=True)
+            pending.unlink(missing_ok=True)
+            if not path.exists():
+                done.unlink(missing_ok=True)
