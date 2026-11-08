@@ -65,6 +65,20 @@ def test_oversized_headline_does_not_hide_a_fitting_measured_sibling():
     assert "wall: " + WALL in line and len(line) <= 160
 
 
+@pytest.mark.parametrize("wall_width", [107, 108, 109])
+def test_overflow_reserves_the_plus_sign_at_the_160_column_boundary(wall_width):
+    wall = "x" * wall_width
+    facts = watch.Facts("ok", 0, 0, 0, walls=[wall], usage=[item("a", "never"), item("b", "never")])
+    before = output.value(facts)
+    line = facts.line()
+    assert len(line) <= 160, line
+    if wall_width == 107:
+        assert len(line) == 160 and "wall: " + wall in line and "+2 usage: qd status" in line
+    else:
+        assert "1 walls" in line and "details: qd status" in line
+    assert output.value(facts) == before, "only presentation is compacted; alerts and usage keep their source order"
+
+
 @pytest.mark.parametrize("state", ["current", "stale", "failed", "unknown", "never"])
 def test_overflow_keeps_ties_in_source_order(state):
     rows = [item(name, state) for name in ("first", "second", "third", "fourth", "fifth", "sixth")]

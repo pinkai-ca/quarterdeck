@@ -39,7 +39,7 @@ def status_line(facts, alerts: list[str]) -> str:
     usage = [compact(item) for item in sorted(facts.usage, key=priority)]
     # Long names/reasons or many simultaneous alerts: retain every affected category
     # as an explicit count and direct the reader to the complete status reading.
-    if len(SEPARATOR.join(parts + [f"{len(usage)} usage: qd status"])) > WIDTH:
+    if len(SEPARATOR.join(parts + [f"+{len(usage)} usage: qd status"])) > WIDTH:
         parts = ["SERVICE DOWN" if facts.service == "down" else f"service {facts.service}"]
         counts = [(facts.waiting, "waiting"), (facts.queued, "queued"), (facts.blind, "blind"),
                   (len(facts.needs_human), "need human"), (len(facts.unarmed), "unarmed"),
