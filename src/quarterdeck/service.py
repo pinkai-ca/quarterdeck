@@ -10,6 +10,7 @@ than the tick (law: events-not-clocks).
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import signal
 import sys
@@ -20,7 +21,7 @@ from pathlib import Path
 
 from . import harness as harnesses
 from . import pending as pending_delivery, delivery_record
-from . import credential, machine, post, quota, record_owner, ship as shipmod, standing
+from . import credential, install, machine, post, quota, record_owner, ship as shipmod, standing
 from .door import CONFIRM_SECONDS, Door
 from .harness.base import record_fingerprint
 from .ledger import Ledger
@@ -47,6 +48,8 @@ class Service:
         self.withheld: dict[tuple[str, str], str] = {}  # (message, seat) -> the screen it was withheld on
         self.told: dict[str, str | None] = {}  # seat -> the obstruction the desk was last told of
         self.brief_stamp = self._brief_stamp()
+        copy = install.installed(self.runtime) if install.running_from(self.runtime / 'venv' / 'bin') else None
+        self.framework_commit = copy['commit'] if copy else None
         self.ledger = Ledger(self.runtime / "ledger.sqlite")
         self.meters: dict[str, machine.Meter] = {}
         self.usage_read: dict[str, float] = {}
@@ -212,6 +215,13 @@ class Service:
 
     def answer(self, data: dict) -> str | None:
         kind = data["kind"]
+        if kind == 'rebrief':
+            copy = install.installed(self.runtime)
+            if copy is None or copy['commit'] != data['commit']:
+                return json.dumps(dict(token=data['token'], status='superseded'))
+            if self.framework_commit != data['commit']:
+                return None  # only the requested installed/running revision may render and announce it
+            return self.upgrade_rebrief(data)
         if kind == "stop":
             return Door(self.seat(data["seat"])).interrupt()
         if kind == "resend":
@@ -397,7 +407,41 @@ class Service:
             return
         self.brief_stamp = stamp
         for seat in seats(self.ship, self.tmux):
+            path = self.runtime / 'brief' / f'{seat.name}.md'
+            before = path.read_text() if path.exists() else None
             standing.render(self.ship, seat.spec)
-            if seat.is_up:
+            if seat.is_up and path.read_text() != before:
                 self.store.new("report", "ship", seat.name, f"ship's orders changed · read runtime/brief/{seat.name}.md")
         self.log("rebrief", seats=list(self.ship.seats))
+
+    def upgrade_rebrief(self, data: dict) -> str | None:
+        """A durable baseline survives rendering and retries; posting is not proof of reading."""
+        affected, changed = [], []
+        for seat in seats(self.ship, self.tmux):
+            launch = seat.folder / 'launch.json'
+            same = (data['launches'].get(seat.name) is not None
+                    and install.launch_stamp(launch) == data['launches'][seat.name] and seat.is_up)
+            if same and data['before'].get(seat.name) is None:
+                return None  # no known prior brief to compare; never overwrite that unknown baseline
+            path = standing.render(self.ship, seat.spec)
+            if hashlib.sha256(path.read_bytes()).hexdigest() == data['before'].get(seat.name):
+                continue
+            changed.append(seat.name)
+            if same:
+                key = hashlib.sha256(f"{data['token']}:{seat.name}".encode()).hexdigest()[:16]
+                notice = post.Message(f'rep-upgrade-{key}', 'report', post.SHIP, seat.name,
+                    datetime.fromisoformat(data['at']), f"brief changed · read runtime/brief/{seat.name}.md")
+                target = self.store.dir / f'{notice.id}.json'
+                if target.exists():
+                    if post.Message.from_json(target.read_text()) != notice:
+                        raise ShipError('upgrade brief notice identity conflicts with an immutable post')
+                else:
+                    self.store.write(notice)
+                affected.append(seat.name)
+        self.brief_stamp = self._brief_stamp()
+        if changed:
+            proof = 'rebrief complete · changed briefs: ' + ', '.join(changed)
+            proof += ' · notices posted: ' + (', '.join(affected) or 'none') + ' · delivery/read unconfirmed'
+        else:
+            proof = 'rebrief complete · no brief changed'
+        return json.dumps(dict(token=data['token'], status='complete', proof=proof))

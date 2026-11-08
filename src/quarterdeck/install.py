@@ -13,6 +13,7 @@ previous commit rolls back; removing ``runtime/venv`` returns the ship to the ch
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import os
 import shlex
@@ -20,6 +21,8 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import time
+from uuid import uuid4
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -28,6 +31,58 @@ from .ship import Ship, ShipError
 from .tmux import Tmux
 
 RECORD = "installed.json"
+
+
+def launch_stamp(path: Path) -> str | None:
+    """Bind the complete saved launch without copying its command/brief into requests."""
+    if not path.exists():
+        return None
+    data = json.dumps(json.loads(path.read_text()), sort_keys=True)
+    return hashlib.sha256(data.encode()).hexdigest()
+
+
+def brief_snapshot(ship: Ship) -> dict:
+    """Capture the existing offered brief and complete launch before installation/rendering."""
+    before, launches = {}, {}
+    for name in ship.seats:
+        brief = ship.runtime / 'brief' / f'{name}.md'
+        launch = ship.runtime / 'seats' / name / 'launch.json'
+        before[name] = hashlib.sha256(brief.read_bytes()).hexdigest() if brief.exists() else None
+        launches[name] = launch_stamp(launch)
+    return dict(before=before, launches=launches)
+
+
+def queue_rebrief(ship: Ship, commit: str, previous: dict | None, snapshot: dict) -> tuple[Path, dict]:
+    """Reuse incomplete work on the current commit; another upgrade is a new event."""
+    folder = ship.runtime / 'requests'
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f'upgrade-rebrief-{commit}.json'
+    if previous and previous['commit'] == commit and path.exists():
+        data = json.loads(path.read_text())
+    else:
+        data = dict(kind='rebrief', commit=commit, token=uuid4().hex,
+                    at=datetime.now(timezone.utc).isoformat(), **snapshot)
+    path.with_suffix('.done').unlink(missing_ok=True)  # an old unknown-kind answer is not completion
+    tmp = path.with_suffix('.tmp')
+    tmp.write_text(json.dumps(data) + '\n')
+    os.replace(tmp, path)
+    return path, data
+
+
+def rebrief_result(path: Path, data: dict, timeout: float = servicectl.ANSWER_SECONDS) -> str:
+    deadline = time.monotonic() + timeout
+    answer = path.with_suffix('.done')
+    while time.monotonic() < deadline:
+        if answer.exists():
+            try:
+                result = json.loads(answer.read_text())
+                if result.get('token') == data['token'] and result.get('status') == 'complete':
+                    return result['proof']
+            except (ValueError, AttributeError, KeyError):
+                pass
+            return 'rebrief incomplete · installed service did not confirm the request'
+        time.sleep(0.1)
+    return 'rebrief pending · service will retry; no delivery or read is confirmed'
 
 
 def venv_qd(folder: Path) -> Path | None:
@@ -77,6 +132,7 @@ def upgrade(ship: Ship, ref: str = "HEAD", tmux: Tmux | None = None) -> list[str
     repo = source_repo(ship)
     commit = git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}").decode().strip()
     runtime = ship.runtime
+    snapshot = brief_snapshot(ship)
     staging = runtime / "upgrade" / commit
     shutil.rmtree(staging, ignore_errors=True)
     staging.mkdir(parents=True)
@@ -99,17 +155,22 @@ def upgrade(ship: Ship, ref: str = "HEAD", tmux: Tmux | None = None) -> list[str
         shutil.rmtree(venv, ignore_errors=True)  # a copy that cannot answer is not left where every qd would hand off to it
         raise
     previous = installed(runtime)
+    was_running = servicectl.alive(runtime)
+    stopped = servicectl.stop(runtime) if was_running else None
     record = {"commit": commit, "ref": ref, "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
               "previous": previous["commit"] if previous else None}
     (runtime / RECORD).write_text(json.dumps(record, indent=2) + "\n")
+    rebrief, request = queue_rebrief(ship, commit, previous, snapshot)
     before = f"was {previous['commit'][:7]}" if previous else "the ship ran the checkout before"
     back = f"qd upgrade {previous['commit'][:7]} rolls back" if previous else "removing runtime/venv returns it to the checkout"
     proofs = [f"installed {commit[:7]} ({ref}) into runtime/venv · {version} · {before} · {back}"]
-    if servicectl.alive(runtime):
-        proofs.append(servicectl.stop(runtime))
+    if was_running:
+        proofs.append(stopped)
         proofs.append(servicectl.start(ship, qd=venv / "bin" / "qd"))
+        proofs.append(rebrief_result(rebrief, request))
     else:
         proofs.append("service not running; qd up starts it on the installed copy")
+        proofs.append('rebrief pending · qd up renders current briefs and posts changed-brief notices')
     if tmux is not None:
         pointed = [s.title for s in ship.sessions.values() if tmux.has_session(s.title)]
         for title in pointed:
