@@ -80,16 +80,22 @@ def inputs(record: Path) -> list[Input]:
                 if isinstance(content, list) and not any(block.get('type') in ('text', 'tool_result') for block in content):
                     found.skip(line, 'user', 'no known prompt text')
                     continue
+                if isinstance(content, list) and any(block.get('type') == 'text' and not isinstance(block.get('text'), str) for block in content):
+                    raise TypeError
             text = prompt_text(row)
             if text is not None:
                 found.append(Input(text, stamp))
             if row.get("type") != "queue-operation":
                 continue
             operation = row.get("operation")
+            content = row['content']
+            if not isinstance(content, str):
+                raise TypeError
+            text = unwrap(content)
             if operation not in ('enqueue', 'remove', 'dequeue'):
                 found.skip(line, 'queue-operation', 'unknown queue operation')
+                queued = [item for item in queued if item.text.strip() != text.strip()]
                 continue
-            text = unwrap(row.get("content") or "")
             matching = next((i for i, item in enumerate(queued) if item.text.strip() == text.strip()), None)
             if operation == "enqueue":
                 queued.append(Input(text, stamp, "queued"))  # stale and untimed entries still occupy FIFO positions

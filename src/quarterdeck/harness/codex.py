@@ -102,7 +102,7 @@ def inputs(record: Path) -> list[Input]:
             if not any(c.get('type') == 'input_text' for c in content):
                 found.skip(line, 'response_item', 'no known input text')
                 continue
-            text = "\n".join(c.get("text", "") for c in content if c.get("type") == "input_text")
+            text = "\n".join(c["text"] for c in content if c.get("type") == "input_text")
             at = when(row.get("timestamp"))
             found.append(Input(text, at, "consumed" if seen else "accepted", at if seen else None))
             seen = True

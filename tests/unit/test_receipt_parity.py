@@ -85,7 +85,7 @@ def test_unreadable_input_shapes_do_not_hide_fresh_siblings_or_confirm_untimed_h
     at = datetime(2030, 1, 1, tzinfo=timezone.utc)
     make = {
         "claude": lambda value: {"type": "user", "message": {"content": value}},
-        "codex": lambda value: {"type": "response_item", "payload": {"role": "user", "content": value}},
+        "codex": lambda value: {"type": "response_item", "payload": {"type": "message", "role": "user", "content": value}},
         "pi": lambda value: {"type": "message", "message": {"role": "user", "content": value}},
     }[name]
     content = [{"type": "input_text", "text": "exact input"}] if name == "codex" else "exact input"

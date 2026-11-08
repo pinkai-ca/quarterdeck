@@ -97,13 +97,38 @@ def test_foreign_whole_file_is_an_error_but_empty_record_is_not(tmp_path,name):
     with pytest.raises(OSError):input_receipt.confirmed(name,record,'transport',T0)
 
 
-def test_claude_unknown_queue_operation_does_not_erase_or_consume_queue(tmp_path):
+def test_claude_unknown_queue_operation_stays_unknown_and_later_evidence_survives(tmp_path):
     record=tmp_path/'record.jsonl'
     write(record,[queue('transport','enqueue',1),queue('transport',PRIVATE,2)])
-    assert input_receipt.confirmed('claude',record,'transport',T0)=='queued'
-    append(record,bad('claude','shape'),queue('transport','remove',3))
+    assert input_receipt.confirmed('claude',record,'transport',T0) is None
+    assert harness.get('claude').inputs(record).skipped==[
+        {'line':2,'kind':'queue-operation','reason':'unknown queue operation'}]
+    append(record,bad('claude','shape'),queue('transport','enqueue',3),queue('transport','remove',4))
     assert input_receipt.confirmed('claude',record,'transport',T0)=='delivered'
-    assert input_receipt.confirmed('claude',record,'transport',T0+timedelta(seconds=2)) is None
+    assert input_receipt.confirmed('claude',record,'transport',T0+timedelta(seconds=4)) is None
+
+
+@pytest.mark.parametrize('candidate',['codex-text','claude-text','claude-queue'])
+@pytest.mark.parametrize('missing',[False,True])
+def test_missing_or_nonstring_text_is_not_an_empty_receipt(tmp_path,candidate,missing):
+    name=candidate.split('-')[0]
+    record=tmp_path/'record.jsonl'
+    item=user(name,'',2)
+    if candidate=='codex-text':
+        block=item['payload']['content'][0];key='text'
+    elif candidate=='claude-text':
+        block={'type':'text','text':''};key='text';item['message']['content']=[block]
+    else:
+        item=queue('','enqueue',2);block=item;key='content'
+    if missing:block.pop(key)
+    else:block[key]=None
+    rows=[user(name,'known',1),item]
+    if candidate=='claude-queue':rows.append(queue('','remove',3))
+    write(record,rows)
+    assert input_receipt.confirmed(name,record,'',T0) is None
+    assert harness.get(name).inputs(record).skipped==[
+        {'line':2,'kind':'response_item' if name=='codex' else ('queue-operation' if candidate=='claude-queue' else 'user'),
+         'reason':'malformed input row'}]
 
 
 @pytest.mark.parametrize('name',['codex','claude'])
