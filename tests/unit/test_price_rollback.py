@@ -29,11 +29,11 @@ RATES = dict(currency='USD', unit='million_tokens', input=2, output=4, cache_rea
 
 
 @pytest.fixture
-def old(tmp_path):
+def old(tmp_path, request):
     """Extract only committed Python sources in a disposable tree, never an evidence bundle."""
     with tempfile.TemporaryDirectory(dir=tmp_path) as directory:
         root = Path(directory)
-        source = subprocess.check_output(['git', 'archive', BASE, 'src/quarterdeck'], cwd=Path(__file__).parents[2])
+        source = subprocess.check_output(['git', 'archive', getattr(request, 'param', BASE), 'src/quarterdeck'], cwd=Path(__file__).parents[2])
         with tarfile.open(fileobj=io.BytesIO(source)) as archive:
             archive.extractall(root, filter='data')
         env = {k: v for k, v in os.environ.items() if k not in ('QD_SHIP', 'QD_SEAT')}

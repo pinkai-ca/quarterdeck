@@ -9,6 +9,7 @@ import pytest
 from quarterdeck import ledger
 from quarterdeck.harness.types import CostStep, Tokens, ToolCall, Turn
 from quarterdeck.post import Store
+from .test_price_rollback import old
 
 
 @pytest.mark.parametrize("reordered_projection", [False, True])
@@ -61,3 +62,59 @@ def test_late_refresh_retains_named_fields_and_public_tuples(tmp_path, monkeypat
         # A sparse earlier turn still resolves from the original launch after reopening.
         assert book.ingest("worker", "pool-b", record, [replace(refreshed, index=0), refreshed], store) == 1
         assert book.db.execute("SELECT turn,pool FROM turns ORDER BY turn").fetchall() == [(0, "pool-a"), (8, "pool-a")]
+
+
+@pytest.mark.parametrize("old", ["9e8e0e40851129b5f40a64da92ac8275ca5dcdfb"], indirect=True)
+@pytest.mark.parametrize("existing", [False, True])
+def test_current_rollback_target_reads_and_writes_after_named_row_ingestion(tmp_path, old, existing):
+    if existing:
+        old("import sys; from quarterdeck.ledger import Ledger; Ledger(Path(sys.argv[1])/'ledger.sqlite').close()", tmp_path)
+    at = datetime(2032, 1, 1, tzinfo=timezone.utc)
+    record = tmp_path / "record"
+    store = Store(tmp_path)
+    order = store.new("order", "desk", "worker", "synthetic task")
+    initial = Turn(8, at, at+timedelta(seconds=3), "in", "out", "m", Tokens(read_uncached=11),
+                   (ToolCall("child", None, None),), cost=2, recorded_cost=2, cost_basis="record",
+                   cost_steps=(CostStep("unknown", Tokens(), 0), CostStep("m", Tokens(read_uncached=11), 2)),
+                   unpriced_steps=1)
+    with ledger.Ledger(tmp_path / "ledger.sqlite") as book:
+        book.provenance.remember(record, "worker", "pool-a", at-timedelta(seconds=1))
+        book.ingest("worker", "pool-a", record, [initial], store, {8: ledger.Machine(1.25, 8192, 3, 512)})
+    assert old(CURRENT_ROLLBACK_WRITE, tmp_path).strip() == "preceding read and write passed"
+    with ledger.Ledger(tmp_path / "ledger.sqlite") as book:
+        assert book.db.execute("SELECT turn,seat,pool,order_id,cost,cpu_seconds,write_bytes FROM turns ORDER BY turn").fetchall() == [
+            (8, "worker", "pool-a", order.id, 3, 1.25, 512), (12, "worker", "pool-b", order.id, 0, 2, 256)]
+        assert book.costs.get(record, 8) == (3, "record", 1)
+        assert book.costs.details(record, 8).unpriced_steps == 1
+        assert [r.cost for r in book.rollup("pool")] == [3, 0]
+        assert [r.unpriced for r in book.rollup("pool")] == [1, 0]
+        assert book.tools() == [("child", 1, 2, 0, 0, 0)]
+        refresh = replace(initial, ended=at+timedelta(seconds=5), tools=(ToolCall("child", 2, False),),
+                          cost=3, recorded_cost=3, cost_steps=(initial.cost_steps[0], replace(initial.cost_steps[1], recorded=3)))
+        assert book.ingest("foreign", "pool-b", record, [refresh], store) == 0
+        assert book.ingested(record) == 2
+
+
+CURRENT_ROLLBACK_WRITE = """
+import sys
+from datetime import datetime, timedelta, timezone
+from quarterdeck.ledger import Ledger, Machine
+from quarterdeck.harness.types import CostStep, ToolCall, Tokens, Turn
+from quarterdeck.post import Store
+p = Path(sys.argv[1]); at = datetime(2032, 1, 1, tzinfo=timezone.utc)
+with Ledger(p/'ledger.sqlite') as book:
+    assert book.rollup('pool')[0].cost == 2 and book.rollup('pool')[0].unpriced == 1
+    assert book.costs.get(p/'record', 8) == (2, 'record', 1)
+    assert len(book.db.execute('PRAGMA table_info(turns)').fetchall()) == 22
+    assert len(book.db.execute('PRAGMA table_info(record_launches)').fetchall()) == 4
+    book.provenance.remember(p/'record', 'worker', 'pool-b', at+timedelta(seconds=10))
+    refresh = Turn(8, at, at+timedelta(seconds=5), 'in', 'out', 'm', Tokens(read_uncached=11),
+                   (ToolCall('child', 2, False),), cost=3, recorded_cost=3, cost_basis='record',
+                   cost_steps=(CostStep('unknown', Tokens(), 0), CostStep('m', Tokens(read_uncached=11), 3)),
+                   unpriced_steps=1)
+    zero = Turn(12, at+timedelta(seconds=11), at+timedelta(seconds=12), 'new', 'done', 'm', Tokens(), cost=0)
+    assert book.ingest('worker', 'pool-b', p/'record', [refresh, zero], Store(p),
+                       {8: Machine(99), 12: Machine(2, 4096, 1, 256)}) == 2
+    assert book.ingest('worker', 'pool-b', p/'record', [refresh, zero], Store(p)) == 0
+print('preceding read and write passed')
+"""
