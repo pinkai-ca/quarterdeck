@@ -4,7 +4,8 @@ Source: openai/codex rust-v0.166.0, codex-rs/tui/src/bottom_pane/textarea/wrappi
 It selects textwrap 0.16.2 FirstFit with unicode-linebreak 0.1.5 (Unicode 15).
 The separator suppresses HY breaks; HyphenSplitter restores only those between
 alphanumeric characters. Cases below cover the printable-ASCII projection,
-including bracket/quote/number context; they do not claim other scripts.
+including bracket/quote/number context and established Latin letters. Unknown
+classes constrain their own context rather than invalidating the whole line.
 The saved-shape fixture substitutes every private letter/digit and its headers.
 """
 
@@ -67,8 +68,50 @@ def test_other_adapters_do_not_acquire_codex_break_rules(name, monkeypatch):
 
 
 @pytest.mark.parametrize("left,right", [("open( ", "more"), ("quote\"  ", "(more)"),
-                                      ("letteré/", "branch"), ("text\u00a0", "next")])
+                                      ("letter\u200d/", "branch"), ("text\u00a0", "next")])
 def test_unestablished_or_nonbreaking_context_is_not_a_space_wrap(monkeypatch, left, right):
     first = "x" * (37-len(left)) + left
     door = door_for("codex", capture("codex", first.rstrip()+"\n"+right, "full", 43), monkeypatch, 43)
     assert not door.matches(door.harness.box(first+right), door.screen())
+
+
+@pytest.mark.parametrize("payload,rows", [
+    ("café nextword", "café\nnextword"),
+    ("a café-barbaz", "a café-\nbarbaz"),
+    ("a café/barbaz", "a café/\nbarbaz"),
+    ("tag caféword", "tag\ncaféword"),
+    ("a foo-barbaz", "a foo-\nbarbaz"),
+    ("a foo/barbaz", "a foo/\nbarbaz"),
+    ("Ω note nextword", "Ω note\nnextword"),
+    ("tag nextword Ω", "tag\nnextword Ω"),
+    ("☃ café/barbaz", "☃ café/\nbarbaz"),
+    ("go résumé-tail", "go résumé-\ntail"),
+    ("a אב-nextword", "a אב-\nnextword"),
+])
+def test_established_word_breaks_do_not_depend_on_unrelated_unicode(monkeypatch, payload, rows):
+    door = door_for("codex", capture("codex", rows, "full", 13), monkeypatch, 13)
+    assert door.harness.box_columns(13) == 10
+    assert door.matches(door.harness.box(payload), door.screen())
+    assert not door.reading().open, "a match alone cannot claim a foreign draft"
+    assert not door.matches(door.harness.box(payload + "!"), door.screen())
+    wider = door_for("codex", capture("codex", rows, "full", 43), monkeypatch, 43)
+    assert not wider.matches(wider.harness.box(payload), wider.screen()), "a fitting word cannot justify a break"
+
+
+@pytest.mark.parametrize("payload,rows", [
+    ("café nextword", "caf é\nnextword"),
+    ("café nextword", "cafe\nnextword"),
+    ("café nextword", "café\nnextwor"),
+    ("cafe\u0301 nextword", "cafe\u0301\nnextword"),
+    ("a 👩\u200d💻nextword", "a 👩\u200d💻\nnextword"),
+    ("1234567 café\u0301tail", "1234567\ncafé\u0301tail"),
+    ("x\u00a0nextword", "x\nnextword"),
+    ("open( nextword é", "open(\nnextword é"),
+    ('quote" (more) é', 'quote"\n(more) é'),
+    ("name:nextword é", "name:\nnextword é"),
+    ("a 「 nextword", "a 「\nnextword"),
+    ("a אב|+nextword", "a אב|\n+nextword"),
+])
+def test_unicode_does_not_authorize_changed_text_or_unknown_context(monkeypatch, payload, rows):
+    door = door_for("codex", capture("codex", rows, "full", 13), monkeypatch, 13)
+    assert not door.matches(door.harness.box(payload), door.screen())

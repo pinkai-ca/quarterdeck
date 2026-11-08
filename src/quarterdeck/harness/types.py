@@ -214,11 +214,11 @@ def _cells(text: str) -> int | None:
     return total
 
 
-# Printable-ASCII projection of Unicode 15 line-break classes and allowed pairs.
+# Established Unicode 15 line-break classes and their printable-ASCII pairs.
 # Codex 0.166.0 uses textwrap 0.16.2 / unicode-linebreak 0.1.5, FirstFit.
 # Parentheses, quotes, numbers and leading hyphens retain their context rules;
-# punctuation is not a blanket permission to break. Other scripts fail closed
-# at semantic breaks; exact text and established full-cell wraps remain usable.
+# punctuation is not a blanket permission to break. Unknown context is local,
+# never a reason to reject an independently established break elsewhere.
 _LINE_CLASSES = {"SP": " ", "BA": "|", "HY": "-", "CL": "}", "CP": ")]", "EX": "!?",
                  "OP": "([{", "QU": "\"'", "IS": ",.:;", "NU": "0123456789", "PO": "%", "PR": "$+\\", "SY": "/"}
 _BREAK_BEFORE = {
@@ -235,37 +235,52 @@ _BREAK_BEFORE = {
 }
 
 
-def _textwrap_breaks(line: str) -> list[int] | None:
-    """Source positions of the established ASCII textwrap boundaries, including its hyphen splitter."""
-    if any(not " " <= char <= "~" for char in line):
-        return None
+def _line_class(char: str) -> str | None:
+    if " " <= char <= "~":
+        return next((name for name, chars in _LINE_CLASSES.items() if char in chars), "AL")
+    # Latin-1 and Extended-A/B letters are AL in unicode-linebreak 0.1.5.
+    # Do not infer that other letters/scripts have the same line-break class.
+    if "\u00c0" <= char <= "\u024f" and unicodedata.category(char).startswith("L"):
+        return "AL"
+    return None
+
+
+def _textwrap_breaks(line: str) -> list[int]:
+    """Established boundaries, with unknown context retained until known text resolves it."""
     breaks = []
     state = "START"
     for index, char in enumerate(line):
-        kind = next((name for name, chars in _LINE_CLASSES.items() if char in chars), "AL")
+        kind = _line_class(char)
         if kind in _BREAK_BEFORE.get(state, ()):
             breaks.append(index)
         # textwrap suppresses Unicode HY breaks, then splits only alphanumeric-surrounded hyphens.
         if index > 1 and line[index - 1] == "-" and line[index - 2].isalnum() and char.isalnum():
             breaks.append(index)
+        if state == "UNKNOWN" and kind != "AL":
+            continue  # punctuation can retain unknown context (for example Hebrew before a bar)
         if kind == "SP" and state in ("OP", "OP-SP", "QU", "QU-SP"):
-            state = "OP-SP" if state.startswith("OP") else "QU-SP"
+            state = state.removesuffix("-SP") + "-SP"
         else:
-            state = kind
+            state = kind or "UNKNOWN"  # AL is a context reset in the pinned line-break table
     return sorted(set(breaks)) + [len(line)]
 
 
 def _textwrap_piece(text: str, position: int) -> int | None:
-    """Width to the next supported semantic boundary, preserving the logical line's context."""
+    """Known prefix width up to the next boundary or unknown class; never assume the latter joins."""
     start = text.rfind("\n", 0, position) + 1
     end = text.find("\n", position)
     line = text[start:end if end >= 0 else len(text)]
     breaks = _textwrap_breaks(line)
     offset = position - start
-    if breaks is None or offset not in breaks:
+    if offset not in breaks:
         return None
     following = next((stop for stop in breaks if stop > offset), len(line))
-    return _cells(line[offset:following].rstrip(" "))
+    unknown = next((i for i in range(offset, following) if _line_class(line[i]) is None), following)
+    if unknown < following and unicodedata.category(line[unknown])[0] in "CM" and line[unknown - 1:unknown] != " ":
+        return None  # combining/control layout may affect the prefix itself
+    # An unknown later class may introduce a boundary, so count only what is
+    # already known. If even that prefix cannot fit, the observed break is safe.
+    return _cells(line[offset:unknown].rstrip(" "))
 
 
 def _box_matches(text: str, shown: str, columns: int | None = None, slack: int = 0, textwrap_ascii: bool = False) -> bool:
