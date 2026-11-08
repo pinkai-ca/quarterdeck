@@ -62,10 +62,9 @@ def _text(content) -> str:
 
 def _tokens(message: dict) -> Tokens:
     usage = message.get("usage")
-    if not isinstance(usage, dict) or (not usage.get("totalTokens") and message.get("stopReason") in UNMEASURED_STOPS):
-        return Tokens.unknown()  # a step the program never measured: aborted before the usage arrived
-    return Tokens(read_cached=usage.get("cacheRead") or 0, read_uncached=usage.get("input") or 0,
-                  cache_written=usage.get("cacheWrite") or 0, written=usage.get("output") or 0)
+    if isinstance(usage, dict) and message.get("stopReason") in UNMEASURED_STOPS and not usage.get("totalTokens"):
+        return Tokens.unknown()  # the program initializes an aborted step with zero counters before any response
+    return Tokens.from_usage(usage, ("cacheRead", "input", "cacheWrite", "output"), total="totalTokens")
 
 
 class _Reader(JsonLinesReader):
@@ -95,7 +94,9 @@ class _Reader(JsonLinesReader):
                 self.start_turn({"started": at, "input": "", "tokens": Tokens(), "tools": [], "reply": "", "cost": 0.0})
             self.model = message.get("model") or self.model
             self.open["tokens"] = self.open["tokens"] + _tokens(message)
-            cost = ((message.get("usage") or {}).get("cost") or {}).get("total")
+            usage = message.get("usage")
+            costs = usage.get("cost") if isinstance(usage, dict) else None
+            cost = costs.get("total") if isinstance(costs, dict) else None
             if isinstance(cost, (int, float)):
                 self.open["cost"] += cost
             for block in message.get("content") or []:

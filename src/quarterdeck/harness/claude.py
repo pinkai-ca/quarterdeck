@@ -89,12 +89,8 @@ def inputs(record: Path) -> list[Input]:
 
 
 def usage_tokens(usage: dict) -> Tokens:
-    return Tokens(
-        read_cached=usage.get("cache_read_input_tokens", 0) or 0,
-        read_uncached=usage.get("input_tokens", 0) or 0,
-        cache_written=usage.get("cache_creation_input_tokens", 0) or 0,
-        written=usage.get("output_tokens", 0) or 0,
-    )
+    return Tokens.from_usage(usage, ("cache_read_input_tokens", "input_tokens", "cache_creation_input_tokens", "output_tokens"))
+
 
 
 class _Reader(JsonLinesReader):
@@ -170,8 +166,10 @@ class _Reader(JsonLinesReader):
         if self.open is None:
             return
         self.open["model"] = self.model
-        if message.get("usage"):
-            self.open["usage"][message.get("id") or entry.get("requestId") or entry.get("uuid")] = message["usage"]
+        key = message.get("id") or entry.get("requestId") or entry.get("uuid") or len(self.open["usage"])
+        measured = usage_tokens(message.get("usage"))
+        if key not in self.open["usage"] or measured.complete:
+            self.open["usage"][key] = measured
         for block in message.get("content") or []:
             if block.get("type") == "tool_use":
                 self.pending[block.get("id")] = (block.get("name", "?"), when(entry.get("timestamp")))
@@ -180,7 +178,7 @@ class _Reader(JsonLinesReader):
 
     def end(self, at: datetime | None) -> None:
         turn = self.close_turn()
-        tokens = sum((usage_tokens(u) for u in turn["usage"].values()), Tokens())
+        tokens = sum(turn["usage"].values(), Tokens()) if turn["usage"] else Tokens.unknown()
         self.turns.append(
             Turn(
                 index=len(self.turns),

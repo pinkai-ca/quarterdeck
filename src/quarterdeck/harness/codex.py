@@ -44,13 +44,13 @@ def session_id(record: Path) -> str | None:
 
 
 def usage_tokens(usage: dict) -> Tokens:
-    cached = usage.get("cached_input_tokens", 0) or 0
-    return Tokens(
-        read_cached=cached,
-        read_uncached=max((usage.get("input_tokens", 0) or 0) - cached, 0),
-        cache_written=usage.get("cache_write_input_tokens", 0) or 0,
-        written=usage.get("output_tokens", 0) or 0,
-    )
+    measured = Tokens.from_usage(usage, ("cached_input_tokens", "input_tokens", "cache_write_input_tokens", "output_tokens"),
+                                 total="total_tokens")
+    if not measured.complete or measured.read_cached > measured.read_uncached:
+        return Tokens.unknown()
+    return Tokens.measured(read_cached=measured.read_cached,
+                           read_uncached=measured.read_uncached - measured.read_cached,
+                           cache_written=measured.cache_written, written=measured.written)
 
 
 def _text(content: list | str | None) -> str:
@@ -117,10 +117,13 @@ class _Reader(JsonLinesReader):
         if sub == "task_started":
             if self.open is not None:
                 self.end(at)
-            self.start_turn({"started": at, "input": "", "tokens": Tokens(), "tools": [], "reply": ""})
+            self.start_turn({"started": at, "input": "", "tokens": Tokens(), "measurements": 0, "response": False, "tools": [], "reply": ""})
         elif sub == "token_count" and self.open is not None:
-            last = (payload.get("info") or {}).get("last_token_usage") or {}
+            info = payload.get("info")
+            last = info.get("last_token_usage") if isinstance(info, dict) else None
             self.open["tokens"] = self.open["tokens"] + usage_tokens(last)
+            self.open["measurements"] += 1
+            self.open["response"] = False
         elif sub in ENDS_TURN and self.open is not None:
             if payload.get("last_agent_message"):
                 self.open["reply"] = payload["last_agent_message"]
@@ -137,9 +140,16 @@ class _Reader(JsonLinesReader):
                     self.open["input"] = text
         elif sub == "message" and payload.get("role") == "assistant" and self.open is not None:
             self.open["reply"] = _text(payload.get("content")) or self.open["reply"]
+            self.open["response"] = True
         elif sub in CALLS:
+            if self.open is not None:
+                self.open["response"] = True
             self.pending[payload.get("call_id")] = (payload.get("name", "?"), at)
         elif sub in OUTPUTS:
+            if self.open is not None and self.open["response"]:
+                self.open["tokens"] += Tokens.unknown()
+                self.open["measurements"] += 1
+                self.open["response"] = False
             self.close_tool(payload.get("call_id"), at, _failed(payload.get("output")))
 
     def end(self, at: datetime | None) -> None:
@@ -152,7 +162,7 @@ class _Reader(JsonLinesReader):
                 input=turn["input"],
                 reply=turn["reply"],
                 model=self.model,
-                tokens=turn["tokens"],
+                tokens=turn["tokens"] + (Tokens.unknown() if turn["response"] or not turn["measurements"] else Tokens()),
                 tools=tuple(turn["tools"]),
             )
         )

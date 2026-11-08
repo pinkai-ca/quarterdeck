@@ -41,6 +41,22 @@ class Tokens:
         """One step whose usage the record does not hold."""
         return cls(unmeasured=1)
 
+    @classmethod
+    def measured(cls, *, read_cached=0, read_uncached=0, cache_written=0, written=0) -> "Tokens":
+        """A present measurement: omitted classes are zero, invalid counts are unknown."""
+        counts = (read_cached, read_uncached, cache_written, written)
+        return cls(*counts) if all(type(n) is int and n >= 0 for n in counts) else cls.unknown()
+
+    @classmethod
+    def from_usage(cls, usage: object, fields: tuple[str, str, str, str], *, total: str | None = None) -> "Tokens":
+        """JSON measurement presence needs a recognized count; empty/foreign shapes prove nothing."""
+        if not isinstance(usage, dict) or not any(k in usage for k in (*fields, *((total,) if total else ()))):
+            return cls.unknown()
+        if total and total in usage and (type(usage[total]) is not int or usage[total] < 0):
+            return cls.unknown()
+        counts = [usage.get(k, 0) for k in fields]
+        return cls.measured(read_cached=counts[0], read_uncached=counts[1], cache_written=counts[2], written=counts[3])
+
     def __add__(self, other: "Tokens") -> "Tokens":
         return Tokens(
             self.read_cached + other.read_cached,

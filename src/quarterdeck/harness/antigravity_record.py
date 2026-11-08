@@ -55,9 +55,12 @@ def _parse_usage(raw: bytes | None) -> Tokens:
     """
     if raw is None:
         return Tokens.unknown()
-    fields = _proto(raw)
-    return Tokens(read_cached=_int(fields, 5) or 0, read_uncached=_int(fields, 2) or 0,
-                  cache_written=_int(fields, 4) or 0, written=_int(fields, 3) or 0)
+    try:
+        fields = _proto(raw)
+        return Tokens.measured(read_cached=_int(fields, 5) or 0, read_uncached=_int(fields, 2) or 0,
+                               cache_written=_int(fields, 4) or 0, written=_int(fields, 3) or 0)
+    except RecordError:
+        return Tokens.unknown()  # an unreadable measurement cannot discard readable sibling steps
 
 
 def _tool_failed(status: int, err_blob: bytes | None, payload: dict[int, list]) -> bool | None:

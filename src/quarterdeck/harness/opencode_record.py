@@ -102,12 +102,13 @@ def _tokens(step: dict) -> Tokens:
     cache = tokens.get("cache", {})
     if not isinstance(cache, dict):
         return Tokens.unknown()
-    counts = [tokens.get(k, 0) for k in ("total", "input", "output", "reasoning")]
-    counts += [cache.get(k, 0) for k in ("read", "write")]
-    if any(type(n) is not int or n < 0 for n in counts):
+    measured = Tokens.from_usage({**tokens, "cached": cache.get("read", 0), "cache_written": cache.get("write", 0)},
+                                 ("cached", "input", "cache_written", "output"), total="total")
+    reasoning = tokens.get("reasoning", 0)
+    if not measured.complete or type(reasoning) is not int or reasoning < 0:
         return Tokens.unknown()
-    _, uncached, output, reasoning, cached, written = counts
-    return Tokens(read_cached=cached, read_uncached=uncached, cache_written=written, written=output + reasoning)
+    return Tokens.measured(read_cached=measured.read_cached, read_uncached=measured.read_uncached,
+                           cache_written=measured.cache_written, written=measured.written + reasoning)
 
 
 def _tool_call(part: dict, state: dict) -> ToolCall:
@@ -175,6 +176,8 @@ class _Session:
                     elif state.get("status") in ("completed", "error"):
                         tools.append(_tool_call(part, state))
         self.model = model or self.model
+        if not steps:
+            tokens = Tokens.unknown()
         last = steps[-1][0] if steps else {}
         ended = _ms(_object(last.get("time")).get("completed"))
         timed = True
