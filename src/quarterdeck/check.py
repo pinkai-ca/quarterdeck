@@ -67,7 +67,8 @@ def check(ship: Ship, name: str, tmux: Tmux) -> list[Check]:
         proven = ship.runtime / "proven"
         proven.mkdir(parents=True, exist_ok=True)
         (proven / f"{name}-{version}").write_text(f"{post.now().isoformat(timespec='seconds')}\n")
-        checks.append(Check("proven", True, f"{proven / f'{name}-{version}'}"))
+        checks.append(Check("proven: launch, an open door, a paste the record confirmed, the task, the turn read", True,
+                            f"{proven / f'{name}-{version}'}"))
     return checks
 
 
