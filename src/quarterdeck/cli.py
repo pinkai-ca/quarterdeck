@@ -7,13 +7,14 @@ done and how it was confirmed, and every refusal names the reason and what would
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 from typing import Any
 
 from . import (__version__, check, doctor, drill, harness as harnesses, install, ledger, post, seat as seatmod, service,
                ship as shipmod, standing, watch)
+from .output import Reading
+from . import output, ledger_reading
 from .ship import ShipError
 from .tmux import Tmux, TmuxError
 
@@ -49,16 +50,7 @@ def handoff(args: argparse.Namespace, argv: list[str]) -> None:
 
 
 def emit(args: argparse.Namespace, result: Any) -> None:
-    """A proof line, a table, or the same as JSON when asked."""
-    if result is None:
-        return
-    if args.json:
-        print(json.dumps(result if not isinstance(result, str) else {"proof": result}, indent=2, default=str))
-    elif isinstance(result, str):
-        print(result)
-    else:
-        for line in result if isinstance(result, list) else [result]:
-            print(line)
+    output.emit(result, json_output=args.json)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -255,45 +247,55 @@ def apply_control(ship: shipmod.Ship, seat: seatmod.Seat, key: str, value: str) 
     return "  " + service.request(ship.runtime, "control", seat=seat.name, name=key, value=value)
 
 
-def cmd_controls(args: argparse.Namespace) -> list[str]:
+def cmd_controls(args: argparse.Namespace) -> Reading:
     ship = load_ship(args)
     seat = seat_of(ship, this_seat(ship, args.seat))
+    return Reading({"seat": seat.name, "controls": seat.harness.controls(), "relaunch": RESTART_CONTROLS}, render_controls)
+
+
+def render_controls(data: dict) -> list[str]:
     rows = [f"{'control':<10} {'at launch':<22} {'in session':<18} confirmed by"]
-    for c in seat.harness.controls():
+    for c in data["controls"]:
         rows.append(f"{c.name:<10} {c.launch or '-':<22} {c.session or '-':<18} {c.confirmed_by}")
-    for key, how in RESTART_CONTROLS.items():
+    for key, how in data["relaunch"].items():
         rows.append(f"{key:<10} {'the ship file':<22} {'-':<18} qd {how}")
     return rows
 
 
-def cmd_laws(args: argparse.Namespace) -> list[str]:
-    return standing.laws_table()
+def cmd_laws(args: argparse.Namespace) -> Reading:
+    return Reading(standing.law_reading(), standing.render_laws)
 
 
-def cmd_brief(args: argparse.Namespace) -> str:
+def cmd_brief(args: argparse.Namespace) -> Reading:
     ship = load_ship(args)
     brief = standing.brief(ship, ship.seat(this_seat(ship, args.seat)))
+    data = {"text": brief.text, "sources": [{"name": name, "path": path} for name, path in brief.sources],
+            "words": brief.words, "target_words": standing.BRIEF_WORDS}
     if args.sources:
-        lines = [f"{name:<14} {path or '(built in)'}" for name, path in brief.sources]
-        return "\n".join(lines + [f"{'words':<14} {brief.words} (target under {standing.BRIEF_WORDS})"])
-    return brief.text.rstrip("\n")
+        return Reading(data, render_sources)
+    return Reading(data, lambda d: d["text"].rstrip("\n"))
 
 
-def cmd_status(args: argparse.Namespace) -> list[str] | str:
+def render_sources(data: dict) -> list[str]:
+    return [f"{s['name']:<14} {s['path'] or '(built in)'}" for s in data["sources"]] + [
+        f"{'words':<14} {data['words']} (target under {data['target_words']})"]
+
+
+def cmd_status(args: argparse.Namespace) -> Reading:
     ship = load_ship(args)
     if args.line:
-        return watch.line(ship, Tmux.default())
-    return watch.table(ship, Tmux.default())
+        return Reading(watch.facts_reading(ship, Tmux.default()), watch.render_facts)
+    return Reading(watch.status_reading(ship, Tmux.default()), watch.render_table)
 
 
-def cmd_watch(args: argparse.Namespace) -> list[str] | str:
+def cmd_watch(args: argparse.Namespace) -> Reading | str:
     ship = load_ship(args)
     if not args.seat:
-        return watch.table(ship, Tmux.default())
+        return Reading(watch.status_reading(ship, Tmux.default()), watch.render_table)
     seat = seat_of(ship, args.seat)
     if args.save_screen:
         return f"screen saved to {watch.save_screen(seat)}"
-    return watch.full(seat)
+    return Reading(watch.seat_reading(seat), watch.render_full)
 
 
 # -- post --------------------------------------------------------------------------------
@@ -357,19 +359,21 @@ def delivery_note(ship: shipmod.Ship, to: str) -> str:
     return f"the service types it into {to}'s pane"
 
 
-def cmd_inbox(args: argparse.Namespace) -> str | None:
+def cmd_inbox(args: argparse.Namespace) -> Reading | None:
     ship = load_ship(args)
     seat = this_seat(ship, args.seat, operator_too=True)
     if not args.wait:
-        return post.inbox_text(post.Store(ship.runtime), seat).rstrip("\n")
+        return Reading(post.inbox_reading(post.Store(ship.runtime), seat),
+                       lambda data: post.render_inbox_reading(data).rstrip("\n"))
     if seat in ship.seats and not ship.session_of(ship.seat(seat)).human:
         raise ShipError(f"{seat} is reached through its door; --wait is for seats in a human's session")
     shipmod.fence(ship)
-    arrived = post.wait(ship.runtime, seat)
+    arrived = post.wait_batch(ship.runtime, seat)
     if arrived is None:
         return None
-    text, opened = arrived
-    print(text, end="", flush=True)  # printed first, then recorded as delivered
+    messages, opened = arrived
+    batch = Reading({"seat": seat, "messages": messages}, lambda data: post.typed(data["messages"]).rstrip("\n"))
+    emit(args, batch)  # serialization, output and flush must all succeed before the receipt
     post.printed(ship.runtime, opened)
     return None
 
@@ -379,17 +383,15 @@ def cmd_service(args: argparse.Namespace) -> None:
     service.Service(ship, Tmux.default()).run()
 
 
-def cmd_ledger(args: argparse.Namespace) -> list[str]:
+def cmd_ledger(args: argparse.Namespace) -> Reading:
     ship = load_ship(args)
     book = ledger.Ledger.reading(ship.runtime / "ledger.sqlite")  # a reading never writes the book
     if book is None:
-        return ["no ledger yet: the service writes it once the ship is up"]
-    with book:
-        if args.tools:
-            return ledger.tools_table(book)
-        if args.by:
-            return ledger.table(book, args.by)
-        return ledger.pools_table(book, ship)
+        data = ledger_reading.missing(by=args.by, tools=args.tools)
+    else:
+        with book:
+            data = ledger_reading.collect(book, ship, by=args.by, tools=args.tools)
+    return Reading(data, ledger_reading.render)
 
 
 def cmd_check(args: argparse.Namespace) -> list[str]:
@@ -399,12 +401,13 @@ def cmd_check(args: argparse.Namespace) -> list[str]:
     return [str(c) for c in checks]
 
 
-def cmd_doctor(args: argparse.Namespace) -> list[str]:
+def cmd_doctor(args: argparse.Namespace) -> Reading | list[str]:
     try:
         ship = load_ship(args)
     except ShipError as error:
         args.exit_code = 1
-        return [str(drill.Check("ship file", False, str(error)))]
+        return Reading({"checks": [drill.Check("ship file", False, str(error))]},
+                       lambda d: [str(c) for c in d["checks"]])
     found = doctor.checks(ship)
     lines = [str(c) for c in found]
     failed = [c for c in found if not c.passed]
@@ -413,7 +416,7 @@ def cmd_doctor(args: argparse.Namespace) -> list[str]:
         found = doctor.checks(ship)
         lines += ["", "checked again:"] + [str(c) for c in found]
     args.exit_code = 0 if all(c.passed for c in found) else 1
-    return lines
+    return lines if args.fix else Reading({"checks": found}, lambda d: [str(c) for c in d["checks"]])
 
 
 def cmd_upgrade(args: argparse.Namespace) -> list[str]:

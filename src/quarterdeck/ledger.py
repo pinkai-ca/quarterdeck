@@ -335,61 +335,24 @@ def attribution(store: Store, seat: str, turn: Turn) -> str:
     return open_then[0].id if len(open_then) == 1 else UNATTRIBUTED  # law: every-turn-accounted
 
 
-def incomplete_notes(ledger: Ledger) -> list[str]:
-    unknown = ledger.db.execute("SELECT COUNT(*) FROM turns WHERE pool = ?", (UNKNOWN,)).fetchone()[0]
-    notes = ([f"{unknown} turns with unknown pool attribution: missing/ambiguous launch history or turn times, or a turn crossing pools"]
-             if unknown else [])
-    return notes + [f"unread record: {Path(r).name} ({s}, {p}) · {e}" for r, s, p, e in ledger.incomplete_records()]
-
-
 PLUS_NOTE = "a figure with + has turns beside it that the record did not measure: at least this much"
 
 
+def incomplete_notes(ledger: Ledger) -> list[str]:
+    from .ledger_reading import notes, uncertainty
+    return notes(uncertainty(ledger))
+
+
 def table(ledger: Ledger, by: str) -> list[str]:
-    """``qd ledger --by seat|order|pool``: tokens, cost, tool calls, minutes, machine load side by side."""
-    head = f"{by:<30} {'turns':>5} {'cached':>10} {'uncached':>9} {'cache-w':>9} {'written':>8} {'cost':>8} {'tools':>7} {'fail':>7} {'min':>7} {'cpu-s':>7} {'written-MB':>10}"
-    lines = [head]
-    rows = ledger.rollup(by)
-    for r in rows:
-        cost = f"{r.cost:.2f}" if r.cost is not None else "-"
-        lines.append(f"{r.key:<30} {r.turns:>5} {figure(r.read_cached, r.unmeasured):>10} {figure(r.read_uncached, r.unmeasured):>9} "
-                     f"{figure(r.cache_written, r.unmeasured):>9} {figure(r.written, r.unmeasured):>8} {cost:>8} {r.tool_calls:>7} "
-                     f"{figure(r.tool_failures, r.unjudged):>7} {figure(r.minutes, r.untimed, '.1f'):>7} {r.cpu_seconds:>7.1f} {r.write_bytes / 1e6:>10.1f}")
-    if by == "order":
-        lines.append(f"unattributed turns are shown as {UNATTRIBUTED!r}")
-    if any(r.unmeasured or r.untimed or r.unjudged for r in rows):
-        lines.append(PLUS_NOTE)
-    return lines + incomplete_notes(ledger)
+    from .ledger_reading import collect, render
+    return render(collect(ledger, by=by))
 
 
 def tools_table(ledger: Ledger) -> list[str]:
-    """``qd ledger --tools``: tool calls by name."""
-    lines = [f"{'tool':<24} {'calls':>6} {'seconds':>9} {'failed':>6}"]
-    rows = ledger.tools()
-    for name, count, seconds, failed, untimed, unjudged in rows:
-        lines.append(f"{name:<24} {count:>6} {figure(seconds, untimed, '.1f'):>9} {figure(failed, unjudged):>6}")
-    if any(untimed or unjudged for *_, untimed, unjudged in rows):
-        lines.append(PLUS_NOTE)
-    return lines + incomplete_notes(ledger)
+    from .ledger_reading import collect, render
+    return render(collect(ledger, tools=True))
 
 
 def pools_table(ledger: Ledger, ship: Ship | None = None) -> list[str]:
-    lines = ["pool window · used · freshness · reset · reading time (age)"]
-    walls = set(ledger.walls(ship))
-    now = datetime.now().astimezone()
-    for reading in ledger.usage.rows():
-        wall = "  WALL" if any(w == f"{reading.pool} {reading.window}" or w.startswith(f"{reading.pool} {reading.window} ·") for w in walls) else ""
-        lines.append(reading.describe(now) + wall)
-    for pool in (p for p in (ship.pools.values() if ship else ()) if p.kind == "key"):
-        budget = Budget.parse(pool.budget)
-        spent, unpriced = ledger.spend(pool.name, budget.period_start(now) if budget else now.replace(day=1, hour=0, minute=0, second=0, microsecond=0))
-        stated = f"{spent:.2f} {budget.currency if budget else ''}".strip() if spent is not None else "no cost stated"
-        note = f" ({unpriced} turns with no price: the program states none and no table is carried)" if unpriced else ""
-        limit = f" of {budget.amount:.0f} {budget.currency}/{budget.period}" if budget else ""
-        wall = "  WALL" if f"{pool.name} budget" in walls else ""
-        lines.append(f"{pool.name:<20} {'spend':<8} {stated}{limit}{note}{wall}")
-    for pool in (p for p in (ship.pools.values() if ship else ()) if p.kind == "endpoint"):
-        lines.append(f"{pool.name:<20} {'endpoint':<8} {pool.endpoint} · no quota, no wall")
-    if len(lines) == 1:
-        lines.append("no usage read yet: the service reads active subscription pools in the background")
-    return lines + ledger.quota.usage_notes() + ["wall: " + w for w in ledger.quota.walls()] + incomplete_notes(ledger)
+    from .ledger_reading import collect, render
+    return render(collect(ledger, ship))

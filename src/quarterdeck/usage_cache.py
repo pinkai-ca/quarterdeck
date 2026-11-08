@@ -97,7 +97,7 @@ class UsageCache:
     def rows(self, pool=None):
         sql = ('SELECT pool,window,used,resets_at,read_at,blocks,group_name,bucket,bucket_name,attempted_at,error FROM pools'
                + (' WHERE pool=?' if pool is not None else '') + ' ORDER BY pool,window')
-        return [Reading(*r) for r in self.db.execute(sql, (pool,) if pool is not None else ())]
+        return [Reading(*r[:5], bool(r[5]), *r[6:]) for r in self.db.execute(sql, (pool,) if pool is not None else ())]
 
     def record(self, pool, usage, attempted_at):
         previous = {r.window:r for r in self.rows(pool)}

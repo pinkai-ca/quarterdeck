@@ -42,7 +42,7 @@ def test_set_takes_the_ship_from_the_environment_and_refuses_with_a_reason(drydo
 
 def test_brief_and_json_output(drydock: Path, capsys):
     code, out, _ = run(capsys, "--ship", str(drydock), "--json", "brief", "desk", "--sources")
-    assert code == 0 and '"proof"' in out and "laws" in out
+    assert code == 0 and '"sources"' in out and "laws" in out
     code, out, _ = run(capsys, "--ship", str(drydock), "brief", "desk")
     assert out.startswith("# Standing orders for Maeve")
 

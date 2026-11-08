@@ -201,21 +201,28 @@ def briefed_header(seat: str, role: str, open_messages: list[Message]) -> str:
 # -- the inbox ---------------------------------------------------------------------------
 
 
-def inbox_text(store: Store, seat: str) -> str:
+def inbox_reading(store: Store, seat: str) -> dict:
     messages = store.for_seat(seat)
-    open_ = [m for m in messages if store.is_open(m)]
-    rest = [m for m in messages if not store.is_open(m)]
-    lines = [f"# Inbox: {seat}", ""]
-    lines += [f"## Open ({len(open_)})", ""]
-    for message in open_:
-        lines += _entry(message, store)
-    lines += [f"## Received ({len(rest)})", ""]
-    for message in reversed(rest):
-        lines += _entry(message, store)
+    return {"seat": seat, "open": [m for m in messages if store.is_open(m)],
+            "received": list(reversed([m for m in messages if not store.is_open(m)])),
+            "closed_by": {m.id: closed.id for m in messages if m.kind == "order"
+                          and (closed := store.closing_report(m))}}
+
+
+def inbox_text(store: Store, seat: str) -> str:
+    return render_inbox_reading(inbox_reading(store, seat))
+
+
+def render_inbox_reading(data: dict) -> str:
+    lines = [f"# Inbox: {data['seat']}", ""]
+    for title, key in (("Open", "open"), ("Received", "received")):
+        lines += [f"## {title} ({len(data[key])})", ""]
+        for message in data[key]:
+            lines += _entry(message, data["closed_by"].get(message.id))
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _entry(message: Message, store: Store) -> list[str]:
+def _entry(message: Message, closed: str | None) -> list[str]:
     head = f"### {message.kind} {message.short} from {message.sender} · {message.at.strftime('%m-%d %H:%M')}"
     if message.subject:
         head += f" · {message.subject}"
@@ -225,8 +232,7 @@ def _entry(message: Message, store: Store) -> list[str]:
     if message.due:
         details.append(f"due {message.due}")
     if message.kind == "order":
-        closed = store.closing_report(message)
-        details.append(f"closed by {closed.short}" if closed else f"open · reply: qd post report --re {message.short}")
+        details.append(f"closed by {short_of(closed)}" if closed else f"open · reply: qd post report --re {message.short}")
     return [head, *([" · ".join(details)] if details else []), "", message.body.rstrip(), ""]
 
 
@@ -393,7 +399,7 @@ def watch_armed(runtime: Path, seat: str) -> bool:
     return True
 
 
-def wait(runtime: Path, seat: str, interval: float = 1.0, stop_after: float | None = None) -> tuple[str, list[Attempt]] | None:
+def wait_batch(runtime: Path, seat: str, interval: float = 1.0, stop_after: float | None = None) -> tuple[list[Message], list[Attempt]] | None:
     """Block until something new is addressed to ``seat``; return it in full, with its open attempts.
 
     The caller prints the text and then closes the attempts with ``printed``, so a wait
@@ -411,12 +417,17 @@ def wait(runtime: Path, seat: str, interval: float = 1.0, stop_after: float | No
             waiting = attempts.undelivered(store, seat)
             if waiting:
                 opened = [attempts.open(message, seat, None, None, None) for message in waiting]
-                return typed(waiting), opened
+                return waiting, opened
             if deadline is not None and datetime.now().timestamp() > deadline:
                 return None
             time.sleep(interval)
     finally:
         path.unlink(missing_ok=True)
+
+
+def wait(runtime: Path, seat: str, interval: float = 1.0, stop_after: float | None = None) -> tuple[str, list[Attempt]] | None:
+    batch = wait_batch(runtime, seat, interval, stop_after)
+    return (typed(batch[0]), batch[1]) if batch is not None else None
 
 
 def printed(runtime: Path, opened: list[Attempt]) -> None:

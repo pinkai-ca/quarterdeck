@@ -81,6 +81,9 @@ class SeatReading:
     pool: str
     model: str
     harness: str
+    observed_model: str | None = None
+    declared_model: str | None = None
+    version: str | None = None
 
     @property
     def needs_human(self) -> bool:
@@ -113,7 +116,8 @@ def reading(seat: Seat, store: post.Store | None = None) -> SeatReading:
     version = launched.version if launched else None
     pool = launched.pool if launched and launched.pool in seat.ship.pools else seat.pool.name
     return SeatReading(seat.name, act, door, short, tokens_today(seat), pool, model,
-                       f"{seat.harness.name} {version}".strip() if version else seat.harness.name)
+                       f"{seat.harness.name} {version}".strip() if version else seat.harness.name,
+                       running, seat.spec.model, version)
 
 
 def tokens_today(seat: Seat) -> ledger.Count:
@@ -172,49 +176,70 @@ def service_state(runtime: Path) -> str:
     return f"busy {int(late)}s" if late else "ok"
 
 
-def table(ship: Ship, tmux: Tmux) -> list[str]:
-    """``qd status``: every seat on one screen, then the open orders."""
+def status_reading(ship: Ship, tmux: Tmux) -> dict:
     store = post.Store(ship.runtime)
-    state = service_state(ship.runtime)
+    return {"service": service_state(ship.runtime), "seats": [reading(seat, store) for seat in seats(ship, tmux)],
+            "open_orders": [m for m in store.all() if m.kind == "order" and store.is_open(m)],
+            "facts": facts(ship, tmux), "usage": headline_readings(ship)}
+
+
+def render_table(data: dict) -> list[str]:
+    state = data["service"]
     head = f"service {state}" + ("; qd up restarts it" if state == "down" else "")
     rows = [head, f"{'seat':<10} {'activity':<24} {'door':<40} {'order':<10} {'today':>8}  pool · model"]
-    for seat in seats(ship, tmux):
-        r = reading(seat, store)
+    for r in data["seats"]:
         rows.append(f"{r.name:<10} {str(r.activity):<24} {str(r.door):<40} {r.order or '-':<10} {str(r.today):>8}  {r.pool} · {r.model}")
-    open_orders = [m for m in store.all() if m.kind == "order" and store.is_open(m)]
-    rows.append(f"open orders: {len(open_orders)}")
-    for m in open_orders:
+    rows.append(f"open orders: {len(data['open_orders'])}")
+    for m in data["open_orders"]:
         rows.append(f"  {m.short} {m.sender} → {m.to} · {m.at.strftime('%m-%d %H:%M')}" + (f" · {m.subject}" if m.subject else ""))
-    rows.extend(ledger_usage(ship))
-    return rows
+    return rows + render_headlines(data["usage"])
 
 
-def full(seat: Seat) -> list[str]:
-    """``qd watch <seat>``: the whole reading, including the screen as the adapter parsed it."""
+def table(ship: Ship, tmux: Tmux) -> list[str]:
+    return render_table(status_reading(ship, tmux))
+
+
+def seat_reading(seat: Seat) -> dict:
     r = reading(seat)
-    today = f"{r.today} tokens today" + (" (+: some turns were not measured)" if r.today.unmeasured else "")
-    lines = [f"{r.name}: {r.activity} · door {r.door} · order {r.order or '-'} · {today}",
-             f"  {r.harness} · pool {r.pool} · model {r.model}"]
     record = seat.record()
+    state, error = None, None
     if record:
         try:
             state = seat.harness.state(record)
-        except OSError as error:
-            lines.append(f"  record {record} · unreadable: {error}")
+        except OSError as failure:
+            error = str(failure)
+    return {"seat": r, "record": record, "state": state, "record_error": error,
+            "record_absent": seat.join().reason if record is None else None,
+            "record_limits": getattr(seat.harness, "record_limits", None),
+            "screen": Door(seat).screen(), "usage": headline_readings(seat.ship)}
+
+
+def render_full(data: dict) -> list[str]:
+    r = data["seat"]
+    today = f"{r.today} tokens today" + (" (+: some turns were not measured)" if r.today.unmeasured else "")
+    lines = [f"{r.name}: {r.activity} · door {r.door} · order {r.order or '-'} · {today}",
+             f"  {r.harness} · pool {r.pool} · model {r.model}"]
+    record, state = data["record"], data["state"]
+    if record:
+        if data["record_error"]:
+            lines.append(f"  record {record} · unreadable: {data['record_error']}")
         else:
             turns_shown = state.turns if state.turns is not None else "unknown"
             lines.append(f"  record {record} · {turns_shown} turns · last input: {(state.last_input or '')[:60]!r}")
-    elif seat.join().reason:
-        lines.append(f"  record absent: {seat.join().reason}")
-    if note := getattr(seat.harness, "record_limits", None):
-        lines.append(f"  record limits: {note}")
-    screen = Door(seat).screen()
+    elif data["record_absent"]:
+        lines.append(f"  record absent: {data['record_absent']}")
+    if data["record_limits"]:
+        lines.append(f"  record limits: {data['record_limits']}")
+    screen = data["screen"]
     if screen:
         lines.append(f"  screen: box {screen.box!r} · working {screen.working} · queued {screen.queued} · shows {screen.shows}")
         if screen.interruption or screen.unknown:
             lines.append(f"  notice: {screen.interruption.name if screen.interruption else 'unknown: ' + screen.unknown}")
-    lines.extend(ledger_usage(seat.ship))
-    return lines
+    return lines + render_headlines(data["usage"])
+
+
+def full(seat: Seat) -> list[str]:
+    return render_full(seat_reading(seat))
 
 
 def save_screen(seat: Seat) -> Path:
@@ -243,7 +268,7 @@ class Facts:
     login: list[tuple[str, str]] = field(default_factory=list)
     queued: int = 0
     oldest_queued: int = 0
-    usage: list[str] = field(default_factory=list)
+    usage: list[dict] = field(default_factory=list)
     pending: list[str] = field(default_factory=list)
 
     def line(self) -> str:  # law: nothing-waits-silently
@@ -257,7 +282,7 @@ class Facts:
         parts += [f"{name}: no watch armed" for name in self.unarmed]
         parts += [f"wall: {wall}" for wall in self.walls]
         parts += self.pending
-        parts += self.usage
+        parts += render_headlines(self.usage)
         parts += [f"disk: {name} {pct}%" for name, pct in self.disks]
         parts += [f"{pool} · login needed by {when}" for pool, when in self.login]
         return " · ".join(parts)
@@ -266,9 +291,10 @@ class Facts:
 SCHEMA_BEHIND = "ledger written by an older service; qd up restarts it"
 
 
-def ledger_usage(ship: Ship) -> list[str]:
-    """The enabled headline windows already read by the service; never a provider request."""
+def headline_readings(ship: Ship) -> list[dict]:
+    """Only the enabled headline windows; never a provider request or a new headline policy."""
     from . import harness as harnesses
+    from .ledger_reading import window_reading
 
     readers = {p.name: harnesses.get(p.provider) for p in ship.pools.values() if p.kind == "subscription"}
     selected = {name: reader for name, reader in readers.items() if reader.status_usage}
@@ -279,12 +305,21 @@ def ledger_usage(ship: Ship) -> list[str]:
     if book is not None:
         with book:
             try:
-                for reading in book.usage.rows():
-                    if reading.pool in selected and selected[reading.pool].is_headline(reading.group, reading.window) and reading.blocks:
-                        found[reading.pool] = reading.describe(post.now())
+                for row in book.usage.rows():
+                    if row.pool in selected and selected[row.pool].is_headline(row.group, row.window) and row.blocks:
+                        found[row.pool] = window_reading(row, post.now())
             except sqlite3.OperationalError:
-                return [SCHEMA_BEHIND]
-    return [found.get(pool, f"{pool} usage unknown") for pool in sorted(selected)]
+                return [{"pool": None, "reading": None, "reason": SCHEMA_BEHIND}]
+    return [found.get(pool, {"pool": pool, "reading": None, "reason": "usage unknown"}) for pool in sorted(selected)]
+
+
+def render_headlines(rows: list[dict]) -> list[str]:
+    return [row["reading"].describe(row["observed_at"]) if row["reading"] else
+            (f"{row['pool']} {row['reason']}" if row["pool"] else row["reason"]) for row in rows]
+
+
+def ledger_usage(ship: Ship) -> list[str]:
+    return render_headlines(headline_readings(ship))
 
 
 def ledger_walls(ship: Ship) -> list[str]:
@@ -356,7 +391,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         pending=pending_lines,
         unarmed=unarmed,
         walls=walls if walls is not None else ledger_walls(ship),
-        usage=ledger_usage(ship),
+        usage=headline_readings(ship),
         disks=disks([ship.runtime, ship.workspace, Path(tempfile.gettempdir())]),
         login=login if login is not None else credential.login_needed(ship),
     )
@@ -364,3 +399,11 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
 
 def line(ship: Ship, tmux: Tmux) -> str:
     return facts(ship, tmux).line()
+
+
+def facts_reading(ship: Ship, tmux: Tmux) -> Facts:
+    return facts(ship, tmux)
+
+
+def render_facts(data: Facts) -> str:
+    return data.line()
