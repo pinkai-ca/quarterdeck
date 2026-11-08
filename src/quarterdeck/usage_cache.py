@@ -72,17 +72,17 @@ class Reading:
     def current(self, now: datetime) -> bool:
         return self.reason(now) is None
 
-    def describe(self, now: datetime | None = None) -> str:
+    def describe(self, now: datetime | None = None, *, inspect_command: str | None = "qd ledger") -> str:
         now = now or datetime.now(timezone.utc)
         label = f"{self.pool} {self.window}"
         reason = self.reason(now)
+        next_step = f"; inspect with {inspect_command}" if reason and inspect_command else ""
         if not self.complete:
-            return f"{label} usage unknown · {reason}; inspect with qd ledger"
+            return f"{label} usage unknown · {reason}{next_step}"
         age = max(0, int((now - parse(self.read_at)).total_seconds() // 60))
         value = f"{self.used:.0%} used" + (f" ({self.bucket_name})" if self.bucket_name else "")
         reading = f"read {self.read_at} ({age}m ago)"
         stale = f" · LAST KNOWN · {reason}" if reason else ""
-        next_step = "; inspect with qd ledger" if reason else ""
         return f"{label} {value}{stale} · {reset_text(self.resets_at)} · {reading}{next_step}"
 
 

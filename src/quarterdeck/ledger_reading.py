@@ -125,7 +125,7 @@ def render_tools(data: dict) -> list[str]:
 def render_pools(data: dict) -> list[str]:
     lines = ["pool window · used · freshness · reset · reading time (age)"]
     for window in data["windows"]:
-        lines.append(window["reading"].describe(window["observed_at"]) + ("  WALL" if window["wall"] else ""))
+        lines.append(window["reading"].describe(window["observed_at"], inspect_command=None) + ("  WALL" if window["wall"] else ""))
     for pool in data["pools"]:
         if pool["kind"] != "key":
             continue
