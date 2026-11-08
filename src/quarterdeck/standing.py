@@ -10,12 +10,24 @@ own folder. ``qd brief <seat>`` prints exactly what a seat reads at boot, and
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 from .ship import SeatSpec, Ship
 
-FRAMEWORK_DIR = Path(__file__).resolve().parents[2] / "standing-orders"
+
+def project_dir() -> Path:
+    """Where the framework's own files are: the repository, when this code runs from a checkout; else the copy
+    an installed qd keeps under its own prefix, which ``qd upgrade`` puts there beside the package."""
+    source = Path(__file__).resolve().parents[2]
+    if (source / "standing-orders").is_dir():
+        return source
+    return Path(sys.prefix) / "share" / "quarterdeck"
+
+
+PROJECT_DIR = project_dir()
+FRAMEWORK_DIR = PROJECT_DIR / "standing-orders"
 LAW_LINE = re.compile(r"^- `([a-z-]+)` (.+)$")
 BRIEF_WORDS = 3000
 
@@ -109,18 +121,20 @@ def seat_section(ship: Ship, seat: SeatSpec, human_session: bool) -> str:
 
 
 TAG = re.compile(r"#.*?\blaw: ([a-z][a-z-]*[a-z])")  # in a comment: a law named in prose is mentioned, not carried
-PROJECT_DIR = FRAMEWORK_DIR.parent
-
-
 def carriers(root: Path | None = None) -> dict[str, list[tuple[Path, int]]]:
-    """Every ``# law: <id>`` tag in a comment of the source and the tests, by law id, with file and line."""
+    """Every ``# law: <id>`` tag in a comment of the source and the tests, by law id, with file and line.
+
+    An installed copy has no source tree beside it: its own package is read, and no tests.
+    """
     root = root or PROJECT_DIR
+    folders = [root / "src", root / "tests"] if (root / "src").is_dir() else [Path(__file__).resolve().parent]
     found: dict[str, list[tuple[Path, int]]] = {}
-    for folder in ("src", "tests"):
-        for path in sorted((root / folder).rglob("*.py")):
+    for folder in folders:
+        for path in sorted(folder.rglob("*.py")):
+            shown = path.relative_to(root) if path.is_relative_to(root) else path.relative_to(folder.parent)
             for number, line in enumerate(path.read_text().splitlines(), 1):
                 for tag in TAG.findall(line):
-                    found.setdefault(tag, []).append((path.relative_to(root), number))
+                    found.setdefault(tag, []).append((shown, number))
     return found
 
 

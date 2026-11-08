@@ -37,6 +37,10 @@ def test_upgrade_installs_the_checkout_as_the_ships_own_copy_and_qd_hands_off_to
     env.pop("QD_SHIP", None)
     own = subprocess.run([str(installed_qd), "--ship", str(drydock), "status", "--line"], env=env, capture_output=True, text=True, timeout=60)
     assert own.returncode == 0 and own.stdout.startswith("SERVICE DOWN"), own.stderr
+    brief = subprocess.run([str(installed_qd), "--ship", str(drydock), "brief", "captain"], env=env, capture_output=True, text=True, timeout=60)
+    assert brief.stdout.startswith("# Standing orders for Picard"), "the installed copy carries the laws and the cards"
+    laws = subprocess.run([str(installed_qd), "laws"], env=env, capture_output=True, text=True, timeout=60).stdout
+    assert "one-door" in laws and "quarterdeck/door.py" in laws and "carried nowhere" not in laws
     typed = subprocess.run([str(ROOT / ".venv" / "bin" / "qd"), "--ship", str(drydock), "doctor"], env=env, capture_output=True, text=True, timeout=120)
     assert f"runs its installed copy, commit {head[:7]}" in typed.stdout, typed.stderr
 

@@ -17,12 +17,12 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import post, seat as seatmod, service, ship as shipmod, watch
+from . import post, seat as seatmod, service, ship as shipmod, standing, watch
 from .post import Attempts, Store
 from .seat import Seat
 from .tmux import Tmux
 
-DRYDOCK = Path(__file__).resolve().parents[2] / "ships" / "drydock"
+DRYDOCK = standing.PROJECT_DIR / "ships" / "drydock"
 QUICK = '\n[seats.{seat}.settings]\nstep_seconds = "0.05"\n'
 SLOW_TO_ACCEPT = 'accept_seconds = "1.5"\n'  # one seat takes its time writing a message into its record
 
