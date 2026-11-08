@@ -164,7 +164,7 @@ def test_an_open_turn_shows_its_running_tool_and_a_message_typed_meanwhile_is_qu
     state = opencode.state(record)
     assert state.turn_open is True and state.queued == (PING,), "a message typed during a turn is in the record at once, as queued"
     since = datetime(2026, 11, 8, 1, 3, 30, tzinfo=UTC)
-    assert input_receipt.confirmed("opencode", record, PING, since) == "delivered"
+    assert input_receipt.confirmed("opencode", record, PING, since) == "queued"
     assert input_receipt.confirmed("opencode", record, PING, datetime(2026, 11, 8, 1, 3, 32, tzinfo=UTC)) is None, "a receipt before the paste is no receipt"
     assert input_receipt.confirmed("opencode", record, "Say ping.", since) is None
 

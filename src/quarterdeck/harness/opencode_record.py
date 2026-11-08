@@ -134,6 +134,8 @@ class _Session:
         self.turns: list[Turn] = []
         self.open = False
         self.queued: list[str] = []
+        self.inputs: list[Input] = []
+        self.ended_at: datetime | None = None
         self.model = self.last_input = self.last_input_at = self.open_tool = self.open_tool_since = None
         for pos, (index, mid, data, own) in enumerate(users):
             moved_on = any(answers.get(later[1]) for later in users[pos + 1:])
@@ -141,10 +143,18 @@ class _Session:
 
     def user(self, index: int, data: dict, own: list[dict], steps: list[tuple[dict, list[dict]]], moved_on: bool) -> None:
         text = "\n".join(p["text"] for p in own if p.get("type") == "text" and isinstance(p.get("text"), str))
-        if self.open:
-            self.queued.append(text)  # typed while an earlier turn runs: taken, shown, read when that turn ends
-            return
         at = _ms(_object(data.get("time")).get("created"))
+        overlapped = self.ended_at is not None and (at is None or at <= self.ended_at)
+        if self.open or (overlapped and not steps and not moved_on):
+            self.queued.append(text)
+            self.inputs.append(Input(text, at, "queued"))
+            return  # finishing the preceding turn alone does not show that this queue entry was consumed
+        if overlapped:
+            consumed_at = next((stamp for step, _ in steps
+                                if (stamp := _ms(_object(step.get("time")).get("created"))) is not None), None)
+            self.inputs.append(Input(text, at, "consumed", consumed_at))
+        else:
+            self.inputs.append(Input(text, at))
         self.last_input, self.last_input_at = text, at
         model = _text(_object(data.get("model")).get("modelID"))
         tokens, tools, reply, cost = Tokens(), [], "", 0.0
@@ -177,6 +187,7 @@ class _Session:
             if running:
                 tools.append(ToolCall(running[0], None, None))  # left running when the program moved on: its end unknown
         if closed:
+            self.ended_at = ended if timed else None
             self.turns.append(Turn(index, at, ended, text, reply, model, tokens, tuple(tools), cost=cost, timed=timed))
         else:
             self.open = True
@@ -235,12 +246,5 @@ read = _Reader.read
 
 
 def inputs(record: Path) -> list[Input]:
-    """Every user message with its time, for the delivery receipt: a queued message is in the record the moment it is taken."""
-    rows = _Rows(record)
-    active = _active_session(rows)
-    texts: dict[str, list[str]] = {}
-    for _, mid, sid, _, _, data in rows.parts:
-        if sid == active and data.get("type") == "text" and isinstance(data.get("text"), str):
-            texts.setdefault(mid, []).append(data["text"])
-    return [Input("\n".join(texts.get(mid, [])), _ms(_object(data.get("time")).get("created")))
-            for mid, sid, _, _, data in rows.messages if sid == active and data.get("role") == "user"]
+    """The active root's inputs, with the same session-aware queue boundaries as its state."""
+    return _Reader(record).active.inputs
