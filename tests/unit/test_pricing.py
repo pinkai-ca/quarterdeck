@@ -8,7 +8,7 @@ import pytest
 
 from quarterdeck import endpoint
 from quarterdeck.harness import pi, opencode
-from quarterdeck.harness.types import Tokens, Turn
+from quarterdeck.harness.types import CostStep, Tokens, Turn
 from quarterdeck.ledger import Ledger
 from quarterdeck.pricing import Price
 from quarterdeck.provenance import remember_launch
@@ -110,15 +110,16 @@ def test_launch_journal_keeps_price_snapshot_and_conflicts_are_unknown(tmp_path)
 
 @pytest.mark.parametrize("reader", [pi.PiHarness(), opencode.OpenCodeHarness()])
 def test_default_zero_needs_price_evidence_but_real_cost_is_not_erased(reader):
-    turn = Turn(0, AT, AT, "in", "out", "m", Tokens(read_uncached=1_000_000), cost=None, recorded_cost=0, price_model="m")
+    turn = Turn(0, AT, AT, "in", "out", "m", Tokens(read_uncached=1_000_000), cost=None, recorded_cost=0, price_model="m",
+                cost_steps=(CostStep("m", Tokens(read_uncached=1_000_000), 0),))
     assert reader.price_turn(turn, None).cost is None
     price = Price.parse(RATES).snapshot("m")
     assert reader.price_turn(turn, price).cost == 2
     zero = Price.parse({**RATES, "input": 0}).snapshot("m")
     assert reader.price_turn(turn, zero).cost == 0
     assert reader.price_turn(turn, {**price, "model": "other"}).cost is None
-    assert reader.price_turn(replace(turn, tokens=Tokens.unknown()), price).cost is None
-    assert reader.price_turn(replace(turn, cost=3, recorded_cost=3, cost_basis="record"), None).cost == 3
+    assert reader.price_turn(replace(turn, tokens=Tokens.unknown(), cost_steps=(CostStep("m", Tokens.unknown(), 0),)), price).cost is None
+    assert reader.price_turn(replace(turn, cost_steps=(CostStep("m", turn.tokens, 3),)), None).cost == 3
 
 
 @pytest.mark.parametrize("reader", [pi.PiHarness(), opencode.OpenCodeHarness()])
@@ -144,7 +145,8 @@ def test_mixed_model_turn_cannot_use_last_models_price(tmp_path, reader):
     turn = reader.turns(path)[0]
     assert turn.model == 'm' and turn.tokens.read_uncached == 2_000_000
     assert turn.price_model is None and turn.recorded_cost == 0
-    assert reader.price_turn(turn, Price.parse(RATES).snapshot('m')).cost is None
+    priced = reader.price_turn(turn, Price.parse(RATES).snapshot('m'))
+    assert priced.cost == 2 and priced.unpriced_steps == 1, 'only the matching step can be priced'
 
 
 @pytest.mark.parametrize("reader", [pi.PiHarness(), opencode.OpenCodeHarness()])

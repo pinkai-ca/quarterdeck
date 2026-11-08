@@ -8,7 +8,7 @@ class CostEvidence:
             return
         db.execute('''CREATE TABLE IF NOT EXISTS turn_costs (
             record TEXT NOT NULL, turn INTEGER NOT NULL, recorded_cost REAL, cost_basis TEXT,
-            valid INTEGER NOT NULL, PRIMARY KEY(record,turn))''')
+            valid INTEGER NOT NULL, unpriced_steps INTEGER NOT NULL, steps TEXT, PRIMARY KEY(record,turn))''')
         for event in ('INSERT', 'UPDATE'):
             db.execute(f'''CREATE TRIGGER IF NOT EXISTS cost_after_{event.lower()} AFTER {event} ON turns
                 BEGIN UPDATE turn_costs SET valid=0 WHERE record=NEW.record AND turn=NEW.turn; END''')
@@ -20,8 +20,13 @@ class CostEvidence:
         return self.db.execute('SELECT recorded_cost,cost_basis,valid FROM turn_costs WHERE record=? AND turn=?',
                                (str(record), index)).fetchone()
 
-    def put(self, record, index, recorded, basis):
-        self.db.execute('INSERT OR REPLACE INTO turn_costs VALUES (?,?,?,?,1)', (str(record), index, recorded, basis))
+    def details(self, record, index):
+        return self.db.execute('SELECT unpriced_steps,steps FROM turn_costs WHERE record=? AND turn=?',
+                               (str(record), index)).fetchone()
+
+    def put(self, record, index, recorded, basis, unpriced=0, steps=None):
+        self.db.execute('INSERT OR REPLACE INTO turn_costs VALUES (?,?,?,?,1,?,?)',
+                        (str(record), index, recorded, basis, unpriced, steps))
 
     def known(self):
         if not self.present():
@@ -30,3 +35,9 @@ class CostEvidence:
         return f'''cost IS NOT NULL AND (
             EXISTS (SELECT 1 FROM turn_costs c WHERE {same} AND c.valid=1 AND c.cost_basis IS NOT NULL)
             OR (cost > 0 AND NOT EXISTS (SELECT 1 FROM turn_costs c WHERE {same})))'''
+
+    def complete(self):
+        if not self.present():
+            return self.known()
+        return f'''({self.known()}) AND NOT EXISTS (SELECT 1 FROM turn_costs c
+            WHERE c.record=turns.record AND c.turn=turns.turn AND c.unpriced_steps>0)'''

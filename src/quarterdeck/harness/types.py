@@ -76,6 +76,15 @@ class Tokens:
 
 
 @dataclass(frozen=True)
+class CostStep:
+    """One response's explicit model, measured tokens and normalized recorded amount."""
+
+    model: str | None
+    tokens: Tokens
+    recorded: float | None
+
+
+@dataclass(frozen=True)
 class ToolCall:
     name: str
     seconds: float | None
@@ -101,6 +110,8 @@ class Turn:
     recorded_cost: float | None = None  # raw cost stated by a reader whose default zero cannot establish a price
     cost_basis: str | None = None
     price_model: str | None = None  # one model established for every measured step, for stated rates
+    cost_steps: tuple[CostStep, ...] | None = None
+    unpriced_steps: int = 0
 
     @property
     def seconds(self) -> float | None:

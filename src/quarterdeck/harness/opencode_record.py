@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..pricing import amount
+from .costs import CostStep, costed, model_name
 from .base import Input, RecordError, State, Tokens, ToolCall, Turn
 from .sqlite_snapshot import snapshot
 from .json_record import RecordReader
@@ -149,15 +150,15 @@ class _Session:
             self.inputs.append(Input(text, at))
         self.last_input, self.last_input_at = text, at
         model = _text(_object(data.get("model")).get("modelID"))
-        tokens, tools, reply, cost = Tokens(), [], "", 0.0
+        tokens, tools, reply = Tokens(), [], ""
         running = None
-        models = set()
+        costs = []
         for step, step_parts in steps:
-            tokens = tokens + _tokens(step)
-            model = _text(step.get("modelID")) or model
-            models.add(model)
-            stated = amount(step.get("cost"))
-            cost = amount(cost + stated) if cost is not None and stated is not None else None
+            measured = _tokens(step)
+            tokens = tokens + measured
+            step_model = model_name(step.get("modelID"))
+            model = step_model or model
+            costs.append(CostStep(step_model, measured, amount(step.get("cost"))))
             for part in step_parts:
                 kind = part.get("type")
                 if kind == "text" and isinstance(part.get("text"), str):
@@ -171,7 +172,6 @@ class _Session:
         self.model = model or self.model
         if not steps:
             tokens = Tokens.unknown()
-            cost = None
         last = steps[-1][0] if steps else {}
         ended = _ms(_object(last.get("time")).get("completed"))
         timed = True
@@ -185,9 +185,8 @@ class _Session:
                 tools.append(ToolCall(running[0], None, None))  # left running when the program moved on: its end unknown
         if closed:
             self.ended_at = ended if timed else None
-            self.turns.append(Turn(index, at, ended, text, reply, model, tokens, tuple(tools), cost=cost if cost else None, timed=timed,
-                                   recorded_cost=cost, cost_basis="record" if cost else None,
-                                   price_model=next(iter(models)) if len(models) == 1 else None))
+            self.turns.append(costed(Turn(index, at, ended, text, reply, model, tokens, tuple(tools), timed=timed,
+                                          cost_steps=tuple(costs))))
         else:
             self.open = True
             self.open_tool, self.open_tool_since = running or (None, None)

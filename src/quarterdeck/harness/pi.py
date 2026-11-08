@@ -18,6 +18,7 @@ from pathlib import Path
 from .. import endpoint
 from ..pricing import Price, amount
 from .endpoint import EndpointHarness
+from .costs import CostStep, costed, model_name
 from .json_record import JsonLinesReader
 
 from ..ship import Pool, SeatSpec, ShipError
@@ -89,17 +90,18 @@ class _Reader(JsonLinesReader):
             if self.open is not None:
                 self.consumed.append(text)  # steered into the running turn after its current tool call
             else:
-                self.start_turn({"started": at, "input": text, "tokens": Tokens(), "tools": [], "reply": "", "costs": [], "models": []})
+                self.start_turn({"started": at, "input": text, "tokens": Tokens(), "tools": [], "reply": "", "costs": []})
         elif role == "assistant":
             if self.open is None:
-                self.start_turn({"started": at, "input": "", "tokens": Tokens(), "tools": [], "reply": "", "costs": [], "models": []})
-            self.model = message.get("model") or self.model
-            self.open["tokens"] = self.open["tokens"] + _tokens(message)
-            self.open["models"].append(self.model)
+                self.start_turn({"started": at, "input": "", "tokens": Tokens(), "tools": [], "reply": "", "costs": []})
+            step_model = model_name(message.get("model"))
+            self.model = step_model or self.model
+            tokens = _tokens(message)
+            self.open["tokens"] = self.open["tokens"] + tokens
             usage = message.get("usage")
             costs = usage.get("cost") if isinstance(usage, dict) else None
             cost = costs.get("total") if isinstance(costs, dict) else None
-            self.open["costs"].append(amount(cost))
+            self.open["costs"].append(CostStep(step_model, tokens, amount(cost)))
             for block in message.get("content") or []:
                 if block.get("type") == "text" and block.get("text"):
                     self.open["reply"] = block["text"]
@@ -113,13 +115,8 @@ class _Reader(JsonLinesReader):
 
     def end(self, at: datetime | None) -> None:
         turn = self.close_turn()
-        costs = turn["costs"]
-        models = set(turn["models"])
-        price_model = next(iter(models)) if len(models) == 1 else None
-        recorded = amount(sum(costs)) if costs and all(c is not None for c in costs) else None
-        self.turns.append(Turn(len(self.turns), turn["started"] or at, at or turn["started"], turn["input"], turn["reply"],
-                               self.model, turn["tokens"], tuple(turn["tools"]), cost=recorded if recorded else None,
-                               recorded_cost=recorded, cost_basis="record" if recorded else None, price_model=price_model))
+        self.turns.append(costed(Turn(len(self.turns), turn["started"] or at, at or turn["started"], turn["input"], turn["reply"],
+                                     self.model, turn["tokens"], tuple(turn["tools"]), cost_steps=tuple(turn["costs"]))))
 
 state = _Reader.read_state
 turns = _Reader.read_turns

@@ -14,7 +14,8 @@ budget.
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass, replace
+import json
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -209,6 +210,9 @@ class Ledger:
         for turn in turns:
             previous = known.get(turn.index)
             evidence = self.costs.get(record, turn.index)
+            detail = self.costs.details(record, turn.index)
+            unpriced = turn.unpriced_steps
+            steps = json.dumps([asdict(step) for step in turn.cost_steps], sort_keys=True) if turn.cost_steps is not None else None
             owner, charged_pool = (previous[2:4] if previous and previous[3] != UNKNOWN else
                                    self.provenance.resolve(record, turn.started, turn.ended, seat, pool))
             if previous:
@@ -219,10 +223,11 @@ class Ledger:
             failures = sum(bool(t.failed) for t in turn.tools) if all(t.failed is not None for t in turn.tools) else None
             cost = amount(turn.cost)
             basis = (turn.cost_basis or "record") if cost is not None else None
-            recorded = amount(turn.recorded_cost) if turn.recorded_cost is not None else cost
+            recorded = amount(turn.recorded_cost) if turn.recorded_cost is not None or turn.cost_steps is not None else cost
             prior_record = ((evidence[2] and evidence[1] == "record") if evidence else previous and previous[13] is not None and previous[13] > 0)
-            if previous and cost is None and prior_record:
+            if previous and cost is None and prior_record and turn.cost_steps is None:
                 cost, basis = previous[13], "record"
+                unpriced = max(unpriced, detail[0] if detail else 0)
             if previous and recorded is None:
                 recorded = evidence[0] if evidence else previous[13]
             row = (str(record), turn.index, owner, charged_pool, attribution(store, owner, turn), started, ended,
@@ -233,11 +238,11 @@ class Ledger:
             tool_rows = [(str(record), turn.index, t.name, t.seconds, t.failed) for t in turn.tools]
             previous_tools = self.db.execute("SELECT * FROM tool_calls WHERE record = ? AND turn = ? ORDER BY rowid",
                                              (str(record), turn.index)).fetchall()
-            if previous == row and previous_tools == tool_rows and evidence == (recorded, basis, 1):
+            if previous == row and previous_tools == tool_rows and evidence == (recorded, basis, 1) and detail == (unpriced, steps):
                 continue
             changed += 1
             self.db.execute("INSERT OR REPLACE INTO turns VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
-            self.costs.put(record, turn.index, recorded, basis)
+            self.costs.put(record, turn.index, recorded, basis, unpriced, steps)
             self.db.execute("DELETE FROM tool_calls WHERE record = ? AND turn = ?", (str(record), turn.index))
             self.db.executemany("INSERT INTO tool_calls VALUES (?,?,?,?,?)", tool_rows)
         self.db.commit()
@@ -252,7 +257,7 @@ class Ledger:
             f"SUM(COALESCE(cache_written, 0)), SUM(COALESCE(written, 0)), SUM(CASE WHEN {known_cost} THEN cost END), SUM(tool_calls), "
             f"SUM(COALESCE(tool_failures, 0)), SUM(COALESCE(seconds, 0)) / 60.0, SUM(cpu_seconds), SUM(write_bytes), "
             f"SUM(CASE WHEN {PARTLY_UNMEASURED} THEN 1 ELSE 0 END), SUM(seconds IS NULL), SUM(tool_failures IS NULL), "
-            f"SUM(CASE WHEN {known_cost} THEN 0 ELSE 1 END) "
+            f"SUM(CASE WHEN {self.costs.complete()} THEN 0 ELSE 1 END) "
             f"FROM turns GROUP BY {column} ORDER BY {column}"
         ).fetchall()
         by_key = {r[0]: Row(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9], r[10] or 0.0, r[11] or 0,
@@ -292,7 +297,7 @@ class Ledger:
         """A pool's stated cost since a moment, and how many of its turns stated no cost."""
         known_cost = self.known_cost()
         row = self.db.execute(f"SELECT SUM(CASE WHEN {known_cost} THEN cost END), "
-                              f"SUM(CASE WHEN {known_cost} THEN 0 ELSE 1 END) FROM turns WHERE pool = ? AND ended >= ?",
+                              f"SUM(CASE WHEN {self.costs.complete()} THEN 0 ELSE 1 END) FROM turns WHERE pool = ? AND ended >= ?",
                               (pool, since.astimezone().isoformat())).fetchone()
         return row[0], row[1] or 0
 
