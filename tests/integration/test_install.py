@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -31,6 +32,14 @@ def test_upgrade_installs_the_checkout_as_the_ships_own_copy_and_qd_hands_off_to
     assert subprocess.run([str(installed_qd), "--version"], capture_output=True, text=True).stdout.startswith("qd ")
     assert f"runs its installed copy, commit {head[:7]}" in doctor.framework_check(ship).detail
 
+    # the installed copy answers for the ship itself, and a qd typed from this checkout reaches it and answers too
+    env = {**os.environ, "QD_TMUX_SOCKET": tmux.socket}
+    env.pop("QD_SHIP", None)
+    own = subprocess.run([str(installed_qd), "--ship", str(drydock), "status", "--line"], env=env, capture_output=True, text=True, timeout=60)
+    assert own.returncode == 0 and own.stdout.startswith("SERVICE DOWN"), own.stderr
+    typed = subprocess.run([str(ROOT / ".venv" / "bin" / "qd"), "--ship", str(drydock), "doctor"], env=env, capture_output=True, text=True, timeout=120)
+    assert f"runs its installed copy, commit {head[:7]}" in typed.stdout, typed.stderr
+
     # qd typed from this checkout hands off to the installed copy before doing anything
     calls = []
 
@@ -42,7 +51,7 @@ def test_upgrade_installs_the_checkout_as_the_ships_own_copy_and_qd_hands_off_to
     with pytest.raises(SystemExit):
         cli.main(["--ship", str(drydock), "status"])
     assert calls == [(str(installed_qd), [str(installed_qd), "--ship", str(drydock), "status"])]
-    assert install.running_from(Path(ROOT / ".venv" / "bin")) or True  # the test process is not the installed copy
+    assert not install.running_from(installed_qd.parent), "the test process is not the installed copy"
 
     # upgrade itself never hands off, and a second upgrade names the commit it replaced
     calls.clear()

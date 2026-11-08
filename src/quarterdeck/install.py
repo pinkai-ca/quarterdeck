@@ -37,7 +37,9 @@ def venv_qd(folder: Path) -> Path | None:
 
 
 def running_from(bin_dir: Path) -> bool:
-    return Path(sys.executable).resolve().parent == bin_dir.resolve()
+    """Whether this process runs from ``bin_dir``: the interpreter's own folder, never the system python a venv's
+    interpreter is a link to, or an installed copy would hand off to itself without end."""
+    return Path(sys.executable).parent.resolve() == bin_dir.resolve()
 
 
 def handoff(folder: Path, argv: list[str]) -> None:
@@ -87,6 +89,11 @@ def upgrade(ship: Ship, ref: str = "HEAD", tmux: Tmux | None = None) -> list[str
          f"installing {commit[:7]}")
     shutil.rmtree(runtime / "upgrade", ignore_errors=True)
     version = subprocess.run([str(venv / "bin" / "qd"), "--version"], capture_output=True, text=True).stdout.strip()
+    try:  # the installed copy answers for this ship before anything runs on it
+        _run([str(venv / "bin" / "qd"), "--ship", str(ship.folder), "laws"], "proving the installed copy answers", timeout=60)
+    except ShipError:
+        shutil.rmtree(venv, ignore_errors=True)  # a copy that cannot answer is not left where every qd would hand off to it
+        raise
     previous = installed(runtime)
     record = {"commit": commit, "ref": ref, "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
               "previous": previous["commit"] if previous else None}
@@ -109,7 +116,10 @@ def upgrade(ship: Ship, ref: str = "HEAD", tmux: Tmux | None = None) -> list[str
     return proofs
 
 
-def _run(argv: list[str], doing: str) -> None:
-    done = subprocess.run(argv, capture_output=True, text=True)
+def _run(argv: list[str], doing: str, timeout: float | None = None) -> None:
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise ShipError(f"{doing} failed: no answer within {timeout:.0f}s") from None
     if done.returncode:
         raise ShipError(f"{doing} failed: {done.stderr.strip()[-400:]}")
