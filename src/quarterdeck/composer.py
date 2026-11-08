@@ -61,7 +61,9 @@ def matches(text: str, shown: str, columns: int | None = None, slack: int = 0) -
         # layout break when the following piece cannot fit on this row.
         tail = wanted[pos:]
         spaces = len(tail) - len(tail.lstrip(' '))
-        word = re.match(r'[^\s-]+-?', tail[spaces:])
+        # Leading hyphens belong to the next piece (for example a command
+        # flag); they do not make it an empty word that could fit anywhere.
+        word = re.match(r'-*[^\s-]+-?|-+', tail[spaces:])
         piece = cells(word[0]) if word else None
         if (spaces or row.endswith('-')) and piece and width + spaces + piece > columns - slack:
             pos += spaces  # the expected separator hangs off the rendered row

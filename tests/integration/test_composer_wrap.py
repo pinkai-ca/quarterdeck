@@ -69,3 +69,33 @@ def test_real_private_capture_retains_padding_and_adapters_read_it(tmux, tmp_pat
     if body:
         assert door.matches(get(name).box(body),screen)
         assert not door.matches(get(name).box(body.replace('  with',' with')),screen)
+
+
+@pytest.mark.parametrize("name", ["codex", "pi"])
+def test_flag_wrap_in_a_private_318_column_pane(tmux, tmp_path, monkeypatch, name):
+    from types import SimpleNamespace
+    from quarterdeck.door import Door
+    from tests.contract.test_flag_wrap import example
+    from tests.contract.test_padded_composer import capture
+
+    monkeypatch.setattr(Door, "wall", lambda self, screen: None)
+    payload, rows = example(name)
+    tmux.new_session("Flags")
+    pane = tmux.new_window("Flags", "display", tmp_path, ["cat"])
+    tmux.run("resize-window", "-t", pane.id, "-x", "318", "-y", "71")
+    output = "\x1b[2J\x1b[H" + capture(name, rows, "full", 318).replace("\n", "\r\n")
+    script = tmp_path / "display.sh"
+    script.write_text("printf %s " + shlex.quote(output) + "\nsleep 30\n")
+    tmux.run("respawn-pane", "-k", "-t", pane.id, "sh " + shlex.quote(str(script)))
+    seat = SimpleNamespace(harness=get(name), tmux=tmux, pane=lambda: tmux.pane(pane.id))
+    door = Door(seat)
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        screen = door.screen()
+        if screen and screen.box and "before the flag" in screen.box:
+            break
+        time.sleep(0.02)
+    assert seat.pane().width == 318 and seat.pane().height == 71
+    assert any(row.endswith("   ") for row in tmux.capture(pane.id).splitlines())
+    assert door.matches(get(name).box(payload), screen)
+    assert not door.matches(get(name).box(payload.replace("alpha alpha", "alpha  alpha", 1)), screen)

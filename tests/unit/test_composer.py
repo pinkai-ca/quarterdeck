@@ -43,3 +43,12 @@ def test_significant_whitespace_and_unknown_layout_fail_closed():
     assert not matches('first fresh-launch', 'first fresh-\nlaunch', 30)
     assert matches('two  spaces here', 'two  spaces\nhere', 12)
     assert not matches('two  spaces here', 'two spaces\nhere', 12)
+
+
+@pytest.mark.parametrize("token", ["-x", "--option", "---", "-x-y"])
+def test_leading_hyphens_have_width_at_a_word_break(token):
+    first = "alpha " * 3 + "z"
+    assert len(first) == 19
+    assert matches(first + " " + token + " tail", first + "\n" + token + " tail", 20)
+    assert not matches("short " + token, "short\n" + token, 20)
+    assert not matches(first + " " + token, first + "\n" + token.replace("-", "", 1), 20)
