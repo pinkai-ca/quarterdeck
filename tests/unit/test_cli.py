@@ -96,3 +96,23 @@ def test_parse_value():
     assert parse_value("true") is True and parse_value("false") is False
     assert parse_value("42") == 42 and parse_value("-1") == -1
     assert parse_value("a, b") == ["a", "b"] and parse_value("claude-opus-5-5") == "claude-opus-5-5"
+
+
+def test_a_seat_posts_as_itself_and_only_a_shell_that_is_no_seat_may_name_a_sender(drydock: Path, capsys, monkeypatch):
+    from quarterdeck import post
+
+    monkeypatch.setenv("QD_TMUX_SOCKET", "qd-test-nobody-here")
+    monkeypatch.setenv("QD_SHIP", str(drydock))
+    monkeypatch.delenv("QD_SEAT", raising=False)
+    code, out, _ = run(capsys, "post", "order", "--to", "worker-1", "from the operator's own shell")
+    assert code == 0 and post.Store(drydock / "runtime").all()[-1].sender == "operator"
+    code, out, _ = run(capsys, "post", "order", "--from", "desk", "--to", "worker-1", "the desk, from a shell that is no seat")
+    assert code == 0 and post.Store(drydock / "runtime").all()[-1].sender == "desk"
+    monkeypatch.setenv("QD_SEAT", "worker-1")
+    code, out, _ = run(capsys, "post", "report", "--to", "captain", "signed by the seat itself")
+    assert code == 0 and post.Store(drydock / "runtime").all()[-1].sender == "worker-1"
+    code, out, err = run(capsys, "post", "report", "--from", "captain", "--to", "desk", "a seat speaking for another")
+    assert code == 2 and "this shell is seat worker-1, which posts as itself" in err
+    assert post.Store(drydock / "runtime").all()[-1].sender == "worker-1", "nothing was stored"
+    code, out, _ = run(capsys, "post", "report", "--from", "worker-1", "--to", "captain", "naming itself is allowed")
+    assert code == 0

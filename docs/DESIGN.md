@@ -221,7 +221,7 @@ A message is one immutable JSON file:
 }
 ```
 
-Five kinds: order, report, question, answer, ack. `re` names the message being answered. Only a report closes an order: a report from the order's addressee whose `re` names it. An ack claims: it names the order its sender is working on, for the Ledger, and never closes anything. `subject` is optional, one line.
+Five kinds: order, report, question, answer, ack. `re` names the message being answered. Only a report closes an order: a report from the order's addressee whose `re` names it. An ack claims: it names the order its sender is working on, for the Ledger, and never closes anything. `subject` is optional, one line. A message's sender is the seat that posted it, read from the identity its launch set (`QD_SEAT`) and never from a flag, so no seat speaks for another; a shell that is no seat posts as the operator, or names the sender it speaks for.
 
 Where files live, under the runtime: `qd post` writes each message atomically into `post/store/`, the one canonical copy; `post/inbox/<seat>.md` is the rendered view, open obligations first, oldest first, then what was already delivered; `post/attempts/` holds one record per delivery attempt. Messages are addressed to seats by name, whatever program a seat runs.
 

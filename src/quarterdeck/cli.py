@@ -104,7 +104,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("body", nargs="*", help="the text; '-' reads it from stdin; with resend, the message id")
     p.add_argument("--to", help="the addressee seat (the referenced message's sender when --re is given)")
     p.add_argument("--re", help="the message this answers, by id or short id")
-    p.add_argument("--from", dest="sender", help="the sender (default: this seat, else the operator)")
+    p.add_argument("--from", dest="sender", help="the sender, from a shell that is no seat (default: the operator); a seat always posts as itself")
     p.add_argument("--subject")
     p.add_argument("--due")
     p.add_argument("--body-file", help="read the body from a file")
@@ -308,7 +308,10 @@ def cmd_post(args: argparse.Namespace) -> str:
             raise ShipError("resend takes one message id")
         return service.request(ship.runtime, "resend", message=store.get(args.body[0]).id)
     body = read_body(args)
-    sender = args.sender or os.environ.get("QD_SEAT") or ship.operator.lower()
+    seat_here = os.environ.get("QD_SEAT")
+    if seat_here and args.sender and args.sender != seat_here:
+        raise ShipError(f"this shell is seat {seat_here}, which posts as itself; --from names a sender only from a shell that is no seat")
+    sender = seat_here or args.sender or ship.operator.lower()  # a seat's identity is the one its launch set, never a flag
     to = args.to or (store.get(args.re).sender if args.re else None)
     if not to:
         raise ShipError(f"a {args.kind} needs --to <seat>" + (" or --re <message>" if args.kind != "order" else ""))
