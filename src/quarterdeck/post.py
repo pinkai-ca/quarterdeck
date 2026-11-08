@@ -15,7 +15,7 @@ import os
 import secrets
 import time
 from dataclasses import asdict, dataclass, replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from .ship import ShipError

@@ -19,11 +19,11 @@ from pathlib import Path
 from .. import endpoint
 from .endpoint import EndpointHarness
 from ..ship import Pool, SeatSpec, ShipError
-from .base import (Box, ship_template, trimmed, Control, Credential, Harness, Interruption, Keys, Launch, RecordError, Screen, State, Tokens,
-                   ToolCall, Turn, merged, program_version)
+from .base import (Box, ship_template, trimmed, Control, Credential, Interruption, Keys, Launch, Screen, Tokens,
+                   merged)
 
-from .opencode_record import (DATA_PREFIX, RECORD, _Rows, _launch_number, data_dir_of, first_timestamp,
-                              inputs, read, records, session_id, state, turns)
+from .opencode_record import (DATA_PREFIX, _Rows, _launch_number, data_dir_of, first_timestamp,
+                              inputs, read, records, session_id, state)
 
 CONFIG = {
     "$schema": "https://opencode.ai/config.json",

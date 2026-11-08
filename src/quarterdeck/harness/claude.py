@@ -12,15 +12,14 @@ from __future__ import annotations
 import json
 import re
 import urllib.request
-from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .json_record import JsonLinesReader
 
 from ..ship import Pool, SeatSpec
-from .base import (Box, ship_template, trimmed, Input, Control, Credential, Harness, Interruption, Keys, Launch, RecordError, Screen, State, Tokens,
-                   ToolCall, Turn, Usage, Window, credential, entries, key_environment, merged, program_version, same_name, when)
+from .base import (Box, ship_template, trimmed, Input, Control, Credential, Harness, Interruption, Keys, Launch, Screen, Tokens,
+                   Turn, Usage, Window, credential, entries, key_environment, merged, when)
 
 ENDS_TURN = {"end_turn", "max_tokens", "stop_sequence"}
 LOCAL_TAGS = ("<command-name>", "<local-command", "<bash-input>", "<bash-stdout>", "<bash-stderr>")
