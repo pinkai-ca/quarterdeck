@@ -28,7 +28,7 @@ Six parts make the ship and two keep it honest. The parts name the modules and t
 | Part | What it is | Module | Commands |
 |---|---|---|---|
 | **Standing orders** | What every seat reads before it acts: the laws the framework enforces, the ship's own orders, and a card for its role and for its program. The laws live here, are enforced in the six parts above, and are proven by the Drill | `standing.py` | `qd laws`, `qd brief <seat>` |
-| **Drill** | Proof that the ship works: a fake harness that stands in for every real program, and the all-hands exercise, every seat sending to every other, the service crashing and recovering, every seat relaunched fresh and the matrix run again. On the fake harness in the tests; on real programs when asked | `drill.py`, `fakeharness.py` | `qd drill` |
+| **Drill** | Proof that the ship works: a fake harness in the shape of Claude Code or Codex, and the all-hands exercise, every seat sending to every other, the service crashing and recovering, every seat relaunched fresh and the matrix run again. On the fake harness in the tests; on real programs when asked | `drill.py`, `fakeharness.py` | `qd drill` |
 
 One verb is for the machine the ship runs on. `qd doctor` (`doctor.py`) checks tmux and git, the program each harness needs and its version, the sign-in each pool names and when its grant expires, every seat's working directory, the runtime's fence, the service and the disk, and prints a proof line per check. With `--fix` it opens a throwaway seat on the first pool whose program runs, hands it the failures as an order, waits for its report and checks again: the programs that run the ship are the help that can mend it, where a script could only name what is wrong.
 
@@ -385,7 +385,7 @@ Four layers:
 
 1. **Unit.** Pure logic: the ship file and its line editor, message records, inbox rendering, the typed form, attribution, the Ledger's arithmetic, the status line from a fixture state.
 2. **Contract.** Each adapter against recorded screens and transcripts, one directory per proven version, with a check that every proven version has a fixture set; `qd check <harness>` is its live counterpart, and narrower: it proves that the installed program launches, takes a paste its record confirms, does one task and is read, and leaves every comparison with recorded files to this layer. Every interruption the adapter knows has a screen in the set, every control has the state that confirms it, the box's folding of a paste is recorded with its counter, and the claude set includes a subagent transcript.
-3. **Integration.** The Drill on a real tmux server with `qd-fakeharness --as <name>`, a small program that behaves like each real one: it shows a box that folds a long paste, a dialog, a program that queues while working and one that does not; it accepts a message, works for a while through steps, writes the transcript shape of the program it imitates, and replies. Every seat sends to every other seat and the Watch confirms each delivery; the service is killed mid-delivery and recovers with no message lost or doubled; every seat is relaunched fresh and the matrix runs again; the Office seat is reached by its watch and never typed into.
+3. **Integration.** The Drill on a real tmux server with `qd-fakeharness --as claude` or `--as codex`, a small program in the shape of one of those two: it shows a box that folds a long paste, a dialog, a program that queues while working and one that does not; it accepts a message, works for a while through steps, writes the record in the shape it takes, and replies. The other programs are proven by their contract fixtures and by `qd check`, not by the drill. Every seat sends to every other seat and the Watch confirms each delivery; the service is killed mid-delivery and recovers with no message lost or doubled; every seat is relaunched fresh and the matrix runs again; the Office seat is reached by its watch and never typed into.
 4. **Live drill.** Opt-in, real programs on throwaway seats, the same matrix plus one duty per role from its card and one task per seat that the drill can check without reading prose: write a named file with given contents, run a given command and report its output, post a report with given words. The drill verifies each by the filesystem and the post store, not by the reply, and emits a pass table. It spends real tokens and runs only when asked.
 
 Two tests guard the repository itself: no runtime content, seat id or credential pattern in any tracked file, and every `runtime/` ignored; every law carried somewhere, every law tag real, and every law's test attempting its violation. File size is guidance, about 400 lines, split by concept and never compressed to fit a number.
@@ -403,17 +403,20 @@ quarterdeck/                       the project folder: the framework repository
     seat.py        seat identity, lifecycle and controls: up, down, restart, fresh, stop, set
     door.py        the one typing path: clear, type, check, submit, confirm; three speeds; the wall it reads
     pending.py composer.py delivery_queue.py delivery_record.py   the door's evidence of one paste, and the transport around it
+    input_receipt.py   the one rule that matches a delivery to the record's evidence of its input
     service.py     the ship's one long-running process: inboxes, deliveries, attempts, deferred controls, the heartbeat,
                    the machine sample; the one writer of the Ledger
     servicectl.py  the service's lock, heartbeat, start, stop and requests
     harness/       base.py claude.py codex.py antigravity.py opencode.py pi.py fake.py; json_record.py limits.py sqlite_snapshot.py
-                   opencode_record.py antigravity_wire.py antigravity_quota.py
+                   opencode_record.py antigravity_wire.py antigravity_quota.py; simulator.py synthetic_record.py, the fake
+                   program the drill runs and its records, in Claude Code's or Codex's shape
     endpoint.py    endpoint pools: what a server serves, the model a seat takes from it, the key beside it
     sandbox.py     the bubblewrap jail around a sandboxed seat's program
     post.py        messages: store, inbox, the typed form, the watch
     watch.py       reading a seat: activity and door; the status line
     ledger.py      turns, tokens, tool calls, machine load, by pool, seat and order; opened read-only by every reading
-    provenance.py record_owner.py quota.py   which launch and which program a record belongs to; quota walls and the usage refresh
+    provenance.py record_owner.py quota.py usage_cache.py   which launch and which program a record belongs to; quota walls,
+                   the usage refresh, and the latest real reading of each usage window
     credential.py  the one link a seat shares with its pool, reseeded and relinked on the tick
     machine.py     a seat's process tree, sampled for the Ledger
     standing.py    standing orders: laws, the ship's orders, cards, the brief
@@ -421,7 +424,7 @@ quarterdeck/                       the project folder: the framework repository
     check.py       qd check: an installed program proven live on a throwaway seat
     doctor.py      qd doctor: the installation checked, and the failures handed to a seat
     install.py     qd upgrade: the framework at one commit, installed as the ship's own copy under runtime/venv
-    fakeharness.py fakerecord.py   the stand-in for every real program, installed as qd-fakeharness, and its records in each program's shape
+    fakeharness.py the entry point installed as qd-fakeharness, for the simulator under harness/
   standing-orders/ laws.md  roles/  harnesses/        the laws, and the generic cards a ship starts from
   ships/
     drydock/       ship.toml  orders.md    three fake seats, one in each kind of session: the tests and the drill run here
