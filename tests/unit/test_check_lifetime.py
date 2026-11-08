@@ -60,7 +60,7 @@ def test_service_leaves_live_check_to_owner_and_teardown_retires_only_uncertaint
         message = svc.store.new("order", "ship", seat.name, "Synthetic check input")
         orders.append(message)
         attempt = svc.attempts.open(message, seat.name, "%2", 222, seat.launched().at)
-        proof = pending.Proof.begin(seat, [attempt], post.typed([message]))
+        proof = pending.Proof.begin(seat, attempt, post.typed([message]))
         proof.save(phase="submitted", shown=proof.data["payload"])
         observed.update(seat=seat, message=message, attempt=attempt, proof=proof)
         for _ in range(2):
@@ -134,7 +134,7 @@ def probe(checked, seat, orders):
     message = store.new('order', 'ship', seat.name, 'Synthetic killed-owner input')
     orders.append(message)
     attempt = attempts.open(message, seat.name, '%1', 111, seat.launched().at)
-    proof = pending.Proof.begin(seat, [attempt], post.typed([message]))
+    proof = pending.Proof.begin(seat, attempt, post.typed([message]))
     proof.save(phase='submitted', shown=proof.data['payload'])
     print('ready', flush=True)
     sys.stdin.read()

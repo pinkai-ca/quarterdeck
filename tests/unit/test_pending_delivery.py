@@ -189,7 +189,7 @@ def test_crash_at_each_durable_boundary_never_repeats_paste_or_submit(setup, pha
     message = svc.store.new("order", "desk", "worker", "crash boundary")
     launch = seat.launched()
     attempt = svc.attempts.open(message, seat.name, launch.pane, launch.pid, launch.at)
-    proof = pending.Proof.begin(seat, [attempt], post.typed([message]))
+    proof = pending.Proof.begin(seat, attempt, post.typed([message]))
     proof.save(phase=phase, shown=post.typed([message]).rstrip("\n"))
     live["box"] = proof.data["shown"]
     other = Service(svc.ship, svc.tmux)
@@ -248,7 +248,7 @@ def test_confirmation_verdict_survives_crash_before_attempt_close(setup) -> None
     svc, seat, live, record = setup
     msg = svc.store.new("order", "desk", "worker", "already recorded")
     a = svc.attempts.open(msg, seat.name, "%1", 123, seat.launched().at)
-    proof = pending.Proof.begin(seat, [a], post.typed([msg]))
+    proof = pending.Proof.begin(seat, a, post.typed([msg]))
     proof.save(phase="delivered")  # crash after durable verdict, before attempts.close
     record.unlink()  # persisted confirmation is sufficient even if source later disappears
     svc.reconcile()
@@ -363,3 +363,42 @@ def test_padded_capture_never_confirms_a_visually_hidden_record_difference(setup
     svc.reconcile()
     assert svc.attempts.latest()[message.id] == "delivered"
     assert live["pasted"] == live["submitted"] == 1
+
+
+@pytest.mark.parametrize("count", [1, 2])
+def test_saved_journal_lists_remain_readable_by_the_preceding_code_and_reconcile_once(setup, count):
+    import subprocess
+    from types import ModuleType
+
+    svc, seat, live, record = setup
+    messages = [svc.store.new("order", "desk", seat.name, f"historical transport item {i}") for i in range(count)]
+    launch = seat.launched()
+    attempts = [svc.attempts.open(m, seat.name, launch.pane, launch.pid, launch.at) for m in messages]
+    payload = post.typed(messages)
+    proof = pending.Proof.begin(seat, attempts[0], payload)
+    # Multi-attempt lists are an existing disk format, even though new transports take one message.
+    proof.save(attempts=[a.path.name for a in attempts], phase="submitted", shown=payload)
+    source = subprocess.check_output(
+        ["git", "show", "8d89929a9fa828d0052bb0a0f0829a0da001a58e:src/quarterdeck/pending.py"],
+        cwd=Path(__file__).parents[2], text=True)
+    previous = ModuleType("quarterdeck.previous_pending")
+    previous.__package__ = "quarterdeck"
+    exec(compile(source, "previous_pending.py", "exec"), previous.__dict__)
+    found, errors = previous.journals(seat)
+    assert not errors and len(found) == 1 and found[0].data == proof.data
+    assert found[0].confirmed(seat) is None
+    svc.reconcile()
+    assert [a.result for a in svc.attempts.all()] == ["pending"] * count
+    input_row(record, payload, post.now())
+    assert found[0].confirmed(seat) == "delivered"
+    restarted = Service(svc.ship, svc.tmux)
+    try:
+        for _ in range(2):
+            restarted.reconcile()
+            restarted.deliveries()
+        assert [a.result for a in svc.attempts.all()] == ["delivered"] * count
+        assert len(svc.attempts.all()) == count
+        assert json.loads(proof.path.read_text())["phase"] == "delivered"
+        assert live["pasted"] == live["submitted"] == 0
+    finally:
+        restarted.ledger.close()

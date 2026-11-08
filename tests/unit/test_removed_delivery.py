@@ -46,7 +46,7 @@ def test_removed_seat_is_abandoned_once_and_survivor_confirms_on_same_tick(tmp_p
         launch(seat)
     old = svc.store.new("order", "desk", removed.name, "Synthetic removed delivery")
     opened = svc.attempts.open(old, removed.name, "%1", 111, removed.launched().at)
-    proof = pending.Proof.begin(removed, [opened], post.typed([old])) if journal else None
+    proof = pending.Proof.begin(removed, opened, post.typed([old])) if journal else None
     if proof:
         proof.save(phase="submitted", shown=proof.data["payload"])
     if result:
@@ -66,7 +66,7 @@ def test_removed_seat_is_abandoned_once_and_survivor_confirms_on_same_tick(tmp_p
     attempt = svc.attempts.open(good, survivor.name, "%1", 111, survivor.launched().at)
     payload = post.typed([good])
     if surviving_journal:
-        intact = pending.Proof.begin(survivor, [attempt], payload)
+        intact = pending.Proof.begin(survivor, attempt, payload)
         intact.save(phase="submitted", shown=payload)
     svc.attempts.close(attempt, "pending" if surviving_journal else "queued")
     with record.open("a") as stream:
@@ -122,7 +122,7 @@ def test_check_retires_all_unresolved_attempts_and_journals_before_deleting_seat
             state["messages"].append(msg)
             orders.append(msg)
             attempt = attempts.open(msg, seat.name, "%1", 111, seat.launched().at)
-            proof = pending.Proof.begin(seat, [attempt], post.typed([msg]))
+            proof = pending.Proof.begin(seat, attempt, post.typed([msg]))
             proof.save(phase="delivered" if result == "delivered" else "submitted", shown=proof.data["payload"])
             if result:
                 attempts.close(attempt, result)

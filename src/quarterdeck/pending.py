@@ -57,16 +57,15 @@ class Proof:
         os.replace(tmp, self.path)
 
     @classmethod
-    def begin(cls, seat: Seat, attempts: list[post.Attempt], text: str) -> Proof:
-        first = attempts[0]
-        path = seat.ship.runtime / "post" / "pending" / seat.name / first.path.name
+    def begin(cls, seat: Seat, attempt: post.Attempt, text: str) -> Proof:
+        path = seat.ship.runtime / "post" / "pending" / seat.name / attempt.path.name
         record = seat.record()
         proof = cls(path, {})
-        original = min(a.at for attempt in attempts for a in post.Attempts(seat.ship.runtime).for_message(attempt.message))
+        original = min(a.at for a in post.Attempts(seat.ship.runtime).for_message(attempt.message))
         proof.save(seat=seat.name, identity=identity(seat), at=original,
                    since=post.now().isoformat(), payload=text, phase="prepared",
                    record=str(record) if record else None, shown=None,
-                   attempts=[a.path.name for a in attempts])
+                   attempts=[attempt.path.name])
         return proof
 
     def same_launch(self, seat: Seat) -> bool:

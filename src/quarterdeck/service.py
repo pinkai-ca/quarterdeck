@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import harness as harnesses
-from . import pending as pending_delivery, delivery_queue, delivery_record
+from . import pending as pending_delivery, delivery_record
 from . import credential, machine, post, quota, record_owner, ship as shipmod, standing
 from .door import CONFIRM_SECONDS, Door
 from .harness.base import record_fingerprint
@@ -35,7 +35,6 @@ from .tmux import Tmux
 
 TICK = 1.0
 BLIND_INTERVAL = 60.0  # how often the blind attempts are read against the records
-SPEEDS = {None: 0, "now": 1, "interrupt": 2}
 
 
 class Service:
@@ -157,32 +156,40 @@ class Service:
                     self.store.new("report", "ship", desk.name, f"{seat.name} obstructed, {reason}")
 
     def deliver(self, seat: Seat, messages: list[post.Message], resend: bool = False) -> str:
-        return delivery_queue.deliver(self, seat, messages, resend)
+        if resend:
+            pending_delivery.explicit_resend(self, seat, messages)
+        latest = self.attempts.last_results(seat.name)
+        ordered = sorted(messages, key=lambda message: latest.get(message.id) == "withheld")
+        lines = []
+        for message in ordered:
+            lines.append(self._deliver(seat, message, resend))
+            reading = Door(seat).reading()
+            if not reading.open and reading.clears != "dismissable":
+                break  # an occupied or uncertain door holds every remaining item
+        return "\n".join(lines)
 
-    def _deliver(self, seat: Seat, messages: list[post.Message], resend: bool = False) -> str:
+    def _deliver(self, seat: Seat, message: post.Message, resend: bool = False) -> str:
         """One isolated transport, journaled before typing."""
         door = Door(seat)
-        speed = max((m.speed for m in messages), key=lambda s: SPEEDS[s], default=None)
+        speed = message.speed
         reading = door.reading()
         clearable = reading.clears == "dismissable" or (speed == "interrupt" and reading.clears == "time")
         if not reading.open and not clearable:  # the door itself clears a known notice or interrupts; this only spares an attempt file
             return f"{seat.name}: {reading}"
         launched = seat.launched()
-        attempts = [self.attempts.open(m, seat.name, launched.pane, launched.pid, launched.at) for m in messages]
-        text = post.typed(messages)
-        proof = pending_delivery.Proof.begin(seat, attempts, text)
+        attempt = self.attempts.open(message, seat.name, launched.pane, launched.pid, launched.at)
+        text = post.typed([message])
+        proof = pending_delivery.Proof.begin(seat, attempt, text)
         delivery = door.deliver(text, speed, proof=proof)
         if proof:
             proof.finish(delivery.result)
         detail = delivery.detail + (" · resend" if resend else "")
         screen = door.screen()
-        for attempt in attempts:
-            self.attempts.close(attempt, delivery.result, detail)
-            if delivery.result == "withheld":
-                self.withheld[(attempt.message, seat.name)] = screen.text if screen else ""
-        self.log("delivery", seat=seat.name, messages=[m.id for m in messages], speed=speed, result=delivery.result,
-                 detail=detail)
-        return f"{', '.join(m.short for m in messages)} to {seat.name} · {delivery.result}: {detail}"
+        self.attempts.close(attempt, delivery.result, detail)
+        if delivery.result == "withheld":
+            self.withheld[(attempt.message, seat.name)] = screen.text if screen else ""
+        self.log("delivery", seat=seat.name, messages=[message.id], speed=speed, result=delivery.result, detail=detail)
+        return f"{message.short} to {seat.name} · {delivery.result}: {detail}"
 
     def inboxes(self) -> None:
         for name in self.ship.seats:

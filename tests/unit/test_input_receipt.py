@@ -67,7 +67,7 @@ def bind(svc, old, name, path):
 def seed_proof(svc, seat):
     message = svc.store.new("order", "desk", seat.name, "exact  queued transport")
     a = svc.attempts.open(message, seat.name, "%1", 123, seat.launched().at)
-    proof = pending.Proof.begin(seat, [a], post.typed([message]))
+    proof = pending.Proof.begin(seat, a, post.typed([message]))
     proof.save(phase="submitted", shown=proof.data["payload"].rstrip("\n"), since=(T0 + timedelta(seconds=1)).isoformat())
     svc.attempts.close(a, "pending", "submitted once")
     return message, proof

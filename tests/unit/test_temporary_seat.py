@@ -65,7 +65,7 @@ def test_both_callers_retire_transport_and_finish_cleanup_after_exceptions(tmp_p
         foreign = svc.store.new("order", "desk", seat.name, "not opened by this operation")
         state["foreign"] = foreign
         attempt = svc.attempts.open(own, seat.name, "%1", 111, seat.launched().at)
-        proof = pending.Proof.begin(seat, [attempt], post.typed([own]))
+        proof = pending.Proof.begin(seat, attempt, post.typed([own]))
         proof.save(phase="submitted", shown=proof.data["payload"])
         state.update(attempt=attempt, proof=proof)
         svc.reconcile()

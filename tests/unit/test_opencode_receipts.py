@@ -49,7 +49,7 @@ def test_queued_root_input_survives_reconciliation_and_restart_until_consumed(tm
     def attempt_on(service):
         attempt = service.attempts.open(message, seat.name, "%1", 123, launch.at)
         if journaled:
-            proof = pending.Proof.begin(seat, [attempt], payload)
+            proof = pending.Proof.begin(seat, attempt, payload)
             proof.save(phase="submitted", shown=payload)
             proof.finish("queued")
         service.attempts.close(attempt, "queued")
