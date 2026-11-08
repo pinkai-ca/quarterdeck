@@ -20,7 +20,7 @@ from pathlib import Path
 from ..ship import Pool, SeatSpec
 from .antigravity_quota import banner, fetch_usage, record_wall, unknown
 from .antigravity_wire import _bytes, _int, _proto, _snapshot_query, _str, _ts, _uints
-from .base import (Box, Input, Control, Credential, Harness, Interruption, Join, Keys, Launch, RecordError, Screen, State,
+from .base import (Box, ship_template, trimmed, Input, Control, Credential, Harness, Interruption, Join, Keys, Launch, RecordError, Screen, State,
                    Tokens, ToolCall, Turn, program_version, record_fingerprint)
 from .limits import Usage
 
@@ -315,20 +315,33 @@ def read(record: Path) -> tuple[State, list[Turn]]:
 def inputs(record: Path) -> list[Input]:
     # USER_INPUT.created_at is its receipt time, including repeated inputs in one execution.
     found = []
+    executions = set()
     for _, kind, _, _, metadata, _, payload in _snapshot_query(record)[3]:
         if kind == 14:
             ui = _proto(_bytes(_proto(payload), 19))
             text = _str(ui, 2) or _str(ui, 1)
+            meta = _proto(metadata)
+            execution = _str(meta, 12)
+            at = _ts(_bytes(meta, 1))
             if text is not None:
-                found.append(Input(text, _ts(_bytes(_proto(metadata), 1))))
+                consumed = execution is not None and execution in executions
+                found.append(Input(text, at, "consumed" if consumed else "accepted", at if consumed else None))
+                if execution is not None:
+                    executions.add(execution)
     return found
 
 
 class AntigravityHarness(Harness):
     name = "antigravity"
+    program = "agy"
     home_variable = None  # no home switch: the seat runs in the program's own state directory
     brief_channel = "first-message"
     reads_usage = True
+    usage_interval = 300
+    background_usage = True
+    status_usage = True
+    headline_window = ("Gemini 4 Argon", "7d")
+    screen_walls = True
     record_limits = ("cost is unknown unless the record states it; effort and child-turn counts are not exposed; "
                      "a step without a completion time leaves its duration unknown")
     keys = Keys(submit="Enter", send_now=("M-m",), interrupt="Escape", empty=None)
@@ -339,18 +352,24 @@ class AntigravityHarness(Harness):
                            datetime.now(timezone.utc))
         return fetch_usage()
 
+    def shared_usage_key(self, pool: Pool) -> tuple | None:
+        return (self.name, "default-sign-in") if pool.config_dir is None else None
+
+    def quota_wall(self, text: str, at: datetime):
+        from .antigravity_quota import wall
+        return wall(text, "individual-quota", at)
+
     def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None) -> Credential | None:
         """Our settings for the session, passed on the command line; nothing of the program's own is written."""
         home.mkdir(parents=True, exist_ok=True)
         settings = {"trustedWorkspaces": [str(seat.cwd)] if seat.cwd else []}
-        if ship_home and (ship_home / "settings.json").is_file():
-            settings = {**json.loads((ship_home / "settings.json").read_text()), **settings}
+        settings = {**ship_template(ship_home, "settings.json"), **settings}
         settings.update(seat.settings)
         (home / "settings.json").write_text(json.dumps(settings, indent=2) + "\n")
         return None
 
     def launch(self, seat: SeatSpec, pool: Pool, home: Path, brief: Path, resume: str | None, first: str | None) -> Launch:
-        argv = ["agy", "--dangerously-skip-permissions", "--settings", str(home / "settings.json")]
+        argv = [self.program, "--dangerously-skip-permissions", "--settings", str(home / "settings.json")]
         if seat.model:
             argv += ["--model", seat.model]
         if seat.effort:
@@ -363,9 +382,6 @@ class AntigravityHarness(Harness):
         if not resume:  # a new conversation is about to appear: note which ones are there already
             (home / BEFORE).write_text("".join(f"{p.name}\n" for p in sorted(self._conversations())))
         return Launch(tuple(argv), {"AGY_CLI_DISABLE_AUTO_UPDATE": "true"})
-
-    def version(self) -> str | None:
-        return program_version(("agy", "--version"))
 
     # -- record: the one conversation that appeared after the launch ---------------------------
 
@@ -391,9 +407,7 @@ class AntigravityHarness(Harness):
     records = staticmethod(records)
     first_timestamp = staticmethod(first_timestamp)
     session_id = staticmethod(session_id)
-    state = staticmethod(state)
-    turns = staticmethod(turns)
-    read = staticmethod(read)
+    reader = staticmethod(read)
 
     # -- screen ---------------------------------------------------------------------------
 
@@ -410,8 +424,7 @@ class AntigravityHarness(Harness):
             span = lines[top + 1:bottom]
             if span and (span[0].rstrip() == ">" or span[0].startswith("> ")):
                 body = [line[2:] if line.startswith(("> ", "  ")) else line.lstrip(">") for line in span]
-                while body and not body[-1].strip():
-                    body.pop()
+                body = trimmed(body)
                 box = "\n".join(body)
                 if box.rstrip(" ") == QUEUED_PLACEHOLDER:
                     box, queued = "", max(queued, 1)

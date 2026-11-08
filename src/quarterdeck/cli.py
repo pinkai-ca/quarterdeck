@@ -118,10 +118,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--by", choices=("seat", "order", "pool"), help="roll the turns up by this")
     p.add_argument("--tools", action="store_true", help="tool calls by name: count, seconds, failures")
     verb("service", cmd_service, "run the ship's service in the foreground (qd up starts it detached)")
-    p = verb("drill", cmd_drill, "the all-hands drill: on the drydock's fake harness, or on --ship with real programs")
+    p = verb("drill", cmd_drill, "the all-hands drill: on the drydock's simulator, or on --ship with real programs")
     p.add_argument("--keep", action="store_true", help="keep the temporary ship and its tmux server for a look")
     p = verb("check", cmd_check, "prove the installed version of a program live, on a throwaway seat (spends tokens)")
-    p.add_argument("harness", choices=[n for n in harnesses.NAMES if n != "fake"])
+    p.add_argument("harness", choices=[n for n in harnesses.NAMES if not harnesses.get(n).synthetic])
     p = verb("doctor", cmd_doctor, "is this machine ready to run the ship: tmux, git, programs, sign-ins, folders, the service, disk")
     p.add_argument("--fix", action="store_true",
                    help="hand the failures to a throwaway seat on the first pool whose program runs, then check again (spends tokens)")
@@ -218,7 +218,7 @@ def cmd_set(args: argparse.Namespace) -> list[str]:
     if args.adopt:
         return adopt(ship, seat)
     if not changes:
-        raise ShipError("nothing to set: give KEY=VALUE pairs, as in model=claude-opus-5-5, or --adopt")
+        raise ShipError("nothing to set: give KEY=VALUE pairs, as in model=MODEL, or --adopt")
     proofs = []
     for change in changes:
         key, equals, raw = change.partition("=")

@@ -125,21 +125,22 @@ def test_the_door_never_types_into_a_human_session(drydock: Path, tmux: Tmux):
     assert desk.harness.screen(tmux.capture(desk.pane().id)).box == ""
 
 
-def test_a_paste_the_program_took_but_has_not_recorded_yet_is_queued_not_blind(drydock: Path, tmux: Tmux):
-    """A fresh session can take longer than the confirm window to record its first prompt: the box emptied and the
-    program at work say it took the paste, so the attempt reads queued and the record confirms it later."""
+def test_an_empty_box_without_a_record_receipt_stays_unconfirmed(drydock: Path, tmux: Tmux):
+    """An emptied box is not acceptance; only the later exact input confirms the single paste."""
     ship = ship_with(drydock, '\n[seats.captain.settings]\nstep_seconds = "0.05"\naccept_seconds = "7"\n')
     captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
     captain.up()
     wait_for(lambda: Door(captain).reading().open)
-    delivery = Door(captain).deliver(post.typed([order(captain, "slow to accept")]))
-    assert delivery.result == "queued" and delivery.detail.startswith("the box emptied and the program went to work"), delivery
-    record = wait_for(captain.record, 15)
-    wait_for(lambda: "slow to accept" in (captain.harness.state(record).last_input or ""), 15)  # law: one-door
+    door = Door(captain)
+    text = post.typed([order(captain, "slow to accept")])
+    delivery = door.deliver(text)
+    assert delivery.result == "blind", delivery
+    assert wait_for(lambda: door.confirm(text, seconds=0).result == "delivered", 15)  # law: one-door
+    assert sum(item.text.strip() == text.strip() for item in captain.harness.inputs(captain.record())) == 1
 
 
 def test_an_echo_longer_than_the_screen_is_read_from_the_scrollback(tmux: Tmux, tmp_path: Path):
-    """A long message's echo climbs above a 24-line pane; the door confirms it from the transcript, scrollback included."""
+    """A long message's echo climbs above a 24-line pane; the adapter can still read its echo from the transcript, scrollback included."""
     from types import SimpleNamespace
 
     from quarterdeck.door import echoed

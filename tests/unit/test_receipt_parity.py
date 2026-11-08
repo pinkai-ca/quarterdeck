@@ -56,3 +56,41 @@ def test_real_check_probe_and_service_delivery_use_adapter_inputs(setup, monkeyp
     svc.deliver(seat, [message])
     assert svc.attempts.latest()[message.id] == ("delivered" if fresh else "pending")
     assert live["pasted"] == live["submitted"] == 2
+
+
+def test_fifo_queue_receipts_keep_untimed_slots_and_unknown_operations_prove_nothing(tmp_path):
+    at = datetime(2030, 1, 1, tzinfo=timezone.utc)
+    record = tmp_path / "queue.jsonl"
+    text = "exact  input"
+    def event(operation, stamp):
+        return {"type": "queue-operation", "operation": operation,
+                "content": '<pasted_content id="synthetic">\n' + text + '\n</pasted_content>',
+                "timestamp": stamp.isoformat() if stamp else None}
+    rows = [event("enqueue", None), event("enqueue", at), event("dequeue", at + timedelta(seconds=1))]
+    record.write_text("\n".join(map(json.dumps, rows)))
+    assert input_receipt.confirmed("claude", record, text, at) == "queued", "dequeue consumed the untimed FIFO slot"
+    rows.append(event("remove", at + timedelta(seconds=2)))
+    record.write_text("\n".join(map(json.dumps, rows)))
+    assert input_receipt.confirmed("claude", record, text, at) == "delivered"
+    assert input_receipt.confirmed("claude", record, text, at + timedelta(seconds=1)) is None
+    rows = [event("enqueue", at), event("unrecognized", at + timedelta(seconds=1))]
+    record.write_text("\n".join(map(json.dumps, rows)))
+    assert input_receipt.confirmed("claude", record, text, at) is None
+
+
+@pytest.mark.parametrize("name", ["claude", "codex", "pi"])
+def test_unreadable_input_shapes_do_not_hide_fresh_siblings_or_confirm_untimed_history(tmp_path, name):
+    at = datetime(2030, 1, 1, tzinfo=timezone.utc)
+    make = {
+        "claude": lambda value: {"type": "user", "message": {"content": value}},
+        "codex": lambda value: {"type": "response_item", "payload": {"role": "user", "content": value}},
+        "pi": lambda value: {"type": "message", "message": {"role": "user", "content": value}},
+    }[name]
+    content = [{"type": "input_text", "text": "exact input"}] if name == "codex" else "exact input"
+    record = tmp_path / "synthetic.jsonl"
+    rows = [make(content), dict(make(17), timestamp=at.isoformat())]
+    record.write_text("\n".join(map(json.dumps, rows)))
+    assert input_receipt.confirmed(name, record, "exact input", at) is None
+    rows.append(dict(make(content), timestamp=at.isoformat()))
+    record.write_text("\n".join(map(json.dumps, rows)))
+    assert input_receipt.confirmed(name, record, "exact input", at) == "delivered"

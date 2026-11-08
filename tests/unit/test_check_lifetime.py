@@ -10,7 +10,7 @@ import pytest
 
 from quarterdeck import check, pending, post
 from quarterdeck.drill import Check
-from quarterdeck.fakerecord import ClaudeShape
+from quarterdeck.harness.synthetic_record import ClaudeShape
 from quarterdeck.harness.fake import FakeHarness
 from quarterdeck.seat import Seat
 from quarterdeck.service import Service

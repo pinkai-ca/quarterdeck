@@ -12,41 +12,28 @@ Expiry times are read as metadata; token values are never read.
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from . import harness as harnesses
 from .seat import Seat
 from .ship import Pool, Ship
 
 WARN_AHEAD = timedelta(hours=48)
-CREDENTIAL_FILES = {"claude": ".credentials.json", "codex": "auth.json"}
 
 
 def pool_file(pool: Pool) -> Path | None:
-    name = CREDENTIAL_FILES.get(pool.provider)
+    if pool.kind == "endpoint":
+        return None
+    name = harnesses.get(pool.provider).credential_file
     return pool.config_dir / name if pool.config_dir and name else None
 
 
-def freshness(path: Path) -> tuple[float, float] | None:
-    """How live a credential file is: (its access token's expiry, its mtime), or None for a stub.
-
-    Only the shape of the file is read, and the expiry as a number; never a token's value.
-    """
-    try:
-        data = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return None
-    oauth = data.get("claudeAiOauth") if isinstance(data, dict) else None
-    tokens = data.get("tokens") if isinstance(data, dict) else None
-    if isinstance(oauth, dict) and oauth.get("refreshToken"):
-        expiry = oauth.get("expiresAt") or 0
-        return (float(expiry) / 1000 if expiry > 1e11 else float(expiry), path.stat().st_mtime)
-    if isinstance(tokens, dict) and tokens.get("refresh_token"):
-        return (0.0, path.stat().st_mtime)
-    return None
+def freshness(pool: Pool, path: Path) -> tuple[float, float] | None:
+    """The pool adapter judges a detached credential; the transport never guesses its shape."""
+    return harnesses.get(pool.provider).freshness(path)
 
 
 def reseed(ship: Ship, seats: list[Seat]) -> list[str]:
@@ -64,8 +51,9 @@ def reseed(ship: Ship, seats: list[Seat]) -> list[str]:
     proofs = []
     for pool_name, candidates in detached.items():
         source = pool_file(ship.pools[pool_name])
-        current = freshness(source) if source.exists() else None
-        live = [(freshness(link), link, seat) for link, seat in candidates if freshness(link) is not None]
+        pool = ship.pools[pool_name]
+        current = freshness(pool, source) if source.exists() else None
+        live = [(freshness(pool, link), link, seat) for link, seat in candidates if freshness(pool, link) is not None]
         newer = [c for c in live if current is None or c[0] > current]
         if newer:
             _, winner, from_seat = max(newer, key=lambda c: c[0])
@@ -100,18 +88,9 @@ def _install(winner: Path, source: Path) -> None:
 
 
 def grant_expiry(pool: Pool) -> datetime | None:
-    """When the pool's grant itself expires, read as metadata; None where the provider does not say."""
+    """The grant's expiry, when the pool's adapter can read it."""
     source = pool_file(pool)
-    if source is None or not source.exists():
-        return None
-    try:
-        data = json.loads(source.read_text())
-    except (OSError, json.JSONDecodeError):
-        return None
-    millis = (data.get("claudeAiOauth") or {}).get("refreshTokenExpiresAt")
-    if isinstance(millis, (int, float)):
-        return datetime.fromtimestamp(millis / 1000, timezone.utc)
-    return None
+    return harnesses.get(pool.provider).grant_expiry(source) if source is not None else None
 
 
 def login_needed(ship: Ship, now: datetime | None = None) -> list[tuple[str, str]]:

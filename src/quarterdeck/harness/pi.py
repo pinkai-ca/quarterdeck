@@ -16,8 +16,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .. import endpoint
+from .endpoint import EndpointHarness
+from .json_record import JsonLinesReader
+
 from ..ship import Pool, SeatSpec, ShipError
-from .base import (Box, Input, Control, Credential, Harness, Interruption, Keys, Launch, RecordError, Screen, State, Tokens,
+from .base import (Box, ship_template, trimmed, Input, Control, Credential, Harness, Interruption, Keys, Launch, RecordError, Screen, State, Tokens,
                    ToolCall, Turn, entries, merged, program_version, when)
 
 SETTINGS = {
@@ -65,22 +68,9 @@ def _tokens(message: dict) -> Tokens:
                   cache_written=usage.get("cacheWrite") or 0, written=usage.get("output") or 0)
 
 
-class _Reader:
-    def __init__(self, record: Path):
-        self.record = record
-        self.turns: list[Turn] = []
-        self.open: dict | None = None
-        self.pending: dict[str, tuple[str, datetime | None]] = {}
-        self.model = self.effort = self.last_input = self.last_input_at = None
-        self.consumed: list[str] = []
-        rows = entries(record)
-        if rows and not any(row.get("type") in ("session", "message", "model_change") for row in rows):
-            raise RecordError("no pi entries in this record: another program's file")
-        for entry in rows:
-            try:
-                self.take(entry)
-            except (TypeError, ValueError, AttributeError, KeyError):
-                continue  # a line of a shape this reader does not know is skipped; the rest is still read
+class _Reader(JsonLinesReader):
+    kinds = ('session', 'message', 'model_change')
+    label = "pi"
 
     def take(self, entry: dict) -> None:
         kind, at = entry.get("type"), when(entry.get("timestamp"))
@@ -99,10 +89,10 @@ class _Reader:
             if self.open is not None:
                 self.consumed.append(text)  # steered into the running turn after its current tool call
             else:
-                self.open = {"started": at, "input": text, "tokens": Tokens(), "tools": [], "reply": "", "cost": 0.0}
+                self.start_turn({"started": at, "input": text, "tokens": Tokens(), "tools": [], "reply": "", "cost": 0.0})
         elif role == "assistant":
             if self.open is None:
-                self.open = {"started": at, "input": "", "tokens": Tokens(), "tools": [], "reply": "", "cost": 0.0}
+                self.start_turn({"started": at, "input": "", "tokens": Tokens(), "tools": [], "reply": "", "cost": 0.0})
             self.model = message.get("model") or self.model
             self.open["tokens"] = self.open["tokens"] + _tokens(message)
             cost = ((message.get("usage") or {}).get("cost") or {}).get("total")
@@ -117,48 +107,33 @@ class _Reader:
             if message.get("stopReason") != "toolUse":
                 self.end(at)
         elif role == "toolResult":
-            name, started = self.pending.pop(message.get("toolCallId"), (message.get("toolName") or "?", None))
-            seconds = (at - started).total_seconds() if at and started else None
-            if self.open is not None:
-                self.open["tools"].append(ToolCall(name, seconds, bool(message.get("isError"))))
+            self.close_tool(message.get("toolCallId"), at, bool(message.get("isError")), message.get("toolName") or "?")
 
     def end(self, at: datetime | None) -> None:
-        turn, self.open = self.open, None
-        self.pending.clear()
+        turn = self.close_turn()
         self.turns.append(Turn(len(self.turns), turn["started"] or at, at or turn["started"], turn["input"], turn["reply"],
                                self.model, turn["tokens"], tuple(turn["tools"]), cost=turn["cost"]))
 
-    def state(self) -> State:
-        try:
-            last_write = datetime.fromtimestamp(self.record.stat().st_mtime, timezone.utc)
-        except FileNotFoundError:
-            last_write = None
-        tool = next(iter(self.pending.values()), None) if self.open is not None else None
-        return State(turn_open=self.open is not None, open_tool=tool[0] if tool else None, open_tool_since=tool[1] if tool else None,
-                     last_write=last_write, last_input=self.last_input, last_input_at=self.last_input_at, model=self.model,
-                     effort=self.effort, consumed=tuple(self.consumed), turns=len(self.turns))
-
-
-def state(record: Path) -> State:
-    return _Reader(record).state()
-
-
-def turns(record: Path) -> list[Turn]:
-    return _Reader(record).turns
-
-
-def read(record: Path) -> tuple[State, list[Turn]]:
-    reader = _Reader(record)
-    return reader.state(), reader.turns
+state = _Reader.read_state
+turns = _Reader.read_turns
+read = _Reader.read
 
 
 def inputs(record: Path) -> list[Input]:
     """Every user message with the time it entered the record, for the delivery receipt."""
     found = []
+    opened = False
     for entry in entries(record):
-        message = entry.get("message")
-        if entry.get("type") == "message" and isinstance(message, dict) and message.get("role") == "user":
-            found.append(Input(_text(message.get("content")), when(entry.get("timestamp"))))
+        try:
+            message = entry.get("message")
+            if entry.get("type") == "message" and isinstance(message, dict) and message.get("role") == "user":
+                at = when(entry.get("timestamp"))
+                found.append(Input(_text(message.get("content")), at, "consumed" if opened else "accepted", at if opened else None))
+                opened = True
+            elif entry.get("type") == "message" and isinstance(message, dict) and message.get("role") == "assistant":
+                opened = message.get("stopReason") == "toolUse"
+        except (TypeError, ValueError, AttributeError, KeyError):
+            continue
     return found
 
 
@@ -172,19 +147,15 @@ QUEUED_HINT = "Alt+Up to edit all queued messages"
 STEERING = re.compile(r"^\s*Steering: (.*?)\s*$", re.M)
 
 
-class PiHarness(Harness):
+class PiHarness(EndpointHarness):
     """pi, proven on 0.74.2. Runs on an endpoint pool; model and thinking level change only at launch."""
 
     name = "pi"
+    program = "pi"
     home_variable = "PI_CODING_AGENT_DIR"
     keys = Keys(submit="Enter", send_now=None, interrupt="Escape", empty=None)
     brief_channel = "system-prompt"
     wrap_slack = 1  # probed on 0.74.2: a word wraps one column short of where a word without spaces breaks
-
-    def accepts(self, pool: Pool) -> str | None:
-        if pool.kind != "endpoint":
-            return f"pool {pool.name} names no endpoint, and {self.name} runs on an endpoint pool: declare endpoint = \"http://host:port/v1\""
-        return None
 
     def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None) -> Credential | None:
         agent, sessions = home / "agent", home / "sessions"
@@ -192,8 +163,7 @@ class PiHarness(Harness):
         sessions.mkdir(parents=True, exist_ok=True)
         if seat.effort and seat.effort not in THINKING_LEVELS:
             raise ShipError(f"{seat.name}: effort {seat.effort!r} is not a pi thinking level; the levels are {', '.join(THINKING_LEVELS)}")
-        choice = endpoint.choose(pool, seat.model)
-        secret = endpoint.key(pool)
+        choice, secret = self.endpoint_home(home, seat, pool)
         model = {"id": choice.model, "name": choice.model, "reasoning": seat.effort is not None, "input": ["text"],
                  "contextWindow": choice.context, "maxTokens": choice.output,
                  "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}}
@@ -201,18 +171,16 @@ class PiHarness(Harness):
                     "apiKey": endpoint.KEY_VARIABLE if secret else "local",  # a variable's name, read by the program; never the key
                     "models": [model]}
         models = {"$schema": "https://pi.dev/schemas/models.schema.json", "providers": {pool.name: provider}}
-        if ship_home and (ship_home / "models.json").is_file():
-            models = merged(models, json.loads((ship_home / "models.json").read_text()))
-        settings = merged(SETTINGS, json.loads((ship_home / "settings.json").read_text())) if ship_home and (ship_home / "settings.json").is_file() else dict(SETTINGS)
+        models = merged(models, ship_template(ship_home, "models.json"))
+        settings = merged(SETTINGS, ship_template(ship_home, "settings.json"))
         settings = merged(settings, seat.settings)
         (agent / "models.json").write_text(json.dumps(models, indent=2) + "\n")
         (agent / "settings.json").write_text(json.dumps(settings, indent=2) + "\n")
-        choice.write(home)
-        return Credential(variable=endpoint.KEY_VARIABLE) if secret else None
+        return self.endpoint_ready(home, choice, secret)
 
     def launch(self, seat: SeatSpec, pool: Pool, home: Path, brief: Path, resume: str | None, first: str | None) -> Launch:
         choice = endpoint.Choice.read(home)
-        argv = ["pi", "--provider", pool.name, "--model", choice.model, "--session-dir", str(home / "sessions"),
+        argv = [self.program, "--provider", pool.name, "--model", choice.model, "--session-dir", str(home / "sessions"),
                 "--append-system-prompt", str(brief), "--no-context-files",  # the brief, and no instruction file of the user's
                 "--no-extensions", "--no-skills", "--no-prompt-templates"]  # nothing of the project's runs or instructs a seat
         if seat.effort:
@@ -227,16 +195,11 @@ class PiHarness(Harness):
         env = {self.home_variable: str(home / "agent"), "PI_SKIP_VERSION_CHECK": "1", **endpoint.key(pool)}
         return Launch(tuple(argv), env)
 
-    def version(self) -> str | None:
-        return program_version(("pi", "--version"))
-
     inputs = staticmethod(inputs)
     records = staticmethod(records)
     first_timestamp = staticmethod(first_timestamp)
     session_id = staticmethod(session_id)
-    state = staticmethod(state)
-    turns = staticmethod(turns)
-    read = staticmethod(read)
+    reader = staticmethod(read)
 
     def screen(self, text: str) -> Screen:
         """The box is between two rules above the working directory and the footer with the model and thinking level."""
@@ -260,8 +223,7 @@ class PiHarness(Harness):
         if top is None:
             return Screen(text, box=None, working=working, unknown="no box drawn as 0.74.2 draws it", queued=queued, shows=shows, echoes=echoes)
         body = lines[top + 1:bottom]
-        while body and not body[-1].strip():
-            body.pop()
+        body = trimmed(body)
         return Screen(text, box="\n".join(body), working=working, queued=queued, shows=shows, echoes=echoes)
 
     def box_columns(self, pane_width: int) -> int | None:

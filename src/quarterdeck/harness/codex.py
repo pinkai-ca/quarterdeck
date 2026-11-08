@@ -16,8 +16,10 @@ import tomllib
 from datetime import date, datetime, time, timezone
 from pathlib import Path
 
+from .json_record import JsonLinesReader
+
 from ..ship import Pool, SeatSpec, literal
-from .base import (Box, Input, Control, Credential, Harness, Interruption, Keys, Launch, RecordError, Screen, State, Tokens,
+from .base import (Box, ship_template, trimmed, Input, Control, Credential, Harness, Interruption, Keys, Launch, RecordError, Screen, State, Tokens,
                    ToolCall, Turn, credential, entries, key_environment, program_version, when)
 
 ENDS_TURN = {"task_complete", "turn_aborted"}
@@ -74,37 +76,29 @@ def _failed(output: str | list | None) -> bool:
 
 def inputs(record: Path) -> list[Input]:
     found = []
+    seen = False
     for row in entries(record):
         try:
             payload = row.get("payload", {})
+            if row.get("type") == "event_msg" and payload.get("type") in {"task_started", *ENDS_TURN}:
+                seen = False
             if row.get("type") != "response_item" or payload.get("role") != "user":
                 continue
             content = payload.get("content")
             if not isinstance(content, list):
                 continue
             text = "\n".join(c.get("text", "") for c in content if c.get("type") == "input_text")
-            found.append(Input(text, when(row.get("timestamp"))))
+            at = when(row.get("timestamp"))
+            found.append(Input(text, at, "consumed" if seen else "accepted", at if seen else None))
+            seen = True
         except (TypeError, ValueError, AttributeError, KeyError):
             continue
     return found
 
 
-class _Reader:
-    def __init__(self, record: Path):
-        self.record = record
-        self.turns: list[Turn] = []
-        self.open: dict | None = None
-        self.pending: dict[str, tuple[str, datetime | None]] = {}
-        self.model = self.effort = self.last_input = self.last_input_at = None
-        self.consumed: list[str] = []
-        rows = entries(record)
-        if rows and not any(row.get("type") in ("event_msg", "response_item", "session_meta", "turn_context") for row in rows):
-            raise RecordError("no Codex entries in this record: another program's file")
-        for entry in rows:
-            try:
-                self.take(entry)
-            except (TypeError, ValueError, AttributeError, KeyError):
-                continue  # a line of a shape this reader does not know is skipped; the rest is still read
+class _Reader(JsonLinesReader):
+    kinds = ('event_msg', 'response_item', 'session_meta', 'turn_context')
+    label = "Codex"
 
     def take(self, entry: dict) -> None:
         payload = entry.get("payload")
@@ -123,8 +117,7 @@ class _Reader:
         if sub == "task_started":
             if self.open is not None:
                 self.end(at)
-            self.pending.clear()
-            self.open = {"started": at, "input": "", "tokens": Tokens(), "tools": [], "reply": ""}
+            self.start_turn({"started": at, "input": "", "tokens": Tokens(), "tools": [], "reply": ""})
         elif sub == "token_count" and self.open is not None:
             last = (payload.get("info") or {}).get("last_token_usage") or {}
             self.open["tokens"] = self.open["tokens"] + usage_tokens(last)
@@ -147,15 +140,10 @@ class _Reader:
         elif sub in CALLS:
             self.pending[payload.get("call_id")] = (payload.get("name", "?"), at)
         elif sub in OUTPUTS:
-            name, started = self.pending.pop(payload.get("call_id"), ("?", None))
-            seconds = (at - started).total_seconds() if at and started else None
-            if self.open is not None:
-                self.open["tools"].append(ToolCall(name, seconds, _failed(payload.get("output"))))
+            self.close_tool(payload.get("call_id"), at, _failed(payload.get("output")))
 
     def end(self, at: datetime | None) -> None:
-        turn = self.open
-        self.open = None
-        self.pending.clear()
+        turn = self.close_turn()
         self.turns.append(
             Turn(
                 index=len(self.turns),
@@ -169,37 +157,10 @@ class _Reader:
             )
         )
 
-    def state(self) -> State:
-        try:
-            last_write = datetime.fromtimestamp(self.record.stat().st_mtime, timezone.utc)
-        except FileNotFoundError:
-            last_write = None
-        tool = next(iter(self.pending.values()), None) if self.open is not None else None
-        return State(
-            turn_open=self.open is not None,
-            open_tool=tool[0] if tool else None,
-            open_tool_since=tool[1] if tool else None,
-            last_write=last_write,
-            last_input=self.last_input,
-            last_input_at=self.last_input_at,
-            model=self.model,
-            effort=self.effort,
-            consumed=tuple(self.consumed),
-            turns=len(self.turns),
-        )
+state = _Reader.read_state
+turns = _Reader.read_turns
+read = _Reader.read
 
-
-def state(record: Path) -> State:
-    return _Reader(record).state()
-
-
-def turns(record: Path) -> list[Turn]:
-    return _Reader(record).turns
-
-
-def read(record: Path) -> tuple[State, list[Turn]]:
-    reader = _Reader(record)
-    return reader.state(), reader.turns
 
 
 # -- the adapter -----------------------------------------------------------------------------
@@ -265,9 +226,21 @@ class CodexHarness(Harness):
     """Codex, proven on 0.166.0. Model and effort change only at launch: ``/model`` opens a picker."""
 
     name = "codex"
+    program = "codex"
+    credential_file = "auth.json"
+    headline_window = (None, "5h")
     home_variable = "CODEX_HOME"
     keys = Keys(submit="Enter", send_now=None, interrupt="Escape", empty=("C-c",))
     brief_channel = "override"
+
+    def freshness(self, path: Path) -> tuple[float, float] | None:
+        try:
+            tokens = json.loads(path.read_text()).get("tokens")
+            if isinstance(tokens, dict) and tokens.get("refresh_token"):
+                return (0.0, path.stat().st_mtime)
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+        return None
 
     def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None) -> Credential | None:
         home.mkdir(parents=True, exist_ok=True)
@@ -275,8 +248,7 @@ class CodexHarness(Harness):
         cwd = seat.cwd or runtime.parent
         defaults = tomllib.loads(CONFIG.format(model=literal(seat.model or "gpt-6-astra"),
                                                effort=literal(seat.effort or "medium"), cwd=literal(str(cwd))))
-        template = ship_home / "config.toml" if ship_home else None
-        config = tomllib.loads(template.read_text()) if template and template.is_file() else {}
+        config = ship_template(ship_home, "config.toml")
         for key, value in defaults.items():
             if isinstance(value, dict):
                 config[key] = {**value, **config.get(key, {})}
@@ -289,10 +261,10 @@ class CodexHarness(Harness):
             scope["approval_policy"] = "never"
             scope.pop("sandbox_workspace_write", None)
         (home / "config.toml").write_text(config_text(config))
-        return credential(pool, home / "auth.json", "OPENAI_API_KEY")
+        return credential(pool, home / self.credential_file, "OPENAI_API_KEY")
 
     def launch(self, seat: SeatSpec, pool: Pool, home: Path, brief: Path, resume: str | None, first: str | None) -> Launch:
-        argv = ["codex", "--no-daemon", "-c", f"developer_instructions={json.dumps(brief.read_text())}"]
+        argv = [self.program, "--no-daemon", "-c", f"developer_instructions={json.dumps(brief.read_text())}"]
         if seat.model:
             argv += ["-m", seat.model]
         if seat.effort:
@@ -304,16 +276,11 @@ class CodexHarness(Harness):
         env = {self.home_variable: str(home), **key_environment(pool, "OPENAI_API_KEY")}
         return Launch(tuple(argv), env)
 
-    def version(self) -> str | None:
-        return program_version(("codex", "--version"))
-
     inputs = staticmethod(inputs)
     records = staticmethod(records)
     first_timestamp = staticmethod(first_timestamp)
     session_id = staticmethod(session_id)
-    state = staticmethod(state)
-    turns = staticmethod(turns)
-    read = staticmethod(read)
+    reader = staticmethod(read)
 
     def screen(self, text: str) -> Screen:
         """The box is the last ``› `` block above the status line, blank lines inside it and all."""
@@ -328,8 +295,7 @@ class CodexHarness(Harness):
             start_at = next((i for i in range(status_at - 1, -1, -1) if BOX_START.match(lines[i])), None)
             if start_at is not None:
                 body = [BOX_START.match(lines[start_at]).group(1)] + [l[2:] if l.startswith("  ") else l for l in lines[start_at + 1:status_at]]
-                while body and not body[-1].strip():
-                    body.pop()
+                body = trimmed(body)
                 box = "" if len(body) == 1 and body[0].rstrip(" ") == PLACEHOLDER else "\n".join(body)
         working = bool(WORKING.search(text))
         return Screen(text, box=box, working=working, interruption=self.recognize(text) if box is None else None,

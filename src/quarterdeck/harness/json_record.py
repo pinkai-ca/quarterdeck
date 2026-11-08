@@ -9,6 +9,10 @@ there, is a RecordError, and the reading says so instead of showing nothing.
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .base import State, Turn
 
 
 class RecordError(OSError):
@@ -45,3 +49,74 @@ def when(value: str | None) -> datetime | None:
     except ValueError:
         return None
     return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+class RecordReader:
+    """Read live state and ended turns together; the format supplies construction and state."""
+
+    @classmethod
+    def read(cls, record: Path) -> tuple["State", list["Turn"]]:
+        reader = cls(record)
+        return reader.state(), reader.turns
+
+    @classmethod
+    def read_state(cls, record: Path) -> "State":
+        return cls.read(record)[0]
+
+    @classmethod
+    def read_turns(cls, record: Path) -> list["Turn"]:
+        return cls.read(record)[1]
+
+
+class JsonLinesReader(RecordReader):
+    """The shared walk, tool lifetime and live state of a JSON-lines conversation."""
+
+    kinds: tuple[str, ...] = ()
+    label: str = "program"
+
+    def __init__(self, record: Path):
+        self.record = record
+        self.turns = []
+        self.open = None
+        self.pending = {}
+        self.queued = []
+        self.consumed = []
+        self.model = self.effort = self.last_input = self.last_input_at = None
+        rows = entries(record)
+        if rows and not any(row.get("type") in self.kinds for row in rows):
+            raise RecordError(f"no {self.label} entries in this record: another program's file")
+        for entry in rows:
+            try:
+                self.take(entry)
+            except (TypeError, ValueError, AttributeError, KeyError):
+                continue  # an unknown row does not hide the readable rows beside it
+
+    def start_turn(self, turn: dict) -> None:
+        self.pending.clear()
+        self.open = turn
+
+    def close_turn(self) -> dict:
+        turn, self.open = self.open, None
+        self.pending.clear()  # unfinished calls belong to the turn that ended
+        return turn
+
+    def close_tool(self, call: str, at: datetime | None, failed: bool | None, default: str = "?") -> None:
+        from .base import ToolCall
+
+        name, started = self.pending.pop(call, (default, None))
+        seconds = (at - started).total_seconds() if at and started else None
+        if self.open is not None:
+            self.open["tools"].append(ToolCall(name, seconds, failed))
+
+    def state(self) -> "State":
+        from .base import State
+
+        try:
+            last_write = datetime.fromtimestamp(self.record.stat().st_mtime, timezone.utc)
+        except FileNotFoundError:
+            last_write = None
+        tool = next(iter(self.pending.values()), None) if self.open is not None else None
+        return State(turn_open=self.open is not None, open_tool=tool[0] if tool else None,
+                     open_tool_since=tool[1] if tool else None, last_write=last_write,
+                     last_input=self.last_input, last_input_at=self.last_input_at, model=self.model,
+                     effort=self.effort, queued=tuple(self.queued), consumed=tuple(self.consumed), turns=len(self.turns))

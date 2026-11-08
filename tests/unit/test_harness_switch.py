@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from quarterdeck import record_owner, service, watch
-from quarterdeck.fakerecord import AntigravityShape, CodexShape
+from quarterdeck.harness.synthetic_record import AntigravityShape, CodexShape
 from quarterdeck.harness.antigravity import AntigravityHarness
 from quarterdeck.harness.base import Launch, RecordError
 from quarterdeck.harness.codex import CodexHarness

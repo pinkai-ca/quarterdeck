@@ -8,7 +8,7 @@ import json
 import pytest
 
 from quarterdeck import input_receipt, pending, post, watch
-from quarterdeck.fakerecord import AntigravityShape
+from quarterdeck.harness.synthetic_record import AntigravityShape
 from quarterdeck.record_owner import register
 from quarterdeck.service import Service
 from .test_pending_delivery import setup, send, input_row  # shared synthetic seat fixture
@@ -92,7 +92,7 @@ def test_service_restart_reconciles_claude_consumed_exactly_once(setup):
 
 
 def test_antigravity_every_same_execution_input_has_its_own_time(setup, monkeypatch):
-    from quarterdeck import fakerecord
+    from quarterdeck.harness import synthetic_record as fakerecord
     from quarterdeck.harness import antigravity
 
     svc, original, live, _ = setup

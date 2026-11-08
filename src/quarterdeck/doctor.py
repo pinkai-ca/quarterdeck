@@ -26,7 +26,7 @@ from .ship import Pool, SeatSpec, Session, Ship, ShipError
 from .tmux import Tmux
 
 PATIENCE = 600.0  # a fix is a turn of real work
-PROGRAMS = {"claude": "claude", "codex": "codex", "antigravity": "agy", "opencode": "opencode", "pi": "pi", "fake": "qd-fakeharness"}
+
 
 
 def checks(ship: Ship) -> list[Check]:
@@ -38,13 +38,14 @@ def checks(ship: Ship) -> list[Check]:
     found.append(framework_check(ship))
     searched = program_path()
     for name in sorted({seat.harness for seat in ship.seats.values()}):
-        program = PROGRAMS[name]
+        harness = harnesses.get(name)
+        program = harness.program
         if shutil.which(program, path=searched) is None:
             found.append(Check(f"program {name}", False, f"{program} is not on the PATH qd runs with; install it, or put it on that PATH"))
             continue
-        version = harnesses.get(name).version()
+        version = harness.version()
         proven = version is not None and (ship.runtime / "proven" / f"{name}-{version}").exists()
-        note = "the fake harness" if name == "fake" else ("proven by qd check" if proven else f"unproven: qd check {name} proves it")
+        note = "synthetic program" if harness.synthetic else ("proven by qd check" if proven else f"unproven: qd check {name} proves it")
         found.append(Check(f"program {name}", True, f"{program} {version or 'version unknown'} · {note}"))
     found += [pool_check(pool) for pool in ship.pools.values()]
     if any(ship.jailed(seat) for seat in ship.seats.values()):

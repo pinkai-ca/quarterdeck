@@ -293,13 +293,13 @@ class Ledger:
         return self.db.execute(query, (pool,) if pool else ()).fetchall()
 
     def walls(self, ship: Ship | None = None, now: datetime | None = None) -> list[str]:
-        """Pools with a window spent and not yet reset, ``claude-primary 7d``, and key pools past their budget."""
+        """Pools with a window spent and not yet reset, ``subscription 7d``, and key pools past their budget."""
         now = now or datetime.now().astimezone()
         found = []
         for reading in self.usage.rows():
             if reading.blocks and reading.current(now) and reading.used >= 1.0:
                 found.append(f"{reading.pool} {reading.window}" +
-                             (f" · {reset_text(reading.resets_at)}" if reading.group == "Gemini 4 Argon" else ""))
+                             (f" · {reset_text(reading.resets_at)}" if reading.group is not None else ""))
         for pool in (ship.pools.values() if ship else ()):
             budget = Budget.parse(pool.budget)
             if budget is not None:

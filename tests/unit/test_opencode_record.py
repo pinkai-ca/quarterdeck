@@ -1,4 +1,3 @@
-from quarterdeck.harness.base import Input
 """Synthetic OpenCode sessions and unfamiliar rows, through watch and service accounting."""
 
 from dataclasses import asdict
@@ -11,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from quarterdeck import input_receipt, service, watch
+from quarterdeck.harness.base import Input
 from quarterdeck.harness import opencode
 from quarterdeck.harness.base import Join
 from quarterdeck.post import Store

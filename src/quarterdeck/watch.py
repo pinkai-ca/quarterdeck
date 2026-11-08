@@ -267,9 +267,12 @@ SCHEMA_BEHIND = "ledger written by an older service; qd up restarts it"
 
 
 def ledger_usage(ship: Ship) -> list[str]:
-    """The Google decision window the service already read; a reading, never a provider request."""
-    google = {p.name for p in ship.pools.values() if p.provider == "antigravity"}
-    if not google:
+    """The enabled headline windows already read by the service; never a provider request."""
+    from . import harness as harnesses
+
+    readers = {p.name: harnesses.get(p.provider) for p in ship.pools.values() if p.kind == "subscription"}
+    selected = {name: reader for name, reader in readers.items() if reader.status_usage}
+    if not selected:
         return []
     found = {}
     book = ledger.Ledger.reading(ship.runtime / "ledger.sqlite")
@@ -277,11 +280,11 @@ def ledger_usage(ship: Ship) -> list[str]:
         with book:
             try:
                 for reading in book.usage.rows():
-                    if reading.group == "Gemini 4 Argon" and reading.blocks:
+                    if reading.pool in selected and selected[reading.pool].is_headline(reading.group, reading.window) and reading.blocks:
                         found[reading.pool] = reading.describe(post.now())
             except sqlite3.OperationalError:
                 return [SCHEMA_BEHIND]
-    return [found.get(pool, f"{pool} usage unknown") for pool in sorted(google)]
+    return [found.get(pool, f"{pool} usage unknown") for pool in sorted(selected)]
 
 
 def ledger_walls(ship: Ship) -> list[str]:

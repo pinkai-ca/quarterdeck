@@ -17,8 +17,9 @@ import re
 from pathlib import Path
 
 from .. import endpoint
+from .endpoint import EndpointHarness
 from ..ship import Pool, SeatSpec, ShipError
-from .base import (Box, Control, Credential, Harness, Interruption, Keys, Launch, RecordError, Screen, State, Tokens,
+from .base import (Box, ship_template, trimmed, Control, Credential, Harness, Interruption, Keys, Launch, RecordError, Screen, State, Tokens,
                    ToolCall, Turn, merged, program_version)
 
 from .opencode_record import (DATA_PREFIX, RECORD, _Rows, _launch_number, data_dir_of, first_timestamp,
@@ -51,24 +52,19 @@ def _bar(line: str) -> str | None:
     return found.group(1) if found else None
 
 
-class OpenCodeHarness(Harness):
+class OpenCodeHarness(EndpointHarness):
     """OpenCode, proven on 1.19.5. Runs on an endpoint pool; the model changes only at launch."""
 
     name = "opencode"
+    program = "opencode"
     home_variable = "XDG_DATA_HOME"
     keys = Keys(submit="Enter", send_now=None, interrupt="Escape Escape", empty=None)  # Escape once opens nothing; twice, quickly, interrupts
     brief_channel = "instructions"
 
-    def accepts(self, pool: Pool) -> str | None:
-        if pool.kind != "endpoint":
-            return f"pool {pool.name} names no endpoint, and {self.name} runs on an endpoint pool: declare endpoint = \"http://host:port/v1\""
-        return None
-
     def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None) -> Credential | None:
         home.mkdir(parents=True, exist_ok=True)
         runtime = home.parents[2]  # runtime/seats/<seat>/home
-        choice = endpoint.choose(pool, seat.model)
-        secret = endpoint.key(pool)
+        choice, secret = self.endpoint_home(home, seat, pool)
         provider = {
             "npm": "@ai-sdk/openai-compatible",
             "name": pool.name,
@@ -77,19 +73,17 @@ class OpenCodeHarness(Harness):
         }
         config = {**CONFIG, "model": f"{pool.name}/{choice.model}", "provider": {pool.name: provider},
                   "instructions": [str(runtime / "brief" / f"{seat.name}.md")]}  # the brief, and no instruction file of the user's
-        template = ship_home / "opencode.json" if ship_home else None
-        layered = json.loads(template.read_text()) if template and template.is_file() else {}
+        layered = ship_template(ship_home, "opencode.json")
         config = merged(merged(config, layered), seat.settings)
         folder = home / "config" / "opencode"
         folder.mkdir(parents=True, exist_ok=True)
         (folder / "opencode.json").write_text(json.dumps(config, indent=2) + "\n")
-        choice.write(home)
-        return Credential(variable=endpoint.KEY_VARIABLE) if secret else None
+        return self.endpoint_ready(home, choice, secret)
 
     def launch(self, seat: SeatSpec, pool: Pool, home: Path, brief: Path, resume: str | None, first: str | None) -> Launch:
         choice = endpoint.Choice.read(home)
         data = self._data_dir(home, resume, seat.name)
-        argv = ["opencode", "--auto", "--model", f"{pool.name}/{choice.model}"]  # --auto: no approval prompt (law: can-post)
+        argv = [self.program, "--auto", "--model", f"{pool.name}/{choice.model}"]  # --auto: no approval prompt (law: can-post)
         if resume:
             argv += ["--session", resume]
         if first:
@@ -113,16 +107,11 @@ class OpenCodeHarness(Harness):
         number = max((_launch_number(r) for r in existing), default=0) + 1
         return home / f"{DATA_PREFIX}{number:03d}"
 
-    def version(self) -> str | None:
-        return program_version(("opencode", "--version"))
-
     inputs = staticmethod(inputs)
     records = staticmethod(records)
     first_timestamp = staticmethod(first_timestamp)
     session_id = staticmethod(session_id)
-    state = staticmethod(state)
-    turns = staticmethod(turns)
-    read = staticmethod(read)
+    reader = staticmethod(read)
 
     def screen(self, text: str) -> Screen:
         """The box is the bar block straight above the status row, a pad row above and below its text."""
@@ -147,8 +136,7 @@ class OpenCodeHarness(Harness):
         if len(rows) < 2 or rows[0] != "" or rows[-1] != "":
             return Screen(text, box=None, working=working, unknown="no box drawn as 1.19.5 draws it", queued=queued)
         body = [row or "" for row in rows[1:-1]]
-        while body and not body[-1].strip():
-            body.pop()
+        body = trimmed(body)
         box = "" if len(body) == 1 and PLACEHOLDER.match(body[0]) else "\n".join(body)
         return Screen(text, box=box, working=working, queued=queued)
 

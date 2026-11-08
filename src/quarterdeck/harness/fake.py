@@ -24,13 +24,22 @@ DIALOG = re.compile(r"^┌ ([^─]+?) ─")
 
 class FakeHarness(Harness):
     name = "fake"
+    program = sys.executable
+    synthetic = True
     home_variable = "QD_FAKE_HOME"
     keys = Keys(submit="Enter", send_now=("C-x", "C-s"), interrupt="Escape", empty=("C-u",))
     brief_channel = "system-prompt"
 
+    def owns_launch(self, argv) -> bool:
+        return bool(argv) and (Path(argv[0]).name in ("fake", "qd-fakeharness") or
+                              len(argv) >= 3 and tuple(argv[1:3]) == ("-m", "quarterdeck.fakeharness"))
+
     @staticmethod
     def shape_of(seat: SeatSpec) -> str:
         return str(seat.settings.get("as", "claude"))
+
+    def drill_settings(self, slow_acceptance: bool = False) -> dict:
+        return {"step_seconds": "0.05", **({"accept_seconds": "1.5"} if slow_acceptance else {})}
 
     def queues_while_working(self, seat: SeatSpec) -> bool:
         return str(seat.settings.get("queues", "1")) not in ("0", "False", "false")
@@ -45,7 +54,7 @@ class FakeHarness(Harness):
     def launch(
         self, seat: SeatSpec, pool: Pool, home: Path, brief: Path, resume: str | None, first: str | None
     ) -> Launch:
-        argv = [sys.executable, "-m", "quarterdeck.fakeharness", "--as", self.shape_of(seat), "--brief", str(brief)]
+        argv = [self.program, "-m", "quarterdeck.fakeharness", "--as", self.shape_of(seat), "--brief", str(brief)]
         if seat.model:
             argv += ["--model", seat.model]
         if seat.effort:

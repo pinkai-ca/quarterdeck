@@ -9,7 +9,7 @@ import pytest
 
 from quarterdeck import quota, service, watch
 from quarterdeck.door import Door
-from quarterdeck.fakerecord import AntigravityShape, _pb_bytes, _pb_str, _pb_ts, _pb_uint
+from quarterdeck.harness.synthetic_record import AntigravityShape, _pb_bytes, _pb_str, _pb_ts, _pb_uint
 from quarterdeck.harness.antigravity import AntigravityHarness
 from quarterdeck.harness.antigravity_quota import parse_usage, unknown, wall
 from quarterdeck.harness.base import State

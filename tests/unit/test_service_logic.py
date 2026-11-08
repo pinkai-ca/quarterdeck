@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from quarterdeck import post
-from quarterdeck.fakerecord import ClaudeShape
+from quarterdeck.harness.synthetic_record import ClaudeShape
 from quarterdeck.harness.fake import FakeHarness
 from quarterdeck.post import Message, Store
 from quarterdeck.service import Service
@@ -44,7 +44,7 @@ def test_account_tracks_wal_fingerprint_and_retries_after_transient_read_error(t
     import json
     import sqlite3
 
-    from quarterdeck.fakerecord import AntigravityShape, _pb_bytes, _pb_str, _pb_ts, _pb_uint
+    from quarterdeck.harness.synthetic_record import AntigravityShape, _pb_bytes, _pb_str, _pb_ts, _pb_uint
     from quarterdeck.harness import antigravity
     from quarterdeck.harness.base import RecordError, record_fingerprint
     from quarterdeck.ship import Pool, SeatSpec, Session, Ship
@@ -168,7 +168,7 @@ def test_account_keeps_sparse_ids_and_missing_owned_records_visible(tmp_path, mo
 def test_a_blind_attempt_is_judged_delivered_once_a_record_shows_the_message(tmp_path: Path, monkeypatch):
     import json
 
-    from quarterdeck.fakerecord import ClaudeShape
+    from quarterdeck.harness.synthetic_record import ClaudeShape
     from quarterdeck.ship import Pool, SeatSpec, Session, Ship
     from quarterdeck.tmux import Pane
 

@@ -18,6 +18,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
+from . import harness as harnesses
 from . import pending as pending_delivery, delivery_queue, delivery_record
 from . import credential, machine, post, quota, record_owner, ship as shipmod, standing
 from .door import CONFIRM_SECONDS, Door
@@ -112,7 +113,7 @@ class Service:
         for attempt in self.attempts.all():  # a queued message is delivered once the record shows it read
             if attempt.path not in tracked and attempt.result == "queued" and attempt.message in self.attempts.queued_ids():
                 seat = self.seat(attempt.seat)
-                if seat.record() and self.read_now(seat, self.store.get(attempt.message)):
+                if seat.record() and self.read_now(seat, self.store.get(attempt.message), attempt.when):
                     self.attempts.close(attempt, "delivered", "queued, then read: the record names it")
         self.rejudge_blind()
 
@@ -331,7 +332,7 @@ class Service:
                         if live and record == current:
                             self.meters[seat.name] = machine.Meter(pane.pid)
                         self.log("ledger", seat=seat.name, record=record.name, turns=written)
-            if live and seat.harness.name == "antigravity":
+            if live and seat.harness.screen_walls:
                 quota.observe_screen(self.ledger, seat, Door(seat).screen(), launched)  # the one place a screen's wall is written
             quota.refresh(self, seat, live, launched)
         quota.refresh_declared(self)
@@ -358,17 +359,17 @@ class Service:
     def known_open(self, seat: Seat, pool_name: str) -> bool:
         """A pool a seat may move to: not walled, and where its program reads usage, read within the hour first.
 
-        Google uses the paced background cache; other unread pools are read before the move; a program that reads no usage
+        A background provider uses its paced cache; other unread pools are read before the move; a program that reads no usage
         has only the Ledger's walls to go by, and the move says so."""
         pool = self.ship.pools[pool_name]
         if pool.kind in ("key", "endpoint"):  # no usage windows to read: a key is measured by spend, an endpoint has no quota
             return not self.ledger.walled(pool_name, self.ship)
-        if pool.provider == "antigravity":
+        if harnesses.get(pool.provider).background_usage:
             return self.ledger.usage_known(pool_name) and not self.ledger.walled(pool_name, self.ship)
         if not seat.harness.reads_usage:
             return not self.ledger.walled(pool_name, self.ship)
         if not self.ledger.usage_known(pool_name):
-            if not self.ledger.quota.due(pool_name, post.now(), interval=quota.PROVIDER_INTERVAL):
+            if not self.ledger.quota.due(pool_name, post.now(), interval=seat.harness.usage_interval):
                 return False  # retained failures retry by attempt time, including after a restart
             usage = seat.harness.usage(pool)
             if usage is None:

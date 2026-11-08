@@ -9,8 +9,6 @@ import time
 from .harness.limits import Wall, Usage
 from .provenance import UNKNOWN
 
-GOOGLE_INTERVAL = 300
-PROVIDER_INTERVAL = 60
 
 
 def stamp(at: datetime | None) -> str | None:
@@ -77,7 +75,7 @@ class Quotas:
                 return f"{charged if charged != UNKNOWN else 'pool unknown'} {reason} · {reset_text(reset, source.startswith('screen:'))}"
         return None
 
-    def due(self, pool: str, now: datetime, interval: int = GOOGLE_INTERVAL) -> bool:
+    def due(self, pool: str, now: datetime, interval: int) -> bool:
         last = self.db.execute("SELECT at FROM usage_reads WHERE pool=?", (pool,)).fetchone()
         if last is None or (now - datetime.fromisoformat(last[0])).total_seconds() >= interval:
             return True
@@ -98,12 +96,10 @@ def observe_screen(book, seat, screen, launched, now: datetime | None = None) ->
     The record's own quota errors are persisted beside it when the record is read; a banner the
     book already knows, from the record or from an earlier look, is not a new event.
     """
-    from .harness.antigravity_quota import wall
-
     if screen is None or not screen.quota:
         return
     now = now or datetime.now(timezone.utc)
-    event = wall(screen.quota, "individual-quota", now)
+    event = seat.harness.quota_wall(screen.quota, now)
     if event is None or book.quota.recognized(seat.name, event):
         return
     source = f"screen:{seat.name}:{launched.at if launched else 'unknown-launch'}"
@@ -111,31 +107,33 @@ def observe_screen(book, seat, screen, launched, now: datetime | None = None) ->
 
 
 def refresh_declared(service) -> None:
-    """Declared Google subscriptions are read even when all seats use other programs."""
-    from .harness.antigravity import AntigravityHarness
+    """Adapters with background subscription reads run even with no active seat."""
+    from . import harness as harnesses
 
-    shared = None
+    shared = {}
     for pool in service.ship.pools.values():
-        if getattr(pool, "provider", None) != "antigravity" or pool.kind != "subscription":
+        if pool.kind != "subscription":
             continue
-        if not service.ledger.quota.due(pool.name, datetime.now(timezone.utc)):
+        reader = harnesses.get(pool.provider)
+        if not reader.background_usage or not service.ledger.quota.due(pool.name, datetime.now(timezone.utc), reader.usage_interval):
             continue
-        # No account selector is qualified. Default-sign-in pool names are aliases,
-        # so one measured result suffices; an explicit account directory stays unknown.
-        usage = shared if pool.config_dir is None and shared is not None else AntigravityHarness().usage(pool)
-        if pool.config_dir is None:
-            shared = usage
+        key = reader.shared_usage_key(pool)
+        usage = shared[key] if key is not None and key in shared else reader.usage(pool)
+        usage = usage or Usage((), datetime.now(timezone.utc), "provider usage unavailable")
+        if key is not None:
+            shared[key] = usage
         service.ledger.record_usage(pool.name, usage, attempted_at=datetime.now(timezone.utc))
 
 
 def refresh(service, seat, live: bool, launched) -> None:
-    """Other providers retain their existing live-seat cadence."""
-    if not live or seat.harness.name == "antigravity":
+    """A live seat's provider read, paced by its adapter."""
+    reader = seat.harness
+    if not live or reader.background_usage:
         return
     pool = service.ship.pools[launched.pool] if launched and launched.pool in service.ship.pools else seat.pool
-    if pool.kind == "subscription" and time.monotonic() - service.usage_read.get(pool.name, -PROVIDER_INTERVAL) >= PROVIDER_INTERVAL:
+    if pool.kind == "subscription" and time.monotonic() - service.usage_read.get(pool.name, -reader.usage_interval) >= reader.usage_interval:
         service.usage_read[pool.name] = time.monotonic()
-        usage = seat.harness.usage(pool)
-        if usage is not None or seat.harness.reads_usage:
+        usage = reader.usage(pool)
+        if usage is not None or reader.reads_usage:
             service.ledger.record_usage(pool.name, usage or Usage((), datetime.now(timezone.utc), "provider usage unavailable"),
                                         attempted_at=datetime.now(timezone.utc))

@@ -20,7 +20,7 @@ def cells(text: str) -> int | None:
 
 def matches(text: str, shown: str, columns: int | None = None, slack: int = 0) -> bool:
     # ``slack``: columns a program keeps clear at the right when it wraps at a word, below the
-    # width at which it breaks a word that has no space (pi 0.74.2 keeps one).
+    # width at which it breaks a word that has no space (the adapter supplies that margin).
     # Adapters omit the trailing blank composer rows; no interior whitespace is
     # normalized. In particular "a b", "ab", and "a\nb" are different inputs.
     wanted, shown = text.rstrip('\n'), shown.rstrip('\n')

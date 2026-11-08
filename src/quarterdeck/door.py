@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from . import ledger as ledgermod, pending, input_receipt
-from .harness.antigravity_quota import wall as quota_banner
 from .harness.base import Screen
 from .quota import reset_text, stamp
 from .seat import Seat
@@ -88,7 +87,7 @@ class Door:
         """
         launched = self.seat.launched()
         pool = launched.pool if launched else self.seat.pool.name
-        shown = quota_banner(screen.quota, "individual-quota", datetime.now(timezone.utc)) if screen and screen.quota else None
+        shown = self.harness.quota_wall(screen.quota, datetime.now(timezone.utc)) if screen and screen.quota else None
         book = ledgermod.Ledger.reading(self.seat.ship.runtime / "ledger.sqlite")
         if book is not None:
             with book:

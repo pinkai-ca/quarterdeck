@@ -6,9 +6,9 @@ from . import input_receipt, post, record_owner
 from .seat import Seat
 
 
-def read_now(seat: Seat, message: post.Message) -> bool:
+def read_now(seat: Seat, message: post.Message, since: datetime) -> bool:
     """An accepted queue has been consumed only when its timestamped record proves it."""
-    return receipt(seat.harness, seat.record(), message, message.at) == "delivered"
+    return receipt(seat.harness, seat.record(), message, since) == "delivered"
 
 
 def receipt(reader, record, message: post.Message, since: datetime) -> str | None:

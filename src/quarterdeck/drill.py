@@ -3,7 +3,7 @@
 The all-hands exercise: every seat sends an order to every other seat and each is closed
 by its addressee's report; the service is killed in the middle of a delivery and recovers
 with no message lost or doubled; every seat is relaunched fresh and receives what is open;
-and the matrix runs again. On the drydock's fake harness by default, on a private
+and the matrix runs again. On the drydock's simulator by default, on a private
 tmux server; on a real ship when one is named, with real programs and real tokens.
 """
 
@@ -17,14 +17,13 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import post, seat as seatmod, service, ship as shipmod, standing, watch
+from . import harness as harnesses, post, seat as seatmod, service, ship as shipmod, standing, watch
 from .post import Attempts, Store
 from .seat import Seat
 from .tmux import Tmux
 
 DRYDOCK = standing.PROJECT_DIR / "ships" / "drydock"
-QUICK = '\n[seats.{seat}.settings]\nstep_seconds = "0.05"\n'
-SLOW_TO_ACCEPT = 'accept_seconds = "1.5"\n'  # one seat takes its time writing a message into its record
+
 
 
 @dataclass(frozen=True)
@@ -166,13 +165,16 @@ class Drill:
 
 
 def temporary_drydock() -> tuple[shipmod.Ship, Tmux, Path]:
-    """A copy of the drydock with quick fakes, on a private tmux server."""
+    """A copy of the drydock with quick simulators, on a private tmux server."""
     folder = Path(tempfile.mkdtemp(prefix="qd-drill-")) / "drydock"
     shutil.copytree(DRYDOCK, folder)
     ship = shipmod.load(folder)
     slow = next(name for name, spec in ship.seats.items() if not ship.session_of(spec).human)
-    with (folder / "ship.toml").open("a") as f:
-        f.write("".join(QUICK.format(seat=seat) + (SLOW_TO_ACCEPT if seat == slow else "") for seat in ship.seats))
+    text = ship.file.read_text()
+    for name, spec in ship.seats.items():
+        for key, value in harnesses.get(spec.harness).drill_settings(name == slow).items():
+            text = shipmod.edit(text, f"seats.{name}.settings", key, value)
+    ship.file.write_text(text)
     return shipmod.load(folder), Tmux(socket=f"qd-drill-{os.getpid()}"), folder.parent
 
 

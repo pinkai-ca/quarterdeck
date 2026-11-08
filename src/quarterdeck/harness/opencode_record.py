@@ -15,6 +15,7 @@ from pathlib import Path
 
 from .base import Input, RecordError, State, Tokens, ToolCall, Turn
 from .sqlite_snapshot import snapshot
+from .json_record import RecordReader
 
 DATA_PREFIX = "data-"
 RECORD = Path("opencode") / "opencode.db"
@@ -182,7 +183,7 @@ class _Session:
             self.open_tool, self.open_tool_since = running or (None, None)
 
 
-class _Reader:
+class _Reader(RecordReader):
     def __init__(self, record: Path):
         rows = _Rows(record)
         self.empty = not (rows.sessions or rows.messages or rows.parts)
@@ -228,17 +229,9 @@ def session_id(record: Path) -> str | None:
     return _active_session(_Rows(record))
 
 
-def state(record: Path) -> State:
-    return _Reader(record).state()
-
-
-def turns(record: Path) -> list[Turn]:
-    return _Reader(record).turns
-
-
-def read(record: Path) -> tuple[State, list[Turn]]:
-    reader = _Reader(record)
-    return reader.state(), reader.turns
+state = _Reader.read_state
+turns = _Reader.read_turns
+read = _Reader.read
 
 
 def inputs(record: Path) -> list[Input]:

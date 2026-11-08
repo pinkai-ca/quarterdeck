@@ -26,11 +26,8 @@ def launch_reader(launched) -> str | None:
     argv = getattr(launched, 'argv', ())
     if not argv:
         return None
-    program = Path(argv[0]).name
-    if len(argv) >= 3 and tuple(argv[1:3]) == ('-m', 'quarterdeck.fakeharness'):
-        return 'fake'
-    return {'agy': 'antigravity', 'codex': 'codex', 'claude': 'claude',
-            'qd-fakeharness': 'fake', 'fake': 'fake'}.get(program)
+    matches = [name for name in harnesses.NAMES if harnesses.get(name).owns_launch(argv)]
+    return matches[0] if len(matches) == 1 else None
 
 
 def events(path: Path) -> list[dict]:
@@ -110,7 +107,7 @@ def records(seat) -> list[Owned]:
     readers = {name: seat.harness if name == seat.spec.harness else harnesses.get(name) for name in known}
     candidates: dict[Path, set[str]] = {}
     for name, reader in readers.items():
-        # The global Antigravity list is untyped: never claim foreign/shared candidates.
+        # Shared global record lists are untyped: never claim foreign candidates.
         if reader.home_variable is None:
             continue
         for path in reader.records(seat.home):

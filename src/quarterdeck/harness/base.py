@@ -9,6 +9,8 @@ for the box and the dialogs.
 from __future__ import annotations
 
 import os
+import json
+import tomllib
 import re
 import subprocess
 from abc import ABC, abstractmethod
@@ -280,6 +282,22 @@ def merged(base: dict, layer: dict) -> dict:
     return out
 
 
+def ship_template(home: Path | None, name: str) -> dict:
+    """The ship's optional settings file; never the user's template."""
+    path = home / name if home else None
+    if path is None or not path.is_file():
+        return {}
+    return tomllib.loads(path.read_text()) if path.suffix == ".toml" else json.loads(path.read_text())
+
+
+def trimmed(lines: list[str]) -> list[str]:
+    """Drop only trailing blank display rows; preserve text, padding and internal newlines."""
+    end = len(lines)
+    while end and not lines[end - 1].strip():
+        end -= 1
+    return lines[:end]
+
+
 def same_name(shown: str, wanted: str) -> bool:
     """``Sonnet 5.5`` and ``GPT-6-Astra`` name ``claude-sonnet-5-5`` and ``gpt-6-astra``: compare letters and digits only."""
 
@@ -310,12 +328,24 @@ class Harness(ABC):
     """One agent program, as the framework knows it."""
 
     name: str
+    program: str
+    synthetic: bool = False
+    credential_file: str | None = None
+    usage_interval: int = 60
+    background_usage: bool = False
+    status_usage: bool = False
+    headline_window: tuple[str | None, str] | None = None
+    screen_walls: bool = False
     home_variable: str | None
     keys: Keys
     brief_channel: str
     reads_usage: bool = False  # True where usage() reads the provider's windows; a pool of such a program is read before a move
     remote_control: bool = False  # True where the program can open a seat to the operator's phone and claude.ai as well
     wrap_slack: int = 0  # columns the program keeps clear at the right when it wraps at a word, under the width where it breaks a word
+
+    def drill_settings(self, slow_acceptance: bool = False) -> dict:
+        """Program settings for the synthetic drill; real programs supply none."""
+        return {}
 
     def queues_while_working(self, seat: SeatSpec) -> bool:
         """Whether a message typed during a turn is taken and queued, or refused until it ends."""
@@ -345,6 +375,24 @@ class Harness(ABC):
         """The exact command line and environment, with or without resume."""
 
     def version(self) -> str | None:
+        return program_version((self.program, "--version"))
+
+    def owns_launch(self, argv: tuple[str, ...] | list[str]) -> bool:
+        return bool(argv) and Path(argv[0]).name == Path(self.program).name
+
+    def freshness(self, path: Path) -> tuple[float, float] | None:
+        return None
+
+    def grant_expiry(self, path: Path) -> datetime | None:
+        return None
+
+    def shared_usage_key(self, pool: Pool) -> tuple | None:
+        return None
+
+    def is_headline(self, group: str | None, window: str) -> bool:
+        return self.headline_window == (group, window)
+
+    def quota_wall(self, text: str, at: datetime) -> Wall | None:
         return None
     # -- record ------------------------------------------------------------------------
 
@@ -360,17 +408,20 @@ class Harness(ABC):
     def session_id(self, record: Path) -> str | None:
         pass
 
-    @abstractmethod
-    def state(self, record: Path) -> State:
-        pass
+    reader = None
 
-    @abstractmethod
-    def turns(self, record: Path) -> list[Turn]:
-        pass
+    @classmethod
+    def state(cls, record: Path) -> State:
+        return cls.read(record)[0]
 
-    def read(self, record: Path) -> tuple[State, list[Turn]]:
-        """The live state and the ended turns from one reading of the record."""
-        return self.state(record), self.turns(record)
+    @classmethod
+    def turns(cls, record: Path) -> list[Turn]:
+        return cls.read(record)[1]
+
+    @classmethod
+    def read(cls, record: Path) -> tuple[State, list[Turn]]:
+        """The live state and ended turns from one reading by this adapter's reader."""
+        return cls.reader(record)
 
     def inputs(self, record: Path) -> list[Input]:
         """Timestamped evidence from an already owned record; never from a screen."""

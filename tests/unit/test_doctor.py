@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 from pathlib import Path
 
 from quarterdeck import cli, doctor
@@ -18,7 +20,7 @@ def test_the_drydock_passes_every_check_on_a_machine_that_runs_the_tests(drydock
     found = doctor.checks(load(drydock))
     assert all(c.passed for c in found), [str(c) for c in found if not c.passed]
     assert [c.name for c in found][:3] == ["ship file", "tmux", "git"]
-    assert next(c.detail for c in found if c.name == "program fake").startswith("qd-fakeharness")
+    assert next(c.detail for c in found if c.name == "program fake").startswith(sys.executable)
     assert next(c.detail for c in found if c.name == "pool fake") == "the program holds its own sign-in"
     assert "service" not in [c.name for c in found], "no runtime yet, so nothing to say about its service"
     code, out = run(capsys, "--ship", str(drydock), "doctor")
@@ -35,7 +37,7 @@ def test_a_missing_working_directory_and_a_missing_program_fail_by_name(drydock:
     assert code == 1 and f"FAIL  seat captain · working directory {nowhere} does not exist" in out
     monkeypatch.setattr(doctor.shutil, "which", lambda *args, **kwargs: None)
     failed = {c.name: c.detail for c in doctor.checks(load(drydock)) if not c.passed}
-    assert failed["program fake"] == "qd-fakeharness is not on the PATH qd runs with; install it, or put it on that PATH"
+    assert failed["program fake"] == f"{sys.executable} is not on the PATH qd runs with; install it, or put it on that PATH"
 
 
 def test_a_pool_is_ready_when_its_credential_is_there(tmp_path: Path, monkeypatch):

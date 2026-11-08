@@ -109,4 +109,4 @@ def test_the_grant_expiry_is_read_as_metadata_and_warned_two_days_ahead(tmp_path
     assert credential.login_needed(ship) == []
     assert credential.grant_expiry(Pool("codex", "codex", config_dir=tmp_path)) is None, "no file, no claim"
     assert credential.pool_file(Pool("api", "claude", api_key="env:K")) is None
-    assert credential.freshness(tmp_path / "pool" / ".credentials.json") is not None
+    assert credential.freshness(pool, tmp_path / "pool" / ".credentials.json") is not None

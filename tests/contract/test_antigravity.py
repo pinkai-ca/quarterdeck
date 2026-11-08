@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from quarterdeck.door import echoed
-from quarterdeck.fakerecord import (AGY_SCHEMA, AntigravityShape, _pb_bytes, _pb_str, _pb_ts, _pb_uint, tokens_for)
+from quarterdeck.harness.synthetic_record import (AGY_SCHEMA, AntigravityShape, _pb_bytes, _pb_str, _pb_ts, _pb_uint, tokens_for)
 from quarterdeck.harness import antigravity
 from quarterdeck.harness.antigravity import AntigravityHarness
 from quarterdeck.harness.base import RecordError, Tokens, same_name

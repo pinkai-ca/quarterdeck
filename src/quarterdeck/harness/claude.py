@@ -16,8 +16,10 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .json_record import JsonLinesReader
+
 from ..ship import Pool, SeatSpec
-from .base import (Box, Input, Control, Credential, Harness, Interruption, Keys, Launch, RecordError, Screen, State, Tokens,
+from .base import (Box, ship_template, trimmed, Input, Control, Credential, Harness, Interruption, Keys, Launch, RecordError, Screen, State, Tokens,
                    ToolCall, Turn, Usage, Window, credential, entries, key_environment, merged, program_version, same_name, when)
 
 ENDS_TURN = {"end_turn", "max_tokens", "stop_sequence"}
@@ -96,27 +98,14 @@ def usage_tokens(usage: dict) -> Tokens:
     )
 
 
-class _Reader:
-    """Walks a record once, producing the ended turns and the live state together."""
+class _Reader(JsonLinesReader):
+    kinds = ('assistant', 'queue-operation', 'system', 'user')
+    label = "Claude Code"
 
     def __init__(self, record: Path):
-        self.record = record
-        self.turns: list[Turn] = []
-        self.open: dict | None = None
-        self.pending: dict[str, tuple[str, datetime | None]] = {}
-        self.queued: list[str] = []
-        self.consumed: list[str] = []
-        self.model = self.effort = self.last_input = self.last_input_at = None
-        self.sidechain_ends: set[str | None] = set()
+        self.sidechain_ends = set()
         self.subagent_turns = 0
-        rows = entries(record)
-        if rows and not any(row.get("type") in ("assistant", "queue-operation", "system", "user") for row in rows):
-            raise RecordError("no Claude Code entries in this record: another program's file")
-        for entry in rows:
-            try:
-                self.take(entry)
-            except (TypeError, ValueError, AttributeError, KeyError):
-                continue  # a line of a shape this reader does not know is skipped; the rest is still read
+        super().__init__(record)
 
     def take(self, entry: dict) -> None:
         kind = entry.get("type")
@@ -162,19 +151,12 @@ class _Reader:
                 self.queued.remove(text)
             if self.open is not None:
                 self.end(self.last_input_at)  # a prompt while a turn is open ends it: nothing else will
-            self.pending.clear()
-            self.open = {"started": self.last_input_at, "input": text, "usage": {}, "tools": [],
-                         "reply": "", "model": None, "subagents": self.subagent_turns}
+            self.start_turn({"started": self.last_input_at, "input": text, "usage": {}, "tools": [],
+                         "reply": "", "model": None, "subagents": self.subagent_turns})
             return
         for block in entry.get("message", {}).get("content") or []:
             if isinstance(block, dict) and block.get("type") == "tool_result":
-                self.close_tool(block, when(entry.get("timestamp")))
-
-    def close_tool(self, block: dict, at: datetime | None) -> None:
-        name, started = self.pending.pop(block.get("tool_use_id"), ("?", None))
-        seconds = (at - started).total_seconds() if at and started else None
-        if self.open is not None:
-            self.open["tools"].append(ToolCall(name, seconds, bool(block.get("is_error"))))
+                self.close_tool(block.get("tool_use_id"), when(entry.get("timestamp")), bool(block.get("is_error")))
 
     def assistant(self, entry: dict) -> None:
         """One entry per content block, all carrying the message's usage and stop reason.
@@ -198,9 +180,7 @@ class _Reader:
                 self.open["reply"] = (self.open["reply"] + "\n\n" + block["text"]).strip()
 
     def end(self, at: datetime | None) -> None:
-        turn = self.open
-        self.open = None
-        self.pending.clear()  # a tool call the turn never closed does not haunt the next one
+        turn = self.close_turn()
         tokens = sum((usage_tokens(u) for u in turn["usage"].values()), Tokens())
         self.turns.append(
             Turn(
@@ -216,38 +196,10 @@ class _Reader:
             )
         )
 
-    def state(self) -> State:
-        try:
-            last_write = datetime.fromtimestamp(self.record.stat().st_mtime, timezone.utc)
-        except FileNotFoundError:
-            last_write = None
-        tool = next(iter(self.pending.values()), None) if self.open is not None else None
-        return State(
-            turn_open=self.open is not None,
-            open_tool=tool[0] if tool else None,
-            open_tool_since=tool[1] if tool else None,
-            last_write=last_write,
-            last_input=self.last_input,
-            last_input_at=self.last_input_at,
-            model=self.model,
-            effort=self.effort,
-            queued=tuple(self.queued),
-            consumed=tuple(self.consumed),
-            turns=len(self.turns),
-        )
+state = _Reader.read_state
+turns = _Reader.read_turns
+read = _Reader.read
 
-
-def state(record: Path) -> State:
-    return _Reader(record).state()
-
-
-def turns(record: Path) -> list[Turn]:
-    return _Reader(record).turns
-
-
-def read(record: Path) -> tuple[State, list[Turn]]:
-    reader = _Reader(record)
-    return reader.state(), reader.turns
 
 
 # -- the adapter -----------------------------------------------------------------------------
@@ -290,15 +242,37 @@ class ClaudeHarness(Harness):
     """Claude Code, proven on 2.1.317."""
 
     name = "claude"
+    program = "claude"
     home_variable = "CLAUDE_CONFIG_DIR"
     keys = Keys(submit="Enter", send_now=("C-x", "C-s"), interrupt="Escape", empty=("C-c",))
     brief_channel = "system-prompt"
     reads_usage = True
+    credential_file = ".credentials.json"
+    headline_window = (None, "5h")
     remote_control = True
+
+    def freshness(self, path: Path) -> tuple[float, float] | None:
+        try:
+            oauth = json.loads(path.read_text()).get("claudeAiOauth")
+            if isinstance(oauth, dict) and oauth.get("refreshToken"):
+                expiry = oauth.get("expiresAt") or 0
+                return (float(expiry) / 1000 if expiry > 1e11 else float(expiry), path.stat().st_mtime)
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+        return None
+
+    def grant_expiry(self, path: Path) -> datetime | None:
+        try:
+            millis = (json.loads(path.read_text()).get("claudeAiOauth") or {}).get("refreshTokenExpiresAt")
+            if isinstance(millis, (int, float)):
+                return datetime.fromtimestamp(millis / 1000, timezone.utc)
+        except (OSError, ValueError, TypeError, AttributeError, OverflowError):
+            pass
+        return None
 
     def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None) -> Credential | None:
         home.mkdir(parents=True, exist_ok=True)
-        template = json.loads((ship_home / "settings.json").read_text()) if ship_home and (ship_home / "settings.json").is_file() else {}
+        template = ship_template(ship_home, "settings.json")
         settings = merged(merged(SETTINGS, template), seat.settings)  # a ship's or a seat's keys never drop the launch's own
         (home / "settings.json").write_text(json.dumps(settings, indent=2) + "\n")
         state_file = home / ".claude.json"
@@ -312,10 +286,10 @@ class ClaudeHarness(Harness):
         if cwd:
             state.setdefault("projects", {}).setdefault(cwd, {})["hasTrustDialogAccepted"] = True
         state_file.write_text(json.dumps(state, indent=2) + "\n")
-        return credential(pool, home / ".credentials.json", "ANTHROPIC_API_KEY")
+        return credential(pool, home / self.credential_file, "ANTHROPIC_API_KEY")
 
     def launch(self, seat: SeatSpec, pool: Pool, home: Path, brief: Path, resume: str | None, first: str | None) -> Launch:
-        argv = ["claude", "--setting-sources", "user", "--append-system-prompt-file", str(brief), "--name", seat.display]
+        argv = [self.program, "--setting-sources", "user", "--append-system-prompt-file", str(brief), "--name", seat.display]
         if seat.remote_control:
             argv += ["--remote-control", seat.display]  # the same session from the operator's phone, under the seat's name
         if seat.model:
@@ -329,16 +303,11 @@ class ClaudeHarness(Harness):
         env = {self.home_variable: str(home), **key_environment(pool, "ANTHROPIC_API_KEY")}
         return Launch(tuple(argv), env)
 
-    def version(self) -> str | None:
-        return program_version(("claude", "--version"))
-
     inputs = staticmethod(inputs)
     records = staticmethod(records)
     first_timestamp = staticmethod(first_timestamp)
     session_id = staticmethod(session_id)
-    state = staticmethod(state)
-    turns = staticmethod(turns)
-    read = staticmethod(read)
+    reader = staticmethod(read)
 
     def screen(self, text: str) -> Screen:
         lines = text.rstrip("\n").split("\n")
@@ -351,8 +320,7 @@ class ClaudeHarness(Harness):
                     if RULE.match(following):
                         break
                     body.append(following[2:] if following.startswith("  ") else following)
-                while body and not body[-1].strip():
-                    body.pop()
+                body = trimmed(body)
                 box = "\n".join(body).replace(" ", " ")
                 if box.strip() == QUEUED_PLACEHOLDER:
                     box, queued = "", max(queued, 1)

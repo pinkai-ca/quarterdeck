@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from quarterdeck.fakerecord import AntigravityShape, _pb_bytes, _pb_str, _pb_uint
+from quarterdeck.harness.synthetic_record import AntigravityShape, _pb_bytes, _pb_str, _pb_uint
 from quarterdeck.harness import antigravity as agy
 from quarterdeck.harness.base import Tokens
 
@@ -119,7 +119,7 @@ def test_error_message_after_executor_boundary_does_not_invent_an_open_turn(tmp_
 def test_new_input_reports_its_model_before_generation_and_confirms_exact_text(tmp_path):
     from types import SimpleNamespace
     from quarterdeck.door import Door
-    from quarterdeck.fakerecord import _pb_ts
+    from quarterdeck.harness.synthetic_record import _pb_ts
 
     rec = AntigravityShape(tmp_path/'home',tmp_path,'synthetic','older-model')
     rec.begin('old question','older-model','high')

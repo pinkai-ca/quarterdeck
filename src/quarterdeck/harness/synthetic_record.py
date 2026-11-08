@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .harness import antigravity, claude, codex
+from . import antigravity, claude, codex
 
 
 def now() -> datetime:

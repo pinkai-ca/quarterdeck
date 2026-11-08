@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from quarterdeck import ledger as ledgermod, machine, post
-from quarterdeck.fakerecord import ClaudeShape
+from quarterdeck.harness.synthetic_record import ClaudeShape
 from quarterdeck.harness import claude
 from quarterdeck.harness.base import Usage, Window
 from quarterdeck.ledger import Ledger, Machine, attribution
