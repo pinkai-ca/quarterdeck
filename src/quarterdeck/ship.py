@@ -226,6 +226,9 @@ def _validate(ship: Ship) -> None:
     from . import harness as harnesses  # the adapters import this module, so it is imported here, not above
 
     for pool in ship.pools.values():
+        if pool.kind != "endpoint" and pool.provider not in harnesses.NAMES:
+            raise ShipError(f"pool {pool.name}: unsupported {pool.kind} provider {pool.provider!r}; "
+                            f"choose one of {', '.join(harnesses.NAMES)}, or declare an endpoint URL")
         if pool.config_dir and pool.api_key:
             raise ShipError(f"pool {pool.name}: declare config_dir (or home) or api_key, not both")
         if pool.endpoint and pool.config_dir:

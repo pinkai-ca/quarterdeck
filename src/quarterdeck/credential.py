@@ -32,7 +32,9 @@ def pool_file(pool: Pool) -> Path | None:
 
 
 def freshness(pool: Pool, path: Path) -> tuple[float, float] | None:
-    """The pool adapter judges a detached credential; the transport never guesses its shape."""
+    """The pool adapter judges a detached credential; endpoint labels name no credential reader."""
+    if pool.kind == "endpoint":
+        return None
     return harnesses.get(pool.provider).freshness(path)
 
 
