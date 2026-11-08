@@ -1,14 +1,14 @@
-"""Strict protobuf fields and a source-read-only, in-memory SQLite WAL snapshot."""
+"""Strict protobuf fields over the source-read-only SQLite snapshot of ``sqlite_snapshot``."""
 
 from __future__ import annotations
 
 import sqlite3
 import struct
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .base import RecordError, record_fingerprint
+from .base import RecordError
+from .sqlite_snapshot import _apply_wal, _wal_cksum, snapshot  # the two helpers stay importable here for their tests
 
 def _varint(buf: bytes, pos: int) -> tuple[int, int]:
     result = shift = 0
@@ -80,70 +80,9 @@ def _uints(fields: dict[int, list], num: int) -> list[int]:
             raise RecordError(f"field {num} is not uints")
     return out
 
-def _wal_cksum(data: bytes, s0: int, s1: int, endian: str) -> tuple[int, int]:
-    ints = struct.unpack(f"{endian}{len(data) // 4}I", data)
-    for i in range(0, len(ints), 2):
-        s0 = (s0 + ints[i] + s1) & 0xFFFFFFFF; s1 = (s1 + ints[i + 1] + s0) & 0xFFFFFFFF
-    return s0, s1
-
-def _apply_wal(name: str, db_bytes: bytes, wal_bytes: bytes | None) -> bytes:
-    buf = bytearray(db_bytes)
-    if len(buf) < 100 or not buf.startswith(b"SQLite format 3\x00"):
-        raise RecordError(f"{name}: not a valid SQLite database")
-    db_psize = int.from_bytes(buf[16:18], "big")
-    db_psize = 65536 if db_psize == 1 else db_psize
-    if wal_bytes:
-        if len(wal_bytes) < 32:
-            raise RecordError(f"{name}: truncated WAL header")
-        magic, version, psize, _, salt1, salt2, h_s0, h_s1 = struct.unpack(">8I", wal_bytes[:32])
-        endian = ">" if (magic & 1) else "<"
-        if magic not in (0x377F0682, 0x377F0683) or version != 3007000 or psize != db_psize or not (512 <= psize <= 65536) or (psize & (psize - 1)) or (ck := _wal_cksum(wal_bytes[:24], 0, 0, endian)) != (h_s0, h_s1):
-            raise RecordError(f"{name}: invalid WAL header")
-        s0, s1, pos, fsize, staged, committed, n_pages = *ck, 32, 24 + psize, {}, {}, None
-        while pos + fsize <= len(wal_bytes):
-            pno, db_sz, fs1, fs2, f_s0, f_s1 = struct.unpack(">6I", wal_bytes[pos : pos + 24])
-            page = wal_bytes[pos + 24 : pos + fsize]
-            s0, s1 = _wal_cksum(page, *_wal_cksum(wal_bytes[pos : pos + 8], s0, s1, endian), endian)
-            if (fs1, fs2) != (salt1, salt2):
-                break  # stale frames following WAL restart belong to the previous generation
-            if (s0, s1) != (f_s0, f_s1) or pno == 0:
-                raise RecordError(f"{name}: invalid WAL frame")
-            staged[pno] = page
-            if db_sz > 0:
-                committed.update(staged); staged.clear(); n_pages = db_sz
-            pos += fsize
-        if n_pages is not None:
-            total = n_pages * psize
-            if total > len(db_bytes) + len(wal_bytes):
-                raise RecordError(f"{name}: invalid WAL database size")
-            buf[total:] = b""
-            buf.extend(b"\x00" * max(0, total - len(buf)))
-            for pno, page in committed.items():
-                if pno <= n_pages:
-                    buf[(pno - 1) * psize : pno * psize] = page
-    buf[18:20] = b"\x01\x01"
-    return bytes(buf)
-
 def _snapshot_query(record: Path) -> tuple[tuple, str | None, bytes | None, list, list, list]:
     """Read ``.db`` and any ``.db-wal`` into an in-memory SQLite snapshot with zero disk writes (law: one-folder)."""
-    if not record.is_file():
-        raise RecordError(f"{record.name}: record does not exist")
-    wal = Path(f"{record}-wal")
-    if Path(f"{record}-journal").exists():
-        raise RecordError(f"{record.name}: rollback journal present; snapshot unsupported")
-    for _ in range(3):
-        before = record_fingerprint(record)
-        try:
-            db_bytes = record.read_bytes()  # law: one-folder
-            wal_bytes = wal.read_bytes() if wal.is_file() else None  # law: one-folder
-        except OSError as error:
-            raise RecordError(f"{record.name}: {error}") from error
-        if before == (after := record_fingerprint(record)):
-            break
-        time.sleep(0.01)
-    else:
-        raise RecordError(f"{record.name}: record changed concurrently during snapshot")
-    merged = _apply_wal(record.name, db_bytes, wal_bytes)
+    after, merged = snapshot(record)
     try:
         con = sqlite3.connect(":memory:")
         try:

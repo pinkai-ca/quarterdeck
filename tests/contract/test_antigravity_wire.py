@@ -80,19 +80,21 @@ def test_concurrent_changes_are_retried_and_failures_are_not_cached(tmp_path, mo
     rec = AntigravityShape(tmp_path / 'home', tmp_path, 'synthetic', 'fake-model')
     rec.begin('question', 'fake-model', 'high')
     rec.end('answer')
+    from quarterdeck.harness import sqlite_snapshot  # the snapshot and its retry live there, shared with OpenCode
+
     calls = []
-    real = wire.record_fingerprint
+    real = sqlite_snapshot.record_fingerprint
 
     def changing(path):
         calls.append(path)
         fp = real(path)
         return (*fp, len(calls))
 
-    monkeypatch.setattr(wire, 'record_fingerprint', changing)
+    monkeypatch.setattr(sqlite_snapshot, 'record_fingerprint', changing)
     with pytest.raises(RecordError, match='changed concurrently'):
         antigravity.read(rec.path)
     assert len(calls) == 6 and rec.path not in antigravity._CACHE
-    monkeypatch.setattr(wire, 'record_fingerprint', real)
+    monkeypatch.setattr(sqlite_snapshot, 'record_fingerprint', real)
     assert antigravity.state(rec.path).turns == 1
 
 
