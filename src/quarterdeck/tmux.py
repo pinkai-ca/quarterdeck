@@ -139,12 +139,20 @@ class Tmux:
         return cls(os.environ.get("QD_TMUX_SOCKET") or None)
 
     def run(self, *args: str, stdin: str | None = None) -> str:
+        if self.socket and Path(self.socket).is_absolute() and self._owned is None and not _transport(args):
+            raise PrivateTmuxError('private observer generic commands require the typed session/door API')
+        return self._invoke(*args, stdin=stdin)
+
+    def _invoke(self, *args: str, stdin: str | None = None) -> str:
+        """Validated dispatcher for typed operations; generic observers use transport only."""
         if self.socket and Path(self.socket).is_absolute():
             try:
                 if self._closed:
                     raise OwnershipError('private namespace is closed')
                 if not args or args[0].startswith('-'):
                     raise OwnershipError('private transport requires a native command, not address options')
+                if self._owned is None and args[0] in ('kill-server', 'start-server'):
+                    raise OwnershipError('private observer has no server startup or cleanup authority')
                 with locked(self.socket, self._owned.namespace if self._owned else None,
                             exclusive=not _transport(args)) as held:
                     start = False
@@ -208,14 +216,14 @@ class Tmux:
         history limit must be set before any seat's window exists.
         """
         token = secrets.token_hex(16)
-        ident = self.run("new-session", "-d", "-P", "-F", "#{session_id}", "-e", f"QD_SESSION_OWNER={token}",
+        ident = self._invoke("new-session", "-d", "-P", "-F", "#{session_id}", "-e", f"QD_SESSION_OWNER={token}",
                          "-s", name, "-n", "qd").strip()
         identity = SessionIdentity(ident, token)
         try:
-            self.run("set-option", "-t", ident, "history-limit", str(HISTORY_LINES))
-            self.run("set-option", "-t", ident, "renumber-windows", "on")
+            self._invoke("set-option", "-t", ident, "history-limit", str(HISTORY_LINES))
+            self._invoke("set-option", "-t", ident, "renumber-windows", "on")
             for key, value in (env or {}).items():
-                self.run("set-environment", "-t", ident, key, value)
+                self._invoke("set-environment", "-t", ident, key, value)
         except BaseException:
             self.kill_session_id(identity)
             raise
@@ -225,11 +233,11 @@ class Tmux:
         """A server restart can reuse IDs: both the ID and creation token must match."""
         if not self.running() or identity.id not in self.run("list-sessions", "-F", "#{session_id}").splitlines():
             return
-        self.run("if-shell", "-F", "-t", identity.id, f"#{{==:#{{QD_SESSION_OWNER}},{identity.token}}}",
+        self._invoke("if-shell", "-F", "-t", identity.id, f"#{{==:#{{QD_SESSION_OWNER}},{identity.token}}}",
                  f"kill-session -t {identity.id}")
 
     def kill_session(self, name: str) -> None:
-        self.run("kill-session", "-t", _session(name))
+        self._invoke("kill-session", "-t", _session(name))
 
     def kill_server(self) -> None:
         if self.socket and Path(self.socket).is_absolute():
@@ -304,14 +312,14 @@ class Tmux:
         for key, value in (env or {}).items():
             args += ["-e", f"{key}={value}"]
         # Prepare a blocking pane before running a command that may exit immediately.
-        pane = _parse(self.run(*args, "cat").rstrip("\n"))
-        self.run("set-option", "-w", "-t", pane.id, "remain-on-exit", "failed")
+        pane = _parse(self._invoke(*args, "cat").rstrip("\n"))
+        self._invoke("set-option", "-w", "-t", pane.id, "remain-on-exit", "failed")
         args = ["respawn-pane", "-k", "-t", pane.id, "-c", str(cwd)]
         for key, value in (env or {}).items():
             args += ["-e", f"{key}={value}"]
         # Read the new PID in the same command queue, before an immediate successful
         # exit can remove the pane. Its pane id and retention setting are preserved.
-        pane = _parse(self.run(*args, shlex.join(command), ";", "display-message", "-p", "-t", pane.id,
+        pane = _parse(self._invoke(*args, shlex.join(command), ";", "display-message", "-p", "-t", pane.id,
                                _FORMAT).rstrip("\n"))
         self._drop_placeholder(session)
         return pane
@@ -319,10 +327,10 @@ class Tmux:
     def _drop_placeholder(self, session: str) -> None:
         for pane in self.panes(session):
             if pane.window == "qd":
-                self.run("kill-window", "-t", pane.id)
+                self._invoke("kill-window", "-t", pane.id)
 
     def kill_window(self, pane_id: str) -> None:
-        self.run("kill-window", "-t", pane_id)
+        self._invoke("kill-window", "-t", pane_id)
 
     # -- panes -------------------------------------------------------------------------
 
@@ -412,6 +420,6 @@ class Tmux:
 
     def status_line(self, session: str, command: str, interval: int = 5) -> None:
         """Have tmux itself refresh the ship's one line on every session, on its own timer."""
-        self.run("set-option", "-t", _session(session), "status-interval", str(interval))
-        self.run("set-option", "-t", _session(session), "status-right-length", "160")
-        self.run("set-option", "-t", _session(session), "status-right", f"#({command})")
+        self._invoke("set-option", "-t", _session(session), "status-interval", str(interval))
+        self._invoke("set-option", "-t", _session(session), "status-right-length", "160")
+        self._invoke("set-option", "-t", _session(session), "status-right", f"#({command})")

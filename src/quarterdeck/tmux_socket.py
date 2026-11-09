@@ -48,9 +48,13 @@ def locked(path, namespace=None, *, exclusive=True):
     try:
         if namespace is not None and identity(os.fstat(directory)) != identity(os.fstat(namespace.directory)):
             raise OwnershipError('private namespace replaced; retained')
-        lock = os.open(LOCK, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory)
+        candidate = os.stat(LOCK, dir_fd=directory, follow_symlinks=False)
+        if not stat.S_ISREG(candidate.st_mode):
+            raise OwnershipError('private namespace lock is unfamiliar; retained')
+        lock = os.open(LOCK, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=directory)
         info = os.fstat(lock)
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600:
+        if (not stat.S_ISREG(info.st_mode) or identity(candidate) != identity(info)
+                or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600):
             raise OwnershipError('private namespace lock is unfamiliar; retained')
         deadline = time.monotonic() + (.25 if exclusive else 0)
         operation = (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB

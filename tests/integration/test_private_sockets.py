@@ -37,6 +37,9 @@ def test_observer_can_reach_but_cannot_own_stop_or_bootstrap(tmux):
     assert not observer.close() and 'authority' in observer.held
     with pytest.raises(TmuxError, match='authority'):
         observer.kill_server()
+    delegated=observer.new_session('Delegated')
+    observer.kill_session_id(delegated)
+    assert not observer.has_session('Delegated')
     assert tmux.has_session('Synthetic')
     tmux.kill_server()
     with pytest.raises(TmuxError):
@@ -171,8 +174,10 @@ def test_a_shared_transport_lease_allows_fresh_reads_and_typing_but_not_generic_
         observer.paste(pane.id,'synthetic transport')
         observer.keys(pane.id,'Enter')
         assert 'synthetic transport' in observer.capture(pane.id)
-        with pytest.raises(TmuxError,match='busy'):
+        with pytest.raises(PrivateTmuxError,match='observer.*typed'):
             observer.run('list-sessions',';','kill-server')
+        with pytest.raises(TmuxError,match='busy'):
+            tmux.run('list-sessions',';','kill-server')
     assert tmux.has_session('Synthetic')
 
 
@@ -237,3 +242,50 @@ def test_interruption_during_exact_endpoint_removal_retains_original_creator_evi
         assert (endpoint.parent/tmux_socket.LOCK).exists()
     assert tmux.close(),tmux.held # the same creator, with its original descriptor and process evidence
     assert not endpoint.parent.exists()
+
+
+def test_an_unfamiliar_fifo_lock_refuses_without_blocking_or_repair():
+    root=Path(tempfile.mkdtemp(prefix='qs-fifo-',dir=os.environ['TMUX_TMPDIR']))
+    path=root/tmux_socket.LOCK
+    os.mkfifo(path,0o600);before=path.lstat()
+    code=('import sys\nfrom quarterdeck.tmux_socket import locked,OwnershipError\n'
+          'try:\n with locked(sys.argv[1]): pass\n'
+          'except OwnershipError as error: print(error)\n'
+          'else: raise AssertionError("unfamiliar special lock was accepted")\n')
+    try:
+        result=subprocess.run([sys.executable,'-c',code,str(root/'s')],capture_output=True,text=True,timeout=2)
+        assert result.returncode==0 and 'unfamiliar' in result.stdout
+        after=path.lstat()
+        assert (before.st_dev,before.st_ino,before.st_mode)==(after.st_dev,after.st_ino,after.st_mode)
+        assert list(root.iterdir())==[path]
+    finally:
+        # subprocess.run kills/waits a timed-out child before returning/raising.
+        assert (path.lstat().st_dev,path.lstat().st_ino)==(before.st_dev,before.st_ino)
+        path.unlink() # only this test-created FIFO, after the probe child ended
+        root.rmdir()
+
+
+@pytest.mark.parametrize('commands',[('kill-server',),('list-sessions',';','kill-server')])
+def test_observer_generic_server_shutdown_is_refused_with_the_server_unchanged(tmux,commands):
+    tmux.new_session('Synthetic')
+    endpoint=Path(tmux.socket);before=endpoint.lstat()
+    with pytest.raises(PrivateTmuxError,match='observer.*typed'):
+        Tmux(socket=tmux.socket).run(*commands)
+    after=endpoint.lstat()
+    assert (before.st_dev,before.st_ino)==(after.st_dev,after.st_ino)
+    assert tmux.has_session('Synthetic')
+
+
+@pytest.mark.parametrize('commands',[
+    ('start-server',),('source-file','synthetic-unused'),
+    ('set-option','-s','exit-empty','on'),('if-shell','true','kill-server'),
+    ('future-private-command',),('list-sessions',';','future-private-command')])
+def test_other_observer_generic_mutations_refuse_before_dispatch(tmux,monkeypatch,commands):
+    tmux.new_session('Synthetic')
+    observer=Tmux(socket=tmux.socket)
+    def forbidden(*args,**kwargs):
+        raise AssertionError('refused generic mutation reached the native dispatcher')
+    monkeypatch.setattr(observer,'_invoke',forbidden)
+    with pytest.raises(PrivateTmuxError,match='observer.*typed'):
+        observer.run(*commands)
+    assert tmux.has_session('Synthetic')

@@ -126,14 +126,14 @@ def test_failed_session_setup_cleans_only_the_session_it_created(tmux: Tmux, mon
     import pytest
 
     tmux.new_session("Existing")
-    run = tmux.run
+    run = tmux._invoke
 
     def fail_option(*args, **kwargs):
         if args[0] == "set-option":
             raise TmuxError("synthetic configuration failure")
         return run(*args, **kwargs)
 
-    monkeypatch.setattr(tmux, "run", fail_option)
+    monkeypatch.setattr(tmux, "_invoke", fail_option)
     with pytest.raises(TmuxError, match="synthetic configuration failure"):
         tmux.new_session("Temporary")
     assert tmux.sessions() == ["Existing"]
@@ -159,13 +159,13 @@ def test_cleanup_checks_ownership_in_the_server_that_performs_the_kill(tmux: Tmu
         old = tmux.new_session("Temporary")
         current = other.new_session("Temporary")
         assert old.id == current.id and old.token != current.token
-        run = tmux.run
+        run = tmux._invoke
         def switch_server(*args, **kwargs):
             # The earlier existence checks saw the owned session. The action reaches a replacement server.
             if args[0] == "if-shell":
-                return other.run(*args, **kwargs)
+                return other._invoke(*args, **kwargs)
             return run(*args, **kwargs)
-        monkeypatch.setattr(tmux, "run", switch_server)
+        monkeypatch.setattr(tmux, "_invoke", switch_server)
         tmux.kill_session_id(old)
         assert other.has_session("Temporary")
         other.kill_session_id(current)
