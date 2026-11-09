@@ -160,6 +160,8 @@ class _Reader(JsonLinesReader):
             self.assistant(entry)
         elif kind == "system" and entry.get("subtype") == "turn_duration" and self.open is not None:
             self.end(when(entry.get("timestamp")))  # the one entry that says the turn is over
+        elif kind not in ('system', *INPUT_IGNORED):
+            self.tools_known = False
 
     def queue(self, entry: dict) -> None:
         """A message queued mid-turn; removed when the program takes it, often into the running turn itself."""

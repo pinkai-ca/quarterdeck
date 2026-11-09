@@ -80,6 +80,40 @@ def _failed(output: str | list | None) -> bool:
         return bool(match and int(match.group(1)))
 
 
+PROCESS_HEADER = re.compile(
+    r'\A(?:Chunk ID: [^\n]+\n)?Wall time: [0-9]+(?:\.[0-9]+)? seconds\n'
+    r'(?:Process exited with code (-?\d+)\n)?'
+    r'(?:Process running with session ID (\d+)\n)?'
+    r'(?:Original token count: \d+\n)?Output:(?:\n|\Z)')
+
+
+def process_result(output) -> tuple[bool, str | None]:
+    """Explicit terminal code or a live native handle; never search command stdout for proof."""
+    if isinstance(output, list):
+        if len(output) != 1 or not isinstance(output[0], dict) or output[0].get('type') not in ('input_text', 'output_text', 'text'):
+            return False, None
+        output = output[0].get('text')
+    if not isinstance(output, str):
+        return False, None
+    try:
+        value = json.loads(output)
+    except ValueError:
+        header = PROCESS_HEADER.match(output)
+        if header is None:
+            return False, None
+        code, session = header.groups()
+        return (code is not None and session is None), session if code is None else None
+    if not isinstance(value, dict):
+        return False, None
+    meta = value.get('metadata') if isinstance(value.get('metadata'), dict) else {}
+    code, session = value.get('exit_code', meta.get('exit_code')), value.get('session_id', meta.get('session_id'))
+    if type(code) is int and session is None:
+        return True, None
+    if code is None and (type(session) is int and session > 0 or isinstance(session, str) and session.isdecimal()):
+        return False, str(session)
+    return False, None
+
+
 def inputs(record: Path) -> list[Input]:
     found = Inputs()
     seen = False
@@ -118,10 +152,22 @@ class _Reader(JsonLinesReader):
     kinds = ('event_msg', 'response_item', 'session_meta', 'turn_context')
     label = "Codex"
 
+    def __init__(self, record):
+        self.process_inputs = {}
+        self.active_processes = {}
+        super().__init__(record)
+
     def take(self, entry: dict) -> None:
+        kind = entry.get('type')
+        if kind in (*INPUT_IGNORED, 'compacted'):
+            return  # known non-execution metadata, independent of accounting format markers
+        if kind not in ('session_meta', 'turn_context', 'event_msg', 'response_item'):
+            self.tools_known = False
+            return
         payload = entry.get("payload")
         if not isinstance(payload, dict):
-            return  # not an entry this reader knows
+            self.tools_known = False
+            return
         kind, sub, at = entry.get("type"), payload.get("type"), when(entry.get("timestamp"))
         if kind == "turn_context":
             self.model = payload.get("model") or self.model
@@ -146,8 +192,21 @@ class _Reader(JsonLinesReader):
             if payload.get("last_agent_message"):
                 self.open["reply"] = payload["last_agent_message"]
             self.end(at)
+        elif sub not in ('task_started', 'token_count', *ENDS_TURN, 'user_message', 'agent_message',
+                         'agent_reasoning', 'agent_reasoning_raw_content', 'context_compacted',
+                         'thread_settings_applied', 'thread_goal_updated', 'model_reroute',
+                         'model_verification', 'warning', 'deprecation_notice', 'plan_update',
+                         'turn_diff', 'entered_review_mode', 'exited_review_mode'):
+            self.tools_known = False
 
     def item(self, sub: str | None, payload: dict, at: datetime | None) -> None:
+        if sub == 'message' and (payload.get('role') not in ('user', 'assistant', 'system', 'developer')
+                                 or not isinstance(payload.get('content'), (str, list))):
+            self.tools_known = False
+        if sub == 'message' and isinstance(payload.get('content'), list):
+            if any(not isinstance(block, dict) or block.get('type') not in
+                   ('input_text', 'output_text', 'input_image', 'input_audio') for block in payload['content']):
+                self.tools_known = False
         if sub == "message" and payload.get("role") == "user":
             text = _text(payload.get("content"))
             if text and not text.startswith("<") and self.open is not None:
@@ -163,15 +222,68 @@ class _Reader(JsonLinesReader):
             if self.open is not None:
                 self.open["response"] = True
             name = payload.get('name', '?')
-            if isinstance(name, str) and name.rsplit('.', 1)[-1] in ('spawn_agent', 'exec', 'exec_command', 'write_stdin'):
-                self.tools_known = False  # these can return while child/process execution continues
+            call = payload.get('call_id')
+            if payload.get('status') not in (None, 'completed'):
+                self.tools_known = False  # a streamed/in-flight call is not an established question wait
+            arguments = None
+            if sub == 'function_call':
+                try:
+                    arguments = json.loads(payload.get('arguments'))
+                except (TypeError, ValueError):
+                    pass
+                if not isinstance(arguments, dict):
+                    self.tools_known = False
+            elif not isinstance(payload.get('input'), str):
+                self.tools_known = False
+            if isinstance(name, str):
+                short = name.rsplit('.', 1)[-1]
+                if short in ('spawn_agent', 'exec'):
+                    self.tools_known = False  # opaque/delegated execution is not ended by a call's return
+                if short in ('exec_command', 'write_stdin') and isinstance(call, str):
+                    self.process_inputs[call] = (short, arguments or {})
+            if isinstance(call, str) and call in self.live_tools:
+                self.tools_known = False
             self.open_call(payload.get('call_id'), name, at)
         elif sub in OUTPUTS:
+            call = payload.get('call_id')
+            if not isinstance(call, str) or not call or not isinstance(payload.get('output'), (str, list)):
+                self.tools_known = False
+            elif call not in self.live_tools:
+                self.tools_known = False  # an unjoined result cannot certify the full execution set
             if self.open is not None and self.open["response"]:
                 self.open["tokens"] += Tokens.unknown()
                 self.open["measurements"] += 1
                 self.open["response"] = False
-            self.close_tool(payload.get("call_id"), at, _failed(payload.get("output")))
+            name = self.live_tools.get(call) if isinstance(call, str) else None
+            keep = self.process_output(call, payload.get('output')) if isinstance(call, str) else False
+            self.close_tool(call, at, _failed(payload.get("output")))
+            if keep:
+                self.live_tools[call] = name
+        elif sub not in ('message', 'reasoning', 'compaction', 'compaction_summary', 'context_compaction',
+                         'configuration_update', 'compaction_trigger', 'additional_tools'):
+            self.tools_known = False  # a future execution item cannot disappear from exclusivity proof
+
+    def process_output(self, call, output):
+        info = self.process_inputs.pop(call, None)
+        if info is None:
+            return False
+        name, arguments = info
+        completed, session = process_result(output)
+        if name == 'write_stdin':
+            original = arguments.get('session_id')
+            original = str(original) if type(original) is int or isinstance(original, str) else None
+            if original not in self.active_processes or session is not None and session != original:
+                self.tools_known = False
+            if completed:
+                for origin in self.active_processes.pop(original, ()):
+                    self.live_tools.pop(origin, None)
+        if session is not None:
+            self.active_processes.setdefault(session, set()).add(call)
+            return True
+        if not completed:
+            self.tools_known = False
+            return True
+        return False
 
     def end(self, at: datetime | None, *, completed: bool = True) -> None:
         turn = self.close_turn()

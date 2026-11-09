@@ -82,6 +82,8 @@ class _Reader(JsonLinesReader):
             self.effort = entry.get("thinkingLevel") or self.effort
         elif kind == "message" and isinstance(entry.get("message"), dict):
             self.message(entry["message"], at)
+        elif kind != 'session':
+            self.tools_known = False
 
     def message(self, message: dict, at: datetime | None) -> None:
         role = message.get("role")

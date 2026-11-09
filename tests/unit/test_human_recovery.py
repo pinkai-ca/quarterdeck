@@ -170,9 +170,13 @@ def test_codex_question_proof_keeps_prior_calls_and_child_execution(tmp_path, ex
     if extra:
         name = None if extra == 'malformed-name' else 'shell' if extra == 'previous-call' else extra
         rows.append(event('response_item', {'type': 'function_call', 'name': name,
-                                           'call_id': 'old'}))
+                                           'call_id': 'old', 'arguments': '{}'}))
         rows.append(event('event_msg', {'type': 'task_started'}))
-    rows.append(event('response_item', {'type': 'function_call', 'name': 'request_user_input', 'call_id': 'ask'}))
+    rows.append(event('response_item', {'type': 'function_call', 'name': 'request_user_input', 'call_id': 'ask',
+                                       'arguments': json.dumps({'questions': [{'id': 'choice', 'header': 'Choice',
+                                           'question': 'Choose a synthetic option', 'options': [
+                                               {'label': 'First', 'description': 'First option'},
+                                               {'label': 'Second', 'description': 'Second option'}]}]})}))
     path.write_text(''.join(json.dumps(row)+'\n' for row in rows))
     seat, calls = seat_for(path, 'codex')
     assert bool(Service.relaunch(None, seat, False)) is (extra is None)

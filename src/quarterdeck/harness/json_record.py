@@ -87,7 +87,7 @@ class RecordReader:
 class JsonLinesReader(RecordReader):
     """The shared walk, tool lifetime and live state of a JSON-lines conversation."""
 
-    kinds: tuple[str, ...] = ()
+    kinds: tuple[str, ...] = ()  # format-identification markers, not an exhaustive native row taxonomy
     label: str = "program"
 
     def __init__(self, record: Path):
@@ -105,8 +105,6 @@ class JsonLinesReader(RecordReader):
         if rows and not any(row.get("type") in self.kinds for row in rows):
             raise RecordError(f"no {self.label} entries in this record: another program's file")
         for entry in rows:
-            if entry.get('type') not in self.kinds:
-                self.tools_known = False
             try:
                 self.take(entry)
             except (TypeError, ValueError, AttributeError, KeyError):

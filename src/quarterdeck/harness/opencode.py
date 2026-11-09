@@ -178,7 +178,7 @@ class OpenCodeHarness(EndpointHarness):
         if not seat.human_session:
             # V1 loads project/config-env rules after its global config. Keep native
             # policy on the generated ship config rather than inheriting another scope.
-            env.update(OPENCODE_DISABLE_PROJECT_CONFIG='1',
+            env.update(HOME=str(home), OPENCODE_DISABLE_PROJECT_CONFIG='1',
                        OPENCODE_CONFIG=str(home / 'config/opencode/opencode.json'),
                        OPENCODE_CONFIG_DIR=str(home / 'config/opencode'),
                        OPENCODE_CONFIG_CONTENT='{}', OPENCODE_PERMISSION='{"question":"deny"}')
