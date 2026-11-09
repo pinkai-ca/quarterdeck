@@ -61,7 +61,6 @@ class Attribution:
         Retained exact-envelope evidence survives a missing source if the stored
         seat and turn bounds are unchanged. Old-writer changes require rereading.
         """
-        graph = Threads(store)
         if bindings is None:
             bindings = defaultdict(set)
             for folder in (Path(runtime)/'seats').glob('*'):
@@ -93,7 +92,7 @@ class Attribution:
             stamp = (reader, None)
             try:
                 stamp = (reader, record_fingerprint(Path(record))) if reader in harness.NAMES else (reader, None)
-                if record in self.sources and self.sources[record][0] == stamp:
+                if record in self.sources and self.sources[record][0] == stamp and not self.sources[record][2]:
                     continue
                 if reader not in harness.NAMES:
                     raise OSError('record reader unavailable or ambiguous')
@@ -103,12 +102,12 @@ class Attribution:
                 inputs, error = [], f'record attribution evidence unavailable: {type(exc).__name__}'
             self.sources[record] = stamp, inputs, error
             changed = True
-        stamp = tuple(m.id for m in graph.messages)
+        stamp = tuple(store.all())
         invalid = self.db.execute('''SELECT count(*) FROM turns t LEFT JOIN turn_attribution a
             ON a.record=t.record AND a.turn=t.turn WHERE a.valid IS NULL OR a.valid=0''').fetchone()[0]
         if not changed and self.last == stamp and not invalid:
             return 0
-        self.last = stamp
+        graph = Threads(store)
         written = 0
         for record, turns in by_record.items():
             if record in excluded:
@@ -152,4 +151,5 @@ class Attribution:
                     verdict = Verdict('unresolved', verdict.orders, 'received message overlaps recorded turn intervals', verdict.evidence)
                 written += self.put(row, received, verdict)
         self.db.commit()
+        self.last = stamp
         return written

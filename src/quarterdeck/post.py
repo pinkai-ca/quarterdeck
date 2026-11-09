@@ -76,7 +76,7 @@ class Store:
 
     def __init__(self, runtime: Path):
         self.dir = runtime / "post" / "store"
-        self._cache: tuple[tuple[int, int], list[Message], dict[str, list[Message]]] | None = None
+        self._cache: tuple[tuple[int, ...], list[Message], dict[str, list[Message]]] | None = None
 
     def new(self, kind: str, sender: str, to: str, body: str, **fields) -> Message:
         if kind not in KINDS:
@@ -110,11 +110,18 @@ class Store:
     def _loaded(self) -> tuple[list[Message], dict[str, list[Message]]]:
         """The messages, oldest first, and the replies by the id they answer: read once per change of the
         store folder, since files there never change, so every question of the store is one lookup."""
-        if not self.dir.is_dir():
+        try:
+            info = self.dir.stat()
+        except FileNotFoundError:
+            self._cache = None
             return [], {}
-        stamp = (self.dir.stat().st_mtime_ns, len(list(self.dir.iterdir())))
+        # Posts are immutable and published by rename. Checking their directory is
+        # constant work even when an inbox asks about every historical reply.
+        stamp = (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns)
         if self._cache is None or self._cache[0] != stamp:
-            messages = sorted((Message.from_json(p.read_text()) for p in self.dir.glob("*.json")), key=lambda m: (m.at, m.id))
+            with os.scandir(self.dir) as entries:
+                paths = [self.dir / entry.name for entry in entries if entry.name.endswith('.json')]
+            messages = sorted((Message.from_json(p.read_text()) for p in paths), key=lambda m: (m.at, m.id))
             replies: dict[str, list[Message]] = {}
             for message in messages:
                 if message.re:
@@ -282,6 +289,7 @@ class Attempt:
 class Attempts:
     def __init__(self, runtime: Path):
         self.dir = runtime / "post" / "attempts"
+        self._cache = {}
 
     @contextmanager
     def _locked(self):
@@ -337,9 +345,28 @@ class Attempts:
         os.replace(tmp, attempt.path)
 
     def all(self) -> list[Attempt]:
-        if not self.dir.is_dir():
+        # Attempts are mutable, including writes from another process. Directory
+        # times alone miss same-path edits; stat every entry, parse only changes.
+        try:
+            entries = os.scandir(self.dir)
+        except FileNotFoundError:
+            self._cache = {}
             return []
-        found = [Attempt(**json.loads(p.read_text()), path=p) for p in self.dir.glob("*.json")]
+        current = {}
+        with entries:
+            for entry in entries:
+                if not entry.name.endswith('.json'):
+                    continue
+                info = entry.stat()
+                stamp = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+                cached = self._cache.get(entry.name)
+                if cached is None or cached[0] != stamp:
+                    path = self.dir / entry.name
+                    cached = stamp, Attempt(**json.loads(path.read_text()), path=path)
+                current[entry.name] = cached
+        # A failed scan/read must propagate, never certify a partial snapshot.
+        self._cache = current
+        found = [value[1] for value in current.values()]
         return sorted(found, key=lambda a: (a.at, a.path.name))
 
     def for_message(self, message_id: str) -> list[Attempt]:
@@ -378,7 +405,7 @@ class Attempts:
         neither is sent again by the service (law: one-door); an acknowledgment claims and
         never wakes, so it is never delivered at all (law: open-until-closed).
         """
-        skip = self.accepted_ids() | self.blind_ids() | {m for m, r in self.latest().items() if r in (None, "pending", "abandoned")}
+        skip = {m for m, r in self.latest().items() if r in (*ACCEPTED, "blind", None, "pending", "abandoned")}
         return [m for m in store.for_seat(seat) if m.id not in skip and m.kind != "ack"]  # law: open-until-closed
 
 
