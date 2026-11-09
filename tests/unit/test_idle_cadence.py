@@ -64,8 +64,8 @@ def test_known_no_clients_skips_only_presentation_and_unknown_collects(tmp_path,
     monkeypatch.setattr(svc,'publish_status',lambda:collected.append(clock[0]))
     svc.tick()
     assert not collected,'no viewer must not trigger a complete status collection every tick'
-    clients[0]=True;clock[0]=.5;svc.tick()
-    clients[0]=None;clock[0]=1.;svc.tick()
+    clients[0]=True;clock[0]=.8;svc.tick()
+    clients[0]=None;clock[0]=1.6;svc.tick()
     assert len(collected)==2 and duties==['account']*3
     svc.ledger.close()
 
@@ -88,6 +88,7 @@ def test_presentation_deadlines_do_not_move_actor_tick_cadence(tmp_path,monkeypa
     with pytest.raises(Stop):svc.run()
     assert actors==pytest.approx([0.,1.2,2.4]),'record/actor duties keep sleep-after-work cadence'
     assert max(b-a for a,b in zip(published,published[1:]))<=1.,'simulated collection starts must cover the unchanged one-second freshness contract'
+    assert len(published)<=5,'fresh presentation must not require eight full collections in three actor ticks'
     svc.lock.close();svc.ledger.close()
 
 
@@ -164,3 +165,26 @@ def test_cold_text_failure_cannot_reuse_health_or_omit_the_native_failure_path(l
     else:
         assert 'status unknown' in line and '0 waiting' not in line
     assert path.read_text()=='{ corrupt'
+
+
+def test_idle_delivery_uses_its_fresh_owned_frame_without_a_second_liveness_query(tmp_path,monkeypatch):
+    from quarterdeck.tmux import Pane
+    (tmp_path/'ship.toml').write_text('[pools.p]\nprovider="fake"\n[sessions.crew]\n[seats.worker]\nsession="crew"\nharness="fake"\npool="p"\n')
+    tmux=Tmux(socket='synthetic');svc=Service(shipmod.load(tmp_path),tmux)
+    seat=svc.seat('worker');seat.folder.mkdir(parents=True)
+    Launched('%1',101,datetime.now(timezone.utc).isoformat(),'p',None,['synthetic'],'synthetic','fake').write(seat.folder/'launch.json')
+    calls=[];pid=[101]
+    def packet(*args):
+        calls.append(args)
+        return Pane('%1','crew','worker',pid[0],80,24,False,False,None),'synthetic frame'
+    monkeypatch.setattr(tmux,'read_pane',packet)
+    def redundant(*args):raise AssertionError('redundant liveness query before the owned frame')
+    monkeypatch.setattr(tmux,'pane',redundant)
+    monkeypatch.setattr(type(seat.harness),'screen',lambda self,text:Screen(text,'human draft'))
+    try:
+        svc.deliveries()
+        assert len(calls)==1 and svc.told['worker']=='text in the box'
+        svc.told.clear();pid[0]=202
+        svc.deliveries()
+        assert len(calls)==2 and not svc.told,'a replacement cannot supply the prior seat obstruction'
+    finally:svc.ledger.close()

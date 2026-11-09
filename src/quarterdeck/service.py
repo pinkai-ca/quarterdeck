@@ -35,7 +35,7 @@ from .ship import Ship, ShipError
 from .tmux import Tmux
 
 TICK = 1.0
-STATUS_INTERVAL = 0.4  # presentation only; its collection-start lifetime stays one second
+STATUS_INTERVAL = 0.7  # presentation only; its collection-start lifetime stays one second
 BLIND_INTERVAL = 60.0  # how often the blind attempts are read against the records
 
 
@@ -186,12 +186,18 @@ class Service:
     def deliveries(self) -> None:
         results = self.attempts.latest()
         for seat in self.resolved_seats():
-            if seat.session.human or not seat.is_up:
+            if seat.session.human:
                 continue
             pending = [m for m in self.attempts.undelivered(self.store, seat.name, results=results) if self._due(m, seat)]
             if pending:
+                if not seat.is_up:
+                    continue
                 self.deliver(seat, pending)
-            self.needs_human(seat)
+                self.needs_human(seat)
+            else:
+                found = seat.read_pane()
+                if found is not None:
+                    self.needs_human(seat, seat.harness.screen(found[1]))
 
     def _due(self, message: post.Message, seat: Seat) -> bool:
         """A withheld message is tried again when the screen has changed since, not on a clock (law: events-not-clocks)."""
@@ -201,9 +207,9 @@ class Service:
         screen = Door(seat).screen()
         return screen is None or screen.text != last  # law: events-not-clocks
 
-    def needs_human(self, seat: Seat) -> None:
+    def needs_human(self, seat: Seat, screen=None) -> None:
         """When a seat's door needs a human, the desk is told once, with a report from ``ship``."""
-        reading = Door(seat).reading()
+        reading = Door(seat).reading(screen)
         reason = reading.reason if (not reading.open and reading.clears == "needs a human") else None
         reason = reason or next(iter(pending_delivery.detached(seat)), None)
         if reason == self.told.get(seat.name):
