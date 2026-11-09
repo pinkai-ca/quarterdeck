@@ -125,6 +125,10 @@ class Harness(ABC):
     def freshness(self, path: Path) -> tuple[float, float] | None:
         return None
 
+    def startup_ready(self, home: Path | None) -> bool:
+        """Any program-specific startup decision required before its composer can take input."""
+        return True
+
     def grant_expiry(self, path: Path) -> datetime | None:
         return None
 

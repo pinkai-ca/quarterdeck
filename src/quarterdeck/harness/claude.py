@@ -260,6 +260,31 @@ SETTINGS = {
     "permissions": {"allow": ["Bash(qd *)", "Bash(qd:*)"], "defaultMode": "bypassPermissions"},  # law: can-post
 }
 
+AUTO_DEFAULT_TITLE = 'Make auto mode your default permission mode?'
+AUTO_DEFAULT_DESCRIPTION = ('Auto mode lets Claude handle permission prompts automatically. Claude checks each tool call '
+                            'for risky actions and prompt injection before executing, runs the ones it assesses as '
+                            'lower-risk, and blocks the rest.')
+
+
+def auto_default_offer(text: str) -> Interruption | None:
+    """2.1.317's exact widget, including which of its two rows is selected."""
+    lines = text.splitlines()
+    titles = [i for i, line in enumerate(lines) if line.strip() == AUTO_DEFAULT_TITLE]
+    if len(titles) != 1:
+        return None
+    at = titles[0]
+    if not at or not RULE.match(lines[at-1]) or not re.search(r'Claude Code v2\.1\.317\b', '\n'.join(lines[:at])):
+        return None
+    body = [line.strip() for line in lines[at+1:] if line.strip()]
+    if len(body) < 3 or ' '.join(body[:-2]) != AUTO_DEFAULT_DESCRIPTION:
+        return None
+    yes, no = body[-2:]
+    if yes == '❯ Yes, set auto mode as my default permission mode' and no == 'No, keep bypass permissions':
+        return Interruption('auto-mode default offer: select No', re.escape(AUTO_DEFAULT_TITLE), 'Down')
+    if yes == 'Yes, set auto mode as my default permission mode' and no == '❯ No, keep bypass permissions':
+        return Interruption('auto-mode default offer: confirm No', re.escape(AUTO_DEFAULT_TITLE), 'Enter')
+    return None
+
 
 def pool_account(pool: Pool) -> dict | None:
     """The account record beside a subscription's credential, and nothing else of the pool's state.
@@ -320,7 +345,10 @@ class ClaudeHarness(Harness):
         state = json.loads(state_file.read_text()) if state_file.is_file() else {}
         # The trust dialog and the one that asks a person to accept running without approval prompts, both answered
         # before the first launch: a fresh home opens without a dialog.
-        state.update({"hasCompletedOnboarding": True, "bypassPermissionsModeAccepted": True, "theme": state.get("theme", "dark")})
+        state.update({"hasCompletedOnboarding": True, "bypassPermissionsModeAccepted": True,
+                      # 2.1.317 writes this after No/keep bypass. A fresh-home startup-only
+                      # probe proves it prevents that offer without enabling auto mode.
+                      "hasSeenAutoDefaultNudge": True, "theme": state.get("theme", "dark")})
         if account := pool_account(pool):
             state["oauthAccount"] = account  # whose credential this is, known before the first launch
         cwd = str(seat.cwd) if seat.cwd else None
@@ -350,6 +378,15 @@ class ClaudeHarness(Harness):
     session_id = staticmethod(session_id)
     reader = staticmethod(read)
 
+    def startup_ready(self, home: Path | None) -> bool:
+        if home is None:
+            return False
+        try:
+            state = json.loads((home / '.claude.json').read_text())
+            return isinstance(state, dict) and state.get('hasSeenAutoDefaultNudge') is True
+        except (OSError, ValueError):
+            return False  # the pre-offer composer is not readiness; no elapsed-time shortcut
+
     def screen(self, text: str) -> Screen:
         lines = text.rstrip("\n").split("\n")
         box, queued = None, 1 if "ctrl+x ctrl+s to send now" in text else 0
@@ -367,7 +404,7 @@ class ClaudeHarness(Harness):
                     box, queued = "", max(queued, 1)
                 break
         mode = MODE_LINE.search(text)
-        interruption = self.recognize(text) if box is None else None  # a dialog replaces the box; prose never counts
+        interruption = (auto_default_offer(text) or self.recognize(text)) if box is None else None  # prose never counts
         return Screen(text, box=box, working=bool(WORKING.search(text)), interruption=interruption,
                       queued=queued, shows={"effort": mode.group(1)} if mode else {})
 

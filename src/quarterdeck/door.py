@@ -131,6 +131,8 @@ class Door:
             return Reading(False, "text in the box", "needs a human")
         if screen.working and not self.harness.queues_while_working(self.seat.spec):
             return Reading(False, "working, program does not queue", "time")
+        if not self.harness.startup_ready(getattr(self.seat, 'home', None)):
+            return Reading(False, "starting, waiting for the program's startup choice", "time")
         return Reading(True, working=screen.working)
 
     def clear_known(self) -> Screen | None:
