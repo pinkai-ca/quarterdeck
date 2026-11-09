@@ -21,7 +21,7 @@ from pathlib import Path
 
 from . import harness as harnesses
 from . import pending as pending_delivery, delivery_record
-from . import credential, install, machine, post, quota, record_owner, ship as shipmod, standing
+from . import credential, install, machine, post, presentation, quota, record_owner, ship as shipmod, standing
 from .door import CONFIRM_SECONDS, Door
 from .harness.base import record_fingerprint
 from .ledger import Ledger
@@ -47,6 +47,7 @@ class Service:
         self.log_path = self.runtime / "log" / "service.jsonl"
         self.withheld: dict[tuple[str, str], str] = {}  # (message, seat) -> the screen it was withheld on
         self.told: dict[str, str | None] = {}  # seat -> the obstruction the desk was last told of
+        self.status_framework = presentation.framework_stamp()
         self.brief_stamp = self._brief_stamp()
         copy = install.installed(self.runtime) if install.running_from(self.runtime / 'venv' / 'bin') else None
         self.framework_commit = copy['commit'] if copy else None
@@ -71,12 +72,15 @@ class Service:
         except ShipError as error:
             self.log("error", step="load", error=str(error))
         for step in (self.reconcile, self.account, self.inboxes, self.deliveries, self.requests, self.fresh_after_order,
-                     self.rebrief, self.credentials, self.failover):  # accounting before anything relaunches a seat
+                     self.rebrief, self.credentials, self.failover, self.publish_status):  # accounting before anything relaunches a seat
             self.heartbeat()  # before every step: a slow delivery or usage read reads as busy, never as dead
             try:
                 step()
             except Exception as error:  # one failing step never stops the others
                 self.log("error", step=step.__name__, error=repr(error), trace=traceback.format_exc())
+
+    def publish_status(self) -> None:
+        presentation.publish(self.ship, self.tmux, self.status_framework, self.store, self.attempts)
 
     def heartbeat(self) -> None:
         write_heartbeat(self.runtime)

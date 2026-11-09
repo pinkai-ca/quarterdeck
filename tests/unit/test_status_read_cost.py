@@ -42,3 +42,16 @@ def test_reconcile_reads_one_inventory_per_journal_and_attempt_phase(tmp_path,mo
     try:svc.reconcile()
     finally:svc.ledger.close()
     assert len(calls)==2, 'journal reconciliation can write receipts; latest reductions reuse the fresh inventory after it'
+
+
+def test_service_publishes_an_optional_fresh_presentation_for_cold_status_jobs(tmp_path):
+    from quarterdeck import servicectl
+    (tmp_path/'ship.toml').write_text('[ship]\nname="synthetic"\n')
+    ship=shipmod.load(tmp_path);ship.runtime.mkdir(parents=True)
+    lock=servicectl.acquire_lock(ship.runtime)
+    svc=Service(ship,SimpleNamespace())
+    try:
+        svc.tick()
+        assert (ship.runtime/'status-line.json').exists(), 'cold status processes need a service-produced presentation, not reparsed history'
+    finally:
+        lock.close();svc.ledger.close()

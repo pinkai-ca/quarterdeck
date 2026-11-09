@@ -21,6 +21,7 @@ from .door import Door, Reading
 from .harness.base import same_name
 from .seat import Seat, seats
 from .ship import Ship
+from .servicectl import STALE_SECONDS
 from .tmux import Tmux
 
 STALL_SECONDS = 600
@@ -181,7 +182,10 @@ def service_state(runtime: Path) -> str:
     """``ok``, ``busy <age>`` while a service holds its lock but has not ticked lately, or ``down``."""
     if not service.alive(runtime):
         return "down"
-    late = service.stale(runtime)
+    beat = service.read_heartbeat(runtime)
+    if beat is None or beat[1] < 0:
+        return 'busy (heartbeat unknown)'
+    late = beat[1] if beat[1] > STALE_SECONDS else None
     return f"busy {int(late)}s" if late else "ok"
 
 
@@ -391,9 +395,11 @@ def _mount(path: Path) -> str:
     return str(path) if str(path) != "/" else "root"
 
 
-def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tuple[str, str]] | None = None) -> Facts:
+def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tuple[str, str]] | None = None,
+          *, store=None, attempts=None) -> Facts:
     """Everything the status line says; cheap enough for tmux to ask every few seconds."""
-    store, attempts = post.Store(ship.runtime), post.Attempts(ship.runtime)
+    store = post.Store(ship.runtime) if store is None else store
+    attempts = post.Attempts(ship.runtime) if attempts is None else attempts
     records = attempts.all()
     latest = attempts.latest(attempts=records)
     waiting, needs_human, unarmed, pending_lines, routes = [], [], [], [], []

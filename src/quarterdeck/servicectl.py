@@ -18,7 +18,6 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .seat import qd_bin
 from .ship import Ship, ShipError
 
 STALE_SECONDS = 10.0  # a tick longer than this reads as busy
@@ -44,10 +43,13 @@ def read_heartbeat(runtime: Path) -> tuple[int, float] | None:
     """The service's pid and the age of its last tick in seconds, or None when none was written."""
     try:
         pid, stamp = heartbeat_path(runtime).read_text().split()
-    except (FileNotFoundError, ValueError):
+        moment = datetime.fromisoformat(stamp)
+        if int(pid) <= 0 or moment.tzinfo is None:
+            return None
+        age = datetime.now(timezone.utc).timestamp() - moment.timestamp()
+        return int(pid), age
+    except (OSError, ValueError, OverflowError):
         return None
-    age = datetime.now(timezone.utc).timestamp() - datetime.fromisoformat(stamp).timestamp()
-    return int(pid), age
 
 
 def acquire_lock(runtime: Path):
@@ -63,7 +65,7 @@ def acquire_lock(runtime: Path):
 def locked(runtime: Path) -> bool:
     """Whether a service holds the runtime's lock: the one fact that says a service owns this ship."""
     try:
-        with lock_path(runtime).open("a") as handle:
+        with lock_path(runtime).open("rb") as handle:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
             fcntl.flock(handle, fcntl.LOCK_UN)
     except FileNotFoundError:
@@ -90,6 +92,8 @@ def started(runtime: Path) -> bool:
 
 def start(ship: Ship, qd: Path | None = None) -> str:
     """Start the service detached, logging under the runtime; a proof line. It runs the ``qd`` given, else this one."""
+    from .seat import qd_bin
+
     if alive(ship.runtime):
         beat, late = read_heartbeat(ship.runtime), stale(ship.runtime)
         return f"service alive · pid {beat[0] if beat else '?'}" + (f" · busy, last tick {int(late)}s ago" if late else "")

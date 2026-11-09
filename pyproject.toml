@@ -17,7 +17,7 @@ dependencies = []
 dev = ["pytest>=8", "pytest-xdist>=3"]
 
 [project.scripts]
-qd = "quarterdeck.cli:main"
+qd = "quarterdeck:main"
 qd-fakeharness = "quarterdeck.fakeharness:main"
 
 [tool.setuptools.packages.find]

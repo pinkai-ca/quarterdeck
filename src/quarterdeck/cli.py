@@ -291,7 +291,13 @@ def render_sources(data: dict) -> list[str]:
 def cmd_status(args: argparse.Namespace) -> Reading:
     ship = load_ship(args)
     if args.line:
-        return Reading(watch.facts(ship, Tmux.default()), watch.Facts.line)
+        try:
+            return Reading(watch.facts(ship, Tmux.default()), watch.Facts.line)
+        except (OSError, ValueError, TypeError, KeyError):
+            state = watch.service_state(ship.runtime)
+            lead = 'SERVICE DOWN' if state == 'down' else f'service {state}'
+            return Reading(dict(service=state, facts=None, error='status evidence unavailable'),
+                           lambda _: lead + ' · status unknown: evidence unavailable; inspect qd status')
     return Reading(watch.status_reading(ship, Tmux.default()), watch.render_table)
 
 
