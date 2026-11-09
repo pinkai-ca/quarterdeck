@@ -299,14 +299,18 @@ def test_a_blocked_delivery_goes_in_on_the_tick_after_the_human_clears_the_box(s
     captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
     wait_for(lambda: captain.harness.screen(tmux.capture(captain.pane().id)).box == "")
     tmux.paste(captain.pane().id, "a human's half-written thought")  # the human at this keyboard
-    qd(capsys, "post", "order", "--to", "captain", "waits behind the human's text")
-    service_progress(ship)
     store, attempts = post.Store(ship.runtime), post.Attempts(ship.runtime)
+    draft_report = wait_for(lambda: next((m for m in store.for_seat("desk") if m.sender == "ship"
+                                         and m.body == "captain obstructed, text in the box"), None))
+    proof = qd(capsys, "post", "order", "--to", "captain", "waits behind the human's text")
+    order = store.get(proof.split()[0])
+    assert store.all().index(draft_report) < store.all().index(order)
+    service_progress(ship)
     assert attempts.all() == [], "nothing typed, nothing attempted while a human's text is in the box"  # law: one-door
     assert "captain needs a human" in qd(capsys, "status", "--line")
     tmux.keys(captain.pane().id, "C-u")  # the human clears their own box
     done = wait_for(lambda: [a for a in attempts.all() if a.accepted], seconds=6)  # law: events-not-clocks
-    assert done[0].message == store.all()[0].id and done[0].result == "delivered"
+    assert done[0].message == order.id and done[0].result == "delivered"
 
 
 def test_a_message_once_queued_is_not_carried_again_once_read(ship: shipmod.Ship, tmux: Tmux, capsys):
