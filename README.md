@@ -78,6 +78,14 @@ freshness at `observed_at`. Unknown token/price semantics and headline selection
 are the same as in text. Mutating commands, including `watch --save-screen` and
 `doctor --fix`, retain their proof output.
 
+### Seat cards
+
+`dashboard/seat_cards.py` turns the status reading and the ship file into one HTML page with a card for each seat, grouped by session. A card shows the seat's name and role; its program, model and effort; whether it is working and whether its door is open; the subject of the order it holds; and today's tokens. The page fetches nothing, so it opens from disk and can be copied anywhere:
+
+```bash
+.venv/bin/python dashboard/seat_cards.py --ship ships/default > seats.html
+```
+
 ## What is proven, and what is not
 
 Claude Code 2.1.317 and Codex 0.166.0 were proven live by `qd check` on 7 November 2026: each launched, took a long paste its record confirmed, wrote a named file, posted a report and had its turn read. What their adapters know of each program's record, screen, keys, dialogs and controls is pinned separately, by the contract tests' fixtures under `tests/fixtures/`. Antigravity 1.5.2 has no home switch, so its seat runs in the user's Antigravity state; its record, a SQLite database of protobuf messages, is read from a snapshot of its bytes, so deliveries are confirmed and turns accounted like the others, and what the record does not hold is marked rather than guessed. The fields read are in `docs/ANTIGRAVITY.md`; its live check is still to run. OpenCode 1.19.5 and pi 0.74.2 run on endpoint pools, a model served at an OpenAI-compatible URL; both were spiked against a local vLLM server on 7 November 2026, and their records, screens, folds and wraps are pinned by fixtures. A seat on an endpoint pool runs in a bubblewrap jail unless the ship says otherwise: the operator's home hidden, the workspace writable, `qd post` working from inside.
