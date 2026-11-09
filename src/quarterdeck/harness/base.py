@@ -61,7 +61,7 @@ def program_version(argv: tuple[str, ...]) -> str | None:
     except (OSError, subprocess.TimeoutExpired):
         return None
     for stream in (done.stdout, done.stderr):
-        match = re.search(r"\d+\.\d+(\.\d+)?", stream)
+        match = re.search(r"(?<![\d.])\d+\.\d+(?:\.\d+)?[A-Za-z0-9.+_-]*(?=\s|$)", stream)
         if match:
             return match.group(0)
     return None
@@ -86,6 +86,10 @@ class Harness(ABC):
     wrap_slack: int = 0  # columns the program keeps clear at the right when it wraps at a word, under the width where it breaks a word
     human_tools: tuple[str, ...] = ()
     human_tool_policy: str = "No native question-tool suppression proved for this adapter."
+
+    def thinking_recovery(self, home: Path, evidence: dict | None, version: str | None, seat: SeatSpec, pool: Pool):
+        """A proved native off/restore client, or no supported automatic recovery."""
+        return None
 
     def waiting_for_human(self, state: State) -> bool:
         """A complete nonempty question-only set; a displayed first tool proves no exclusivity."""

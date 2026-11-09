@@ -177,7 +177,7 @@ class Door:
             screen = self.screen()
         return screen
 
-    def deliver(self, text: str, speed: str | None = None, confirm: bool = True, proof=None) -> Delivery:
+    def deliver(self, text: str, speed: str | None = None, confirm: bool = True, proof=None, verify=None) -> Delivery:
         """Type ``text`` once and confirm it, or withhold it and say why.
 
         A slash command is typed with ``confirm=False``: the control's own confirmation
@@ -201,6 +201,8 @@ class Door:
         pane = self.seat.pane()
         if proof and not proof.same_launch(self.seat):
             return Delivery("blind", "launch changed before paste; no keys sent")
+        if verify is not None and not verify():
+            return Delivery('withheld', 'bound source changed before paste; no keys sent')
         if proof:
             proof.save(phase="pasting")
         self.tmux.paste(pane.id, text)
@@ -210,6 +212,8 @@ class Door:
             return Delivery("blind", f"box showed {seen!r}, not the message; not submitted or cleared; needs a human")
         if proof and not proof.same_launch(self.seat):
             return Delivery("blind", "launch changed after paste; not submitted or cleared")
+        if verify is not None and not verify():
+            return Delivery('blind', 'bound source changed after paste; not submitted or cleared')
         if proof:
             proof.save(phase="submitting", shown=shown.box)
         self.submit(pane.id)
@@ -220,6 +224,19 @@ class Door:
         if not confirm:
             return Delivery("typed", f"submitted in {pane.id}")
         return self.confirm(text)  # law: one-door
+
+    def control_keys(self, keys: tuple[str, ...], proof, verify) -> Delivery:
+        """One adapter-proved mode-control queue, under the same human/draft/identity Door."""
+        self.proof = proof
+        screen = self.screen()
+        reading = self.reading(screen)
+        if not reading.open or reading.working or screen.queued:
+            return Delivery('withheld', str(reading))
+        if not proof.same_launch(self.seat) or not verify():
+            return Delivery('withheld', 'bound mode/source changed; no control key sent')
+        pane = self.seat.pane()
+        self.tmux.keys(pane.id, *keys)
+        return Delivery('typed', 'one native mode-control queue sent')
 
     def settled(self, seconds: float = BOX_SECONDS) -> Screen | None:
         """The screen once the program has stopped working, or the last screen seen."""

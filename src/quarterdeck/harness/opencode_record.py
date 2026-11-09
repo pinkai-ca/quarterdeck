@@ -8,6 +8,7 @@ Unknown nested fields never discard readable siblings or turn malformed usage in
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +18,7 @@ from .costs import CostStep, costed, model_name
 from .base import Input, RecordError, State, Tokens, ToolCall, Turn
 from .sqlite_snapshot import snapshot
 from .json_record import RecordReader
+from .types import CappedGeneration
 
 DATA_PREFIX = "data-"
 RECORD = Path("opencode") / "opencode.db"
@@ -252,13 +254,84 @@ class _Reader(RecordReader):
         updated = [m[3] for m in rows.messages if m[1] in family]
         updated += [p[4] for p in rows.parts if p[2] in family] + [s[2] for s in rows.sessions if s[0] in family]
         self.last_write = max((at for value in updated if (at := _ms(value))), default=None)
+        self.input_id, self.work_id, self.capped = _generation(rows, self.session)
 
     def state(self) -> State:
         active = self.active
         return State(turn_open=active.open if self.session or self.empty else None, open_tool=active.open_tool,
                      open_tool_since=active.open_tool_since, last_write=self.last_write, last_input=active.last_input,
                      last_input_at=active.last_input_at, model=active.model, queued=tuple(active.queued), turns=len(self.turns),
-                     completed_turns=tuple(active.completed_turns), pending_tools=self.pending_tools)
+                     completed_turns=tuple(active.completed_turns), pending_tools=self.pending_tools,
+                     conversation=self.session, input_id=self.input_id, work_id=self.work_id,
+                     capped=self.capped if not active.open and not active.queued and self.pending_tools == () else None)
+
+
+def _generation(rows, root):
+    """Bind the terminal generation and original work, including native marked compaction continuation.
+
+    This does not change turn closure, receipts or accounting. Unmarked replay after
+    compaction has no provable original-work identity and cannot receive recovery.
+    """
+    parts = {}
+    for pid, mid, sid, _, _, data in rows.parts:
+        if sid == root:
+            parts.setdefault(mid, []).append((pid, data))
+    messages = [(mid, data) for mid, sid, _, _, data in rows.messages if sid == root]
+    users, current, work, compacting = {}, None, None, False
+    for mid, data in messages:
+        if data.get('role') != 'user':
+            continue
+        own = [p for _, p in parts.get(mid, [])]
+        current = mid
+        users[mid] = data, own
+        if own and all(p.get('type') == 'compaction' for p in own):
+            compacting = True
+        elif (compacting and own and all(p.get('type') == 'text' and isinstance(p.get('text'), str)
+              and p.get('synthetic') is True and _object(p.get('metadata')).get('compaction_continue') is True for p in own)):
+            compacting = False  # the installed client's explicit automatic-continuation marker
+        elif (compacting or not own or any(p.get('type') != 'text' or not isinstance(p.get('text'), str)
+              or p.get('synthetic') or _object(p.get('metadata')).get('compaction_continue') for p in own)):
+            work, compacting = None, False
+        else:
+            work = mid if any(p['text'].strip() for p in own) else None
+    if compacting:
+        return current, None, None  # a completed summary is not an idle continuation of accepted work
+    if not messages or current is None or work is None:
+        return current, work, None
+    mid, last = messages[-1]
+    user = users[current][0]
+    model = _object(user.get('model'))
+    tokens, times = _object(last.get('tokens')), _object(last.get('time'))
+    own = [p for _, p in parts.get(mid, [])]
+    finished = [p for p in own if p.get('type') == 'step-finish']
+    created, ended = _ms(times.get('created')), _ms(times.get('completed'))
+    if (last.get('role') != 'assistant' or last.get('parentID') != current or last.get('finish') != 'length'
+            or last.get('error') or last.get('summary') or last.get('agent') == 'compaction'
+            or not created or not ended or ended < created
+            or not isinstance(last.get('agent'), str) or not last['agent']
+            or not all(isinstance(last.get(k), str) and last[k] for k in ('modelID', 'providerID'))
+            or model.get('modelID') != last['modelID'] or model.get('providerID') != last['providerID']
+            or model.get('variant') not in (None, 'default')
+            or not _tokens(last).complete or type(tokens.get('reasoning')) is not int or tokens['reasoning'] <= 0
+            or type(tokens.get('output')) is not int or tokens['output'] < 0
+            or len(finished) != 1 or finished[0].get('reason') != 'length' or finished[0].get('tokens') != tokens):
+        return current, work, None
+    for p in own:
+        kind = p.get('type')
+        if kind in ('text', 'reasoning'):
+            if not isinstance(p.get('text'), str) or (kind == 'text' and p['text']):
+                return current, work, None
+        elif kind == 'patch':
+            if not isinstance(p.get('hash'), str) or not isinstance(p.get('files'), list) or not all(isinstance(f, str) for f in p['files']):
+                return current, work, None
+        elif kind not in ('step-start', 'step-finish', 'snapshot'):
+            return current, work, None  # any tool, retry, file, compaction or unfamiliar payload refuses
+    if not any(p.get('type') == 'reasoning' and p.get('text') for p in own):
+        return current, work, None
+    bound = [root, work, current, messages, sorted(parts.items())]
+    signature = hashlib.sha256(json.dumps(bound, sort_keys=True).encode()).hexdigest()
+    return current, work, CappedGeneration(root, work, current, mid, last['modelID'], last['providerID'],
+                                           tokens['reasoning'], tokens['output'], signature)
 
 
 def first_timestamp(record: Path) -> datetime | None:

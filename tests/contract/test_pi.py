@@ -171,7 +171,7 @@ def test_the_home_is_built_from_the_endpoint_and_the_launch_carries_the_brief_an
     provider = models["providers"]["local-a"]
     assert provider["baseUrl"] == "http://127.0.0.1:8000/v1" and provider["api"] == "openai-completions" and provider["apiKey"] == "local"
     assert provider["models"] == [{"id": "qwen3.8-27b", "name": "qwen3.8-27b", "reasoning": True, "input": ["text"], "contextWindow": 98304,
-                                   "maxTokens": 8192}]
+                                   "maxTokens": 8192, "compat": {"thinkingFormat": "qwen-chat-template"}}]
     settings = json.loads((home / "agent" / "settings.json").read_text())
     assert settings == {"defaultProjectTrust": "always", "quietStartup": True, "enableInstallTelemetry": False, "theme": "dark"}
     brief = tmp_path / "ship" / "runtime" / "brief" / "w.md"

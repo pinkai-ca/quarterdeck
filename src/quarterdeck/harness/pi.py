@@ -11,7 +11,9 @@ against a local vLLM endpoint.
 from __future__ import annotations
 
 import json
+import hashlib
 import re
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,6 +22,7 @@ from ..pricing import Price, amount
 from .endpoint import EndpointHarness
 from .costs import CostStep, costed, model_name
 from .json_record import JsonLinesReader
+from .types import CappedGeneration
 
 from ..ship import Pool, SeatSpec, ShipError
 from .base import (Box, ship_template, trimmed, Input, Control, Credential, Harness, Interruption, Keys, Launch, RecordError, Screen, State, Tokens,
@@ -84,6 +87,62 @@ class _Reader(JsonLinesReader):
             self.message(entry["message"], at)
         elif kind != 'session':
             self.tools_known = False
+        self.native_entry(entry)
+
+    def native_entry(self, entry: dict) -> None:
+        """Recovery identity needs the native parent chain; ordinary accounting remains unchanged."""
+        kind, ident = entry.get('type'), entry.get('id')
+        if kind == 'session':
+            self.native_session = ident if isinstance(ident, str) and ident else None
+            self.native_chain = self.native_session is not None
+            self.native_parent = self.native_user = self.native_work = self.native_capped = None
+            self.native_trace = ''
+            return
+        if (not isinstance(ident, str) or not ident or not getattr(self, 'native_session', None)
+                or entry.get('parentId') != getattr(self, 'native_parent', None)):
+            self.native_chain = False
+            self.native_user = self.native_work = self.native_capped = None
+        self.native_parent = ident
+        if kind == 'model_change':
+            self.native_capped = None
+        elif kind == 'message':
+            self.native_capped = None
+            message = entry.get('message')
+            if not isinstance(message, dict) or not isinstance(ident, str):
+                return
+            if message.get('role') == 'user':
+                self.native_user = ident
+                self.native_work = entry if self.message_known(message) and _text(message.get('content')).strip() else None
+                self.native_trace = hashlib.sha256(json.dumps(entry, sort_keys=True).encode()).hexdigest()
+                return
+            work = getattr(self, 'native_work', None)
+            self.native_trace = hashlib.sha256(json.dumps([getattr(self, 'native_trace', ''), entry], sort_keys=True).encode()).hexdigest()
+            content, usage = message.get('content'), message.get('usage')
+            if (not work or not self.native_chain or message.get('role') != 'assistant' or message.get('stopReason') != 'length'
+                    or message.get('errorMessage')
+                    or not self.message_known(message) or not _tokens(message).complete or self.open is not None
+                    or not isinstance(content, list) or not content
+                    or not all(b.get('type') == 'thinking' and isinstance(b.get('thinking'), str) for b in content)
+                    or not any(b['thinking'] for b in content)
+                    or not isinstance(usage, dict) or type(usage.get('output')) is not int or usage['output'] <= 0
+                    or not all(isinstance(message.get(k), str) and message[k] for k in ('model', 'provider'))):
+                return
+            # Pi retains total output, not a separate reasoning count. Thinking-only
+            # native content is the evidence; never invent a reasoning measurement.
+            signature = hashlib.sha256(json.dumps([self.native_session, work['id'], self.native_trace], sort_keys=True).encode()).hexdigest()
+            self.native_capped = CappedGeneration(self.native_session, work['id'], self.native_user, ident,
+                message['model'], message['provider'], None, usage['output'], signature)
+        elif kind not in ('thinking_level_change',):
+            self.native_capped = None
+
+    def state(self) -> State:
+        state = super().state()
+        work = getattr(self, 'native_work', None)
+        chain = getattr(self, 'native_chain', False)
+        return replace(state, conversation=getattr(self, 'native_session', None),
+                       input_id=getattr(self, 'native_user', None) if chain else None, work_id=work['id'] if work and chain else None,
+                       capped=getattr(self, 'native_capped', None)
+                       if state.turn_open is False and state.pending_tools == () and not state.queued else None)
 
     def message(self, message: dict, at: datetime | None) -> None:
         role = message.get("role")
@@ -191,7 +250,7 @@ def inputs(record: Path) -> list[Input]:
 
 RULE = re.compile(r"^─{20,}\s*$")
 # "↑1.6k ↓19 1.6%/98k (auto)    qwen3.8-27b • medium"; a model declared without reasoning shows no thinking level
-FOOTER = re.compile(r"^(?P<stats>\S.*?)\s{2,}(?P<model>\S+)(?: • (?P<level>\w+))?\s*$")
+FOOTER = re.compile(r"^(?P<stats>\S.*?)\s{2,}(?P<model>\S+)(?: • (?P<level>thinking off|\w+))?\s*$")
 WORKING = re.compile(r"^\s*[⠁-⣿] Working\.\.\.", re.M)
 QUEUED_HINT = "Alt+Up to edit all queued messages"
 STEERING = re.compile(r"^\s*Steering: (.*?)\s*$", re.M)
@@ -216,6 +275,8 @@ class PiHarness(EndpointHarness):
         choice, secret = self.endpoint_home(home, seat, pool)
         model = {"id": choice.model, "name": choice.model, "reasoning": seat.effort is not None, "input": ["text"],
                  "contextWindow": choice.context, "maxTokens": choice.output}
+        if not seat.human_session and choice.model == 'qwen3.8-27b' and seat.effort in THINKING_LEVELS:
+            model['compat'] = {'thinkingFormat': 'qwen-chat-template'}
         provider = {"baseUrl": pool.endpoint, "api": "openai-completions",
                     "apiKey": endpoint.KEY_VARIABLE if secret else "local",  # a variable's name, read by the program; never the key
                     "models": [model]}
@@ -235,6 +296,8 @@ class PiHarness(EndpointHarness):
         selected = [m for m in models["providers"][pool.name]["models"] if m["id"] == choice.model]
         if len(selected) != 1:
             raise ShipError(f"pool {pool.name}: generated model does not identify one price target")
+        if pool.output is not None:
+            selected[0]['maxTokens'] = pool.output
         selected[0].pop("cost", None)  # omission is supported; null rates are not
         if price:
             selected[0]["cost"] = {"input": price.input, "output": price.output,
@@ -260,7 +323,12 @@ class PiHarness(EndpointHarness):
         if first:
             argv.append(first)
         env = {self.home_variable: str(home / "agent"), "PI_SKIP_VERSION_CHECK": "1", **endpoint.key(pool)}
-        return Launch(tuple(argv), env, choice.price)
+        from .pi_thinking import launch_evidence
+        return Launch(tuple(argv), env, choice.price, launch_evidence(home, seat, pool, choice))
+
+    def thinking_recovery(self, home, evidence, version, seat, pool):
+        from .pi_thinking import client
+        return client(home, evidence, version, seat, pool)
 
     inputs = staticmethod(inputs)
     records = staticmethod(records)
@@ -280,7 +348,8 @@ class PiHarness(EndpointHarness):
         footer = FOOTER.match(lines[footer_at]) if footer_at is not None else None
         shows = {}
         if footer:
-            shows = {"model": footer.group("model"), **({"effort": footer.group("level")} if footer.group("level") else {})}
+            shows = {"model": footer.group("model"),
+                     **({"effort": footer.group("level").removeprefix('thinking ')} if footer.group("level") else {})}
         interruption = self.recognize(text)
         if footer is None or interruption is not None:
             unknown = None if footer or interruption else "no footer drawn as 0.74.2 draws it"

@@ -21,7 +21,7 @@ from pathlib import Path
 
 from . import harness as harnesses
 from . import pending as pending_delivery, delivery_record
-from . import credential, install, machine, post, presentation, quota, record_owner, ship as shipmod, standing
+from . import credential, install, machine, post, presentation, quota, record_owner, recovery, ship as shipmod, standing
 from .door import CONFIRM_SECONDS, Door
 from .harness.base import record_fingerprint
 from .ledger import Ledger
@@ -79,7 +79,7 @@ class Service:
             self.ship = shipmod.load(self.ship.folder)  # law: ship-file
         except ShipError as error:
             self.log("error", step="load", error=str(error))
-        for step in (self.reconcile, self.account, self.inboxes, self.deliveries, self.requests, self.fresh_after_order,
+        for step in (self.reconcile, self.account, self.inboxes, self.recoveries, self.deliveries, self.requests, self.fresh_after_order,
                      self.rebrief, self.credentials, self.failover):  # accounting before anything relaunches a seat
             self.heartbeat()  # before every step: a slow delivery or usage read reads as busy, never as dead
             try:
@@ -195,6 +195,9 @@ class Service:
                 self.deliver(seat, pending)
             self.needs_human(seat)
 
+    def recoveries(self) -> None:
+        recovery.run(self)
+
     def _due(self, message: post.Message, seat: Seat) -> bool:
         """A withheld message is tried again when the screen has changed since, not on a clock (law: events-not-clocks)."""
         last = self.withheld.get((message.id, seat.name))
@@ -302,6 +305,8 @@ class Service:
 
     def relaunch(self, seat: Seat, resume: bool) -> str | None:
         """Explicit recovery alone may interrupt a proven question-only wait."""
+        if recovery.held(seat):
+            return None
         pane = seat.pane()
         if pane is not None and not pane.dead:
             joined = seat.join()
@@ -322,6 +327,8 @@ class Service:
 
     def control(self, seat: Seat, name: str, value: str) -> str | None:
         """Apply a control by its in-session form, through the door, when the seat is idle."""
+        if reason := recovery.held(seat):
+            return f'{name} held: {reason}'
         if seat.spec.pool_choices and (name in {"harness", "model", "effort"} or name not in shipmod.SEAT_KEYS):
             return f"{name} not applied: inline pool choices require an explicit edit in ship.toml; queued program controls have no choice scope"
         control = seat.harness.control(name)
@@ -355,7 +362,7 @@ class Service:
     def fresh_after_order(self) -> None:
         """A worker whose last open order closed, and whose closing turn ended, starts fresh."""
         for seat in self.resolved_seats():
-            if seat.spec.fresh != "after-order" or not seat.is_up or self.store.open_for(seat.name):
+            if recovery.held(seat) or seat.spec.fresh != "after-order" or not seat.is_up or self.store.open_for(seat.name):
                 continue
             launched = seat.launched()
             if launched is None:
@@ -437,7 +444,7 @@ class Service:
     def failover(self) -> None:
         """A seat whose pool is walled moves on at its turn's end to the next pool of its list that is not, and stays."""
         for seat in self.resolved_seats():
-            if len(seat.spec.pools) < 2 or not seat.is_up or not self.ledger.walled(seat.pool.name, self.ship):
+            if recovery.held(seat) or len(seat.spec.pools) < 2 or not seat.is_up or not self.ledger.walled(seat.pool.name, self.ship):
                 continue
             try:
                 record = seat.record()

@@ -153,6 +153,11 @@ def validate(data: Any, seat: str) -> None:
             or (data["record"] is not None and not isinstance(data["record"], str))
             or (data["shown"] is not None and not isinstance(data["shown"], str))):
         raise ValueError("invalid pending journal")
+    if 'recovery' in data:
+        from .recovery import validate as validate_recovery
+        validate_recovery(data['recovery'])
+        if data['record'] is None or any(not n.startswith(data['recovery']['post'] + '-') for n in data['attempts']):
+            raise ValueError('thinking-recovery reservation does not match its record/attempt')
     for stamp in (data["at"], data["since"], identity["launch"]):
         if datetime.fromisoformat(stamp).tzinfo is None:
             raise ValueError("pending journal timestamp lacks timezone")
@@ -167,10 +172,29 @@ def active(seat: Seat, include_terminal: bool = False) -> list[Proof]:
 
 def held(seat: Seat, screen: Screen | None, ignored: Proof | None = None) -> tuple[str, str, bool] | None:
     try:
-        proofs = active(seat)
+        proofs, errors = journals(seat)
+        if errors:
+            raise ValueError('pending journal unreadable')
     except (OSError, ValueError, KeyError):
         return (inspection(seat, "pending delivery journal unreadable; never resent"), "needs a human", False)
+    from .recovery import mode_hold
+    if reason := mode_hold(seat, proofs, ignored):
+        unresolved = [p for p in proofs if p.data.get('recovery') and p.data['recovery']['mode'] != 'done'
+                      and (ignored is None or ignored.path != p.path)]
+        if unresolved and all(p.data['recovery']['mode'] == 'submitted' and p.data['phase'] in ('submitted', 'queued')
+                and (seat.ship.runtime / 'post/store' / (p.data['recovery']['post'] + '.json')).is_file() for p in unresolved):
+            for proof in unresolved:
+                if reading := proof.reading(seat, screen):
+                    return reading  # retain the ordinary receipt/draft/600s uncertainty rule
+            return (inspection(seat, reason), 'ended recovery and original native mode', True)
+        if unresolved and all(p.data['recovery']['mode'] == 'submitted' and p.data['phase'] == 'delivered'
+                and p.data['recovery']['error'] is None
+                and (seat.ship.runtime / 'post/store' / (p.data['recovery']['post'] + '.json')).is_file() for p in unresolved):
+            return (inspection(seat, reason), 'ended recovery and original native mode', True)
+        return (inspection(seat, reason), 'needs a human', False)
     for proof in proofs:
+        if proof.data['phase'] in TERMINAL:
+            continue
         if ignored is not None and proof.path == ignored.path and proof.data["phase"] == "prepared":
             continue  # only this delivery's pre-paste check may ignore its own reservation
         if not proof.same_launch(seat) and screen and screen.box == "" and not screen.unknown and not screen.interruption:

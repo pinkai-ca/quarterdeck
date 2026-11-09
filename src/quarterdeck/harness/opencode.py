@@ -150,6 +150,8 @@ class OpenCodeHarness(EndpointHarness):
                     scope['tools'].pop('question')  # native Object.assign would insert this key before wildcard rules
         price = Price.parse(pool.price) if pool.price is not None else None
         model = config["provider"][pool.name]["models"][choice.model]
+        from .opencode_thinking import prepare
+        prepare(config, pool, choice.model, seat.human_session)
         model.pop("cost", None)
         if price:
             model["cost"] = {"input": price.input, "output": price.output,
@@ -182,7 +184,13 @@ class OpenCodeHarness(EndpointHarness):
                        OPENCODE_CONFIG=str(home / 'config/opencode/opencode.json'),
                        OPENCODE_CONFIG_DIR=str(home / 'config/opencode'),
                        OPENCODE_CONFIG_CONTENT='{}', OPENCODE_PERMISSION='{"question":"deny"}')
-        return Launch(tuple(argv), env, choice.price)
+        from .opencode_thinking import launch_evidence
+        recovery = launch_evidence(home, seat, pool, choice, env)
+        return Launch(tuple(argv), env, choice.price, recovery)
+
+    def thinking_recovery(self, home, evidence, version, seat, pool):
+        from .opencode_thinking import client
+        return client(home, evidence, version, seat, pool)
 
     @staticmethod
     def _data_dir(home: Path, resume: str | None, seat_name: str) -> Path:

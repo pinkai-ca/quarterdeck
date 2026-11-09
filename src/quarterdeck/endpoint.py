@@ -107,10 +107,13 @@ def choose(pool: Pool, wanted: str | None) -> Choice:
             names = ", ".join(m.id for m in served)
             raise ShipError(f"pool {pool.name}: {pool.endpoint} does not serve {wanted!r}; it serves {names}")
     context = pool.context or model.context or DEFAULT_CONTEXT
+    if pool.output is not None and pool.output >= context:
+        raise ShipError(f"pool {pool.name}: output must be smaller than the selected model's context ({context:,}), leaving room for input")
     note = None
     if not pool.context and not model.context:
         note = f"the endpoint states no context length; {DEFAULT_CONTEXT} assumed, or declare context = N in the pool"
-    return Choice(pool.name, model.id, context, min(DEFAULT_OUTPUT, max(context // 4, 1024)), note=note)
+    output = pool.output if pool.output is not None else min(DEFAULT_OUTPUT, max(context // 4, 1024))
+    return Choice(pool.name, model.id, context, output, note=note)
 
 
 def key(pool: Pool) -> dict[str, str]:
@@ -122,4 +125,5 @@ def describe(pool: Pool) -> str:
     """What an endpoint pool serves, for ``qd doctor``; a ShipError says why it cannot be read."""
     served = models(pool.endpoint or "", api_key=key(pool).get(KEY_VARIABLE))
     names = ", ".join(f"{m.id} ({m.context:,} tokens)" if m.context else m.id for m in served) or "nothing"
-    return f"{pool.endpoint} answers; serves {names}"
+    output = f"; output {pool.output:,} tokens (declared)" if pool.output is not None else ''
+    return f"{pool.endpoint} answers; serves {names}{output}"

@@ -41,6 +41,7 @@ class Pool:
     endpoint: str | None = None  # such as http://127.0.0.1:8000/v1
     context: int | None = None  # the context window of what the endpoint serves, where the endpoint does not say
     price: dict | None = None  # explicit USD rates per million tokens; validated on load
+    output: int | None = None  # endpoint response allowance; omission preserves the native adapter default
 
     @property
     def kind(self) -> str:
@@ -204,7 +205,7 @@ def _pool(name: str, table: dict) -> Pool:
         api_key=table.get("api_key"),
         budget=table.get("budget"),
         endpoint=str(endpoint).rstrip("/") if endpoint else None,
-        context=table.get("context"), price=price,
+        context=table.get("context"), price=price, output=table.get("output"),
     )
 
 
@@ -280,6 +281,13 @@ def _validate(ship: Ship) -> None:
             raise ShipError(f"pool {pool.name}: endpoint must be an http or https URL such as http://127.0.0.1:8000/v1, not {pool.endpoint!r}")
         if pool.context is not None and (isinstance(pool.context, bool) or not isinstance(pool.context, int) or pool.context <= 0):
             raise ShipError(f"pool {pool.name}: context must be a count of tokens, not {pool.context!r}")
+        if pool.output is not None:
+            if type(pool.output) is not int or pool.output <= 0:
+                raise ShipError(f"pool {pool.name}: output must be a positive count of tokens, not {pool.output!r}")
+            if pool.kind != 'endpoint':
+                raise ShipError(f"pool {pool.name}: output is supported only for an endpoint pool")
+            if pool.context is not None and pool.output >= pool.context:
+                raise ShipError(f"pool {pool.name}: output must be smaller than context, leaving room for input")
     for seat in ship.seats.values():
         if seat.session not in ship.sessions:
             raise ShipError(f"seat {seat.name}: session {seat.session!r} is not declared")

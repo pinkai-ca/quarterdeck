@@ -41,10 +41,13 @@ class Launched:
     harness: str | None = None
     records_before: list[str] = field(default_factory=list)
     price: dict | None = None
+    recovery: dict | None = None
 
     def write(self, path: Path) -> None:
         data = asdict(self)
         price = data.pop("price")
+        if data['recovery'] is None:
+            data.pop('recovery')  # unchanged launch shape for programs without this optional proof
         path.write_text(json.dumps(data, indent=2) + "\n")
         save_price(path, price)
 
@@ -152,6 +155,8 @@ class Seat:
 
     def failover_to(self, pool: str) -> str:
         """Preserve the source before selecting another program or paying pool."""
+        from .recovery import require_clear
+        require_clear(self)
         from . import credential
 
         selected = self.spec.for_pool(pool)
@@ -172,6 +177,9 @@ class Seat:
         except FileNotFoundError:
             return None
         data = json.loads(text)
+        if data.get('recovery') is not None:
+            from .harness.thinking import validate_launch
+            validate_launch(data['recovery'])
         return Launched(**data, price=saved_price(path))
 
     def pane(self) -> Pane | None:
@@ -289,6 +297,8 @@ class Seat:
     # -- the one relaunch path -----------------------------------------------------------
 
     def up(self, resume: bool = True) -> str:
+        from .recovery import require_clear
+        require_clear(self)
         if self.is_up:
             raise ShipError(f"{self.name} is up in {self.pane().id}; qd restart {self.name} relaunches it")
         if self.spec.remote_control and not self.harness.remote_control:
@@ -329,7 +339,8 @@ class Seat:
             argv = sandbox.command(jail, argv)
         at = datetime.now(timezone.utc).isoformat()  # before the program can write a record (law: one-record)
         pane = self._open_window(argv, launch.env, path)
-        launched = Launched(pane.id, pane.pid, at, pool.name, resume_id, argv, self.harness.version(), self.spec.harness, sorted(map(str, prior)), launch.price)
+        launched = Launched(pane.id, pane.pid, at, pool.name, resume_id, argv, self.harness.version(), self.spec.harness,
+                            sorted(map(str, prior)), launch.price, launch.recovery)
         launched.write(self.folder / "launch.json")
         if self.spec.pool_choices:
             self.move_to(pool.name)
@@ -439,10 +450,14 @@ class Seat:
 
     def restart(self) -> str:
         """Relaunch with resume: the conversation continues in a new process."""
+        from .recovery import require_clear
+        require_clear(self)
         return self.down() + "\n" + self.up(resume=True)
 
     def fresh(self) -> str:
         """Relaunch without resume: a new conversation that begins with the brief and the open messages."""
+        from .recovery import require_clear
+        require_clear(self)
         return self.down() + "\n" + self.up(resume=False)
 
 

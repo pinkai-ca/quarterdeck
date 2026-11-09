@@ -145,6 +145,21 @@ class Turn:
 
 
 @dataclass(frozen=True)
+class CappedGeneration:
+    """A native, ended reasoning-only length stop; an adapter must still prove its allowance."""
+
+    conversation: str
+    work: str
+    user: str
+    generation: str
+    model: str
+    provider: str
+    reasoning: int | None  # None when the native record has no separate reasoning counter
+    written: int
+    signature: str
+
+
+@dataclass(frozen=True)
 class State:
     """The live reading of a record."""
 
@@ -162,6 +177,10 @@ class State:
     walls: tuple[Wall, ...] = ()
     completed_turns: tuple[Turn, ...] = ()  # explicit completions in the active conversation, never children or inferred ends
     pending_tools: tuple[str, ...] | None = None  # complete relevant tool evidence; None is unknown, never an empty proof
+    conversation: str | None = None
+    input_id: str | None = None
+    work_id: str | None = None  # native automatic continuation cannot create a new recovery allowance
+    capped: CappedGeneration | None = None
 
 
 @dataclass(frozen=True)
@@ -445,3 +464,4 @@ class Launch:
     argv: tuple[str, ...]
     env: dict[str, str] = field(default_factory=dict)
     price: dict | None = None
+    recovery: dict | None = None  # adapter-owned effective-source evidence, captured before the pane opens
