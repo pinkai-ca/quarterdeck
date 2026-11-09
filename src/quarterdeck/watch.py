@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from . import credential, ledger, pending as pending_delivery, post, record_owner, servicectl as service
+from . import credential, ledger, pending as pending_delivery, post, record_owner, recovery, servicectl as service
 from .door import Door, Reading
 from .harness.base import same_name
 from .seat import Seat, UnresolvedSeat, seats
@@ -428,6 +428,9 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         if launched is not None and launched.pool in seat.spec.pools[1:]:
             routes.append(f"{seat.name} on {seat.harness.name}/{launched.pool}")
         if seat.session.human:
+            if reason := recovery.held(seat):
+                needs_human.append(seat.name)
+                pending_lines.append(f"{seat.name}: {reason}")
             if pending and not post.watch_armed(ship.runtime, seat.name):
                 unarmed.append(seat.name)
         else:

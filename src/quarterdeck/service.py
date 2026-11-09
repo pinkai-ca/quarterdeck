@@ -187,6 +187,8 @@ class Service:
         results = self.attempts.latest()
         for seat in self.resolved_seats():
             if seat.session.human:
+                if recovery.held(seat):
+                    self.needs_human(seat)
                 continue
             pending = [m for m in self.attempts.undelivered(self.store, seat.name, results=results) if self._due(m, seat)]
             if pending:

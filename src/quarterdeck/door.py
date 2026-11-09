@@ -113,6 +113,9 @@ class Door:
     def reading(self, screen: Screen | None = None) -> Reading:
         """Can the typing path deliver, from the screen and the Ledger's walls; nothing is pressed, written or fetched."""
         if self.seat.session.human:
+            from .recovery import held
+            if reason := held(self.seat):
+                return Reading(False, f"a human owns this session; {reason}", "needs a human")
             return Reading(False, "a human's session", "its watch delivers")  # law: one-door
         screen = screen or self.screen()
         return self._reading(screen)
@@ -148,7 +151,8 @@ class Door:
     def human_obstruction(self) -> tuple[Reading, str | None]:
         """Alarm evidence only: confirm an unknown frame twice, never grant Door authority."""
         if self.seat.session.human:
-            return self.reading(), None
+            reading = self.reading()
+            return reading, reading.reason if reading.clears == 'needs a human' else None
         launched = self.seat.launched()
         screen = self.screen()
         reading = self._reading(screen)

@@ -321,6 +321,85 @@ def test_redraw_alarm_paths_preserve_quiet_and_unknown_recovery_holds(world, mon
     assert world.native.calls == calls and len(world.native.inputs) == 1
 
 
+def forbid_human_content_and_input(world, monkeypatch):
+    def forbidden(*args, **kwargs):
+        pytest.fail('human mode alarms/refusals use only owned journal metadata, never conversation or input')
+    for obj, name in ((world.seat, 'record'), (world.seat.harness, 'state'),
+                      (world.seat.harness, 'inputs'), (world.seat.harness, 'screen'),
+                      (world.native, 'capture'), (world.native, 'paste'), (world.native, 'keys')):
+        monkeypatch.setattr(obj, name, forbidden)
+
+
+def human_ownership_transition(world, monkeypatch, *, unknown):
+    seat, svc = world.seat, world.service
+    svc.told = {}
+    svc.needs_human = lambda seat: Service.needs_human(svc, seat)
+    svc.ship.sessions['office'] = Session('office', 'Office', human=True)
+    svc.ship.seats['desk'] = SeatSpec('desk', 'office', 'desk', 'opencode', ('synthetic',))
+    monkeypatch.setattr(watch, 'seats', lambda *_: [seat])
+    original = svc.ship.sessions['crew']
+    svc.ship.sessions['crew'] = replace(original, human=True)
+    with monkeypatch.context() as guard:
+        forbid_human_content_and_input(world, guard)
+        facts = watch.facts(svc.ship, seat.tmux, walls=[], login=[])
+        assert not facts.needs_human and facts.unarmed == [seat.name]
+        assert Door(seat).reading().reason == "a human's session"
+        Service.deliveries(svc)
+        assert not svc.store.for_seat('desk'), 'ordinary human/unarmed behavior is unchanged'
+    svc.ship.sessions['crew'] = original
+    world.native.auto_complete = False
+    recovery.run(svc)
+    if unknown:
+        con = database_connection(world.record)
+        part(con, 'unknown', 'recovery-answer', 'root', 10016, {'type': 'future_tool_call', 'name': 'bash'})
+        con.commit()
+        con.close()
+        recovery.run(svc)
+    proof = journal(world)
+    svc.ship.sessions['crew'] = replace(original, human=True)
+    assert seat.session.human and not seat.spec.human_session, 'actual Session ownership is authoritative'
+    before = proof.path.read_bytes()
+    calls = list(world.native.calls)
+    forbid_human_content_and_input(world, monkeypatch)
+    return proof, before, calls
+
+
+def test_human_ownership_exposes_a_running_mode_hold_without_conversation_reads(world, monkeypatch):
+    proof, before, calls = human_ownership_transition(world, monkeypatch, unknown=False)
+    seat, svc = world.seat, world.service
+    facts = watch.facts(svc.ship, seat.tmux, walls=[], login=[])
+    assert facts.needs_human == [seat.name] and facts.unarmed == [seat.name]
+    assert 'mode unresolved' in '\n'.join(facts.pending)
+    reading = Door(seat).reading()
+    assert not reading.open and reading.clears == 'needs a human' and not reading.waiting
+    recovery.run(svc)
+    assert proof.path.read_bytes() == before and world.native.calls == calls
+    assert world.native.selected == 'qd-recovery-off' and len(world.native.inputs) == 1
+
+
+def test_human_ownership_reports_unknown_mode_and_keeps_every_new_input_held(world, monkeypatch):
+    proof, before, calls = human_ownership_transition(world, monkeypatch, unknown=True)
+    seat, svc = world.seat, world.service
+    svc.store.new('order', 'captain', seat.name, 'Late new work')
+    svc.store.new('report', 'ship', seat.name, 'New rebrief notification')
+    attempts = [a.path for a in svc.attempts.all()]
+    Service.deliveries(svc)
+    Service.deliveries(svc)
+    reports = svc.store.for_seat('desk')
+    assert len(reports) == 1 and 'mode unresolved' in reports[0].body
+    assert [a.path for a in svc.attempts.all()] == attempts
+    recovery.run(svc)
+    assert Service.control(svc, seat, 'effort', 'high').startswith('effort held:')
+    assert Service.relaunch(svc, seat, False) is None
+    Service.fresh_after_order(svc)
+    Service.failover(svc)
+    for action in (seat.up, seat.restart, seat.fresh, lambda: seat.failover_to('synthetic')):
+        with pytest.raises(ShipError, match='mode unresolved'):
+            action()
+    assert proof.path.read_bytes() == before and world.native.calls == calls
+    assert world.native.selected == 'qd-recovery-off' and len(world.native.inputs) == 1
+
+
 @pytest.mark.parametrize('change', ['native-option', 'native-selection', 'declaration'])
 def test_intervening_setting_is_never_overwritten_on_restore(world, monkeypatch, change):
     original = recovery._restore
