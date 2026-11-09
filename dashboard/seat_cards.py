@@ -2,10 +2,14 @@
 
     .venv/bin/python dashboard/seat_cards.py --ship ships/default > seats.html
 
-The page is a single HTML file with nothing to fetch, so it opens from disk and can be copied anywhere.
-It reads `qd --json status` and the ship file, and writes nothing but the page to standard output. A card
-shows a seat's name, role, program, model and effort, what it is doing, whether its door is open, the
-subject of the order it holds and today's tokens. Nothing else of the ship's runtime is on the page.
+The page is a single HTML file with nothing to fetch, so it opens from disk. It reads `qd --json status`
+and the ship file, and writes nothing but the page to standard output. A card shows a seat's name, role,
+program, model and effort, what it is doing, whether its door is open, the subject of the order it holds
+and today's tokens, and keeps the reading's register: what the reading could not see reads as unknown or
+carries its `+`, never as a measured zero, and a value taken from the ship file reads as declared.
+
+Order subjects are the crew's own free text and may name anything the ship works on. Escaping keeps them
+from breaking the page, not private: read a page before you share it, as you would any of the ship's text.
 """
 
 from __future__ import annotations
@@ -33,41 +37,64 @@ def status(folder: Path) -> dict:
 
 
 def tokens(n: int | None) -> str:
-    if not n:
-        return "0"
+    if n is None:
+        return "unknown"
     for size, unit in ((1e9, "B"), (1e6, "M"), (1e3, "K")):
         if n >= size:
             return f"{n / size:.1f}".rstrip("0").rstrip(".") + unit
     return str(n)
 
 
-def state_of(reading: dict, needs_human: set[str]) -> str:
+def today(reading: dict) -> tuple[str, str]:
+    """Today's tokens as the text reading prints them: the measured count, with + when some turns were not measured."""
+    count = reading.get("today")
+    if not isinstance(count, dict) or count.get("known") is None:
+        return "unknown", "no token count in the reading"
+    text = tokens(count["known"]) + ("+" if count.get("unmeasured") else "")
+    return text, "some turns were not measured" if count.get("unmeasured") else "every turn measured"
+
+
+STATES = {"working": "working", "idle": "idle", "stalled": "attention", "off": "down", "unknown": "unknown"}
+
+
+def state_of(reading: dict | None, needs_human: set[str]) -> str:
+    if reading is None:
+        return "unknown"
     if reading["name"] in needs_human:
         return "attention"
-    activity = (reading.get("activity") or {}).get("state") or "down"
-    return "working" if activity.startswith("working") else "down" if activity.startswith("down") else "idle"
+    return STATES.get((reading.get("activity") or {}).get("state"), "unknown")
 
 
-def card(spec: shipmod.SeatSpec, reading: dict, subjects: dict[str, str], needs_human: set[str]) -> str:
-    pool = reading.get("pool") or spec.pools[0]
+def card(spec: shipmod.SeatSpec, reading: dict | None, subjects: dict[str, str], needs_human: set[str]) -> str:
+    """One seat's card. A seat the reading does not hold still has its card, saying so."""
+    r = reading or {}
+    pool = r.get("pool") or spec.pools[0]
     chosen = spec.for_pool(pool) if pool in spec.pools else spec
-    model = reading.get("model") or chosen.model or "model unknown"
-    engine = f"{reading.get('harness') or chosen.harness} · {model}" + (f" @ {chosen.effort}" if chosen.effort else "")
-    activity = (reading.get("activity") or {}).get("state") or "down"
-    door = reading.get("door") or {}
-    door_text = "door open" if door.get("open") else (door.get("reason") or "door closed")
-    subject = subjects.get(reading.get("order") or "")
-    version = reading.get("version")
-    fallback = pool != spec.pools[0]
+    observed = r.get("model")
+    model = observed or (f"{chosen.model} (declared)" if chosen.model else "model unknown")
+    engine = f"{r.get('harness') or chosen.harness} · {model}"
+    if reading is None:
+        activity = "unknown, not in the status reading"
+    else:
+        a = r.get("activity") or {}
+        activity = f"{a.get('state')}, {a['detail']}" if a.get("state") and a.get("detail") else (a.get("state") or "unknown")
+    door = r.get("door")
+    door_text = ("door unknown" if not isinstance(door, dict) else
+                 "door open" if door.get("open") else (door.get("reason") or "door closed"))
+    subject = subjects.get(r.get("order") or "")
+    version = r.get("version")
+    count, count_title = today(r)
     esc = html.escape
     return (
         f'<article class="seat" data-state="{state_of(reading, needs_human)}">'
         f'<header><h2>{esc(spec.display)}</h2><span class="role">{esc(spec.role)}</span></header>'
-        f'<p class="engine" title="pool {esc(pool)}">{esc(engine)}{" · on fallback" if fallback else ""}</p>'
+        f'<p class="engine" title="pool {esc(pool)}">{esc(engine)}{" · on fallback" if pool != spec.pools[0] else ""}</p>'
         f'<p class="line"><i class="dot"></i><span>{esc(activity)}</span><small>{esc(door_text)}</small></p>'
         + (f'<p class="order">{esc(subject)}</p>' if subject else "")
-        + f'<footer><span><small>today</small><b>{tokens((reading.get("today") or {}).get("known"))}</b></span>'
+        + f'<footer><span title="{esc(count_title)}"><small>today</small><b>{esc(count)}</b></span>'
         f'<span><small>pool</small><b>{esc(pool)}</b></span>'
+        + (f'<span title="from the ship file, not read from the seat"><small>effort (declared)</small><b>{esc(chosen.effort)}</b></span>'
+           if chosen.effort else "")
         + (f'<span><small>program</small><b>{esc(version)}</b></span>' if version else "")
         + "</footer></article>"
     )
@@ -100,8 +127,10 @@ padding:12px 13px 10px;box-shadow:0 5px 20px #0002;min-width:0}
 .line small{margin-left:auto;font-size:11px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dot{display:block;width:7px;height:7px;border-radius:50%;background:var(--dim);flex-shrink:0}
 [data-state=working] .dot{background:var(--mint);box-shadow:0 0 0 3px color-mix(in srgb,var(--mint) 25%,transparent)}
-[data-state=attention] .dot{background:var(--warn)}
+[data-state=attention] .dot,[data-state=unknown] .dot{background:var(--warn)}
+.seat[data-state=unknown]{border-style:dashed}
 [data-state=idle] .line,[data-state=down] .line{color:var(--muted)}
+[data-state=unknown] .line{color:var(--warn)}
 .order{margin:8px 0 0;font-size:13px;color:var(--ink);overflow-wrap:anywhere}
 .seat footer{display:flex;flex-wrap:wrap;gap:4px 16px;margin-top:10px;padding-top:8px;border-top:1px solid var(--edge)}
 .seat footer span{display:flex;gap:6px;align-items:baseline;font:11px var(--mono)}
@@ -122,7 +151,7 @@ def page(ship: shipmod.Ship, reading: dict, at: dt.datetime | None = None) -> st
         seats = [s for s in ship.seats.values() if s.session == session_name]
         if not seats:
             continue
-        cards = "".join(card(s, by_name.get(s.name, {"name": s.name}), subjects, needs_human) for s in seats)
+        cards = "".join(card(s, by_name.get(s.name), subjects, needs_human) for s in seats)
         sections.append(f'<section><h3>{html.escape(session.title or session_name)}</h3><div class="cards">{cards}</div></section>')
     title = f"{ship.name} seats"
     summary = (f"service {html.escape(str(reading.get('service', 'unknown')))} · "
