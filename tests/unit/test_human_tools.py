@@ -137,3 +137,48 @@ def test_native_saved_session_overrides_cannot_restore_question_on_nonhuman_resu
     assert seat.harness.launch(replace(seat.spec, human_session=True), seat.pool, seat.home, tmp_path/'brief', 'root', None)
     assert 'data-002' in seat.harness.launch(seat.spec, seat.pool, seat.home, tmp_path/'brief', None, None).env['XDG_DATA_HOME']
     assert record.read_bytes() == before, 'policy never rewrites existing native permissions'
+
+
+@pytest.mark.parametrize('relative', ['.opencode/agents/custom.md', 'config/opencode/agent/custom.md',
+                                    '.opencode/modes/custom.md', 'config/opencode/opencode.jsonc'])
+def test_unmanaged_native_agent_scopes_refuse_nonhuman_launch_and_preserve_human_settings(tmp_path, monkeypatch, relative):
+    monkeypatch.setattr(endpoint, 'choose', lambda pool, model: endpoint.Choice(pool.name, 'synthetic', 8192, 1024))
+    seat = resolved(tmp_path, 'opencode', False)
+    path = seat.home / relative
+    path.parent.mkdir(parents=True)
+    content = '---\ndescription: Synthetic agent\npermission:\n  question: allow\n---\nSynthetic prompt.\n' if path.suffix == '.md' else '{"agent":{"custom":{"permission":{"question":"allow"}}}}'
+    path.write_text(content)
+    with pytest.raises(ShipError, match='unmanaged native configuration'):
+        seat.harness.build_home(seat.home, seat.spec, seat.pool, None)
+    seat.harness.build_home(seat.home, replace(seat.spec, human_session=True), seat.pool, None)
+    assert path.read_text() == content, 'never edit an unmanaged native configuration to enforce policy'
+
+
+def test_native_scope_failure_is_not_certified_empty_and_empty_directories_remain_compatible(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    monkeypatch.setattr(endpoint, 'choose', lambda pool, model: endpoint.Choice(pool.name, 'synthetic', 8192, 1024))
+    seat = resolved(tmp_path, 'opencode', False)
+    folder = seat.home/'config/opencode/agents'
+    folder.mkdir(parents=True)
+    original = Path.iterdir
+    with monkeypatch.context() as patch:
+        def unavailable(path):
+            if path == folder:
+                raise PermissionError('synthetic native scope unavailable')
+            return original(path)
+        patch.setattr(Path, 'iterdir', unavailable)
+        with pytest.raises(PermissionError, match='native scope unavailable'):
+            seat.harness.build_home(seat.home, seat.spec, seat.pool, None)
+    seat.harness.build_home(seat.home, seat.spec, seat.pool, None)
+
+
+def test_native_scope_symlink_is_refused_without_reading_its_target(tmp_path, monkeypatch):
+    monkeypatch.setattr(endpoint, 'choose', lambda *args: pytest.fail('unmanaged native scope reached model discovery'))
+    seat = resolved(tmp_path, 'opencode', False)
+    seat.home.mkdir(parents=True)
+    target = tmp_path/'synthetic-native-config'
+    target.mkdir()
+    (seat.home/'.opencode').symlink_to(target, target_is_directory=True)
+    with pytest.raises(ShipError, match='unmanaged native configuration'):
+        seat.harness.build_home(seat.home, seat.spec, seat.pool, None)

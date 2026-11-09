@@ -15,6 +15,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+import stat
 from pathlib import Path
 
 from .. import endpoint
@@ -78,6 +79,35 @@ def question_stays_denied(raw: str | None) -> bool:
     return last['action'] == 'deny' and last['pattern'] == '*'
 
 
+def guard_question_configuration(home: Path) -> None:
+    """Native home agent/mode files load after JSON rules, even with project discovery off."""
+    def metadata(path):
+        try:
+            return path.lstat()
+        except FileNotFoundError:
+            return None
+
+    def refuse(path):
+        raise ShipError(f'opencode: unmanaged native configuration at {path.relative_to(home)}; '
+                        'move it to ship.toml settings and remove this unmanaged scope before launch, or use a human session')
+
+    roots = (home / '.opencode', home / 'config/opencode')
+    for path in (home, home / 'config', *roots):
+        found = metadata(path)
+        if found is not None and not stat.S_ISDIR(found.st_mode):
+            refuse(path)  # do not follow a native configuration symlink
+    for root in roots:
+        files = ('opencode.json', 'opencode.jsonc') if root == roots[0] else ('config.json', 'opencode.jsonc', 'config')
+        for name in files:
+            if metadata(root / name) is not None:
+                refuse(root / name)
+        for name in ('agent', 'agents', 'mode', 'modes'):
+            path = root / name
+            found = metadata(path)
+            if found is not None and (not stat.S_ISDIR(found.st_mode) or next(path.iterdir(), None) is not None):
+                refuse(path)
+
+
 class OpenCodeHarness(EndpointHarness):
     """OpenCode, proven on 1.19.5. Runs on an endpoint pool; the model changes only at launch."""
 
@@ -89,6 +119,8 @@ class OpenCodeHarness(EndpointHarness):
     human_tool_policy = "The native question tool is denied for every configured agent."
 
     def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None) -> Credential | None:
+        if not seat.human_session:
+            guard_question_configuration(home)
         home.mkdir(parents=True, exist_ok=True)
         runtime = home.parents[2]  # runtime/seats/<seat>/home
         choice, secret = self.endpoint_home(home, seat, pool)
@@ -123,6 +155,8 @@ class OpenCodeHarness(EndpointHarness):
         return self.endpoint_ready(home, choice, secret, price)
 
     def launch(self, seat: SeatSpec, pool: Pool, home: Path, brief: Path, resume: str | None, first: str | None) -> Launch:
+        if not seat.human_session:
+            guard_question_configuration(home)
         choice = endpoint.Choice.read(home)
         data = self._data_dir(home, resume, seat.name)
         if resume and not seat.human_session:
