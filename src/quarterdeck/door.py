@@ -115,6 +115,10 @@ class Door:
         if self.seat.session.human:
             return Reading(False, "a human's session", "its watch delivers")  # law: one-door
         screen = screen or self.screen()
+        return self._reading(screen)
+
+    def _reading(self, screen: Screen | None) -> Reading:
+        """Read this captured frame, including absence, without taking another capture."""
         wall = self.wall(screen)
         if hold := pending.held(self.seat, screen, self.proof):
             return Reading(False, hold[0], hold[1], waiting=hold[2])
@@ -140,6 +144,24 @@ class Door:
         if not self.harness.startup_ready(getattr(self.seat, 'home', None)):
             return Reading(False, "starting, waiting for the program's startup choice", "time")
         return Reading(True, working=screen.working)
+
+    def human_obstruction(self) -> tuple[Reading, str | None]:
+        """Alarm evidence only: confirm an unknown frame twice, never grant Door authority."""
+        if self.seat.session.human:
+            return self.reading(), None
+        launched = self.seat.launched()
+        screen = self.screen()
+        reading = self._reading(screen)
+        reason = reading.reason if not reading.open and reading.clears == 'needs a human' else None
+        if reason and screen is not None and screen.interruption is None:
+            unknown = (f'unknown dialog: {screen.unknown}' if screen.unknown is not None
+                       else 'box not found on the screen' if screen.box is None and screen.text.strip() else None)
+            if reason == unknown:
+                confirmed = self.screen()
+                if (launched is None or self.seat.launched() != launched or confirmed is None
+                        or confirmed.text != screen.text):
+                    reason = None
+        return reading, reason
 
     def clear_known(self) -> Screen | None:
         """Dismiss a notice the adapter knows, once, and read again (law: one-door).

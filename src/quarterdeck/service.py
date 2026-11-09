@@ -193,11 +193,7 @@ class Service:
                 if not seat.is_up:
                     continue
                 self.deliver(seat, pending)
-                self.needs_human(seat)
-            else:
-                found = seat.read_pane()
-                if found is not None:
-                    self.needs_human(seat, seat.harness.screen(found[1]))
+            self.needs_human(seat)
 
     def _due(self, message: post.Message, seat: Seat) -> bool:
         """A withheld message is tried again when the screen has changed since, not on a clock (law: events-not-clocks)."""
@@ -207,10 +203,9 @@ class Service:
         screen = Door(seat).screen()
         return screen is None or screen.text != last  # law: events-not-clocks
 
-    def needs_human(self, seat: Seat, screen=None) -> None:
+    def needs_human(self, seat: Seat) -> None:
         """When a seat's door needs a human, the desk is told once, with a report from ``ship``."""
-        reading = Door(seat).reading(screen)
-        reason = reading.reason if (not reading.open and reading.clears == "needs a human") else None
+        _, reason = Door(seat).human_obstruction()
         reason = reason or next(iter(pending_delivery.detached(seat)), None)
         if reason == self.told.get(seat.name):
             return

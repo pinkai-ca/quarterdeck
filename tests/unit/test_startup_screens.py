@@ -35,8 +35,9 @@ def starting(request, drydock, monkeypatch):
     monkeypatch.setattr(seat, "pane", lambda: pane)
     monkeypatch.setattr(seat, "join", lambda: Join(None, "no record yet"))
     monkeypatch.setattr(seat, "record", lambda: None)
-    monkeypatch.setattr(seat, "launched", lambda: Launched("%1", 123, datetime.now(timezone.utc).isoformat(),
-                                                         spec.pools[0], None, [program], version, program))
+    launched = Launched("%1", 123, datetime.now(timezone.utc).isoformat(),
+                        spec.pools[0], None, [program], version, program)
+    monkeypatch.setattr(seat, "launched", lambda: launched)
     monkeypatch.setattr(watch, "seats", lambda *_: [seat])
     monkeypatch.setattr(service, "seats", lambda *_: [seat])
     svc = service.Service(ship, tmux)

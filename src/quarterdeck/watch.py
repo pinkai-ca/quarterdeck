@@ -431,8 +431,8 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
             if pending and not post.watch_armed(ship.runtime, seat.name):
                 unarmed.append(seat.name)
         else:
-            door = Door(seat).reading()
-            if not door.open and door.clears == "needs a human":
+            door, obstruction = Door(seat).human_obstruction()
+            if obstruction:
                 needs_human.append(seat.name)
             if door.waiting or "pending" in door.reason:
                 pending_lines.append(f"{seat.name}: {door.reason}")
