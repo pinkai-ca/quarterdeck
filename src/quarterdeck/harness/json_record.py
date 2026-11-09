@@ -7,8 +7,14 @@ there, is a RecordError, and the reading says so instead of showing nothing.
 """
 
 from datetime import datetime, timezone
+from collections import OrderedDict
+from copy import deepcopy
+from dataclasses import dataclass, field
+from functools import wraps
 import json
 from pathlib import Path
+import time
+from threading import RLock
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -19,6 +25,104 @@ class RecordError(OSError):
     """A record file that cannot be read or decoded at all."""
 
 
+@dataclass
+class _Snapshot:
+    raw: str
+    stamp: tuple
+    rows: list
+    skipped: list
+    certified_at: int | None
+    complete_end: int
+    complete_lines: int
+    readers: dict = field(default_factory=dict)
+    inputs: dict = field(default_factory=dict)
+
+
+_snapshots = OrderedDict()
+_CACHE_BYTES = 128 * 1024 * 1024
+_TIMESTAMP_TICK_NS = 2_000_000_000  # same conservative local metadata window as the post listing
+_read_lock = RLock()
+
+
+def _stamp(info):
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+
+def _parsed(record: Path) -> _Snapshot:
+    with _read_lock:
+        return _parse(record)
+
+
+def _parse(record: Path) -> _Snapshot:
+    """Private immutable views; every changed/racy source is byte-checked before prefix reuse."""
+    record = Path(record)
+    cached = _snapshots.pop(record, None)  # a failed read cannot preserve a certified success
+    started = time.time_ns()
+    info = record.stat()
+    checked = time.time_ns()
+    stamp = _stamp(info)
+    if (cached is not None and cached.stamp == stamp and cached.certified_at is not None
+            and cached.certified_at <= started <= checked):
+        _snapshots[record] = cached
+        return cached
+    try:
+        raw = record.read_bytes().decode('utf-8')
+    except UnicodeError as error:
+        raise RecordError("record is not UTF-8 JSON lines") from error
+    if _stamp(record.stat()) != stamp:
+        raise RecordError('record changed while being read')
+    finished = time.time_ns()
+    certified = started if max(stamp[-2:]) + _TIMESTAMP_TICK_NS < started <= checked <= finished else None
+    if cached is not None and raw == cached.raw:
+        cached.stamp, cached.certified_at = stamp, certified
+        _snapshots[record] = cached
+        return cached
+    rows, skipped, offset, number = [], [], 0, 0
+    # Only complete physical lines are retained. An unterminated final object may
+    # become invalid when extended; a partial final row must be reparsed on recovery.
+    if cached is not None:
+        end = cached.complete_end
+        if raw.startswith(cached.raw[:end]):
+            offset = end
+            number = cached.complete_lines
+            rows = (list(cached.rows) if end == len(cached.raw) else
+                    [(n, row) for n, row in cached.rows if n <= number])
+            skipped = [item for item in cached.skipped if item[0] <= number]
+    complete_end = raw.rfind('\n') + 1
+    complete_lines = number + len(raw[offset:complete_end].splitlines())
+    for number, line in enumerate(raw[offset:].splitlines(), number + 1):
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            skipped.append((number, 'json', 'invalid JSON'))
+            continue
+        if isinstance(entry, dict):
+            rows.append((number, entry))
+        else:
+            skipped.append((number, 'non-object', 'expected JSON object'))
+    if raw.strip() and not rows:
+        raise RecordError("no JSON object lines in this record: not a record this reader can read")
+    result = _Snapshot(raw, stamp, rows, skipped, certified, complete_end, complete_lines)
+    if cached is not None and cached.complete_end == len(cached.raw) and offset == len(cached.raw) and raw.endswith('\n'):
+        result.readers, result.inputs = dict(cached.readers), dict(cached.inputs)
+    if stamp[2] <= _CACHE_BYTES:
+        _snapshots[record] = result
+        while len(_snapshots) > 16 or sum(value.stamp[2] for value in _snapshots.values()) > _CACHE_BYTES:
+            _snapshots.popitem(last=False)
+    return result
+
+
+def _object_lines(record: Path, skip=None):
+    """Only native readers receive these private rows; they do not mutate source objects."""
+    snapshot = _parsed(record)
+    if skip is not None:
+        for diagnostic in snapshot.skipped:
+            skip(*diagnostic)
+    return snapshot.rows
+
+
 def entries(record: Path) -> list[dict]:
     """Every parseable object line of the record, in order; the rest is skipped."""
     return [entry for _, entry in object_lines(record)]
@@ -26,34 +130,34 @@ def entries(record: Path) -> list[dict]:
 
 def object_lines(record: Path, skip=None) -> list[tuple[int, dict]]:
     """Keep original line numbers; optional diagnostics contain no source values."""
-    try:
-        raw = record.read_text()
-    except UnicodeError as error:
-        raise RecordError("record is not UTF-8 JSON lines") from error
-    out = []
-    for number, line in enumerate(raw.splitlines(), 1):
-        if not line.strip():
-            continue
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            if skip is not None:
-                skip(number, 'json', 'invalid JSON')
-            continue  # half written, or not JSON at all: not this reader's to interpret
-        if isinstance(entry, dict):
-            out.append((number, entry))
-        elif skip is not None:
-            skip(number, 'non-object', 'expected JSON object')
-    if raw.strip() and not out:
-        raise RecordError("no JSON object lines in this record: not a record this reader can read")
-    return out
+    return deepcopy(_object_lines(record, skip))
 
 
 def input_rows(record: Path, kinds: tuple[str, ...], label: str, evidence):
-    rows = object_lines(record, evidence.skip)
+    rows = _object_lines(record, evidence.skip)
     if rows and not any(row.get('type') in kinds for _, row in rows):
         raise RecordError(f"no {label} entries in this record: another program's file")
     return rows
+
+
+def input_reader(relevant):
+    """An adapter classifies which appended native rows can change its input evidence."""
+    def decorate(read):
+        @wraps(read)
+        def cached(record):
+            with _read_lock:
+                snapshot = _parsed(record)
+                old = snapshot.inputs.get(read)
+                if (old is not None and old[2] == len(snapshot.skipped)
+                        and not any(relevant(row) for _, row in snapshot.rows[old[1]:])):
+                    result = old[0]
+                else:
+                    result = read(record)
+                if _snapshots.get(Path(record)) is snapshot and snapshot.raw.endswith('\n'):
+                    snapshot.inputs[read] = result, len(snapshot.rows), len(snapshot.skipped)
+                return deepcopy(result)
+        return cached
+    return decorate
 
 
 def when(value: str | None) -> datetime | None:
@@ -90,7 +194,23 @@ class JsonLinesReader(RecordReader):
     kinds: tuple[str, ...] = ()  # format-identification markers, not an exhaustive native row taxonomy
     label: str = "program"
 
-    def __init__(self, record: Path):
+    @classmethod
+    def read(cls, record: Path):
+        with _read_lock:
+            snapshot = _parsed(record)
+            previous = snapshot.readers.get(cls)
+            if previous is None:
+                reader = cls(record, snapshot)
+            else:
+                reader, count, skipped = previous
+                if snapshot.skipped[skipped:]:
+                    reader.tools_known = False
+                reader.take_rows(row for _, row in snapshot.rows[count:])
+            if _snapshots.get(Path(record)) is snapshot and snapshot.raw.endswith('\n'):
+                snapshot.readers[cls] = reader, len(snapshot.rows), len(snapshot.skipped)
+            return reader.state(), list(reader.turns)
+
+    def __init__(self, record: Path, snapshot=None):
         self.record = record
         self.turns = []
         self.open = None
@@ -101,9 +221,15 @@ class JsonLinesReader(RecordReader):
         self.queued = []
         self.consumed = []
         self.model = self.effort = self.last_input = self.last_input_at = None
-        rows = [row for _, row in object_lines(record, self.unknown_tools)]
+        if snapshot is not None:
+            for diagnostic in snapshot.skipped:
+                self.unknown_tools(*diagnostic)
+        rows = [row for _, row in (snapshot.rows if snapshot is not None else _object_lines(record, self.unknown_tools))]
         if rows and not any(row.get("type") in self.kinds for row in rows):
             raise RecordError(f"no {self.label} entries in this record: another program's file")
+        self.take_rows(rows)
+
+    def take_rows(self, rows):
         for entry in rows:
             try:
                 self.take(entry)

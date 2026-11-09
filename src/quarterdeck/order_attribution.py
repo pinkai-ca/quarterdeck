@@ -43,6 +43,9 @@ class Threads:
                     and message.sender == order.to and message.at >= order.at):
                 self.closed.setdefault(order.id, message)
         self.envelopes = {typed([m]).strip(): m for m in self.messages}
+        self.by_header = {}
+        for envelope, message in self.envelopes.items():
+            self.by_header.setdefault(envelope.partition('\n')[0], []).append((envelope, message))
 
     def valid(self, message):
         target = self.by_id.get(message.re)
@@ -86,7 +89,7 @@ class Threads:
         text = text.strip()
         found = []
         while text:
-            matches = [(envelope, m) for envelope, m in self.envelopes.items()
+            matches = [(envelope, m) for envelope, m in self.by_header.get(text.partition('\n')[0], ())
                        if text == envelope or text.startswith(envelope + '\n')]
             if len(matches) != 1:
                 return []  # no partial/truncated bundle or arbitrary surrounding stdout

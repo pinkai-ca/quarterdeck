@@ -12,6 +12,14 @@ from .order_attribution import Threads, Verdict, moment
 OUTSIDE_RUNTIME = 'legacy binding outside the runtime, no saved fingerprint'
 
 
+def source_evidence(source):
+    stamp, inputs, error = source
+    identity = ((stamp[0], tuple((part[0], part[1], part[4]) for part in stamp[1]))
+                if isinstance(stamp[1], tuple) else stamp)
+    diagnostics = inputs.diagnostics() if hasattr(inputs, 'diagnostics') else None
+    return identity, inputs, error, diagnostics
+
+
 class Attribution:
     def __init__(self, db, create=True):
         self.db = db
@@ -84,6 +92,7 @@ class Attribution:
                     if not Path(abspath(record)).is_relative_to(Path(abspath(runtime)))}
         changed = False
         for record in by_record:
+            prior = self.sources.get(record)
             if record in excluded:
                 stamp = (None, OUTSIDE_RUNTIME)
                 changed |= record not in self.sources or self.sources[record][0] != stamp
@@ -103,7 +112,8 @@ class Attribution:
             except (OSError, ValueError, KeyError, TypeError) as exc:
                 inputs, error = [], f'record attribution evidence unavailable: {type(exc).__name__}'
             self.sources[record] = stamp, inputs, error
-            changed = True
+            changed |= (prior is None or error is not None
+                        or source_evidence(prior) != source_evidence(self.sources[record]))
         stamp = tuple(store.all())
         invalid = self.db.execute('''SELECT count(*) FROM turns t LEFT JOIN turn_attribution a
             ON a.record=t.record AND a.turn=t.turn WHERE a.valid IS NULL OR a.valid=0''').fetchone()[0]

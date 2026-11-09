@@ -16,7 +16,7 @@ import tomllib
 from datetime import date, datetime, time, timezone
 from pathlib import Path
 
-from .json_record import JsonLinesReader, input_rows
+from .json_record import JsonLinesReader, input_reader, input_rows
 from .types import Inputs
 from . import codex_usage
 
@@ -114,6 +114,19 @@ def process_result(output) -> tuple[bool, str | None]:
     return False, None
 
 
+def _input_relevant(row):
+    kind, payload = row.get('type'), row.get('payload', {})
+    if kind in INPUT_IGNORED:
+        return False
+    if kind not in _Reader.kinds:
+        return True
+    if not isinstance(payload, dict):
+        return kind in ('event_msg', 'response_item')
+    return (kind == 'event_msg' and payload.get('type') in {'task_started', *ENDS_TURN}
+            or kind == 'response_item' and payload.get('role') == 'user')
+
+
+@input_reader(_input_relevant)
 def inputs(record: Path) -> list[Input]:
     found = Inputs()
     seen = False
@@ -152,10 +165,10 @@ class _Reader(JsonLinesReader):
     kinds = ('event_msg', 'response_item', 'session_meta', 'turn_context')
     label = "Codex"
 
-    def __init__(self, record):
+    def __init__(self, record, snapshot=None):
         self.process_inputs = {}
         self.active_processes = {}
-        super().__init__(record)
+        super().__init__(record, snapshot)
 
     def take(self, entry: dict) -> None:
         kind = entry.get('type')

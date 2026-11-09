@@ -60,7 +60,9 @@ def test_idle_replay_does_not_rebuild_threads_and_all_change_routes_still_replay
             before = len(graphs)
             measured = measurement_snapshot(book)
             replay()
-            assert len(graphs) == before + 1, change
+            # A source stamp still forces a fresh read. Identical current input
+            # evidence needs no graph; actual input/error/ledger/post changes do.
+            assert len(graphs) == before + (change != 'source'), change
             assert measurement_snapshot(book) == measured
             assert book.attributions.details()[0]['orders'] == [order.id]
             if change != 'loss':

@@ -394,12 +394,14 @@ def _mount(path: Path) -> str:
 def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tuple[str, str]] | None = None) -> Facts:
     """Everything the status line says; cheap enough for tmux to ask every few seconds."""
     store, attempts = post.Store(ship.runtime), post.Attempts(ship.runtime)
+    records = attempts.all()
+    latest = attempts.latest(attempts=records)
     waiting, needs_human, unarmed, pending_lines, routes = [], [], [], [], []
     for seat in seats(ship, tmux):
         launched = seat.launched()
         if launched is not None and launched.pool in seat.spec.pools[1:]:
             routes.append(f"{seat.name} on {seat.harness.name}/{launched.pool}")
-        pending = attempts.undelivered(store, seat.name)
+        pending = attempts.undelivered(store, seat.name, results=latest)
         waiting += pending
         if seat.session.human:
             if pending and not post.watch_armed(ship.runtime, seat.name):
@@ -416,12 +418,12 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
                 pending_lines.append(f"{seat.name}: {reason}")
     now = post.now()
     oldest = int(max(((now - m.at).total_seconds() for m in waiting), default=0) // 60)
-    queued = [a for a in attempts.all() if a.result == "queued" and a.message in attempts.queued_ids()]
+    queued = [a for a in records if a.result == "queued" and latest.get(a.message) == 'queued']
     return Facts(
         service=service_state(ship.runtime),
         waiting=len(waiting),
         oldest=oldest,
-        blind=len(attempts.blind_ids()),
+        blind=sum(result == 'blind' for result in latest.values()),
         queued=len(queued),
         oldest_queued=int(max(((now - a.when).total_seconds() for a in queued), default=0) // 60),
         needs_human=needs_human,

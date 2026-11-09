@@ -100,8 +100,11 @@ class Service:
         retry_blind = time.monotonic() - self.blind_checked >= BLIND_INTERVAL
         if retry_blind:
             self.blind_checked = time.monotonic()
-        queued, blind = self.attempts.queued_ids(), self.attempts.blind_ids()
-        for attempt in self.attempts.all():
+        records = self.attempts.all()
+        latest = self.attempts.latest(attempts=records)
+        queued = {message for message, result in latest.items() if result == 'queued'}
+        blind = {message for message, result in latest.items() if result == 'blind'}
+        for attempt in records:
             if attempt.path in tracked or attempt.seat not in self.ship.seats:
                 continue
             result = attempt.result
@@ -129,10 +132,11 @@ class Service:
                          detail="a blind attempt, found in the record later")
 
     def deliveries(self) -> None:
+        results = self.attempts.latest()
         for seat in seats(self.ship, self.tmux):
             if seat.session.human or not seat.is_up:
                 continue
-            pending = [m for m in self.attempts.undelivered(self.store, seat.name) if self._due(m, seat)]
+            pending = [m for m in self.attempts.undelivered(self.store, seat.name, results=results) if self._due(m, seat)]
             if pending:
                 self.deliver(seat, pending)
             self.needs_human(seat)

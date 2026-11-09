@@ -383,10 +383,10 @@ class Attempts:
     def for_message(self, message_id: str) -> list[Attempt]:
         return [a for a in self.all() if a.message == message_id]
 
-    def latest(self, seat: str | None = None) -> dict[str, str | None]:
+    def latest(self, seat: str | None = None, *, attempts=None) -> dict[str, str | None]:
         """Each message's latest attempt result, at one seat or at any: the latest attempt is the one that speaks."""
         results: dict[str, str | None] = {}
-        for attempt in self.all():
+        for attempt in self.all() if attempts is None else attempts:
             if seat is None or attempt.seat == seat:
                 results[attempt.message] = attempt.result
         return results
@@ -409,14 +409,15 @@ class Attempts:
         """Attempts with no result: the service died between typing and confirming."""
         return [a for a in self.all() if a.result is None]
 
-    def undelivered(self, store: Store, seat: str) -> list[Message]:
+    def undelivered(self, store: Store, seat: str, *, results=None) -> list[Message]:
         """What is addressed to the seat and never reached it, oldest first.
 
         A blind message waits for a hand, one with an attempt still open is being judged, so
         neither is sent again by the service (law: one-door); an acknowledgment claims and
         never wakes, so it is never delivered at all (law: open-until-closed).
         """
-        skip = {m for m, r in self.latest().items() if r in (*ACCEPTED, "blind", None, "pending", "abandoned")}
+        skip = {m for m, r in (self.latest() if results is None else results).items()
+                if r in (*ACCEPTED, "blind", None, "pending", "abandoned")}
         return [m for m in store.for_seat(seat) if m.id not in skip and m.kind != "ack"]  # law: open-until-closed
 
 

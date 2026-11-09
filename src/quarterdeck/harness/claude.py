@@ -16,7 +16,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .json_record import JsonLinesReader, input_rows
+from .json_record import JsonLinesReader, input_reader, input_rows
 from .types import Inputs
 
 from ..ship import Pool, SeatSpec
@@ -66,6 +66,7 @@ def prompt_text(entry: dict) -> str | None:
     return unwrap(content)
 
 
+@input_reader(lambda row: row.get('type') not in ('assistant', 'system', *INPUT_IGNORED))
 def inputs(record: Path) -> list[Input]:
     found, queued = Inputs(), []
     for line, row in input_rows(record, _Reader.kinds, _Reader.label, found):
@@ -139,10 +140,10 @@ class _Reader(JsonLinesReader):
     kinds = ('assistant', 'queue-operation', 'system', 'user')
     label = "Claude Code"
 
-    def __init__(self, record: Path):
+    def __init__(self, record: Path, snapshot=None):
         self.sidechain_ends = set()
         self.subagent_turns = 0
-        super().__init__(record)
+        super().__init__(record, snapshot)
 
     def take(self, entry: dict) -> None:
         kind = entry.get("type")
