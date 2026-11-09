@@ -13,13 +13,16 @@ import pytest
 
 from quarterdeck import post, seat as seatmod, ship as shipmod
 from quarterdeck.ship import ShipError
-from quarterdeck.tmux import Tmux
+from quarterdeck.tmux import Tmux, PrivateTmuxError
 
 
 def wait_for(predicate, seconds: float = 10.0):
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
-        value = predicate()
+        try:
+            value = predicate()
+        except PrivateTmuxError:
+            value = None  # retry fresh evidence within the same existing deadline
         if value:
             return value
         time.sleep(0.05)

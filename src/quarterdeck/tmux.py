@@ -11,14 +11,20 @@ import os
 import secrets
 import shlex
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from .tmux_socket import Namespace, OwnedSocket, OwnershipError, ShutdownPending, OWNER, locked
 
 HISTORY_LINES = 50_000
 
 
 class TmuxError(Exception):
     pass
+
+
+class PrivateTmuxError(TmuxError):
+    """Private ownership or lock uncertainty is never evidence of a missing server/pane."""
 
 
 @dataclass(frozen=True)
@@ -75,12 +81,57 @@ def _parse(line: str) -> Pane:
     )
 
 
-class Tmux:
-    """A tmux server: the user's by default, a private one (``-L``) in tests."""
+def _transport(args):
+    """Only known endpoint-neutral transport queues share a namespace stability lock."""
+    commands = {'list-sessions', 'list-panes', 'list-windows', 'list-clients',
+                'display-message', 'capture-pane', 'show-option', 'show-options', 'show-environment',
+                'load-buffer', 'paste-buffer', 'send-keys'}
+    command = True
+    for arg in args:
+        if command:
+            if arg not in commands:
+                return False
+            command = False
+        elif arg == ';':
+            command = True
+        elif ';' in arg or '#(' in arg:
+            return False
+    return not command
 
-    def __init__(self, socket: str | None = None):
+
+class Tmux:
+    """A tmux server: the user's by default, an owned absolute endpoint in tests."""
+
+    def __init__(self, socket: str | None = None, *, _owned=None):
         self.socket = socket
         self._buffers = itertools.count()
+        self._owned = _owned
+        self.held = None
+        self._closed = False
+
+    @classmethod
+    def private(cls, fallback: Path) -> "Tmux":
+        """A creator-owned short namespace, outside tmux's shared socket directory."""
+        try:
+            owned = OwnedSocket(Namespace(fallback), root_owner=True)
+            return cls(str(owned.path), _owned=owned)
+        except (OSError, OwnershipError) as error:
+            raise TmuxError(str(error)) from error
+
+    def private_peer(self, suffix='-replacement') -> "Tmux":
+        if self._owned is None or self._closed:
+            raise TmuxError('only a private namespace creator may delegate a peer')
+        try:
+            owned = OwnedSocket(self._owned.namespace, suffix)
+            return Tmux(str(owned.path), _owned=owned)
+        except OwnershipError as error:
+            raise TmuxError(str(error)) from error
+
+    def attach_command(self, session: str) -> str:
+        address = ['-S' if Path(self.socket).is_absolute() else '-L', self.socket] if self.socket else []
+        if self.socket and Path(self.socket).is_absolute():
+            address += ['-N']
+        return shlex.join(['tmux', *address, 'attach-session', '-t', _session(session)])
 
     @classmethod
     def default(cls) -> "Tmux":
@@ -88,8 +139,43 @@ class Tmux:
         return cls(os.environ.get("QD_TMUX_SOCKET") or None)
 
     def run(self, *args: str, stdin: str | None = None) -> str:
-        command = ["tmux"] + (["-L", self.socket] if self.socket else []) + list(args)
-        done = subprocess.run(command, input=stdin, capture_output=True, text=True)
+        if self.socket and Path(self.socket).is_absolute():
+            try:
+                if self._closed:
+                    raise OwnershipError('private namespace is closed')
+                if not args or args[0].startswith('-'):
+                    raise OwnershipError('private transport requires a native command, not address options')
+                with locked(self.socket, self._owned.namespace if self._owned else None,
+                            exclusive=not _transport(args)) as held:
+                    start = False
+                    if self._owned:
+                        if str(self._owned.path) != self.socket:
+                            raise OwnershipError('private transport binding changed; retained')
+                        present = self._owned.current(held)
+                        if args[0] == 'new-session' and (not present or self._owned.ended()):
+                            if not self._owned.ended():
+                                raise OwnershipError('prior private server still running; retained')
+                            self._remove_ended(held)
+                            self._owned.reset()
+                            start = True
+                    # Keep a private server available to bound observers between sessions.
+                    # Its creator, rather than the last session, ends this server lifetime.
+                    command = (*args, ';', 'set-option', '-s', 'exit-empty', 'off') if start else args
+                    result = self._run(*command, stdin=stdin, start=start)
+                    if start:
+                        self._owned.record(held, lambda: self._run('display-message', '-p', '#{pid}', ';',
+                                                                 'show-environment', '-g', OWNER))
+                    return result
+            except (OSError, ValueError, OwnershipError) as error:
+                raise PrivateTmuxError(str(error)) from error
+        return self._run(*args, stdin=stdin)
+
+    def _run(self, *args, stdin=None, start=False):
+        absolute = bool(self.socket and Path(self.socket).is_absolute())
+        address = (['-S', self.socket, '-f', '/dev/null'] + ([] if start else ['-N'])) if absolute else (['-L', self.socket] if self.socket else [])
+        command = ['tmux', *address, *args]
+        env = dict(os.environ, **{OWNER: self._owned.nonce}) if start else None
+        done = subprocess.run(command, input=stdin, capture_output=True, text=True, env=env)
         if done.returncode:
             raise TmuxError(f"tmux {args[0]}: {done.stderr.strip() or done.returncode}")
         return done.stdout
@@ -97,8 +183,12 @@ class Tmux:
     # -- sessions and windows ----------------------------------------------------------
 
     def running(self) -> bool:
+        if self._closed:
+            return False
         try:
             self.run("list-sessions")
+        except PrivateTmuxError:
+            raise
         except TmuxError:
             return False
         return True
@@ -142,10 +232,63 @@ class Tmux:
         self.run("kill-session", "-t", _session(name))
 
     def kill_server(self) -> None:
+        if self.socket and Path(self.socket).is_absolute():
+            if self._owned is None:
+                raise TmuxError('a private transport binding grants no server cleanup authority')
+            try:
+                with locked(self.socket, self._owned.namespace) as held:
+                    present = self._owned.current(held)
+                    if present and not self._owned.ended():
+                        guard = '#{&&:#{==:#{pid},%s},#{==:#{%s},%s}}' % (self._owned.pid, OWNER, self._owned.nonce)
+                        try:
+                            self._run('if-shell', '-F', guard, 'kill-server')
+                        except TmuxError:
+                            if not self._owned.ended():
+                                raise
+                    self._remove_ended(held)
+                return
+            except (OSError, ValueError, OwnershipError) as error:
+                raise TmuxError(str(error)) from error
         try:
             self.run("kill-server")
         except TmuxError:
             pass
+
+    def _remove_ended(self, held):
+        deadline = time.monotonic() + 2
+        while True:
+            try:
+                self._owned.remove_dead(held)
+                return
+            except ShutdownPending:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(.01)
+
+    def close(self) -> bool:
+        """Stop/remove only this creator's endpoint; unknown or peer state is retained visibly."""
+        if self._closed:
+            return True
+        if self._owned is None:
+            self.held = 'transport binding has no private cleanup authority'
+            return False
+        try:
+            self.kill_server()
+            if self._owned.root_owner:
+                with locked(self.socket, self._owned.namespace) as held:
+                    # A managed replacement may have arrived since shutdown completed.
+                    self._owned.remove_dead(held)
+                    self._owned.namespace.remove(held)
+            self._owned.reset()
+            self._closed = True
+            return True
+        except (OSError, TmuxError, OwnershipError, ValueError) as error:
+            self.held = f'{error}; endpoint {self.socket}'
+            return False
+        except (KeyboardInterrupt, SystemExit) as error:
+            self.held = f'private cleanup interrupted; endpoint retained at {self.socket}'
+            error.add_note(self.held)
+            raise
 
     def new_window(
         self, session: str, name: str, cwd: Path, command: list[str], env: dict[str, str] | None = None
@@ -194,6 +337,8 @@ class Tmux:
             return None
         try:
             identity = self.run('display-message', '-p', '-t', pane_id, _FORMAT).rstrip('\n')
+        except PrivateTmuxError:
+            raise
         except TmuxError:
             return next((p for p in self.panes() if p.id == pane_id), None)
         return _parse(identity) if identity.partition('\t')[0] == pane_id else None
@@ -205,6 +350,8 @@ class Tmux:
         try:
             output = self.run('display-message', '-p', '-t', pane_id, _FORMAT, ';',
                               'capture-pane', '-p', '-J', '-t', pane_id, '-S', str(-history))
+        except PrivateTmuxError:
+            raise
         except TmuxError:
             if self.pane(pane_id) is None:
                 return None

@@ -7,13 +7,16 @@ from pathlib import Path
 
 import pytest
 
-from quarterdeck.tmux import HISTORY_LINES, Tmux
+from quarterdeck.tmux import HISTORY_LINES, Tmux, PrivateTmuxError
 
 
 def wait_for(predicate, seconds: float = 5.0):
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
-        value = predicate()
+        try:
+            value = predicate()
+        except PrivateTmuxError:
+            value = None
         if value:
             return value
         time.sleep(0.05)
@@ -137,7 +140,7 @@ def test_failed_session_setup_cleans_only_the_session_it_created(tmux: Tmux, mon
 
 
 def test_reused_ids_on_another_server_do_not_transfer_ownership(tmux: Tmux):
-    other = Tmux(socket=tmux.socket + "-replacement")
+    other = tmux.private_peer()
     try:
         old = tmux.new_session("Temporary")
         current = other.new_session("Temporary")
@@ -147,11 +150,11 @@ def test_reused_ids_on_another_server_do_not_transfer_ownership(tmux: Tmux):
         other.kill_session_id(current)
         assert not other.has_session("Temporary")
     finally:
-        other.kill_server()
+        assert other.close(), other.held
 
 
 def test_cleanup_checks_ownership_in_the_server_that_performs_the_kill(tmux: Tmux, monkeypatch):
-    other = Tmux(socket=tmux.socket + "-replacement")
+    other = tmux.private_peer()
     try:
         old = tmux.new_session("Temporary")
         current = other.new_session("Temporary")
@@ -168,4 +171,4 @@ def test_cleanup_checks_ownership_in_the_server_that_performs_the_kill(tmux: Tmu
         other.kill_session_id(current)
         assert not other.has_session("Temporary")
     finally:
-        other.kill_server()
+        assert other.close(), other.held

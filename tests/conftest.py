@@ -5,12 +5,39 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+
+@pytest.fixture(scope='session', autouse=True)
+def private_socket_root():
+    """Even legacy named no-server probes must stay outside the user's socket directory."""
+    previous = os.environ.get('TMUX_TMPDIR')
+    parent = Path(previous).expanduser().resolve() if previous else ROOT / 'work'
+    parent.mkdir(parents=True, exist_ok=True)
+    folder = Path(tempfile.mkdtemp(prefix='qd-suite-', dir=parent))
+    os.environ['TMUX_TMPDIR'] = str(folder)
+    try:
+        yield folder
+    finally:
+        if previous is None:
+            os.environ.pop('TMUX_TMPDIR', None)
+        else:
+            os.environ['TMUX_TMPDIR'] = previous
+        native = folder / f'tmux-{os.getuid()}'
+        try:
+            native.rmdir()  # only an empty directory in this fresh owned test root
+        except FileNotFoundError:
+            pass
+        try:
+            folder.rmdir()
+        except OSError as error:
+            pytest.fail(f'test socket namespace retained: {folder}: {error}')
 
 
 @pytest.fixture
@@ -39,9 +66,12 @@ def tmux():
     """A private tmux server for one test, never the user's."""
     from quarterdeck.tmux import Tmux
 
-    server = Tmux(socket=f"qd-test-{os.getpid()}-{os.urandom(3).hex()}")
-    yield server
-    server.kill_server()
+    server = Tmux.private(ROOT / 'work')
+    try:
+        yield server
+    finally:
+        if not server.close():
+            pytest.fail(f'private tmux cleanup held: {server.held}')
 
 
 def git(folder: Path, *args: str) -> str:

@@ -31,6 +31,9 @@ def ship(drydock: Path, tmux: Tmux, monkeypatch) -> shipmod.Ship:
     monkeypatch.setenv("QD_SHIP", str(drydock))
     monkeypatch.delenv("QD_SEAT", raising=False)
     ship = shipmod.load(drydock)
+    # The creator starts the server; CLI/service receive only an existing transport.
+    tmux.new_session('Synthetic bootstrap')
+    tmux.kill_session('Synthetic bootstrap')
     yield ship
     service.stop(ship.runtime)
 
@@ -157,7 +160,11 @@ def test_a_busy_service_reads_busy_not_dead_and_qd_down_still_stops_it(ship: shi
     monkeypatch.setattr(servicectl, "ANSWER_SECONDS", 1.0)
     qd(capsys, "up", "captain")
     pid, _ = service.read_heartbeat(ship.runtime)
-    os.kill(pid, signal.SIGSTOP)  # a tick that never ends: the lock stays held while the heartbeat ages
+    from quarterdeck.tmux_socket import locked
+    # Model actor work that never ends, between native namespace operations.
+    # Holding an actual namespace lease is separately tested as ownership uncertainty.
+    with locked(tmux.socket, tmux._owned.namespace):
+        os.kill(pid, signal.SIGSTOP)  # the service lock stays held while the heartbeat ages
     try:
         stamp = (datetime.now(timezone.utc) - timedelta(seconds=30)).isoformat()
         service.heartbeat_path(ship.runtime).write_text(f"{pid} {stamp}\n")

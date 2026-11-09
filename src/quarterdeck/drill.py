@@ -25,7 +25,7 @@ from .pending import journals
 from .harness.synthetic_control import Rendezvous, events
 from .harness.types import Input
 from .seat import Seat
-from .tmux import Tmux
+from .tmux import Tmux, TmuxError
 
 DRYDOCK = standing.PROJECT_DIR / "ships" / "drydock"
 
@@ -230,7 +230,7 @@ def temporary_drydock() -> tuple[shipmod.Ship, Tmux, Path]:
         for key, value in harnesses.get(spec.harness).drill_settings(name == slow).items():
             text = shipmod.edit(text, f"seats.{name}.settings", key, value)
     ship.file.write_text(text)
-    return shipmod.load(folder), Tmux(socket=f"qd-drill-{os.getpid()}"), folder.parent
+    return shipmod.load(folder), Tmux.private(standing.PROJECT_DIR / 'work'), folder.parent
 
 
 def temporary_copy(ship: shipmod.Ship) -> tuple[shipmod.Ship, Path]:
@@ -247,7 +247,9 @@ def temporary_copy(ship: shipmod.Ship) -> tuple[shipmod.Ship, Path]:
 
 def run(ship: shipmod.Ship | None, keep: bool = False) -> tuple[bool, list[str]]:
     """``qd drill``: the exercise and its pass table; the temporary ship is removed unless kept."""
-    if ship is None:
+    private = ship is None
+    previous_socket = os.environ.get('QD_TMUX_SOCKET')
+    if private:
         ship, tmux, folder = temporary_drydock()
         os.environ["QD_TMUX_SOCKET"] = tmux.socket
     else:
@@ -259,13 +261,21 @@ def run(ship: shipmod.Ship | None, keep: bool = False) -> tuple[bool, list[str]]
         lines = [str(c) for c in checks]
         lines.append(f"{'all' if passed else sum(not c.passed for c in checks)} {'passed' if passed else 'failed'} of {len(checks)} checks")
     finally:
-        if not keep:
-            try:
-                seatmod.bring_down(ship, tmux)
-            finally:
-                if tmux.socket:
-                    tmux.kill_server()
-                shutil.rmtree(folder, ignore_errors=True)
+        try:
+            if not keep:
+                try:
+                    seatmod.bring_down(ship, tmux)
+                finally:
+                    if private and not tmux.close():
+                        raise TmuxError(f'private drill cleanup held: {tmux.held}; retained ship {ship.folder}')
+                    shutil.rmtree(folder, ignore_errors=True)
+        finally:
+            if private:
+                if previous_socket is None:
+                    os.environ.pop('QD_TMUX_SOCKET', None)
+                else:
+                    os.environ['QD_TMUX_SOCKET'] = previous_socket
     if keep:
-        lines.append(f"kept: ship {ship.folder}" + (f" on tmux -L {tmux.socket}" if tmux.socket else " in its qd-drill sessions"))
+        session = next(iter(ship.sessions.values())).title
+        lines.append(f'kept: ship {ship.folder} · {tmux.attach_command(session)}')
     return passed, lines
