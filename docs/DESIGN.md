@@ -491,6 +491,8 @@ quarterdeck/                       the project folder: the framework repository
     service.py     the ship's one long-running process: inboxes, deliveries, attempts, deferred controls, the heartbeat,
                    the machine sample; the one writer of the Ledger
     servicectl.py  the service's lock, heartbeat, start, stop and requests
+    presentation.py   disposable status text rendering and freshness checks; the console bootstrap's optional fast path,
+                   never lifecycle, receipt or usage evidence
     harness/       base.py types.py home.py claude.py codex.py antigravity.py opencode.py pi.py fake.py; json_record.py limits.py sqlite_snapshot.py costs.py
                    opencode_record.py antigravity_record.py antigravity_wire.py antigravity_quota.py; simulator.py synthetic_record.py synthetic_control.py,
                    the fake program the drill runs, its records in Claude Code's or Codex's shape, and the rendezvous a test holds it at

@@ -57,19 +57,24 @@ def _parse(record: Path) -> _Snapshot:
     """Private immutable views; every changed/racy source is byte-checked before prefix reuse."""
     record = Path(record)
     cached = _snapshots.pop(record, None)  # a failed read cannot preserve a certified success
-    started = time.time_ns()
-    info = record.stat()
-    checked = time.time_ns()
-    stamp = _stamp(info)
-    if (cached is not None and cached.stamp == stamp and cached.certified_at is not None
-            and cached.certified_at <= started <= checked):
-        _snapshots[record] = cached
-        return cached
-    try:
-        raw = record.read_bytes().decode('utf-8')
-    except UnicodeError as error:
-        raise RecordError("record is not UTF-8 JSON lines") from error
-    if _stamp(record.stat()) != stamp:
+    for attempt in range(3):
+        started = time.time_ns()
+        info = record.stat()
+        checked = time.time_ns()
+        stamp = _stamp(info)
+        if (attempt == 0 and cached is not None and cached.stamp == stamp and cached.certified_at is not None
+                and cached.certified_at <= started <= checked):
+            _snapshots[record] = cached
+            return cached
+        try:
+            raw = record.read_bytes().decode('utf-8')
+        except UnicodeError as error:
+            raise RecordError("record is not UTF-8 JSON lines") from error
+        if _stamp(record.stat()) == stamp:
+            break
+        # A live writer can append between stat and read. Re-read fresh bytes,
+        # never a cached fallback; a continuously changing source still refuses.
+    else:
         raise RecordError('record changed while being read')
     finished = time.time_ns()
     certified = started if max(stamp[-2:]) + _TIMESTAMP_TICK_NS < started <= checked <= finished else None

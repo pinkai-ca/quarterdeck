@@ -75,7 +75,7 @@ def test_removed_seat_is_abandoned_once_and_survivor_confirms_on_same_tick(tmp_p
         stream.write(json.dumps({"type": "response_item", "timestamp": post.now().isoformat(),
                                 "payload": {"type": "message", "role": "user",
                                             "content": [{"type": "input_text", "text": payload}]}}) + "\n")
-    for duty in ("account", "inboxes", "deliveries", "requests", "fresh_after_order", "rebrief", "credentials", "failover"):
+    for duty in ("account", "inboxes", "deliveries", "requests", "fresh_after_order", "rebrief", "credentials", "failover", "publish_status"):
         monkeypatch.setattr(svc, duty, lambda: None)
     file.write_text(HEADER + SURVIVOR)
     svc.tick()  # reloads the actual synthetic ship.toml

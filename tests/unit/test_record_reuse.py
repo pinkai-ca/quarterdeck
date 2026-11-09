@@ -197,3 +197,32 @@ def test_new_inputs_and_queue_receipts_refresh_independently_of_growing_output(t
     assert claude.state(record.path).queued==()
     old[0]=None
     assert claude.inputs(record.path)[0].text=='Synthetic first input'
+
+
+@pytest.mark.parametrize('continuous', [False, True])
+def test_a_racing_record_read_requires_a_stable_fresh_snapshot(tmp_path, monkeypatch, continuous):
+    record = ClaudeShape(tmp_path/'home', tmp_path, 'synthetic', 'synthetic')
+    record.begin('First synthetic input', 'synthetic', 'low')
+    assert claude.state(record.path).last_input == 'First synthetic input'
+    read = Path.read_bytes
+    reads = []
+
+    def concurrent(path):
+        raw = read(path)
+        if path == record.path:
+            reads.append(True)
+            if continuous:
+                with path.open('ab') as stream:
+                    stream.write(b'\n')
+            elif len(reads) == 1:
+                record.begin('Second synthetic input', 'synthetic', 'low')
+        return raw
+
+    monkeypatch.setattr(Path, 'read_bytes', concurrent)
+    if continuous:
+        with pytest.raises(json_record.RecordError, match='changed while being read'):
+            claude.state(record.path)
+        assert len(reads) <= 3, 'continuous mutation must refuse within the bounded snapshot read'
+        monkeypatch.setattr(Path, 'read_bytes', read)
+        record.begin('Second synthetic input', 'synthetic', 'low')
+    assert claude.state(record.path).last_input == 'Second synthetic input'
