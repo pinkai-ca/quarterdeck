@@ -3,6 +3,8 @@
 import json
 import os
 import re
+from dataclasses import asdict
+from types import SimpleNamespace
 from ..ship import ShipError
 
 from .thinking import declaration, digest, json_file, sources, unchanged
@@ -90,6 +92,22 @@ def launch_evidence(home, seat, pool, choice, env):
                 environment={OUTPUT_CAP: env[OUTPUT_CAP], 'OPENCODE_EXPERIMENTAL_NATIVE_LLM': '0'})
 
 
+def _accepted_input(rows, text, since, conversation):
+    from ..input_receipt import same_text
+    from .opencode_record import _active_session, _ms
+    if _active_session(rows) != conversation:
+        return None
+    matches = []
+    for mid, sid, _, _, data in rows.messages:
+        at = _ms(data.get('time', {}).get('created'))
+        own = [p for _, pid, session, _, _, p in rows.parts if pid == mid and session == sid]
+        if (sid == conversation and data.get('role') == 'user' and at is not None and at >= since
+                and own and all(p.get('type') == 'text' and isinstance(p.get('text'), str) for p in own)
+                and same_text('\n'.join(p['text'] for p in own), text)):
+            matches.append(mid)
+    return matches[0] if len(matches) == 1 else None
+
+
 class Client:
     continuation = ('The last assistant generation exhausted its output allowance with thinking and no answer.\n'
         'Continue the accepted work from the retained conversation with thinking disabled.\n'
@@ -111,20 +129,83 @@ class Client:
                 and (capped.reasoning, capped.written) in ((limit, 0), (limit - 1, 1)))
 
     def accepted_input(self, record, text, since, conversation):
-        from ..input_receipt import same_text
-        from .opencode_record import _Rows, _active_session, _ms
+        from .opencode_record import _Rows
+        return _accepted_input(_Rows(record), text, since, conversation)
+
+    def waiting_for_work(self, record, source, user, payload, since, observed):
+        """Only a live, native-marked compaction leaf; never completion or control proof."""
+        from .opencode_record import _Rows, _Reader, _generation, _ms, _object
         rows = _Rows(record)
-        if _active_session(rows) != conversation:
-            return None
-        matches = []
-        for mid, sid, _, _, data in rows.messages:
-            at = _ms(data.get('time', {}).get('created'))
-            own = [p for _, pid, session, _, _, p in rows.parts if pid == mid and session == sid]
-            if (sid == conversation and data.get('role') == 'user' and at is not None and at >= since
-                    and own and all(p.get('type') == 'text' and isinstance(p.get('text'), str) for p in own)
-                    and same_text('\n'.join(p['text'] for p in own), text)):
-                matches.append(mid)
-        return matches[0] if len(matches) == 1 else None
+        state = _Reader(record, _rows=rows).state()
+        root = source['conversation']
+        if (state.conversation != root or state.turn_open is not True or state.pending_tools != () or state.queued
+                or state.work_id is not None or state.capped is not None
+                or state.input_id != observed.input_id or state.conversation != observed.conversation
+                or _accepted_input(rows, payload, since, root) != user):
+            return False
+        messages = [(mid, data) for mid, sid, _, _, data in rows.messages if sid == root]
+        parts = {}
+        for _, mid, sid, _, _, data in rows.parts:
+            if sid == root:
+                parts.setdefault(mid, []).append(data)
+        ids = [mid for mid, _ in messages]
+        if (source['generation'] not in ids or user not in ids or len(messages) < 4
+                or any(mid not in ids for mid in parts)):
+            return False
+        end = ids.index(source['generation'])
+        prefix = set(ids[:end + 1])
+        original = SimpleNamespace(messages=[m for m in rows.messages if m[1] == root and m[0] in prefix],
+                                   parts=[p for p in rows.parts if p[2] == root and p[1] in prefix])
+        candidate = _generation(original, root)[2]
+        if candidate is None or asdict(candidate) != source or not self.eligible(candidate):
+            return False
+        following = messages[end + 1:]
+        if not following or following[0][0] != user or following[0][1].get('role') != 'user':
+            return False
+        compact, summary = messages[-2:]
+        mid, marker = compact
+        leaf_id, leaf = summary
+        own = parts.get(mid, [])
+        marker_at = _ms(_object(marker.get('time')).get('created'))
+        leaf_at = _ms(_object(leaf.get('time')).get('created'))
+        accepted_at = _ms(_object(following[0][1].get('time')).get('created'))
+        if (state.input_id != mid or ids.index(user) >= len(ids) - 2
+                or marker.get('role') != 'user' or marker.get('agent') != 'build'
+                or marker_at is None or leaf_at is None or accepted_at is None
+                or marker_at < accepted_at or leaf_at < marker_at
+                or _object(marker.get('model')).get('modelID') != self.settings['model']
+                or _object(marker.get('model')).get('providerID') != self.settings['provider']
+                or len(own) != 1 or own[0].get('type') != 'compaction' or own[0].get('auto') is not True
+                or set(own[0]) - {'id', 'sessionID', 'messageID', 'type', 'auto', 'overflow'}
+                or own[0].get('sessionID', root) != root or own[0].get('messageID', mid) != mid
+                or ('overflow' in own[0] and type(own[0]['overflow']) is not bool)
+                or leaf.get('role') != 'assistant' or leaf.get('parentID') != mid
+                or leaf.get('agent') != 'compaction' or leaf.get('summary') is not True
+                or leaf.get('modelID') != self.settings['model'] or leaf.get('providerID') != self.settings['provider']
+                or _object(leaf.get('time')).get('completed') is not None
+                or leaf.get('finish') is not None or leaf.get('error') is not None):
+            return False
+        # The exact confirmed recovery is followed only by completed foreground
+        # steps and this marker/unfinished summary, with no superseding input.
+        steps = following[1:-2]
+        for _, step in steps:
+            times = _object(step.get('time'))
+            if (step.get('role') != 'assistant' or step.get('parentID') != user
+                    or step.get('agent') != 'build' or step.get('summary') or step.get('error')
+                    or step.get('modelID') != self.settings['model'] or step.get('providerID') != self.settings['provider']
+                    or _ms(times.get('created')) is None or _ms(times.get('completed')) is None
+                    or times['completed'] < times['created'] or _ms(times['created']) < accepted_at
+                    or _ms(times['completed']) > marker_at or step.get('finish') != 'tool-calls'):
+                return False
+        for part in parts.get(leaf_id, []):
+            if part.get('sessionID', root) != root or part.get('messageID', leaf_id) != leaf_id:
+                return False
+            if part.get('type') in ('text', 'reasoning'):
+                if not isinstance(part.get('text'), str):
+                    return False
+            elif part.get('type') != 'step-start':
+                return False
+        return True
 
     def mode(self, state, screen):
         if state.model != self.settings['model']:

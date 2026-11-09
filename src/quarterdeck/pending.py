@@ -170,7 +170,8 @@ def active(seat: Seat, include_terminal: bool = False) -> list[Proof]:
     return [p for p in found if include_terminal or p.data["phase"] not in TERMINAL]
 
 
-def held(seat: Seat, screen: Screen | None, ignored: Proof | None = None) -> tuple[str, str, bool] | None:
+def held(seat: Seat, screen: Screen | None, ignored: Proof | None = None,
+         wall: str | None = None) -> tuple[str, str, bool] | None:
     try:
         proofs, errors = journals(seat)
         if errors:
@@ -190,6 +191,12 @@ def held(seat: Seat, screen: Screen | None, ignored: Proof | None = None) -> tup
         if unresolved and all(p.data['recovery']['mode'] == 'submitted' and p.data['phase'] == 'delivered'
                 and p.data['recovery']['error'] is None
                 and (seat.ship.runtime / 'post/store' / (p.data['recovery']['post'] + '.json')).is_file() for p in unresolved):
+            if wall:
+                return (wall, 'quota reset or another pool', False)
+            if screen is not None and screen.interruption is not None:
+                return (screen.interruption.name, 'needs a human', False)
+            if screen is not None and screen.box is not None and screen.box.strip():
+                return ('text in the box', 'needs a human', False)
             return (inspection(seat, reason), 'ended recovery and original native mode', True)
         return (inspection(seat, reason), 'needs a human', False)
     for proof in proofs:

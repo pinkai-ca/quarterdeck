@@ -167,6 +167,9 @@ def _wait(check):
 
 
 def _restore(seat, proof):
+    meta = proof.data['recovery']
+    if proof.data['phase'] == 'delivered' and meta['mode'] == 'submitted' and meta['error'] is not None:
+        return  # a previously exposed uncertainty is not erased by later waiting evidence
     received = _received(seat, proof)
     if received is None:
         if proof.data['phase'] == 'delivered':
@@ -181,7 +184,19 @@ def _restore(seat, proof):
                           and state is not None and state.conversation == meta['source']['conversation']
                           and state.pending_tools is not None and native is not None and state.work_id == native
                           and meta['recovery_input'] in (None, native))
-            if known_work and (state.turn_open or state.pending_tools or state.queued or (screen and screen.working)):
+            wait_fact = getattr(client, 'waiting_for_work', None)
+            safe_wait = (callable(wait_fact) and meta['mode'] == 'submitted' and meta['error'] is None
+                         and client.signature == meta['client'] and proof.same_launch(seat)
+                         and record is not None and seat.home in record.parents and record.resolve() == record.absolute()
+                         and record_owner.pinned_reader(seat, record) == seat.harness.name
+                         and state is not None and state.turn_open is True and state.pending_tools == () and not state.queued
+                         and native is not None and meta['recovery_input'] in (None, native)
+                         and screen is not None and screen.box == '' and screen.working and not screen.queued
+                         and not screen.unknown and not screen.interruption and not screen.starting
+                         and not Door(seat).wall(screen) and client.mode(state, screen) == 'off'
+                         and wait_fact(record, meta['source'], native, proof.data['payload'],
+                                       datetime.fromisoformat(proof.data['since']), state))
+            if safe_wait or (known_work and (state.turn_open or state.pending_tools or state.queued or (screen and screen.working))):
                 _save(proof, recovery_input=native, error=None)  # ordinary work, not a request for a human
             else:
                 _save(proof, error='fresh recovery source/receipt/idle/box evidence unknown; original mode not restored')

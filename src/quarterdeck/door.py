@@ -123,7 +123,7 @@ class Door:
     def _reading(self, screen: Screen | None) -> Reading:
         """Read this captured frame, including absence, without taking another capture."""
         wall = self.wall(screen)
-        if hold := pending.held(self.seat, screen, self.proof):
+        if hold := pending.held(self.seat, screen, self.proof, wall):
             return Reading(False, hold[0], hold[1], waiting=hold[2])
         if screen is None:
             return Reading(False, "no program in the pane", "qd up")

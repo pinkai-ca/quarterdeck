@@ -204,8 +204,8 @@ class _Session:
 
 
 class _Reader(RecordReader):
-    def __init__(self, record: Path):
-        rows = _Rows(record)
+    def __init__(self, record: Path, *, _rows=None):
+        rows = _Rows(record) if _rows is None else _rows
         self.empty = not (rows.sessions or rows.messages or rows.parts)
         self.session = _active_session(rows)
         parts: dict[tuple[str, str], list[dict]] = {}
