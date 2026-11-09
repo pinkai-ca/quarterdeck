@@ -35,7 +35,7 @@ from .ship import Ship, ShipError
 from .tmux import Tmux
 
 TICK = 1.0
-STATUS_INTERVAL = 0.7  # presentation only; its collection-start lifetime stays one second
+STATUS_INTERVAL = 0.7  # presentation only; rendering age and owner are checked independently
 BLIND_INTERVAL = 60.0  # how often the blind attempts are read against the records
 
 

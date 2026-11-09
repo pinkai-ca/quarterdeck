@@ -1,4 +1,4 @@
-"""Optional one-second status text, never evidence for a lifecycle or receipt decision."""
+"""Optional bounded status text, never evidence for a lifecycle or receipt decision."""
 
 import json
 import hashlib
@@ -10,7 +10,7 @@ import time
 from . import servicectl
 
 NAME = 'status-line.json'
-MAX_AGE_NS = 1_000_000_000
+MAX_AGE_NS = 3_000_000_000  # covers long actor duties; independent owner checks still run on every job
 CLOCK_SKEW_NS = 50_000_000
 
 
@@ -73,7 +73,18 @@ def cached_line(folder):
 
 
 def publish(ship, tmux, framework, store, attempts):
-    """Only the service writes this disposable rendering; failure cannot renew an old snapshot."""
+    """A failed/refused collection cannot leave its prior healthy rendering available."""
+    written = False
+    try:
+        written = _publish(ship, tmux, framework, store, attempts)
+        return written
+    finally:
+        if not written:
+            (ship.runtime / NAME).unlink(missing_ok=True)
+
+
+def _publish(ship, tmux, framework, store, attempts):
+    """Only the service writes this disposable rendering, dated at collection start."""
     from . import ship as shipmod, watch
 
     wall, monotonic = time.time_ns(), time.monotonic_ns()

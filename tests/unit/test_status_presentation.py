@@ -60,7 +60,8 @@ def test_invalid_or_unowned_snapshot_requires_the_ordinary_independent_reader(li
 
 
 @pytest.mark.parametrize('wall_delta,mono_delta,usable',[(0,0,True),(1_000_000_000,1_000_000_000,True),
-    (1_000_000_001,1_000_000_001,False),(-1,-1,False),(100_000_000,0,False)])
+    (3_000_000_000,3_000_000_000,True),(3_000_000_001,3_000_000_001,False),
+    (-1,-1,False),(100_000_000,0,False)])
 def test_cache_lifetime_has_no_clock_or_aging_shortcut(live,monkeypatch,wall_delta,mono_delta,usable):
     ship,svc,lock=live;data=json.loads((ship.runtime/presentation.NAME).read_text())
     monkeypatch.setattr(presentation.time,'time_ns',lambda:data['wall']+wall_delta)
@@ -73,10 +74,26 @@ def test_failed_collection_does_not_renew_an_old_success(live,monkeypatch):
     def unavailable(*args,**kwargs):raise PermissionError('synthetic unavailable evidence')
     monkeypatch.setattr(watch,'facts',unavailable)
     with pytest.raises(PermissionError):svc.publish_status()
-    assert path.read_bytes()==before
-    monkeypatch.setattr(presentation.time,'time_ns',lambda:data['wall']+2_000_000_000)
-    monkeypatch.setattr(presentation.time,'monotonic_ns',lambda:data['monotonic']+2_000_000_000)
+    assert presentation.cached_line(ship.folder) is None, 'failed facts cannot hide behind a still-young rendering'
+    assert not path.exists(), 'discard the optional rendering instead of renewing prior success'
+    monkeypatch.setattr(presentation.time,'time_ns',lambda:data['wall']+3_000_000_001)
+    monkeypatch.setattr(presentation.time,'monotonic_ns',lambda:data['monotonic']+3_000_000_001)
     assert presentation.cached_line(ship.folder) is None
+
+
+@pytest.mark.parametrize('change',['death','busy','unknown'])
+def test_long_tick_rendering_still_requires_current_independent_owner_evidence(live,monkeypatch,change):
+    ship,svc,lock=live;path=ship.runtime/presentation.NAME;before=path.read_bytes();data=json.loads(before)
+    monkeypatch.setattr(presentation.time,'time_ns',lambda:data['wall']+2_500_000_000)
+    monkeypatch.setattr(presentation.time,'monotonic_ns',lambda:data['monotonic']+2_500_000_000)
+    assert presentation.cached_line(ship.folder)==data['line'],'a live rendering covers the measured long tick'
+    if change=='death':lock.close()
+    elif change=='busy':
+        stamp=(datetime.now(timezone.utc)-timedelta(seconds=20)).isoformat()
+        servicectl.heartbeat_path(ship.runtime).write_text(f'{os.getpid()} {stamp}\n')
+    else:servicectl.heartbeat_path(ship.runtime).write_text('unparsed heartbeat\n')
+    assert presentation.cached_line(ship.folder) is None  # law: nothing-waits-silently
+    assert path.read_bytes()==before,'consumer and owner refusal never renew success'
 
 
 def test_cold_console_avoids_full_reading_imports_but_falls_back_after_death(live,tmp_path):

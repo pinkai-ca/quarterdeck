@@ -87,7 +87,7 @@ def test_presentation_deadlines_do_not_move_actor_tick_cadence(tmp_path,monkeypa
     monkeypatch.setattr(servicemod.time,'sleep',sleep)
     with pytest.raises(Stop):svc.run()
     assert actors==pytest.approx([0.,1.2,2.4]),'record/actor duties keep sleep-after-work cadence'
-    assert max(b-a for a,b in zip(published,published[1:]))<=1.,'simulated collection starts must cover the unchanged one-second freshness contract'
+    assert max(b-a for a,b in zip(published,published[1:]))<=1.,'short actor duties keep collection starts within one second'
     assert len(published)<=5,'fresh presentation must not require eight full collections in three actor ticks'
     svc.lock.close();svc.ledger.close()
 
