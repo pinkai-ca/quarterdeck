@@ -8,6 +8,7 @@ import pytest
 
 from quarterdeck.door import Door
 from quarterdeck.harness import get
+from quarterdeck.ship import Pool, SeatSpec
 
 NAMES = ("codex", "claude", "antigravity", "fake", "opencode", "pi")
 
@@ -32,19 +33,22 @@ def capture(name, body, padding=0, width=80):
     return "\n".join(map(pad, lines)) + "\n"
 
 
-def door_for(name, text, monkeypatch: pytest.MonkeyPatch, width=80):
-    # These are layout contracts, with no pool/session/provider state to inspect.
+def door_for(name, text, monkeypatch: pytest.MonkeyPatch, width=80, home=None):
+    # Layout contracts use initialized startup policy, with no provider state.
     monkeypatch.setattr(Door, "wall", lambda self, screen: None)
     seat = SimpleNamespace(harness=get(name), session=SimpleNamespace(human=False), spec=SimpleNamespace(),
                            pane=lambda: SimpleNamespace(id="%1", width=width, dead=False),
-                           tmux=SimpleNamespace(capture=lambda *a, **k: text))
+                           tmux=SimpleNamespace(capture=lambda *a, **k: text), home=home)
+    if name == 'claude' and home is not None:
+        seat.harness.build_home(home, SeatSpec('synthetic','synthetic','worker','claude',('synthetic',)),
+                                Pool('synthetic','claude'), None)
     return Door(seat)
 
 
 @pytest.mark.parametrize("name", NAMES)
 @pytest.mark.parametrize("padding", [3, 4, "full"])
-def test_empty_padded_prompt_rows_open_every_adapter(name, padding, monkeypatch: pytest.MonkeyPatch) -> None:
-    door = door_for(name, capture(name, "\n", padding), monkeypatch)
+def test_empty_padded_prompt_rows_open_every_adapter(name, padding, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    door = door_for(name, capture(name, "\n", padding), monkeypatch, home=tmp_path/'home')
     assert door.screen().box == ""
     assert door.reading().open  # law: one-door
 
@@ -53,8 +57,8 @@ def test_empty_padded_prompt_rows_open_every_adapter(name, padding, monkeypatch:
     ("claude", "Press up to edit queued messages"), ("antigravity", "Press up to edit queued messages"),
     ("opencode", 'Ask anything… "What is the tech stack of this project?"')])
 @pytest.mark.parametrize("padding", [3, 4, "full"])
-def test_recognized_placeholder_padding_is_empty_not_an_obstruction(name, placeholder, padding, monkeypatch: pytest.MonkeyPatch) -> None:
-    door = door_for(name, capture(name, placeholder, padding), monkeypatch)
+def test_recognized_placeholder_padding_is_empty_not_an_obstruction(name, placeholder, padding, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    door = door_for(name, capture(name, placeholder, padding), monkeypatch, home=tmp_path/'home')
     assert door.screen().box == "" and door.reading().open
     assert not door_for(name, capture(name, placeholder + " edited", padding), monkeypatch).reading().open
 

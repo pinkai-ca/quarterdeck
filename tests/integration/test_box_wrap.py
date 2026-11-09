@@ -62,6 +62,11 @@ def test_real_private_capture_retains_padding_and_adapters_read_it(tmux: Tmux, t
     tmux.run("resize-window", "-t", pane.id, "-x", "80", "-y", "24")
     seat = SimpleNamespace(harness=get(name), session=SimpleNamespace(human=False), spec=SimpleNamespace(),
                            pane=lambda: tmux.pane(pane.id), tmux=tmux)
+    if name == 'claude':
+        from quarterdeck.ship import Pool, SeatSpec
+        seat.home = tmp_path/'home'
+        seat.harness.build_home(seat.home, SeatSpec('synthetic','synthetic','worker','claude',('synthetic',)),
+                                Pool('synthetic','claude'), None)
     door = Door(seat)
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline:
