@@ -369,7 +369,10 @@ class Service:
                 state = seat.harness.state(record) if record is not None else None
             except OSError:
                 continue
-            if state is None or state.turn_open is not False or state.queued:
+            if (state is None or state.turn_open is not False or state.queued
+                    or not any(turn.timed and turn.started is not None and turn.ended is not None
+                               and state.last_input_at is not None
+                               and turn.started <= state.last_input_at <= turn.ended for turn in state.completed_turns)):
                 continue
             pools = list(seat.spec.pools)
             start = pools.index(seat.pool.name)

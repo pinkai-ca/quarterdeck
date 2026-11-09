@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 from quarterdeck import service
 from quarterdeck.harness.base import State, Tokens, ToolCall, Turn, Usage, Window
+from quarterdeck.harness.synthetic_record import CodexShape
 from quarterdeck.ledger import Ledger, Machine, table
 from quarterdeck.post import Store
 from quarterdeck.seat import Launched, Seat
@@ -24,8 +25,10 @@ def test_account_same_record_failover_restart_and_delayed_metadata(tmp_path, mon
     tmux = SimpleNamespace(pane=lambda ident: active['pane'], kill_window=lambda ident: active.update(pane=None))
     seat = Seat(ship, spec, tmux)
     seat.home.mkdir(parents=True)
-    record = seat.home / 'synthetic-record'
-    record.write_text('revision 1')
+    shape = CodexShape(seat.home, tmp_path, 'synthetic-provenance', 'synthetic-model')
+    shape.begin('old input', 'synthetic-model', 'high')
+    shape.end('old reply')
+    record = shape.path
     (seat.folder / 'record').write_text(str(record))
     origin = datetime.now(timezone.utc) - timedelta(minutes=10)
     initial_launch = Launched('%1', 1001, origin.isoformat(), 'pool-a', None, ['fake'], 'synthetic')
@@ -33,7 +36,7 @@ def test_account_same_record_failover_restart_and_delayed_metadata(tmp_path, mon
     old = Turn(0, origin + timedelta(seconds=1), origin + timedelta(seconds=2),
                'old input', 'old reply', 'synthetic-model', Tokens(1, 10, 0, 2),
                (ToolCall('run_command', None, False),))
-    data = {'turns': [old], 'state': State(turns=1, turn_open=False)}
+    data = {'turns': [old], 'state': seat.harness.state(record)}
 
     def read(path):
         if not path.exists():

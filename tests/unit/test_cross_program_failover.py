@@ -213,8 +213,10 @@ def test_legacy_pool_list_also_requires_record_proof_at_the_move_boundary(tmp_pa
     tmux = SimpleNamespace(pane=lambda ident: pane, capture=lambda *a, **k: '')
     seat = Seat(ship, spec, tmux)
     seat.home.mkdir(parents=True)
-    record = seat.home/'record.jsonl'
-    record.write_text('synthetic source')
+    shape = CodexShape(seat.home, tmp_path, 'synthetic-terminal', 'synthetic-model')
+    shape.begin('synthetic input', 'synthetic-model', 'high')
+    shape.end('synthetic reply')
+    record = shape.path
     Launched('%1', 101, post.now().isoformat(), 'one', None, ['fake'], 'synthetic', 'fake').write(seat.folder/'launch.json')
     (seat.folder/'record').write_text(str(record))
     record_owner.register(seat.folder, record, 'fake')
@@ -236,8 +238,9 @@ def test_legacy_pool_list_also_requires_record_proof_at_the_move_boundary(tmp_pa
             raise OSError('synthetic unreadable record')
         monkeypatch.setattr(seat.harness, 'state', unreadable)
     else:
-        state = State(turn_open=True if evidence == 'working' else None if evidence == 'unknown' else False,
-                      queued=('queued input',) if evidence == 'queued' else ())
+        state = replace(seat.harness.state(record),
+                        turn_open=True if evidence == 'working' else None if evidence == 'unknown' else False,
+                        queued=('queued input',) if evidence == 'queued' else ())
         monkeypatch.setattr(seat.harness, 'state', lambda path: state)
     monkeypatch.setattr(service, 'seats', lambda *a: [seat])
     svc = Service(ship, tmux)
