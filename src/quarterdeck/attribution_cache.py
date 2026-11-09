@@ -61,6 +61,8 @@ class Attribution:
         Retained exact-envelope evidence survives a missing source if the stored
         seat and turn bounds are unchanged. Old-writer changes require rereading.
         """
+        previous = self.last
+        self.last = None  # source-cache updates stay dirty through every pre-gate failure
         if bindings is None:
             bindings = defaultdict(set)
             for folder in (Path(runtime)/'seats').glob('*'):
@@ -105,9 +107,9 @@ class Attribution:
         stamp = tuple(store.all())
         invalid = self.db.execute('''SELECT count(*) FROM turns t LEFT JOIN turn_attribution a
             ON a.record=t.record AND a.turn=t.turn WHERE a.valid IS NULL OR a.valid=0''').fetchone()[0]
-        if not changed and self.last == stamp and not invalid:
+        if not changed and previous == stamp and not invalid:
+            self.last = stamp
             return 0
-        self.last = None  # a failed pass must retry even if its source inputs are already cached
         graph = Threads(store)
         written = 0
         for record, turns in by_record.items():

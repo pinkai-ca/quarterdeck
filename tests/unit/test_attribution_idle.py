@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from datetime import timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -93,7 +94,8 @@ def test_failed_source_read_is_retried_without_a_fingerprint_change(tmp_path, mo
         assert calls == [record, record]
 
 
-def test_failed_replay_retries_cached_changed_source(tmp_path, monkeypatch):
+@pytest.mark.parametrize('failure', ['put', 'post-read', 'pending-query'])
+def test_failed_replay_retries_cached_changed_source(tmp_path, monkeypatch, failure):
     store = post.Store(tmp_path)
     first = message(store, 'ord-first')
     second = message(store, 'ord-second')
@@ -102,8 +104,19 @@ def test_failed_replay_retries_cached_changed_source(tmp_path, monkeypatch):
     record = tmp_path / 'record'
     record.write_text('first synthetic source')
     current = [first]
-    monkeypatch.setattr(FakeHarness, 'attribution_inputs', lambda self, path:
-                        [Input(post.typed(current), AT + timedelta(seconds=11))])
+    reads, graphs = [], []
+    original = attribution_cache.Threads
+
+    def inputs(self, path):
+        reads.append(path)
+        return [Input(post.typed(current), AT + timedelta(seconds=11))]
+
+    def graph(store):
+        graphs.append(True)
+        return original(store)
+
+    monkeypatch.setattr(FakeHarness, 'attribution_inputs', inputs)
+    monkeypatch.setattr(attribution_cache, 'Threads', graph)
     bindings = {str(record): {'fake'}}
     with Ledger(tmp_path / 'ledger.sqlite') as book:
         book.ingest('worker', 'pool', record, [turn()], store)
@@ -111,14 +124,31 @@ def test_failed_replay_retries_cached_changed_source(tmp_path, monkeypatch):
         assert book.attributions.details()[0]['orders'] == [first.id]
         measured = measurement_snapshot(book)
         record.write_text('second synthetic source')
+        source_stamp = record.stat()
+        posts = store.all()
         current[:] = [second]
         with monkeypatch.context() as patch:
             def fail(*args):
-                raise OSError('synthetic interrupted verdict write')
-            patch.setattr(book.attributions, 'put', fail)
+                raise PermissionError('synthetic interrupted replay')
+            if failure == 'put':
+                patch.setattr(book.attributions, 'put', fail)
+            elif failure == 'post-read':
+                patch.setattr(store, 'all', fail)
+            else:
+                def execute(sql, *args):
+                    if 'count(*)' in sql:
+                        fail()
+                    return book.db.execute(sql, *args)
+                patch.setattr(book.attributions, 'db', SimpleNamespace(execute=execute))
             with pytest.raises(OSError):
                 book.attributions.replay(store, tmp_path, bindings)
+        assert reads == [record, record], 'new incoming evidence was cached before the interruption'
+        before = len(graphs)
         assert book.attributions.replay(store, tmp_path, bindings) == 1
         assert book.attributions.details()[0]['orders'] == [second.id]
         assert measurement_snapshot(book) == measured
+        assert record.stat() == source_stamp and store.all() == posts
+        assert len(graphs) == before + 1 and reads == [record, record]
+        before = len(graphs)
         assert book.attributions.replay(store, tmp_path, bindings) == 0
+        assert len(graphs) == before and reads == [record, record]
