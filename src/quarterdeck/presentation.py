@@ -141,7 +141,7 @@ def command_line(argv):
         return None
     try:
         return watch.facts(ship, Tmux.default()).line()
-    except TmuxError:
+    except (TmuxError, shipmod.ShipError):
         return None  # preserve the CLI's native failure exit and independent alarm
     except (OSError, ValueError, KeyError, TypeError):
         return unavailable_line(argv)

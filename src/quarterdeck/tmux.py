@@ -218,7 +218,7 @@ class Tmux:
             return None
         try:
             lines = self.run('list-clients', '-F', 'client\t#{session_name}').splitlines()
-        except TmuxError:
+        except (TmuxError, OSError, UnicodeError):
             return None
         names = []
         for line in lines:

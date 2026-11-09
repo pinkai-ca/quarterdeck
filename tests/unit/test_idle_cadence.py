@@ -188,3 +188,32 @@ def test_idle_delivery_uses_its_fresh_owned_frame_without_a_second_liveness_quer
         svc.deliveries()
         assert len(calls)==2 and not svc.told,'a replacement cannot supply the prior seat obstruction'
     finally:svc.ledger.close()
+
+
+def test_facts_application_refusal_keeps_bootstrap_error_exit_and_alarm(live,monkeypatch,capsys):
+    from quarterdeck import main
+    ship,svc,lock=live
+    lock.close()
+    def refused(*args,**kwargs):raise shipmod.ShipError('synthetic application refusal')
+    monkeypatch.setattr(watch,'facts',refused)
+    monkeypatch.setattr(sys,'argv',['qd','--ship',str(ship.folder),'status','--line'])
+    assert main()==2
+    captured=capsys.readouterr()
+    assert 'synthetic application refusal' in captured.err
+    assert captured.out.startswith('SERVICE DOWN') and 'status unknown' in captured.out
+    assert '0 waiting' not in captured.out
+
+
+@pytest.mark.parametrize('error',[PermissionError,UnicodeError])
+def test_unreadable_native_client_query_collects_unknown_demand(tmp_path,monkeypatch,error):
+    tmux=Tmux(socket='synthetic')
+    def failed(*args,**kwargs):raise error('synthetic unreadable client query')
+    monkeypatch.setattr(tmux,'run',failed)
+    assert tmux.clients_attached(['crew']) is None
+    (tmp_path/'ship.toml').write_text('[ship]\nname="synthetic"\n[sessions.crew]\n')
+    svc=Service(shipmod.load(tmp_path),tmux);collected=[]
+    monkeypatch.setattr(svc,'publish_status',lambda:collected.append(True))
+    try:
+        svc.status_due()
+        assert collected==[True],'unknown demand cannot suppress collection'
+    finally:svc.ledger.close()
