@@ -27,7 +27,7 @@ from .harness.base import record_fingerprint
 from .ledger import Ledger
 from .provenance import UNKNOWN
 from .post import Attempts, Store
-from .seat import Seat, seats
+from .seat import Seat, SelectionError, UnresolvedSeat, seats
 from .servicectl import (  # noqa: F401  (the process control, reachable as service.* too)
     acquire_lock, alive, heartbeat_path, locked, read_heartbeat, request, stale, start, stop, write_heartbeat,
 )
@@ -93,6 +93,25 @@ class Service:
     def seat(self, name: str) -> Seat:
         return Seat(self.ship, self.ship.seat(name), self.tmux)
 
+    def hold_selection(self, error: SelectionError) -> None:
+        reason = str(error)
+        if self.told.get(error.seat) == reason:
+            return
+        self.told[error.seat] = reason
+        self.log('held', seat=error.seat, error=reason)
+        for desk in self.ship.seats.values():
+            if desk.role == 'desk':
+                self.store.new('report', 'ship', desk.name, f'{reason}; seat held, restore its declared selection')
+
+    def resolved_seats(self) -> list[Seat]:
+        found = []
+        for seat in seats(self.ship, self.tmux, False):
+            if isinstance(seat, UnresolvedSeat):
+                self.hold_selection(seat.error)
+            else:
+                found.append(seat)
+        return found
+
 
     def reconcile(self) -> None:
         """Reconcile journals first, then unjournaled attempts through the same fresh receipt rule.
@@ -121,7 +140,12 @@ class Service:
             elif not (result == "queued" and attempt.message in queued
                       or result == "blind" and retry_blind and attempt.message in blind):
                 continue
-            seat, message = self.seat(attempt.seat), self.store.get(attempt.message)
+            try:
+                seat = self.seat(attempt.seat)
+            except SelectionError as error:
+                self.hold_selection(error)
+                continue
+            message = self.store.get(attempt.message)
             seen = delivery_record.receipt_anywhere(seat, message, attempt.receipt_since)
             if result is None:
                 if self.attempts.judge(attempt, seen or "blind", "found in the record on reconciliation" if seen else
@@ -137,7 +161,7 @@ class Service:
 
     def deliveries(self) -> None:
         results = self.attempts.latest()
-        for seat in seats(self.ship, self.tmux):
+        for seat in self.resolved_seats():
             if seat.session.human or not seat.is_up:
                 continue
             pending = [m for m in self.attempts.undelivered(self.store, seat.name, results=results) if self._due(m, seat)]
@@ -214,7 +238,11 @@ class Service:
         folder = self.runtime / "requests"
         for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
             data = json.loads(path.read_text())
-            answer = self.answer(data)
+            try:
+                answer = self.answer(data)
+            except SelectionError as error:
+                self.hold_selection(error)
+                continue  # this request stays held; later healthy-seat requests still run
             if answer is None:
                 continue  # not yet: the request waits for the seat's turn to end
             path.with_suffix(".done").write_text(answer + "\n")
@@ -301,7 +329,7 @@ class Service:
 
     def fresh_after_order(self) -> None:
         """A worker whose last open order closed, and whose closing turn ended, starts fresh."""
-        for seat in seats(self.ship, self.tmux):
+        for seat in self.resolved_seats():
             if seat.spec.fresh != "after-order" or not seat.is_up or self.store.open_for(seat.name):
                 continue
             launched = seat.launched()
@@ -330,7 +358,7 @@ class Service:
 
     def credentials(self) -> None:
         """A seat whose credential link became a file has refreshed the token: reseed the pool and relink."""
-        for line in credential.reseed(self.ship, seats(self.ship, self.tmux)):
+        for line in credential.reseed(self.ship, self.resolved_seats()):
             self.log("credential", proof=line)
 
 
@@ -339,7 +367,7 @@ class Service:
         and refresh its pool usage at the provider cadence. A record a relaunch left behind is still accounted
         (law: every-turn-accounted); one whose file has not moved is not read again."""
         table = machine.processes()
-        for seat in seats(self.ship, self.tmux):
+        for seat in self.resolved_seats():
             pane, launched = seat.pane(), seat.launched()
             live = pane is not None and not pane.dead
             current = seat.record()
@@ -383,7 +411,7 @@ class Service:
 
     def failover(self) -> None:
         """A seat whose pool is walled moves on at its turn's end to the next pool of its list that is not, and stays."""
-        for seat in seats(self.ship, self.tmux):
+        for seat in self.resolved_seats():
             if len(seat.spec.pools) < 2 or not seat.is_up or not self.ledger.walled(seat.pool.name, self.ship):
                 continue
             try:
@@ -439,20 +467,23 @@ class Service:
         stamp = self._brief_stamp()
         if stamp == self.brief_stamp:
             return
-        self.brief_stamp = stamp
-        for seat in seats(self.ship, self.tmux):
+        selected = self.resolved_seats()
+        for seat in selected:
             path = self.runtime / 'brief' / f'{seat.name}.md'
             before = path.read_text() if path.exists() else None
             standing.render(self.ship, seat.spec)
             if seat.is_up and path.read_text() != before:
                 self.store.new("report", "ship", seat.name, f"ship's orders changed · read runtime/brief/{seat.name}.md")
-        self.log("rebrief", seats=list(self.ship.seats))
+        if len(selected) == len(self.ship.seats):
+            self.brief_stamp = stamp
+        self.log("rebrief", seats=[seat.name for seat in selected])
 
     def upgrade_rebrief(self, data: dict) -> str | None:
         """A durable baseline survives rendering and retries; posting is not proof of reading."""
         stamp = self._brief_stamp()
         affected, changed = [], []
-        for seat in seats(self.ship, self.tmux):
+        selected = self.resolved_seats()
+        for seat in selected:
             launch = seat.folder / 'launch.json'
             same = (data['launches'].get(seat.name) is not None
                     and install.launch_stamp(launch) == data['launches'][seat.name] and seat.is_up)
@@ -472,6 +503,8 @@ class Service:
                 else:
                     self.store.write(notice)
                 affected.append(seat.name)
+        if len(selected) != len(self.ship.seats):
+            return None  # healthy briefs progressed; the unresolved seat keeps this operation held
         self.brief_stamp = stamp  # edits arriving during this pass still belong to ordinary rebrief
         if changed:
             proof = 'rebrief complete · changed briefs: ' + ', '.join(changed)

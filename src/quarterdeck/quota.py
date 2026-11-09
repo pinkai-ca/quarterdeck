@@ -119,10 +119,9 @@ def refresh_declared(service) -> None:
             continue
         key = reader.shared_usage_key(pool)
         if reader.usage_from_records is not None:
-            from .seat import seats
             from .record_owner import launch_reader
             sources = []
-            for seat in seats(service.ship, service.tmux):
+            for seat in service.resolved_seats():
                 launched = seat.launched()
                 if (launched is not None and launched.pool == pool.name
                         and launch_reader(launched) == pool.provider and seat.spec.harness == pool.provider):

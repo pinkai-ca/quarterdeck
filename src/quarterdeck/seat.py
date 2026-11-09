@@ -75,16 +75,40 @@ def launch_script(seat: str, path: str, argv: list[str]) -> str:
             f"exec env {shlex.quote(f'PATH={path}')} {shlex.join(argv)}\n")
 
 
+class SelectionError(ShipError):
+    """One seat's saved selection cannot establish its current program and pool."""
+
+    def __init__(self, seat: str, reason: str):
+        self.seat = seat
+        super().__init__(reason)
+
+
+@dataclass(frozen=True)
+class UnresolvedSeat:
+    ship: Ship
+    spec: SeatSpec
+    tmux: Tmux
+    error: SelectionError
+
+    @property
+    def name(self) -> str:
+        return self.spec.name
+
+
 class Seat:
     def __init__(self, ship: Ship, spec: SeatSpec, tmux: Tmux):
         self.ship, self.spec, self.tmux = ship, spec, tmux
         self.folder = ship.runtime / "seats" / spec.name
         self.home = self.folder / "home"
-        self.spec = replace(spec.for_pool(self.pool.name), human_session=self.session.human)
-        self.harness: Harness = harnesses.get(self.spec.harness)
-        if self.spec.pool_choices and (launched := self.launched()) is not None:
-            if launched.pool != self.pool.name or record_owner.launch_reader(launched) != self.spec.harness:
-                raise ShipError(f"{self.name}: saved launch and selected program disagree; restore its pool declaration/selection")
+        try:
+            self.spec = replace(spec.for_pool(self.pool.name), human_session=self.session.human)
+            self.harness: Harness = harnesses.get(self.spec.harness)
+            if self.spec.pool_choices and (launched := self.launched()) is not None:
+                if launched.pool != self.pool.name or record_owner.launch_reader(launched) != self.spec.harness:
+                    raise ShipError(f"{self.name}: saved launch and selected program disagree; restore its pool declaration/selection")
+        except (ShipError, OSError, ValueError, TypeError) as error:
+            reason = str(error).removeprefix(f'{spec.name}: ')
+            raise SelectionError(spec.name, f"{spec.name}: selection unknown: {reason}") from error
 
     @property
     def name(self) -> str:
@@ -213,7 +237,12 @@ class Seat:
         """A program with no home of its own writes every seat's record to one place: two unjoined seats cannot be told apart."""
         for other in self.ship.seats.values():
             if other.name != self.name:
-                sibling = Seat(self.ship, other, self.tmux)
+                if not any(other.for_pool(pool).harness == self.spec.harness for pool in other.pools):
+                    continue
+                try:
+                    sibling = Seat(self.ship, other, self.tmux)
+                except SelectionError:
+                    return True  # an unresolved sibling cannot certify exclusive shared state
                 if sibling.spec.harness == self.spec.harness and sibling.is_up:
                     pinned = sibling.folder / "record"
                     if not pinned.is_file():
@@ -385,6 +414,8 @@ class Seat:
         launched = self.launched()
         if launched is not None:
             self.record()  # preserve the last proven join before removing its launch
+            if self.spec.pool_choices:
+                self.move_to(self.pool.name)  # retain the corroborated selection before its launch disappears
         pane = self.pane()
         (self.folder / "launch.json").unlink(missing_ok=True)
         if pane is None:
@@ -455,8 +486,17 @@ def temporary_seat(ship: Ship, tmux: Tmux, spec: SeatSpec, orders: list[post.Mes
 # -- the ship ------------------------------------------------------------------------------
 
 
-def seats(ship: Ship, tmux: Tmux) -> list[Seat]:
-    return [Seat(ship, spec, tmux) for spec in ship.seats.values()]
+def read_seat(ship: Ship, spec: SeatSpec, tmux: Tmux) -> Seat | UnresolvedSeat:
+    try:
+        return Seat(ship, spec, tmux)
+    except SelectionError as error:
+        return UnresolvedSeat(ship, spec, tmux, error)
+
+
+def seats(ship: Ship, tmux: Tmux, strict: bool = True) -> list[Seat | UnresolvedSeat]:
+    """Lifecycle callers refuse unknown selection; readings retain its named failure."""
+    construct = Seat if strict else read_seat
+    return [construct(ship, spec, tmux) for spec in ship.seats.values()]
 
 
 def bring_up(ship: Ship, tmux: Tmux) -> list[str]:

@@ -19,7 +19,7 @@ from pathlib import Path
 from . import credential, ledger, pending as pending_delivery, post, record_owner, service
 from .door import Door, Reading
 from .harness.base import same_name
-from .seat import Seat, seats
+from .seat import Seat, UnresolvedSeat, seats
 from .ship import Ship
 from .servicectl import STALE_SECONDS
 from .tmux import Tmux
@@ -44,8 +44,10 @@ def _ago(moment: datetime | None, now: datetime) -> str:
     return f"{int(seconds // 60)}m" if seconds >= 60 else f"{int(seconds)}s"
 
 
-def activity(seat: Seat, now: datetime | None = None) -> Activity:
+def activity(seat: Seat | UnresolvedSeat, now: datetime | None = None) -> Activity:
     """idle, working, question-only human wait, stalled, off, or an explicitly unknown reading."""
+    if isinstance(seat, UnresolvedSeat):
+        return Activity('unknown', str(seat.error))
     now = now or datetime.now(timezone.utc)
     pane = seat.pane()
     if pane is None:
@@ -108,7 +110,7 @@ class SeatReading:
         return self.activity.state == 'needs a human' or (not self.door.open and self.door.clears == "needs a human")
 
 
-def reading(seat: Seat, store: post.Store | None = None) -> SeatReading:
+def reading(seat: Seat | UnresolvedSeat, store: post.Store | None = None) -> SeatReading:
     """One seat's row: activity, door, order, tokens today, pool and the model it runs.
 
     What the seat runs is read from its record first and its screen second; the ship file's
@@ -117,12 +119,15 @@ def reading(seat: Seat, store: post.Store | None = None) -> SeatReading:
     """
     store = store or post.Store(seat.ship.runtime)
     act = activity(seat)
-    door = Door(seat).reading() if act.state not in ("off",) else Reading(False, act.detail or "off", "qd up")
-    observed = running_settings(seat) if act.state != "off" else {}
-    running = observed.get("model")
     open_orders = [m for m in store.open_for(seat.name) if m.kind == "order"]
     claimed = store.claimed(seat.name, post.now())
     order = claimed or (open_orders[0].id if len(open_orders) == 1 else None)
+    if isinstance(seat, UnresolvedSeat):
+        return SeatReading(seat.name, act, Reading(False, str(seat.error), 'needs a human'),
+                           order, tokens_today(seat), 'unknown', None, 'unknown')
+    door = Door(seat).reading() if act.state not in ("off",) else Reading(False, act.detail or "off", "qd up")
+    observed = running_settings(seat) if act.state != "off" else {}
+    running = observed.get("model")
     launched = seat.launched()
     version = launched.version if launched else None
     pool = launched.pool if launched and launched.pool in seat.ship.pools else seat.pool.name
@@ -130,7 +135,7 @@ def reading(seat: Seat, store: post.Store | None = None) -> SeatReading:
                        seat.harness.name, seat.spec.model, version)
 
 
-def tokens_today(seat: Seat) -> ledger.Count:
+def tokens_today(seat: Seat | UnresolvedSeat) -> ledger.Count:
     """Today's tokens: the Ledger's count, which outlives a fresh start; the records' while the Ledger has nothing.
 
     A ``+`` on the figure says some of today's turns could not be measured: a record that would not
@@ -146,6 +151,8 @@ def tokens_today(seat: Seat) -> ledger.Count:
                 counted = ledger.Count()
         if counted.known or counted.unmeasured:
             return counted
+    if isinstance(seat, UnresolvedSeat):
+        return ledger.Count(0, 1)  # retained totals above are usable; guessing a record reader is not
     found = ledger.Count()
     for item in record_owner.records(seat):
         try:
@@ -191,7 +198,7 @@ def service_state(runtime: Path) -> str:
 
 def status_reading(ship: Ship, tmux: Tmux) -> dict:
     store = post.Store(ship.runtime)
-    return {"service": service_state(ship.runtime), "seats": [reading(seat, store) for seat in seats(ship, tmux)],
+    return {"service": service_state(ship.runtime), "seats": [reading(seat, store) for seat in seats(ship, tmux, False)],
             "open_orders": [m for m in store.all() if m.kind == "order" and store.is_open(m)],
             "facts": facts(ship, tmux), "usage": headline_readings(ship)}
 
@@ -212,8 +219,13 @@ def table(ship: Ship, tmux: Tmux) -> list[str]:
     return render_table(status_reading(ship, tmux))
 
 
-def seat_reading(seat: Seat) -> dict:
+def seat_reading(seat: Seat | UnresolvedSeat) -> dict:
     r = reading(seat)
+    if isinstance(seat, UnresolvedSeat):
+        return dict(seat=r, record=None, state=None, record_error=str(seat.error),
+                    receipt_skips=dict(total=0, counts=[], examples=[], omitted=0),
+                    receipt_error=str(seat.error), record_absent=str(seat.error),
+                    record_limits=None, screen=None, usage=headline_readings(seat.ship))
     record = seat.record()
     state, error = None, None
     skips, receipt_error = dict(total=0, counts=[], examples=[], omitted=0), None
@@ -299,6 +311,7 @@ class Facts:
     usage: list[dict] = field(default_factory=list)
     pending: list[str] = field(default_factory=list)
     routes: list[str] = field(default_factory=list)
+    unknown: list[str] = field(default_factory=list)
 
     def line(self) -> str:  # law: nothing-waits-silently
         parts = ["SERVICE DOWN" if self.service == "down" else f"service {self.service}"]
@@ -307,6 +320,7 @@ class Facts:
             parts.append(f"{self.queued} queued behind a turn, oldest {self.oldest_queued}m")
         if self.blind:
             parts.append(f"{self.blind} blind")
+        parts += self.unknown
         parts += [f"{name} needs a human" for name in self.needs_human]
         parts += [f"{name}: no watch armed" for name in self.unarmed]
         parts += [f"wall: {wall}" for wall in self.walls]
@@ -402,13 +416,17 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
     attempts = post.Attempts(ship.runtime) if attempts is None else attempts
     records = attempts.all()
     latest = attempts.latest(attempts=records)
-    waiting, needs_human, unarmed, pending_lines, routes = [], [], [], [], []
-    for seat in seats(ship, tmux):
+    waiting, needs_human, unarmed, pending_lines, routes, unknown = [], [], [], [], [], []
+    for seat in seats(ship, tmux, False):
+        pending = attempts.undelivered(store, seat.name, results=latest)
+        waiting += pending
+        if isinstance(seat, UnresolvedSeat):
+            needs_human.append(seat.name)
+            unknown.append(str(seat.error).partition(';')[0])
+            continue
         launched = seat.launched()
         if launched is not None and launched.pool in seat.spec.pools[1:]:
             routes.append(f"{seat.name} on {seat.harness.name}/{launched.pool}")
-        pending = attempts.undelivered(store, seat.name, results=latest)
-        waiting += pending
         if seat.session.human:
             if pending and not post.watch_armed(ship.runtime, seat.name):
                 unarmed.append(seat.name)
@@ -435,6 +453,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         needs_human=needs_human,
         pending=pending_lines,
         routes=routes,
+        unknown=unknown,
         unarmed=unarmed,
         walls=walls if walls is not None else ledger_walls(ship),
         usage=headline_readings(ship),

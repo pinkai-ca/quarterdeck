@@ -218,6 +218,8 @@ def abandon(runtime: Path, name: str, reason: str) -> None:
 
 
 def reconcile(service: Service) -> set[Path]:
+    from .seat import SelectionError
+
     paths = set()
     attempts = {a.path.name: a for a in service.attempts.all()}
     names = {a.seat for a in attempts.values()}
@@ -228,7 +230,12 @@ def reconcile(service: Service) -> set[Path]:
                 abandon(service.runtime, name, "seat no longer declared; submission unconfirmed and never resent")
         paths.update(a.path for a in attempts.values() if a.seat == name)
     for name in service.ship.seats:
-        seat = service.seat(name)
+        try:
+            seat = service.seat(name)
+        except SelectionError as error:
+            service.hold_selection(error)
+            paths.update(a.path for a in attempts.values() if a.seat == name)
+            continue  # neither uncertainty nor receipt evidence is changed under a guessed selection
         proofs, errors = journals(seat)
         if errors:
             # Attempts without journals cannot reconstruct this seat's unreadable evidence.

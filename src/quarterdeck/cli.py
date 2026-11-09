@@ -305,8 +305,10 @@ def cmd_watch(args: argparse.Namespace) -> Reading | str:
     ship = load_ship(args)
     if not args.seat:
         return Reading(watch.status_reading(ship, Tmux.default()), watch.render_table)
-    seat = seat_of(ship, args.seat)
+    seat = seatmod.read_seat(ship, ship.seat(args.seat), Tmux.default())
     if args.save_screen:
+        if isinstance(seat, seatmod.UnresolvedSeat):
+            raise seat.error
         return f"screen saved to {watch.save_screen(seat)}"
     return Reading(watch.seat_reading(seat), watch.render_full)
 
