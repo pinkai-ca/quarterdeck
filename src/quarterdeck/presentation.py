@@ -113,7 +113,27 @@ def command_folder(argv):
 def command_line(argv):
     """Only the plain canonical text command bypasses the normal parser/handoff."""
     folder = command_folder(argv)
-    return cached_line(folder) if folder is not None else None
+    if folder is None:
+        return None
+    line = cached_line(folder)
+    if line is not None:
+        return line
+    from . import ship as shipmod, watch
+    from .tmux import Tmux, TmuxError
+
+    try:
+        ship = shipmod.load(shipmod.find(folder))
+    except shipmod.ShipError:
+        return None  # keep the CLI's declaration errors and numeric exit
+    installed = ship.runtime / 'venv/bin/qd'
+    if installed.exists() and Path(sys.executable).parent.resolve() != installed.parent.resolve():
+        return None
+    try:
+        return watch.facts(ship, Tmux.default()).line()
+    except TmuxError:
+        return None  # preserve the CLI's native failure exit and independent alarm
+    except (OSError, ValueError, KeyError, TypeError):
+        return unavailable_line(argv)
 
 
 def unavailable_line(argv):

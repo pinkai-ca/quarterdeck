@@ -94,7 +94,7 @@ def test_cold_console_avoids_full_reading_imports_but_falls_back_after_death(liv
     lock.close()
     done=subprocess.run(command,env=env,capture_output=True,text=True,check=True)
     assert done.stdout.startswith('SERVICE DOWN')
-    assert 'quarterdeck.cli' in json.loads(modules.read_text())
+    assert 'quarterdeck.watch' in json.loads(modules.read_text())
 
 
 def test_json_and_unrecognized_arguments_never_take_the_text_shortcut(live):

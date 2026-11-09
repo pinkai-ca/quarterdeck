@@ -50,6 +50,10 @@ def test_paste_reaches_the_program_and_the_screen_reads_back(tmux: Tmux, tmp_pat
     screen = wait_for(lambda: screen_showing(tmux, pane.id, "line two"))
     assert "qd > order from desk · ord-7f3a · a subject" in screen
     assert tmux.pane(pane.id) is not None and tmux.pane("%999") is None
+    current, captured = tmux.read_pane(pane.id)
+    assert current.pid == pane.pid and current.width == tmux.pane(pane.id).width
+    assert "line two" in captured and tmux.read_pane("%999") is None
+    assert tmux.clients_attached(["Crew"]) is False
 
 
 @pytest.mark.parametrize("exit_code", [3, 7])

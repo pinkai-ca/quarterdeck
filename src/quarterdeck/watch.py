@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from . import credential, ledger, pending as pending_delivery, post, record_owner, service
+from . import credential, ledger, pending as pending_delivery, post, record_owner, servicectl as service
 from .door import Door, Reading
 from .harness.base import same_name
 from .seat import Seat, UnresolvedSeat, seats

@@ -190,7 +190,43 @@ class Tmux:
         return [_parse(line) for line in self.run(*args).splitlines()]
 
     def pane(self, pane_id: str) -> Pane | None:
-        return next((p for p in self.panes() if p.id == pane_id), None)
+        if not pane_id.startswith('%') or not pane_id[1:].isascii() or not pane_id[1:].isdigit():
+            return None
+        try:
+            identity = self.run('display-message', '-p', '-t', pane_id, _FORMAT).rstrip('\n')
+        except TmuxError:
+            return next((p for p in self.panes() if p.id == pane_id), None)
+        return _parse(identity) if identity.partition('\t')[0] == pane_id else None
+
+    def read_pane(self, pane_id: str, history: int = 0) -> tuple[Pane, str] | None:
+        """Read current identity and text in one server command queue, never from a cache."""
+        if not pane_id.startswith('%') or not pane_id[1:].isascii() or not pane_id[1:].isdigit():
+            return None
+        try:
+            output = self.run('display-message', '-p', '-t', pane_id, _FORMAT, ';',
+                              'capture-pane', '-p', '-J', '-t', pane_id, '-S', str(-history))
+        except TmuxError:
+            if self.pane(pane_id) is None:
+                return None
+            raise
+        identity, separator, text = output.partition('\n')
+        return (_parse(identity), text) if separator and identity.partition('\t')[0] == pane_id else None
+
+    def clients_attached(self, sessions: list[str]) -> bool | None:
+        """Only a successful complete client listing can establish no presentation demand."""
+        if any(any(char in name for char in '\t\r\n') for name in sessions):
+            return None
+        try:
+            lines = self.run('list-clients', '-F', 'client\t#{session_name}').splitlines()
+        except TmuxError:
+            return None
+        names = []
+        for line in lines:
+            fields = line.split('\t')
+            if len(fields) != 2 or fields[0] != 'client' or not fields[1]:
+                return None
+            names.append(fields[1])
+        return any(name in sessions for name in names)
 
     def capture(self, pane_id: str, history: int = 0) -> str:
         """Join only terminal-marked soft wraps; preserve application newlines."""

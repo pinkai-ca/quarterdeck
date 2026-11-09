@@ -55,10 +55,13 @@ def test_startup_holds_without_keys_then_ready_delivers_once_with_a_receipt(capt
 
     raw = (FIXTURES / program / version / f"{frame}.txt").read_text()
     startup = harness.get(program).screen(raw)
-    native_screen, capture = captain.harness.screen, tmux.capture
+    native_screen, read_pane = captain.harness.screen, tmux.read_pane
     holding = [True]
     monkeypatch.setattr(captain.harness, "screen", lambda text: startup if text == raw else native_screen(text))
-    monkeypatch.setattr(tmux, "capture", lambda *args, **kwargs: raw if holding[0] else capture(*args, **kwargs))
+    def startup_packet(*args, **kwargs):
+        found = read_pane(*args, **kwargs)
+        return (found[0], raw) if found and holding[0] else found
+    monkeypatch.setattr(tmux, "read_pane", startup_packet)
     sent, pressed = [], []
     paste, keys = tmux.paste, tmux.keys
 

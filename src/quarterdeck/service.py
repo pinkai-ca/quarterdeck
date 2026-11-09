@@ -35,6 +35,7 @@ from .ship import Ship, ShipError
 from .tmux import Tmux
 
 TICK = 1.0
+STATUS_INTERVAL = 0.4  # presentation only; its collection-start lifetime stays one second
 BLIND_INTERVAL = 60.0  # how often the blind attempts are read against the records
 
 
@@ -56,6 +57,8 @@ class Service:
         self.usage_read: dict[str, float] = {}
         self.read_marks: dict[Path, tuple] = {}  # record -> the fingerprint it was last read at
         self.blind_checked = -BLIND_INTERVAL  # when the blind attempts were last read against the records
+        self.next_status = 0.0
+        self.status_checked: float | None = None
 
     def run(self) -> None:
         self.lock = acquire_lock(self.runtime)  # one service per ship, for its whole life
@@ -63,7 +66,12 @@ class Service:
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
         while True:
             self.tick()
-            time.sleep(TICK)
+            until = time.monotonic() + TICK
+            while time.monotonic() < until:
+                self.status_due()
+                remaining = until - time.monotonic()
+                if remaining > 0:
+                    time.sleep(min(remaining, max(0.001, self.next_status - time.monotonic())))
 
     def tick(self) -> None:
         """One pass: the ship file read afresh, then every duty, each failing alone."""
@@ -72,12 +80,28 @@ class Service:
         except ShipError as error:
             self.log("error", step="load", error=str(error))
         for step in (self.reconcile, self.account, self.inboxes, self.deliveries, self.requests, self.fresh_after_order,
-                     self.rebrief, self.credentials, self.failover, self.publish_status):  # accounting before anything relaunches a seat
+                     self.rebrief, self.credentials, self.failover):  # accounting before anything relaunches a seat
             self.heartbeat()  # before every step: a slow delivery or usage read reads as busy, never as dead
             try:
                 step()
             except Exception as error:  # one failing step never stops the others
                 self.log("error", step=step.__name__, error=repr(error), trace=traceback.format_exc())
+            self.status_due()
+
+    def status_due(self) -> None:
+        now = time.monotonic()
+        if self.status_checked is not None and self.status_checked <= now < self.next_status:
+            return
+        self.status_checked = now
+        self.next_status = now + STATUS_INTERVAL
+        try:
+            sessions = [session.title for session in self.ship.sessions.values()]
+            demand = self.tmux.clients_attached(sessions) if hasattr(self.tmux, 'clients_attached') else None
+            if demand is not False:
+                self.heartbeat()
+                self.publish_status()
+        except Exception as error:
+            self.log('error', step='publish_status', error=repr(error), trace=traceback.format_exc())
 
     def publish_status(self) -> None:
         presentation.publish(self.ship, self.tmux, self.status_framework, self.store, self.attempts)

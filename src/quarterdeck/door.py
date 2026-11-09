@@ -67,6 +67,9 @@ class Door:
         self.since = datetime.now(timezone.utc)
 
     def screen(self) -> Screen | None:
+        if hasattr(self.seat, 'read_pane'):
+            found = self.seat.read_pane()
+            return self.harness.screen(found[1]) if found else None
         pane = self.seat.pane()
         if pane is None or pane.dead:
             return None
@@ -74,6 +77,9 @@ class Door:
 
     def echoes(self) -> tuple[str, ...]:
         """The inputs the transcript shows, read with scrollback, since a long message's echo reaches above the screen."""
+        if hasattr(self.seat, 'read_pane'):
+            found = self.seat.read_pane(history=TRANSCRIPT_LINES)
+            return self.harness.screen(found[1]).echoes if found else ()
         pane = self.seat.pane()
         if pane is None or pane.dead:
             return ()

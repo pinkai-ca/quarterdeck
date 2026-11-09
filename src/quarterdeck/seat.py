@@ -189,6 +189,20 @@ class Seat:
         pane = self.pane()
         return pane is not None and not pane.dead
 
+    def read_pane(self, history: int = 0) -> tuple[Pane, str] | None:
+        """A fresh screen still belongs to the launch whose identity we checked."""
+        if not hasattr(self.tmux, 'read_pane'):
+            pane = self.pane()
+            return (pane, self.tmux.capture(pane.id, history=history)) if pane and not pane.dead else None
+        launched = self.launched()
+        if launched is None:
+            return None
+        found = self.tmux.read_pane(launched.pane, history)
+        if (found is None or found[0].pid != launched.pid or found[0].dead
+                or self.launched() != launched):
+            return None  # law: identity
+        return found
+
     def join(self) -> Join:
         """The seat's record: pinned once found, the first written after its launch."""
         pinned = self.folder / "record"
