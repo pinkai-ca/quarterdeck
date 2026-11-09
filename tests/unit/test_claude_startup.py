@@ -108,6 +108,17 @@ def test_altered_or_ambiguous_offer_is_untouched(startup, change):
     assert w.calls == []
 
 
+@pytest.mark.parametrize('version', ['2.1.317-beta.1', '2.1.317.1'])
+@pytest.mark.parametrize('selected', ['yes', 'no'])
+def test_unproven_version_suffixes_never_authorize_either_key(startup, version, selected):
+    w = startup
+    w.state.write_text(json.dumps({'hasSeenAutoDefaultNudge': True}))
+    before = w.state.read_bytes()
+    w.shown[0] = frame('auto-default-offer-'+selected).replace('v2.1.317', 'v'+version)
+    assert Door(w.seat).deliver('synthetic work').result == 'withheld'
+    assert w.calls == [] and w.state.read_bytes() == before
+
+
 def test_human_sessions_and_drafts_never_answer_the_offer(startup):
     w = startup
     w.shown[0] = frame('auto-default-offer-yes')

@@ -273,7 +273,7 @@ def auto_default_offer(text: str) -> Interruption | None:
     if len(titles) != 1:
         return None
     at = titles[0]
-    if not at or not RULE.match(lines[at-1]) or not re.search(r'Claude Code v2\.1\.317\b', '\n'.join(lines[:at])):
+    if not at or not RULE.match(lines[at-1]) or not re.search(r'Claude Code v2\.1\.317[ \t]*$', '\n'.join(lines[:at]), re.MULTILINE):
         return None
     body = [line.strip() for line in lines[at+1:] if line.strip()]
     if len(body) < 3 or ' '.join(body[:-2]) != AUTO_DEFAULT_DESCRIPTION:

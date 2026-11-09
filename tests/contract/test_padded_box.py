@@ -60,14 +60,14 @@ def test_empty_padded_prompt_rows_open_every_adapter(name, padding, monkeypatch:
 def test_recognized_placeholder_padding_is_empty_not_an_obstruction(name, placeholder, padding, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     door = door_for(name, capture(name, placeholder, padding), monkeypatch, home=tmp_path/'home')
     assert door.screen().box == "" and door.reading().open
-    assert not door_for(name, capture(name, placeholder + " edited", padding), monkeypatch).reading().open
+    assert not door_for(name, capture(name, placeholder + " edited", padding), monkeypatch, home=tmp_path/'home').reading().open
 
 
 @pytest.mark.parametrize("name", NAMES)
 @pytest.mark.parametrize("padding", [3, 4, "full"])
-def test_nonempty_padding_verifies_only_known_payload_and_keeps_drafts_obstructed(name, padding, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_nonempty_padding_verifies_only_known_payload_and_keeps_drafts_obstructed(name, padding, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     payload = "keep  both spaces\n\n  preserve indentation\nlast line"
-    door = door_for(name, capture(name, payload, padding), monkeypatch)
+    door = door_for(name, capture(name, payload, padding), monkeypatch, home=tmp_path/'home')
     screen = door.screen()
     assert screen.box.endswith(" "), "keep raw nonempty padding for ownership checks"
     assert not door.reading().open and door.reading().clears == "needs a human"
