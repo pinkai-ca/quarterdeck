@@ -136,13 +136,18 @@ class OpenCodeHarness(EndpointHarness):
         config = copy.deepcopy(merged(merged(config, layered), seat.settings))
         if not seat.human_session:
             # V1 evaluates the last matching rule. Agent rules follow root rules.
-            for scope in [config, *config.get('agent', {}).values(), *config.get('mode', {}).values()]:
+            modes = config.get('mode', {})
+            scopes = [(config, True), *((scope, name not in modes) for name, scope in config.get('agent', {}).items()),
+                      *((scope, True) for scope in modes.values())]
+            for scope, final in scopes:
                 rules = scope.get('permission', {})
                 rules = {'*': rules} if isinstance(rules, str) else dict(rules)
                 rules.pop('question', None)
-                scope['permission'] = {**rules, 'question': 'deny'}
+                # A mode overlay must insert the final key, not update an earlier
+                # agent key before newly merged wildcard allows.
+                scope['permission'] = {**rules, **({'question': 'deny'} if final else {})}
                 if isinstance(scope.get('tools'), dict) and 'question' in scope['tools']:
-                    scope['tools']['question'] = False  # deprecated native setting must not translate back to allow
+                    scope['tools'].pop('question')  # native Object.assign would insert this key before wildcard rules
         price = Price.parse(pool.price) if pool.price is not None else None
         model = config["provider"][pool.name]["models"][choice.model]
         model.pop("cost", None)

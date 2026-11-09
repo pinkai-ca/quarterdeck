@@ -4,6 +4,7 @@ from dataclasses import replace
 import json
 import tomllib
 import copy
+from fnmatch import fnmatchcase
 
 import pytest
 
@@ -30,8 +31,9 @@ def test_native_question_policy_is_applied_after_root_profile_agent_and_wildcard
         'codex': {'tools': {'experimental_request_user_input': {'enabled': True}},
                   'profiles': {'custom': {'tools': {'experimental_request_user_input': {'enabled': True}}}},
                   'features': {'default_mode_request_user_input': True, 'collaboration_modes': True}},
-        'opencode': {'permission': {'question': 'allow', 'q*': 'allow', '*': 'allow'},
-                     'mode': {'legacy': {'permission': {'question': 'allow', '*': 'allow'}}},
+        'opencode': {'permission': {'question': 'allow', 'q*': 'allow', '*': 'allow'}, 'tools': {'question': True},
+                     'mode': {'legacy': {'permission': {'question': 'allow', '*': 'allow'}},
+                              'custom': {'permission': {'*': 'allow'}}},
                      'agent': {'build': {'permission': '*'}, 'plan': {'permission': {'question': 'allow', '*': 'allow'}},
                                'custom': {'permission': {'q*': 'allow'}, 'tools': {'question': True, 'read': False}}}},
     }
@@ -59,11 +61,22 @@ def test_native_question_policy_is_applied_after_root_profile_agent_and_wildcard
         out = json.loads((seat.home / 'config/opencode/opencode.json').read_text())
         if human:
             assert out['permission'] == config['permission'] and out['agent'] == config['agent']
+            assert out['tools'] == config['tools']
             assert 'OPENCODE_PERMISSION' not in launch.env
         else:
-            for scope in [out, *out['agent'].values(), *out['mode'].values()]:
-                assert list(scope['permission'])[-1] == 'question'
-                assert scope['permission']['question'] == 'deny', 'last rule wins in native 1.19.5'
+            # Pinned native ConfigAgent.normalize uses Object.assign; mode then
+            # merges into agent. Existing keys keep their position in both steps.
+            def native_permissions(scope):
+                rules = {key: 'allow' if value else 'deny' for key, value in scope.get('tools', {}).items()}
+                rules.update(scope.get('permission', {}))
+                return rules
+            root_rules = native_permissions(out)
+            assert [action for pattern, action in root_rules.items() if fnmatchcase('question', pattern)][-1] == 'deny'
+            for name in out['agent'].keys() | out['mode'].keys():
+                rules = native_permissions(out['agent'].get(name, {}))
+                rules.update(native_permissions(out['mode'].get(name, {})))
+                matching = [action for pattern, action in [*root_rules.items(), *rules.items()] if fnmatchcase('question', pattern)]
+                assert matching[-1] == 'deny', 'native normalization/legacy overlay must still remove question'
             assert out['agent']['custom']['tools']['read'] is False
             assert launch.env['OPENCODE_DISABLE_PROJECT_CONFIG'] == '1'
             assert json.loads(launch.env['OPENCODE_PERMISSION']) == {'question': 'deny'}
