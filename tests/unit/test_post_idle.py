@@ -13,6 +13,9 @@ from quarterdeck import post
 def test_unchanged_immutable_store_lookups_do_not_list_the_directory(tmp_path, monkeypatch):
     store = post.Store(tmp_path)
     order = store.new('order', 'issuer', 'worker', 'synthetic')
+    info = store.dir.stat()
+    # Exercise the old idle directory path, outside its timestamp race window.
+    monkeypatch.setattr(post.time, 'time_ns', lambda: max(info.st_mtime_ns, info.st_ctime_ns) + 3_000_000_000)
     store.all()
     scans = []
     original = os.scandir

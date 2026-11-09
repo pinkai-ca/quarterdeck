@@ -24,6 +24,7 @@ KINDS = ("order", "report", "question", "answer", "ack")
 SPEEDS = ("now", "interrupt")
 SHIP = "ship"  # the sender of the ship's own notices, and an inbox a seat may answer to
 REPLY_VERB = {"order": "report", "question": "answer"}
+POST_TIMESTAMP_TICK_NS = 2_000_000_000  # conservative filesystem tick; see docs/DESIGN.md
 
 
 def now() -> datetime:
@@ -77,6 +78,7 @@ class Store:
     def __init__(self, runtime: Path):
         self.dir = runtime / "post" / "store"
         self._cache: tuple[tuple[int, ...], list[Message], dict[str, list[Message]]] | None = None
+        self._cache_at: int | None = None
 
     def new(self, kind: str, sender: str, to: str, body: str, **fields) -> Message:
         if kind not in KINDS:
@@ -108,17 +110,19 @@ class Store:
         return path
 
     def _loaded(self) -> tuple[list[Message], dict[str, list[Message]]]:
-        """The messages, oldest first, and the replies by the id they answer: read once per change of the
-        store folder, since files there never change, so every question of the store is one lookup."""
+        """Immutable messages and replies; recent directory listings stay untrusted."""
+        cached_at = self._cache_at
+        self._cache_at = None  # a failed refresh cannot certify the previous listing
+        started = time.time_ns()
         try:
             info = self.dir.stat()
         except FileNotFoundError:
             self._cache = None
             return [], {}
-        # Posts are immutable and published by rename. Checking their directory is
-        # constant work even when an inbox asks about every historical reply.
+        checked = time.time_ns()
         stamp = (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns)
-        if self._cache is None or self._cache[0] != stamp:
+        if (self._cache is None or self._cache[0] != stamp or cached_at is None
+                or not cached_at <= started <= checked):
             with os.scandir(self.dir) as entries:
                 paths = [self.dir / entry.name for entry in entries if entry.name.endswith('.json')]
             messages = sorted((Message.from_json(p.read_text()) for p in paths), key=lambda m: (m.at, m.id))
@@ -127,6 +131,13 @@ class Store:
                 if message.re:
                     replies.setdefault(message.re, []).append(message)
             self._cache = (stamp, messages, replies)
+            finished = time.time_ns()
+            # Certify only a listing begun after the entire timestamp bucket.
+            # An unsafe listing must be refreshed even when its stamp has aged.
+            if max(info.st_mtime_ns, info.st_ctime_ns) + POST_TIMESTAMP_TICK_NS < started <= checked <= finished:
+                self._cache_at = started
+        else:
+            self._cache_at = cached_at
         return self._cache[1], self._cache[2]
 
     def all(self) -> list[Message]:
