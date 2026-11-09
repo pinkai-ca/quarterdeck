@@ -87,6 +87,8 @@ class _Reader(JsonLinesReader):
 
     def message(self, message: dict, at: datetime | None) -> None:
         role = message.get("role")
+        if not self.message_known(message):
+            self.tools_known = False
         if role == "user":
             text = _text(message.get("content"))
             self.last_input, self.last_input_at = text, at
@@ -110,11 +112,52 @@ class _Reader(JsonLinesReader):
                     self.open["reply"] = block["text"]
                 elif block.get("type") == "toolCall":
                     name = " ".join(str(block.get("name") or "").split()) or "?"  # a malformed call may carry a name with line breaks
+                    if block.get('id') in self.live_tools:
+                        self.tools_known = False
                     self.open_call(block.get('id'), name, at)
             if message.get("stopReason") in ENDS_TURN:
                 self.end(at)
         elif role == "toolResult":
             self.close_tool(message.get("toolCallId"), at, bool(message.get("isError")), message.get("toolName") or "?")
+
+    def message_known(self, message: dict) -> bool:
+        """Native role/content boundaries must account for every possible call."""
+        role, content = message.get('role'), message.get('content')
+        if role in ('branchSummary', 'compactionSummary'):
+            return isinstance(message.get('summary'), str) and 'content' not in message
+        if role == 'bashExecution':
+            return ('content' not in message and isinstance(message.get('command'), str) and isinstance(message.get('output'), str)
+                    and (type(message.get('exitCode')) is int or message.get('cancelled') is True))
+        if role not in ('user', 'assistant', 'toolResult', 'custom'):
+            return False
+        if role == 'toolResult':
+            call = message.get('toolCallId')
+            if (not isinstance(call, str) or call not in self.live_tools
+                    or message.get('toolName') != self.live_tools[call] or not isinstance(message.get('isError'), bool)):
+                return False
+        if role in ('user', 'custom') and isinstance(content, str):
+            return True
+        if not isinstance(content, list):
+            return False
+        for block in content:
+            if not isinstance(block, dict):
+                return False
+            kind = block.get('type')
+            if kind == 'text':
+                known = isinstance(block.get('text'), str)
+            elif role == 'assistant' and kind == 'thinking':
+                known = isinstance(block.get('thinking'), str)
+            elif role == 'assistant' and kind == 'toolCall':
+                call, name = block.get('id'), block.get('name')
+                known = (isinstance(call, str) and bool(call) and call not in self.live_tools
+                         and isinstance(name, str) and bool(name) and isinstance(block.get('arguments'), dict))
+            elif role != 'assistant' and kind == 'image':
+                known = isinstance(block.get('data'), str) and isinstance(block.get('mimeType'), str)
+            else:
+                known = False
+            if not known:
+                return False
+        return True
 
     def end(self, at: datetime | None) -> None:
         turn = self.close_turn()

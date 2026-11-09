@@ -172,7 +172,55 @@ class _Reader(JsonLinesReader):
             self.queued.remove(text)
             self.consumed.append(text)
 
+    def content_known(self, content, role: str) -> bool:
+        """Classify native blocks for execution proof, independently of accounting."""
+        if role == 'user' and isinstance(content, str):
+            return True
+        if not isinstance(content, list):
+            return False
+        for block in content:
+            if not isinstance(block, dict):
+                return False
+            kind = block.get('type')
+            if kind == 'text':
+                known = isinstance(block.get('text'), str)
+            elif role == 'assistant' and kind in ('thinking', 'redacted_thinking'):
+                known = isinstance(block.get('thinking' if kind == 'thinking' else 'data'), str)
+            elif role == 'assistant' and kind == 'tool_use':
+                call, name = block.get('id'), block.get('name')
+                known = (isinstance(call, str) and bool(call) and call not in self.live_tools
+                         and isinstance(name, str) and bool(name) and isinstance(block.get('input'), dict))
+            elif role == 'user' and kind == 'tool_result':
+                call = block.get('tool_use_id')
+                known = (isinstance(call, str) and call in self.live_tools
+                         and isinstance(block.get('is_error', False), bool)
+                         and (isinstance(block.get('content', ''), str)
+                              or self.content_known(block.get('content'), 'result')))
+            elif role in ('user', 'result') and kind in ('image', 'document'):
+                source = block.get('source')
+                known = isinstance(source, dict) and (
+                    source.get('type') == 'base64' and isinstance(source.get('data'), str)
+                    or source.get('type') == 'url' and isinstance(source.get('url'), str)
+                    or kind == 'document' and source.get('type') == 'text' and isinstance(source.get('data'), str)
+                    or kind == 'document' and source.get('type') == 'content'
+                    and (isinstance(source.get('content'), str) or self.content_known(source.get('content'), 'document')))
+            elif role == 'document' and kind == 'image':
+                known = self.content_known([block], 'result')
+            elif role in ('user', 'result') and kind == 'search_result':
+                known = (isinstance(block.get('source'), str) and isinstance(block.get('title'), str)
+                         and self.content_known(block.get('content'), 'document'))
+            elif role == 'result' and kind == 'tool_reference':
+                known = isinstance(block.get('tool_name'), str)
+            else:
+                known = False
+            if not known:
+                return False
+        return True
+
     def user(self, entry: dict) -> None:
+        message = entry.get('message', {})
+        if message.get('role', 'user') != 'user' or not self.content_known(message.get('content'), 'user'):
+            self.tools_known = False
         text = prompt_text(entry)
         content = entry.get("message", {}).get("content")
         if isinstance(content, str) and content.startswith("<local-command-stdout>"):
@@ -206,9 +254,13 @@ class _Reader(JsonLinesReader):
         next prompt does.
         """
         message = entry.get("message", {})
+        if message.get('role', 'assistant') != 'assistant' or not self.content_known(message.get('content'), 'assistant'):
+            self.tools_known = False
         self.model = message.get("model") or self.model
         self.effort = entry.get("effort") or self.effort
         if self.open is None:
+            if any(block.get('type') == 'tool_use' for block in message.get('content') or []):
+                self.tools_known = False  # an out-of-turn call is not absent execution
             return
         self.open["model"] = self.model
         key = message.get("id") or entry.get("requestId") or entry.get("uuid") or len(self.open["usage"])
@@ -219,7 +271,7 @@ class _Reader(JsonLinesReader):
             if block.get("type") == "tool_use":
                 name = block.get('name', '?')
                 arguments = block.get('input')
-                if (name in ('Task', 'Agent') or arguments is not None and not isinstance(arguments, dict)
+                if (block.get('id') in self.live_tools or name in ('Task', 'Agent') or arguments is not None and not isinstance(arguments, dict)
                         or isinstance(arguments, dict) and arguments.get('run_in_background')):
                     self.tools_known = False  # a returned delegation/background handle is not execution completion
                 self.open_call(block.get('id'), name, when(entry.get('timestamp')))
