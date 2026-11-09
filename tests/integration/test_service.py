@@ -123,7 +123,7 @@ def test_a_worker_starts_fresh_after_its_order_closes(ship: shipmod.Ship, tmux: 
     wait_for(lambda: not post.Store(ship.runtime).open_for("worker-1"), seconds=20)
     report = post.Store(ship.runtime).all()[-1]
     assert report.kind == "report" and report.sender == "worker-1" and report.to == "operator"
-    wait_for(lambda: worker.launched() and worker.launched().at != first_launch.at, seconds=20)  # law: context-is-cache
+    wait_for(lambda: (launched := worker.launched()) and launched.at != first_launch.at, seconds=20)  # law: context-is-cache
     assert worker.launched().resume is None, "fresh: a new conversation"
     assert "fake-2" in worker.launched().argv, "the service read the ship file afresh, not what it loaded at start"  # law: ship-file
     book_path = ship.runtime / "ledger.sqlite"
