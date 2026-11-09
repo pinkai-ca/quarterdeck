@@ -106,6 +106,8 @@ def enterprise_ship(tmp_path: Path) -> Path:
     shutil.copy(FIXTURES / "ships" / "enterprise.toml", folder / "ship.toml")
     (folder / "orders.md").write_text("# Ship's orders: enterprise\n")
     git(folder, "init", "--quiet")
+    git(folder, "config", "user.name", "test")
+    git(folder, "config", "user.email", "t@example.org")
     git(folder, "add", ".")
     git(folder, "commit", "--quiet", "-m", "declare the ship")
     return folder
