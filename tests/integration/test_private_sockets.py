@@ -6,6 +6,7 @@ import threading
 import sys
 import time
 import subprocess
+import json
 
 import pytest
 
@@ -15,19 +16,120 @@ from quarterdeck.tmux import Tmux, TmuxError, PrivateTmuxError
 
 
 def test_suite_fixture_removes_its_dead_socket_in_an_isolated_root(monkeypatch):
-    root = Path(tempfile.mkdtemp(prefix='qs-', dir=os.environ.get('TMUX_TMPDIR', tempfile.gettempdir())))
-    monkeypatch.setenv('TMUX_TMPDIR', str(root))
-    fixture = conftest.tmux.__wrapped__()
-    server = next(fixture)
-    server.new_session('Synthetic')
-    socket = Path(server.run('display-message', '-p', '#{socket_path}').strip())
-    assert socket.is_relative_to(root) and socket.exists()
-    with pytest.raises(StopIteration):
-        next(fixture)  # the actual suite fixture's teardown, not a replica
-    assert not server.running()
-    assert not socket.exists(), 'fixture teardown left its private dead tmux socket'
-    assert not any(root.iterdir()), 'fixture left private namespace artifacts'
-    root.rmdir()
+    with conftest.socket_container(os.environ['TMUX_TMPDIR'], 'qs-') as root:
+        monkeypatch.setenv('TMUX_TMPDIR', str(root))
+        fixture = conftest.tmux.__wrapped__()
+        try:
+            server = next(fixture)
+            server.new_session('Synthetic')
+            socket = Path(server.run('display-message', '-p', '#{socket_path}').strip())
+            assert socket.is_relative_to(root) and socket.exists()
+            with pytest.raises(StopIteration):
+                next(fixture)  # the actual suite fixture's teardown, not a replica
+            assert not server.running()
+            assert not socket.exists(), 'fixture teardown left its private dead tmux socket'
+            assert not any(root.iterdir()), 'fixture left private namespace artifacts'
+        finally:
+            fixture.close()
+
+
+def test_unset_outer_root_uses_the_real_checkout_anchor_and_restores_environment():
+    code = '''
+import json, os
+from pathlib import Path
+from tests import conftest
+assert 'TMUX_TMPDIR' not in os.environ
+old = conftest.ROOT/'work/qd-suite-12345678/qs-12345678/qd-pt-12345678/s-replacement'
+scope = conftest.private_socket_root.__wrapped__()
+try:
+    root = next(scope)
+    assert root.parent == conftest.socket_parent()
+    with conftest.socket_container(root, 'qs-') as inner:
+        os.environ['TMUX_TMPDIR'] = str(inner)
+        fixture = conftest.tmux.__wrapped__()
+        try:
+            server = next(fixture)
+            server.new_session('Synthetic')
+            endpoint = Path(server.socket)
+            assert endpoint.is_relative_to(inner) and endpoint.exists()
+            assert len(os.fsencode(endpoint.parent/'s-replacement')) < 108
+            assert server.close(), server.held
+            assert not endpoint.exists() and not any(inner.iterdir())
+        finally:
+            fixture.close()
+            os.environ['TMUX_TMPDIR'] = str(root)
+    assert not any(root.iterdir())
+finally:
+    scope.close()
+assert 'TMUX_TMPDIR' not in os.environ and not root.exists()
+print(json.dumps(dict(checkout=str(conftest.ROOT), anchor=str(root.parent), old_nested_bytes=len(os.fsencode(old)), residue=0)))
+'''
+    env = {key: value for key, value in os.environ.items()
+           if key not in ('TMUX_TMPDIR','TMUX','TMUX_PANE','QD_SHIP','QD_SEAT','QD_TMUX_SOCKET')}
+    result = subprocess.run([sys.executable,'-c',code],env=env,cwd=conftest.ROOT,
+                            capture_output=True,text=True,timeout=10)
+    assert result.returncode == 0,result.stderr
+    observed = json.loads(result.stdout)
+    assert observed['checkout'] == str(conftest.ROOT)
+    assert Path(observed['anchor']) == conftest.socket_parent() and observed['residue'] == 0
+
+
+def test_failed_real_namespace_setup_removes_only_its_owned_empty_container(monkeypatch):
+    container = None
+    with pytest.raises(TmuxError,match='private tmux path too long'):
+        with conftest.socket_container(os.environ['TMUX_TMPDIR'], 'qs-'+'x'*100) as container:
+            monkeypatch.setenv('TMUX_TMPDIR',str(container))
+            fixture = conftest.tmux.__wrapped__()
+            try:
+                next(fixture)
+            finally:
+                fixture.close()
+    assert container is not None and not container.exists()
+
+
+def test_unset_fallback_refuses_a_symlink_outside_its_verified_project(tmp_path,monkeypatch):
+    project=tmp_path/'synthetic-project';project.mkdir()
+    conftest.git(project,'init','--quiet')
+    (project/'.gitignore').write_text('work/\n')
+    outside=tmp_path/'synthetic-outside';outside.mkdir()
+    (project/'work').symlink_to(outside,target_is_directory=True)
+    monkeypatch.setattr(conftest,'ROOT',project)
+    with pytest.raises(pytest.UsageError,match='cannot verify framework ignored work/'):
+        conftest.socket_parent()
+    assert not list(outside.iterdir())
+
+
+@pytest.mark.parametrize('replace',[False,True])
+def test_failed_setup_retains_a_nonempty_or_replaced_container_with_its_reason(replace):
+    container = None
+    descriptor = peer = None
+    try:
+        with pytest.raises(RuntimeError,match='synthetic setup failure') as raised:
+            with conftest.socket_container(os.environ['TMUX_TMPDIR'], 'qs-retain-') as container:
+                if replace:
+                    container.rmdir() # replace only this test's still-empty original directory
+                    container.mkdir(mode=0o700)
+                else:
+                    peer = (container/'test-owned-peer').open('w+')
+                    peer.write('synthetic peer');peer.flush()
+                descriptor = os.open(container,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+                raise RuntimeError('synthetic setup failure')
+        assert container.exists() and 'test socket container retained' in raised.value.__notes__[0]
+        if replace:
+            assert 'identity changed' in raised.value.__notes__[0]
+        else:
+            peer.seek(0)
+            assert peer.read()=='synthetic peer'
+    finally:
+        if descriptor is not None:
+            actual,created = container.lstat(),os.fstat(descriptor)
+            assert (actual.st_dev,actual.st_ino)==(created.st_dev,created.st_ino)
+            if peer is not None:
+                path=container/'test-owned-peer';actual=path.lstat();created=os.fstat(peer.fileno())
+                assert (actual.st_dev,actual.st_ino)==(created.st_dev,created.st_ino)
+                path.unlink();peer.close() # this test's file, never an unfamiliar socket
+            container.rmdir() # the original nonempty container or this test's replacement, now empty
+            os.close(descriptor)
 
 
 def test_observer_can_reach_but_cannot_own_stop_or_bootstrap(tmux):

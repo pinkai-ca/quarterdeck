@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -14,30 +15,79 @@ ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
+def socket_parent():
+    """Use the framework's ignored work/, including when these tests run in a linked worktree."""
+    try:
+        common = Path(subprocess.check_output(
+            ['git', '-C', str(ROOT), 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+            text=True, stderr=subprocess.PIPE).strip()).resolve()
+        project = common.parent
+        ignored = subprocess.run(['git', '-C', str(project), 'check-ignore', '--quiet', '--',
+                                  'work/.qd-test-sockets'], capture_output=True).returncode == 0
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise pytest.UsageError(f'cannot verify framework socket anchor for {ROOT}') from error
+    anchor = project / 'work'
+    if (common.name != '.git' or not common.is_dir() or not ignored or anchor.resolve() != anchor
+            or not (ROOT == project or ROOT.is_relative_to(project / 'work'))):
+        raise pytest.UsageError(f'cannot verify framework ignored work/ socket anchor for {ROOT}')
+    return anchor
+
+
+@contextmanager
+def socket_container(parent, prefix):
+    """Own this exact empty container through setup failure; never erase a peer or replacement."""
+    folder = Path(tempfile.mkdtemp(prefix=prefix, dir=parent))
+    descriptor = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    failure = None
+    try:
+        yield folder
+    except BaseException as error:
+        failure = error
+        raise
+    finally:
+        try:
+            actual, original = folder.lstat(), os.fstat(descriptor)
+            if (actual.st_dev, actual.st_ino) != (original.st_dev, original.st_ino):
+                raise OSError('container identity changed')
+            folder.rmdir()
+        except OSError as error:
+            detail = f'test socket container retained: {folder}: {error}'
+            if failure is not None:
+                failure.add_note(detail)
+            else:
+                pytest.fail(detail)
+        finally:
+            os.close(descriptor)
+
+
 @pytest.fixture(scope='session', autouse=True)
 def private_socket_root():
     """Even legacy named no-server probes must stay outside the user's socket directory."""
     previous = os.environ.get('TMUX_TMPDIR')
-    parent = Path(previous).expanduser().resolve() if previous else ROOT / 'work'
+    parent = Path(previous).expanduser().resolve() if previous else socket_parent()
     parent.mkdir(parents=True, exist_ok=True)
-    folder = Path(tempfile.mkdtemp(prefix='qd-suite-', dir=parent))
-    os.environ['TMUX_TMPDIR'] = str(folder)
-    try:
-        yield folder
-    finally:
-        if previous is None:
-            os.environ.pop('TMUX_TMPDIR', None)
-        else:
-            os.environ['TMUX_TMPDIR'] = previous
-        native = folder / f'tmux-{os.getuid()}'
+    sample = parent / 'qd-suite-12345678'
+    paths = [sample / 'qs-12345678/qd-pt-12345678/s-replacement',
+             sample / f'tmux-{os.getuid()}/qd-test-9999999999-abcdef-replacement',
+             sample / f'tmux-{os.getuid()}/qd-synthetic-attribution-no-server']
+    longest = max(len(os.fsencode(path)) for path in paths)
+    if longest >= 108:
+        raise pytest.UsageError(f'test socket anchor {parent} needs {longest} bytes; native limit is 107; '
+                                'choose a shorter project-owned TMUX_TMPDIR')
+    with socket_container(parent, 'qd-suite-') as folder:
+        os.environ['TMUX_TMPDIR'] = str(folder)
         try:
-            native.rmdir()  # only an empty directory in this fresh owned test root
-        except FileNotFoundError:
-            pass
-        try:
-            folder.rmdir()
-        except OSError as error:
-            pytest.fail(f'test socket namespace retained: {folder}: {error}')
+            yield folder
+        finally:
+            if previous is None:
+                os.environ.pop('TMUX_TMPDIR', None)
+            else:
+                os.environ['TMUX_TMPDIR'] = previous
+            native = folder / f'tmux-{os.getuid()}'
+            try:
+                native.rmdir()  # only an empty directory in this fresh owned test root
+            except FileNotFoundError:
+                pass
 
 
 @pytest.fixture
