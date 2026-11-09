@@ -71,7 +71,7 @@ def _tokens(message: dict) -> Tokens:
 
 
 class _Reader(JsonLinesReader):
-    kinds = ('session', 'message', 'model_change')
+    kinds = ('session', 'message', 'model_change', 'thinking_level_change')
     label = "pi"
 
     def take(self, entry: dict) -> None:
@@ -108,7 +108,7 @@ class _Reader(JsonLinesReader):
                     self.open["reply"] = block["text"]
                 elif block.get("type") == "toolCall":
                     name = " ".join(str(block.get("name") or "").split()) or "?"  # a malformed call may carry a name with line breaks
-                    self.pending[block.get("id")] = (name, at)
+                    self.open_call(block.get('id'), name, at)
             if message.get("stopReason") in ENDS_TURN:
                 self.end(at)
         elif role == "toolResult":
@@ -154,6 +154,8 @@ STEERING = re.compile(r"^\s*Steering: (.*?)\s*$", re.M)
 
 class PiHarness(EndpointHarness):
     """pi, proven on 0.74.2. Runs on an endpoint pool; model and thinking level change only at launch."""
+
+    human_tool_policy = "The enumerated core tools have no question tool; launch disables extensions. Custom tools are not classified."
 
     name = "pi"
     program = "pi"

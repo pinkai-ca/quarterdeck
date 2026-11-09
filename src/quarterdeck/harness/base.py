@@ -84,6 +84,13 @@ class Harness(ABC):
     reads_usage: bool = False  # True where usage() reads the provider's windows; a pool of such a program is read before a move
     remote_control: bool = False  # True where the program can open a seat to the operator's phone and claude.ai as well
     wrap_slack: int = 0  # columns the program keeps clear at the right when it wraps at a word, under the width where it breaks a word
+    human_tools: tuple[str, ...] = ()
+    human_tool_policy: str = "No native question-tool suppression proved for this adapter."
+
+    def waiting_for_human(self, state: State) -> bool:
+        """A complete nonempty question-only set; a displayed first tool proves no exclusivity."""
+        return (state.turn_open is True and bool(state.pending_tools)
+                and all(name in self.human_tools for name in state.pending_tools))
 
     def drill_settings(self, slow_acceptance: bool = False) -> dict:
         """Program settings for the synthetic drill; real programs supply none."""

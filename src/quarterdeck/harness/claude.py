@@ -9,6 +9,7 @@ same message) and the stop reason that ends a turn. Queued messages appear as
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import urllib.request
@@ -148,6 +149,7 @@ class _Reader(JsonLinesReader):
         if kind == "queue-operation":
             self.queue(entry)
         elif entry.get("isSidechain"):
+            self.tools_known = False  # this stream cannot prove all child/background execution ended
             message = entry.get("message", {})
             if kind == "assistant" and message.get("stop_reason") in ENDS_TURN and message.get("id") not in self.sidechain_ends:
                 self.sidechain_ends.add(message.get("id"))
@@ -213,7 +215,12 @@ class _Reader(JsonLinesReader):
             self.open["usage"][key] = measured
         for block in message.get("content") or []:
             if block.get("type") == "tool_use":
-                self.pending[block.get("id")] = (block.get("name", "?"), when(entry.get("timestamp")))
+                name = block.get('name', '?')
+                arguments = block.get('input')
+                if (name in ('Task', 'Agent') or arguments is not None and not isinstance(arguments, dict)
+                        or isinstance(arguments, dict) and arguments.get('run_in_background')):
+                    self.tools_known = False  # a returned delegation/background handle is not execution completion
+                self.open_call(block.get('id'), name, when(entry.get('timestamp')))
             elif block.get("type") == "text" and block.get("text"):
                 self.open["reply"] = (self.open["reply"] + "\n\n" + block["text"]).strip()
 
@@ -312,6 +319,8 @@ class ClaudeHarness(Harness):
     credential_file = ".credentials.json"
     headline_window = (None, "5h")
     remote_control = True
+    human_tools = ('AskUserQuestion',)
+    human_tool_policy = "AskUserQuestion is denied by the native permissions policy."
 
     def attribution_inputs(self, record: Path) -> list[Input]:
         from .claude_watch import inputs as watch_inputs
@@ -339,7 +348,10 @@ class ClaudeHarness(Harness):
     def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None) -> Credential | None:
         home.mkdir(parents=True, exist_ok=True)
         template = ship_template(ship_home, "settings.json")
-        settings = merged(merged(SETTINGS, template), seat.settings)  # a ship's or a seat's keys never drop the launch's own
+        settings = copy.deepcopy(merged(merged(SETTINGS, template), seat.settings))  # policy cannot mutate shared defaults
+        if not seat.human_session:
+            permissions = settings.setdefault('permissions', {})
+            permissions['deny'] = list(dict.fromkeys([*permissions.get('deny', []), 'AskUserQuestion']))
         (home / "settings.json").write_text(json.dumps(settings, indent=2) + "\n")
         state_file = home / ".claude.json"
         state = json.loads(state_file.read_text()) if state_file.is_file() else {}

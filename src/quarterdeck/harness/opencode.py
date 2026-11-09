@@ -12,6 +12,7 @@ opened in place (law: one-folder). Proven on 1.19.5 against a local vLLM endpoin
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 from pathlib import Path
@@ -23,7 +24,7 @@ from ..ship import Pool, SeatSpec, ShipError
 from .base import (Box, ship_template, trimmed, Control, Credential, Interruption, Keys, Launch, Screen, Tokens,
                    merged)
 
-from .opencode_record import (DATA_PREFIX, _Rows, _launch_number, data_dir_of, first_timestamp,
+from .opencode_record import (DATA_PREFIX, RECORD, _Rows, _launch_number, data_dir_of, first_timestamp,
                               inputs, read, records, session_id, state)
 
 CONFIG = {
@@ -53,6 +54,30 @@ def _bar(line: str) -> str | None:
     return found.group(1) if found else None
 
 
+def question_stays_denied(raw: str | None) -> bool:
+    """V1 session rules follow agent rules. Unknown saved overrides cannot certify exclusion."""
+    if raw is None:
+        return True
+    try:
+        rules = json.loads(raw)
+    except (ValueError, TypeError):
+        return False
+    if not isinstance(rules, list):
+        return False
+    last = {'action': 'deny', 'pattern': '*'}  # the generated agent's final policy
+    for rule in rules:
+        if (not isinstance(rule, dict) or not all(isinstance(rule.get(key), str) for key in ('permission', 'pattern', 'action'))
+                or rule['action'] not in ('allow', 'ask', 'deny')):
+            return False
+        # Native Wildcard.match: normalized slashes, * and ?, optional trailing arguments.
+        pattern = re.escape(rule['permission'].replace('\\', '/')).replace(r'\ ', ' ').replace(r'\*', '.*').replace(r'\?', '.')
+        if pattern.endswith(' .*'):
+            pattern = pattern[:-3] + '( .*)?'
+        if re.fullmatch(pattern, 'question', re.S):
+            last = rule
+    return last['action'] == 'deny' and last['pattern'] == '*'
+
+
 class OpenCodeHarness(EndpointHarness):
     """OpenCode, proven on 1.19.5. Runs on an endpoint pool; the model changes only at launch."""
 
@@ -60,6 +85,8 @@ class OpenCodeHarness(EndpointHarness):
     program = "opencode"
     home_variable = "XDG_DATA_HOME"
     keys = Keys(submit="Enter", send_now=None, interrupt="Escape Escape")  # Escape once opens nothing; twice, quickly, interrupts
+    human_tools = ('question',)
+    human_tool_policy = "The native question tool is denied for every configured agent."
 
     def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None) -> Credential | None:
         home.mkdir(parents=True, exist_ok=True)
@@ -74,7 +101,16 @@ class OpenCodeHarness(EndpointHarness):
         config = {**CONFIG, "model": f"{pool.name}/{choice.model}", "provider": {pool.name: provider},
                   "instructions": [str(runtime / "brief" / f"{seat.name}.md")]}  # the brief, and no instruction file of the user's
         layered = ship_template(ship_home, "opencode.json")
-        config = merged(merged(config, layered), seat.settings)
+        config = copy.deepcopy(merged(merged(config, layered), seat.settings))
+        if not seat.human_session:
+            # V1 evaluates the last matching rule. Agent rules follow root rules.
+            for scope in [config, *config.get('agent', {}).values(), *config.get('mode', {}).values()]:
+                rules = scope.get('permission', {})
+                rules = {'*': rules} if isinstance(rules, str) else dict(rules)
+                rules.pop('question', None)
+                scope['permission'] = {**rules, 'question': 'deny'}
+                if isinstance(scope.get('tools'), dict) and 'question' in scope['tools']:
+                    scope['tools']['question'] = False  # deprecated native setting must not translate back to allow
         price = Price.parse(pool.price) if pool.price is not None else None
         model = config["provider"][pool.name]["models"][choice.model]
         model.pop("cost", None)
@@ -89,6 +125,10 @@ class OpenCodeHarness(EndpointHarness):
     def launch(self, seat: SeatSpec, pool: Pool, home: Path, brief: Path, resume: str | None, first: str | None) -> Launch:
         choice = endpoint.Choice.read(home)
         data = self._data_dir(home, resume, seat.name)
+        if resume and not seat.human_session:
+            if not all(question_stays_denied(raw) for raw in _Rows(data / RECORD, permissions=True).permissions.values()):
+                raise ShipError(f'{seat.name}: saved native session permissions may re-enable question; '
+                                'remove that override before restart, or use qd fresh for a new native session')
         argv = [self.program, "--auto", "--model", f"{pool.name}/{choice.model}"]  # --auto: no approval prompt (law: can-post)
         if resume:
             argv += ["--session", resume]
@@ -96,6 +136,13 @@ class OpenCodeHarness(EndpointHarness):
             argv += ["--prompt", first]
         env = {"XDG_CONFIG_HOME": str(home / "config"), self.home_variable: str(data), "XDG_CACHE_HOME": str(home / "cache"),
                "XDG_STATE_HOME": str(home / "state"), "OPENCODE_DISABLE_AUTOUPDATE": "1", **endpoint.key(pool)}
+        if not seat.human_session:
+            # V1 loads project/config-env rules after its global config. Keep native
+            # policy on the generated ship config rather than inheriting another scope.
+            env.update(OPENCODE_DISABLE_PROJECT_CONFIG='1',
+                       OPENCODE_CONFIG=str(home / 'config/opencode/opencode.json'),
+                       OPENCODE_CONFIG_DIR=str(home / 'config/opencode'),
+                       OPENCODE_CONFIG_CONTENT='{}', OPENCODE_PERMISSION='{"question":"deny"}')
         return Launch(tuple(argv), env, choice.price)
 
     @staticmethod
@@ -123,6 +170,10 @@ class OpenCodeHarness(EndpointHarness):
         """The box is the bar block straight above the status row, a pad row above and below its text."""
         if not text.strip():
             return Screen(text, box=None, starting=True)
+        if (re.search(r'^\s*→ Asked [1-9][0-9]* questions?\s*$', text, re.M)
+                and re.search(r'^\s*┃  [1-9][0-9]*\. Type your own answer\s*$', text, re.M)
+                and re.search(r'^\s*┃  ↑↓ select  enter submit  esc dismiss\s*$', text, re.M)):
+            return Screen(text, box=None, interruption=Interruption('native question tool', '', key=None))
         lines = text.rstrip("\n").split("\n")
         rule_at = next((i for i in range(len(lines) - 1, 0, -1) if RULE.match(lines[i]) and STATUS.match(lines[i - 1])), None)
         working = bool(WORKING.search(text))

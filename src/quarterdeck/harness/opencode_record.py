@@ -59,7 +59,7 @@ def data_dir_of(record: Path) -> Path:
 class _Rows:
     """The three tables a reading needs, from one snapshot of the database."""
 
-    def __init__(self, record: Path):
+    def __init__(self, record: Path, *, permissions: bool = False):
         _, merged_bytes = snapshot(record)
         try:
             con = sqlite3.connect(":memory:")
@@ -69,6 +69,11 @@ class _Rows:
                 if not {"session", "message", "part"} <= tables:
                     raise RecordError(f"{record.name}: not an OpenCode database")
                 self.sessions = con.execute("SELECT id, time_created, time_updated, parent_id FROM session ORDER BY time_created, id").fetchall()
+                self.permissions = {}
+                if permissions:
+                    columns = {row[1] for row in con.execute('PRAGMA table_info(session)')}
+                    if 'permission' in columns:
+                        self.permissions = dict(con.execute('SELECT id, permission FROM session'))
                 self.messages = [(mid, sid, created, updated, _json(data)) for mid, sid, created, updated, data in con.execute(
                     "SELECT id, session_id, time_created, time_updated, data FROM message ORDER BY time_created, id")]
                 self.parts = [(pid, mid, sid, created, updated, _json(data)) for pid, mid, sid, created, updated, data in con.execute(
@@ -222,6 +227,28 @@ class _Reader(RecordReader):
             if children <= family:
                 break
             family |= children
+        # Inspect every relevant part, including older calls and children. The display
+        # reader deliberately retains only one tool; it cannot certify exclusivity.
+        pending = []
+        known = all(data and data.get('role') in ('user', 'assistant') for _, _, _, _, data in rows.messages)
+        for _, _, sid, _, _, data in rows.parts:
+            if not data or not isinstance(data.get('type'), str):
+                known = False
+            if data.get('type') != 'tool':
+                if data.get('type') not in ('text', 'reasoning', 'file', 'step-start', 'step-finish',
+                                            'snapshot', 'patch', 'retry', 'compaction'):
+                    known = False
+                continue
+            name, status = data.get('tool'), _object(data.get('state')).get('status')
+            if name == 'task' and _object(_object(data.get('state')).get('input')).get('background'):
+                known = False  # scheduling/returned job handles are not child completion evidence
+            if not isinstance(name, str) or not name or status not in (*RUNNING, 'completed', 'error'):
+                known = False
+            elif status in RUNNING:
+                pending.append(name)
+        if any(session.open for sid, session in sessions.items() if sid != self.session):
+            known = False  # children/previous roots in this launch can be generating between tools
+        self.pending_tools = tuple(pending) if known else None
         updated = [m[3] for m in rows.messages if m[1] in family]
         updated += [p[4] for p in rows.parts if p[2] in family] + [s[2] for s in rows.sessions if s[0] in family]
         self.last_write = max((at for value in updated if (at := _ms(value))), default=None)
@@ -231,7 +258,7 @@ class _Reader(RecordReader):
         return State(turn_open=active.open if self.session or self.empty else None, open_tool=active.open_tool,
                      open_tool_since=active.open_tool_since, last_write=self.last_write, last_input=active.last_input,
                      last_input_at=active.last_input_at, model=active.model, queued=tuple(active.queued), turns=len(self.turns),
-                     completed_turns=tuple(active.completed_turns))
+                     completed_turns=tuple(active.completed_turns), pending_tools=self.pending_tools)
 
 
 def first_timestamp(record: Path) -> datetime | None:

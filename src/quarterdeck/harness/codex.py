@@ -162,7 +162,10 @@ class _Reader(JsonLinesReader):
         elif sub in CALLS:
             if self.open is not None:
                 self.open["response"] = True
-            self.pending[payload.get("call_id")] = (payload.get("name", "?"), at)
+            name = payload.get('name', '?')
+            if isinstance(name, str) and name.rsplit('.', 1)[-1] in ('spawn_agent', 'exec', 'exec_command', 'write_stdin'):
+                self.tools_known = False  # these can return while child/process execution continues
+            self.open_call(payload.get('call_id'), name, at)
         elif sub in OUTPUTS:
             if self.open is not None and self.open["response"]:
                 self.open["tokens"] += Tokens.unknown()
@@ -297,6 +300,9 @@ def config_text(config: dict) -> str:
 class CodexHarness(Harness):
     """Codex, proven on 0.166.0. Model and effort change only at launch: ``/model`` opens a picker."""
 
+    human_tools = ('request_user_input', 'request_user_input_async')
+    human_tool_policy = "Native synchronous and asynchronous request_user_input tools are disabled, including plan mode."
+
     reads_usage = background_usage = True
     usage_from_records = staticmethod(codex_usage.read)
 
@@ -336,11 +342,15 @@ class CodexHarness(Harness):
             scope["sandbox_mode"] = "danger-full-access"  # law: can-post
             scope["approval_policy"] = "never"
             scope.pop("sandbox_workspace_write", None)
+            if not seat.human_session:
+                scope.setdefault('tools', {})['experimental_request_user_input'] = {'enabled': False}
         (home / "config.toml").write_text(config_text(config))
         return credential(pool, home / self.credential_file, "OPENAI_API_KEY")
 
     def launch(self, seat: SeatSpec, pool: Pool, home: Path, brief: Path, resume: str | None, first: str | None) -> Launch:
         argv = [self.program, "--no-daemon", "-c", f"developer_instructions={json.dumps(brief.read_text())}"]
+        if not seat.human_session:
+            argv += ['-c', 'tools.experimental_request_user_input.enabled=false']
         if seat.model:
             argv += ["-m", seat.model]
         if seat.effort:

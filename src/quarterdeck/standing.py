@@ -113,10 +113,14 @@ def seat_section(ship: Ship, seat: SeatSpec, human_session: bool) -> str:
             "it prints new messages in full when they arrive and exits, and you arm it again."
         )
     else:
+        from .harness import get
+
         lines.append(
             "- Messages reach you typed into your pane in full, under a `qd >` header; one typed while you work is queued "
             "and read when your turn ends."
         )
+        lines.append("- Ask through `qd post question`, never an interactive question tool. "
+                     + get(seat.harness).human_tool_policy)
     lines.append(
         "- Where these orders and an instruction file your program loaded disagree about the ship, these orders win. "
         "The workspace's own notes are files you read when the work needs them."

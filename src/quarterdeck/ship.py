@@ -75,6 +75,7 @@ class SeatSpec:
     sandbox: bool | None = None  # None: a seat on an endpoint pool is jailed, every other seat runs open; true or false says
     settings: dict = field(default_factory=dict)
     pool_choices: dict[str, dict] = field(default_factory=dict)
+    human_session: bool = False  # resolved from Session by Seat, never a ship-file setting
 
     def for_pool(self, name: str) -> SeatSpec:
         if name not in self.pools:

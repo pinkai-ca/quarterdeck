@@ -1,0 +1,14 @@
+     + Thought: synthetic
+     → Asked 1 question
+     ▣  Build
+  ┃
+  ┃  Which synthetic option should be used?
+  ┃
+  ┃  1. First option
+  ┃     A synthetic choice.
+  ┃  2. Second option
+  ┃     Another synthetic choice.
+  ┃  3. Type your own answer
+  ┃
+  ┃  ↑↓ select  enter submit  esc dismiss
+  ┃

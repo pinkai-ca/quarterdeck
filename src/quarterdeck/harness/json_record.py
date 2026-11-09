@@ -96,17 +96,34 @@ class JsonLinesReader(RecordReader):
         self.open = None
         self.completed_turns = []
         self.pending = {}
+        self.live_tools = {}
+        self.tools_known = True
         self.queued = []
         self.consumed = []
         self.model = self.effort = self.last_input = self.last_input_at = None
-        rows = entries(record)
+        rows = [row for _, row in object_lines(record, self.unknown_tools)]
         if rows and not any(row.get("type") in self.kinds for row in rows):
             raise RecordError(f"no {self.label} entries in this record: another program's file")
         for entry in rows:
+            if entry.get('type') not in self.kinds:
+                self.tools_known = False
             try:
                 self.take(entry)
             except (TypeError, ValueError, AttributeError, KeyError):
+                self.tools_known = False
                 continue  # an unknown row does not hide the readable rows beside it
+
+    def unknown_tools(self, *diagnostic) -> None:
+        self.tools_known = False
+
+    def open_call(self, call, name, at) -> None:
+        """Track outstanding calls beyond accounting boundaries; a new turn cannot end a tool."""
+        if not isinstance(call, str) or not call or not isinstance(name, str) or not name or name == '?':
+            self.tools_known = False
+        if call in self.live_tools and self.live_tools[call] != name:
+            self.tools_known = False
+        self.live_tools[call] = name
+        self.pending[call] = (name, at)
 
     def start_turn(self, turn: dict) -> None:
         self.pending.clear()
@@ -125,6 +142,7 @@ class JsonLinesReader(RecordReader):
     def close_tool(self, call: str, at: datetime | None, failed: bool | None, default: str = "?") -> None:
         from .base import ToolCall
 
+        self.live_tools.pop(call, None)
         name, started = self.pending.pop(call, (default, None))
         seconds = (at - started).total_seconds() if at and started else None
         if self.open is not None:
@@ -142,4 +160,5 @@ class JsonLinesReader(RecordReader):
                      open_tool_since=tool[1] if tool else None, last_write=last_write,
                      last_input=self.last_input, last_input_at=self.last_input_at, model=self.model,
                      effort=self.effort, queued=tuple(self.queued), consumed=tuple(self.consumed), turns=len(self.turns),
-                     completed_turns=tuple(self.completed_turns))
+                     completed_turns=tuple(self.completed_turns),
+                     pending_tools=tuple(self.live_tools.values()) if self.tools_known else None)

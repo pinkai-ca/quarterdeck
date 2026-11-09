@@ -161,6 +161,7 @@ class State:
     turns: int | None = 0
     walls: tuple[Wall, ...] = ()
     completed_turns: tuple[Turn, ...] = ()  # explicit completions in the active conversation, never children or inferred ends
+    pending_tools: tuple[str, ...] | None = None  # complete relevant tool evidence; None is unknown, never an empty proof
 
 
 @dataclass(frozen=True)

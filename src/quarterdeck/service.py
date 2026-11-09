@@ -240,9 +240,23 @@ class Service:
         return f"unknown request {kind!r}"
 
     def relaunch(self, seat: Seat, resume: bool) -> str | None:
-        """Restart or fresh at the turn's end, so nothing is relaunched under a running tool call."""
-        if seat.is_working():
-            return None
+        """Explicit recovery alone may interrupt a proven question-only wait."""
+        pane = seat.pane()
+        if pane is not None and not pane.dead:
+            joined = seat.join()
+            if joined.record is None:
+                return None  # an idle screen cannot certify absent/unknown execution
+            try:
+                state = seat.harness.state(joined.record)
+            except OSError:
+                return None
+            if not seat.harness.waiting_for_human(state):
+                if state.turn_open is not False or state.pending_tools != ():
+                    return None
+                if not any(turn.timed and turn.started is not None and turn.ended is not None
+                           and state.last_input_at is not None
+                           and turn.started <= state.last_input_at <= turn.ended for turn in state.completed_turns):
+                    return None  # empty/header-only and inferred idle are not recorded completion
         return seat.restart() if resume else seat.fresh()
 
     def control(self, seat: Seat, name: str, value: str) -> str | None:

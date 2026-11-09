@@ -44,7 +44,7 @@ def _ago(moment: datetime | None, now: datetime) -> str:
 
 
 def activity(seat: Seat, now: datetime | None = None) -> Activity:
-    """idle, working (with the open tool), stalled (no step in ten minutes), off, or unknown."""
+    """idle, working, question-only human wait, stalled, off, or an explicitly unknown reading."""
     now = now or datetime.now(timezone.utc)
     pane = seat.pane()
     if pane is None:
@@ -62,6 +62,8 @@ def activity(seat: Seat, now: datetime | None = None) -> Activity:
         return Activity("unknown", f"record unreadable: {error}")
     if state.turn_open is None:
         return Activity("unknown", "turn state unknown in record")
+    if seat.harness.waiting_for_human(state):
+        return Activity('needs a human', 'native question tool; ask through qd post question')
     if not state.turn_open:
         return Activity("idle", f"{len(state.queued)} queued" if state.queued else "")
     where = f"in {state.open_tool} {_ago(state.open_tool_since, now)}".rstrip() if state.open_tool else ""
@@ -102,7 +104,7 @@ class SeatReading:
 
     @property
     def needs_human(self) -> bool:
-        return not self.door.open and self.door.clears == "needs a human"
+        return self.activity.state == 'needs a human' or (not self.door.open and self.door.clears == "needs a human")
 
 
 def reading(seat: Seat, store: post.Store | None = None) -> SeatReading:

@@ -197,7 +197,8 @@ def test_the_launch_builds_a_home_of_the_ships_own(tmp_path: Path):
     brief.write_text("# Standing orders\nBe brief.\n")
     launch = harness.launch(seat, pool, home, brief, None, None)
     assert launch.argv[:3] == ("codex", "--no-daemon", "-c") and launch.argv[3] == 'developer_instructions="# Standing orders\\nBe brief.\\n"'
-    assert launch.argv[4:] == ("-m", "gpt-6-astra", "-c", 'model_reasoning_effort="xhigh"')
+    assert launch.argv[4:] == ('-c', 'tools.experimental_request_user_input.enabled=false',
+                               "-m", "gpt-6-astra", "-c", 'model_reasoning_effort="xhigh"')
     assert launch.env == {"CODEX_HOME": str(home)}
     resumed = harness.launch(seat, pool, home, brief, "0199-abc", "qd > briefed")
     assert resumed.argv[-3:] == ("resume", "0199-abc", "qd > briefed")
@@ -286,7 +287,8 @@ servers = [{name = "local", args = ["a"]}]
     CodexHarness().build_home(home,spec,Pool('codex','codex'),None)
     assert settings == before
     result = tomllib.loads((home/'config.toml').read_text())
-    assert result['profiles']['custom'] == {'sandbox_mode':'danger-full-access','approval_policy':'never','model':'custom-model'}
+    assert result['profiles']['custom'] == {'sandbox_mode':'danger-full-access','approval_policy':'never','model':'custom-model',
+                                           'tools': {'experimental_request_user_input': {'enabled': False}}}
 
 
 def test_restart_rebuilds_generated_policy_before_opening_the_program(tmp_path, monkeypatch):

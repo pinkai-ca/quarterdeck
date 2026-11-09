@@ -260,7 +260,8 @@ def _decode(record: Path) -> _Decoded:
     last_write = max(filter(None, (last_step_at, file_write)), default=None)
     state = State(turn_open, open_tool, open_tool_since, last_write, last_input, last_input_at, last_model, None, (),
                   tuple(consumed), turns_count, tuple(walls),
-                  completed_turns=tuple(t for t in turns_out if t.timed))
+                  completed_turns=tuple(t for t in turns_out if t.timed),
+                  pending_tools=(() if turn_open is False else None))
     decoded = _Decoded(session, created_at or first_step_at, state, turns_out)
     _CACHE[record] = (fingerprint, decoded)
     return decoded

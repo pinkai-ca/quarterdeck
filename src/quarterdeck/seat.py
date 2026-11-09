@@ -80,7 +80,7 @@ class Seat:
         self.ship, self.spec, self.tmux = ship, spec, tmux
         self.folder = ship.runtime / "seats" / spec.name
         self.home = self.folder / "home"
-        self.spec = spec.for_pool(self.pool.name)
+        self.spec = replace(spec.for_pool(self.pool.name), human_session=self.session.human)
         self.harness: Harness = harnesses.get(self.spec.harness)
         if self.spec.pool_choices and (launched := self.launched()) is not None:
             if launched.pool != self.pool.name or record_owner.launch_reader(launched) != self.spec.harness:
