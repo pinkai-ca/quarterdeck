@@ -80,7 +80,11 @@ class Seat:
         self.ship, self.spec, self.tmux = ship, spec, tmux
         self.folder = ship.runtime / "seats" / spec.name
         self.home = self.folder / "home"
-        self.harness: Harness = harnesses.get(spec.harness)
+        self.spec = spec.for_pool(self.pool.name)
+        self.harness: Harness = harnesses.get(self.spec.harness)
+        if self.spec.pool_choices and (launched := self.launched()) is not None:
+            if launched.pool != self.pool.name or record_owner.launch_reader(launched) != self.spec.harness:
+                raise ShipError(f"{self.name}: saved launch and selected program disagree; restore its pool declaration/selection")
 
     @property
     def name(self) -> str:
@@ -96,18 +100,54 @@ class Seat:
     def pool(self) -> Pool:
         """The pool the seat is on: the first declared, or the one failover moved it to."""
         current = self.folder / "pool"
-        name = current.read_text().strip() if current.is_file() else ""
+        try:
+            name = current.read_text().strip()
+        except FileNotFoundError:
+            name = None
+        if self.spec.pool_choices:
+            if name is not None and name not in self.spec.pools:
+                raise ShipError(f"{self.name}: saved pool {name!r} has no declared choice; restore its declaration")
+            if name is None:
+                launched = self.launched()
+                if launched is not None:
+                    name = launched.pool
+                    if name not in self.spec.pools:
+                        raise ShipError(f"{self.name}: saved launch pool has no declared choice; restore its declaration")
+                elif any((self.folder / file).exists() for file in
+                         ('record', record_owner.REGISTRY, 'record-launches.jsonl')):
+                    raise ShipError(f"{self.name}: saved pool missing with retained record; restore the selected pool")
         return self.ship.pool(name if name in self.spec.pools else self.spec.pools[0])
 
     def move_to(self, pool: str) -> None:
+        self.spec.for_pool(pool)
         self.folder.mkdir(parents=True, exist_ok=True)
-        (self.folder / "pool").write_text(pool + "\n")
+        path = self.folder / 'pool'
+        temporary = path.with_suffix('.tmp')
+        temporary.write_text(pool + '\n')
+        os.replace(temporary, path)
+
+    def failover_to(self, pool: str) -> str:
+        """Preserve the source before selecting another program or paying pool."""
+        from . import credential
+
+        selected = self.spec.for_pool(pool)
+        same_program = selected.harness == self.spec.harness
+        self.record()
+        credential.reseed(self.ship, [self])
+        stopped = self.down()
+        self.move_to(pool)
+        self.spec = selected
+        if not same_program:
+            self.harness = harnesses.get(selected.harness)
+        return stopped + '\n' + self.up(resume=same_program)
 
     def launched(self) -> Launched | None:
         path = self.folder / "launch.json"
-        if not path.is_file():
+        try:
+            text = path.read_text()
+        except FileNotFoundError:
             return None
-        data = json.loads(path.read_text())
+        data = json.loads(text)
         return Launched(**data, price=saved_price(path))
 
     def pane(self) -> Pane | None:
@@ -172,15 +212,15 @@ class Seat:
     def _shared_state_contended(self) -> bool:
         """A program with no home of its own writes every seat's record to one place: two unjoined seats cannot be told apart."""
         for other in self.ship.seats.values():
-            if other.name != self.name and other.harness == self.spec.harness:
+            if other.name != self.name:
                 sibling = Seat(self.ship, other, self.tmux)
-                if sibling.is_up:
+                if sibling.spec.harness == self.spec.harness and sibling.is_up:
                     pinned = sibling.folder / "record"
                     if not pinned.is_file():
                         return True
                     try:
                         record = Path(pinned.read_text().strip())
-                        if not record.exists() or record_owner.pinned_reader(sibling, record) != other.harness:
+                        if not record.exists() or record_owner.pinned_reader(sibling, record) != sibling.spec.harness:
                             return True
                     except OSError:
                         return True
@@ -248,6 +288,8 @@ class Seat:
         pane = self._open_window(argv, launch.env, path)
         launched = Launched(pane.id, pane.pid, at, pool.name, resume_id, argv, self.harness.version(), self.spec.harness, sorted(map(str, prior)), launch.price)
         launched.write(self.folder / "launch.json")
+        if self.spec.pool_choices:
+            self.move_to(pool.name)
         if resume_id:
             self.record()  # retain the resumed record's new pool boundary immediately
         self._survives(pane.id, launch.argv[0])

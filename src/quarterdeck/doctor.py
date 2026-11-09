@@ -36,7 +36,7 @@ def checks(ship: Ship) -> list[Check]:
         found.append(Check(program, version is not None, f"{program} {version}" if version else f"{program} is not on the PATH; install it"))
     found.append(framework_check(ship))
     searched = program_path()
-    for name in sorted({seat.harness for seat in ship.seats.values()}):
+    for name in sorted({seat.for_pool(pool).harness for seat in ship.seats.values() for pool in seat.pools}):
         harness = harnesses.get(name)
         program = harness.program
         if shutil.which(program, path=searched) is None:
@@ -47,7 +47,8 @@ def checks(ship: Ship) -> list[Check]:
         note = "synthetic program" if harness.synthetic else ("proven by qd check" if proven else f"unproven: qd check {name} proves it")
         found.append(Check(f"program {name}", True, f"{program} {version or 'version unknown'} · {note}"))
     found += [pool_check(pool) for pool in ship.pools.values()]
-    if any(ship.jailed(seat) for seat in ship.seats.values()):
+    if any(ship.jailed(seat.for_pool(pool), ship.pools[pool])
+           for seat in ship.seats.values() for pool in seat.pools):
         version = program_version((sandbox.PROGRAM, "--version"))
         found.append(Check("sandbox", version is not None, f"bubblewrap {version}: jailed seats run in it" if version
                            else f"{sandbox.PROGRAM} is not on the PATH, and a seat is jailed; install bubblewrap, or set sandbox = false on it"))

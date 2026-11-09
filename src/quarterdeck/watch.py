@@ -292,6 +292,7 @@ class Facts:
     oldest_queued: int = 0
     usage: list[dict] = field(default_factory=list)
     pending: list[str] = field(default_factory=list)
+    routes: list[str] = field(default_factory=list)
 
     def line(self) -> str:  # law: nothing-waits-silently
         parts = ["SERVICE DOWN" if self.service == "down" else f"service {self.service}"]
@@ -303,6 +304,7 @@ class Facts:
         parts += [f"{name} needs a human" for name in self.needs_human]
         parts += [f"{name}: no watch armed" for name in self.unarmed]
         parts += [f"wall: {wall}" for wall in self.walls]
+        parts += self.routes
         parts += self.pending
         parts += [f"disk: {name} {pct}%" for name, pct in self.disks]
         parts += [f"{pool} · login needed by {when}" for pool, when in self.login]
@@ -390,8 +392,11 @@ def _mount(path: Path) -> str:
 def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tuple[str, str]] | None = None) -> Facts:
     """Everything the status line says; cheap enough for tmux to ask every few seconds."""
     store, attempts = post.Store(ship.runtime), post.Attempts(ship.runtime)
-    waiting, needs_human, unarmed, pending_lines = [], [], [], []
+    waiting, needs_human, unarmed, pending_lines, routes = [], [], [], [], []
     for seat in seats(ship, tmux):
+        launched = seat.launched()
+        if launched is not None and launched.pool in seat.spec.pools[1:]:
+            routes.append(f"{seat.name} on {seat.harness.name}/{launched.pool}")
         pending = attempts.undelivered(store, seat.name)
         waiting += pending
         if seat.session.human:
@@ -419,6 +424,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         oldest_queued=int(max(((now - a.when).total_seconds() for a in queued), default=0) // 60),
         needs_human=needs_human,
         pending=pending_lines,
+        routes=routes,
         unarmed=unarmed,
         walls=walls if walls is not None else ledger_walls(ship),
         usage=headline_readings(ship),

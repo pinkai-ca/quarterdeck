@@ -32,7 +32,8 @@ def check(ship: Ship, name: str, tmux: Tmux) -> list[Check]:
     checks = [Check("installed", version is not None, f"{name} {version or 'not found on the PATH'}")]
     if version is None:
         return checks
-    like = next((s for s in ship.seats.values() if s.harness == name), None)
+    like = next((s.for_pool(pool.name) for s in ship.seats.values()
+                 if pool.name in s.pools and s.for_pool(pool.name).harness == name), None)
     run = secrets.token_hex(2)
     seat_name, session_name = f"check-{name}-{run}", f"qd-check-{name}-{run}"
     spec = SeatSpec(seat_name, session_name, "worker", name, (pool.name,), model=like.model if like else None,

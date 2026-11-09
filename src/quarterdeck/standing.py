@@ -72,6 +72,9 @@ class Brief:
 
 def brief(ship: Ship, seat: SeatSpec) -> Brief:
     """What one seat reads at boot: laws, the ship's orders, its cards, and its own seat."""
+    if seat.pool_choices:
+        from .seat import Seat
+        seat = Seat(ship, seat, None).spec  # the selected program's card, including later re-briefs
     session = ship.session_of(seat)
     parts: list[tuple[str, str, Path | None]] = []
     laws_path = FRAMEWORK_DIR / "laws.md"

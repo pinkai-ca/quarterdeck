@@ -362,36 +362,41 @@ class Service:
         for seat in seats(self.ship, self.tmux):
             if len(seat.spec.pools) < 2 or not seat.is_up or not self.ledger.walled(seat.pool.name, self.ship):
                 continue
-            if seat.is_working():
+            try:
+                record = seat.record()
+                state = seat.harness.state(record) if record is not None else None
+            except OSError:
+                continue
+            if state is None or state.turn_open is not False or state.queued:
                 continue
             pools = list(seat.spec.pools)
             start = pools.index(seat.pool.name)
-            ordered = pools[start + 1:] + pools[:start]
+            ordered = pools[start + 1:]
             target = next((p for p in ordered if self.known_open(seat, p)), None)
             if target is None:
                 continue  # every pool is walled or unread: a fact the status line shows, not a move
             came_from = seat.pool.name
-            seat.move_to(target)
-            proof = seat.restart()
+            proof = seat.failover_to(target)
             self.store.new("report", post.SHIP, seat.name, f"moved to pool {target} from {came_from} at its wall")
             self.log("failover", seat=seat.name, pool=target, came_from=came_from, proof=proof)
 
     def known_open(self, seat: Seat, pool_name: str) -> bool:
-        """A pool a seat may move to: not walled, and where its program reads usage, read within the hour first.
+        """A destination pool, judged by its own adapter's existing usage rules.
 
         A background provider uses its paced cache; other unread pools are read before the move; a program that reads no usage
         has only the Ledger's walls to go by, and the move says so."""
         pool = self.ship.pools[pool_name]
         if pool.kind in ("key", "endpoint"):  # no usage windows to read: a key is measured by spend, an endpoint has no quota
             return not self.ledger.walled(pool_name, self.ship)
-        if harnesses.get(pool.provider).background_usage:
+        reader = harnesses.get(pool.provider)
+        if reader.background_usage:
             return self.ledger.usage_known(pool_name) and not self.ledger.walled(pool_name, self.ship)
-        if not seat.harness.reads_usage:
+        if not reader.reads_usage:
             return not self.ledger.walled(pool_name, self.ship)
         if not self.ledger.usage_known(pool_name):
-            if not self.ledger.quota.due(pool_name, post.now(), interval=seat.harness.usage_interval):
+            if not self.ledger.quota.due(pool_name, post.now(), interval=reader.usage_interval):
                 return False  # retained failures retry by attempt time, including after a restart
-            usage = seat.harness.usage(pool)
+            usage = reader.usage(pool)
             if usage is None:
                 from .harness.limits import Usage
                 self.ledger.record_usage(pool_name, Usage((), post.now(), "provider usage unavailable"))

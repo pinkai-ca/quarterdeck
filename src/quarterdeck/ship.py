@@ -14,7 +14,7 @@ import os
 import re
 import subprocess
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 RUNTIME = "runtime"
@@ -74,6 +74,12 @@ class SeatSpec:
     remote_control: bool = False  # the same session open from the operator's phone, where the program has it
     sandbox: bool | None = None  # None: a seat on an endpoint pool is jailed, every other seat runs open; true or false says
     settings: dict = field(default_factory=dict)
+    pool_choices: dict[str, dict] = field(default_factory=dict)
+
+    def for_pool(self, name: str) -> SeatSpec:
+        if name not in self.pools:
+            raise ShipError(f"seat {self.name}: pool {name!r} is not in its declared list")
+        return replace(self, **self.pool_choices[name]) if self.pool_choices else self
 
     @property
     def display(self) -> str:
@@ -205,13 +211,37 @@ def _seat(name: str, table: dict, folder: Path) -> SeatSpec:
     if "sandbox" in table and type(table["sandbox"]) is not bool:
         raise ShipError(f"seat {name}: sandbox must be true or false (a TOML boolean)")
     pool = table.get("pool", [])
-    pools = tuple(pool) if isinstance(pool, list) else (pool,)
+    entries = pool if isinstance(pool, list) else [pool]
+    pools, choices = [], {}
+    defaults = dict(harness=table['harness'], model=table.get('model'), effort=table.get('effort'),
+                    settings=dict(table.get('settings', {})))
+    for entry in entries:
+        if isinstance(entry, str):
+            selected, choice = entry, defaults
+        elif isinstance(entry, dict):
+            if set(entry) - {'pool', 'harness', 'model', 'effort', 'settings'}:
+                raise ShipError(f"seat {name}: unknown pool choice fields")
+            selected = entry.get('pool')
+            if any(not isinstance(entry.get(key), str) or not entry[key].strip()
+                   for key in ('harness', 'model')):
+                raise ShipError(f"seat {name}: each inline pool choice needs an explicit harness and model")
+            if (entry.get('effort') is not None and not isinstance(entry['effort'], str)
+                    or not isinstance(entry.get('settings', {}), dict)):
+                raise ShipError(f"seat {name}: pool choice effort must be text and settings must be a table")
+            choice = dict(harness=entry['harness'], model=entry['model'], effort=entry.get('effort'),
+                          settings=dict(entry.get('settings', {})))
+        else:
+            raise ShipError(f"seat {name}: pool choices must be names or inline tables")
+        if not isinstance(selected, str) or not selected.strip() or selected in pools:
+            raise ShipError(f"seat {name}: pool choice names must be nonempty and unique")
+        pools.append(selected)
+        choices[selected] = choice
     return SeatSpec(
         name=name,
         session=table["session"],
         role=table.get("role", name),
         harness=table["harness"],
-        pools=pools,
+        pools=tuple(pools),
         model=table.get("model"),
         effort=table.get("effort"),
         persona=table.get("persona"),
@@ -221,6 +251,7 @@ def _seat(name: str, table: dict, folder: Path) -> SeatSpec:
         remote_control=bool(table.get("remote_control", False)),
         sandbox=table.get("sandbox"),
         settings=dict(table.get("settings", {})),
+        pool_choices=choices if any(isinstance(entry, dict) for entry in entries) else {},
     )
 
 
@@ -256,10 +287,14 @@ def _validate(ship: Ship) -> None:
                 raise ShipError(f"seat {seat.name}: pool {pool!r} is not declared")
         if not seat.pools:
             raise ShipError(f"seat {seat.name}: declare a pool")
-        harness = harnesses.get(seat.harness)
+        harnesses.get(seat.harness)  # the legacy/default program remains a valid declaration
         for pool in seat.pools:
+            selected = seat.for_pool(pool)
+            harness = harnesses.get(selected.harness)
             if reason := harness.accepts(ship.pools[pool]):
                 raise ShipError(f"seat {seat.name}: {reason}")
+            if seat.pool_choices and selected.remote_control and not harness.remote_control:
+                raise ShipError(f"seat {seat.name}: {harness.name} has no Remote Control")
         if seat.fresh not in (None, "after-order"):
             raise ShipError(f"seat {seat.name}: fresh = {seat.fresh!r}; the one value is \"after-order\"")
 

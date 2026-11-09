@@ -11,6 +11,7 @@ import pytest
 
 from quarterdeck import service, watch
 from quarterdeck.harness import antigravity
+from quarterdeck.harness.claude import ClaudeHarness
 from quarterdeck.harness.antigravity_quota import parse_usage, unknown, wall
 from quarterdeck.harness.limits import Usage, Window
 from quarterdeck.ledger import Ledger, pools_table
@@ -284,7 +285,11 @@ def test_inactive_non_google_fallback_recovers_at_attempt_cadence_across_restart
         assert pool.name == "fallback"
         calls.append(clock[0])
         return outcomes.pop(0) if outcomes else Usage((replace(window, used=.3),), clock[0])
-    seat = SimpleNamespace(name="worker", harness=SimpleNamespace(reads_usage=True, usage=fetch, usage_interval=60))
+    monkeypatch.setattr(ClaudeHarness, 'usage', lambda self, pool: fetch(pool))
+    monkeypatch.setattr(ClaudeHarness, 'usage_interval', 60)
+    def wrong_program(*args):
+        pytest.fail('fallback usage was read by the source program')
+    seat = SimpleNamespace(name="worker", harness=SimpleNamespace(reads_usage=False, usage=wrong_program))
     # The old good timestamp is only ten minutes old; retry must not wait an hour.
     assert not svc.known_open(seat, "fallback") and calls == [now]
     assert svc.ledger.pool_windows("fallback") == original

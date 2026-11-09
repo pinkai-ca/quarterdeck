@@ -269,6 +269,12 @@ def test_a_seat_moves_on_at_a_wall_and_stays(ship: shipmod.Ship, tmux: Tmux, cap
     captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
     first = captain.launched()
     assert captain.pool.name == "fake"
+    post.Store(ship.runtime).new('order', 'desk', 'captain', 'complete one synthetic turn before the wall')
+    def recorded_idle():
+        record = captain.record()
+        state = captain.harness.state(record) if record else None
+        return state is not None and state.turns and state.turn_open is False and not state.queued
+    wait_for(recorded_idle)
     book = ledger.Ledger(ship.runtime / "ledger.sqlite")
     book.record_usage("fake", Usage((Window("5h", 1.0, datetime.now(timezone.utc) + timedelta(hours=1)),), datetime.now(timezone.utc)))
     book.close()

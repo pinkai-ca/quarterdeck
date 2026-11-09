@@ -44,7 +44,8 @@ def status_line(facts, alerts: list[str]) -> str:
         counts = [(facts.waiting, "waiting"), (facts.queued, "queued"), (facts.blind, "blind"),
                   (len(facts.needs_human), "need human"), (len(facts.unarmed), "unarmed"),
                   (len(facts.walls), "walls"), (len(facts.pending), "pending"),
-                  (len(facts.disks), "disk alerts"), (len(facts.login), "login needed")]
+                  (len(facts.disks), "disk alerts"), (len(facts.login), "login needed"),
+                  (len(facts.routes), "on fallback")]
         parts += [f"{count} {label}" for count, label in counts if count]
         parts.append("details: qd status")
     suffix = "" if "details: qd status" in parts else ": qd status"
