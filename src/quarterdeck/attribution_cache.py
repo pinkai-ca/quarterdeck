@@ -107,6 +107,7 @@ class Attribution:
             ON a.record=t.record AND a.turn=t.turn WHERE a.valid IS NULL OR a.valid=0''').fetchone()[0]
         if not changed and self.last == stamp and not invalid:
             return 0
+        self.last = None  # a failed pass must retry even if its source inputs are already cached
         graph = Threads(store)
         written = 0
         for record, turns in by_record.items():

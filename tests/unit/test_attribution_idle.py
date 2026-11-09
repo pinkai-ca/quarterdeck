@@ -3,6 +3,8 @@
 from dataclasses import replace
 from datetime import timedelta
 
+import pytest
+
 from quarterdeck import attribution_cache, post
 from quarterdeck.harness.fake import FakeHarness
 from quarterdeck.harness.types import Input
@@ -89,3 +91,34 @@ def test_failed_source_read_is_retried_without_a_fingerprint_change(tmp_path, mo
         assert book.attributions.details()[0]['orders'] == [order.id]
         assert book.attributions.replay(store, tmp_path, bindings) == 0
         assert calls == [record, record]
+
+
+def test_failed_replay_retries_cached_changed_source(tmp_path, monkeypatch):
+    store = post.Store(tmp_path)
+    first = message(store, 'ord-first')
+    second = message(store, 'ord-second')
+    for i, order in enumerate((first, second)):
+        message(store, f'rep-{i}', 'report', 'worker', 'issuer', 1, order.id)
+    record = tmp_path / 'record'
+    record.write_text('first synthetic source')
+    current = [first]
+    monkeypatch.setattr(FakeHarness, 'attribution_inputs', lambda self, path:
+                        [Input(post.typed(current), AT + timedelta(seconds=11))])
+    bindings = {str(record): {'fake'}}
+    with Ledger(tmp_path / 'ledger.sqlite') as book:
+        book.ingest('worker', 'pool', record, [turn()], store)
+        assert book.attributions.replay(store, tmp_path, bindings) == 1
+        assert book.attributions.details()[0]['orders'] == [first.id]
+        measured = measurement_snapshot(book)
+        record.write_text('second synthetic source')
+        current[:] = [second]
+        with monkeypatch.context() as patch:
+            def fail(*args):
+                raise OSError('synthetic interrupted verdict write')
+            patch.setattr(book.attributions, 'put', fail)
+            with pytest.raises(OSError):
+                book.attributions.replay(store, tmp_path, bindings)
+        assert book.attributions.replay(store, tmp_path, bindings) == 1
+        assert book.attributions.details()[0]['orders'] == [second.id]
+        assert measurement_snapshot(book) == measured
+        assert book.attributions.replay(store, tmp_path, bindings) == 0
