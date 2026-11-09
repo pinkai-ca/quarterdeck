@@ -211,6 +211,11 @@ def cmd_set(args: argparse.Namespace) -> list[str]:
         return adopt(ship, seat)
     if not changes:
         raise ShipError("nothing to set: give KEY=VALUE pairs, as in model=MODEL, or --adopt")
+    if seat.spec.pool_choices:
+        for change in changes:
+            key = change.partition("=")[0].removeprefix("settings.")
+            if change.startswith("settings.") or key in {"harness", "model", "effort"} or key not in shipmod.SEAT_KEYS:
+                raise ShipError("inline pool choices: edit harness, model, effort and program settings in ship.toml; qd set cannot select their scope")
     proofs = []
     for change in changes:
         key, equals, raw = change.partition("=")
@@ -225,6 +230,8 @@ def cmd_set(args: argparse.Namespace) -> list[str]:
 
 def adopt(ship: shipmod.Ship, seat: seatmod.Seat) -> list[str]:
     """Write what the seat is running, model and effort as its record and screen report them, into the ship file."""
+    if seat.spec.pool_choices:
+        raise ShipError("inline pool choices: --adopt is unavailable; edit each choice's model and effort in ship.toml")
     running = watch.running_settings(seat)
     if not running:
         raise ShipError(f"{seat.name}: nothing to adopt; its record and screen show no model or effort yet")

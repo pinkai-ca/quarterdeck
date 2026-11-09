@@ -247,6 +247,8 @@ class Service:
 
     def control(self, seat: Seat, name: str, value: str) -> str | None:
         """Apply a control by its in-session form, through the door, when the seat is idle."""
+        if seat.spec.pool_choices and (name in {"harness", "model", "effort"} or name not in shipmod.SEAT_KEYS):
+            return f"{name} not applied: inline pool choices require an explicit edit in ship.toml; queued program controls have no choice scope"
         control = seat.harness.control(name)
         if control is None or control.session is None:
             return f"{name} written; qd restart {seat.name} applies it"

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import credential, pending, post, quota, record_owner, seat as seatmod, service, standing, watch
+from quarterdeck import cli, credential, pending, post, quota, record_owner, seat as seatmod, service, standing, watch
 from quarterdeck.harness.claude import ClaudeHarness
 from quarterdeck.harness.codex import CodexHarness
 from quarterdeck.harness.limits import Usage, Window
@@ -269,3 +269,43 @@ def test_shared_state_join_checks_a_siblings_selected_program(tmp_path, monkeypa
         pytest.fail('ambiguous shared record candidates were enumerated')
     monkeypatch.setattr(AntigravityHarness, '_appeared', no_scan)
     assert seat.join().record is None and seat.join().reason.startswith('ambiguous:')
+
+
+@pytest.mark.parametrize('change', ['model=other-model', 'effort=low', 'settings.synthetic=1', 'settings.up=false', 'synthetic=1', 'harness=codex', 'adopt'])
+def test_inline_program_controls_cannot_edit_the_previous_program_defaults(running, monkeypatch, change):
+    r = running
+    r.svc.failover()
+    before = r.seat.ship.file.read_bytes()
+    applied = []
+    monkeypatch.setattr(cli, 'load_ship', lambda args: r.seat.ship)
+    monkeypatch.setattr(cli, 'seat_of', lambda *args: r.seat)
+    monkeypatch.setattr(cli, 'apply_control', lambda *args: applied.append(args))
+    monkeypatch.setattr(watch, 'running_settings', lambda *args: pytest.fail('refusal must precede program readings'))
+    args = SimpleNamespace(seat='worker', adopt=change == 'adopt', changes=[] if change == 'adopt' else ['up=false', change])
+    with pytest.raises(ShipError, match='inline pool choices'):
+        cli.cmd_set(args)
+    assert r.seat.ship.file.read_bytes() == before and not applied
+
+
+@pytest.mark.parametrize('name', ['model', 'effort', 'harness', 'synthetic'])
+def test_old_queued_program_control_is_refused_after_switch_to_inline_choice(running, monkeypatch, name):
+    r = running
+    r.svc.failover()
+    before = r.seat.ship.file.read_bytes()
+    monkeypatch.setattr(r.seat.harness, 'control', lambda *args: pytest.fail('refusal must precede adapter controls'))
+    monkeypatch.setattr(r.svc, 'seat', lambda *args: r.seat)
+    answer = r.svc.answer(dict(kind='control', seat='worker', name=name, value='other-program-value'))
+    assert 'inline pool choices' in answer and 'not applied' in answer
+    assert 'ship.toml' in answer
+    assert r.seat.ship.file.read_bytes() == before
+
+
+def test_common_seat_controls_remain_available_with_inline_choices(running, monkeypatch):
+    r = running
+    r.svc.failover()
+    monkeypatch.setattr(cli, 'load_ship', lambda args: r.seat.ship)
+    monkeypatch.setattr(cli, 'seat_of', lambda *args: r.seat)
+    proofs = cli.cmd_set(SimpleNamespace(seat='worker', adopt=False, changes=['up=false']))
+    assert proofs[-1] == '  up written'
+    assert not service.shipmod.load(r.seat.ship.folder).seat('worker').up
+    assert r.svc.control(r.seat, 'pool', 'third') == 'pool written; qd restart worker applies it'
