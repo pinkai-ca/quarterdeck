@@ -16,7 +16,7 @@ import tomllib
 from datetime import date, datetime, time, timezone
 from pathlib import Path
 
-from .json_record import JsonLinesReader, input_reader, input_rows
+from .json_record import JsonLinesReader, input_reader, input_rows, records_matching
 from .types import Inputs
 from . import codex_usage
 
@@ -31,8 +31,7 @@ INPUT_IGNORED = ('token_usage_record', 'world_state')
 
 
 def records(home: Path) -> list[Path]:
-    files = [p for p in (home / "sessions").glob("*/*/*/rollout-*.jsonl") if p.is_file()]
-    return sorted(files, key=lambda p: p.stat().st_mtime)
+    return records_matching(home, "sessions/*/*/*/rollout-*.jsonl")
 
 
 def first_timestamp(record: Path) -> datetime | None:

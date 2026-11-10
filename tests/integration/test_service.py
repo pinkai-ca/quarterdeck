@@ -16,7 +16,7 @@ from quarterdeck.door import CONFIRM_SECONDS
 from quarterdeck.harness.base import Usage, Window
 from quarterdeck.tmux import Tmux
 
-from .test_seat import wait_for
+from .waiting import wait_for
 from .progress import service_progress
 from quarterdeck.harness.synthetic_control import Rendezvous, events
 

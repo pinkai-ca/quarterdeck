@@ -3,7 +3,7 @@
 import json
 import time
 
-from .test_seat import wait_for
+from .waiting import wait_for
 
 
 def service_progress(ship, seconds=8):

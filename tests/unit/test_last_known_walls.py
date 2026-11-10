@@ -69,29 +69,13 @@ def assert_no_wall(seat: Seat) -> None:
     assert seen["walls()"] == [] and not seen["walled()"] and seen["door guard"] is None and seen["status line"] == [], seen
 
 
-def test_a_spent_window_is_a_wall_while_its_reading_is_current(tmp_path):
+@pytest.mark.parametrize("age,failed_after", [(5, False), (5, True), (61, False), (90, True)],
+                         ids=["current", "failed-after-current", "stale", "failed-after-stale"])
+def test_a_spent_window_keeps_its_wall_current_stale_or_after_a_failed_read(tmp_path, age, failed_after):
     seat, now = claude_seat(tmp_path), datetime.now(timezone.utc)
-    read(seat, spent(now), at=now - timedelta(minutes=5))
-    assert_wall(seat)
-
-
-def test_a_failed_read_after_a_spent_window_keeps_the_wall(tmp_path):
-    seat, now = claude_seat(tmp_path), datetime.now(timezone.utc)
-    read(seat, spent(now), at=now - timedelta(minutes=5))
-    read(seat, at=now - timedelta(minutes=1), error=FAILED)
-    assert_wall(seat)
-
-
-def test_a_stale_read_of_a_spent_window_keeps_the_wall(tmp_path):
-    seat, now = claude_seat(tmp_path), datetime.now(timezone.utc)
-    read(seat, spent(now), at=now - timedelta(minutes=61))
-    assert_wall(seat)
-
-
-def test_a_failed_read_after_a_stale_spent_window_keeps_the_wall(tmp_path):
-    seat, now = claude_seat(tmp_path), datetime.now(timezone.utc)
-    read(seat, spent(now), at=now - timedelta(minutes=90))
-    read(seat, at=now - timedelta(minutes=1), error=FAILED)
+    read(seat, spent(now), at=now - timedelta(minutes=age))
+    if failed_after:
+        read(seat, at=now - timedelta(minutes=1), error=FAILED)
     assert_wall(seat)
 
 

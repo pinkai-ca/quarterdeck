@@ -11,7 +11,7 @@ from quarterdeck import post, seat as seatmod, ship as shipmod
 from quarterdeck.door import Door
 from quarterdeck.tmux import Tmux
 
-from .test_seat import wait_for
+from .waiting import wait_for
 from tests.conftest import FIXTURES
 
 

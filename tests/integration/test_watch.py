@@ -11,7 +11,7 @@ import pytest
 from quarterdeck import cli, post, seat as seatmod, ship as shipmod, watch
 from quarterdeck.tmux import Tmux
 
-from .test_seat import wait_for
+from .waiting import wait_for
 
 
 @pytest.fixture

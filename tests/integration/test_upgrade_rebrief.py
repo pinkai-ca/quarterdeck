@@ -7,7 +7,7 @@ from quarterdeck import install, post, standing
 from quarterdeck.seat import Seat
 from quarterdeck.service import Service
 from quarterdeck.ship import load
-from .test_seat import wait_for
+from .waiting import wait_for
 
 
 def test_changed_upgrade_brief_uses_door_and_human_watch_and_down_seat_launch(drydock,tmux,monkeypatch,tmp_path):

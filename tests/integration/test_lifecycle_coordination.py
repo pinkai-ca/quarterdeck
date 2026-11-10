@@ -11,7 +11,7 @@ from quarterdeck import seat as seatmod, ship as shipmod
 from quarterdeck.ship import ShipError
 from quarterdeck.tmux import Tmux
 from .test_launch_lifecycle import process_identity, windows
-from .test_seat import wait_for
+from .waiting import wait_for
 
 
 def peer_call(ship, tmux, operation, process):

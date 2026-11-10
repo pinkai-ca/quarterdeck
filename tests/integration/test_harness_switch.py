@@ -16,7 +16,7 @@ from quarterdeck.harness.fake import FakeHarness
 from quarterdeck.post import Store
 from quarterdeck.seat import Seat
 from quarterdeck.service import Service
-from .test_seat import wait_for
+from .waiting import wait_for
 from ..unit.test_harness_switch import setup_seat, switch
 
 

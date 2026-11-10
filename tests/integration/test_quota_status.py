@@ -8,7 +8,7 @@ import subprocess
 from quarterdeck import seat, ship
 from quarterdeck.harness.antigravity_quota import parse_usage, unknown, wall
 from quarterdeck.ledger import Ledger
-from .test_seat import wait_for
+from .waiting import wait_for
 from ..unit.test_antigravity_quota import document
 
 

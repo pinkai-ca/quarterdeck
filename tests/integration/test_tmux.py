@@ -2,25 +2,13 @@
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 
 import pytest
 
-from quarterdeck.tmux import HISTORY_LINES, Tmux, PrivateTmuxError
+from quarterdeck.tmux import HISTORY_LINES, Tmux
 
-
-def wait_for(predicate, seconds: float = 5.0):
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        try:
-            value = predicate()
-        except PrivateTmuxError:
-            value = None
-        if value:
-            return value
-        time.sleep(0.05)
-    raise AssertionError("condition not met in time")
+from .waiting import wait_for
 
 
 def screen_showing(tmux: Tmux, pane_id: str, text: str) -> str | None:

@@ -11,7 +11,7 @@ from quarterdeck.harness.limits import Usage, Window
 from quarterdeck.seat import Seat
 from quarterdeck.service import Service
 from tests.unit.test_pool_choices import declaration
-from .test_seat import wait_for
+from .waiting import wait_for
 
 
 def test_private_process_moves_fresh_with_full_messages_and_destination_program(tmp_path, tmux, monkeypatch):

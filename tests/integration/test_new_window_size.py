@@ -8,7 +8,7 @@ import subprocess
 import pytest
 
 from quarterdeck import seat as seatmod, service, ship as shipmod
-from .test_seat import wait_for
+from .waiting import wait_for
 
 pytestmark = pytest.mark.skipif(shutil.which('script') is None, reason='no pty helper to attach a client')
 

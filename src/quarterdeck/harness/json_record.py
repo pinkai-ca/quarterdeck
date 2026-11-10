@@ -25,6 +25,11 @@ class RecordError(OSError):
     """A record file that cannot be read or decoded at all."""
 
 
+def records_matching(home: Path, pattern: str) -> list[Path]:
+    """Every record file under a home that matches ``pattern``, oldest written first."""
+    return sorted((p for p in home.glob(pattern) if p.is_file()), key=lambda p: p.stat().st_mtime)
+
+
 @dataclass
 class _Snapshot:
     raw: str

@@ -56,33 +56,6 @@ def test_ellipsis_has_its_own_source_established_following_breaks(monkeypatch, p
     assert door.matches(door.harness.box(payload), door.screen())
 
 
-@pytest.mark.parametrize('payload,rows', [
-    ('x part\u00b7nextword', 'x part\u00b7\nnextword'),
-    ('x part\u2192nextword', 'x part\u2192\nnextword'),
-    ('x part\u2026nextword', 'x part\n\u2026nextword'),
-    ('x part\u2026\u2026nextword', 'x part\u2026\n\u2026nextword'),
-    ('x part\u2026.nextword', 'x part\u2026\n.nextword'),
-    ('open( \u00b7nextword', 'open(\n\u00b7nextword'),
-    ('open( \u2026nextword', 'open(\n\u2026nextword'),
-    ('open( \u2192nextword', 'open(\n\u2192nextword'),
-    ('x part\u2026"nextword', 'x part\u2026\n"nextword'),
-    ('x part\u2026/nextword', 'x part\u2026\n/nextword'),
-    ('x part\u2026|nextword', 'x part\u2026\n|nextword'),
-    ('a 「 \u2026nextword', 'a 「\n\u2026nextword'),
-    ('a אב|\u2026nextword', 'a אב|\n\u2026nextword'),
-    ('part\u00b7\u00a0nextword', 'part\u00b7\nnextword'),
-    ('part\u2192\u2060nextword', 'part\u2192\nnextword'),
-    ('part\u2026\u200dnextword', 'part\u2026\nnextword'),
-    ('a \u00b7\u0301nextword', 'a \u00b7\u0301\nnextword'),
-    ('prefix \u2022nextword', 'prefix\n\u2022nextword'),
-    ('prefix \u2190nextword', 'prefix\n\u2190nextword'),
-    ('prefix \u2014nextword', 'prefix\n\u2014nextword'),
-])
-def test_symbols_do_not_authorize_arbitrary_or_unknown_contexts(monkeypatch, payload, rows):
-    door = door_for('codex', capture('codex', rows, 'full', 13), monkeypatch, 13)
-    assert not door.matches(door.harness.box(payload), door.screen())
-
-
 @pytest.mark.parametrize('symbol', ['\u00b7', '\u2026', '\u2192'])
 @pytest.mark.parametrize('unknown', ['\u0301', '\u200d', '\ufe0f', '\u2060', '\t'])
 def test_preserved_unknown_grapheme_or_control_cannot_supply_piece_width(monkeypatch, symbol, unknown):

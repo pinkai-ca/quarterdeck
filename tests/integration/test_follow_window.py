@@ -9,7 +9,7 @@ import pytest
 
 from quarterdeck import seat as seatmod, service, ship as shipmod
 from quarterdeck.tmux import TmuxError
-from .test_seat import wait_for
+from .waiting import wait_for
 
 
 @pytest.fixture

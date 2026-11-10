@@ -11,7 +11,7 @@ from quarterdeck import seat as seatmod
 from quarterdeck.harness.base import Launch
 from quarterdeck.ship import ShipError
 from .test_sandbox import namespaces_allowed
-from .test_seat import wait_for
+from .waiting import wait_for
 
 
 def process_identity(pid):

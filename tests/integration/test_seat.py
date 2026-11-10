@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
-import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -13,20 +12,9 @@ import pytest
 
 from quarterdeck import post, seat as seatmod, ship as shipmod
 from quarterdeck.ship import ShipError
-from quarterdeck.tmux import Tmux, PrivateTmuxError
+from quarterdeck.tmux import Tmux
 
-
-def wait_for(predicate, seconds: float = 10.0):
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        try:
-            value = predicate()
-        except PrivateTmuxError:
-            value = None  # retry fresh evidence within the same existing deadline
-        if value:
-            return value
-        time.sleep(0.05)
-    raise AssertionError("condition not met in time")
+from .waiting import wait_for
 
 
 @pytest.fixture

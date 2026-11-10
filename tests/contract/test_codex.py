@@ -19,22 +19,15 @@ def screen(name: str):
     return CodexHarness().screen((SCREENS / f"{name}.txt").read_text())
 
 
-@pytest.mark.parametrize("name", ["startup-logo", "startup-default"])
-def test_captured_logo_startup_waits_for_the_ready_footer(name):
-    """8 Nov 2026, isolated 0.166.0 launch at 320x120, synthetic auth, no request submitted.
-
-    Header/logo/placeholder at 0.38s, default-effort footer at 0.66s, ready at 0.83s.
-    Paths scrubbed; the complete 17-row logo and its placement are retained.
+@pytest.mark.parametrize("name,starting,box", [("startup-logo", True, None), ("startup-default", True, None),
+                                               ("startup-ready", False, ""), ("startup-residual", False, "")])
+def test_the_startup_logo_waits_for_the_ready_footer_and_a_residual_logo_holds_no_box(name, starting, box):
+    """8 Nov 2026, isolated 0.166.0 launch at 320x120, synthetic auth, no request submitted: header, logo and
+    placeholder at 0.38s, default-effort footer at 0.66s, ready at 0.83s; the residual capture is the supplied
+    8 Nov one. Paths and workspace scrubbed; the complete 17-row logo and its placement are retained.
     """
     s = screen(name)
-    assert s.starting and s.box is None and s.unknown is None and s.interruption is None
-
-
-@pytest.mark.parametrize("name", ["startup-ready", "startup-residual"])
-def test_residual_startup_logo_does_not_hold_a_ready_box(name):
-    """Ready probe frame, plus the supplied 8 Nov residual capture with its workspace scrubbed."""
-    s = screen(name)
-    assert not s.starting and s.box == "" and s.interruption is None
+    assert s.starting is starting and s.box == box and s.unknown is None and s.interruption is None
 
 
 @pytest.mark.parametrize("change", [

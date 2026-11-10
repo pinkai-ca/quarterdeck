@@ -18,7 +18,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .json_record import JsonLinesReader, input_reader, input_rows
+from .json_record import JsonLinesReader, input_reader, input_rows, records_matching
 from .types import Inputs
 
 from ..ship import Pool, SeatSpec
@@ -42,8 +42,7 @@ def unwrap(text: str) -> str:
 
 
 def records(home: Path) -> list[Path]:
-    files = [p for p in (home / "projects").glob("*/*.jsonl") if p.is_file()]
-    return sorted(files, key=lambda p: p.stat().st_mtime)
+    return records_matching(home, "projects/*/*.jsonl")
 
 
 def first_timestamp(record: Path) -> datetime | None:

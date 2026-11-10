@@ -385,11 +385,6 @@ def attribution(store: Store, seat: str, turn: Turn) -> str:
 PLUS_NOTE = "a figure with + has turns beside it that the record did not measure: at least this much"
 
 
-def incomplete_notes(ledger: Ledger) -> list[str]:
-    from .ledger_reading import notes, uncertainty
-    return notes(uncertainty(ledger))
-
-
 def table(ledger: Ledger, by: str) -> list[str]:
     from .ledger_reading import collect, render
     return render(collect(ledger, by=by))
