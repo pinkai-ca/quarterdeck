@@ -345,7 +345,7 @@ class Service:
                 if answer is None:
                     self.clear_request_claim(claim)
                     continue  # not yet: the request waits for the seat's turn to end
-                durable.replace_file(path.with_suffix(".done"), answer + "\n")
+                path.with_suffix(".done").write_text(answer + "\n")
                 self.log("request", **data, answer=answer)
                 path.unlink()
                 durable.sync_folder(folder)  # retire the active name durably before removing its replay guard
@@ -389,8 +389,8 @@ class Service:
             self.log("error", step="requests", request=path.name, archive_unavailable=True,
                      error=repr(archive_error), trace=traceback.format_exc())
         try:
-            durable.replace_file(path.with_suffix(".done"), f"failed: {error!r}; the request is kept in "
-                                 f"requests/{kept.relative_to(path.parent)} and the service log has the trace\n")
+            path.with_suffix(".done").write_text(f"failed: {error!r}; the request is kept in "
+                                                f"requests/{kept.relative_to(path.parent)} and the service log has the trace\n")
             if kept != claim:
                 self.clear_request_claim(claim)
         except OSError as answer_error:
