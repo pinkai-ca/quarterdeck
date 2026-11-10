@@ -14,6 +14,10 @@ import time
 LOCK = '.qd-tmux-lock'
 HEADER = b'quarterdeck private tmux namespace 1\n'
 OWNER = 'QD_PRIVATE_TMUX_OWNER'
+# How long an exclusive operation waits for the namespace lock. A holder holds it for one tmux client
+# command, which a loaded machine can take well over a quarter second to run; a holder still there
+# after this is stuck or suspended, and the operation refuses with ownership uncertainty.
+EXCLUSIVE_WAIT = 2.0
 
 
 class OwnershipError(Exception):
@@ -56,7 +60,7 @@ def locked(path, namespace=None, *, exclusive=True):
         if (not stat.S_ISREG(info.st_mode) or identity(candidate) != identity(info)
                 or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600):
             raise OwnershipError('private namespace lock is unfamiliar; retained')
-        deadline = time.monotonic() + (.25 if exclusive else 0)
+        deadline = time.monotonic() + (EXCLUSIVE_WAIT if exclusive else 0)
         operation = (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB
         attempted = False
         while True:
@@ -126,8 +130,8 @@ class Namespace:
 def process_state(pid):
     try:
         fields = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
-    except FileNotFoundError:
-        return []
+    except (FileNotFoundError, ProcessLookupError):
+        return []  # gone, or reaped between the open and the read (ESRCH): either way it has ended
     if len(fields) <= 19 or not fields[19].isdigit():
         raise OwnershipError('private server process identity unreadable; retained')
     return fields

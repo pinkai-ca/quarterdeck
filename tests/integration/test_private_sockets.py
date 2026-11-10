@@ -259,7 +259,7 @@ def test_an_exclusive_lock_in_another_process_refuses_reads_and_cleanup_without_
             tmux.run('kill-server') # generic commands must not bypass exclusive serialization
         with pytest.raises(TmuxError,match='busy'):
             tmux.run('list-sessions',';','kill-server')
-        assert time.monotonic()-started<1.5 # three 250ms budgets, with no nested full-wait retry
+        assert time.monotonic()-started<3*tmux_socket.EXCLUSIVE_WAIT+1 # three budgets, with no nested full-wait retry
         after=endpoint.lstat()
         assert (before.st_dev,before.st_ino)==(after.st_dev,after.st_ino)
     finally:
