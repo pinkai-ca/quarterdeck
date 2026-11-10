@@ -315,19 +315,45 @@ class Service:
 
 
     def requests(self) -> None:
+        """Each request answered alone, in name order: none keeps a later one waiting.
+
+        A rebrief persists its intent and posts each notice once, so one that fails stays to be tried
+        again; its error is raised once every other request has had its answer, and the tick logs it.
+        """
         folder = self.runtime / "requests"
+        retry = []
         for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
-            data = json.loads(path.read_text())
+            data = None
             try:
+                data = json.loads(path.read_text())
                 answer = self.answer(data)
             except SelectionError as error:
                 self.hold_selection(error)
                 continue  # this request stays held; later healthy-seat requests still run
+            except ShipError as error:
+                answer = f"refused: {error}"  # a refusal is an answer: its asker reads why
+            except Exception as error:
+                if isinstance(data, dict) and data.get("kind") == "rebrief":
+                    retry.append(error)
+                else:
+                    self.failed_request(path, error)
+                continue
             if answer is None:
                 continue  # not yet: the request waits for the seat's turn to end
             path.with_suffix(".done").write_text(answer + "\n")
             path.unlink()
             self.log("request", **data, answer=answer)
+        if retry:
+            raise retry[0]
+
+    def failed_request(self, path: Path, error: Exception) -> None:
+        """An unexpected error: the request kept as it was under requests/failed, the trace logged, its asker told; never retried."""
+        kept = path.parent / "failed" / path.name
+        self.log("error", step="requests", request=path.name, error=repr(error), trace=traceback.format_exc())
+        kept.parent.mkdir(exist_ok=True)
+        os.replace(path, kept)
+        path.with_suffix(".done").write_text(f"failed: {error!r}; the request is kept in requests/failed/{path.name} "
+                                             "and the service log has the trace\n")
 
     def answer(self, data: dict) -> str | None:
         kind = data["kind"]
