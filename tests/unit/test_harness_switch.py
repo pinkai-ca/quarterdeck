@@ -29,7 +29,7 @@ def setup_seat(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
              "neighbor": SeatSpec("neighbor", "crew", "worker", "codex", ("codex",), up=False)}
     ship = Ship(tmp_path, "example", "admiral", tmp_path, pools, {"crew": Session("crew", "crew")}, specs)
     active = {"pane": None}
-    tmux = SimpleNamespace(pane=lambda ident: active["pane"], kill_window=lambda ident: active.update(pane=None))
+    tmux = SimpleNamespace(pane=lambda ident: active["pane"], kill_window=lambda ident, *, expected_pid=None: active.update(pane=None))
     seat = Seat(ship, specs["worker"], tmux)
     seat.home.mkdir(parents=True)
     old = AntigravityShape(seat.home, tmp_path, "synthetic-old", "synthetic-model")

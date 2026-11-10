@@ -22,7 +22,7 @@ def test_account_same_record_failover_restart_and_delayed_metadata(tmp_path, mon
     ship = Ship(tmp_path, 'example', 'admiral', tmp_path, pools,
                 {'crew': Session('crew', 'crew')}, {'worker': spec})
     active = {'pane': Pane('%1', 'crew', 'worker', 1001, 80, 24, False, False, None)}
-    tmux = SimpleNamespace(pane=lambda ident: active['pane'], kill_window=lambda ident: active.update(pane=None))
+    tmux = SimpleNamespace(pane=lambda ident: active['pane'], kill_window=lambda ident, *, expected_pid=None: active.update(pane=None))
     seat = Seat(ship, spec, tmux)
     seat.home.mkdir(parents=True)
     shape = CodexShape(seat.home, tmp_path, 'synthetic-provenance', 'synthetic-model')

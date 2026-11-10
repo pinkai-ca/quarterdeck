@@ -28,7 +28,7 @@ class Native:
         self.live = SimpleNamespace(id='%1', pid=12345, width=120, dead=False, in_mode=False)
 
     def pane(self, ident):
-        return self.live if ident == self.live.id else None
+        return self.live if self.live is not None and ident == self.live.id else None
 
     def capture(self, *args, **kwargs):
         suffix = '' if self.selected == 'default' else ' · qd-recovery-off'
@@ -81,7 +81,7 @@ class Native:
         con.commit()
         con.close()
 
-    def kill_window(self, ident):
+    def kill_window(self, ident, *, expected_pid=None):
         self.calls.append(('down', ident))
         self.live = None
 

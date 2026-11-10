@@ -27,7 +27,7 @@ def migrated(tmp_path, monkeypatch):
     plain = declaration(tmp_path, '"first"')
     live, launches = {}, []
     tmux = SimpleNamespace(pane=lambda ident: live.get(ident), capture=lambda *a, **k: '',
-                           kill_window=lambda ident: live.pop(ident, None))
+                           kill_window=lambda ident, *, expected_pid=None: live.pop(ident, None))
     original = Seat(plain, plain.seat('worker'), tmux)
 
     def own(seat, ident):

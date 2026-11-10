@@ -31,7 +31,7 @@ def running(tmp_path, monkeypatch):
     ship = declaration(tmp_path, CHOICES)
     live = {'pane': Pane('%1', 'crew', 'worker', 101, 80, 24, False, False, None)}
     tmux = SimpleNamespace(pane=lambda ident: live['pane'] if live['pane'] and live['pane'].id == ident else None,
-                           kill_window=lambda ident: live.update(pane=None), capture=lambda *a, **k: '')
+                           kill_window=lambda ident, *, expected_pid=None: live.update(pane=None), capture=lambda *a, **k: '')
     seat = Seat(ship, ship.seat('worker'), tmux)
     seat.home.mkdir(parents=True)
     source = CodexShape(seat.home, tmp_path, 'synthetic-source', 'synthetic-source')

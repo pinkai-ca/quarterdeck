@@ -329,8 +329,18 @@ class Tmux:
             if pane.window == "qd":
                 self._invoke("kill-window", "-t", pane.id)
 
-    def kill_window(self, pane_id: str) -> None:
-        self._invoke("kill-window", "-t", pane_id)
+    def kill_window(self, pane_id: str, *, expected_pid: int | None = None) -> None:
+        if expected_pid is None:
+            self._invoke("kill-window", "-t", pane_id)
+            return
+        if (not pane_id.startswith('%') or not pane_id[1:].isascii() or not pane_id[1:].isdigit()
+                or type(expected_pid) is not int or expected_pid <= 0):
+            raise TmuxError('invalid window retirement identity')
+        refused = 'qd-window-retirement-identity-refused'
+        result = self._invoke('if-shell', '-F', '-t', pane_id, f'#{{==:#{{pane_pid}},{expected_pid}}}',
+                              f'kill-window -t {pane_id}', f'display-message -p {refused}')
+        if result.strip() == refused:
+            raise TmuxError(f'pane {pane_id} changed process identity; window retained')
 
     # -- panes -------------------------------------------------------------------------
 

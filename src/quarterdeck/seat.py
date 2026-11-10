@@ -192,6 +192,23 @@ class Seat:
             return None  # law: identity
         return pane
 
+    def _lifecycle_pane(self, launched: Launched | None) -> Pane | None:
+        """Unmatched live evidence is a refusal, not permission to forget a launch."""
+        pane = self.tmux.pane(launched.pane) if launched is not None else None
+        if self.launched() != launched:
+            raise ShipError(f"{self.name}: launch identity changed; retained for inspection")
+        if pane is not None and pane.pid != launched.pid:
+            raise ShipError(f"{self.name}: pane {launched.pane} no longer matches its launch PID; "
+                            "launch retained, no window closed or new launch allowed")  # law: identity
+        return pane
+
+    def _retire_window(self, launched: Launched | None) -> None:
+        pane = self._lifecycle_pane(launched)
+        if pane is not None:
+            self.tmux.kill_window(pane.id, expected_pid=launched.pid)
+            if self.tmux.pane(pane.id) is not None:
+                raise ShipError(f"{self.name}: pane {pane.id} retirement is unconfirmed; launch retained")
+
     @property
     def is_up(self) -> bool:
         pane = self.pane()
@@ -299,16 +316,17 @@ class Seat:
     def up(self, resume: bool = True) -> str:
         from .recovery import require_clear
         require_clear(self)
-        if self.is_up:
-            raise ShipError(f"{self.name} is up in {self.pane().id}; qd restart {self.name} relaunches it")
+        previous = self.launched()
+        left = self._lifecycle_pane(previous)
+        if left is not None and not left.dead:
+            raise ShipError(f"{self.name} is up in {left.id}; qd restart {self.name} relaunches it")
         if self.spec.remote_control and not self.harness.remote_control:
             raise ShipError(f"{self.name}: remote_control = true, and {self.harness.name} has no Remote Control; "
                             "select a harness that offers it or drop the key")
         shipmod.fence(self.ship)
         self.folder.mkdir(parents=True, exist_ok=True)
-        left = self.pane()
         if left is not None and left.dead:
-            self.tmux.kill_window(left.id)  # the last launch's pane, kept for a look, goes when the seat comes back
+            self._retire_window(previous)  # the last launch's failed pane goes only with matching identity
         if self.launched() is not None:
             from . import credential  # the credential module reads seats, so it is imported here, not above
 
@@ -437,15 +455,17 @@ class Seat:
 
     def down(self) -> str:
         launched = self.launched()
+        pane = self._lifecycle_pane(launched)
         if launched is not None:
             self.record()  # preserve the last proven join before removing its launch
             if self.spec.pool_choices:
                 self.move_to(self.pool.name)  # retain the corroborated selection before its launch disappears
-        pane = self.pane()
+        self._retire_window(launched)
+        if self.launched() != launched:
+            raise ShipError(f"{self.name}: launch identity changed during retirement; launch retained")
         (self.folder / "launch.json").unlink(missing_ok=True)
         if pane is None:
             return f"{self.name} was not up" + (f" · pane {launched.pane} is gone" if launched else "")
-        self.tmux.kill_window(pane.id)
         return f"{self.name} down · pane {pane.id} closed"
 
     def restart(self) -> str:
