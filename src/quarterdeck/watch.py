@@ -467,9 +467,6 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
                 pending_lines.append(f"{seat.name}: {reason}")
     pending_lines += [f"request claimed: {path.name}; inspect requests/ before retrying"
                       for path in sorted((ship.runtime / "requests").glob("*.claimed"))]
-    pending_lines += [f"request pending: {path.name}"
-                      for path in sorted((ship.runtime / "requests").glob("*.json"))
-                      if not path.with_suffix(".claimed").exists() and not path.with_suffix(".claimed").is_symlink()]
     now = post.now()
     oldest = int(max(((now - m.at).total_seconds() for m in waiting), default=0) // 60)
     queued = [a for a in records if a.result == "queued" and latest.get(a.message) == 'queued']
