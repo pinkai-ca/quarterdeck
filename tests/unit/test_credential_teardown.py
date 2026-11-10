@@ -18,7 +18,7 @@ from quarterdeck.harness.home import credential
 from quarterdeck.harness.synthetic_record import ClaudeShape
 from quarterdeck.harness.types import Screen
 from quarterdeck.seat import Launched, Seat, temporary_seat
-from quarterdeck.ship import SeatSpec, ShipError, load
+from quarterdeck.ship import Pool, SeatSpec, ShipError, load
 from quarterdeck.tmux import Pane
 
 
@@ -153,6 +153,34 @@ def test_a_home_is_not_built_over_a_detached_credential_newer_than_its_pool(ship
         credential(pool, link, "ANTHROPIC_API_KEY")
     assert not link.is_symlink() and token(link) == "newer", "the only live token is kept"
     assert token(ship.source) == "older"
+
+
+def test_an_api_key_home_preserves_a_detached_subscription_refresh_without_guessing_its_source(tmp_path):
+    pool = Pool("synthetic-key-destination", "claude", api_key="env:SYNTHETIC_NOT_READ")
+    link = tmp_path / ".credentials.json"
+    link.write_text(live("only-refresh", 3600))
+    before = link.read_bytes()
+    with pytest.raises(ShipError, match="API key.*move it aside"):
+        credential(pool, link, "ANTHROPIC_API_KEY")
+    assert not link.is_symlink() and link.read_bytes() == before, "the unknown-origin refresh is preserved exactly"
+    assert sorted(p.name for p in tmp_path.iterdir()) == [link.name], "no guessed source or destination was written"
+
+
+@pytest.mark.parametrize("left", ["link", "stub", "missing"])
+def test_an_api_key_home_still_removes_old_links_and_stubs_without_reading_a_key(tmp_path, left):
+    pool = Pool("synthetic-key-destination", "claude", api_key="env:SYNTHETIC_NOT_READ")
+    link = tmp_path / ".credentials.json"
+    source = tmp_path / "subscription"
+    source.write_text(live("source-refresh", 3600))
+    before = source.read_bytes()
+    if left == "link":
+        link.symlink_to(source)
+    elif left == "stub":
+        link.write_text("{}")
+    result = credential(pool, link, "ANTHROPIC_API_KEY")
+    assert result.variable == "ANTHROPIC_API_KEY" and result.link is None
+    assert not link.exists() and not link.is_symlink()
+    assert source.read_bytes() == before, "removing the old link must never change its subscription source"
 
 
 @pytest.mark.parametrize("left", ["{}", "older-refresh"], ids=["logged-out-stub", "older-than-pool"])
