@@ -21,6 +21,7 @@ class Usage:
     windows: tuple[Window, ...]
     read_at: datetime
     error: str | None = None
+    retry_after: float | None = None  # seconds a refusal asked to wait; held in memory, never stored
 
 
 @dataclass(frozen=True)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timezone
+import math
 import time
 
 from .harness.limits import Wall, Usage
@@ -106,6 +107,28 @@ def observe_screen(book, seat, screen, launched, now: datetime | None = None) ->
     book.quota.observe(source, seat.name, launched.pool if launched else UNKNOWN, replace(event, key=event.error_id or event.key), now)
 
 
+BACKOFF_MAX = 3600  # a refusal holds its pool at most an hour
+
+
+def held(service, pool: str) -> bool:
+    """A pool whose last read was refused with a Retry-After is not read again before it."""
+    return time.monotonic() < service.usage_hold.get(pool, 0.0)
+
+
+def record_read(service, pool: str, usage: Usage, interval: int, attempted_at: datetime) -> None:
+    """Keep one read in the book; log a failed one with its reason and hold a refused pool by Retry-After."""
+    service.usage_read[pool] = time.monotonic()
+    service.ledger.record_usage(pool, usage, attempted_at=attempted_at)
+    if not usage.error:
+        return
+    entry = {"pool": pool, "error": usage.error}
+    if usage.retry_after is not None:
+        hold = min(max(usage.retry_after, interval), BACKOFF_MAX)
+        service.usage_hold[pool] = time.monotonic() + hold
+        entry["backoff"] = round(hold)
+    service.log("usage", **entry)
+
+
 def refresh_declared(service) -> None:
     """Adapters with background subscription reads run even with no active seat."""
     from . import harness as harnesses
@@ -132,7 +155,7 @@ def refresh_declared(service) -> None:
         usage = usage or Usage((), datetime.now(timezone.utc), "provider usage unavailable")
         if key is not None:
             shared[key] = usage
-        service.ledger.record_usage(pool.name, usage, attempted_at=datetime.now(timezone.utc))
+        record_read(service, pool.name, usage, reader.usage_interval, datetime.now(timezone.utc))
 
 
 def refresh(service, seat, live: bool, launched) -> None:
@@ -141,9 +164,10 @@ def refresh(service, seat, live: bool, launched) -> None:
     if not live or reader.background_usage:
         return
     pool = service.ship.pools[launched.pool] if launched and launched.pool in service.ship.pools else seat.pool
-    if pool.kind == "subscription" and time.monotonic() - service.usage_read.get(pool.name, -reader.usage_interval) >= reader.usage_interval:
+    if (pool.kind == "subscription" and not held(service, pool.name)
+            and time.monotonic() - service.usage_read.get(pool.name, -math.inf) >= reader.usage_interval):
         service.usage_read[pool.name] = time.monotonic()
         usage = reader.usage(pool)
         if usage is not None or reader.reads_usage:
-            service.ledger.record_usage(pool.name, usage or Usage((), datetime.now(timezone.utc), "provider usage unavailable"),
-                                        attempted_at=datetime.now(timezone.utc))
+            record_read(service, pool.name, usage or Usage((), datetime.now(timezone.utc), "provider usage unavailable"),
+                        reader.usage_interval, datetime.now(timezone.utc))

@@ -10,8 +10,10 @@ same message) and the stop reason that ends a turn. Queued messages appear as
 from __future__ import annotations
 
 import copy
+import email.utils
 import json
 import re
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -371,6 +373,7 @@ class ClaudeHarness(Harness):
     home_variable = "CLAUDE_CONFIG_DIR"
     keys = Keys(submit="Enter", send_now=("C-x", "C-s"), interrupt="Escape")
     reads_usage = True
+    usage_interval = 300  # the account's other callers share the endpoint; a minute's reads were refused
     credential_file = ".credentials.json"
     headline_window = (None, "5h")
     remote_control = True
@@ -502,25 +505,80 @@ USAGE_WINDOWS = {"five_hour": "5h", "seven_day": "7d"}
 
 
 def usage(pool: Pool) -> Usage | None:
-    """A subscription pool's utilization windows from the OAuth usage endpoint; None when it cannot be read."""
+    """A subscription pool's utilization windows from the OAuth usage endpoint.
+
+    A failed read is a Usage with no windows whose error says what came back: the HTTP
+    status (with any Retry-After, kept also as ``retry_after``), a timeout, a network error
+    or bad JSON. The reason never carries the token, another header or the response body.
+    """
+    now = datetime.now(timezone.utc)
     source = pool.config_dir / ".credentials.json" if pool.config_dir else None
     if source is None or not source.exists():
-        return None
+        return Usage((), now, "credential file missing")
     try:
         token = json.loads(source.read_text()).get("claudeAiOauth", {}).get("accessToken")
-        request = urllib.request.Request(USAGE_URL, headers={
-            "Authorization": f"Bearer {token}", "anthropic-beta": "oauth-2025-04-20", "Accept": "application/json"})
+    except (OSError, ValueError, AttributeError):
+        return Usage((), now, "credential file unreadable")
+    if not token:
+        return Usage((), now, "no access token in the credential file")
+    request = urllib.request.Request(USAGE_URL, headers={
+        "Authorization": f"Bearer {token}", "anthropic-beta": "oauth-2025-04-20", "Accept": "application/json"})
+    try:
         with urllib.request.urlopen(request, timeout=10) as response:
-            data = json.loads(response.read())
-    except (OSError, ValueError, json.JSONDecodeError):
-        return None
+            body = response.read()
+    except urllib.error.HTTPError as error:
+        raw = _printable(error.headers.get("Retry-After") if error.headers else None)
+        return Usage((), now, f"HTTP {error.code}" + (f", retry-after {raw}" if raw else ""), retry_after=_retry_after(raw, now))
+    except urllib.error.URLError as error:
+        reason = error.reason
+        return Usage((), now, "timeout" if isinstance(reason, TimeoutError) else f"network error: {type(reason).__name__}")
+    except TimeoutError:
+        return Usage((), now, "timeout")
+    except OSError as error:
+        return Usage((), now, f"network error: {type(error).__name__}")
+    try:
+        data = json.loads(body)
+    except ValueError:
+        return Usage((), now, "bad JSON")
+    if not isinstance(data, dict):
+        return Usage((), now, "bad JSON: not an object")
     windows = []
     for key, name in USAGE_WINDOWS.items():
         window = data.get(key) or {}
-        if "utilization" in window:
-            resets = when(window.get("resets_at")) if window.get("resets_at") else None
-            windows.append(Window(name, float(window["utilization"]) / 100.0, resets))
-    return Usage(tuple(windows), datetime.now(timezone.utc)) if windows else None
+        if not isinstance(window, dict) or window.get("utilization") is None:
+            continue  # the provider reports no figure for this window
+        try:
+            used = float(window["utilization"]) / 100.0
+        except (TypeError, ValueError):
+            return Usage((), now, "bad JSON: utilization not a number")
+        resets = when(window.get("resets_at")) if window.get("resets_at") else None
+        windows.append(Window(name, used, resets))
+    return Usage(tuple(windows), now) if windows else Usage((), now, "no utilization in response")
+
+
+def _printable(value: str | None) -> str | None:
+    """A header value fit for a reason: printable, short, or nothing."""
+    if not value:
+        return None
+    value = value.strip()[:40]
+    return value if value.isprintable() else None
+
+
+def _retry_after(value: str | None, now: datetime) -> float | None:
+    """Retry-After as seconds from now: delta-seconds or an HTTP-date; None when absent or unreadable."""
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    try:
+        moment = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return max(0.0, (moment - now).total_seconds())
 
 
 ClaudeHarness.usage = staticmethod(usage)

@@ -74,6 +74,7 @@ class Service:
         self.ledger = Ledger(self.runtime / "ledger.sqlite")
         self.meters: dict[str, machine.Meter] = {}
         self.usage_read: dict[str, float] = {}
+        self.usage_hold: dict[str, float] = {}  # a refused pool's Retry-After, by the monotonic clock
         self.read_marks: dict[Path, tuple] = {}  # record -> the fingerprint it was last read at
         self.working: dict[str, bool] = {}  # seat -> whether its record last showed a turn open
         self.work_marks: dict[str, tuple] = {}  # seat -> (record, fingerprint) its working state was read at
@@ -599,15 +600,16 @@ class Service:
         if not reader.reads_usage:
             return not self.ledger.walled(pool_name, self.ship)
         if not self.ledger.usage_known(pool_name):
-            if not self.ledger.quota.due(pool_name, post.now(), interval=reader.usage_interval):
-                return False  # retained failures retry by attempt time, including after a restart
+            if quota.held(self, pool_name) or not self.ledger.quota.due(pool_name, post.now(), interval=reader.usage_interval):
+                return False  # retained failures retry by attempt time, including after a restart, and a refusal's hold
             usage = reader.usage(pool)
-            if usage is None:
+            if usage is None or usage.error:
                 from .harness.limits import Usage
-                self.ledger.record_usage(pool_name, Usage((), post.now(), "provider usage unavailable"))
-                self.log("failover", seat=seat.name, pool=pool_name, skipped="its usage could not be read")
+                usage = usage or Usage((), post.now(), "provider usage unavailable")
+                quota.record_read(self, pool_name, usage, reader.usage_interval, post.now())
+                self.log("failover", seat=seat.name, pool=pool_name, skipped=f"its usage could not be read: {usage.error}")
                 return False
-            self.ledger.record_usage(pool_name, usage, attempted_at=post.now())
+            quota.record_read(self, pool_name, usage, reader.usage_interval, post.now())
         return self.ledger.usage_known(pool_name) and not self.ledger.walled(pool_name, self.ship)
 
     def rebrief(self) -> None:
