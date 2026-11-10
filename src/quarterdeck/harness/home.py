@@ -22,9 +22,24 @@ def credential(pool: Pool, link: Path, variable: str) -> Credential | None:
     if pool.config_dir is None:
         return None
     source = pool.config_dir / link.name
+    if _newer(pool, link, source):
+        raise ShipError(f"{link} holds a credential newer than pool {pool.name}'s and is not deleted: it may hold the only "
+                        f"live token. If it is {pool.name}'s, put it in {source}; otherwise move it aside; then try again")
     link.unlink(missing_ok=True)  # a link to a former pool, or a refreshed file the service has reseeded from
     link.symlink_to(source)
     return Credential(link=(link, source))
+
+
+def _newer(pool: Pool, link: Path, source: Path) -> bool:
+    """A detached credential the pool's adapter reads as live and fresher than the pool's own."""
+    if link.is_symlink() or not link.exists():
+        return False
+    from . import get  # the adapters import this module
+
+    reader = get(pool.provider)
+    detached = reader.freshness(link)
+    current = reader.freshness(source) if source.exists() else None
+    return detached is not None and (current is None or detached > current)
 
 
 def key_environment(pool: Pool, variable: str) -> dict[str, str]:

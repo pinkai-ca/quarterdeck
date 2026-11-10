@@ -529,6 +529,10 @@ class Seat:
         self._retire_window(launched)
         if self.launched() != launched:
             raise ShipError(f"{self.name}: launch identity changed during retirement; launch retained")
+        if launched is not None:
+            from . import credential  # the credential module reads seats, so it is imported here, not above
+
+            credential.reseed(self.ship, [self])  # the program is gone: a refresh it left reseeds the pool its launch names, while it is named
         (self.folder / "launch.json").unlink(missing_ok=True)
         if pane is None:
             return f"{self.name} was not up" + (f" · pane {launched.pane} is gone" if launched else "")
@@ -586,6 +590,9 @@ def temporary_seat(ship: Ship, tmux: Tmux, spec: SeatSpec, orders: list[post.Mes
 
         def remove_home() -> None:
             if retired:
+                from . import credential
+
+                credential.reseed(treated, [seat])  # its one pool: a refresh left in the home is not deleted with it
                 shutil.rmtree(seat.folder)
 
         with ExitStack() as cleanup:

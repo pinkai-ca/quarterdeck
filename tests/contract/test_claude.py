@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from quarterdeck.harness.base import State, same_name
 from quarterdeck.harness.claude import ClaudeHarness
-from quarterdeck.ship import Pool, SeatSpec
+from quarterdeck.ship import Pool, SeatSpec, ShipError
 
 from tests.conftest import FIXTURES
 
@@ -182,6 +185,7 @@ def test_a_move_to_another_pool_replaces_the_link_and_copies_no_token(tmp_path: 
         folder = tmp_path / name
         folder.mkdir()
         (folder / ".credentials.json").write_text(json.dumps({"claudeAiOauth": {"refreshToken": name}}))
+        os.utime(folder / ".credentials.json", (1_000_000, 1_000_000))  # both pools' files older than the refresh below
         pools[name] = Pool(f"pool-{name}", "claude", config_dir=folder)
     seat = SeatSpec("pike", "bridge", "captain", "claude", ("pool-a", "pool-b"), cwd=tmp_path)
     home = tmp_path / "home"
@@ -189,6 +193,11 @@ def test_a_move_to_another_pool_replaces_the_link_and_copies_no_token(tmp_path: 
     link = home / ".credentials.json"
     link.unlink()
     link.write_text(json.dumps({"claudeAiOauth": {"refreshToken": "a2"}}))  # a refresh detached it
+    os.utime(link, (2_000_000, 2_000_000))  # no expiry in these files: freshness orders them by mtime, set here
+    with pytest.raises(ShipError, match="newer than pool pool-b"):
+        harness.build_home(home, seat, pools["b"], None)  # pool a's only live token is never deleted by the move
+    assert not link.is_symlink() and json.loads(link.read_text())["claudeAiOauth"]["refreshToken"] == "a2"
+    os.replace(link, tmp_path / "a" / ".credentials.json")  # as the reseed before every move puts it in pool a's place
     harness.build_home(home, seat, pools["b"], None)  # the seat moves to pool b
     assert link.is_symlink() and link.resolve() == (tmp_path / "b" / ".credentials.json").resolve()
     assert json.loads((tmp_path / "b" / ".credentials.json").read_text())["claudeAiOauth"]["refreshToken"] == "b", "nothing of pool a reached pool b"
