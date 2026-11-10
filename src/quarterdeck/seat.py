@@ -8,10 +8,12 @@ persona and the window name are display (law: identity).
 from __future__ import annotations
 
 import json
+import fcntl
 import os
 import shlex
 import shutil
 import sys
+import stat
 import time
 from contextlib import contextmanager, ExitStack
 from typing import Iterator
@@ -155,6 +157,10 @@ class Seat:
 
     def failover_to(self, pool: str) -> str:
         """Preserve the source before selecting another program or paying pool."""
+        with self._lifecycle():
+            return self._failover_to(pool)
+
+    def _failover_to(self, pool: str) -> str:
         from .recovery import require_clear
         require_clear(self)
         from . import credential
@@ -163,12 +169,12 @@ class Seat:
         same_program = selected.harness == self.spec.harness
         self.record()
         credential.reseed(self.ship, [self])
-        stopped = self.down()
+        stopped = self._down()
         self.move_to(pool)
         self.spec = selected
         if not same_program:
             self.harness = harnesses.get(selected.harness)
-        return stopped + '\n' + self.up(resume=same_program)
+        return stopped + '\n' + self._up(resume=same_program)
 
     def launched(self) -> Launched | None:
         path = self.folder / "launch.json"
@@ -313,7 +319,42 @@ class Seat:
 
     # -- the one relaunch path -----------------------------------------------------------
 
+    @contextmanager
+    def _lifecycle(self) -> Iterator[None]:
+        """One caller owns the whole seat transition, including compound relaunches.
+
+        Keep the empty inode outside removable seat homes. No lifecycle path unlinks
+        it; old binaries do not participate in this advisory coordination protocol.
+        """
+        path = self.ship.runtime / 'post' / 'lifecycle' / f'{self.name}.lock'
+        descriptor = None
+        try:
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NONBLOCK | os.O_NOFOLLOW, 0o600)
+                os.set_inheritable(descriptor, False)
+                opened = os.fstat(descriptor)
+                if not stat.S_ISREG(opened.st_mode):
+                    raise ShipError(f'{self.name}: lifecycle lock is not a regular file; retained')
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    raise ShipError(f'{self.name}: another lifecycle transition is in progress; retry when it ends') from None
+                current = path.lstat()
+                if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+                    raise ShipError(f'{self.name}: lifecycle lock identity changed; transition refused')
+            except OSError as error:
+                raise ShipError(f'{self.name}: lifecycle coordination unavailable: {error}') from error
+            yield
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
     def up(self, resume: bool = True) -> str:
+        with self._lifecycle():
+            return self._up(resume)
+
+    def _up(self, resume: bool = True) -> str:
         from .recovery import require_clear
         require_clear(self)
         previous = self.launched()
@@ -454,6 +495,10 @@ class Seat:
                                 f"qd up {self.name} tries again. It printed: {shown}")
 
     def down(self) -> str:
+        with self._lifecycle():
+            return self._down()
+
+    def _down(self) -> str:
         launched = self.launched()
         pane = self._lifecycle_pane(launched)
         if launched is not None:
@@ -470,15 +515,17 @@ class Seat:
 
     def restart(self) -> str:
         """Relaunch with resume: the conversation continues in a new process."""
-        from .recovery import require_clear
-        require_clear(self)
-        return self.down() + "\n" + self.up(resume=True)
+        with self._lifecycle():
+            from .recovery import require_clear
+            require_clear(self)
+            return self._down() + "\n" + self._up(resume=True)
 
     def fresh(self) -> str:
         """Relaunch without resume: a new conversation that begins with the brief and the open messages."""
-        from .recovery import require_clear
-        require_clear(self)
-        return self.down() + "\n" + self.up(resume=False)
+        with self._lifecycle():
+            from .recovery import require_clear
+            require_clear(self)
+            return self._down() + "\n" + self._up(resume=False)
 
 
 @contextmanager
