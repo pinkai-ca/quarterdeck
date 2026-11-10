@@ -6,13 +6,16 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from quarterdeck import endpoint, input_receipt
 from quarterdeck.harness import opencode
 from quarterdeck.harness.opencode import OpenCodeHarness
-from quarterdeck.ship import Pool, SeatSpec, ShipError
+from quarterdeck.seat import Launched, Seat
+from quarterdeck.ship import Pool, SeatSpec, Session, Ship, ShipError
+from quarterdeck.tmux import Pane
 
 from tests.conftest import FIXTURES
 
@@ -45,7 +48,8 @@ def test_captured_blank_startup_is_drawing_not_an_unknown_dialog():
 HELD: list[sqlite3.Connection] = []  # a connection kept open per record, as the running program keeps its own: closing the last one would fold the log into the file
 
 
-def build_record(home: Path, number: int = 1, until: int | None = None) -> Path:
+def build_record(home: Path, number: int = 1, until: int | None = None, *,
+                 directory: Path | None = None, session: str | None = None) -> Path:
     """The spike's session rebuilt as OpenCode writes it: a database in WAL mode, the rows still in the log."""
     record = home / f"data-{number:03d}" / "opencode" / "opencode.db"
     record.parent.mkdir(parents=True, exist_ok=True)
@@ -55,14 +59,16 @@ def build_record(home: Path, number: int = 1, until: int | None = None) -> Path:
     for statement in SCHEMA:
         con.execute(statement)
     s = ROWS["session"]
-    con.execute("INSERT INTO session VALUES (?,?,?,?,?,?,?,?,?,?,?)", (s["id"], s["project_id"], s["slug"], s["directory"], s["title"],
+    session = session or s["id"]
+    location = str(directory) if directory is not None else s["directory"]
+    con.execute("INSERT INTO session VALUES (?,?,?,?,?,?,?,?,?,?,?)", (session, s["project_id"], s["slug"], location, s["title"],
                                                                       s["version"], s["time_created"], s["time_updated"], s["model"], s["agent"], s["parent_id"]))
     for m in ROWS["messages"]:
         if until is None or m["time_created"] < until:
-            con.execute("INSERT INTO message VALUES (?,?,?,?,?)", (m["id"], m["session_id"], m["time_created"], m["time_updated"], m["data"]))
+            con.execute("INSERT INTO message VALUES (?,?,?,?,?)", (m["id"], session, m["time_created"], m["time_updated"], m["data"]))
     for p in ROWS["parts"]:
         if until is None or p["time_created"] < until:
-            con.execute("INSERT INTO part VALUES (?,?,?,?,?,?)", (p["id"], p["message_id"], p["session_id"], p["time_created"], p["time_updated"], p["data"]))
+            con.execute("INSERT INTO part VALUES (?,?,?,?,?,?)", (p["id"], p["message_id"], session, p["time_created"], p["time_updated"], p["data"]))
     con.commit()
     assert Path(f"{record}-wal").stat().st_size > 0, "the rows live in the write-ahead log, as under a running program"
     return record
@@ -229,3 +235,81 @@ def test_the_home_is_built_from_the_endpoint_and_each_launch_gets_a_data_directo
         harness.build_home(home, SeatSpec("w", "crew", "worker", "opencode", ("local-a",), model="huge"), pool, None)
     unnamed = harness.build_home(home, SeatSpec("w", "crew", "worker", "opencode", ("local-a",)), pool, None)
     assert unnamed is None and endpoint.Choice.read(home).model == "qwen3.8-27b", "no model named: the first the endpoint lists"
+
+
+@pytest.mark.parametrize("role,human,sandbox,scoped", [
+    ("hand", False, None, True),
+    ("hand", False, True, True),
+    ("hand", False, False, False),
+    ("hand", True, None, False),
+    ("worker", False, None, False),
+])
+def test_jailed_opencode_hands_start_the_native_finder_in_a_seat_owned_folder(
+    tmp_path, served, role, human, sandbox, scoped,
+):
+    harness = OpenCodeHarness()
+    pool = Pool("local", "local", endpoint="http://127.0.0.1:9/v1")
+    workspace = tmp_path / "declared-workspace"
+    workspace.mkdir()
+    home = tmp_path / "ship/runtime/seats/w/home"
+    folder = home.parent / "work"
+    seat = SeatSpec("w", "crew", role, "opencode", (pool.name,), cwd=workspace,
+                    human_session=human, sandbox=sandbox)
+    harness.build_home(home, seat, pool, None)
+    brief = home.parents[2] / "brief/w.md"
+    launch = harness.launch(seat, pool, home, brief, None, "synthetic brief")
+    expected = ("opencode", str(folder), "--auto") if scoped else ("opencode", "--auto")
+    assert launch.argv[:len(expected)] == expected
+    assert launch.argv[-2:] == ("--prompt", "synthetic brief")
+    assert launch.env.get("QD_WORKSPACE") == (str(workspace) if scoped else None)
+    assert "OPENCODE_DISABLE_FFF" not in launch.env
+    assert folder.is_dir() == scoped and not list(workspace.iterdir())
+
+    if scoped:
+        legacy = build_record(home, directory=workspace)
+        wal = legacy.with_name(legacy.name + "-wal")
+        before = legacy.read_bytes(), wal.read_bytes()
+        with pytest.raises(ShipError, match="qd fresh w starts a scoped session"):
+            harness.launch(seat, pool, home, brief, "ses_0001", None)
+        assert (legacy.read_bytes(), wal.read_bytes()) == before
+        fresh = harness.launch(seat, pool, home, brief, None, "synthetic brief")
+        assert fresh.env["XDG_DATA_HOME"] == str(home / "data-002")
+        assert fresh.argv[-2:] == ("--prompt", "synthetic brief")
+        record = build_record(home, number=2, directory=folder, session="ses_scoped")
+        resumed = harness.launch(seat, pool, home, brief, "ses_scoped", None)
+        assert resumed.argv[:len(expected)] == expected
+        assert resumed.argv[-2:] == ("--session", "ses_scoped")
+        assert resumed.env["XDG_DATA_HOME"] == str(record.parents[1])
+        build_record(home, number=3, directory=workspace, session="ses_scoped")
+        with pytest.raises(ShipError, match="ambiguous directory evidence.*qd fresh w"):
+            harness.launch(seat, pool, home, brief, "ses_scoped", None)
+        folder.rmdir()
+        folder.symlink_to(workspace, target_is_directory=True)
+        with pytest.raises(ShipError, match="must be a seat-owned working directory"):
+            harness.launch(seat, pool, home, brief, None, None)
+
+
+@pytest.mark.parametrize("joined", [False, True])
+def test_scoped_hand_relaunch_refuses_unproved_directory_before_retirement(tmp_path, monkeypatch, joined):
+    pool = Pool("local", "local", endpoint="http://127.0.0.1:9/v1")
+    workspace = tmp_path / "declared-workspace"
+    workspace.mkdir()
+    spec = SeatSpec("w", "crew", "hand", "opencode", (pool.name,), cwd=workspace)
+    ship = Ship(tmp_path / "ship", "synthetic", "operator", workspace, {pool.name: pool},
+                {"crew": Session("crew", "crew")}, {spec.name: spec})
+    pane = Pane("%1", "crew", "w", 101, 160, 48, False, False, None)
+    seat = Seat(ship, spec, SimpleNamespace(pane=lambda ident: pane if ident == pane.id else None))
+    legacy = build_record(seat.home, directory=workspace)
+    Launched(pane.id, pane.pid, datetime.now(UTC).isoformat(), pool.name, None,
+             ["opencode"], VERSION, "opencode").write(seat.folder / "launch.json")
+    monkeypatch.setattr(seat, "record", lambda: legacy if joined else None)
+    assert seat.is_up
+    retired = []
+    monkeypatch.setattr(seat, "_down", lambda: retired.append(True) or "down")
+    monkeypatch.setattr(seat, "_up", lambda resume: pytest.fail("a refused resume launched"))
+    with pytest.raises(ShipError, match="qd fresh w starts a scoped session"):
+        seat.restart()
+    assert not retired
+
+    monkeypatch.setattr(seat, "_up", lambda resume: "resumed" if resume else "fresh")
+    assert seat.fresh() == "down\nfresh" and retired == [True]

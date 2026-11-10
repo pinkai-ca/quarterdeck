@@ -61,7 +61,7 @@ def data_dir_of(record: Path) -> Path:
 class _Rows:
     """The three tables a reading needs, from one snapshot of the database."""
 
-    def __init__(self, record: Path, *, permissions: bool = False):
+    def __init__(self, record: Path, *, resume_metadata: bool = False):
         _, merged_bytes = snapshot(record)
         try:
             con = sqlite3.connect(":memory:")
@@ -72,10 +72,13 @@ class _Rows:
                     raise RecordError(f"{record.name}: not an OpenCode database")
                 self.sessions = con.execute("SELECT id, time_created, time_updated, parent_id FROM session ORDER BY time_created, id").fetchall()
                 self.permissions = {}
-                if permissions:
+                self.directories = {}
+                if resume_metadata:
                     columns = {row[1] for row in con.execute('PRAGMA table_info(session)')}
                     if 'permission' in columns:
                         self.permissions = dict(con.execute('SELECT id, permission FROM session'))
+                    if 'directory' in columns:
+                        self.directories = dict(con.execute('SELECT id, directory FROM session'))
                 self.messages = [(mid, sid, created, updated, _json(data)) for mid, sid, created, updated, data in con.execute(
                     "SELECT id, session_id, time_created, time_updated, data FROM message ORDER BY time_created, id")]
                 self.parts = [(pid, mid, sid, created, updated, _json(data)) for pid, mid, sid, created, updated, data in con.execute(

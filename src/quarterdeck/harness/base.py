@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 import subprocess
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from .limits import Usage, Wall, Window
@@ -132,6 +133,9 @@ class Harness(ABC):
         self, seat: SeatSpec, pool: Pool, home: Path, brief: Path, resume: str | None, first: str | None
     ) -> Launch:
         """The exact command line and environment, with or without resume."""
+
+    def preflight_resume(self, seat: SeatSpec, home: Path, resume_id: Callable[[], str | None]) -> None:
+        """Check a program-specific resume requirement before retiring its current launch."""
 
     def version(self) -> str | None:
         return program_version((self.program, "--version"))

@@ -165,6 +165,8 @@ class Seat:
 
         selected = self.spec.for_pool(pool)
         same_program = selected.harness == self.spec.harness
+        if same_program:
+            self.harness.preflight_resume(selected, self.home, self._resume_id)
         self.record()
         credential.reseed(self.ship, [self])
         stopped = self._down()
@@ -406,6 +408,8 @@ class Seat:
         spec = replace(self.spec, cwd=self.ship.cwd_of(self.spec))  # the adapter sees the seat's real working directory
         self.harness.build_home(self.home, spec, pool, ship_home if ship_home.is_dir() else None)
         resume_id = self._resume_id() if resume else None
+        if resume and resume_id is None and prior:
+            self.harness.preflight_resume(spec, self.home, lambda: None)
         first, carried = self.first_message()  # read while the last record is still pinned
         if not resume_id:
             (self.folder / "record").unlink(missing_ok=True)
@@ -548,6 +552,7 @@ class Seat:
         with self._lifecycle():
             from .recovery import require_clear
             require_clear(self)
+            self.harness.preflight_resume(self.spec, self.home, self._resume_id)
             return self._down() + "\n" + self._up(resume=True)
 
     def fresh(self) -> str:

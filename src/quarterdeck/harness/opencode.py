@@ -16,6 +16,7 @@ import copy
 import json
 import re
 import stat
+from collections.abc import Callable
 from pathlib import Path
 
 from .. import endpoint
@@ -161,13 +162,32 @@ class OpenCodeHarness(EndpointHarness):
         (folder / "opencode.json").write_text(json.dumps(config, indent=2) + "\n")
         return self.endpoint_ready(home, choice, secret, price)
 
+    @staticmethod
+    def _working_folder(seat: SeatSpec, home: Path) -> Path | None:
+        # OpenCode uses endpoint pools, which are jailed unless explicitly opted out.
+        if not seat.human_session and seat.role == 'hand' and seat.sandbox is not False:
+            return home.parent / 'work'
+        return None
+
+    def preflight_resume(self, seat: SeatSpec, home: Path, resume_id: Callable[[], str | None]) -> None:
+        folder = self._working_folder(seat, home)
+        if folder is None:
+            return
+        resume = resume_id()
+        if resume is None:
+            raise ShipError(f'opencode: {seat.name} has no proved session directory; '
+                            f'qd fresh {seat.name} starts a scoped session and retains the old record')
+        self._data_dir(home, resume, seat.name, working_folder=folder)
+
     def launch(self, seat: SeatSpec, pool: Pool, home: Path, brief: Path, resume: str | None, first: str | None) -> Launch:
         if not seat.human_session:
             guard_question_configuration(home)
+        folder = self._working_folder(seat, home)
         choice = endpoint.Choice.read(home)
-        data = self._data_dir(home, resume, seat.name)
+        data = self._data_dir(home, resume, seat.name, working_folder=folder)
         if resume and not seat.human_session:
-            if not all(question_stays_denied(raw) for raw in _Rows(data / RECORD, permissions=True).permissions.values()):
+            rows = _Rows(data / RECORD, resume_metadata=True)
+            if not all(question_stays_denied(raw) for raw in rows.permissions.values()):
                 raise ShipError(f'{seat.name}: saved native session permissions may re-enable question; '
                                 'remove that override before restart, or use qd fresh for a new native session')
         argv = [self.program, "--auto", "--model", f"{pool.name}/{choice.model}"]  # --auto: no approval prompt (law: can-post)
@@ -184,6 +204,16 @@ class OpenCodeHarness(EndpointHarness):
                        OPENCODE_CONFIG=str(home / 'config/opencode/opencode.json'),
                        OPENCODE_CONFIG_DIR=str(home / 'config/opencode'),
                        OPENCODE_CONFIG_CONTENT='{}', OPENCODE_PERMISSION='{"question":"deny"}')
+        if folder is not None:
+            try:
+                folder.mkdir()
+            except FileExistsError:
+                if not stat.S_ISDIR(folder.lstat().st_mode):
+                    raise ShipError(f'opencode: {folder} must be a seat-owned working directory') from None
+            # The native project argument scopes its finder. The jail still binds the declared cwd.
+            argv.insert(1, str(folder))
+            if seat.cwd is not None:
+                env['QD_WORKSPACE'] = str(seat.cwd)
         from .opencode_thinking import launch_evidence
         recovery = launch_evidence(home, seat, pool, choice, env)
         return Launch(tuple(argv), env, choice.price, recovery)
@@ -193,16 +223,32 @@ class OpenCodeHarness(EndpointHarness):
         return client(home, evidence, version, seat, pool)
 
     @staticmethod
-    def _data_dir(home: Path, resume: str | None, seat_name: str) -> Path:
+    def _data_dir(home: Path, resume: str | None, seat_name: str, *, working_folder: Path | None = None) -> Path:
         """A fresh launch gets the next numbered data directory; a resumed one, the directory holding its session."""
         existing = records(home)
         if resume:
+            selected = None
             for record in reversed(existing):
                 try:
-                    if any(row[0] == resume for row in _Rows(record).sessions):
-                        return data_dir_of(record)
+                    rows = _Rows(record, resume_metadata=working_folder is not None)
                 except OSError:
                     continue
+                matches = sum(row[0] == resume for row in rows.sessions)
+                if not matches:
+                    continue
+                if working_folder is None:
+                    return data_dir_of(record)
+                if selected is not None or matches != 1:
+                    raise ShipError(f'opencode: {seat_name} session has ambiguous directory evidence; '
+                                    f'qd fresh {seat_name} starts a scoped session and retains the old record')
+                selected = (data_dir_of(record), rows.directories.get(resume))
+            if selected is not None:
+                data, directory = selected
+                # Native search follows the session's saved directory after resume.
+                if directory != str(working_folder):
+                    raise ShipError(f'opencode: {seat_name} session directory does not prove its seat-owned working folder; '
+                                    f'qd fresh {seat_name} starts a scoped session and retains the old record')
+                return data
             raise ShipError(f"{seat_name}: no record in {home} holds the session {resume}; qd fresh {seat_name} starts a new one")
         number = max((_launch_number(r) for r in existing), default=0) + 1
         return home / f"{DATA_PREFIX}{number:03d}"

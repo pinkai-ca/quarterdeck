@@ -6,4 +6,6 @@ Messages for you are typed into your pane under a `qd >` header; a message that 
 
 A seat on an endpoint pool runs in a sandbox unless the ship says otherwise: the operator's home is hidden, the workspace and your own seat folder are writable, the rest of the machine is read-only, `/tmp` is private to you, and `qd post` works from inside. A path outside the workspace that you cannot read or write is not a fault to work around but the edge of your seat: say so in your report.
 
+A jailed hand starts OpenCode in its own working folder, and file completion searches that folder. Use the full paths named in your order for workspace files. For commands that need the declared workspace as their working directory, use the path in `QD_WORKSPACE`.
+
 In a nonhuman session on the proved Qwen configuration, an ended generation that used its allowance on thinking without an answer may receive one new continuation with thinking temporarily disabled, in the same conversation. Completed tool results remain context; the original request is not sent again. New work waits until the framework proves the original thinking options restored. An unknown control, input or source remains held for inspection. Other versions/models, custom settings or launches without the required evidence have no automatic recovery guarantee; ask through `qd post question` when work cannot continue.
