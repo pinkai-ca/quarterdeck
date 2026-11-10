@@ -83,6 +83,7 @@ class Harness(ABC):
     home_variable: str | None
     keys: Keys
     reads_usage: bool = False  # True where usage() reads the provider's windows; a pool of such a program is read before a move
+    reads_queue_error: bool = False  # state() can report unresolved native queue identity to automatic status
     remote_control: bool = False  # True where the program can open a seat to the operator's phone and claude.ai as well
     wrap_slack: int = 0  # columns the program keeps clear at the right when it wraps at a word, under the width where it breaks a word
     human_tools: tuple[str, ...] = ()

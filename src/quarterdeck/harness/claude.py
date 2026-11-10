@@ -422,6 +422,7 @@ def pool_account(pool: Pool) -> dict | None:
 
 
 class ClaudeHarness(Harness):
+    reads_queue_error = True
     """Claude Code, proven on 2.1.317."""
 
     name = "claude"

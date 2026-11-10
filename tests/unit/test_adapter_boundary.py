@@ -70,6 +70,11 @@ def test_production_program_knowledge_stays_in_adapters():
     assert offenders == [], f"program knowledge outside harness/: {offenders}"
 
 
+def test_queue_uncertainty_reading_is_declared_by_its_adapter():
+    assert ClaudeHarness().reads_queue_error
+    assert all(not harness.get(name).reads_queue_error for name in harness.NAMES if name != 'claude')
+
+
 def test_attempt_acceptance_does_not_rename_its_persisted_queue_result():
     from quarterdeck.post import Attempt
 

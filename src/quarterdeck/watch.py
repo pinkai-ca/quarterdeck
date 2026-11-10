@@ -463,7 +463,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
                 unarmed.append(seat.name)
         else:
             # Human alarms use owned metadata only; never read their conversation here.
-            if seat.harness.name == 'claude' and (record := seat.record()) is not None:
+            if seat.harness.reads_queue_error and (record := seat.record()) is not None:
                 try:
                     queue_error = seat.harness.state(record).queue_error
                 except OSError:
