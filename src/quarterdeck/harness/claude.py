@@ -55,8 +55,12 @@ def session_id(record: Path) -> str | None:
 
 
 def prompt_text(entry: dict) -> str | None:
-    """The text of a typed prompt, or None for a tool result or a local command's echo."""
-    if entry.get("type") != "user" or entry.get("isSidechain"):
+    """The text of a typed prompt, or None for a tool result, a local command's echo or a compaction summary.
+
+    A compaction writes its summary as a user row marked ``isCompactSummary``; nothing typed it,
+    and an idle compaction is followed by no reply, so counting it would open a turn nothing closes.
+    """
+    if entry.get("type") != "user" or entry.get("isSidechain") or entry.get("isCompactSummary") is True:
         return None
     content = entry.get("message", {}).get("content")
     if isinstance(content, list):
