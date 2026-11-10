@@ -87,6 +87,64 @@ def prompt_text(entry: dict) -> str | None:
     return unwrap(content)
 
 
+def compactions(record: Path):
+    from .compactions import History, read
+
+    def interpret(rows):
+        history, seen = History(), {}
+        native_turn = None
+        for row in rows:
+            if 'isSidechain' in row and type(row['isSidechain']) is not bool:
+                raise ValueError('unknown root history identity')
+            if row.get('isSidechain'):
+                continue
+            kind = row.get('type')
+            if kind not in (*_Reader.kinds, *INPUT_IGNORED):
+                raise ValueError('unknown native history')
+            key = row.get('uuid')
+            if key is not None:
+                if not isinstance(key, str) or key in seen:
+                    raise ValueError('duplicate native history identity')
+                parent = row.get('logicalParentUuid') or row.get('parentUuid')
+                if parent is not None and parent not in seen:
+                    raise ValueError('missing native parent history')
+                if history.conversation is None:
+                    if kind != 'user' or row.get('isCompactSummary') or 'parentUuid' not in row or row['parentUuid'] is not None:
+                        raise ValueError('native origin missing')
+                    history.conversation = row['sessionId']
+                    history.origin = when(row.get('timestamp'))
+                    if not isinstance(history.conversation, str) or not history.conversation:
+                        raise ValueError('native identity missing')
+                if row.get('sessionId') != history.conversation:
+                    raise ValueError('mixed native conversation')
+                seen[key] = parent
+            elif kind in ('user', 'assistant') or row.get('subtype') == 'compact_boundary':
+                raise ValueError('native identity missing')
+            if kind == 'system' and row.get('subtype') == 'compact_boundary':
+                metadata = row.get('compactMetadata')
+                if not isinstance(metadata, dict) or metadata.get('trigger') not in ('auto', 'manual'):
+                    raise ValueError('unknown compaction boundary')
+                history.count += 1
+                history.work(row)
+            elif kind == 'system' and row.get('subtype') == 'turn_duration':
+                ancestor = key
+                while ancestor is not None and ancestor != native_turn:
+                    ancestor = seen.get(ancestor)
+                history.complete = native_turn is not None and ancestor == native_turn
+            elif kind == 'user' and prompt_text(row) is not None:
+                history.work(row, turn=True)
+                native_turn = key
+            elif kind == 'queue-operation' and row.get('operation') == 'enqueue':
+                history.work(row)
+            elif kind == 'assistant':
+                for block in row.get('message', {}).get('content', []):
+                    if block.get('type') == 'tool_use':
+                        history.work(dict(row=key, call=block), call=block.get('id'))
+        return history
+
+    return read(record, interpret, _Reader)
+
+
 @input_reader(lambda row: row.get('type') not in ('assistant', 'system', *INPUT_IGNORED))
 def inputs(record: Path) -> list[Input]:
     found, queued = Inputs(), []
@@ -423,6 +481,7 @@ def pool_account(pool: Pool) -> dict | None:
 
 class ClaudeHarness(Harness):
     reads_queue_error = True
+    compactions = staticmethod(compactions)
     """Claude Code, proven on 2.1.317."""
 
     name = "claude"

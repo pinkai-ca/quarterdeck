@@ -102,7 +102,7 @@ class Service:
             self.ship = shipmod.load(self.ship.folder)  # law: ship-file
         except ShipError as error:
             self.log("error", step="load", error=str(error))
-        for step in (self.reconcile, self.account, self.inboxes, self.recoveries, self.deliveries, self.follow, self.requests, self.fresh_after_order,
+        for step in (self.reconcile, self.account, self.inboxes, self.recoveries, self.compactions, self.deliveries, self.follow, self.requests, self.fresh_after_order,
                      self.rebrief, self.credentials, self.failover):  # accounting before anything relaunches a seat
             self.heartbeat()  # before every step: a slow delivery or usage read reads as busy, never as dead
             try:
@@ -291,10 +291,15 @@ class Service:
         clearable = reading.clears == "dismissable" or (speed == "interrupt" and reading.clears == "time")
         if not reading.open and not clearable:  # the door itself clears a known notice or interrupts; this only spares an attempt file
             return f"{seat.name}: {reading}"
-        launched = seat.launched()
-        attempt = self.attempts.open(message, seat.name, launched.pane, launched.pid, launched.at)
-        text = post.typed([message])
-        proof = pending_delivery.Proof.begin(seat, attempt, text)
+        with post.admission(self.runtime, seat.name):
+            from . import compaction
+            reserved, transitioning = compaction.withheld(self.runtime, seat.name)
+            if transitioning or message.id in reserved:
+                return f"{seat.name}: compaction handoff/transition reserved; held for successor"
+            launched = seat.launched()
+            attempt = self.attempts.open(message, seat.name, launched.pane, launched.pid, launched.at)
+            text = post.typed([message])
+            proof = pending_delivery.Proof.begin(seat, attempt, text)
         delivery = door.deliver(text, speed, proof=proof)
         if proof:
             proof.finish(delivery.result)
@@ -407,10 +412,22 @@ class Service:
                 return None  # only the requested installed/running revision may render and announce it
             return self.upgrade_rebrief(data)
         if kind == "stop":
-            return Door(self.seat(data["seat"])).interrupt()
+            seat = self.seat(data['seat'])
+            from . import compaction
+            if compaction.path(self.runtime, seat.name).exists():
+                with seat._lifecycle():
+                    return Door(seat).interrupt()
+            return Door(seat).interrupt()
+        if kind == 'fresh-ready':
+            from . import compaction
+            return compaction.arm(self.seat(data['seat']), data['revision'], data['report'], data['binding'])
         if kind == "resend":
             message = self.store.get(data["message"])
             seat = self.seat(message.to)
+            from . import compaction
+            reserved, transitioning = compaction.withheld(self.runtime, seat.name)
+            if transitioning or message.id in reserved:
+                return f"{message.short}: held for the compaction successor"
             if seat.session.human:  # the Office is reached by its watch alone: the message is offered to it again
                 self.attempts.close(self.attempts.open(message, seat.name, None, None, None), "resend", "re-offered to the watch")
                 return f"{message.short} re-offered to {seat.name}'s watch; " + ("it prints it now" if post.watch_armed(self.runtime, seat.name) else "no watch is armed yet")
@@ -552,10 +569,24 @@ class Service:
             return str(error)
         return None
 
+    def compactions(self) -> None:
+        from . import compaction
+        selected = {spec.name for spec in self.ship.seats.values()
+                    if spec.fresh_after_compactions or compaction.path(self.runtime, spec.name).exists()}
+        if not selected:
+            return
+        for seat in self.resolved_seats():
+            if seat.name not in selected:
+                continue
+            try:
+                compaction.tick(seat)
+            except (OSError, ShipError) as error:
+                self.log('error', step='compactions', seat=seat.name, error=repr(error))
+
     def fresh_after_order(self) -> None:
         """A worker whose last open order closed, and whose closing turn ended, starts fresh."""
         for seat in self.resolved_seats():
-            if recovery.held(seat) or seat.spec.fresh != "after-order" or not seat.is_up or self.store.open_for(seat.name):
+            if seat.session.human or recovery.held(seat) or seat.spec.fresh != "after-order" or not seat.is_up or self.store.open_for(seat.name):
                 continue
             launched = seat.launched()
             if launched is None:

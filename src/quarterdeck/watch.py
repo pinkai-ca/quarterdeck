@@ -91,6 +91,7 @@ class SeatReading:
     harness: str
     declared_model: str | None = None
     version: str | None = None
+    compaction: str | None = None
 
     @property
     def model_text(self) -> str:
@@ -134,8 +135,9 @@ def reading(seat: Seat | UnresolvedSeat, store: post.Store | None = None) -> Sea
     launched = seat.launched()
     version = launched.version if launched else None
     pool = launched.pool if launched and launched.pool in seat.ship.pools else seat.pool.name
+    from .compaction import status as compaction_status
     return SeatReading(seat.name, act, door, order, tokens_today(seat), pool, running,
-                       seat.harness.name, seat.spec.model, version)
+                       seat.harness.name, seat.spec.model, version, compaction_status(seat))
 
 
 def tokens_today(seat: Seat | UnresolvedSeat) -> ledger.Count:
@@ -212,6 +214,8 @@ def render_table(data: dict) -> list[str]:
     rows = [head, f"{'seat':<10} {'activity':<24} {'door':<40} {'order':<10} {'today':>8}  pool · model"]
     for r in data["seats"]:
         rows.append(f"{r.name:<10} {str(r.activity):<24} {str(r.door):<40} {r.order_text:<10} {str(r.today):>8}  {r.pool} · {r.model_text}")
+        if r.compaction:
+            rows.append(f"  {r.compaction}")
     rows.append(f"open orders: {len(data['open_orders'])}")
     for m in data["open_orders"]:
         rows.append(f"  {m.short} {m.sender} → {m.to} · {m.at.strftime('%m-%d %H:%M')}" + (f" · {m.subject}" if m.subject else ""))
@@ -255,6 +259,8 @@ def render_full(data: dict) -> list[str]:
     today = f"{r.today} tokens today" + (" (+: some turns were not measured)" if r.today.unmeasured else "")
     lines = [f"{r.name}: {r.activity} · door {r.door} · order {r.order_text} · {today}",
              f"  {r.harness_text} · pool {r.pool} · model {r.model_text}"]
+    if r.compaction:
+        lines.append(f"  {r.compaction}")
     record, state = data["record"], data["state"]
     if record:
         if data["record_error"] is not None:
@@ -318,6 +324,7 @@ class Facts:
     routes: list[str] = field(default_factory=list)
     unknown: list[str] = field(default_factory=list)
     queue_unknown: list[str] = field(default_factory=list)
+    compactions: list[str] = field(default_factory=list)
 
     def line(self) -> str:  # law: nothing-waits-silently
         parts = ["SERVICE DOWN" if self.service == "down" else f"service {self.service}"]
@@ -328,6 +335,7 @@ class Facts:
             parts.append(f"{self.blind} blind")
         parts += self.unknown
         parts += self.queue_unknown
+        parts += self.compactions
         parts += [f"{name} needs a human" for name in self.needs_human]
         parts += [f"{name}: no watch armed" for name in self.unarmed]
         parts += [f"wall: {wall}" for wall in self.walls]
@@ -444,7 +452,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
     attempts = post.Attempts(ship.runtime) if attempts is None else attempts
     records = attempts.all()
     latest = attempts.latest(attempts=records)
-    waiting, needs_human, unarmed, pending_lines, routes, unknown, queue_unknown = [], [], [], [], [], [], []
+    waiting, needs_human, unarmed, pending_lines, routes, unknown, queue_unknown, compactions = [], [], [], [], [], [], [], []
     for seat in seats(ship, tmux, False):
         pending = attempts.undelivered(store, seat.name, results=latest)
         waiting += pending
@@ -453,6 +461,9 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
             unknown.append(str(seat.error).partition(';')[0])
             continue
         launched = seat.launched()
+        from .compaction import status as compaction_status
+        if detail := compaction_status(seat):
+            compactions.append(f"{seat.name}: {detail}")
         if launched is not None and launched.pool in seat.spec.pools[1:]:
             routes.append(f"{seat.name} on {seat.harness.name}/{launched.pool}")
         if seat.session.human:
@@ -496,6 +507,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         routes=routes,
         unknown=unknown,
         queue_unknown=queue_unknown,
+        compactions=compactions,
         unarmed=unarmed,
         walls=walls if walls is not None else ledger_walls(ship),
         usage=headline_readings(ship),

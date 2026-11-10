@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import json
 import fcntl
+import hashlib
 from contextlib import contextmanager
 import os
 import secrets
+import stat
 import time
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
@@ -73,6 +75,23 @@ class Message:
         return cls(**data)
 
 
+@contextmanager
+def admission(runtime: Path, seat: str):
+    """Serialize publication/transition claims, never program startup; locks are not reentrant."""
+    folder = runtime / 'post' / 'admission'
+    folder.mkdir(parents=True, exist_ok=True)
+    name = hashlib.sha256(seat.encode()).hexdigest()
+    descriptor = os.open(folder / (name + '.lock'), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        opened, current = os.fstat(descriptor), (folder / (name + '.lock')).lstat()
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
+            raise ShipError('post admission lock identity changed; retained')
+        yield
+    finally:
+        os.close(descriptor)
+
+
 class Store:
     """Every message of a ship, one immutable file each."""
 
@@ -82,6 +101,12 @@ class Store:
         self._cache_at: int | None = None
 
     def new(self, kind: str, sender: str, to: str, body: str, **fields) -> Message:
+        message = self.prepare(kind, sender, to, body, **fields)
+        self.write(message)
+        return message
+
+    def prepare(self, kind: str, sender: str, to: str, body: str, **fields) -> Message:
+        """Construct an immutable intent before publication, without changing its format."""
         if kind not in KINDS:
             raise ShipError(f"no message kind {kind!r}; the kinds are {', '.join(KINDS)}")
         if fields.get("speed") not in (None, *SPEEDS):
@@ -90,7 +115,6 @@ class Store:
             fields["re"] = self.get(fields["re"]).id
         at = now()
         message = Message(self._new_id(kind, sender, at), kind, sender, to, at, body, **fields)
-        self.write(message)
         return message
 
     def _new_id(self, kind: str, sender: str, at: datetime) -> str:
@@ -101,6 +125,13 @@ class Store:
                 return candidate
 
     def write(self, message: Message) -> Path:
+        with admission(self.dir.parent.parent, message.to):
+            from . import compaction
+            compaction.admitting(self.dir.parent.parent, message)
+            return self._write(message)
+
+    def _write(self, message: Message) -> Path:
+        """Publish while the caller holds admission; fixed-intent recovery verifies first."""
         self.dir.mkdir(parents=True, exist_ok=True)
         path = self.dir / f"{message.id}.json"
         if path.exists():
@@ -415,6 +446,11 @@ class Attempts:
         """
         skip = {m for m, r in (self.latest() if results is None else results).items()
                 if r in (*ACCEPTED, "blind", None, "pending", "abandoned")}
+        from .compaction import withheld
+        reserved, transitioning = withheld(store.dir.parent.parent, seat)
+        if transitioning:
+            return []
+        skip |= reserved
         return [m for m in store.for_seat(seat) if m.id not in skip and m.kind != "ack"]  # law: open-until-closed
 
 
@@ -450,10 +486,11 @@ def wait_batch(runtime: Path, seat: str, interval: float = 1.0, stop_after: floa
     deadline = None if stop_after is None else datetime.now().timestamp() + stop_after
     try:
         while True:
-            waiting = attempts.undelivered(store, seat)
-            if waiting:
-                opened = [attempts.open(message, seat, None, None, None) for message in waiting]
-                return waiting, opened
+            with admission(runtime, seat):
+                waiting = attempts.undelivered(store, seat)
+                if waiting:
+                    opened = [attempts.open(message, seat, None, None, None) for message in waiting]
+                    return waiting, opened
             if deadline is not None and datetime.now().timestamp() > deadline:
                 return None
             time.sleep(interval)

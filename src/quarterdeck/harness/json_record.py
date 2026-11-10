@@ -41,6 +41,7 @@ class _Snapshot:
     complete_lines: int
     readers: dict = field(default_factory=dict)
     inputs: dict = field(default_factory=dict)
+    compactions: dict = field(default_factory=dict)
 
 
 _snapshots = OrderedDict()
@@ -207,18 +208,22 @@ class JsonLinesReader(RecordReader):
     @classmethod
     def read(cls, record: Path):
         with _read_lock:
-            snapshot = _parsed(record)
-            previous = snapshot.readers.get(cls)
-            if previous is None:
-                reader = cls(record, snapshot)
-            else:
-                reader, count, skipped = previous
-                if snapshot.skipped[skipped:]:
-                    reader.tools_known = False
-                reader.take_rows(row for _, row in snapshot.rows[count:])
-            if _snapshots.get(Path(record)) is snapshot and snapshot.raw.endswith('\n'):
-                snapshot.readers[cls] = reader, len(snapshot.rows), len(snapshot.skipped)
-            return reader.state(), list(reader.turns)
+            return cls.read_snapshot(record, _parsed(record))
+
+    @classmethod
+    def read_snapshot(cls, record: Path, snapshot: _Snapshot):
+        """State/turn facts from these exact bytes; caller holds the reader lock."""
+        previous = snapshot.readers.get(cls)
+        if previous is None:
+            reader = cls(record, snapshot)
+        else:
+            reader, count, skipped = previous
+            if snapshot.skipped[skipped:]:
+                reader.tools_known = False
+            reader.take_rows(row for _, row in snapshot.rows[count:])
+        if _snapshots.get(Path(record)) is snapshot and snapshot.raw.endswith('\n'):
+            snapshot.readers[cls] = reader, len(snapshot.rows), len(snapshot.skipped)
+        return reader.state(), list(reader.turns)
 
     def __init__(self, record: Path, snapshot=None):
         self.record = record

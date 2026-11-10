@@ -341,7 +341,7 @@ class Seat:
     # -- the one relaunch path -----------------------------------------------------------
 
     @contextmanager
-    def _lifecycle(self) -> Iterator[None]:
+    def _lifecycle(self, *, automatic: bool = False) -> Iterator[None]:
         """One caller owns the whole seat transition, including compound relaunches.
 
         Keep the empty inode outside removable seat homes. No lifecycle path unlinks
@@ -366,6 +366,9 @@ class Seat:
                     raise ShipError(f'{self.name}: lifecycle lock identity changed; transition refused')
             except OSError as error:
                 raise ShipError(f'{self.name}: lifecycle coordination unavailable: {error}') from error
+            if not automatic:
+                from . import compaction
+                compaction.disarm(self)
             yield
         finally:
             if descriptor is not None:

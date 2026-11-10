@@ -74,6 +74,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("seat", nargs="?", help="default: this seat (QD_SEAT)")
     p = verb("fresh", cmd_fresh, "relaunch a seat without resume: a new conversation, briefed, with its open messages")
     p.add_argument("seat", nargs="?", help="default: this seat (QD_SEAT)")
+    p = verb('fresh-ready', cmd_fresh_ready, 'attest a natural break with an open handoff, or cancel prepared readiness')
+    p.add_argument('seat', nargs='?', help='default: this seat; outside-seat cancellation is supported')
+    p.add_argument('--request')
+    p.add_argument('--handoff')
+    p.add_argument('--at-break', action='store_true', help='attest no review/signature/landing is half done; finish this turn without new work')
+    p.add_argument('--cancel', action='store_true')
     p = verb("stop", cmd_stop, "interrupt a seat's turn, nothing more")
     p.add_argument("seat", nargs="?", help="default: this seat (QD_SEAT)")
     p = verb("set", cmd_set, "change a seat: writes the ship file, then applies what it can")
@@ -184,6 +190,21 @@ def cmd_fresh(args: argparse.Namespace) -> str:
     return relaunch(load_ship(args), args.seat, resume=False)
 
 
+def cmd_fresh_ready(args: argparse.Namespace) -> str:
+    from . import compaction
+    ship = load_ship(args)
+    seat = seat_of(ship, this_seat(ship, args.seat))
+    if args.cancel:
+        with seat._lifecycle():
+            return compaction.disarm(seat, 'readiness cancelled; handoffs remain open')
+    if os.environ.get('QD_SEAT') != seat.name or not args.at_break or not args.request or not args.handoff:
+        raise ShipError('fresh-ready requires the seat itself, --request, --handoff and explicit --at-break')
+    if not service.alive(ship.runtime):
+        raise ShipError('service down; readiness not confirmed')
+    act = compaction.prepare_ready(seat, args.request, args.handoff)
+    return service.request(ship.runtime, 'fresh-ready', seat=seat.name, **act)
+
+
 def relaunch(ship: shipmod.Ship, name: str | None, resume: bool) -> str:
     """Relaunch now when the seat is idle; when it is working, the service does it at the turn's end."""
     seat = seat_of(ship, this_seat(ship, name))
@@ -227,7 +248,18 @@ def cmd_set(args: argparse.Namespace) -> list[str]:
         table = f"seats.{seat.name}" if key in shipmod.SEAT_KEYS else f"seats.{seat.name}.settings"  # the program's own keys
         parsed.append((table, key, raw))
     # One edit: a seat's program and its pool are only valid together, so all are validated and written at once.
-    written = shipmod.set_values(ship, [(table, key, parse_value(raw)) for table, key, raw in parsed])
+    from . import compaction
+    edits = [(table, key, parse_value(raw)) for table, key, raw in parsed]
+    threshold = next((value for _, key, value in edits if key == 'fresh_after_compactions'), None)
+    if threshold is not None or seat.spec.fresh_after_compactions or compaction.path(ship.runtime, seat.name).exists():
+        shipmod.fence(ship)
+        with post.admission(ship.runtime, seat.name):
+            written = shipmod.set_values(ship, edits)
+            compaction.disarm_locked(seat, 'declaration changed; renew readiness',
+                                     disabled=(threshold == 0) if threshold is not None else None,
+                                     clear_transition=False)
+    else:
+        written = shipmod.set_values(ship, edits)
     switching = any(key == "harness" for _, key, _ in parsed)
     proofs = []
     for proof, (_, key, raw) in zip(written, parsed):
@@ -265,6 +297,8 @@ def adopt(ship: shipmod.Ship, seat: seatmod.Seat) -> list[str]:
 
 def apply_control(ship: shipmod.Ship, seat: seatmod.Seat, key: str, value: str) -> str:
     """Hand a written change to the service, or say which relaunch applies it."""
+    if key == 'fresh_after_compactions':
+        return '  compaction threshold applies on the service tick; 0 disables it and leaves all posts open'
     control = seat.harness.control(key)
     if key in RESTART_CONTROLS:
         return f"  {key} written; qd {RESTART_CONTROLS[key]} {seat.name} applies it"

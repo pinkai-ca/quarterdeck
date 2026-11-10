@@ -48,6 +48,7 @@ def status_line(facts, alerts: list[str]) -> str:
                   (len(facts.routes), "on fallback")]
         counts.append((len(facts.unknown), 'selection unknown'))
         counts.append((len(facts.queue_unknown), 'queue unknown'))
+        counts.append((len(facts.compactions), 'compaction readings'))
         parts += [f"{count} {label}" for count, label in counts if count]
         parts.append("details: qd status")
     suffix = "" if "details: qd status" in parts else ": qd status"

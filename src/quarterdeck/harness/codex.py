@@ -30,6 +30,52 @@ OUTPUTS = {"function_call_output", "custom_tool_call_output"}
 INPUT_IGNORED = ('token_usage_record', 'world_state')
 
 
+def compactions(record: Path):
+    from .compactions import History, identity, read
+
+    def interpret(rows):
+        history, checkpoints = History(), set()
+        native_turn = None
+        for index, row in enumerate(rows):
+            kind, payload = row.get('type'), row.get('payload')
+            if not isinstance(payload, dict):
+                raise ValueError('unknown native history')
+            sub = payload.get('type')
+            if kind == 'session_meta':
+                if index != 0 or any(payload.get(key) is not None for key in
+                                     ('forked_from_id', 'history_base', 'parent_thread_id', 'subagent_history_start_ordinal')):
+                    raise ValueError('native origin not complete')
+                history.conversation = payload['id']
+                history.origin = when(row.get('timestamp'))
+                if not isinstance(history.conversation, str) or payload.get('session_id', history.conversation) != history.conversation:
+                    raise ValueError('native identity missing')
+            elif history.conversation is None:
+                raise ValueError('native header missing')
+            elif kind == 'compacted':
+                key = identity(row)
+                if not isinstance(payload.get('message'), str) or key in checkpoints:
+                    raise ValueError('ambiguous checkpoint')
+                checkpoints.add(key)
+                history.count += 1
+                history.work(row)
+            elif kind == 'event_msg' and sub == 'task_started':
+                history.work(row, turn=True)
+                native_turn = payload.get('turn_id')
+            elif kind == 'event_msg' and sub == 'task_complete':
+                history.complete = isinstance(native_turn, str) and bool(native_turn) and payload.get('turn_id') == native_turn
+            elif kind == 'event_msg' and sub in ENDS_TURN:
+                history.work(row)  # an abort invalidates readiness; it is not the promised completion
+            elif kind == 'response_item' and sub in CALLS:
+                history.work(row, call=payload.get('call_id'))
+            elif kind == 'response_item' and sub == 'message' and payload.get('role') == 'user':
+                history.work(row)
+            elif kind not in ('response_item', 'event_msg', 'turn_context', *INPUT_IGNORED):
+                raise ValueError('unknown native history')
+        return history
+
+    return read(record, interpret, _Reader)
+
+
 def records(home: Path) -> list[Path]:
     return records_matching(home, "sessions/*/*/*/rollout-*.jsonl")
 
@@ -423,6 +469,8 @@ def config_text(config: dict) -> str:
 
 class CodexHarness(Harness):
     """Codex, proven on 0.166.0. Model and effort change only at launch: ``/model`` opens a picker."""
+
+    compactions = staticmethod(compactions)
 
     human_tools = ('request_user_input', 'request_user_input_async')
     human_tool_policy = "Native synchronous and asynchronous request_user_input tools are disabled, including plan mode."

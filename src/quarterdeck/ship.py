@@ -77,6 +77,7 @@ class SeatSpec:
     settings: dict = field(default_factory=dict)
     pool_choices: dict[str, dict] = field(default_factory=dict)
     human_session: bool = False  # resolved from Session by Seat, never a ship-file setting
+    fresh_after_compactions: int | None = None
 
     def for_pool(self, name: str) -> SeatSpec:
         if name not in self.pools:
@@ -250,6 +251,7 @@ def _seat(name: str, table: dict, folder: Path) -> SeatSpec:
         cwd=_path(table["cwd"], folder) if "cwd" in table else None,
         up=bool(table.get("up", True)),
         fresh=table.get("fresh"),
+        fresh_after_compactions=table.get("fresh_after_compactions"),
         remote_control=bool(table.get("remote_control", False)),
         sandbox=table.get("sandbox"),
         settings=dict(table.get("settings", {})),
@@ -257,7 +259,7 @@ def _seat(name: str, table: dict, folder: Path) -> SeatSpec:
     )
 
 
-SEAT_KEYS = frozenset({"session", "role", "harness", "pool", "model", "effort", "persona", "cwd", "up", "fresh", "remote_control", "sandbox"})
+SEAT_KEYS = frozenset({"session", "role", "harness", "pool", "model", "effort", "persona", "cwd", "up", "fresh", "remote_control", "sandbox", "fresh_after_compactions"})
 """The keys of ``[seats.<name>]`` the framework reads; any other key belongs to the program, under ``.settings``."""
 
 
@@ -306,6 +308,8 @@ def _validate(ship: Ship) -> None:
                 raise ShipError(f"seat {seat.name}: {harness.name} has no Remote Control")
         if seat.fresh not in (None, "after-order"):
             raise ShipError(f"seat {seat.name}: fresh = {seat.fresh!r}; the one value is \"after-order\"")
+        if seat.fresh_after_compactions is not None and (type(seat.fresh_after_compactions) is not int or seat.fresh_after_compactions < 0):
+            raise ShipError(f"seat {seat.name}: fresh_after_compactions must be a nonnegative integer; 0 disables it")
 
 
 # -- the line editor -------------------------------------------------------------------

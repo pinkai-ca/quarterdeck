@@ -93,6 +93,10 @@ class Harness(ABC):
         """A proved native off/restore client, or no supported automatic recovery."""
         return None
 
+    def compactions(self, record: Path):
+        from .compactions import Compactions
+        return Compactions()
+
     def waiting_for_human(self, state: State) -> bool:
         """A complete nonempty question-only set; a displayed first tool proves no exclusivity."""
         return (state.turn_open is True and bool(state.pending_tools)
