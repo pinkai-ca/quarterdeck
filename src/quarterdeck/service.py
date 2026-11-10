@@ -326,23 +326,24 @@ class Service:
             data = None
             try:
                 data = json.loads(path.read_text())
-                answer = self.answer(data)
-            except SelectionError as error:
-                self.hold_selection(error)
-                continue  # this request stays held; later healthy-seat requests still run
-            except ShipError as error:
-                answer = f"refused: {error}"  # a refusal is an answer: its asker reads why
+                try:
+                    answer = self.answer(data)
+                except SelectionError as error:
+                    self.hold_selection(error)
+                    continue  # this request stays held; later healthy-seat requests still run
+                except ShipError as error:
+                    answer = f"refused: {error}"  # a refusal is an answer: its asker reads why
+                if answer is None:
+                    continue  # not yet: the request waits for the seat's turn to end
+                path.with_suffix(".done").write_text(answer + "\n")
+                self.log("request", **data, answer=answer)
+                path.unlink()
             except Exception as error:
                 if isinstance(data, dict) and data.get("kind") == "rebrief":
                     retry.append(error)
                 else:
                     self.failed_request(path, error)
                 continue
-            if answer is None:
-                continue  # not yet: the request waits for the seat's turn to end
-            path.with_suffix(".done").write_text(answer + "\n")
-            path.unlink()
-            self.log("request", **data, answer=answer)
         if retry:
             raise retry[0]
 
@@ -352,8 +353,12 @@ class Service:
         self.log("error", step="requests", request=path.name, error=repr(error), trace=traceback.format_exc())
         kept.parent.mkdir(exist_ok=True)
         os.replace(path, kept)
-        path.with_suffix(".done").write_text(f"failed: {error!r}; the request is kept in requests/failed/{path.name} "
-                                             "and the service log has the trace\n")
+        try:
+            path.with_suffix(".done").write_text(f"failed: {error!r}; the request is kept in requests/failed/{path.name} "
+                                                 "and the service log has the trace\n")
+        except OSError as answer_error:
+            self.log("error", step="requests", request=path.name, answer_unavailable=True,
+                     error=repr(answer_error), trace=traceback.format_exc())
 
     def answer(self, data: dict) -> str | None:
         kind = data["kind"]

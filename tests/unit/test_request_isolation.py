@@ -68,6 +68,22 @@ def test_a_refused_request_is_answered_in_its_done_and_removed(svc):
     assert not logged(service, "error"), "a refusal is an answer, not an error"
 
 
+def test_an_unwritable_reply_for_one_request_does_not_block_the_next_stop_or_repeat_the_action(svc, monkeypatch):
+    service, folder = svc
+    called = []
+    monkeypatch.setattr(doormod.Door, "interrupt", lambda self: called.append(self.seat.name) or "synthetic stop")
+    (folder / "110000-stop-1.done").mkdir()  # this request alone cannot publish its answer
+    paths = requests(service, folder, **{"110000-stop-1": {"kind": "stop", "seat": "survivor"},
+                                         "110001-stop-2": {"kind": "stop", "seat": "survivor"}})
+    assert paths["110001-stop-2"].with_suffix(".done").read_text() == "synthetic stop\n"
+    assert (folder / "failed" / paths["110000-stop-1"].name).is_file()
+    assert not paths["110000-stop-1"].exists()
+    errors = logged(service, "error")
+    assert any(row.get("request") == "110000-stop-1.json" and "Traceback" in row["trace"] for row in errors)
+    service.tick()
+    assert called == ["survivor", "survivor"], "the first action may have run: neither is repeated"
+
+
 def test_a_failing_rebrief_stays_to_be_tried_again_and_the_stop_after_it_is_answered(svc, monkeypatch):
     service, folder = svc
     monkeypatch.setattr(Service, "answer", lambda self, data, original=Service.answer:
