@@ -287,7 +287,8 @@ def test_redraw_alarm_paths_preserve_quiet_and_unknown_recovery_holds(world, mon
     world.native.auto_complete = False
     recovery.run(world.service)
     seat, svc = world.seat, world.service
-    svc.told = {}
+    svc.told, svc.alarmed = {}, {}
+    svc.alarm_recipients = lambda seat, reason: Service.alarm_recipients(svc, seat, reason)
     svc.ship.seats['desk'] = SeatSpec('desk', 'crew', 'desk', 'opencode', ('synthetic',))
     monkeypatch.setattr(watch, 'seats', lambda *_: [seat])
     capture = world.native.capture
@@ -332,7 +333,8 @@ def forbid_human_content_and_input(world, monkeypatch):
 
 def human_ownership_transition(world, monkeypatch, *, unknown):
     seat, svc = world.seat, world.service
-    svc.told = {}
+    svc.told, svc.alarmed = {}, {}
+    svc.alarm_recipients = lambda seat, reason: Service.alarm_recipients(svc, seat, reason)
     svc.needs_human = lambda seat: Service.needs_human(svc, seat)
     svc.ship.sessions['office'] = Session('office', 'Office', human=True)
     svc.ship.seats['desk'] = SeatSpec('desk', 'office', 'desk', 'opencode', ('synthetic',))

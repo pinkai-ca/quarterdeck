@@ -36,6 +36,23 @@ from .tmux import Tmux
 
 TICK = 1.0
 STATUS_INTERVAL = 0.7  # presentation only; rendering age and owner are checked independently
+
+# Door alarms only a person can clear: a sign-in (every adapter names that dialog "login"),
+# or a delivery whose paste or submit outcome is uncertain (the pending journal's own reasons).
+# These go to the desk as well as the systems seat; every other alarm goes to the systems
+# seat alone while one is up. With no systems seat up, every alarm goes to the desk.
+PERSON_ONLY = (
+    "login",
+    "paste/submit outcome uncertain",
+    "pending delivery",
+    "pending box changed",
+    "pending folded box",
+    "prior launch has an unconfirmed delivery",
+)
+
+
+def person_only(reason: str) -> bool:
+    return reason.startswith(PERSON_ONLY)
 BLIND_INTERVAL = 60.0  # how often the blind attempts are read against the records
 
 
@@ -48,6 +65,7 @@ class Service:
         self.log_path = self.runtime / "log" / "service.jsonl"
         self.withheld: dict[tuple[str, str], str] = {}  # (message, seat) -> the screen it was withheld on
         self.told: dict[str, str | None] = {}  # seat -> the obstruction the desk was last told of
+        self.alarmed: dict[str, tuple[str, set[str]]] = {}  # seat -> its obstruction and who has been told of it
         self.status_framework = presentation.framework_stamp()
         self.brief_stamp = self._brief_stamp()
         copy = install.installed(self.runtime) if install.running_from(self.runtime / 'venv' / 'bin') else None
@@ -209,16 +227,43 @@ class Service:
         return screen is None or screen.text != last  # law: events-not-clocks
 
     def needs_human(self, seat: Seat) -> None:
-        """When a seat's door needs a human, the desk is told once, with a report from ``ship``."""
+        """When a seat's door needs a human, each of the alarm's recipients is told once, with a report from ``ship``.
+
+        Once is per addressee and per reason: a repeated reading tells no one again, a changed
+        reason tells again, and a recipient added while the reason stands is told it then.
+        """
         _, reason = Door(seat).human_obstruction()
         reason = reason or next(iter(pending_delivery.detached(seat)), None)
-        if reason == self.told.get(seat.name):
+        if reason != self.told.get(seat.name):
+            self.told[seat.name] = reason
+        if not reason:
+            self.alarmed.pop(seat.name, None)
             return
-        self.told[seat.name] = reason
-        if reason:
-            for desk in self.ship.seats.values():
-                if desk.role == "desk":
-                    self.store.new("report", "ship", desk.name, f"{seat.name} obstructed, {reason}")
+        told = self.alarmed.get(seat.name)
+        if told is None or told[0] != reason:
+            told = self.alarmed[seat.name] = (reason, set())
+        for name in self.alarm_recipients(seat, reason):
+            if name not in told[1]:
+                told[1].add(name)
+                self.store.new("report", "ship", name, f"{seat.name} obstructed, {reason}")
+
+    def alarm_recipients(self, seat: Seat, reason: str) -> list[str]:
+        """The systems seats that are up, and the desk too for what only a person can clear.
+
+        The obstructed seat is never its own recipient: its door is the one that cannot take the report.
+        """
+        desks = [spec.name for spec in self.ship.seats.values() if spec.role == "desk"]
+        systems = [spec.name for spec in self.ship.seats.values()
+                   if spec.role == "systems" and spec.name != seat.name and self._up(spec.name)]
+        if not systems:
+            return desks
+        return (systems + [name for name in desks if name not in systems]) if person_only(reason) else systems
+
+    def _up(self, name: str) -> bool:
+        try:
+            return self.seat(name).is_up
+        except ShipError:
+            return False  # an unresolved or unconfirmed launch is not a seat that can take the alarm
 
     def deliver(self, seat: Seat, messages: list[post.Message], resend: bool = False) -> str:
         if resend:
