@@ -3,7 +3,9 @@
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import json
+import os
 from pathlib import Path
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -43,6 +45,28 @@ def setup_seat(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return seat, old, active
 
 
+@pytest.fixture
+def local_midday():
+    """Run at local noon, in a fixed zone, so turns stamped minutes ago share today's local date.
+
+    tokens_today counts the turns of date.today(), and this test stamps its old turn a minute
+    before now; in the first minute after local midnight that turn falls on the day before.
+    """
+    previous = os.environ.get("TZ")
+    offset = int(time.time() % 86400) - 12 * 3600  # local = UTC - offset puts now at 12:00 local
+    sign = "+" if offset >= 0 else "-"
+    os.environ["TZ"] = f"QDNOON{sign}{abs(offset) // 3600:02d}:{abs(offset) % 3600 // 60:02d}:{abs(offset) % 60:02d}"
+    time.tzset()
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = previous
+        time.tzset()
+
+
 def switch(seat):
     seat.down()  # archives the reader and actual launch before removing launch.json
     spec = replace(seat.spec, harness="codex", pools=("codex",))
@@ -50,8 +74,10 @@ def switch(seat):
     return Seat(seat.ship, spec, seat.tmux)
 
 
-def test_down_switch_fresh_join_and_history_use_original_reader_pool_and_quota(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_down_switch_fresh_join_and_history_use_original_reader_pool_and_quota(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                                              local_midday) -> None:
     seat, old, active = setup_seat(tmp_path, monkeypatch)
+    assert datetime.now().hour == 12 and (datetime.now() - timedelta(minutes=5)).date() == datetime.now().date()
     at = datetime.now(timezone.utc) - timedelta(minutes=1)
     append_error(old, "Individual quota reached. Resets in 2h.\nError ID: synthetic-old-error", at)
     old_turns = seat.harness.turns(old.path)
