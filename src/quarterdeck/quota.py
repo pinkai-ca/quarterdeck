@@ -82,6 +82,10 @@ class Quotas:
             return True
         return any(p == pool and observed > last[0] for _, p, _, _, observed, _ in self.active(now))
 
+    def last_attempt(self, pool: str) -> datetime | None:
+        row = self.db.execute("SELECT at FROM usage_reads WHERE pool=?", (pool,)).fetchone()
+        return datetime.fromisoformat(row[0]) if row else None
+
     def usage_read(self, pool: str, at: datetime, error: str | None) -> None:
         self.db.execute("INSERT OR REPLACE INTO usage_reads VALUES (?,?,?)", (pool, stamp(at), error))
         self.db.commit()
@@ -116,17 +120,39 @@ def held(service, pool: str) -> bool:
 
 
 def record_read(service, pool: str, usage: Usage, interval: int, attempted_at: datetime) -> None:
-    """Keep one read in the book; log a failed one with its reason and hold a refused pool by Retry-After."""
+    """Keep one read in the book; log a failed one with its reason and hold a refused pool by Retry-After.
+
+    Every failed provider call is logged, so how often is readable. A state that made no call
+    repeats each interval unchanged, so it is logged only when its reason differs from the
+    pool's last logged one, and again once a good read has come between.
+    """
     service.usage_read[pool] = time.monotonic()
     service.ledger.record_usage(pool, usage, attempted_at=attempted_at)
     if not usage.error:
+        service.usage_logged.pop(pool, None)
         return
+    if not usage.called and service.usage_logged.get(pool) == usage.error:
+        return
+    service.usage_logged[pool] = usage.error
     entry = {"pool": pool, "error": usage.error}
     if usage.retry_after is not None:
         hold = min(max(usage.retry_after, interval), BACKOFF_MAX)
         service.usage_hold[pool] = time.monotonic() + hold
         entry["backoff"] = round(hold)
+    if not usage.called:
+        entry["no_call"] = True
     service.log("usage", **entry)
+
+
+def last_read(service, pool: str) -> float:
+    """The monotonic time of the pool's last read, seeded after a restart from the book's stored attempt."""
+    if pool not in service.usage_read:
+        at = service.ledger.quota.last_attempt(pool)
+        if at is None:
+            return -math.inf
+        elapsed = max(0.0, (datetime.now(timezone.utc) - at).total_seconds())  # a clock set back waits a full interval
+        service.usage_read[pool] = time.monotonic() - elapsed
+    return service.usage_read[pool]
 
 
 def refresh_declared(service) -> None:
@@ -149,7 +175,8 @@ def refresh_declared(service) -> None:
                 if (launched is not None and launched.pool == pool.name
                         and launch_reader(launched) == pool.provider and seat.spec.harness == pool.provider):
                     sources.append((seat.record(), launched.when))
-            usage = reader.usage_from_records(sources, datetime.now(timezone.utc))
+            usage = replace(reader.usage_from_records(sources, datetime.now(timezone.utc))
+                            or Usage((), datetime.now(timezone.utc), "provider usage unavailable"), called=False)
         else:
             usage = shared[key] if key is not None and key in shared else reader.usage(pool)
         usage = usage or Usage((), datetime.now(timezone.utc), "provider usage unavailable")
@@ -165,7 +192,7 @@ def refresh(service, seat, live: bool, launched) -> None:
         return
     pool = service.ship.pools[launched.pool] if launched and launched.pool in service.ship.pools else seat.pool
     if (pool.kind == "subscription" and not held(service, pool.name)
-            and time.monotonic() - service.usage_read.get(pool.name, -math.inf) >= reader.usage_interval):
+            and time.monotonic() - last_read(service, pool.name) >= reader.usage_interval):
         service.usage_read[pool.name] = time.monotonic()
         usage = reader.usage(pool)
         if usage is not None or reader.reads_usage:

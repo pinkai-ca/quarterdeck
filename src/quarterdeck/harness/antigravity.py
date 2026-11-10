@@ -10,6 +10,7 @@ listed in docs/ANTIGRAVITY.md.
 
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import re
 from datetime import datetime, timezone
@@ -48,8 +49,8 @@ class AntigravityHarness(Harness):
 
     def usage(self, pool: Pool) -> Usage:
         if pool.config_dir is not None:
-            return unknown("a Google account directory is not read; /usage reads the sign-in the program itself holds",
-                           datetime.now(timezone.utc))
+            return replace(unknown("a Google account directory is not read; /usage reads the sign-in the program itself holds",
+                                   datetime.now(timezone.utc)), called=False)
         return fetch_usage()
 
     def shared_usage_key(self, pool: Pool) -> tuple | None:

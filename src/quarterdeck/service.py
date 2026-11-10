@@ -75,6 +75,7 @@ class Service:
         self.meters: dict[str, machine.Meter] = {}
         self.usage_read: dict[str, float] = {}
         self.usage_hold: dict[str, float] = {}  # a refused pool's Retry-After, by the monotonic clock
+        self.usage_logged: dict[str, str] = {}  # each pool's last logged usage failure
         self.read_marks: dict[Path, tuple] = {}  # record -> the fingerprint it was last read at
         self.working: dict[str, bool] = {}  # seat -> whether its record last showed a turn open
         self.work_marks: dict[str, tuple] = {}  # seat -> (record, fingerprint) its working state was read at

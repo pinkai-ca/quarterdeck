@@ -519,13 +519,13 @@ def usage(pool: Pool) -> Usage | None:
     now = datetime.now(timezone.utc)
     source = pool.config_dir / ".credentials.json" if pool.config_dir else None
     if source is None or not source.exists():
-        return Usage((), now, "credential file missing")
+        return Usage((), now, "credential file missing", called=False)
     try:
         token = json.loads(source.read_text()).get("claudeAiOauth", {}).get("accessToken")
     except (OSError, ValueError, AttributeError):
-        return Usage((), now, "credential file unreadable")
+        return Usage((), now, "credential file unreadable", called=False)
     if not token:
-        return Usage((), now, "no access token in the credential file")
+        return Usage((), now, "no access token in the credential file", called=False)
     request = urllib.request.Request(USAGE_URL, headers={
         "Authorization": f"Bearer {token}", "anthropic-beta": "oauth-2025-04-20", "Accept": "application/json"})
     try:
