@@ -353,6 +353,11 @@ class Service:
             return self.control(self.seat(data["seat"]), data["name"], str(data["value"]))
         if kind == "relaunch":
             return self.relaunch(self.seat(data["seat"]), bool(data["resume"]))
+        if kind == "select":  # the seats failover acts on: a seat whose selection is unknown is held, not guessed
+            seat = next((s for s in self.resolved_seats() if s.name == data["seat"]), None)
+            if seat is None:
+                return f"{data['seat']} not moved: its pool selection is unknown or held; inspect with qd status"
+            return self.select(seat, str(data["pool"]))
         return f"unknown request {kind!r}"
 
     def relaunch(self, seat: Seat, resume: bool) -> str | None:
@@ -566,15 +571,7 @@ class Service:
         for seat in self.resolved_seats():
             if recovery.held(seat) or len(seat.spec.pools) < 2 or not seat.is_up or not self.ledger.walled(seat.pool.name, self.ship):
                 continue
-            try:
-                record = seat.record()
-                state = seat.harness.state(record) if record is not None else None
-            except OSError:
-                continue
-            if (state is None or state.turn_open is not False or state.queued
-                    or not any(turn.timed and turn.started is not None and turn.ended is not None
-                               and state.last_input_at is not None
-                               and turn.started <= state.last_input_at <= turn.ended for turn in state.completed_turns)):
+            if self.not_idle(seat):
                 continue
             pools = list(seat.spec.pools)
             start = pools.index(seat.pool.name)
@@ -586,6 +583,54 @@ class Service:
             proof = seat.failover_to(target)
             self.store.new("report", post.SHIP, seat.name, f"moved to pool {target} from {came_from} at its wall")
             self.log("failover", seat=seat.name, pool=target, came_from=came_from, proof=proof)
+
+    def not_idle(self, seat: Seat) -> str | None:
+        """Why a seat may not move now: a move needs no open turn, no queued input and a recorded completion."""
+        try:
+            record = seat.record()
+            state = seat.harness.state(record) if record is not None else None
+        except OSError:
+            return "its record is unreadable"
+        if state is None:
+            return "it has no joined record"
+        if state.turn_open is not False:
+            return "a turn is open"
+        if state.queued:
+            return "input is queued"
+        if not any(turn.timed and turn.started is not None and turn.ended is not None
+                   and state.last_input_at is not None
+                   and turn.started <= state.last_input_at <= turn.ended for turn in state.completed_turns):
+            return "its last input has no recorded completion"
+        return None
+
+    def select(self, seat: Seat, pool: str) -> str:
+        """An explicit move to one of a seat's declared choices, by failover's path and refusals.
+
+        Failover moves only forward at a wall; this act may go back to an earlier choice once it
+        has room. It refuses, rather than waits, where failover would not move, except that only a
+        walled destination refuses it: an unknown one moves, and the answer says so.
+        """
+        if not seat.spec.pool_choices or pool not in seat.spec.pools:
+            return f"{seat.name}: {pool} is not one of its declared choices ({', '.join(seat.spec.pools)}); nothing moved"
+        if pool == seat.pool.name:
+            return f"{seat.name} is already on {pool}"
+        if reason := recovery.held(seat):
+            return f"{seat.name} not moved: {reason}"
+        if not seat.is_up:
+            return f"{seat.name} not moved: it is down; qd up {seat.name} first"
+        if reason := self.not_idle(seat):
+            return f"{seat.name} not moved: {reason}; ask again when its turn has ended"
+        # The destination is read as failover would read it. Only a wall refuses the explicit act: a pool
+        # whose usage is unknown, such as a background provider with no seat on it to read, is the human's call.
+        unknown = not self.known_open(seat, pool)
+        if unknown and self.ledger.walled(pool, self.ship):
+            return f"{seat.name} not moved: {pool} is walled"
+        came_from = seat.pool.name
+        proof = seat.failover_to(pool)
+        self.store.new("report", post.SHIP, seat.name, f"moved to pool {pool} from {came_from} by qd set")
+        self.log("select", seat=seat.name, pool=pool, came_from=came_from, usage_unknown=unknown, proof=proof)
+        note = f"; {pool} usage unknown; moved on the explicit act" if unknown else ""
+        return f"{seat.name} moved to {pool} from {came_from}{note}\n{proof}"
 
     def known_open(self, seat: Seat, pool_name: str) -> bool:
         """A destination pool, judged by its own adapter's existing usage rules.

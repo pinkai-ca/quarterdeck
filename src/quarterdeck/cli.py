@@ -216,16 +216,41 @@ def cmd_set(args: argparse.Namespace) -> list[str]:
             key = change.partition("=")[0].removeprefix("settings.")
             if change.startswith("settings.") or key in {"harness", "model", "effort"} or key not in shipmod.SEAT_KEYS:
                 raise ShipError("inline pool choices: edit harness, model, effort and program settings in ship.toml; qd set cannot select their scope")
-    proofs = []
+        if any(change.partition("=")[0] == "pool" for change in changes):
+            return [select(ship, seat, changes)]
+    parsed = []
     for change in changes:
         key, equals, raw = change.partition("=")
         if not equals:
             raise ShipError(f"{change!r} is not KEY=VALUE")
         key = key.removeprefix("settings.")
         table = f"seats.{seat.name}" if key in shipmod.SEAT_KEYS else f"seats.{seat.name}.settings"  # the program's own keys
-        proofs.append(shipmod.set_value(ship, table, key, parse_value(raw)))
-        proofs.append(apply_control(ship, seat, key, raw))
+        parsed.append((table, key, raw))
+    # One edit: a seat's program and its pool are only valid together, so all are validated and written at once.
+    written = shipmod.set_values(ship, [(table, key, parse_value(raw)) for table, key, raw in parsed])
+    switching = any(key == "harness" for _, key, _ in parsed)
+    proofs = []
+    for proof, (_, key, raw) in zip(written, parsed):
+        proofs.append(proof)
+        if key == "pool" and switching:
+            proofs.append(f"  pool written; qd fresh {seat.name} applies it with the harness")
+        else:
+            proofs.append(apply_control(ship, seat, key, raw))
     return proofs
+
+
+def select(ship: shipmod.Ship, seat: seatmod.Seat, changes: list[str]) -> str:
+    """A seat with inline choices moves to one of them by the path failover uses; its declaration is unchanged.
+
+    The selection is the seat's runtime state, so nothing is written to the ship file; the service checks
+    the destination and the seat's idleness exactly as failover does, and refuses rather than waits.
+    """
+    if len(changes) != 1:
+        raise ShipError(f"{seat.name}: select a pool alone, as in qd set {seat.name} pool=<choice>")
+    pool = changes[0].partition("=")[2]
+    if pool not in seat.spec.pools:
+        raise ShipError(f"{seat.name}: {pool!r} is not one of its declared choices ({', '.join(seat.spec.pools)})")
+    return service.request(ship.runtime, "select", seat=seat.name, pool=pool)
 
 
 def adopt(ship: shipmod.Ship, seat: seatmod.Seat) -> list[str]:

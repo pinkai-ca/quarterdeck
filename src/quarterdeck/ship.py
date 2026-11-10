@@ -372,17 +372,32 @@ def set_value(ship: Ship, table: str, key: str, value: object) -> str:
 
     Returns the proof line.
     """
-    text = ship.file.read_text()
-    changed = edit(text, table, key, value)
-    if changed == text:
-        return f"{ship.file.name}: {table}.{key} = {literal(value)} already"
-    _validate(_from_text(changed, ship.folder))  # the file never holds a declaration qd cannot load
-    _write_atomically(ship.file, changed)
-    line = f"{ship.file.name}: {table}.{key} = {literal(value)}"
+    return set_values(ship, [(table, key, value)])[0]
+
+
+def set_values(ship: Ship, edits: list[tuple[str, str, object]]) -> list[str]:
+    """Write several lines of the ship file as one edit: validated together, written once, committed once.
+
+    A change that is only valid whole, such as a seat's program with its pool, is never half written.
+    Returns one proof line per edit.
+    """
+    text = original = ship.file.read_text()
+    lines, changed = [], []
+    for table, key, value in edits:
+        edited = edit(text, table, key, value)
+        lines.append((f"{ship.file.name}: {table}.{key} = {literal(value)}", edited != text))
+        if edited != text:
+            changed.append(f"{table}.{key} = {literal(value)}")
+        text = edited
+    if text == original:
+        return [f"{line} already" for line, _ in lines]
+    _validate(_from_text(text, ship.folder))  # the file never holds a declaration qd cannot load
+    _write_atomically(ship.file, text)
     if ship.is_repository:
-        sha = commit(ship.folder, [ship.file.name], f"qd set {table}.{key} = {literal(value)}")
-        return f"{line} · committed {sha}"
-    return f"{line} · written; {ship.folder.name} is not a repository, so not committed"
+        suffix = f" · committed {commit(ship.folder, [ship.file.name], 'qd set ' + ', '.join(changed))}"
+    else:
+        suffix = f" · written; {ship.folder.name} is not a repository, so not committed"
+    return [line + (suffix if edited else " already") for line, edited in lines]
 
 
 def _write_atomically(path: Path, text: str) -> None:
