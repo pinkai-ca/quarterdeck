@@ -9,6 +9,11 @@ jobs:
   ubuntu:
     runs-on: ubuntu-26.04
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # The distro's Python, and the oldest version pyproject.toml claims.
+        python: [system, "3.12"]
     env:
       PYTHONNOUSERSITE: "1"
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
@@ -27,13 +32,28 @@ jobs:
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
           bwrap --ro-bind / / true
+      - if: matrix.python != 'system'
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Choose the interpreter
+        # The upgrade test builds the ship's venv on the base interpreter's setuptools,
+        # as python3-setuptools provides for the distro's Python.
+        run: |
+          if [ '${{ matrix.python }}' = system ]; then
+            echo PYTHON=/usr/bin/python3 >> "$GITHUB_ENV"
+          else
+            python -c 'import sys; assert sys.version.startswith("${{ matrix.python }}."), sys.version'
+            python -m pip install setuptools wheel
+            echo "PYTHON=$(python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
+          fi
       - name: Create a fresh Python environment
         # Distro build tools also serve the upgrade test's separate installation.
         run: |
           git config --global user.name 'Quarterdeck CI'
           git config --global user.email 'ci@example.invalid'
-          /usr/bin/python3 -c 'import sys; assert sys.version_info >= (3, 12)'
-          /usr/bin/python3 -m venv .venv
+          "$PYTHON" -c 'import sys; assert sys.version_info >= (3, 12)'
+          "$PYTHON" -m venv .venv
           . .venv/bin/activate
           python -m pip install --upgrade pip setuptools wheel
           python -m pip install -e '.[dev]'

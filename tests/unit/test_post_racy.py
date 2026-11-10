@@ -25,7 +25,7 @@ def boundary(tmp_path, monkeypatch):
 
     def stat(path, *args, **kwargs):
         if path == store.dir:
-            return SimpleNamespace(st_dev=info.st_dev, st_ino=info.st_ino,
+            return SimpleNamespace(st_mode=info.st_mode, st_dev=info.st_dev, st_ino=info.st_ino,
                                    st_mtime_ns=clock.mtime, st_ctime_ns=clock.ctime)
         return original_stat(path, *args, **kwargs)
 
@@ -157,8 +157,9 @@ def test_clock_rollback_during_stat_invalidates_a_trusted_listing(boundary, monk
     def stat(path, *args, **kwargs):
         info = original(path, *args, **kwargs)
         if path == store.dir and not later:
+            later.append(None)  # claimed first: the publication below may stat the directory itself
             clock.now = CHANGE + NS
-            later.append(publish('ord-second'))
+            later[0] = publish('ord-second')
         return info
 
     monkeypatch.setattr(Path, 'stat', stat)
