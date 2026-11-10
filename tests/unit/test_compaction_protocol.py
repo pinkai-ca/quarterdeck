@@ -1,7 +1,7 @@
 """Explicit readiness, immutable intent recovery, and incoming admission at a fresh boundary."""
 
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -303,12 +303,14 @@ def test_post_after_transition_claim_is_admitted_during_slow_start_and_carried(w
             w.svc.store.new('report', w.seat.name, w.seat.name, 'Synthetic premature close', re=hand.id)
         # Would block if admission were held through retirement/startup.
         message = w.svc.store.new('order', 'operator', w.seat.name, 'Synthetic post after claim')
+        report = w.svc.store.new('report', 'operator', w.seat.name, 'Synthetic unread non-open post after claim')
         assert w.svc.attempts.undelivered(w.svc.store, w.seat.name) == []
     finally:
         release.set()
         thread.join(5)
     assert not thread.is_alive() and not errors
     assert w.calls == ['down', 'fresh'] and hand in w.carried[-1] and message in w.carried[-1]
+    assert not w.svc.store.is_open(report) and report in w.carried[-1]
     compaction.tick(w.seat)
     assert w.calls == ['down', 'fresh']
 
@@ -329,6 +331,128 @@ def test_post_winning_before_final_claim_prevents_fresh(world, monkeypatch):
     compaction.tick(w.seat)
     assert w.calls == [] and w.svc.store.is_open(hand)
     assert compaction.load(w.svc.runtime, w.seat.name)['ready'] is None
+
+
+@pytest.mark.parametrize('suffix', ['json', 'claimed'])
+def test_existing_lifecycle_request_blocks_automatic_claim(world, suffix):
+    w = world
+    ready(w)
+    w.source[0].result()
+    w.source[0].finish()
+    folder = w.svc.runtime/'requests'
+    folder.mkdir()
+    path = folder/f'synthetic-explicit-relaunch.{suffix}'
+    path.write_text(json.dumps(dict(kind='relaunch', seat=w.seat.name, resume=True)))
+    compaction.tick(w.seat)
+    assert not w.calls and path.exists(), 'explicit pending or possibly executed lifecycle intent wins'
+    assert 'lifecycle request' in compaction.status(w.seat)
+
+
+@pytest.mark.parametrize('phase', ['before-claim', 'after-claim'])
+def test_alternate_recipient_cannot_close_reserved_handoff(world, monkeypatch, phase):
+    w = world
+    _, hand, _ = ready(w)
+    refused = []
+    def try_close():
+        try:
+            w.svc.store.new('report', w.seat.name, 'operator', 'Synthetic alternate-recipient close', re=hand.id)
+        except ShipError:
+            refused.append(True)
+    if phase == 'before-claim':
+        try_close()
+    else:
+        original = w.seat._down
+        def down():
+            try_close()
+            return original()
+        monkeypatch.setattr(w.seat, '_down', down)
+    w.source[0].result()
+    w.source[0].finish()
+    compaction.tick(w.seat)
+    assert refused == [True] and w.svc.store.is_open(hand), f'calls={w.calls}, carried={w.carried}'
+    assert w.calls == ['down', 'fresh'] and hand in w.carried[-1]
+
+
+@pytest.mark.parametrize('world', ['codex'], indirect=True)
+@pytest.mark.parametrize('trigger', ['threshold', 'handoff', 'ordinary', 'ordinary-self'])
+def test_compaction_after_order_excludes_protocol_closures_only(world, monkeypatch, trigger):
+    w = world
+    w.seat.spec = replace(w.seat.spec, fresh='after-order')
+    monkeypatch.setattr(w.svc, 'resolved_seats', lambda: [w.seat])
+    request = threshold(w)
+    if trigger == 'threshold':
+        opaque_call(w.source[0])
+        opaque_result(w.source[0])
+    w.svc.store.new('report', w.seat.name, post.SHIP, 'Synthetic request status report', re=request.id)
+    if trigger == 'handoff':
+        hand = handoff(w, request)
+        w.source[0].finish()
+        w.seat.fresh()  # explicit successor; the generation advances before its handoff report
+        for row in w.source[0].rows:
+            row['timestamp'] = (datetime.fromisoformat(row['timestamp']) + timedelta(hours=1)).isoformat()
+        w.source[0].flush()
+        monkeypatch.setattr(post, 'now', lambda: AT + timedelta(hours=1, seconds=w.source[0].serial + 0.5))
+        compaction.tick(w.seat)
+        assert compaction.load(w.svc.runtime, w.seat.name)['count'] == 0
+        w.svc.store.new('report', w.seat.name, 'operator', 'Synthetic successor handoff closure', re=hand.id)
+        assert not w.svc.store.is_open(hand)
+    elif trigger.startswith('ordinary'):
+        order = w.svc.store.new('order', w.seat.name if trigger == 'ordinary-self' else 'operator',
+                                w.seat.name, 'Synthetic ordinary order')
+        w.svc.store.new('report', w.seat.name, 'operator', 'Synthetic ordinary closure', re=order.id)
+    previous_rows = len(w.source[0].rows)
+    w.source[0].finish()
+    if trigger == 'handoff':
+        for row in w.source[0].rows[previous_rows:]:
+            row['timestamp'] = (datetime.fromisoformat(row['timestamp']) + timedelta(hours=1)).isoformat()
+        w.source[0].flush()
+    compaction.tick(w.seat)
+    before = list(w.calls)
+    w.svc.fresh_after_order()
+    assert w.calls[len(before):] == (['down', 'fresh'] if trigger.startswith('ordinary') else [])
+
+
+@pytest.mark.parametrize('world', ['claude'], indirect=True)
+def test_real_control_writer_releases_admission_before_waiting_for_reply(world, monkeypatch):
+    from contextlib import contextmanager
+    from quarterdeck import durable, servicectl
+    w = world
+    ready(w)
+    w.source[0].result()
+    w.source[0].finish()
+    monkeypatch.setattr(w.svc, 'seat', lambda _: w.seat)
+    monkeypatch.setattr(servicectl, 'alive', lambda _: True)
+    monkeypatch.setattr(servicectl, 'ANSWER_SECONDS', 2)
+    original_lock, original_write = post.admission, durable.replace_file
+    entering, published = Event(), Event()
+    replies, errors = [], []
+    @contextmanager
+    def observed_lock(runtime, name):
+        entering.set()
+        with original_lock(runtime, name):
+            yield
+    def observed_write(path, text):
+        original_write(path, text)
+        if path.parent.name == 'requests' and path.suffix == '.json':
+            published.set()
+    monkeypatch.setattr(post, 'admission', observed_lock)
+    monkeypatch.setattr(durable, 'replace_file', observed_write)
+    def ask():
+        try:
+            replies.append(servicectl.request(w.svc.runtime, 'relaunch', seat=w.seat.name, resume=True))
+        except BaseException as error:
+            errors.append(error)
+    thread = Thread(target=ask)
+    with original_lock(w.svc.runtime, w.seat.name):
+        thread.start()
+        assert entering.wait(2) and not published.is_set()
+    try:
+        assert published.wait(2)
+        w.svc.requests()  # ordinary lifecycle takes admission again to disarm readiness
+    finally:
+        thread.join(3)
+    assert not thread.is_alive() and not errors
+    assert replies == ['synthetic down\nsynthetic launch'] and w.calls == ['down', 'resume']
 
 
 @pytest.mark.parametrize('guard', ['queue-error', 'draft', 'blind', 'untimed', 'incoming'])
@@ -542,7 +666,7 @@ def test_measured_fake_program_uses_real_lifecycle_and_carries_open_handoff(worl
     # Restore the real Seat lifecycle/join. Replace only credentials, adapter launch command
     # and the synthetic pane transport. The successor process writes its own native record.
     live = [w.seat.pane()]
-    launches, retired, first_messages = [], [], []
+    launches, retired, first_messages, late = [], [], [], []
     monkeypatch.setattr(w.seat, 'record', lambda: Seat.record(w.seat))
     monkeypatch.setattr(w.seat, 'join', lambda: Seat.join(w.seat))
     monkeypatch.setattr(w.seat, '_down', lambda: Seat._down(w.seat))
@@ -590,6 +714,9 @@ sys.stdin.read(1)
         return Launch((sys.executable, str(fake), str(template.path), str(target), str(prompt), str(brief)), {})
     monkeypatch.setattr(w.seat.harness, 'launch', launch)
     def open_window(argv, env, path):
+        late.append(w.svc.store.new('answer', 'operator', w.seat.name, 'Synthetic arrival after the launch snapshot'))
+        assert post.typed(late) not in first_messages[-1]
+        assert w.svc.attempts.undelivered(w.svc.store, w.seat.name) == []
         process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         launches.append(process)
         proof = json.loads(process.stdout.readline())
@@ -616,12 +743,12 @@ sys.stdin.read(1)
             for _ in range(3):
                 restarted.compactions()
             assert compaction.load(w.svc.runtime, w.seat.name)['count'] == 0
-            assert len(launches) == 1 and restarted.attempts.undelivered(restarted.store, w.seat.name) == []
+            assert len(launches) == 1 and restarted.attempts.undelivered(restarted.store, w.seat.name) == late
         finally:
             restarted.ledger.close()
         assert len([m for m in w.svc.store.all() if m.sender == post.SHIP]) == 1
         assert len([m for m in w.svc.store.all() if m.kind == 'report']) == 1
-        print(f'{w.program} fake launch (lost_reply={lost_reply}): request=1 attestation=1 fresh_process=1 open_handoff_launch_receipt=1 successor_count=0')
+        print(f'{w.program} fake launch (lost_reply={lost_reply}): request=1 attestation=1 fresh_process=1 open_handoff_launch_receipt=1 successor_count=0 late_successor_unread=1')
     finally:
         for process in launches:
             process.communicate(timeout=5)

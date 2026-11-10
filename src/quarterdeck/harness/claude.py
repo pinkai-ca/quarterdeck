@@ -109,7 +109,7 @@ def compactions(record: Path):
                 if parent is not None and parent not in seen:
                     raise ValueError('missing native parent history')
                 if history.conversation is None:
-                    if kind != 'user' or row.get('isCompactSummary') or 'parentUuid' not in row or row['parentUuid'] is not None:
+                    if kind != 'user' or prompt_text(row) is None or 'parentUuid' not in row or row['parentUuid'] is not None:
                         raise ValueError('native origin missing')
                     history.conversation = row['sessionId']
                     history.origin = when(row.get('timestamp'))

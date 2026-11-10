@@ -453,8 +453,10 @@ class Seat:
         what was queued in a turn that never read it (law: context-is-cache).
         """
         store, attempts = post.Store(self.ship.runtime), post.Attempts(self.ship.runtime)
-        open_messages = store.open_for(self.name)
-        carried = set(open_messages) | set(attempts.undelivered(store, self.name)) | set(self._queued_unread(store, attempts))
+        with post.admission(self.ship.runtime, self.name):
+            open_messages = store.open_for(self.name)
+            unread = attempts.undelivered(store, self.name, for_launch=True)
+        carried = set(open_messages) | set(unread) | set(self._queued_unread(store, attempts))
         if not carried:
             return None, []
         ordered = sorted(carried, key=lambda m: (m.at, m.id))

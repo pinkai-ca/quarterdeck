@@ -23,6 +23,7 @@ from .ship import Ship, ShipError
 
 STALE_SECONDS = 10.0  # a tick longer than this reads as busy
 ANSWER_SECONDS = 8.0
+LIFECYCLE_REQUESTS = frozenset({'relaunch', 'stop', 'select', 'control'})
 
 
 def heartbeat_path(runtime: Path) -> Path:
@@ -144,7 +145,13 @@ def request(runtime: Path, kind: str, **data) -> str:
     folder.mkdir(parents=True, exist_ok=True)
     name = f"{datetime.now().strftime('%H%M%S')}-{kind}-{os.getpid()}"
     path = folder / f"{name}.json"
-    durable.replace_file(path, json.dumps({"kind": kind, **data}) + "\n")
+    payload = json.dumps({"kind": kind, **data}) + "\n"
+    if kind in LIFECYCLE_REQUESTS and isinstance(data.get('seat'), str):
+        from .post import admission
+        with admission(runtime, data['seat']):
+            durable.replace_file(path, payload)
+    else:
+        durable.replace_file(path, payload)
     answer = folder / f"{name}.done"
     deadline = time.monotonic() + ANSWER_SECONDS
     while time.monotonic() < deadline:

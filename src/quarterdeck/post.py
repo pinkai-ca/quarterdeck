@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import fcntl
 import hashlib
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import os
 import secrets
 import stat
@@ -125,9 +125,17 @@ class Store:
                 return candidate
 
     def write(self, message: Message) -> Path:
-        with admission(self.dir.parent.parent, message.to):
+        runtime = self.dir.parent.parent
+        names = {message.to}
+        if message.kind == 'report' and message.re:
+            # A closing report is by the order's addressee, regardless of report recipient.
+            names.add(message.sender)
+        with ExitStack() as held:
+            for name in sorted(names):
+                held.enter_context(admission(runtime, name))
             from . import compaction
-            compaction.admitting(self.dir.parent.parent, message)
+            compaction.protect_closure(runtime, message)
+            compaction.admitting(runtime, message)
             return self._write(message)
 
     def _write(self, message: Message) -> Path:
@@ -437,7 +445,7 @@ class Attempts:
         """Attempts with no result: the service died between typing and confirming."""
         return [a for a in self.all() if a.result is None]
 
-    def undelivered(self, store: Store, seat: str, *, results=None) -> list[Message]:
+    def undelivered(self, store: Store, seat: str, *, results=None, for_launch=False) -> list[Message]:
         """What is addressed to the seat and never reached it, oldest first.
 
         A blind message waits for a hand, one with an attempt still open is being judged, so
@@ -446,11 +454,12 @@ class Attempts:
         """
         skip = {m for m, r in (self.latest() if results is None else results).items()
                 if r in (*ACCEPTED, "blind", None, "pending", "abandoned")}
-        from .compaction import withheld
-        reserved, transitioning = withheld(store.dir.parent.parent, seat)
-        if transitioning:
-            return []
-        skip |= reserved
+        if not for_launch:
+            from .compaction import withheld
+            reserved, transitioning = withheld(store.dir.parent.parent, seat)
+            if transitioning:
+                return []
+            skip |= reserved
         return [m for m in store.for_seat(seat) if m.id not in skip and m.kind != "ack"]  # law: open-until-closed
 
 

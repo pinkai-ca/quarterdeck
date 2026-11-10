@@ -61,6 +61,14 @@ def test_sidechain_checkpoint_does_not_count(tmp_path):
     assert get('claude').compactions(native.path).count == 0
 
 
+def test_orphan_tool_result_cannot_establish_native_origin(tmp_path):
+    native = Native(tmp_path/'record', 'claude')
+    native.rows[0]['message']['content'] = [dict(type='tool_result', tool_use_id='synthetic-missing-call', content='Synthetic orphan')]
+    native.begin()
+    native.compact()
+    assert get('claude').compactions(native.path).count is None
+
+
 @pytest.mark.parametrize('program', ['pi', 'opencode', 'antigravity', 'fake'])
 def test_unsupported_harness_is_unknown_even_for_empty_file(tmp_path, program):
     path = tmp_path/'record'

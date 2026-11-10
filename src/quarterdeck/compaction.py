@@ -1,6 +1,6 @@
 """Explicit compaction handoffs. Optional runtime intent; immutable posts stay authoritative.
 
-Lock order is lifecycle, post admission, attempts. Admission never spans native startup.
+Lock order is lifecycle, sorted recipient admission, attempts. Admission never spans native startup.
 Only a recorded, unchanged turn plus the seat's own attestation may claim an automatic fresh.
 """
 
@@ -36,13 +36,13 @@ def load(runtime, name):
         raise ShipError('compaction journal unreadable; automatic fresh held') from error
     if not isinstance(data, dict) or type(data.get('version')) is not int or data['version'] != VERSION or not isinstance(data.get('generation'), str):
         raise ShipError('compaction journal unsupported; automatic fresh held')
-    required = {'count', 'source', 'source_launch', 'request', 'reserved', 'handoff_digest', 'used', 'ready', 'attestation', 'transition', 'error', 'intents', 'reason'}
+    required = {'count', 'source', 'source_launch', 'request', 'protocol_requests', 'reserved', 'handoff_digest', 'used', 'ready', 'attestation', 'transition', 'error', 'intents', 'reason'}
     if (not required <= data.keys() or data['count'] is not None and (type(data['count']) is not int or data['count'] < 0)
             or any(data[key] is not None and not isinstance(data[key], dict)
                    for key in ('source', 'source_launch', 'ready', 'attestation', 'transition'))
             or any(data[key] is not None and not isinstance(data[key], str) for key in ('request', 'reserved', 'handoff_digest', 'error'))
-            or not isinstance(data['used'], list) or not isinstance(data['intents'], list)
-            or any(not isinstance(item, str) for item in data['used'] + data['intents'])
+            or any(not isinstance(data[key], list) for key in ('used', 'intents', 'protocol_requests'))
+            or any(not isinstance(item, str) for key in ('used', 'intents', 'protocol_requests') for item in data[key])
             or not isinstance(data['reason'], str)):
         raise ShipError('compaction journal invalid; automatic fresh held')
     if (data['source'] is not None and any(not isinstance(data['source'].get(key), str) for key in ('record', 'harness', 'conversation'))
@@ -69,7 +69,7 @@ def save(runtime, name, data):
 
 def new():
     return dict(version=VERSION, generation=secrets.token_hex(16), count=None, source=None, source_launch=None,
-                request=None, reserved=None, handoff_digest=None, used=[], ready=None,
+                request=None, protocol_requests=[], reserved=None, handoff_digest=None, used=[], ready=None,
                 attestation=None, transition=None, error=None, intents=[], reason='count unknown')
 
 
@@ -141,9 +141,6 @@ def admitting(runtime, message):
         return  # unknown holds automation, never guesses a reservation or vetoes ordinary posts
     if data is None:
         return
-    protected = {value for value in (data.get('reserved'), (data.get('transition') or {}).get('handoff')) if value}
-    if message.kind == 'report' and message.sender == message.to and message.re in protected:
-        raise ShipError('the reserved handoff stays open for the successor; cancel readiness first')
     if data.get('transition'):
         return
     try:
@@ -163,6 +160,23 @@ def admitting(runtime, message):
     elif message.kind != 'ack' and (data.get('ready') or data.get('attestation')):
         release(data, 'new incoming work; prepare a new handoff and renew readiness')
         save(runtime, message.to, data)
+
+
+def protect_closure(runtime, message):
+    """A report can close only an order to its sender; that admission lock is held."""
+    if message.kind != 'report' or not message.re:
+        return
+    try:
+        data = load(runtime, message.sender)
+    except ShipError:
+        return  # the unreadable journal cannot authorize automation
+    if data and message.re in (data.get('reserved'), (data.get('transition') or {}).get('handoff')):
+        raise ShipError('the reserved handoff stays open for the successor; cancel readiness first')
+
+
+def protocol_requests(seat):
+    data = load(seat.ship.runtime, seat.name)
+    return set(data['protocol_requests']) if data else set()
 
 
 def withheld(runtime, name):
@@ -246,6 +260,7 @@ def observe(seat, data, record, reading, launched):
             raise ShipError('conversation changed without a proved fresh successor')
         replacement = new()
         recover(seat.ship.runtime, data)
+        replacement['protocol_requests'] = data['protocol_requests']
         replacement['reason'] = 'proved fresh successor'
         data.clear()
         data.update(replacement)
@@ -280,6 +295,7 @@ def threshold(seat, data):
             'Human-owned sessions remain manual-only; qd fresh-ready --cancel releases readiness '
             'and preserves all posts. Use qd fresh at the chosen moment.')
         data['request'] = message.to_json()
+        data['protocol_requests'].append(message.id)
         data['intents'].append(message.to_json())
         data['reason'] = 'threshold reached; waiting for open handoff/readiness'
         save(runtime, seat.name, data)
@@ -403,6 +419,8 @@ def obstruction(seat, data, record, reading):
         return 'queue unknown or queued; automatic fresh held'
     if recovery.held(seat) or pending.active(seat):
         return 'recovery or delivery uncertainty; automatic fresh held'
+    if lifecycle_pending(seat.ship.runtime, seat.name):
+        return 'explicit lifecycle request pending or uncertain; automatic fresh held'
     attempts, store = post.Attempts(seat.ship.runtime), post.Store(seat.ship.runtime)
     latest = attempts.latest(seat.name)
     if any(value in (None, 'pending', 'blind', 'queued') for value in latest.values()):
@@ -417,6 +435,23 @@ def obstruction(seat, data, record, reading):
     if not open_handoff(seat.ship.runtime, data):
         return 'handoff not open; automatic fresh held'
     return None
+
+
+def lifecycle_pending(runtime, name):
+    """Read only request routing metadata under the same lock as control publication."""
+    from .servicectl import LIFECYCLE_REQUESTS
+    folder = runtime / 'requests'
+    for request in [*folder.glob('*.json'), *folder.glob('*.claimed')]:
+        try:
+            data = json.loads(request.read_text())
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError):
+            return True  # absence of a conflicting action is not proved
+        if isinstance(data, dict) and data.get('seat') == name:
+            if not isinstance(data.get('kind'), str) or data['kind'] in LIFECYCLE_REQUESTS:
+                return True
+    return False
 
 
 def tick(seat):

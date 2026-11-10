@@ -102,7 +102,7 @@ class Service:
             self.ship = shipmod.load(self.ship.folder)  # law: ship-file
         except ShipError as error:
             self.log("error", step="load", error=str(error))
-        for step in (self.reconcile, self.account, self.inboxes, self.recoveries, self.compactions, self.deliveries, self.follow, self.requests, self.fresh_after_order,
+        for step in (self.reconcile, self.account, self.inboxes, self.recoveries, self.deliveries, self.follow, self.requests, self.compactions, self.fresh_after_order,
                      self.rebrief, self.credentials, self.failover):  # accounting before anything relaunches a seat
             self.heartbeat()  # before every step: a slow delivery or usage read reads as busy, never as dead
             try:
@@ -585,14 +585,21 @@ class Service:
 
     def fresh_after_order(self) -> None:
         """A worker whose last open order closed, and whose closing turn ended, starts fresh."""
+        from . import compaction
         for seat in self.resolved_seats():
             if seat.session.human or recovery.held(seat) or seat.spec.fresh != "after-order" or not seat.is_up or self.store.open_for(seat.name):
                 continue
             launched = seat.launched()
             if launched is None:
                 continue
+            try:
+                protocol = compaction.protocol_requests(seat)
+            except ShipError:
+                continue  # unknown protocol identity cannot authorize another automatic path
             closed = max((report.at for order in self.store.for_seat(seat.name)
-                          if order.kind == "order" and (report := self.store.closing_report(order))
+                          if order.kind == "order" and order.id not in protocol
+                          and not (order.sender == order.to and order.re in protocol)
+                          and (report := self.store.closing_report(order))
                           and report.at > launched.when), default=None)
             if closed is None or (record := seat.record()) is None:
                 continue
