@@ -25,3 +25,5 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+tmp_path_retention_policy = "failed"
+tmp_path_retention_count = 3

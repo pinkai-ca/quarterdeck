@@ -135,6 +135,8 @@ tests/integration/test_door.py:41, 96, 163, 179, 203
 
 `AGENTS.md` is for whoever works on the framework itself. The tests run with `.venv/bin/python -m pytest -q`: unit tests, contract tests against recorded screens, and integration tests on a private tmux server with the fake harness. Nothing from a runtime may be tracked, and every law must be carried in code and tried by a test; two tests guard those.
 
+Pytest removes a passing test's scratch directory and keeps failed-test directories, with three sessions of ordinary temporary history. A run with an explicit `--basetemp` owns its own history: keep its result, report and failing output, and retain a failed-test directory only while it is needed as evidence. Do not retain successful suite trees. Socket namespaces have separate ownership and cleanup; this policy does not remove them.
+
 ## Authorship
 
 Quarterdeck was designed and directed by Tyler Dwyer. Its code was written by coding agents (Claude Code, Codex, and local models under pi and OpenCode) under this repository's standing orders. Each change is reviewed once by a second agent and its tests pass before merge; the history records what changed.
