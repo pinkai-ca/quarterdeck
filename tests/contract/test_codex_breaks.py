@@ -115,3 +115,23 @@ def test_established_word_breaks_do_not_depend_on_unrelated_unicode(monkeypatch,
 def test_unicode_does_not_authorize_changed_text_or_unknown_context(monkeypatch, payload, rows):
     door = door_for("codex", capture("codex", rows, "full", 13), monkeypatch, 13)
     assert not door.matches(door.harness.box(payload), door.screen())
+
+
+@pytest.mark.parametrize("payload,shown", [
+    ("a b-1 2 3 4", "a b-\n1 2 3 4"),  # ASCII control: refused before and after 9e8e0e4
+    ("a Ω-1 2 3 4", "a Ω-\n1 2 3 4"),
+    ("a ש-1 2 3 4", "a ש-\n1 2 3 4"),
+])
+def test_a_number_after_unknown_context_keeps_its_own_breaks(payload, shown):
+    """The hyphen split before "1" is real, but "1" alone fits the row, so the
+    shown break is the payload with a newline after the hyphen, not this one."""
+    from quarterdeck.harness.types import _box_matches
+    assert not _box_matches(payload, shown, 10, textwrap_ascii=True)
+    assert _box_matches(payload.replace("-", "-\n", 1), shown, 10, textwrap_ascii=True)
+
+
+def test_a_number_after_unknown_context_allows_the_true_first_fit_display():
+    from quarterdeck.harness.types import _box_matches
+    payload = "a Ω-1 2 3 4"
+    assert _box_matches(payload, "a Ω-1 2 3\n4", 10, textwrap_ascii=True)
+    assert not _box_matches(payload, "a Ω-1 2 3\n4", 11, textwrap_ascii=True)

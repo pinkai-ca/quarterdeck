@@ -307,12 +307,12 @@ def _textwrap_breaks(line: str) -> list[int]:
         # textwrap suppresses Unicode HY breaks, then splits only alphanumeric-surrounded hyphens.
         if index > 1 and line[index - 1] == "-" and line[index - 2].isalnum() and char.isalnum():
             breaks.append(index)
-        if state == "UNKNOWN" and kind != "AL":
+        if state == "UNKNOWN" and kind not in ("AL", "NU"):
             continue  # punctuation can retain unknown context (for example Hebrew before a bar)
         if kind == "SP" and state in ("OP", "OP-SP", "QU", "QU-SP"):
             state = state.removesuffix("-SP") + "-SP"
         else:
-            state = kind or "UNKNOWN"  # AL is a context reset in the pinned line-break table
+            state = kind or "UNKNOWN"  # AL and NU are context resets in the pinned line-break table
     return sorted(set(breaks)) + [len(line)]
 
 
