@@ -522,16 +522,33 @@ def tick(seat):
             save(runtime, seat.name, data)
 
 
-def status(seat):
-    if not seat.spec.fresh_after_compactions and not path(seat.ship.runtime, seat.name).exists():
-        return None
+def status(seat, *, alerts_only=False):
+    """Read the journal for detailed status or for actionable status-line entries."""
+    threshold = seat.spec.fresh_after_compactions
     try:
         data = load(seat.ship.runtime, seat.name)
     except ShipError as error:
         return str(error)
-    if not seat.spec.fresh_after_compactions:
-        return 'compaction automation disabled' + ('; transition already claimed' if data and data.get('transition') else '')
+    claimed = data is not None and data['transition'] is not None
+    if not threshold:
+        if claimed:
+            return 'compaction automation disabled; transition already claimed'
+        if alerts_only or (threshold is None and data is None):
+            return None
+        return 'compaction automation disabled'
     if data is None or data.get('error') or data.get('reading_unknown') or data.get('count') is None:
-        return 'compaction count unknown: ' + (data.get('reason', '') if data else 'awaiting current record')
-    detail = (data.get('manual') or data['reason']) if data['count'] >= seat.spec.fresh_after_compactions else 'below compaction threshold'
-    return f"compactions {data['count']}/{seat.spec.fresh_after_compactions}: {detail}"
+        reason = data['reason'] if data else 'awaiting current record'
+        if claimed:
+            label = 'fresh transition claimed; compaction count unknown'
+            return label if alerts_only else f'{label}: {reason}'
+        return f'compaction count unknown: {reason}'
+    count = data['count']
+    if claimed:
+        detail = 'fresh transition claimed; waiting for proved successor'
+    elif count >= threshold:
+        detail = data.get('manual') or data['reason']
+    elif alerts_only:
+        return None
+    else:
+        detail = 'below compaction threshold'
+    return f'compactions {count}/{threshold}: {detail}'

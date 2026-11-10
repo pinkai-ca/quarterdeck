@@ -462,7 +462,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
             continue
         launched = seat.launched()
         from .compaction import status as compaction_status
-        if detail := compaction_status(seat):
+        if detail := compaction_status(seat, alerts_only=True):
             compactions.append(f"{seat.name}: {detail}")
         if launched is not None and launched.pool in seat.spec.pools[1:]:
             routes.append(f"{seat.name} on {seat.harness.name}/{launched.pool}")
