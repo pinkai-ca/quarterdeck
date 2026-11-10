@@ -21,7 +21,7 @@ from pathlib import Path
 
 from . import harness as harnesses
 from . import pending as pending_delivery, delivery_record
-from . import credential, install, machine, post, presentation, quota, record_owner, recovery, ship as shipmod, standing
+from . import credential, durable, install, machine, post, presentation, quota, record_owner, recovery, ship as shipmod, standing
 from .door import CONFIRM_SECONDS, Door
 from .harness.base import record_fingerprint
 from .ledger import Ledger
@@ -323,39 +323,76 @@ class Service:
         folder = self.runtime / "requests"
         retry = []
         for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
+            claim = path.with_suffix(".claimed")
+            if claim.exists() or claim.is_symlink():
+                continue  # an earlier action may have run; its raw durable claim needs inspection, never replay
             data = None
             try:
-                data = json.loads(path.read_text())
+                raw = path.read_text()
+                data = json.loads(raw)
+                if not isinstance(data, dict) or data.get("kind") != "rebrief":
+                    durable.replace_file(claim, raw)  # before dispatch: failed archival cannot requeue an executed action
                 try:
                     answer = self.answer(data)
                 except SelectionError as error:
                     self.hold_selection(error)
+                    self.clear_request_claim(claim)
                     continue  # this request stays held; later healthy-seat requests still run
                 except ShipError as error:
+                    if isinstance(data, dict) and data.get("kind") == "rebrief":
+                        raise  # an immutable notice conflict must retain the rebrief's durable baseline/notices
                     answer = f"refused: {error}"  # a refusal is an answer: its asker reads why
                 if answer is None:
+                    self.clear_request_claim(claim)
                     continue  # not yet: the request waits for the seat's turn to end
-                path.with_suffix(".done").write_text(answer + "\n")
+                durable.replace_file(path.with_suffix(".done"), answer + "\n")
                 self.log("request", **data, answer=answer)
                 path.unlink()
+                durable.sync_folder(folder)  # retire the active name durably before removing its replay guard
+                self.clear_request_claim(claim)
             except Exception as error:
                 if isinstance(data, dict) and data.get("kind") == "rebrief":
                     retry.append(error)
                 else:
-                    self.failed_request(path, error)
+                    try:
+                        self.failed_request(path, error)
+                    except Exception as failure:
+                        try:
+                            self.log("error", step="requests", request=path.name, failure_handling=True,
+                                     error=repr(failure), trace=traceback.format_exc())
+                        except Exception:
+                            pass  # the surviving claim stays visible in status even when the log cannot be written
                 continue
         if retry:
             raise retry[0]
 
+    def clear_request_claim(self, claim: Path) -> None:
+        claim.unlink(missing_ok=True)
+        durable.sync_folder(claim.parent)
+
     def failed_request(self, path: Path, error: Exception) -> None:
-        """An unexpected error: the request kept as it was under requests/failed, the trace logged, its asker told; never retried."""
+        """Keep the raw request and trace; an archival/answer failure leaves a visible claim, never a replay."""
+        claim = path.with_suffix(".claimed")
+        if not claim.exists():
+            durable.replace_file(claim, path.read_text())  # malformed input also leaves the active queue on a terminal error
         kept = path.parent / "failed" / path.name
         self.log("error", step="requests", request=path.name, error=repr(error), trace=traceback.format_exc())
-        kept.parent.mkdir(exist_ok=True)
-        os.replace(path, kept)
         try:
-            path.with_suffix(".done").write_text(f"failed: {error!r}; the request is kept in requests/failed/{path.name} "
-                                                 "and the service log has the trace\n")
+            kept.parent.mkdir(exist_ok=True)
+            if kept.exists():
+                raise FileExistsError(f"failed request evidence already exists: {kept.name}")
+            os.replace(path, kept)
+            durable.sync_folder(kept.parent)
+            durable.sync_folder(path.parent)
+        except OSError as archive_error:
+            kept = claim
+            self.log("error", step="requests", request=path.name, archive_unavailable=True,
+                     error=repr(archive_error), trace=traceback.format_exc())
+        try:
+            durable.replace_file(path.with_suffix(".done"), f"failed: {error!r}; the request is kept in "
+                                 f"requests/{kept.relative_to(path.parent)} and the service log has the trace\n")
+            if kept != claim:
+                self.clear_request_claim(claim)
         except OSError as answer_error:
             self.log("error", step="requests", request=path.name, answer_unavailable=True,
                      error=repr(answer_error), trace=traceback.format_exc())

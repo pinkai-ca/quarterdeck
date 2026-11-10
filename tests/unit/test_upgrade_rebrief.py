@@ -1,6 +1,7 @@
 """Upgrade carries old brief baselines across a new service's initial card stamp."""
 
 from io import BytesIO
+from dataclasses import replace
 import json
 from pathlib import Path
 import shutil
@@ -9,7 +10,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import install, post, service, standing
+from quarterdeck import durable, install, post, service, standing
+from quarterdeck.ship import ShipError
 from quarterdeck.service import Service
 from quarterdeck.ship import load
 from quarterdeck.tmux import Pane
@@ -225,17 +227,40 @@ def test_return_to_old_commit_is_new_event_but_only_content_changes_notify(upgra
 
 def test_posted_notices_do_not_duplicate_when_request_answer_write_is_interrupted(upgraded,monkeypatch):
     s=upgraded;change_archive(s)
-    original=Path.write_text;failed=[]
+    original=durable.replace_file;failed=[]
     def write(path,*args,**kwargs):
         if path.suffix=='.done' and path.name.startswith('upgrade-rebrief-') and not failed:
             failed.append(True);raise OSError('synthetic answer interruption')
         return original(path,*args,**kwargs)
-    monkeypatch.setattr(Path,'write_text',write)
+    monkeypatch.setattr(durable,'replace_file',write)
     with pytest.raises(OSError,match='answer interruption'):
         install.upgrade(s.ship,'changed',s.tmux)
     ids={m.id for m in notices(s)};assert len(ids)==2
     install.upgrade(s.ship,'changed',s.tmux)
     assert {m.id for m in notices(s)}==ids
+
+
+def test_immutable_notice_conflict_retains_the_exact_rebrief_intent_and_answers_later_requests(upgraded,monkeypatch):
+    s=upgraded;change_archive(s)
+    original=post.Store.write;conflicts=[]
+    def write(store,message):
+        if message.sender==post.SHIP and not conflicts:
+            conflict=replace(message,body='Synthetic immutable conflict')
+            conflicts.append(original(store,conflict))
+            raise ShipError('synthetic publication conflict')
+        return original(store,message)
+    monkeypatch.setattr(post.Store,'write',write)
+    with pytest.raises(ShipError,match='publication conflict'):
+        install.upgrade(s.ship,'changed',s.tmux)
+    request=s.ship.runtime/'requests'/f'upgrade-rebrief-{NEW}.json'
+    before=request.read_bytes();notice_before=conflicts[0].read_bytes()
+    later=request.parent/'zz-synthetic-healthy.json'
+    later.write_text(json.dumps(dict(kind='synthetic-healthy')))
+    with pytest.raises(ShipError,match='identity conflicts'):
+        s.started[-1].requests()
+    assert request.read_bytes()==before and conflicts[0].read_bytes()==notice_before
+    assert not request.with_suffix('.done').exists() and not (request.parent/'failed').exists()
+    assert later.with_suffix('.done').read_text()=="unknown request 'synthetic-healthy'\n"
 
 
 def test_missing_running_baseline_holds_without_rendering_a_new_baseline(upgraded):

@@ -7,8 +7,9 @@ import json
 
 import pytest
 
-from quarterdeck import door as doormod
+from quarterdeck import door as doormod, durable, watch
 from quarterdeck.service import Service
+from quarterdeck.ship import ShipError
 from .test_check_lifetime import synthetic_ship
 
 
@@ -84,14 +85,78 @@ def test_an_unwritable_reply_for_one_request_does_not_block_the_next_stop_or_rep
     assert called == ["survivor", "survivor"], "the first action may have run: neither is repeated"
 
 
-def test_a_failing_rebrief_stays_to_be_tried_again_and_the_stop_after_it_is_answered(svc, monkeypatch):
+def test_failed_archival_after_an_action_keeps_its_claim_and_later_requests_run_across_restart(svc, monkeypatch):
+    service, folder = svc
+    called = []
+
+    def interrupt(self):
+        called.append(self.seat.name)
+        if len(called) == 1:
+            raise RuntimeError("synthetic error after the action ran")
+        return "synthetic stop"
+
+    monkeypatch.setattr(doormod.Door, "interrupt", interrupt)
+    (folder / "failed").write_text("synthetic obstruction to archival")
+    paths = requests(service, folder, **{"110000-stop-1": {"kind": "stop", "seat": "survivor"},
+                                         "110001-stop-2": {"kind": "stop", "seat": "survivor"}})
+    assert paths["110001-stop-2"].with_suffix(".done").read_text() == "synthetic stop\n"
+    held = paths["110000-stop-1"].with_suffix(".claimed")
+    assert json.loads(held.read_text()) == {"kind": "stop", "seat": "survivor"}
+    assert "claimed" in paths["110000-stop-1"].with_suffix(".done").read_text()
+    service.requests()
+    restarted = Service(service.ship, None)
+    try:
+        restarted.requests()
+    finally:
+        restarted.ledger.close()
+    assert called == ["survivor", "survivor"], "a claimed action is never replayed, even if archival failed"
+    monkeypatch.setattr(watch, "seats", lambda *a: [])
+    assert "request claimed: 110000-stop-1.claimed" in watch.facts(service.ship, None, walls=[], login=[]).line()
+
+
+def test_a_claim_write_failure_happens_before_dispatch_and_does_not_block_later_requests(svc, monkeypatch):
+    service, folder = svc
+    original = durable.replace_file
+    called = []
+
+    def write(path, text):
+        if path.name == "110000-stop-1.claimed":
+            raise OSError("synthetic claim write failure")
+        return original(path, text)
+
+    monkeypatch.setattr(durable, "replace_file", write)
+    monkeypatch.setattr(doormod.Door, "interrupt", lambda self: called.append(self.seat.name) or "synthetic stop")
+    paths = requests(service, folder, **{"110000-stop-1": {"kind": "stop", "seat": "survivor"},
+                                         "110001-stop-2": {"kind": "stop", "seat": "survivor"}})
+    assert paths["110001-stop-2"].with_suffix(".done").read_text() == "synthetic stop\n"
+    assert called == ["survivor"], "no action runs without a durable claim"
+    assert paths["110000-stop-1"].exists(), "the unexecuted request remains for a later claim attempt"
+
+
+def test_a_preexisting_claim_is_never_dispatched_and_deferred_requests_release_their_claim(svc, monkeypatch):
+    service, folder = svc
+    held = folder / "110000-stop-1.json"
+    held.write_text(json.dumps(dict(kind="stop", seat="survivor")))
+    held.with_suffix(".claimed").write_text(held.read_text())
+    original = Service.answer
+    monkeypatch.setattr(Service, "answer", lambda self, data: None if data["kind"] == "synthetic-deferred" else original(self, data))
+    paths = requests(service, folder, **{"110001-deferred": {"kind": "synthetic-deferred"},
+                                         "110002-stop-2": {"kind": "stop", "seat": "survivor"}})
+    assert held.exists() and held.with_suffix(".claimed").exists() and not held.with_suffix(".done").exists()
+    assert paths["110001-deferred"].exists() and not paths["110001-deferred"].with_suffix(".claimed").exists()
+    assert paths["110002-stop-2"].with_suffix(".done").read_text() == "survivor interrupted (synthetic)\n"
+
+
+@pytest.mark.parametrize("error_type", [OSError, ShipError])
+def test_a_failing_rebrief_stays_to_be_tried_again_and_the_stop_after_it_is_answered(svc, monkeypatch, error_type):
     service, folder = svc
     monkeypatch.setattr(Service, "answer", lambda self, data, original=Service.answer:
-                        (_ for _ in ()).throw(OSError("synthetic interrupted post")) if data["kind"] == "rebrief"
+                        (_ for _ in ()).throw(error_type("synthetic interrupted post")) if data["kind"] == "rebrief"
                         else original(self, data))
     paths = requests(service, folder, **{"110000-rebrief": {"kind": "rebrief", "commit": "synthetic", "token": "t"},
                                          "110001-stop-2": {"kind": "stop", "seat": "survivor"}})
     assert paths["110001-stop-2"].with_suffix(".done").read_text() == "survivor interrupted (synthetic)\n"
     assert paths["110000-rebrief"].exists() and not (folder / "failed").exists(), "kept in place for the next tick"
+    assert not paths["110000-rebrief"].with_suffix(".claimed").exists()
     error, = logged(service, "error")
     assert "synthetic interrupted post" in error["error"] and "Traceback" in error["trace"]
