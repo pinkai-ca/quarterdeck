@@ -321,14 +321,25 @@ class Tmux:
         so a PATH the program needs travels in the command itself, and every other
         variable in ``env`` reaches it as given. The command line is short: tmux refuses
         one over 16 KiB, so a seat's long command goes in a script the command names.
+
+        When a terminal is attached to the session, the window takes the size of the window
+        the session shows before the command starts; tmux would otherwise size a new detached
+        window by the most recently active terminal anywhere, which may be another session's.
         """
+        size = self._watched_size(session)
         args = ["new-window", "-d", "-P", "-F", _FORMAT, "-t", _session(session), "-n", name, "-c", str(cwd)]
         for key, value in (env or {}).items():
             args += ["-e", f"{key}={value}"]
         # Prepare a blocking pane before running a command that may exit immediately.
         pane = _parse(self._invoke(*args, "cat").rstrip("\n"))
         self._invoke("set-option", "-w", "-t", pane.id, "remain-on-exit", "failed")
-        args = ["respawn-pane", "-k", "-t", pane.id, "-c", str(cwd)]
+        args = []
+        if size is not None:
+            # Sized while only the placeholder runs, before the command can draw or the door read it.
+            # resize-window pins the window to manual sizing, so its own option is unset again at once.
+            args += ["resize-window", "-t", pane.id, "-x", str(size[0]), "-y", str(size[1]), ";",
+                     "set-option", "-wu", "-t", pane.id, "window-size", ";"]
+        args += ["respawn-pane", "-k", "-t", pane.id, "-c", str(cwd)]
         for key, value in (env or {}).items():
             args += ["-e", f"{key}={value}"]
         # Read the new PID in the same command queue, before an immediate successful
@@ -337,6 +348,17 @@ class Tmux:
                                _FORMAT).rstrip("\n"))
         self._drop_placeholder(session)
         return pane
+
+    def _watched_size(self, session: str) -> tuple[int, int] | None:
+        """The size of the window a session shows, when a terminal is attached to it; otherwise None."""
+        try:
+            view = self.session_view(session)
+        except PrivateTmuxError:
+            view = None  # a busy or uncertain namespace sizes nothing; the window's own creation then validates it exclusively
+        if view is None or not view.inputs or view.active is None:
+            return None  # no terminal watching this session, or no certain reading: tmux sizes it as before
+        _, width, height = view.windows[view.active]
+        return (width, height) if width > 0 and height > 0 else None
 
     def _drop_placeholder(self, session: str) -> None:
         for pane in self.panes(session):
