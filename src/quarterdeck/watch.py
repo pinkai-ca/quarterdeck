@@ -452,14 +452,6 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
             needs_human.append(seat.name)
             unknown.append(str(seat.error).partition(';')[0])
             continue
-        record = seat.record()
-        if record is not None:
-            try:
-                queue_error = seat.harness.state(record).queue_error
-            except OSError:
-                queue_error = None  # ordinary unreadable-record reporting remains independent
-            if queue_error:
-                queue_unknown.append(f"{seat.name}: queue unknown: {queue_error}")
         launched = seat.launched()
         if launched is not None and launched.pool in seat.spec.pools[1:]:
             routes.append(f"{seat.name} on {seat.harness.name}/{launched.pool}")
@@ -470,6 +462,14 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
             if pending and not post.watch_armed(ship.runtime, seat.name):
                 unarmed.append(seat.name)
         else:
+            # Human alarms use owned metadata only; never read their conversation here.
+            if seat.harness.name == 'claude' and (record := seat.record()) is not None:
+                try:
+                    queue_error = seat.harness.state(record).queue_error
+                except OSError:
+                    queue_error = None  # ordinary unreadable-record reporting remains independent
+                if queue_error:
+                    queue_unknown.append(f"{seat.name}: queue unknown: {queue_error}")
             door, obstruction = Door(seat).human_obstruction()
             if obstruction:
                 needs_human.append(seat.name)

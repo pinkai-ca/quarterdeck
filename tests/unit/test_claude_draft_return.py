@@ -283,3 +283,38 @@ def test_queue_unknown_survives_status_overflow_as_its_own_category():
                         queue_unknown=["synthetic-seat: queue unknown: " + "unresolved " * 50],
                         usage=[dict(pool="synthetic", window="synthetic", reading=None, reason="unknown")])
     assert "1 queue unknown" in facts.line() and "qd status" in facts.line()
+
+
+@pytest.mark.parametrize("operation", ["dequeue", "synthetic-unknown"])
+def test_older_pending_match_prevents_identifying_a_newer_queued_slot(tmp_path, operation):
+    ambiguous = row("queue-operation", 3, operation=operation)
+    if operation == "synthetic-unknown":
+        ambiguous["content"] = FIRST
+    path = record(tmp_path, queue(FIRST, 1), queue(OTHER, 2), ambiguous,
+                  queue(FIRST, 4), queue(FIRST, 5, "popAll"))
+    state = claude.state(path)
+    assert state.queue_error == "popAll identity unresolved"
+    assert state.queued == (FIRST, OTHER, FIRST)  # no guessed target removed from candidates
+    found = claude.inputs(path)
+    assert any(item["reason"] == "popAll identity unresolved" for item in found.diagnostics()["counts"])
+    assert not any(item.kind == "consumed" for item in found)
+    assert input_receipt.confirmed("claude", path, FIRST, AT + timedelta(seconds=4)) == "queued"
+    append(path, user(FIRST, 6))
+    # Real input still resolves the oldest acceptance, not the newer attempt.
+    assert input_receipt.confirmed("claude", path, FIRST, AT + timedelta(seconds=4)) == "queued"
+    consumed = [item for item in claude.inputs(path) if item.kind == "consumed"]
+    assert len(consumed) == 1 and consumed[0].at == AT + timedelta(seconds=1)
+    assert claude.state(path).queue_error == state.queue_error
+
+
+def test_human_claude_automatic_status_never_reads_conversation(setup, monkeypatch):
+    svc, seat, _, _ = setup
+    svc.ship.seats[seat.name] = replace(seat.spec, harness="claude")
+    svc.ship.sessions[seat.spec.session] = replace(seat.session, human=True)
+    def forbidden(*args, **kwargs):
+        pytest.fail("automatic human status must use owned metadata, not conversation")
+    monkeypatch.setattr(Seat, "record", forbidden)
+    monkeypatch.setattr(claude, "state", forbidden)
+    monkeypatch.setattr(claude, "inputs", forbidden)
+    facts = watch.facts(svc.ship, svc.tmux, walls=[], login=[])
+    assert facts.queue_unknown == []

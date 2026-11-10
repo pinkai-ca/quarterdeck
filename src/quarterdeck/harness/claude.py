@@ -48,6 +48,15 @@ def draft_return_text(entry: dict) -> str | None:
     return text if text is not None and text.strip() else None
 
 
+def draft_return_slot(slots, text: str | None) -> int | None:
+    """An older possible member cannot be skipped to identify a newer equal queued item."""
+    if text is not None:
+        for index, (item, phase) in enumerate(slots):
+            if phase in ('queued', 'pending') and item.strip() == text.strip():
+                return index if phase == 'queued' else None
+    return None
+
+
 def records(home: Path) -> list[Path]:
     return records_matching(home, "projects/*/*.jsonl")
 
@@ -118,8 +127,7 @@ def inputs(record: Path) -> list[Input]:
             operation = row.get("operation")
             if operation == 'popAll':
                 text = draft_return_text(row)
-                matching = next((i for i, (item, phase) in enumerate(queued)
-                                 if phase == 'queued' and text is not None and item.text.strip() == text.strip()), None)
+                matching = draft_return_slot(((item.text, phase) for item, phase in queued), text)
                 if matching is None:
                     found.skip(line, 'queue-operation', 'popAll identity unresolved')
                 else:
@@ -195,8 +203,7 @@ class _Reader(JsonLinesReader):
             return
         if entry.get('operation') == 'popAll':
             text = draft_return_text(entry)
-            matching = next((i for i, (item, phase) in enumerate(self.queue_slots)
-                             if phase == 'queued' and text is not None and item.strip() == text.strip()), None)
+            matching = draft_return_slot(self.queue_slots, text)
             if matching is None:
                 self.queue_error = 'popAll identity unresolved'
             else:
