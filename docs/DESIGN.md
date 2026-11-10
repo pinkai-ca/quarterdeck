@@ -549,6 +549,7 @@ quarterdeck/                       the project folder: the framework repository
     door.py        the one typing path: clear, type, check, submit, confirm; three speeds; the wall it reads
     pending.py delivery_record.py   durable paste evidence and historical receipts
     recovery.py    one reserved native continuation and unresolved-mode lifecycle hold, using the existing Door/Proof
+    compaction.py  the threshold, handoff, readiness and transition journal for fresh starts after compaction
     input_receipt.py   the one rule that matches a delivery to the record's evidence of its input
     service.py     the ship's one long-running process: inboxes, deliveries, attempts, deferred controls, the heartbeat,
                    the machine sample; the one writer of the Ledger
@@ -560,6 +561,7 @@ quarterdeck/                       the project folder: the framework repository
                    the fake program the drill runs, its records in Claude Code's or Codex's shape, and the rendezvous a test holds it at
     harness/codex_usage.py   Codex usage windows from the newest eligible snapshot in current launch records
     harness/claude_watch.py  structured watch-output consumption for attribution, never delivery receipts
+    harness/compactions.py   the complete native compaction count and work snapshot from the current owned record
     harness/thinking.py opencode_thinking.py pi_thinking.py   native recovery source evidence and proved off/restore controls;
                    program configuration, request/body and selection knowledge stays in adapters
     endpoint.py    endpoint pools: what a server serves, the model a seat takes from it, the key beside it
