@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import harness as harnesses, input_receipt, pending, post, record_owner, ship as shipmod, standing
+from . import durable, harness as harnesses, input_receipt, pending, post, record_owner, ship as shipmod, standing
 from .harness.base import Harness, Join
 from .provenance import remember_launch
 from .pricing import save_price, saved_price
@@ -50,7 +50,7 @@ class Launched:
         price = data.pop("price")
         if data['recovery'] is None:
             data.pop('recovery')  # unchanged launch shape for programs without this optional proof
-        path.write_text(json.dumps(data, indent=2) + "\n")
+        durable.replace_file(path, json.dumps(data, indent=2) + "\n")
         save_price(path, price)
 
     @property
@@ -151,9 +151,7 @@ class Seat:
         self.spec.for_pool(pool)
         self.folder.mkdir(parents=True, exist_ok=True)
         path = self.folder / 'pool'
-        temporary = path.with_suffix('.tmp')
-        temporary.write_text(pool + '\n')
-        os.replace(temporary, path)
+        durable.replace_file(path, pool + '\n')
 
     def failover_to(self, pool: str) -> str:
         """Preserve the source before selecting another program or paying pool."""
@@ -255,7 +253,13 @@ class Seat:
         """The seat's record: pinned once found, the first written after its launch."""
         pinned = self.folder / "record"
         if pinned.is_file():
-            record = Path(pinned.read_text().strip())
+            try:
+                named = pinned.read_text().strip()
+            except (OSError, UnicodeDecodeError) as error:
+                return Join(None, f"record pointer unreadable: {error}; inspect with qd watch {self.name}")
+            if not named:  # an emptied pointer names no record; Path('') would be the working folder
+                return Join(None, f"record pointer empty: {pinned}; restore the owned record if available; inspect with qd watch {self.name}")  # law: one-record
+            record = Path(named)
             try:
                 owner = record_owner.pinned_reader(self, record)
             except OSError as error:
@@ -281,7 +285,7 @@ class Seat:
         except OSError as error:
             return Join(None, f"record unreadable: {error}; inspect with qd watch {self.name}")
         if found.record is not None:
-            pinned.write_text(str(found.record) + "\n")  # law: one-record
+            durable.replace_file(pinned, str(found.record) + "\n")  # law: one-record
             self._note_owned(found.record)
         return found
 

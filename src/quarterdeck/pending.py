@@ -10,12 +10,11 @@ from datetime import datetime
 from contextlib import contextmanager
 import fcntl
 import json
-import os
 import re
 from pathlib import Path
 from typing import Any, Iterator, Sequence, TYPE_CHECKING
 
-from . import post
+from . import durable, post
 from . import input_receipt
 from .harness.json_record import RecordError
 from .harness.types import Screen
@@ -52,9 +51,7 @@ class Proof:
     def save(self, **fields: Any) -> None:
         self.data.update(fields)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.data, indent=2) + "\n")
-        os.replace(tmp, self.path)
+        durable.replace_file(self.path, json.dumps(self.data, indent=2) + "\n")
 
     @classmethod
     def begin(cls, seat: Seat, attempt: post.Attempt, text: str) -> Proof:

@@ -6,6 +6,8 @@ import json
 import math
 from pathlib import Path
 
+from . import durable
+
 
 def binding(path: Path) -> list:
     """An old writer replacing even identical JSON invalidates its adjacent evidence."""
@@ -15,7 +17,7 @@ def binding(path: Path) -> list:
 
 
 def save_price(path: Path, price: dict | None) -> None:
-    path.with_name(path.stem + '-price.json').write_text(json.dumps({'binding': binding(path), 'price': price}) + '\n')
+    durable.replace_file(path.with_name(path.stem + '-price.json'), json.dumps({'binding': binding(path), 'price': price}) + '\n')
 
 
 def saved_price(path: Path) -> dict | None:

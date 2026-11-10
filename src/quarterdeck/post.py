@@ -18,6 +18,7 @@ from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from . import durable
 from .ship import ShipError
 
 KINDS = ("order", "report", "question", "answer", "ack")
@@ -104,9 +105,7 @@ class Store:
         path = self.dir / f"{message.id}.json"
         if path.exists():
             raise ShipError(f"{message.id} exists; messages are immutable")  # law: post-is-files
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(message.to_json())
-        os.replace(tmp, path)
+        durable.replace_file(path, message.to_json())
         return path
 
     def _loaded(self) -> tuple[list[Message], dict[str, list[Message]]]:
@@ -351,9 +350,7 @@ class Attempts:
 
     def _write(self, attempt: Attempt) -> None:
         data = {k: v for k, v in asdict(attempt).items() if k != "path"}
-        tmp = attempt.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=2) + "\n")
-        os.replace(tmp, attempt.path)
+        durable.replace_file(attempt.path, json.dumps(data, indent=2) + "\n")
 
     def all(self) -> list[Attempt]:
         # Attempts are mutable, including writes from another process. Directory
