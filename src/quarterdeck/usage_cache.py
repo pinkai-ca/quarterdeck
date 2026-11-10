@@ -14,6 +14,7 @@ from .harness.limits import Usage, Window
 from .quota import reset_text
 
 MAX_AGE = 3600  # the service's availability freshness bound
+MISSING = "window missing from latest usage read"
 
 
 def aware(value: object) -> bool:
@@ -113,7 +114,7 @@ class UsageCache:
             old, candidates = previous.get(name), grouped.get(name, [])
             new = candidates[0] if candidates else None
             if not candidates:
-                error = "window missing from latest usage read" + (f": {usage.error}" if usage.error else "")
+                error = MISSING + (f": {usage.error}" if usage.error else "")
             elif len(candidates) != 1:
                 error = "ambiguous duplicate bucket"
             else:

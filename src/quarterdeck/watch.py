@@ -23,6 +23,7 @@ from .seat import Seat, UnresolvedSeat, seats
 from .ship import Ship
 from .servicectl import STALE_SECONDS
 from .tmux import Tmux
+from .usage_cache import MISSING
 
 STALL_SECONDS = 600
 DISK_WARN = 0.90
@@ -360,13 +361,34 @@ def headline_readings(ship: Ship) -> list[dict]:
                         if key[0] == pool:
                             item.update(attempted_at=at, error=error,
                                         reason=f"usage unknown: {error}" if error else "headline window missing from usage read")
+                for key in missing:
+                    fallback = reported_without(book.usage.rows(key[0]), key, selected[key[0]].headline_fallback)
+                    if fallback is not None:
+                        found[key] = {**window_reading(fallback, post.now()), "window": fallback.window,
+                                      "note": f"provider reports no {key[2]} window"}
             except sqlite3.OperationalError:
                 return [{"pool": None, "reading": None, "reason": SCHEMA_BEHIND}]
     return [found.get(key, item) for key, item in missing.items()]
 
 
+def reported_without(rows, key: tuple, fallback: tuple | None):
+    """The fallback window's reading when the latest good read carried no headline window, else None.
+
+    The provider reports no such window when a good read gave the fallback (its row has no
+    error) and either never gave the headline window or its row says only that the latest
+    read left it out. A failed read marks the fallback's row too, so it stays unknown.
+    """
+    if fallback is None:
+        return None
+    by = {(row.group, row.window): row for row in rows}
+    own, other = by.get(key[1:]), by.get(fallback)
+    if other is None or other.error is not None or not other.complete:
+        return None
+    return other if own is None or own.error == MISSING else None
+
+
 def render_headlines(rows: list[dict]) -> list[str]:
-    return [row["reading"].describe(row["observed_at"]) if row["reading"] else
+    return [row["reading"].describe(row["observed_at"]) + (f" · {row['note']}" if row.get("note") else "") if row["reading"] else
             (f"{row['pool']} {row.get('window', '')} {row['reason']}" if row["pool"] else row["reason"]) for row in rows]
 
 

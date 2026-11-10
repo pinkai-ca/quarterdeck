@@ -78,6 +78,7 @@ class Harness(ABC):
     background_usage: bool = False
     usage_from_records = None  # optional reader of (joined record, saved launch time) sources
     headline_window: tuple[str | None, str] | None = None
+    headline_fallback: tuple[str | None, str] | None = None  # shown when a good read carries no headline window
     screen_walls: bool = False
     home_variable: str | None
     keys: Keys
