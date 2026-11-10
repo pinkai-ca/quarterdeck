@@ -32,9 +32,10 @@ from .servicectl import (  # noqa: F401  (the process control, reachable as serv
     acquire_lock, alive, heartbeat_path, locked, read_heartbeat, request, stale, start, stop, write_heartbeat,
 )
 from .ship import Ship, ShipError
-from .tmux import Tmux
+from .tmux import Tmux, TmuxError
 
 TICK = 1.0
+TYPING_QUIET = 30  # seconds since a client's last key or mouse input before its session may be switched
 STATUS_INTERVAL = 0.7  # presentation only; rendering age and owner are checked independently
 
 # Door alarms only a person can clear: a sign-in (every adapter names that dialog "login"),
@@ -74,6 +75,8 @@ class Service:
         self.meters: dict[str, machine.Meter] = {}
         self.usage_read: dict[str, float] = {}
         self.read_marks: dict[Path, tuple] = {}  # record -> the fingerprint it was last read at
+        self.working: dict[str, bool] = {}  # seat -> whether its record last showed a turn open
+        self.work_marks: dict[str, tuple] = {}  # seat -> (record, fingerprint) its working state was read at
         self.blind_checked = -BLIND_INTERVAL  # when the blind attempts were last read against the records
         self.next_status = 0.0
         self.status_checked: float | None = None
@@ -97,7 +100,7 @@ class Service:
             self.ship = shipmod.load(self.ship.folder)  # law: ship-file
         except ShipError as error:
             self.log("error", step="load", error=str(error))
-        for step in (self.reconcile, self.account, self.inboxes, self.recoveries, self.deliveries, self.requests, self.fresh_after_order,
+        for step in (self.reconcile, self.account, self.inboxes, self.recoveries, self.deliveries, self.follow, self.requests, self.fresh_after_order,
                      self.rebrief, self.credentials, self.failover):  # accounting before anything relaunches a seat
             self.heartbeat()  # before every step: a slow delivery or usage read reads as busy, never as dead
             try:
@@ -405,6 +408,74 @@ class Service:
             time.sleep(0.2)
         return f"{name} = {value} · typed {command} in {seat.pane().id} · not confirmed by the {control.confirmed_by} yet"
 
+
+    def follow(self) -> None:
+        """When a seat starts working, the session it sits in shows its window.
+
+        A start is a turn the seat's record opens after the service saw it closed (law: record-first);
+        the first reading of a seat is its baseline, never a start. Seats in a human's session are never
+        followed, and a switch is refused while a human scrolls or types in the session, or when it would
+        resize the window shown.
+        """
+        for seat in self.resolved_seats():
+            if seat.session.human:
+                continue  # law: one-door; the human's session is theirs
+            working = self._working(seat)
+            if working is None:
+                continue  # an unreadable or uncertain record is no transition
+            before = self.working.get(seat.name)
+            self.working[seat.name] = working
+            if working and before is False:
+                refused = self.show_window(seat)
+                self.log("followed" if refused is None else "not followed", seat=seat.name,
+                         **({"reason": refused} if refused else {}))
+
+    def _working(self, seat: Seat) -> bool | None:
+        if seat.launched() is None:
+            self.work_marks.pop(seat.name, None)
+            return False
+        record = seat.record()
+        if record is None:
+            return False  # a launch that has not written yet has not started working
+        mark = (record, record_fingerprint(record))
+        if self.work_marks.get(seat.name) == mark:
+            return self.working.get(seat.name)
+        try:
+            state = seat.harness.state(record)
+        except OSError:
+            return None
+        self.work_marks[seat.name] = mark
+        return None if state.turn_open is None else bool(state.turn_open)
+
+    def show_window(self, seat: Seat) -> str | None:
+        """Show the seat's window in its session, or say why not; nothing is typed, closed or resized."""
+        session = seat.session
+        if session.human:
+            return "a human's session"
+        pane = seat.pane()  # law: identity
+        if pane is None or pane.dead:
+            return "no live pane of its launch"
+        if pane.session != session.title:
+            return f"its pane is in session {pane.session!r}, not {session.title!r}"
+        if self.tmux.session_environment(session.title, "QD_SHIP") != str(self.ship.folder):
+            return f"session {session.title!r} is not this ship's"
+        view = self.tmux.session_view(session.title)
+        if view is None or pane.id not in view.pane_windows:
+            return "session unreadable"
+        target = view.pane_windows[pane.id]
+        if target == view.active:
+            return None
+        if view.scrolling:
+            return "a human is scrolling in the session"
+        if any(time.time() - last < TYPING_QUIET for last in view.inputs):
+            return "a human is typing in the session"
+        if view.inputs and view.windows[target][1:] != view.windows[view.active][1:]:
+            return "showing it would resize its window"
+        try:
+            self.tmux.select_window(pane.id, expected_pid=pane.pid)
+        except TmuxError as error:
+            return str(error)
+        return None
 
     def fresh_after_order(self) -> None:
         """A worker whose last open order closed, and whose closing turn ended, starts fresh."""

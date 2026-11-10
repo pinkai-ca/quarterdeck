@@ -46,6 +46,20 @@ class Pane:
     exit_status: int | None
 
 
+@dataclass(frozen=True)
+class SessionView:
+    """One reading of a session, for showing a window there: what it shows, who is scrolling, when its clients last typed."""
+
+    windows: dict[str, tuple[bool, int, int]]  # window id -> (active, width, height)
+    pane_windows: dict[str, str]  # pane id -> its window id
+    scrolling: bool  # some pane of the session is in a mode (copy or view): a human is reading back
+    inputs: tuple[int, ...]  # each attached client's last input, epoch seconds
+
+    @property
+    def active(self) -> str | None:
+        return next((ident for ident, (active, _, _) in self.windows.items() if active), None)
+
+
 _FORMAT = "\t".join(
     [
         "#{pane_id}",
@@ -341,6 +355,53 @@ class Tmux:
                               f'kill-window -t {pane_id}', f'display-message -p {refused}')
         if result.strip() == refused:
             raise TmuxError(f'pane {pane_id} changed process identity; window retained')
+
+    def session_view(self, session: str) -> SessionView | None:
+        """Windows, panes and clients of one session in one command queue; None when any part is unreadable."""
+        if any(char in session for char in '\t\r\n'):
+            return None
+        target = _session(session)
+        try:
+            lines = self.run('list-windows', '-t', target, '-F', 'w\t#{window_id}\t#{window_active}\t#{window_width}\t#{window_height}',
+                             ';', 'list-panes', '-s', '-t', target, '-F', 'p\t#{pane_id}\t#{window_id}\t#{pane_in_mode}',
+                             ';', 'list-clients', '-t', target, '-F', 'c\t#{client_activity}').splitlines()
+        except PrivateTmuxError:
+            raise
+        except (TmuxError, OSError, UnicodeError):
+            return None
+        windows, panes, inputs, scrolling = {}, {}, [], False
+        for line in lines:
+            fields = line.split('\t')
+            try:
+                if fields[0] == 'w' and len(fields) == 5:
+                    windows[fields[1]] = (fields[2] == '1', int(fields[3]), int(fields[4]))
+                elif fields[0] == 'p' and len(fields) == 4:
+                    panes[fields[1]] = fields[2]
+                    scrolling = scrolling or fields[3] == '1'
+                elif fields[0] == 'c' and len(fields) == 2:
+                    inputs.append(int(fields[1]))
+                else:
+                    return None
+            except ValueError:
+                return None
+        if not windows or sum(active for active, _, _ in windows.values()) != 1 or set(panes.values()) - set(windows):
+            return None
+        return SessionView(windows, panes, scrolling, tuple(inputs))
+
+    def select_window(self, pane_id: str, *, expected_pid: int) -> None:
+        """Make this pane's window the one its session shows, only while the pane still runs the expected process.
+
+        Selecting a window never resizes it by itself; the caller refuses a window whose size
+        differs from the one shown, since a client viewing it would fit it to itself.
+        """
+        if (not pane_id.startswith('%') or not pane_id[1:].isascii() or not pane_id[1:].isdigit()
+                or type(expected_pid) is not int or expected_pid <= 0):
+            raise TmuxError('invalid window selection identity')
+        refused = 'qd-window-selection-identity-refused'
+        result = self._invoke('if-shell', '-F', '-t', pane_id, f'#{{==:#{{pane_pid}},{expected_pid}}}',
+                              f'select-window -t {pane_id}', f'display-message -p {refused}')
+        if result.strip() == refused:
+            raise TmuxError(f'pane {pane_id} changed process identity; window not shown')
 
     # -- panes -------------------------------------------------------------------------
 
