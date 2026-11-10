@@ -166,19 +166,56 @@ def test_last_session_exit_leaves_only_the_creators_proved_dead_endpoint(tmux,re
     assert not Path(tmux.socket).parent.exists()
 
 
-def test_child_binding_reaches_the_same_private_server_without_creator_authority(tmux,tmp_path):
+# An observer's shared lock makes one nonblocking attempt by design (DESIGN: status is never blocked by a
+# holder), so a busy namespace is reported as uncertainty and the caller retries it within its own deadline.
+# The child retries only that uncertainty; any other refusal still ends it, and it never gains ownership.
+CHILD = ('import os,time\nfrom quarterdeck.tmux import Tmux, PrivateTmuxError\n'
+         'client=Tmux.default()\n'
+         'if os.environ.get("QD_TEST_MARK"):open(os.environ["QD_TEST_MARK"],"w").close()\n'
+         'deadline=time.monotonic()+4\n'
+         'while True:\n'
+         '    try:\n'
+         '        path=client.run("display-message","-p","#{socket_path}").strip()\n'
+         '        break\n'
+         '    except PrivateTmuxError as error:\n'
+         '        if "private namespace busy" not in str(error) or time.monotonic()>=deadline:raise\n'
+         '        print("busy, retrying", flush=True)\n'
+         '        time.sleep(.05)\n'
+         'print(path, flush=True)\n'
+         'print("owns="+str(client.close()),flush=True)\ntime.sleep(20)\n')
+
+
+def child_reaches(tmux, tmp_path, env=None):
     tmux.new_session('Synthetic')
-    script = ('import time\nfrom quarterdeck.tmux import Tmux\n'
-              'client=Tmux.default()\n'
-              'print(client.run("display-message","-p","#{socket_path}").strip(), flush=True)\n'
-              'print("owns="+str(client.close()),flush=True)\ntime.sleep(20)\n')
-    pane=tmux.new_window('Synthetic','Child',tmp_path,[sys.executable,'-c',script],env={'QD_TMUX_SOCKET':tmux.socket})
+    pane=tmux.new_window('Synthetic','Child',tmp_path,[sys.executable,'-c',CHILD],env={'QD_TMUX_SOCKET':tmux.socket,**(env or {})})
     deadline=time.monotonic()+5
+    text=''
     while time.monotonic()<deadline:
         text=tmux.capture(pane.id)
-        if tmux.socket in text and 'owns=False' in text:break
+        if tmux.socket in text and 'owns=False' in text:return text
         time.sleep(.02)
-    else:pytest.fail('child did not use the existing private binding without ownership')
+    pytest.fail(f'child did not use the existing private binding without ownership; pane: {text.strip()[-400:]!r}')
+
+
+def test_child_binding_reaches_the_same_private_server_without_creator_authority(tmux,tmp_path):
+    child_reaches(tmux, tmp_path)
+
+
+def test_child_binding_reaches_the_server_after_its_first_query_meets_the_creators_exclusive_lock(tmux,tmp_path,monkeypatch):
+    """new_window drops its placeholder window under the exclusive lock after the child has started;
+    an observer's shared lock makes one nonblocking attempt, so the child's first query can meet it."""
+    mark=tmp_path/'querying'
+    original=tmux._drop_placeholder
+    def held(session):
+        with tmux_socket.locked(tmux.socket, tmux._owned.namespace):  # exclusive, as kill-window takes it
+            deadline=time.monotonic()+5
+            while not mark.exists() and time.monotonic()<deadline:time.sleep(.01)
+            assert mark.exists(), 'the child never reached its first query'
+            time.sleep(.5)  # across the child's first query
+        original(session)
+    monkeypatch.setattr(tmux,'_drop_placeholder',held)
+    text=child_reaches(tmux, tmp_path, {'QD_TEST_MARK':str(mark)})
+    assert 'busy, retrying' in text, 'the first query met the exclusive lock'
 
 
 @pytest.mark.parametrize('live',[True,False])
