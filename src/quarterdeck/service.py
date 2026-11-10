@@ -569,7 +569,7 @@ class Service:
                 state = seat.harness.state(record)
             except OSError:
                 continue  # no screen or default idle reading can prove a recorded closing turn
-            if (state.turn_open is False and not state.queued
+            if (state.turn_open is False and state.queue_error is None and not state.queued
                     and any(turn.timed and turn.started is not None and turn.ended is not None
                             and turn.started <= closed <= turn.ended for turn in state.completed_turns)):
                 proof = seat.fresh()  # law: context-is-cache
@@ -663,6 +663,8 @@ class Service:
             return "it has no joined record"
         if state.turn_open is not False:
             return "a turn is open"
+        if state.queue_error:
+            return f"queue unknown: {state.queue_error}"
         if state.queued:
             return "input is queued"
         if not any(turn.timed and turn.started is not None and turn.ended is not None

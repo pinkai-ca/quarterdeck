@@ -64,17 +64,19 @@ def activity(seat: Seat | UnresolvedSeat, now: datetime | None = None) -> Activi
         state = seat.harness.state(join.record)
     except OSError as error:
         return Activity("unknown", f"record unreadable: {error}")
+    queue_detail = f"queue unknown: {state.queue_error}" if state.queue_error else ""
     if state.turn_open is None:
-        return Activity("unknown", "turn state unknown in record")
+        return Activity("unknown", " · ".join(filter(None, ("turn state unknown in record", queue_detail))))
     if seat.harness.waiting_for_human(state):
-        return Activity('needs a human', 'native question tool; ask through qd post question')
+        return Activity('needs a human', 'native question tool; ask through qd post question' +
+                        (f" · {queue_detail}" if queue_detail else ""))
     if not state.turn_open:
-        return Activity("idle", f"{len(state.queued)} queued" if state.queued else "")
+        return Activity("idle", queue_detail or (f"{len(state.queued)} queued" if state.queued else ""))
     where = f"in {state.open_tool} {_ago(state.open_tool_since, now)}".rstrip() if state.open_tool else ""
     quiet = (now - state.last_write).total_seconds() if state.last_write else 0
     if quiet >= STALL_SECONDS:
-        return Activity("stalled", where or f"{int(quiet // 60)}m without a step")
-    return Activity("working", where)
+        return Activity("stalled", " · ".join(filter(None, (where or f"{int(quiet // 60)}m without a step", queue_detail))))
+    return Activity("working", " · ".join(filter(None, (where, queue_detail))))
 
 
 @dataclass(frozen=True)
@@ -260,6 +262,8 @@ def render_full(data: dict) -> list[str]:
         else:
             turns_shown = state.turns if state.turns is not None else "unknown"
             lines.append(f"  record {record} · {turns_shown} turns · last input: {(state.last_input or '')[:60]!r}")
+            if state.queue_error:
+                lines.append(f"  queue unknown: {state.queue_error}; queued is candidate history")
     elif data["record_absent"]:
         lines.append(f"  record absent: {data['record_absent']}")
     if data["record_limits"]:
@@ -313,6 +317,7 @@ class Facts:
     pending: list[str] = field(default_factory=list)
     routes: list[str] = field(default_factory=list)
     unknown: list[str] = field(default_factory=list)
+    queue_unknown: list[str] = field(default_factory=list)
 
     def line(self) -> str:  # law: nothing-waits-silently
         parts = ["SERVICE DOWN" if self.service == "down" else f"service {self.service}"]
@@ -322,6 +327,7 @@ class Facts:
         if self.blind:
             parts.append(f"{self.blind} blind")
         parts += self.unknown
+        parts += self.queue_unknown
         parts += [f"{name} needs a human" for name in self.needs_human]
         parts += [f"{name}: no watch armed" for name in self.unarmed]
         parts += [f"wall: {wall}" for wall in self.walls]
@@ -438,7 +444,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
     attempts = post.Attempts(ship.runtime) if attempts is None else attempts
     records = attempts.all()
     latest = attempts.latest(attempts=records)
-    waiting, needs_human, unarmed, pending_lines, routes, unknown = [], [], [], [], [], []
+    waiting, needs_human, unarmed, pending_lines, routes, unknown, queue_unknown = [], [], [], [], [], [], []
     for seat in seats(ship, tmux, False):
         pending = attempts.undelivered(store, seat.name, results=latest)
         waiting += pending
@@ -446,6 +452,14 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
             needs_human.append(seat.name)
             unknown.append(str(seat.error).partition(';')[0])
             continue
+        record = seat.record()
+        if record is not None:
+            try:
+                queue_error = seat.harness.state(record).queue_error
+            except OSError:
+                queue_error = None  # ordinary unreadable-record reporting remains independent
+            if queue_error:
+                queue_unknown.append(f"{seat.name}: queue unknown: {queue_error}")
         launched = seat.launched()
         if launched is not None and launched.pool in seat.spec.pools[1:]:
             routes.append(f"{seat.name} on {seat.harness.name}/{launched.pool}")
@@ -481,6 +495,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         pending=pending_lines,
         routes=routes,
         unknown=unknown,
+        queue_unknown=queue_unknown,
         unarmed=unarmed,
         walls=walls if walls is not None else ledger_walls(ship),
         usage=headline_readings(ship),

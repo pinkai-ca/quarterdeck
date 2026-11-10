@@ -41,6 +41,13 @@ def unwrap(text: str) -> str:
     return match.group(1) if match else text
 
 
+def draft_return_text(entry: dict) -> str | None:
+    """Only readable whole content can identify a native return-to-draft target."""
+    content = entry.get('content')
+    text = unwrap(content) if isinstance(content, str) else None
+    return text if text is not None and text.strip() else None
+
+
 def records(home: Path) -> list[Path]:
     return records_matching(home, "projects/*/*.jsonl")
 
@@ -109,6 +116,18 @@ def inputs(record: Path) -> list[Input]:
             if row.get("type") != "queue-operation":
                 continue
             operation = row.get("operation")
+            if operation == 'popAll':
+                text = draft_return_text(row)
+                matching = next((i for i, (item, phase) in enumerate(queued)
+                                 if phase == 'queued' and text is not None and item.text.strip() == text.strip()), None)
+                if matching is None:
+                    found.skip(line, 'queue-operation', 'popAll identity unresolved')
+                else:
+                    entry, _ = queued[matching]
+                    # Native popAllEditable returns this item to the composer draft.
+                    # Keep acceptance identity for a later real submission; no receipt now.
+                    queued[matching] = entry, 'draft'
+                continue
             if operation == 'dequeue' and 'content' not in row:
                 # No identity is stated: retain FIFO slots, hold until readable input.
                 queued = [(entry, 'pending' if phase == 'queued' else phase) for entry, phase in queued]
@@ -119,11 +138,11 @@ def inputs(record: Path) -> list[Input]:
             text = unwrap(content)
             if operation not in ('enqueue', 'remove', 'dequeue'):
                 found.skip(line, 'queue-operation', 'unknown queue operation')
-                queued = [(entry, 'pending' if entry.text.strip() == text.strip() and phase != 'echo' else phase)
+                queued = [(entry, 'pending' if entry.text.strip() == text.strip() and phase not in ('echo', 'draft') else phase)
                           for entry, phase in queued]
                 continue
             matching = next((i for i, (item, phase) in enumerate(queued)
-                             if phase != 'echo' and item.text.strip() == text.strip()), None)
+                             if phase not in ('echo', 'draft') and item.text.strip() == text.strip()), None)
             if operation == "enqueue":
                 queued.append((Input(text, stamp, "queued"), 'queued'))  # stale/untimed slots still occupy FIFO
             elif operation in ("remove", "dequeue") and matching is not None:
@@ -148,6 +167,7 @@ class _Reader(JsonLinesReader):
     def __init__(self, record: Path, snapshot=None):
         self.sidechain_ends = set()
         self.subagent_turns = 0
+        self.queue_slots = []  # text/phase FIFO, including returned drafts and consumed echo identities
         super().__init__(record, snapshot)
 
     def take(self, entry: dict) -> None:
@@ -171,12 +191,35 @@ class _Reader(JsonLinesReader):
 
     def queue(self, entry: dict) -> None:
         """A message queued mid-turn; removed when the program takes it, often into the running turn itself."""
+        if entry.get('isSidechain'):
+            return
+        if entry.get('operation') == 'popAll':
+            text = draft_return_text(entry)
+            matching = next((i for i, (item, phase) in enumerate(self.queue_slots)
+                             if phase == 'queued' and text is not None and item.strip() == text.strip()), None)
+            if matching is None:
+                self.queue_error = 'popAll identity unresolved'
+            else:
+                item, _ = self.queue_slots[matching]
+                self.queue_slots[matching] = item, 'draft'
+                self.queued.remove(item)  # return one selected item to draft, never to consumed
+            return
         text = unwrap(entry.get("content") or "")
         if entry.get("operation") == "enqueue":
             self.queued.append(text)
+            self.queue_slots.append((text, 'queued'))
         elif entry.get("operation") in ("remove", "dequeue") and text in self.queued:
             self.queued.remove(text)
             self.consumed.append(text)
+            matching = next((i for i, (item, phase) in enumerate(self.queue_slots)
+                             if phase not in ('echo', 'draft') and item == text), None)
+            if matching is not None:
+                self.queue_slots[matching] = text, 'echo'
+        elif entry.get('operation') == 'dequeue' and 'content' not in entry:
+            self.queue_slots = [(item, 'pending' if phase == 'queued' else phase) for item, phase in self.queue_slots]
+        elif entry.get('operation') not in ('enqueue', 'remove', 'dequeue'):
+            self.queue_slots = [(item, 'pending' if item.strip() == text.strip() and phase not in ('echo', 'draft') else phase)
+                                for item, phase in self.queue_slots]
 
     def content_known(self, content, role: str) -> bool:
         """Classify native blocks for execution proof, independently of accounting."""
@@ -241,8 +284,11 @@ class _Reader(JsonLinesReader):
             return
         if text is not None:
             self.last_input, self.last_input_at = text, when(entry.get("timestamp"))
-            if text in self.queued:
-                self.queued.remove(text)
+            matching = next((i for i, (item, _) in enumerate(self.queue_slots) if item.strip() == text.strip()), None)
+            if matching is not None:
+                item, phase = self.queue_slots.pop(matching)
+                if phase not in ('echo', 'draft') and item in self.queued:
+                    self.queued.remove(item)
             if self.open is not None:
                 self.end(self.last_input_at, completed=False)  # a later prompt bounds accounting, not terminal evidence
             self.start_turn({"started": self.last_input_at, "input": text, "usage": {}, "tools": [],

@@ -181,6 +181,7 @@ class State:
     input_id: str | None = None
     work_id: str | None = None  # native automatic continuation cannot create a new recovery allowance
     capped: CappedGeneration | None = None
+    queue_error: str | None = None  # queued is candidate history, not proved membership, when unresolved
 
 
 @dataclass(frozen=True)

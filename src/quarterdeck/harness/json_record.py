@@ -229,6 +229,7 @@ class JsonLinesReader(RecordReader):
         self.live_tools = {}
         self.tools_known = True
         self.queued = []
+        self.queue_error = None
         self.consumed = []
         self.model = self.effort = self.last_input = self.last_input_at = None
         if snapshot is not None:
@@ -295,4 +296,5 @@ class JsonLinesReader(RecordReader):
                      last_input=self.last_input, last_input_at=self.last_input_at, model=self.model,
                      effort=self.effort, queued=tuple(self.queued), consumed=tuple(self.consumed), turns=len(self.turns),
                      completed_turns=tuple(self.completed_turns),
-                     pending_tools=tuple(self.live_tools.values()) if self.tools_known else None)
+                     pending_tools=tuple(self.live_tools.values()) if self.tools_known else None,
+                     queue_error=self.queue_error)
