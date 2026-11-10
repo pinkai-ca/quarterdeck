@@ -361,6 +361,20 @@ class Tmux:
             return next((p for p in self.panes() if p.id == pane_id), None)
         return _parse(identity) if identity.partition('\t')[0] == pane_id else None
 
+    def started(self) -> int | None:
+        """When the running server began, in whole seconds since the epoch, as tmux reports it; None if unreadable.
+
+        Pane ids start again from %0 in each server lifetime, so this tells an id saved in an
+        earlier lifetime from the same id in this one.
+        """
+        try:
+            text = self.run('display-message', '-p', '#{start_time}').strip()
+        except PrivateTmuxError:
+            raise
+        except TmuxError:
+            return None
+        return int(text) if text.isascii() and text.isdigit() else None
+
     def read_pane(self, pane_id: str, history: int = 0) -> tuple[Pane, str] | None:
         """Read current identity and text in one server command queue, never from a cache."""
         if not pane_id.startswith('%') or not pane_id[1:].isascii() or not pane_id[1:].isdigit():

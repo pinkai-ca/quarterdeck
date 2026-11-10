@@ -203,10 +203,27 @@ class Seat:
         pane = self.tmux.pane(launched.pane) if launched is not None else None
         if self.launched() != launched:
             raise ShipError(f"{self.name}: launch identity changed; retained for inspection")
+        if pane is not None and pane.pid != launched.pid and self._earlier_server():
+            return None  # the saved id named a pane of an earlier server lifetime; this one is another's
         if pane is not None and pane.pid != launched.pid:
             raise ShipError(f"{self.name}: pane {launched.pane} no longer matches its launch PID; "
                             "launch retained, no window closed or new launch allowed")  # law: identity
         return pane
+
+    def _earlier_server(self) -> bool:
+        """The running tmux server began after this launch was written, so the launch's pane cannot be in it.
+
+        launch.json is written after its pane exists, and a server's start is whole seconds rounded
+        down, so a start later than the file's write time is proof, and any doubt (an unreadable
+        start, a restart within the same second) keeps the refusal. The launch's own `at` is no
+        proof: it is stamped before the window opens, and opening it can start the server.
+        """
+        started = self.tmux.started()
+        try:
+            written = (self.folder / "launch.json").stat().st_mtime
+        except FileNotFoundError:
+            return False
+        return started is not None and started > written
 
     def _retire_window(self, launched: Launched | None) -> None:
         pane = self._lifecycle_pane(launched)
