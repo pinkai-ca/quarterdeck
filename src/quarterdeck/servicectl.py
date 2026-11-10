@@ -18,6 +18,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import durable
 from .ship import Ship, ShipError
 
 STALE_SECONDS = 10.0  # a tick longer than this reads as busy
@@ -143,7 +144,7 @@ def request(runtime: Path, kind: str, **data) -> str:
     folder.mkdir(parents=True, exist_ok=True)
     name = f"{datetime.now().strftime('%H%M%S')}-{kind}-{os.getpid()}"
     path = folder / f"{name}.json"
-    path.write_text(json.dumps({"kind": kind, **data}) + "\n")
+    durable.replace_file(path, json.dumps({"kind": kind, **data}) + "\n")
     answer = folder / f"{name}.done"
     deadline = time.monotonic() + ANSWER_SECONDS
     while time.monotonic() < deadline:
