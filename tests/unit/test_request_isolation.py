@@ -147,6 +147,24 @@ def test_a_preexisting_claim_is_never_dispatched_and_deferred_requests_release_t
     assert paths["110002-stop-2"].with_suffix(".done").read_text() == "survivor interrupted (synthetic)\n"
 
 
+@pytest.mark.parametrize("body", ["{not json", json.dumps(dict(kind="stop", seat="survivor"))], ids=["malformed", "action"])
+def test_a_legal_request_name_with_an_overlong_claim_is_held_without_blocking_a_later_request(svc, monkeypatch, body):
+    service, folder = svc
+    called = []
+    monkeypatch.setattr(doormod.Door, "interrupt", lambda self: called.append(self.seat.name) or "synthetic stop")
+    bad = folder / ("0" + "x" * 249 + ".json")
+    assert len(bad.name.encode()) == 255 and len(bad.with_suffix(".claimed").name.encode()) == 258
+    bad.write_text(body)
+    good = folder / "1-good.json"
+    good.write_text(json.dumps(dict(kind="stop", seat="survivor")))
+    service.requests()  # 3.12 raises ENAMETOOLONG on the claim's Path.exists unless it is isolated
+    assert good.with_suffix(".done").read_text() == "synthetic stop\n"
+    assert called == ["survivor"], "the unclaimable request must not dispatch, even if it is a valid action"
+    assert bad.read_text() == body, "the full request identity and evidence are preserved without truncation"
+    errors = logged(service, "error")
+    assert any(row.get("request") == bad.name and "Traceback" in row["trace"] for row in errors)
+
+
 @pytest.mark.parametrize("error_type", [OSError, ShipError])
 def test_a_failing_rebrief_stays_to_be_tried_again_and_the_stop_after_it_is_answered(svc, monkeypatch, error_type):
     service, folder = svc

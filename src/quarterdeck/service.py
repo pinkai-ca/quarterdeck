@@ -323,11 +323,11 @@ class Service:
         folder = self.runtime / "requests"
         retry = []
         for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
-            claim = path.with_suffix(".claimed")
-            if claim.exists() or claim.is_symlink():
-                continue  # an earlier action may have run; its raw durable claim needs inspection, never replay
             data = None
             try:
+                claim = path.with_suffix(".claimed")
+                if claim.exists() or claim.is_symlink():
+                    continue  # an earlier action may have run; its raw durable claim needs inspection, never replay
                 raw = path.read_text()
                 data = json.loads(raw)
                 if not isinstance(data, dict) or data.get("kind") != "rebrief":
