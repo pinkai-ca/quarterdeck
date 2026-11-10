@@ -171,6 +171,8 @@ def test_last_session_exit_leaves_only_the_creators_proved_dead_endpoint(tmux,re
 # The child retries only that uncertainty; any other refusal still ends it, and it never gains ownership.
 CHILD = ('import os,time\nfrom quarterdeck.tmux import Tmux, PrivateTmuxError\n'
          'client=Tmux.default()\n'
+         'held,wait=os.environ.get("QD_TEST_HELD"),time.monotonic()+5\n'
+         'while held and not os.path.exists(held) and time.monotonic()<wait:time.sleep(.01)\n'
          'if os.environ.get("QD_TEST_MARK"):open(os.environ["QD_TEST_MARK"],"w").close()\n'
          'deadline=time.monotonic()+4\n'
          'while True:\n'
@@ -203,18 +205,20 @@ def test_child_binding_reaches_the_same_private_server_without_creator_authority
 
 def test_child_binding_reaches_the_server_after_its_first_query_meets_the_creators_exclusive_lock(tmux,tmp_path,monkeypatch):
     """new_window drops its placeholder window under the exclusive lock after the child has started;
-    an observer's shared lock makes one nonblocking attempt, so the child's first query can meet it."""
-    mark=tmp_path/'querying'
+    an observer's shared lock makes one nonblocking attempt, so the child's first query can meet it.
+    A handshake makes it meet it: the child first waits until the creator says it holds the lock."""
+    mark,locked=tmp_path/'querying',tmp_path/'locked'
     original=tmux._drop_placeholder
     def held(session):
         with tmux_socket.locked(tmux.socket, tmux._owned.namespace):  # exclusive, as kill-window takes it
+            locked.touch()
             deadline=time.monotonic()+5
             while not mark.exists() and time.monotonic()<deadline:time.sleep(.01)
             assert mark.exists(), 'the child never reached its first query'
             time.sleep(.5)  # across the child's first query
         original(session)
     monkeypatch.setattr(tmux,'_drop_placeholder',held)
-    text=child_reaches(tmux, tmp_path, {'QD_TEST_MARK':str(mark)})
+    text=child_reaches(tmux, tmp_path, {'QD_TEST_MARK':str(mark),'QD_TEST_HELD':str(locked)})
     assert 'busy, retrying' in text, 'the first query met the exclusive lock'
 
 
