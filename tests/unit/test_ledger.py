@@ -75,10 +75,14 @@ def test_pool_windows_and_walls(tmp_path: Path):
     assert book.walls() == ["claude-primary 5h"] and book.walled("claude-primary") and not book.walled("claude-secondary")
     earlier = datetime.now(timezone.utc) - timedelta(minutes=1)
     book.record_usage("claude-primary", Usage((Window("5h", 1.0, earlier),), datetime.now(timezone.utc)))
-    assert book.walls() == [], "a spent window already reset is no wall"
+    # A reading rejected as invalid (its reset is not after its own read) is not a newer good
+    # reading, so it neither clears nor moves the wall; the next valid reading with room clears it.
+    assert book.walls() == ["claude-primary 5h · last known"], "a rejected read keeps the retained wall"
     lines = ledgermod.pools_table(book)
-    assert lines[1].startswith("claude-primary 5h") and "WALL" not in lines[1]
+    assert lines[1].startswith("claude-primary 5h") and lines[1].endswith("WALL")
     assert "LAST KNOWN" in lines[1], "invalid reset retains the prior dated tuple"
+    book.record_usage("claude-primary", Usage((Window("5h", 0.2, later),), datetime.now(timezone.utc)))
+    assert book.walls() == [], "the next valid reading with room clears it"
     book.close()
 
 

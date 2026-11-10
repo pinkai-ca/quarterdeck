@@ -27,7 +27,7 @@ from .attribution_cache import Attribution
 from .provenance import Provenance, UNKNOWN
 from .quota import Quotas, reset_text
 from .ship import Ship, ShipError
-from .usage_cache import UsageCache, aware
+from .usage_cache import UsageCache, aware, parse
 
 UNATTRIBUTED = "-"
 PERIODS = {"day": 1, "week": 7, "month": 30}
@@ -341,9 +341,12 @@ class Ledger:
         now = now or datetime.now().astimezone()
         found = []
         for reading in self.usage.rows():
-            if reading.blocks and reading.current(now) and reading.used >= 1.0:
+            # A spent window is a wall until its own reset. A failed or stale read keeps the
+            # last complete measurement, marked last known; only a newer good reading replaces it.
+            if reading.blocks and reading.complete and reading.used >= 1.0 and parse(reading.resets_at) > now:
                 found.append(f"{reading.pool} {reading.window}" +
-                             (f" · {reset_text(reading.resets_at)}" if reading.group is not None else ""))
+                             (f" · {reset_text(reading.resets_at)}" if reading.group is not None else "") +
+                             ("" if reading.current(now) else " · last known"))
         for pool in (ship.pools.values() if ship else ()):
             budget = Budget.parse(pool.budget)
             if budget is not None:
