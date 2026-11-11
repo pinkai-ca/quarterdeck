@@ -28,6 +28,18 @@ HOPS = 20  # a chain of links longer than this is nobody's install
 FRAMEWORK_TOOLS = ("qd", "node")  # what a seat's program needs beside itself: qd to post, node where the program is JavaScript
 
 
+def seats_hidden(argv: object) -> bool | None:
+    """Whether a saved managed launch hides sibling seats; malformed evidence is unknown.
+
+    The jail is the outer command, including on launches made before an upgrade.
+    Reading one's own launch needs no access to another seat or to the host's pids.
+    """
+    if (not isinstance(argv, (list, tuple)) or not argv or not argv[0]
+            or any(not isinstance(arg, str) for arg in argv)):
+        return None
+    return Path(argv[0]).name == PROGRAM
+
+
 def available() -> bool:
     return shutil.which(PROGRAM) is not None
 

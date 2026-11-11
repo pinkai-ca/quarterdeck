@@ -113,3 +113,45 @@ print(json.dumps(dict(operator_read=(home/'operator-marker').exists(),
     assert values['workspace'] and values['own'] and values['post'] and not values['ship']
     assert not (home/'escape-marker').exists(), 'the writable empty home must never reach the host home'
     assert (workspace/'written').exists() and (own/'written').exists() and (ship.runtime/'post'/'written').exists()
+
+
+def test_a_jailed_post_to_an_up_recipient_does_not_call_hidden_state_down(drydock: Path, tmux: Tmux, tmp_path: Path):
+    """Real bwrap + qd post + fake recipient: hidden metadata is not a down seat."""
+    from quarterdeck.service import Service
+
+    workspace = tmp_path/'workspace'
+    workspace.mkdir()
+    path = drydock/'ship.toml'
+    text = shipmod.edit(path.read_text(), 'seats.worker-1', 'sandbox', True)
+    text = shipmod.edit(text, 'seats.worker-1', 'cwd', str(workspace))
+    path.write_text(text+'\n[seats.worker-1.settings]\nstep_seconds="0.05"\n')
+    ship = shipmod.load(drydock)
+    captain = seatmod.Seat(ship, ship.seat('captain'), tmux)
+    worker = seatmod.Seat(ship, ship.seat('worker-1'), tmux)
+    svc = Service(ship, tmux)
+    try:
+        captain.up(resume=False)
+        worker.up(resume=False)
+        wait_for(lambda: Door(captain).reading().open and Door(worker).reading().open)
+        assert captain.is_up and (captain.folder/'launch.json').is_file()
+        message = svc.store.new('order','captain',worker.name,
+            f'$ test ! -e {captain.folder}/launch.json && echo recipient-runtime-hidden\n'
+            '$ qd post report --re {this} Synthetic jailed report', subject='Synthetic jailed post')
+        sent = Door(worker).deliver(post.typed([message]))
+        assert sent.result == 'delivered', sent
+        report = wait_for(lambda: svc.store.closing_report(message), 30)
+        assert report.sender == worker.name and report.to == captain.name
+        assert captain.is_up, 'recipient is actually up outside the sender jail'
+        proof = svc.deliver(captain,[report])
+        print(proof)
+        assert 'delivered:' in proof, proof
+        assert svc.attempts.latest()[report.id] == 'delivered'
+        assert captain.record() is not None
+        screen = wait_for(lambda: (text if '· stored ·' in (text := tmux.capture(worker.pane().id, history=200)) else None))
+        assert '⎿ recipient-runtime-hidden' in screen
+        assert 'captain is down' not in screen, screen  # law: record-first
+        assert 'recipient state is not visible here' in screen, screen
+    finally:
+        worker.down()
+        captain.down()
+        svc.ledger.close()

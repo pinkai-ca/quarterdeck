@@ -11,7 +11,7 @@ import os
 import sys
 from typing import Any
 
-from . import (__version__, check, doctor, drill, harness as harnesses, install, ledger, post, seat as seatmod, service,
+from . import (__version__, check, doctor, drill, harness as harnesses, install, ledger, post, sandbox, seat as seatmod, service,
                ship as shipmod, standing, watch)
 from .output import Reading
 from . import output, ledger_reading
@@ -415,17 +415,35 @@ def read_body(args: argparse.Namespace) -> str:
     return body
 
 
+def _post_view_restricted(ship: shipmod.Ship) -> bool:
+    """The caller's own saved launch establishes its managed view, not the new declaration."""
+    caller = os.environ.get("QD_SEAT")
+    if not caller:
+        return False
+    try:
+        launched = seat_of(ship, caller).launched()
+    except (ShipError, OSError, ValueError, TypeError):
+        return True
+    return launched is None or sandbox.seats_hidden(launched.argv) is not False
+
+
 def delivery_note(ship: shipmod.Ship, to: str) -> str:
     if to not in ship.seats:
         return "addressed to the operator; read it with qd inbox"
-    seat = seat_of(ship, to)
-    if seat.session.human:
-        armed = post.watch_armed(ship.runtime, to)
-        return "watch armed, prints it" if armed else f"no watch armed on {to}; waits in the inbox"
+    if _post_view_restricted(ship):  # law: record-first
+        if ship.session_of(ship.seat(to)).human:
+            return "human session; read it with qd inbox; watch state is not visible here"
+        return "the service handles delivery; recipient state is not visible here"
     try:
+        seat = seat_of(ship, to)
+        if seat.session.human:
+            armed = post.watch_armed(ship.runtime, to)
+            return "watch armed, prints it" if armed else f"no watch armed on {to}; waits in the inbox"
         up = seat.is_up
     except TmuxError:
-        return "the service types it when the seat is up; tmux is out of reach from here, as it is from a jailed seat"
+        return "the service handles delivery; tmux is out of reach from here"
+    except (ShipError, OSError, ValueError, TypeError):
+        return "the service handles delivery; recipient state is unknown here"
     if not up:
         return f"{to} is down; carried as its first message at qd up"
     if not service.alive(ship.runtime):

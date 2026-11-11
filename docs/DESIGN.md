@@ -294,6 +294,8 @@ runtime/
 
 ## 7. Post
 
+A post proof confirms storage and says only what its caller can observe. A seat's own saved launch establishes whether the managed jail hides other seats; the current declaration alone does not describe an already running launch. A missing, malformed or unreadable caller launch leaves that view unproved. In either case the proof reads no recipient launch, host service PID or watch PID: it names service delivery, or the declared human inbox route, and says that recipient/watch state is not visible. Hidden metadata is never a down or unarmed fact. This uses the existing own-seat mount and exposes no additional path, marker or environment variable. Unrestricted callers retain the normal up/down, service and watch proofs; failed recipient selection or unreachable transport is reported as unknown. Stored messages and delivery/receipt behavior do not change.
+
 A message is one immutable JSON file:
 
 ```json
