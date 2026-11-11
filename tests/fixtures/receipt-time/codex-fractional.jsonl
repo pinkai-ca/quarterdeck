@@ -1,0 +1,2 @@
+{"type": "event_msg", "timestamp": "2040-01-02T03:04:05+00:00", "payload": {"type": "task_started"}}
+{"type": "response_item", "timestamp": "2040-01-02T03:04:05.456000+00:00", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "qd > answer from synthetic \u00b7 ans-a1b2\nReturn a synthetic greeting."}]}}

@@ -93,6 +93,7 @@ class Harness(ABC):
     human_tool_policy: str = "No native question-tool suppression proved for this adapter."
     styled_screen: bool = False  # opt-in SGR evidence in the same atomic identity/screen reading
     private_usage_home: bool = False  # native usage client needs framework-owned settings and state
+    record_time_resolution: float = 0.0  # seconds; zero retains exact receipt-time comparisons
 
     def thinking_recovery(self, home: Path, evidence: dict | None, version: str | None, seat: SeatSpec, pool: Pool):
         """A proved native off/restore client, or no supported automatic recovery."""

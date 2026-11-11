@@ -1,6 +1,7 @@
 """One matching rule for timestamped input evidence from an already owned record."""
 
 from datetime import datetime
+from math import floor
 from pathlib import Path
 
 from .harness import get
@@ -15,6 +16,10 @@ def same_text(recorded: str, wanted: str) -> bool:
 def confirmed(reader: str | Harness, record: Path, text: str, since: datetime) -> str | None:
     """Exact fresh acceptance, queueing or consumption; untimed history proves nothing."""
     harness = get(reader) if isinstance(reader, str) else reader
+    resolution = getattr(harness, "record_time_resolution", 0.0)
+    if resolution > 0:
+        # Native precision affects only this comparison, never the saved attempt.
+        since = datetime.fromtimestamp(floor(since.timestamp() / resolution) * resolution, since.tzinfo)
     queued = False
     for item in harness.inputs(record):
         if item.at is None or item.at < since or not same_text(item.text, text):

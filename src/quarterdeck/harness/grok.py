@@ -190,6 +190,7 @@ class GrokHarness(Harness):
     reads_usage = True
     private_usage_home = True
     styled_screen = True
+    record_time_resolution = 1.0
     usage_interval = 300
     headline_window = (None, "7d")
     human_tools = ("ask_user_question",)

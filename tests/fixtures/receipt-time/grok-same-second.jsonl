@@ -1,0 +1,1 @@
+{"timestamp": 2209086245, "method": "session/update", "params": {"sessionId": "synthetic-session", "update": {"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": "qd > answer from synthetic \u00b7 ans-a1b2\nReturn a synthetic greeting."}}}}

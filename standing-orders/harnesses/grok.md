@@ -35,6 +35,8 @@ Memory is configured off with `memory.enabled=false`, `memory_v2.enabled=false`,
 
 The record is `sessions/<encoded working directory>/<session>/updates.jsonl` in your home. Quarterdeck reads native input messages and explicit turn completions, and accounts the tokens and tool lifetimes the record reports. A class the record does not measure stays unknown. It never treats transcript text as a delivery receipt.
 
+Native 1.0.77 update timestamps have one-second resolution. The adapter declares that resolution to the canonical receipt matcher, which floors only its local comparison time; it never changes the saved attempt time, payload or record. The complete unique-message payload in the launch-owned record remains required, and an input in an earlier second remains stale. An uncertain submission is never resent.
+
 Billing is read through Grok's own agent protocol in a separate private home, without opening a conversation. The weekly percentage and reset come from that response. An absent percentage is unknown. No five-hour window is inferred. The subscription tier is a live billing fact, separate from the sign-in file's age.
 
 Native model and effort launch flags are `--model` and `--reasoning-effort`; their session forms are `/model` and `/effort`. Quarterdeck confirms a setting from resulting native state, not the command's echo.
@@ -49,4 +51,4 @@ At an 80-column pane, ordinary text wraps at 70 cells, with one additional curso
 
 Guide 03 documents external editing through `/edit-prompt`, but excludes pasted/file/image chips so attachments are not flattened. The adapter uses the measured visual fold contract and the canonical record receipt; it does not invent an expansion key or an alternate delivery route.
 
-Version facts are being measured on 1.0.77. Working spinner, cancellation during a turn, queue behavior, completed native records, resume and exact input receipts still await ordinary native measurement. Installed live check and full acceptance remain outstanding.
+Version facts are being measured on 1.0.77. One foreground turn supplied a working spinner/footer, a completed native record and one accounted tool. Its canonical receipt remained pending under the original subsecond comparison; the declared-resolution correction still needs its ordinary checks and a new live proof. Mid-turn queue behavior, cancellation and resume remain unproved. Installed live check and full acceptance remain outstanding.

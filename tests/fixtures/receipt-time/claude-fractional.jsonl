@@ -1,0 +1,1 @@
+{"type": "user", "timestamp": "2040-01-02T03:04:05.456000+00:00", "uuid": "synthetic-user-message", "message": {"role": "user", "content": "qd > answer from synthetic \u00b7 ans-a1b2\nReturn a synthetic greeting."}}
