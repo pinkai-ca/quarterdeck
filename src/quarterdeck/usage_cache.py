@@ -47,7 +47,9 @@ def exhaustion_evidence(pool, window, used, resets_at, read_at, blocks, group) -
     """Bind a native wall to its complete tuple; an older writer cannot leave a stale flag."""
     if type(used) not in (int, float) or not isinstance(resets_at, str) or not isinstance(read_at, str):
         return None
-    identity = (pool, window, float(used), resets_at, read_at, bool(blocks), group)
+    number = float(used)
+    number = 0.0 if number == 0 else number  # SQLite REAL does not retain the sign of zero.
+    identity = (pool, window, number, resets_at, read_at, bool(blocks), group)
     return "v1:" + hashlib.sha256(json.dumps(identity, separators=(",", ":")).encode()).hexdigest()
 
 

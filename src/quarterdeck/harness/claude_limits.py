@@ -9,7 +9,7 @@ from .json_record import when
 from .limits import Usage, Window
 
 PERIODS = {"five_hour": "5h", "seven_day": "7d"}
-FAMILIES = {"fable": "fable", "sonnet": "fable", "opus": "opus", "haiku": "haiku"}
+FAMILIES = {"fable": "fable", "sonnet": "sonnet", "opus": "opus", "haiku": "haiku"}
 WALL_SEVERITIES = {"critical", "exceeded", "error"}
 
 

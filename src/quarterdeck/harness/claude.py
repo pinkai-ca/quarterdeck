@@ -500,11 +500,11 @@ class ClaudeHarness(Harness):
     human_tool_policy = "AskUserQuestion is denied by the native permissions policy."
 
     def usage_scope(self, group: str | None, model: str | None) -> bool | None:
-        from .claude_limits import family
+        from .claude_limits import FAMILIES, family
         if group is None:
             return True
         known = family(model)
-        return group == known if known and group in ("fable", "opus", "haiku") else None
+        return group == known if known and group in FAMILIES.values() else None
 
     def is_headline(self, group: str | None, window: str) -> bool:
         return group is not None or super().is_headline(group, window)

@@ -28,7 +28,7 @@ def body(**extra):
 
 def test_provider_model_allowances_are_kept_from_one_fetched_body(tmp_path, monkeypatch):
     from quarterdeck.harness import claude
-    endpoint = Endpoint(monkeypatch, ok(body(seven_day_sonnet=100, seven_day_opus=20)))
+    endpoint = Endpoint(monkeypatch, ok(body(seven_day_fable=100, seven_day_opus=20)))
     measured = claude.usage(subscription(tmp_path))
     assert endpoint.calls == 1
     assert {(w.name, w.group, w.used) for w in measured.windows} == {
@@ -158,10 +158,10 @@ def test_reported_unreadable_scope_is_unknown_without_manufacturing_a_wall(tmp_p
 
 
 @pytest.mark.parametrize("duplicate", [100, 20])
-def test_repeated_top_level_representations_agree_or_remain_unknown(tmp_path, duplicate):
+def test_repeated_same_family_list_rows_agree_or_remain_unknown(tmp_path, duplicate):
     from quarterdeck.harness.claude_limits import snapshot
     at = post.now()
-    measured = snapshot(body(seven_day_sonnet=100, seven_day_fable=duplicate), at)
+    measured = snapshot({**body(), "limits": [native_row(100), native_row(duplicate)]}, at)
     scoped_rows = [w for w in measured.windows if w.group == "fable"]
     assert len(scoped_rows) == 1
     with Ledger(tmp_path / "ledger.sqlite") as book:
@@ -174,7 +174,7 @@ def test_last_known_scoped_spend_survives_missing_or_failed_measurement_until_re
     from quarterdeck.harness.claude_limits import snapshot
     at = post.now()
     with Ledger(tmp_path / "ledger.sqlite") as book:
-        book.record_usage("synthetic", snapshot(body(seven_day_sonnet=100), at))
+        book.record_usage("synthetic", snapshot(body(seven_day_fable=100), at))
         book.record_usage("synthetic", snapshot(body(), at + timedelta(seconds=1)))
         assert book.walled("synthetic") and not book.usage_known("synthetic")
         book.record_usage("synthetic", Usage((), at+timedelta(seconds=2), "synthetic refused"))
@@ -324,7 +324,7 @@ def test_renamed_or_malformed_list_container_remains_visible_and_unknown(tmp_pat
 def test_top_level_and_list_representation_merge_and_keep_the_native_severity_wall(tmp_path):
     from quarterdeck.harness.claude_limits import snapshot
     at = post.now()
-    measured = snapshot({**body(seven_day_sonnet=35), "limits": [native_row(35, "critical")]}, at)
+    measured = snapshot({**body(seven_day_fable=35), "limits": [native_row(35, "critical")]}, at)
     rows = [w for w in measured.windows if w.group == "fable"]
     assert len(rows) == 1 and rows[0].used == .35 and rows[0].exhausted
 
@@ -476,3 +476,99 @@ with Ledger(Path(sys.argv[1])) as book:
         row = next(r for r in book.usage.rows() if r.group == "fable")
         assert row.used == .2 and not row.exhausted and not book.walled("synthetic")
         assert not book.usage_known("synthetic") and "no longer matches" in row.error
+
+
+@pytest.mark.parametrize("percent", [-0.0, 0.0])
+@pytest.mark.parametrize("severity,spent", [("normal", False), ("critical", True)])
+def test_signed_zero_native_fraction_keeps_its_severity_wall_across_sqlite(tmp_path, percent, severity, spent):
+    from quarterdeck.harness.claude_limits import snapshot
+    at = post.now()
+    path = tmp_path / "ledger.sqlite"
+    measured = snapshot({**body(), "limits": [native_row(percent, severity)]}, at)
+    native = next(w for w in measured.windows if w.group == "fable")
+    assert native.used == 0 and native.exhausted == spent
+    with Ledger(path) as book:
+        book.record_usage("synthetic", measured)
+    with Ledger.reading(path) as book:
+        row = next(r for r in book.usage.rows() if r.group == "fable")
+        assert row.used == 0 and row.exhausted == spent and row.error is None
+        assert book.walled("synthetic") == spent and book.usage_known("synthetic")
+
+
+@pytest.mark.parametrize("running_family,spent_family", [("sonnet", "fable"), ("fable", "sonnet")])
+def test_distinct_families_do_not_share_native_allowance_walls(scoped, running_family, spent_family):
+    from quarterdeck.door import Door
+    r = scoped
+    model(r, f"claude-{running_family}-5-5", declared=f"claude-{spent_family}-5-2")
+    at = post.now()
+    r.svc.ledger.record_usage("second", Usage((Window("5h", .8, at+timedelta(hours=5)),
+        Window("7d", .8, at+timedelta(days=7)),
+        Window(f"{spent_family} / 7d", 1, at+timedelta(days=7), group=spent_family)), at))
+    assert not quota.current_walled(r.seat, r.svc.ledger)
+    assert Door(r.seat).wall(None) is None and facts(r).held == []
+    r.svc.failover()
+    assert r.seat.pool.name == "second"
+
+
+def test_sonnet_destination_has_room_despite_a_spent_fable_row(scoped):
+    r = scoped
+    model(r, "claude-fable-5-2", destination="claude-sonnet-5-5")
+    windows(r, "second", fable=1)
+    windows(r, "third", fable=1)
+    assert r.svc.known_open(r.seat, "third") and facts(r).held == []
+    r.svc.failover()
+    assert r.seat.pool.name == "third"
+
+
+@pytest.mark.parametrize("selected", ["fable", "sonnet"])
+def test_each_exact_family_is_constrained_by_its_own_native_row(scoped, selected):
+    from quarterdeck.harness.claude_limits import snapshot
+    r = scoped
+    model(r, f"claude-{selected}-5-5", declared="claude-opus-5-5")
+    at = post.now()
+    # Preserve the fixture's general 5h window; constrain only the exact model row.
+    document = {**body(), "five_hour": {"utilization": 80, "resets_at": (at+timedelta(hours=5)).isoformat()},
+                "limits": [native_row(100, scope={"model": {"display_name": selected.title()}})]}
+    r.svc.ledger.record_usage("second", snapshot(document, at))
+    assert quota.current_walled(r.seat, r.svc.ledger)
+    row = next(row for row in r.svc.ledger.usage.rows("second") if row.group == selected)
+    assert row.window == f"{selected} / 7d"
+
+
+@pytest.mark.parametrize("representation", ["named", "list"])
+def test_sonnet_native_name_establishes_only_sonnet_scope(representation):
+    from quarterdeck.harness.claude_limits import snapshot
+    at = post.now()
+    document = body(seven_day_sonnet=100) if representation == "named" else {
+        **body(), "limits": [native_row(100, scope={"model": {"display_name": "Sonnet"}})]}
+    rows = [row for row in snapshot(document, at).windows if row.group]
+    assert len(rows) == 1 and rows[0].group == "sonnet" and rows[0].name == "sonnet / 7d"
+    reader = harness.get("claude")
+    assert reader.usage_scope(rows[0].group, "claude-sonnet-5-5") is True
+    assert reader.usage_scope(rows[0].group, "claude-fable-5-2") is False
+
+
+@pytest.mark.parametrize("selected,other", [("sonnet", "fable"), ("fable", "sonnet")])
+@pytest.mark.parametrize("state", ["unreadable", "stale"])
+def test_other_exact_family_unknown_or_stale_row_does_not_block_room(scoped, selected, other, state):
+    r = scoped
+    model(r, "claude-fable-5-2", destination=f"claude-{selected}-5-5")
+    at = post.now()
+    other_row = Window(f"{other} / 7d", None if state == "unreadable" else .2,
+                       at+timedelta(days=7), group=other,
+                       error="synthetic unreadable" if state == "unreadable" else None)
+    r.svc.ledger.record_usage("third", Usage((Window("5h", .8, at+timedelta(hours=5)),
+        Window("7d", .8, at+timedelta(days=7)), other_row), at))
+    if state == "stale":
+        old = (at-timedelta(hours=2)).isoformat()
+        r.svc.ledger.db.execute("UPDATE pools SET read_at=? WHERE pool='third' AND group_name=?", (old, other))
+        r.svc.ledger.db.commit()
+    assert r.svc.known_open(r.seat, "third")
+
+
+def test_sonnet_still_obeys_general_walls_when_fable_is_irrelevant(scoped):
+    r = scoped
+    model(r, "claude-sonnet-5-5")
+    windows(r, "second", fable=1, general=1)
+    windows(r, "third", fable=.2, general=1)
+    assert quota.current_walled(r.seat, r.svc.ledger) and facts(r).held == ["worker"]
