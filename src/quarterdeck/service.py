@@ -673,7 +673,7 @@ class Service:
         self.ledger.attributions.replay(self.store, self.runtime)
 
     def failover(self) -> None:
-        """A seat whose pool is walled moves on at its turn's end to the next pool of its list that is not, and stays."""
+        """At a wall, try eligible later choices first, then earlier choices in declared order."""
         for seat in self.resolved_seats():
             if recovery.held(seat) or len(seat.spec.pools) < 2 or not seat.is_up or not self.ledger.walled(seat.pool.name, self.ship):
                 continue
@@ -681,7 +681,7 @@ class Service:
                 continue
             pools = list(seat.spec.pools)
             start = pools.index(seat.pool.name)
-            ordered = pools[start + 1:]
+            ordered = pools[start + 1:] + pools[:start]
             target = next((p for p in ordered if self.known_open(seat, p)), None)
             if target is None:
                 continue  # every pool is walled or unread: a fact the status line shows, not a move
@@ -714,9 +714,9 @@ class Service:
     def select(self, seat: Seat, pool: str) -> str:
         """An explicit move to one of a seat's declared choices, by failover's path and refusals.
 
-        Failover moves only forward at a wall; this act may go back to an earlier choice once it
-        has room. It refuses, rather than waits, where failover would not move, except that only a
-        walled destination refuses it: an unknown one moves, and the answer says so.
+        The operator may choose a destination while the current pool still has room. Selection
+        requires the same idle proof and refuses a walled destination. An unknown destination
+        moves on the explicit act, and the answer says so.
         """
         if not seat.spec.pool_choices or pool not in seat.spec.pools:
             return f"{seat.name}: {pool} is not one of its declared choices ({', '.join(seat.spec.pools)}); nothing moved"

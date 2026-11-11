@@ -27,8 +27,10 @@ def usage(svc, pool, used):
 
 
 @pytest.fixture
-def running(tmp_path, monkeypatch):
+def running(tmp_path, monkeypatch, request):
     ship = declaration(tmp_path, CHOICES)
+    if getattr(request, 'param', False):
+        ship.sessions['crew'] = replace(ship.sessions['crew'], human=True)
     live = {'pane': Pane('%1', 'crew', 'worker', 101, 80, 24, False, False, None)}
     tmux = SimpleNamespace(pane=lambda ident: live['pane'] if live['pane'] and live['pane'].id == ident else None,
                            kill_window=lambda ident, *, expected_pid=None: live.update(pane=None), capture=lambda *a, **k: '')
@@ -53,7 +55,8 @@ def running(tmp_path, monkeypatch):
         if '--resume' in argv:
             record = created[-1]
         else:
-            record = ClaudeShape(seat.home, tmp_path, f'synthetic-target-{len(launches)}', seat.spec.model)
+            shape = CodexShape if seat.harness.name == 'codex' else ClaudeShape
+            record = shape(seat.home, tmp_path, f'synthetic-target-{len(launches)}', seat.spec.model)
             created.append(record)
         record.begin('new synthetic input', seat.spec.model, seat.spec.effort or 'none')
         record.end('new synthetic reply')
@@ -116,9 +119,6 @@ def test_actual_cross_program_move_is_fresh_carries_context_and_keeps_readers(ru
     r.svc.failover()
     assert r.seat.pool.name == 'third' and r.seat.launched().resume is not None
     assert '--resume' in r.launches[-1] and r.seat.record() == r.created[0].path
-    usage(r.svc, 'third', 1.0)
-    r.svc.failover()
-    assert r.seat.pool.name == 'third' and len(r.launches) == 2, 'never wrap to the recovered first pool'
 
 
 def test_all_candidate_walls_hold_without_relaunch(running):

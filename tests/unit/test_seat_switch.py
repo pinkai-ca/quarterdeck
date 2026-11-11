@@ -2,14 +2,14 @@
 
 Synthetic ships only. A seat declared with one program switches program and pool in one validated
 edit. A seat with inline pool choices selects one of them by name through the path failover uses,
-with failover's refusals; failover itself still never wraps back.
+with failover's refusals and an explicit choice of destination.
 """
 
 from datetime import timedelta
 
 import pytest
 
-from quarterdeck import cli, post, service as servicemod
+from quarterdeck import cli, post, service as servicemod, watch
 from quarterdeck.ship import load
 from .test_cross_program_failover import running, usage  # noqa: F401  (the fixture and its helper)
 
@@ -119,7 +119,7 @@ def test_a_selection_is_refused_where_failover_would_not_move(running):
     assert r.seat.launched() == launched and not r.launches and r.seat.pool.name == "first"
 
 
-def test_failover_still_never_wraps_back(running):
+def test_failover_stays_on_the_current_pool_while_it_has_room(running):
     r = running
     r.svc.account()
     r.svc.failover()
@@ -129,16 +129,53 @@ def test_failover_still_never_wraps_back(running):
     assert r.seat.pool.name == "second" and len(r.launches) == 1
 
 
-def back_to_codex_after_a_wall(r, reset):
-    """The seat failed over to second; first (Codex, a background provider with no seat now reading it)
-    keeps only its last reading: 5h spent, read two hours ago, resetting at ``reset``."""
-    r.svc.account()
-    r.svc.failover()
-    assert r.seat.pool.name == "second"
-    read = post.now() - timedelta(hours=2)  # time has passed since first's spent reading; nothing has read it since
+def retain_spent_reading(r, reset):
+    """Advance the age of the spent first pool's cached reading without a provider call."""
+    read = post.now() - timedelta(hours=2)
     r.svc.ledger.db.execute("UPDATE pools SET read_at=?, attempted_at=?, resets_at=? WHERE pool='first'",
                             (read.isoformat(), read.isoformat(), reset.isoformat()))
     r.svc.ledger.db.commit()
+
+
+@pytest.mark.parametrize("running", [False, True], ids=["managed", "human"], indirect=True)
+@pytest.mark.parametrize("earlier", ["spent", "unknown", "ready"])
+def test_failover_from_the_last_choice_uses_earlier_pool_evidence(running, earlier):
+    r = running
+    r.svc.failover()
+    usage(r.svc, "second", 1.0)
+    r.svc.failover()
+    assert r.seat.pool.name == "third" and len(r.launches) == 2
+    usage(r.svc, "third", 1.0)
+    reset = post.now() + timedelta(minutes=1 if earlier == "spent" else -1)
+    retain_spent_reading(r, reset)
+    assert not r.svc.ledger.usage_known("first")
+    assert r.svc.ledger.walled("first", r.seat.ship) == (earlier == "spent")
+
+    for _ in range(3):
+        r.svc.failover()
+    assert r.seat.pool.name == "third" and len(r.launches) == 2
+    facts = watch.facts(r.seat.ship, r.seat.tmux, login=[])
+    assert "third 5h" in facts.walls and "wall" in facts.line()
+    if earlier != "ready":
+        return
+
+    open_order = r.svc.store.new("order", "issuer", "worker", "synthetic open order")
+    unread = r.svc.store.new("report", "issuer", "worker", "synthetic unread report")
+    usage(r.svc, "first", 0.2)
+    usage(r.svc, "second", 0.2)
+    r.svc.failover()
+    assert r.seat.pool.name == "first" and r.seat.harness.name == "codex"
+    assert len(r.launches) == 3 and r.seat.launched().resume is None
+    assert r.seat.record() == r.created[-1].path
+    assert post.typed([open_order]) in r.launches[-1][-1]
+    assert post.typed([unread]) in r.launches[-1][-1]
+
+
+def back_to_codex_after_a_wall(r, reset):
+    r.svc.account()
+    r.svc.failover()
+    assert r.seat.pool.name == "second"
+    retain_spent_reading(r, reset)
     return select(r, "first")
 
 
