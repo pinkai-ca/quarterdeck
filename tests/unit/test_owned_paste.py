@@ -189,3 +189,11 @@ def test_clear_intent_is_durable_before_key_failure_and_blocks_another_paste(edi
     assert Door(editor.seat).deliver('another message',proof=editor.proof('another message')).result=='withheld'
     assert len(editor.terminal.pastes)==1 and not editor.terminal.clears
     assert proof.path.read_bytes()==before
+
+
+def test_record_first_live_work_prevents_clear_despite_an_idle_looking_frame(editor):
+    with editor.record.open('a') as stream:
+        stream.write(json.dumps(dict(timestamp=post.now().isoformat(),type='event_msg',payload={'type':'task_started'}))+'\n')
+    text='header\nbody\nreply';proof=editor.proof(text);door=Door(editor.seat);delayed(door,editor)
+    assert door.deliver(text,proof=proof).result=='blind'
+    assert not editor.terminal.clears and proof.data['phase']=='pasting'

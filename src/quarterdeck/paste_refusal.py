@@ -3,6 +3,7 @@ import hashlib
 import json
 import re
 import time
+from pathlib import Path
 
 from . import pending
 from .harness.base import record_fingerprint
@@ -65,6 +66,10 @@ def clear(door,text,owned,failed,seconds):
                 or screen.unknown or screen.interruption or screen.starting or not proof.same_launch(seat)
                 or pending.identity(seat)!=owned['identity'] or record_binding(seat)!=owned['record']
                 or proof.confirmed(seat) is not None):return None
+        if owned['record']['path']:
+            state=seat.harness.state(Path(owned['record']['path']))
+            if (state.turn_open is not False or state.pending_tools is None or state.pending_tools
+                    or state.queued or state.queue_error):return None
         view=seat.tmux.session_view(seat.session.title)
         if view is None or view.scrolling or view.inputs!=owned['inputs']:return None
         position=seat.tmux.editor_position(pane.id,pane.pid)
