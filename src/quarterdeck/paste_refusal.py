@@ -74,15 +74,18 @@ def clear(door,text,owned,failed,seconds):
         if view is None or view.scrolling or view.inputs!=owned['inputs']:return None
         position=seat.tmux.editor_position(pane.id,pane.pid)
         if position is None or tuple(position[2:])!=(pane.width,pane.height):return None
+        rule=seat.harness.paste_clear_rule(launch.version)
+        if rule is None:return None
         keys=seat.harness.paste_clear_keys(text,screen,seat.harness.box_columns(pane.width),launch.version,position[:2])
-        if not keys:return None
+        lines=len(text.split('\n'))
+        if not keys or keys!=rule.keys(lines):return None
         confirmed=door.screen()
         if (confirmed is None or confirmed.text!=screen.text or not proof.same_launch(seat)
                 or record_binding(seat)!=owned['record']):return None
         view=seat.tmux.session_view(seat.session.title)
         if view is None or view.scrolling or view.inputs!=owned['inputs']:return None
         intent=dict(format=1,identity=owned['identity'],position=list(position),
-                    rule='codex-0.166.0-logical-line-clear',lines=len(text.split('\n')),stage='clearing')
+                    rule=rule.name,lines=lines,stage='clearing')
         proof.save(shown=failed.box if failed else None,paste_clear=intent)
         final=door.screen();view=seat.tmux.session_view(seat.session.title)
         if (final is None or final.text!=screen.text or not proof.same_launch(seat)
@@ -131,8 +134,9 @@ def validate(evidence):
 
 
 def validate_clear(intent,identity):
+    from .harness import get
     if (not isinstance(intent,dict) or intent.get('format')!=1 or intent.get('identity')!=identity
-            or intent.get('rule')!='codex-0.166.0-logical-line-clear'
+            or not any(intent.get('rule')==rule.name for rule in get(identity['harness']).paste_clear_rules)
             or intent.get('stage') not in ('clearing','checking_empty','empty_confirmed')
             or type(intent.get('lines')) is not int or intent['lines']<1
             or not isinstance(intent.get('position'),list) or len(intent['position'])!=4

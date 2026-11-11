@@ -319,15 +319,12 @@ def reconcile(service: Service) -> set[Path]:
     return paths
 
 
-def explicit_resend(service: Service, seat: Seat, messages: list[post.Message]) -> None:
+def explicit_resend(service: Service, seat: Seat, messages: list[post.Message], screen: Screen | None) -> None:
     """An explicit request can retire uncertainty only after the box is empty.
 
     It authorizes another submission, not clearing any draft or calling the old
     one delivered. Normal ticks never call this function.
     """
-    from .door import Door
-
-    screen = Door(seat).screen()
     if seat.session.human or screen is None or screen.box != "" or screen.unknown or screen.interruption:
         return
     requested = {m.id for m in messages}

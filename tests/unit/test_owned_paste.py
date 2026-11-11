@@ -197,3 +197,62 @@ def test_record_first_live_work_prevents_clear_despite_an_idle_looking_frame(edi
     text='header\nbody\nreply';proof=editor.proof(text);door=Door(editor.seat);delayed(door,editor)
     assert door.deliver(text,proof=proof).result=='blind'
     assert not editor.terminal.clears and proof.data['phase']=='pasting'
+
+
+@pytest.mark.parametrize('route',['delivery','resend'])
+@pytest.mark.parametrize('first',['unknown','missing','box-missing'])
+@pytest.mark.parametrize('refusal',[False,True])
+def test_first_obstructing_frame_holds_without_keys_or_journal_mutation(editor,monkeypatch,route,first,refusal):
+    from dataclasses import replace
+    service=Service(editor.seat.ship,None)
+    message=service.store.new('answer','issuer','worker','synthetic body')
+    text=post.typed([message])
+    if refusal:
+        old=editor.proof(text);door=Door(editor.seat);delayed(door,editor)
+        assert door.deliver(text,proof=old).result=='withheld'
+    proof=editor.proof(text)
+    if route=='resend':proof.save(phase='pasting')
+    folder=proof.path.parent
+    before={p.name:p.read_bytes() for p in folder.iterdir()}
+    attempts={p.name:p.read_bytes() for p in (editor.seat.ship.runtime/'post/attempts').iterdir()}
+    healthy=editor.seat.harness.screen(frame('Ask Codex to do anything'))
+    obstructed=(None if first=='missing' else replace(healthy,box=None,
+                unknown='synthetic unknown' if first=='unknown' else None))
+    captures=[]
+    def screen(*a):
+        captures.append(True)
+        return obstructed if len(captures)==1 else healthy
+    monkeypatch.setattr(Door,'screen',screen)
+    pasted=len(editor.terminal.pastes);cleared=len(editor.terminal.clears)
+    try:
+        result=(service.deliver(editor.seat,[message],resend=True) if route=='resend'
+                else Door(editor.seat).deliver(text,proof=proof))
+        assert 'obstructed' in str(result) or 'waiting' in str(result)
+        assert captures==[True], 'a later healthy frame cannot replace the first obstruction'
+        assert len(editor.terminal.pastes)==pasted and len(editor.terminal.clears)==cleared
+        assert not editor.terminal.submitted
+        assert {p.name:p.read_bytes() for p in folder.iterdir()}==before
+        assert {p.name:p.read_bytes() for p in (editor.seat.ship.runtime/'post/attempts').iterdir()}==attempts
+    finally:service.ledger.close()
+
+
+def test_clear_capability_and_journal_validation_are_adapter_owned(editor,monkeypatch):
+    from quarterdeck.harness.types import PasteClearRule
+    capability=PasteClearRule('synthetic-measured-clear','0.166.0',('C-a','C-k','BSpace'))
+    monkeypatch.setattr(CodexHarness,'paste_clear_rules',(capability,))
+    text='header\nbody\nreply';proof=editor.proof(text);door=Door(editor.seat);delayed(door,editor)
+    assert door.deliver(text,proof=proof).result=='withheld'
+    assert proof.data['paste_clear']['rule']==capability.name
+    assert editor.terminal.clears==[capability.keys(3)]
+    pending.validate(proof.data,editor.seat.name)
+    proof.data['paste_clear']['rule']='unproved-capability'
+    with pytest.raises(ValueError,match='clear intent'):pending.validate(proof.data,editor.seat.name)
+
+
+def test_missing_or_different_version_capability_cannot_authorize_keys(editor,monkeypatch):
+    from quarterdeck.harness.types import PasteClearRule
+    monkeypatch.setattr(CodexHarness,'paste_clear_rules',(
+        PasteClearRule('synthetic-other-version','unmeasured',('C-a','C-k','BSpace')),))
+    text='header\nbody\nreply';proof=editor.proof(text);door=Door(editor.seat);delayed(door,editor)
+    assert door.deliver(text,proof=proof).result=='blind'
+    assert not editor.terminal.clears and 'paste_clear' not in proof.data

@@ -17,7 +17,7 @@ from datetime import date, datetime, time, timezone
 from pathlib import Path
 
 from .json_record import JsonLinesReader, input_reader, input_rows, records_matching
-from .types import Inputs
+from .types import Inputs, PasteClearRule
 from . import codex_usage
 
 from ..ship import Pool, SeatSpec, literal
@@ -616,9 +616,12 @@ class CodexHarness(Harness):
         """A long paste folds to ``[Pasted Content N chars]``, N its whole length (0.166.0); a short one shows whole."""
         return EditorBox(text, folded=rf"\[Pasted Content {len(text)} chars\]", textwrap_ascii=True)
 
+    paste_clear_rules = (PasteClearRule('codex-0.166.0-logical-line-clear', '0.166.0', ('C-a','C-k','BSpace')),)
+
     def paste_clear_keys(self,text,screen,columns,version,cursor):
         from .types import _cells
-        if (version!='0.166.0' or not text or text.endswith(' ')
+        rule=self.paste_clear_rule(version)
+        if (rule is None or not text or text.endswith(' ')
                 or not self.box(text).matches(screen.box,columns) or (screen.box or '').startswith('[Pasted')
                 or any(_cells(line) is None for line in text.split('\n'))):
             return None
@@ -635,7 +638,7 @@ class CodexHarness(Harness):
             return None
         # Native 0.166.0, measured unsubmitted with cursor at the paste's end:
         # kill the current logical line, then its preceding separator, once per line.
-        return ('C-a','C-k','BSpace')*len(text.split('\n'))
+        return rule.keys(len(text.split('\n')))
 
     def controls(self) -> tuple[Control, ...]:
         return (

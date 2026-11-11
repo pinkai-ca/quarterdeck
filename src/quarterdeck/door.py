@@ -21,6 +21,7 @@ CONFIRM_SECONDS = 5.0
 BOX_SECONDS = 2.0
 SETTLE_SECONDS = 0.1
 TRANSCRIPT_LINES = 2000  # scrollback read for an echo: a long message's echo climbs above the screen
+UNCAPTURED = object()
 
 
 @dataclass(frozen=True)
@@ -168,12 +169,19 @@ class Door:
                     reason = None
         return reading, reason
 
-    def clear_known(self) -> Screen | None:
+    def initial_obstruction(self, screen: Screen | None) -> Reading | None:
+        """Absence or an unknown initial frame holds without a replacement capture."""
+        if screen is None or screen.unknown is not None or (screen.box is None and screen.interruption is None):
+            return self._reading(screen)
+        return None
+
+    def clear_known(self, screen=UNCAPTURED) -> Screen | None:
         """Dismiss a notice the adapter knows, once, and read again (law: one-door).
 
         Never while text sits in the box: a key pressed then could submit a person's draft.
         """
-        screen = self.screen()
+        if screen is UNCAPTURED:
+            screen = self.screen()
         if self.seat.session.human:
             return screen  # no key of ours is ever pressed in a human's session
         if not pending.held(self.seat, screen, self.proof) and screen and screen.interruption and screen.interruption.dismissable and not (screen.box or "").strip():
@@ -194,9 +202,12 @@ class Door:
         if any(ord(c) < 32 and c not in "\n\t" or ord(c) == 127 for c in text):
             return Delivery("withheld", "message contains unsupported terminal control characters; revise it")
         from . import paste_refusal
-        if reason:=paste_refusal.refused(self.seat,text,self.screen()):
+        screen = self.screen()
+        if reading := self.initial_obstruction(screen):
+            return Delivery('withheld', str(reading))
+        if reason:=paste_refusal.refused(self.seat,text,screen):
             return Delivery('withheld',reason)
-        screen = self.clear_known()  # law: one-door
+        screen = self.clear_known(screen)  # law: one-door
         if wall := self.wall(screen):
             return Delivery("withheld", wall)
         if hold := pending.held(self.seat, screen, proof):
@@ -204,7 +215,7 @@ class Door:
         if speed == "interrupt" and screen is not None and screen.working and not self.seat.session.human:
             self.interrupt()
             screen = self.settled()
-        reading = self.reading(screen)
+        reading = self._reading(screen) if screen is None else self.reading(screen)
         if not reading.open:
             return Delivery("withheld", str(reading))
         pane = self.seat.pane()

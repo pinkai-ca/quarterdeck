@@ -20,7 +20,7 @@ from ..ship import Pool, SeatSpec
 
 from .json_record import RecordError, entries, when
 from .home import credential, key_environment, merged, ship_template
-from .types import Box, Control, Credential, Input, Interruption, Join, Keys, Launch, Screen, State, Tokens, ToolCall, Turn
+from .types import Box, Control, Credential, Input, Interruption, Join, Keys, Launch, PasteClearRule, Screen, State, Tokens, ToolCall, Turn
 
 
 def record_fingerprint(record: Path) -> tuple:
@@ -151,6 +151,11 @@ class Harness(ABC):
 
     def version(self) -> str | None:
         return program_version((self.program, "--version"))
+
+    paste_clear_rules: tuple[PasteClearRule, ...] = ()
+
+    def paste_clear_rule(self, version: str) -> PasteClearRule | None:
+        return next((rule for rule in self.paste_clear_rules if rule.version == version), None)
 
     def paste_clear_keys(self, text: str, screen: Screen, columns: int, version: str, cursor: tuple[int, int]):
         """An adapter-proved clear for a whole visible unsubmitted paste, or unknown."""

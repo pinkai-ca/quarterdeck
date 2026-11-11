@@ -193,6 +193,18 @@ class Join:
 
 
 @dataclass(frozen=True)
+class PasteClearRule:
+    """An adapter's versioned capability for clearing each whole logical input line."""
+
+    name: str
+    version: str
+    line_keys: tuple[str, ...]
+
+    def keys(self, lines: int) -> tuple[str, ...]:
+        return self.line_keys * lines
+
+
+@dataclass(frozen=True)
 class Keys:
     """The keys a version uses, as tmux key names; None where the program lacks one.
 

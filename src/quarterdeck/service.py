@@ -273,9 +273,13 @@ class Service:
     def deliver(self, seat: Seat, messages: list[post.Message], resend: bool = False) -> str:
         if resend:
             from . import paste_refusal
-            if len(messages)==1 and (reason:=paste_refusal.refused(seat,post.typed(messages),Door(seat).screen())):
+            door = Door(seat)
+            screen = door.screen()
+            if reading := door.initial_obstruction(screen):
+                return f'{seat.name}: {reading}'
+            if len(messages)==1 and (reason:=paste_refusal.refused(seat,post.typed(messages),screen)):
                 return f'{messages[0].short} to {seat.name} · withheld: {reason}'
-            pending_delivery.explicit_resend(self, seat, messages)
+            pending_delivery.explicit_resend(self, seat, messages, screen)
         latest = self.attempts.last_results(seat.name)
         ordered = sorted(messages, key=lambda message: latest.get(message.id) == "withheld")
         lines = []
