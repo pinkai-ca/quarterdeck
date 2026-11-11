@@ -307,4 +307,5 @@ class JsonLinesReader(RecordReader):
                      effort=self.effort, queued=tuple(self.queued), consumed=tuple(self.consumed), turns=len(self.turns),
                      completed_turns=tuple(self.completed_turns),
                      pending_tools=tuple(self.live_tools.values()) if self.tools_known else None,
-                     queue_error=self.queue_error)
+                     queue_error=self.queue_error,
+                     failure=self.turns[-1].failure if self.open is None and self.turns else None)

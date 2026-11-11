@@ -154,10 +154,13 @@ class _Reader(JsonLinesReader):
             if self.open is not None:
                 self.consumed.append(text)  # steered into the running turn after its current tool call
             else:
-                self.start_turn({"started": at, "input": text, "tokens": Tokens(), "tools": [], "reply": "", "costs": []})
+                self.start_turn({"started": at, "input": text, "tokens": Tokens(), "tools": [], "reply": "", "costs": [],
+                                 'inputs':[], 'activity':False})
+            self.open['inputs'].append(Input(text,at))
         elif role == "assistant":
             if self.open is None:
-                self.start_turn({"started": at, "input": "", "tokens": Tokens(), "tools": [], "reply": "", "costs": []})
+                self.start_turn({"started": at, "input": "", "tokens": Tokens(), "tools": [], "reply": "", "costs": [],
+                                 'inputs':[], 'activity':False})
             step_model = model_name(message.get("model"))
             self.model = step_model or self.model
             tokens = _tokens(message)
@@ -167,6 +170,8 @@ class _Reader(JsonLinesReader):
             cost = costs.get("total") if isinstance(costs, dict) else None
             self.open["costs"].append(CostStep(step_model, tokens, amount(cost)))
             for block in message.get("content") or []:
+                if block.get('type') in ('thinking','toolCall') or block.get('type')=='text' and block.get('text'):
+                    self.open['activity']=True
                 if block.get("type") == "text" and block.get("text"):
                     self.open["reply"] = block["text"]
                 elif block.get("type") == "toolCall":
@@ -175,6 +180,11 @@ class _Reader(JsonLinesReader):
                         self.tools_known = False
                     self.open_call(block.get('id'), name, at)
             if message.get("stopReason") in ENDS_TURN:
+                if message.get('stopReason')=='error':
+                    from .types import TurnFailure
+                    from .failures import words
+                    self.open['failure']=TurnFailure(words(message.get('errorMessage')),at,tuple(self.open['inputs']),
+                                                     True if self.open['activity'] else None,'program error')
                 self.end(at)
         elif role == "toolResult":
             self.close_tool(message.get("toolCallId"), at, bool(message.get("isError")), message.get("toolName") or "?")
@@ -221,7 +231,8 @@ class _Reader(JsonLinesReader):
     def end(self, at: datetime | None) -> None:
         turn = self.close_turn()
         self.record_turn(costed(Turn(len(self.turns), turn["started"] or at, at or turn["started"], turn["input"], turn["reply"],
-                                    self.model, turn["tokens"], tuple(turn["tools"]), cost_steps=tuple(turn["costs"]))), at)
+                                    self.model, turn["tokens"], tuple(turn["tools"]), cost_steps=tuple(turn["costs"]),
+                                    failure=turn.get('failure'))), at)
 
 state = _Reader.read_state
 turns = _Reader.read_turns
@@ -243,7 +254,8 @@ def inputs(record: Path) -> list[Input]:
                 opened = message.get("stopReason") not in ENDS_TURN
         except (TypeError, ValueError, AttributeError, KeyError):
             continue
-    return found
+    from .failures import dispositions
+    return dispositions(found,_Reader.read_turns(record))
 
 
 # -- the adapter --------------------------------------------------------------------------------

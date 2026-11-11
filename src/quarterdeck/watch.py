@@ -65,6 +65,9 @@ def activity(seat: Seat | UnresolvedSeat, now: datetime | None = None) -> Activi
     except OSError as error:
         return Activity("unknown", f"record unreadable: {error}")
     queue_detail = f"queue unknown: {state.queue_error}" if state.queue_error else ""
+    if getattr(state,'failure',None) and state.turn_open is False:
+        failure=state.failure
+        return Activity('refused' if failure.kind=='provider error' else 'failed',f'{failure.kind}: {failure.message}')  # law: record-first
     if state.turn_open is None:
         return Activity("unknown", " · ".join(filter(None, ("turn state unknown in record", queue_detail))))
     if seat.harness.waiting_for_human(state):
@@ -330,6 +333,7 @@ class Facts:
     queue_unknown: list[str] = field(default_factory=list)
     compactions: list[str] = field(default_factory=list)
     held: list[str] = field(default_factory=list)
+    turn_errors: list[str] = field(default_factory=list)
 
     def line(self) -> str:  # law: nothing-waits-silently
         parts = ["SERVICE DOWN" if self.service == "down" else f"service {self.service}"]
@@ -341,6 +345,7 @@ class Facts:
         parts += self.unknown
         parts += self.queue_unknown
         parts += self.compactions
+        parts += self.turn_errors
         parts += [f"{name} needs a human" for name in self.needs_human]
         parts += [f"{name}: no watch armed" for name in self.unarmed]
         parts += [f"{name} held at limit" for name in self.held]
@@ -475,7 +480,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
     attempts = post.Attempts(ship.runtime) if attempts is None else attempts
     records = attempts.all()
     latest = attempts.latest(attempts=records)
-    waiting, needs_human, unarmed, pending_lines, routes, unknown, queue_unknown, compactions = [], [], [], [], [], [], [], []
+    waiting, needs_human, unarmed, pending_lines, routes, unknown, queue_unknown, compactions, turn_errors = [], [], [], [], [], [], [], [], []
     selected = seats(ship, tmux, False)
     held, limit_unknown = limit_holds(ship, selected)
     pending_lines += limit_unknown
@@ -487,6 +492,10 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
             unknown.append(str(seat.error).partition(';')[0])
             continue
         launched = seat.launched()
+        from .turn_failure import obstruction
+        if reason:=obstruction(seat,store):
+            turn_errors.append(f'{seat.name}: {reason}')  # law: nothing-waits-silently
+            needs_human.append(seat.name)
         from .compaction import status as compaction_status
         if detail := compaction_status(seat, alerts_only=True):
             compactions.append(f"{seat.name}: {detail}")
@@ -508,7 +517,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
                 if queue_error:
                     queue_unknown.append(f"{seat.name}: queue unknown: {queue_error}")
             door, obstruction = Door(seat).human_obstruction()
-            if obstruction:
+            if obstruction and seat.name not in needs_human:
                 needs_human.append(seat.name)
             if door.waiting or "pending" in door.reason:
                 pending_lines.append(f"{seat.name}: {door.reason}")
@@ -535,6 +544,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         queue_unknown=queue_unknown,
         compactions=compactions,
         held=held,
+        turn_errors=turn_errors,
         unarmed=unarmed,
         walls=walls if walls is not None else ledger_walls(ship),
         usage=headline_readings(ship),

@@ -195,8 +195,7 @@ def _input_relevant(row):
         return True
     if not isinstance(payload, dict):
         return kind in ('event_msg', 'response_item')
-    return (kind == 'event_msg' and payload.get('type') in {'task_started', *ENDS_TURN}
-            or kind == 'response_item' and payload.get('role') == 'user')
+    return kind in ('event_msg','response_item')  # output/error rows can revoke an earlier receipt
 
 
 @input_reader(_input_relevant)
@@ -231,7 +230,8 @@ def inputs(record: Path) -> list[Input]:
             seen = True
         except (TypeError, ValueError, AttributeError, KeyError):
             found.skip(line, kind, 'malformed input row')
-    return found
+    from .failures import dispositions
+    return dispositions(found,_Reader.read_turns(record))
 
 
 class _Reader(JsonLinesReader):
@@ -246,6 +246,8 @@ class _Reader(JsonLinesReader):
     def take(self, entry: dict) -> None:
         kind = entry.get('type')
         if kind in (*INPUT_IGNORED, 'compacted'):
+            if kind=='compacted' and self.open is not None:
+                self.open['model_output']=True
             return  # known non-execution metadata, independent of accounting format markers
         if kind not in ('session_meta', 'turn_context', 'event_msg', 'response_item'):
             self.tools_known = False
@@ -267,17 +269,37 @@ class _Reader(JsonLinesReader):
         if sub == "task_started":
             if self.open is not None:
                 self.end(at, completed=False)
-            self.start_turn({"started": at, "input": "", "tokens": Tokens(), "measurements": 0, "response": False, "tools": [], "reply": ""})
+            self.start_turn({"started": at, "input": "", "tokens": Tokens(), "measurements": 0, "response": False,
+                             "tools": [], "reply": "", 'inputs':[], 'model_output':False})
         elif sub == "token_count" and self.open is not None:
             info = payload.get("info")
             last = info.get("last_token_usage") if isinstance(info, dict) else None
             self.open["tokens"] = self.open["tokens"] + usage_tokens(last)
+            if isinstance(last,dict) and type(last.get('output_tokens')) is int and last['output_tokens']>0:
+                self.open['model_output']=True
+            elif not isinstance(last,dict) or type(last.get('output_tokens')) is not int:
+                self.open['model_output']=None if self.open['model_output'] is not True else True
             self.open["measurements"] += 1
             self.open["response"] = False
         elif sub in ENDS_TURN and self.open is not None:
             if payload.get("last_agent_message"):
                 self.open["reply"] = payload["last_agent_message"]
+                self.open['model_output']=True
+            if sub=='task_complete' and payload.get('error') is not None:
+                from .types import TurnFailure
+                from .failures import words
+                error=payload['error']
+                known=isinstance(error,dict) and isinstance(error.get('message'),str) and bool(error['message'].strip())
+                output=self.open['model_output']
+                if output is not True and (not known or 'last_agent_message' not in payload
+                        or payload['last_agent_message'] is not None or not self.tools_known
+                        or at is None or self.open['started'] is None or at<self.open['started']):
+                    output=None
+                self.open['failure']=TurnFailure(words(error.get('message') if isinstance(error,dict) else None),
+                                                at,tuple(self.open['inputs']),output)
             self.end(at)
+        elif sub in ('agent_message','agent_reasoning','agent_reasoning_raw_content') and self.open is not None:
+            self.open['model_output']=True
         elif sub not in ('task_started', 'token_count', *ENDS_TURN, 'user_message', 'agent_message',
                          'agent_reasoning', 'agent_reasoning_raw_content', 'context_compacted',
                          'thread_settings_applied', 'thread_goal_updated', 'model_reroute',
@@ -297,6 +319,7 @@ class _Reader(JsonLinesReader):
             text = _text(payload.get("content"))
             if text and not text.startswith("<") and self.open is not None:
                 self.last_input, self.last_input_at = text, at
+                self.open['inputs'].append(Input(text,at))
                 if self.open["input"]:
                     self.consumed.append(text)  # a message taken into the running turn
                 else:
@@ -304,9 +327,14 @@ class _Reader(JsonLinesReader):
         elif sub == "message" and payload.get("role") == "assistant" and self.open is not None:
             self.open["reply"] = _text(payload.get("content")) or self.open["reply"]
             self.open["response"] = True
+            if _text(payload.get('content')):
+                self.open['model_output']=True
+        elif sub=='reasoning' and self.open is not None:
+            self.open['model_output']=True  # reasoning activity disqualifies unacted replay, even without final text
         elif sub in CALLS:
             if self.open is not None:
                 self.open["response"] = True
+                self.open['model_output']=True
             name = payload.get('name', '?')
             call = payload.get('call_id')
             if payload.get('status') not in (None, 'completed'):
@@ -383,6 +411,7 @@ class _Reader(JsonLinesReader):
                 model=self.model,
                 tokens=turn["tokens"] + (Tokens.unknown() if turn["response"] or not turn["measurements"] else Tokens()),
                 tools=tuple(turn["tools"]),
+                failure=turn.get('failure'),
             ), at if completed else None
         )
 

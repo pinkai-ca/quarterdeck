@@ -359,7 +359,7 @@ class Attempts:
     def close(self, attempt: Attempt, result: str, detail: str = "") -> Attempt:
         with self._locked():
             current = Attempt(**json.loads(attempt.path.read_text()), path=attempt.path)
-            if current.result == "abandoned":
+            if current.result in ("abandoned","refused"):
                 return current  # terminal even if an old door/watch finishes after cleanup
             done = replace(attempt, result=result, detail=detail)
             self._write(done)
@@ -453,7 +453,8 @@ class Attempts:
         never wakes, so it is never delivered at all (law: open-until-closed).
         """
         skip = {m for m, r in (self.latest() if results is None else results).items()
-                if r in (*ACCEPTED, "blind", None, "pending", "abandoned")}
+                if r in (*ACCEPTED, "blind", None, "pending", "abandoned",'uncertain','carrying')
+                or r=='refused' and not for_launch}
         if not for_launch:
             from .compaction import withheld
             reserved, transitioning = withheld(store.dir.parent.parent, seat)

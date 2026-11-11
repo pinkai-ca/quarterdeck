@@ -43,6 +43,7 @@ STATUS_INTERVAL = 0.7  # presentation only; rendering age and owner are checked 
 # These go to the desk as well as the systems seat; every other alarm goes to the systems
 # seat alone while one is up. With no systems seat up, every alarm goes to the desk.
 PERSON_ONLY = (
+    'provider error','program error',
     "login",
     "paste/submit outcome uncertain",
     "pending delivery",
@@ -184,7 +185,7 @@ class Service:
                 if attempt.pane is None:
                     self.attempts.judge(attempt, "blind", "a watch opened it and never reported printing it; qd post resend")
                     continue
-            elif not (result == "queued" and attempt.message in queued
+            elif not (result in ('delivered','launch','uncertain','carrying') or result == "queued" and attempt.message in queued
                       or result == "blind" and retry_blind and attempt.message in blind):
                 continue
             try:
@@ -194,6 +195,9 @@ class Service:
                 continue
             message = self.store.get(attempt.message)
             seen = delivery_record.receipt_anywhere(seat, message, attempt.receipt_since)
+            if seen in ('refused','uncertain'):
+                self.attempts.close(attempt,seen,f'native accepted input; ended error disposition {seen}; no automatic replay')
+                continue
             if result is None:
                 if self.attempts.judge(attempt, seen or "blind", "found in the record on reconciliation" if seen else
                                       "the service died mid-delivery and the record does not show it; qd post resend"):  # law: one-door
@@ -210,7 +214,8 @@ class Service:
         results = self.attempts.latest()
         for seat in self.resolved_seats():
             if seat.session.human:
-                if recovery.held(seat):
+                from . import turn_failure
+                if recovery.held(seat) or turn_failure.obstruction(seat,self.store):
                     self.needs_human(seat)
                 continue
             pending = [m for m in self.attempts.undelivered(self.store, seat.name, results=results) if self._due(m, seat)]
@@ -661,6 +666,9 @@ class Service:
                     self.ledger.mark_record(record, seat.name, pool, str(error))
                     self.log("error", step="account", seat=seat.name, record=record.name, error=str(error))
                     continue
+                if record==current:
+                    from . import turn_failure
+                    turn_failure.publish(seat,record,state,turns,stamp[1])
                 self.ledger.quota.record(record, seat.name, state.walls, self.ledger.provenance, post.now())
                 self.read_marks[record] = stamp
                 incomplete = "incomplete turn state in record" if (state.turns is None or state.turn_open is None) else None

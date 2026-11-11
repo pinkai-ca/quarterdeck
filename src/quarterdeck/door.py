@@ -114,6 +114,9 @@ class Door:
 
     def reading(self, screen: Screen | None = None) -> Reading:
         """Can the typing path deliver, from the screen and the Ledger's walls; nothing is pressed, written or fetched."""
+        from .turn_failure import obstruction
+        if reason:=obstruction(self.seat):
+            return Reading(False,reason,'needs a human')
         if self.seat.session.human:
             from .recovery import held
             if reason := held(self.seat):
@@ -124,6 +127,9 @@ class Door:
 
     def _reading(self, screen: Screen | None) -> Reading:
         """Read this captured frame, including absence, without taking another capture."""
+        from .turn_failure import obstruction
+        if reason:=obstruction(self.seat):
+            return Reading(False,reason,'needs a human')
         wall = self.wall(screen)
         if hold := pending.held(self.seat, screen, self.proof, wall):
             return Reading(False, hold[0], hold[1], waiting=hold[2])
@@ -199,6 +205,9 @@ class Door:
         self.proof = proof
         self.before_submit = None
         self.since = datetime.now(timezone.utc)
+        from .turn_failure import obstruction
+        if reason:=obstruction(self.seat):
+            return Delivery('withheld',reason)  # record refusal holds before any clearing/dialog/interrupt key
         if any(ord(c) < 32 and c not in "\n\t" or ord(c) == 127 for c in text):
             return Delivery("withheld", "message contains unsupported terminal control characters; revise it")
         from . import paste_refusal

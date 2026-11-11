@@ -197,8 +197,17 @@ class _Session:
                 tools.append(ToolCall(running[0], None, None))  # left running when the program moved on: its end unknown
         if closed:
             self.ended_at = ended if timed else None
+            failure=None
+            if completed and last.get('error'):
+                from .types import TurnFailure
+                from .failures import words
+                error=last['error']
+                detail=error.get('message') or _object(error.get('data')).get('message') if isinstance(error,dict) else None
+                activity=any(p.get('type') in ('tool','reasoning') or p.get('type')=='text' and p.get('text')
+                             for _,parts in steps for p in parts)
+                failure=TurnFailure(words(detail),ended,(self.inputs[-1],),True if activity else None,'program error')
             self.turns.append(costed(Turn(index, at, ended, text, reply, model, tokens, tuple(tools), timed=timed,
-                                          cost_steps=tuple(costs))))
+                                          cost_steps=tuple(costs),failure=failure)))
             if completed:
                 self.completed_turns.append(self.turns[-1])
         else:
@@ -266,7 +275,8 @@ class _Reader(RecordReader):
                      last_input_at=active.last_input_at, model=active.model, queued=tuple(active.queued), turns=len(self.turns),
                      completed_turns=tuple(active.completed_turns), pending_tools=self.pending_tools,
                      conversation=self.session, input_id=self.input_id, work_id=self.work_id,
-                     capped=self.capped if not active.open and not active.queued and self.pending_tools == () else None)
+                     capped=self.capped if not active.open and not active.queued and self.pending_tools == () else None,
+                     failure=active.turns[-1].failure if not active.open and active.turns else None)
 
 
 def _generation(rows, root):
@@ -353,4 +363,6 @@ read = _Reader.read
 
 def inputs(record: Path) -> list[Input]:
     """The active root's inputs, with the same session-aware queue boundaries as its state."""
-    return _Reader(record).active.inputs
+    from .failures import dispositions
+    active=_Reader(record).active
+    return dispositions(active.inputs,active.turns)

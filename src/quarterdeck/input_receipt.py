@@ -13,7 +13,7 @@ def same_text(recorded: str, wanted: str) -> bool:
     return recorded.strip() == wanted.strip()
 
 
-def confirmed(reader: str | Harness, record: Path, text: str, since: datetime) -> str | None:
+def confirmed(reader: str | Harness, record: Path, text: str, since: datetime, *, before: datetime | None = None) -> str | None:
     """Exact fresh acceptance, queueing or consumption; untimed history proves nothing."""
     harness = get(reader) if isinstance(reader, str) else reader
     resolution = getattr(harness, "record_time_resolution", 0.0)
@@ -24,10 +24,14 @@ def confirmed(reader: str | Harness, record: Path, text: str, since: datetime) -
     for item in harness.inputs(record):
         if item.at is None or item.at < since or not same_text(item.text, text):
             continue
-        if item.kind == "accepted":
+        if before is not None and (item.at>=before or item.consumed_at is not None and item.consumed_at>=before):
+            continue
+        if item.disposition in ('refused','uncertain'):
+            return item.disposition
+        elif item.kind == "accepted":
             return "delivered"
-        if item.kind == "consumed" and item.consumed_at is not None and item.consumed_at >= item.at:
+        elif item.kind == "consumed" and item.consumed_at is not None and item.consumed_at >= item.at:
             return "delivered"
-        if item.kind == "queued":
-            queued = True
-    return "queued" if queued else None
+        elif item.kind == "queued":
+            queued=True
+    return 'queued' if queued else None

@@ -23,6 +23,7 @@ class Input:
     at: datetime | None
     kind: str = "accepted"
     consumed_at: datetime | None = None
+    disposition: str | None = None  # refused: proved unacted; uncertain: error/output evidence cannot settle receipt
 
 
 class Inputs(list[Input]):
@@ -116,6 +117,17 @@ class ToolCall:
 
 
 @dataclass(frozen=True)
+class TurnFailure:
+    """Explicit ended error and its input/output evidence; absent output certainty is unknown."""
+
+    message: str
+    at: datetime | None
+    inputs: tuple[Input, ...] = ()
+    model_output: bool | None = None
+    kind: str = 'provider error'
+
+
+@dataclass(frozen=True)
 class Turn:
     """One ended turn: from an input to the next idle, summed over its steps."""
 
@@ -136,6 +148,7 @@ class Turn:
     price_model: str | None = None  # one model established for every measured step, for stated rates
     cost_steps: tuple[CostStep, ...] | None = None
     unpriced_steps: int = 0
+    failure: TurnFailure | None = None
 
     @property
     def seconds(self) -> float | None:
@@ -182,6 +195,7 @@ class State:
     work_id: str | None = None  # native automatic continuation cannot create a new recovery allowance
     capped: CappedGeneration | None = None
     queue_error: str | None = None  # queued is candidate history, not proved membership, when unresolved
+    failure: TurnFailure | None = None  # latest ended turn only; cleared by a new native turn
 
 
 @dataclass(frozen=True)
