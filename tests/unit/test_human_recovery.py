@@ -204,7 +204,7 @@ def test_explicit_question_recovery_exception_never_releases_automatic_fresh_or_
     w.svc.store.new('report', 'worker', 'issuer', 'Synthetic report', re=order.id)
     w.seat.spec = replace(w.seat.spec, pools=('local', 'spare'))
     w.seat.ship.pools['spare'] = replace(w.seat.pool, name='spare')
-    monkeypatch.setattr(w.svc.ledger, 'walled', lambda name, *args: name == 'local')
+    monkeypatch.setattr(w.svc.ledger, 'walled', lambda name, *args, **kwargs: name == 'local')
     monkeypatch.setattr(w.seat, 'fresh', lambda: pytest.fail('automatic fresh gained explicit recovery exception'))
     monkeypatch.setattr(w.seat, 'failover_to', lambda _: pytest.fail('automatic failover gained explicit recovery exception'))
     w.svc.fresh_after_order()

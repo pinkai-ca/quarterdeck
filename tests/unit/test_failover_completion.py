@@ -41,7 +41,7 @@ def test_real_program_completion_boundaries_hold_or_release_same_program(worker,
     w = worker
     w.seat.spec = replace(w.seat.spec, pools=('local', 'spare'))
     w.seat.ship.pools['spare'] = replace(w.seat.pool, name='spare')
-    monkeypatch.setattr(w.svc.ledger, 'walled', lambda name, *args: name == 'local')
+    monkeypatch.setattr(w.svc.ledger, 'walled', lambda name, *args, **kwargs: name == 'local')
     moves = []
     monkeypatch.setattr(w.seat, 'failover_to', lambda name: moves.append(name) or w.seat.move_to(name) or 'synthetic move')
     if evidence != 'empty':
@@ -62,7 +62,7 @@ def test_child_and_inferred_accounting_completions_never_release_active_root(wor
     w = worker
     w.seat.spec = replace(w.seat.spec, pools=('local', 'spare'))
     w.seat.ship.pools['spare'] = replace(w.seat.pool, name='spare')
-    monkeypatch.setattr(w.svc.ledger, 'walled', lambda name, *args: name == 'local')
+    monkeypatch.setattr(w.svc.ledger, 'walled', lambda name, *args, **kwargs: name == 'local')
     monkeypatch.setattr(w.seat, 'failover_to', lambda name: pytest.fail('child accounting cannot release the active root'))
     session(w.record.con, 'child', 2, 'root')
     user(w.record.con, 'child-input', 'child', 10, 'Synthetic child work')
