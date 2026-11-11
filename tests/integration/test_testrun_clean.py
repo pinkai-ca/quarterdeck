@@ -166,3 +166,56 @@ def test_an_abandoned_run_is_recovered_by_its_own_change_only(tmp_path):
     assert abandoned['outcome']['status'] == 'abandoned' and set(abandoned['evidence']['counts'].values()) == {None}
     assert (project / '.testruns' / 'results' / run / 'report.md').exists()
     assert sorted(admin_entries(project)) == ['feature', 'other']
+
+
+def test_recovery_refuses_a_state_that_names_another_checkout_and_loses_nothing(tmp_path):
+    hold = tmp_path / 'hold'
+    hold.write_text('hold')
+    project, worktree = make(tmp_path, {'test_wait.py': f'''
+        import os, pathlib, time
+        def test_waits():
+            (pathlib.Path(os.environ["TMPDIR"]) / "started").write_text(str(os.getpid()))
+            while pathlib.Path({str(hold)!r}).exists():
+                time.sleep(0.1)
+        '''})
+    decoy = add_worktree(project, 'decoy', {})
+    (decoy / 'uncommitted.txt').write_text('synthetic work in progress')
+    process = start('run', '--target', str(worktree), '-n', '0', cwd=project)
+    marker = wait_for(lambda: started_marker(project))
+    run = marker.parent.parent.name
+    process.kill()
+    process.wait()
+    state_file = project / '.testruns' / 'runs' / run / 'state.json'
+    state = json.loads(state_file.read_text())
+    for pgid, _ in state['groups']:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    hold.unlink()
+    own_admin = state['admin']
+    tampered = [{**state, 'checkout': str(decoy)},
+                {**state, 'admin': str(tmp_path / 'elsewhere' / 'admin')}]
+    for bad in tampered:
+        state_file.write_text(json.dumps(bad))
+        again = tool('run', '--target', str(worktree), '-n', '0', cwd=project)
+        assert again.returncode == 0, again.stdout + again.stderr
+        assert f'run {run}: abandoned · cleanup held' in again.stdout and 'nothing removed' in again.stdout
+        assert (decoy / 'uncommitted.txt').read_text() == 'synthetic work in progress'
+        assert str(decoy) in git_worktrees(project)
+        assert run in scratch(project) and (project / '.testruns' / 'runs' / run / 'checkout').is_dir()
+        assert os.path.isdir(own_admin) and json.loads(state_file.read_text()) == bad
+    state_file.write_text(json.dumps(state))
+    restored = tool('run', '--target', str(worktree), '-n', '0', cwd=project)
+    assert restored.returncode == 0, restored.stdout + restored.stderr
+    assert f'run {run}: abandoned · cleanup complete' in restored.stdout
+    assert run not in scratch(project) and not os.path.exists(own_admin)
+    assert sorted(admin_entries(project)) == ['decoy', 'feature']
+    assert (decoy / 'uncommitted.txt').read_text() == 'synthetic work in progress'
+    abandoned = json.loads((project / '.testruns' / 'results' / run / 'result.json').read_text())
+    assert abandoned['outcome']['status'] == 'abandoned'
+
+
+def git_worktrees(project):
+    return [line[len('worktree '):] for line in git(project, 'worktree', 'list', '--porcelain').splitlines()
+            if line.startswith('worktree ')]

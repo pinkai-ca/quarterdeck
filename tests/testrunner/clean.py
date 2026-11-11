@@ -54,12 +54,22 @@ def retire_run(root: Root, runs_fd: int, run: str, state: dict) -> dict:
     note = kept(root, run)
     if note:
         return {'outcome': 'kept', 'reason': note['reason'], 'scratch': str(root.path / RUNS / run)}
+    admin = state.get('admin')
+    if admin:
+        # The forced removal below must reach this run's own checkout only. state.json is read back from disk
+        # on recovery, so before anything goes it must name what run.py made: the run's own checkout path and
+        # an admin entry directly under the project's .git/worktrees. Otherwise nothing is touched.
+        own = root.path / RUNS / run / 'checkout'
+        checkout = state.get('checkout')
+        if checkout != str(own) or Path(admin).parent != root.project / '.git' / 'worktrees':
+            return {'outcome': 'held', 'scratch': str(root.path / RUNS / run),
+                    'reason': f'state.json names checkout {checkout} and Git admin {admin}, not this run\'s own '
+                              f'{own} under {root.project / ".git" / "worktrees"}; nothing removed'}
     try:
         tally = owned.remove(runs_fd, run, state['scratch'], root.path / RUNS / run, state.get('owner'))
     except Refused as refused:
         return {'outcome': 'held', 'reason': str(refused)}
     cleanup = {'outcome': 'complete', 'removed': tally.as_dict(), 'scratch': str(root.path / RUNS / run)}
-    admin = state.get('admin')
     if admin:
         checkout = state['checkout']
         done = gitops.ok(root.project, 'worktree', 'remove', '--force', checkout)
