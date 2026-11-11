@@ -20,6 +20,14 @@ MODEL_HINT = "<model> [window] [effort]"
 COMMANDS = Interruption("commands", r"┌─ Commands ─.*\[✗\].*┐", "Escape")
 MODEL_PICKER = Interruption("model picker", r"Grok [0-9.]+ \(current\)", "C-c")
 PASTE_FOLD_LINES = 4
+HINT_STATES = {
+    ("Shift+Tab:mode", "Ctrl+x:shortcuts"): False,
+    ("Enter:send", "Alt+Enter:newline", "Shift+Tab:mode", "Ctrl+x:shortcuts"): False,
+    ("Shift+Tab:mode", "Ctrl+c:cancel", "Ctrl+x:shortcuts"): True,
+    ("Shift+Tab:mode", "Ctrl+c:cancel", "Ctrl+b:send to bg", "Ctrl+x:shortcuts"): True,
+    # At 80 columns the working draft drops Ctrl+x, while retaining cancel.
+    ("Enter:queue", "Alt+Enter:newline", "Shift+Tab:mode", "Ctrl+c:cancel"): True,
+}
 
 
 def paste_lines(text: str) -> int:
@@ -31,6 +39,16 @@ def lf_layout(text: str) -> bool:
     """LF observations establish no other control or line-separator layout."""
     return not any((ord(char) < 32 and char != "\n") or ord(char) == 127
                    or char in "\x85\u2028\u2029" for char in text)
+
+
+def hint_working(rows: list[str]) -> bool | None:
+    """Only measured hint tuples; unknown is never an inferred idle state."""
+    shown = [row.strip(" ") for row in rows if row.strip(" ")]
+    if len(shown) != 1:
+        return None
+    if re.fullmatch(r"Grok Build\s+1\.0\.77", shown[0]):
+        return False
+    return HINT_STATES.get(tuple(part.strip(" ") for part in shown[0].split("│")))
 
 
 @dataclass(frozen=True)
@@ -164,8 +182,7 @@ def read(text: str) -> Screen:
                                       or attribute.background not in (None, (20, 20, 20))):
                 return Screen(plain, box=None, unknown="unmeasured Grok composer text styling", shows=shows)
     box = "\n".join(content for content, _ in body)
-    tail = "\n".join(rows[footer_at + 1:])
-    if not ("Shift+Tab:mode" in tail and "Ctrl+x:shortcuts" in tail
-            or re.search(r"Grok Build\s+1\.0\.77", tail)):
+    working = hint_working(rows[footer_at + 1:])
+    if working is None:
         return Screen(plain, box=None, unknown="unmeasured Grok composer hint", shows=shows)
-    return Screen(plain, box=box, shows=shows)
+    return Screen(plain, box=box, working=working, shows=shows)

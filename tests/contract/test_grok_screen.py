@@ -279,3 +279,33 @@ def test_unmeasured_control_and_line_ending_layouts_have_no_projection(payload):
     assert box.folded is None
     assert not box.matches(payload, 70)
     assert not box.matches("[Pasted: 4 lines]", 70)
+
+
+@pytest.mark.parametrize("name,spinner,payload", [
+    ("working-response", "⠹ Responding…", ""),
+    ("working-tool", "⠴ Synthetic shell command…", ""),
+    ("working-draft", "⠸ Synthetic shell command…",
+     "qd > answer from synthetic · ans-bbbb\nA harmless synthetic follow-up.\nqd > inbox: post/inbox/example.md\n"),
+])
+def test_measured_working_hints_and_visible_draft(name, spinner, payload):
+    adapter = GrokHarness()
+    screen = adapter.screen(fixture(name))
+    assert screen.unknown is None and screen.interruption is None
+    assert screen.working is True
+    assert spinner in screen.text and "[stop]" in screen.text
+    assert screen.shows == {"model": "Grok 4.7", "effort": "high"}
+    assert adapter.box(payload).matches(screen.box, adapter.box_columns(80))
+
+
+@pytest.mark.parametrize("old,new", [("Enter:queue", "Enter:steer"), ("Ctrl+c:cancel", "Ctrl+c:new-action")])
+def test_unmeasured_working_hint_stays_unknown(old, new):
+    screen = GrokHarness().screen(fixture("working-draft").replace(old, new))
+    assert screen.unknown == "unmeasured Grok composer hint"
+    assert screen.box is None
+
+
+def test_transcript_working_words_do_not_replace_native_hint_evidence():
+    text = "   ⠹ Responding… [stop]\nCtrl+c:cancel\n" + fixture("idle-mono")
+    screen = GrokHarness().screen(text)
+    assert screen.unknown is None
+    assert screen.working is False  # read from the known idle hint, not transcript text

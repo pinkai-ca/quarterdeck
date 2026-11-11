@@ -1,0 +1,16 @@
+{
+  "lines": [
+    "  /sample/project                                                               ",
+    "   ⠸ Synthetic shell command… 8s            12s ⇣1.0k [↓][stop]                 ",
+    "                                                                                ",
+    "  ╭──────────────────────────────────────────────────────────────────────────╮  ",
+    "  \u001b[38;2;80;80;88m│\u001b[38;2;225;225;225m ❯ qd > answer from synthetic · ans-bbbb                                  \u001b[38;2;80;80;88m│\u001b[39m  ",
+    "  \u001b[38;2;80;80;88m│\u001b[38;2;225;225;225m   A harmless synthetic follow-up.                                        \u001b[38;2;80;80;88m│\u001b[39m  ",
+    "  \u001b[38;2;80;80;88m│\u001b[38;2;225;225;225m   qd > inbox: post/inbox/example.md                                      \u001b[38;2;80;80;88m│\u001b[39m  ",
+    "  \u001b[38;2;80;80;88m│\u001b[38;2;225;225;225m                                                                          \u001b[38;2;80;80;88m│\u001b[39m  ",
+    "  ╰─────────────────────────────────────── Grok 4.7 (high) · always-approve ─╯  ",
+    "                                                                                ",
+    "  Enter:queue  │  Alt+Enter:newline  │  Shift+Tab:mode  │  Ctrl+c:cancel        ",
+    "                                                                                "
+  ]
+}
