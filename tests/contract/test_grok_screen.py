@@ -169,14 +169,20 @@ def test_measured_unbroken_wrap_boundary(length):
 
 
 @pytest.mark.parametrize("leading,trailing,count", [(0, 0, 24), (0, 1, 24), (0, 2, 25), (1, 2, 26)])
-def test_folded_line_count_includes_blank_lines_except_final_terminator(leading, trailing, count):
+def test_folded_line_count_never_proves_intended_content(leading, trailing, count):
     adapter = GrokHarness()
     screen = adapter.screen(fixture("folded-multiline").replace("Pasted: 24 lines", f"Pasted: {count} lines"))
     # Keep the measured right border fixed when a display count changes width.
     assert screen.unknown is None
+    assert screen.interruption.name == "folded paste: full content is not visible"
+    assert screen.interruption.key is None and screen.box is None
     wanted = "\n" * leading + "\n".join(f"Synthetic item {i}." for i in range(24)) + "\n" * trailing
-    assert adapter.box(wanted).matches(screen.box, adapter.box_columns(80))
-    assert not adapter.box(wanted + "\n\n").matches(screen.box, adapter.box_columns(80))
+    collision = "\n" * leading + "\n".join(f"Different content {i}." for i in range(24)) + "\n" * trailing
+    assert not adapter.box(wanted).matches(screen.box, adapter.box_columns(80))
+    assert not adapter.box(collision).matches(screen.box, adapter.box_columns(80))
+    marker = f"[Pasted: {count} lines]"
+    assert not adapter.box(wanted).matches(marker, adapter.box_columns(80))
+    assert not adapter.box(collision).matches(marker, adapter.box_columns(80))
 
 
 def test_fold_chip_needs_measured_styling():
@@ -203,3 +209,10 @@ def test_clipped_single_line_viewport_cannot_prove_full_paste():
     screen = adapter.screen(fixture("clipped-viewport"))
     assert screen.unknown
     assert not adapter.box("V" * 2000).matches(screen.box, adapter.box_columns(80))
+
+
+@pytest.mark.parametrize("wanted", ["\n", "   ", "\n\n"])
+def test_whitespace_only_draft_never_matches_visually_empty_content(wanted):
+    adapter = GrokHarness()
+    screen = adapter.screen(fixture("idle-mono"))
+    assert not adapter.box(wanted).matches(screen.box, adapter.box_columns(80))

@@ -19,6 +19,7 @@ FOOTER = re.compile(
 MODEL_HINT = "<model> [window] [effort]"
 COMMANDS = Interruption("commands", r"┌─ Commands ─.*\[✗\].*┐", "Escape")
 MODEL_PICKER = Interruption("model picker", r"Grok [0-9.]+ \(current\)", "C-c")
+FOLDED_PASTE = Interruption("folded paste: full content is not visible", r"\[Pasted: [1-9][0-9]* lines\]")
 
 
 @dataclass(frozen=True)
@@ -143,7 +144,9 @@ def read(text: str) -> Screen:
                                                        else (200, 200, 200))
                           for i, attribute in enumerate(attributes[:len(token)])))
         if folded:
-            continue  # the measured count chip, never a generic muted placeholder
+            # A line count is not an input-content proof. No automatic key is
+            # authorized here: a documented full-content path is still needed.
+            return Screen(plain, box=None, interruption=FOLDED_PASTE, shows=shows)
         for char, attribute in zip(content, attributes):
             if not char.isspace() and (attribute.faint or attribute.foreground not in
                                       (None, (225, 225, 225), (122, 162, 247))

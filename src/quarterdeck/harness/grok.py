@@ -147,6 +147,15 @@ def launch_home(home: Path, seat: SeatSpec) -> None:
     no_extra_rules(config, "Grok home configuration")
 
 
+class GrokBox(Box):
+    """Only visible, unfolded content; whitespace-only drafts have no exact proof."""
+
+    def matches(self, shown: str | None, columns: int | None = None, slack: int = 0) -> bool:
+        if self.text and not self.text.strip():
+            return False  # native bare LF/spaces can paint exactly like no draft
+        return super().matches(shown, columns, slack)
+
+
 class GrokHarness(Harness):
     name = "grok"
     program = "grok"
@@ -273,15 +282,13 @@ class GrokHarness(Harness):
         return pane_width - 10 if pane_width >= 14 else None
 
     def box(self, text: str) -> Box:
-        # Native line counting excludes one final LF terminator, while retaining
-        # leading and additional trailing blank lines. Single-line viewport
-        # clipping proves no fold and never matches a shorter visible tail.
-        lines = text.count("\n") + (not text.endswith("\n"))
-        return Box(text, folded=rf"\[Pasted: {lines} lines\]" if text else None)
+        # Neither a native folded line count nor a clipped viewport establishes
+        # all content. Keep the shared matcher strict; no folded acceptance.
+        return GrokBox(text)
 
     def controls(self) -> tuple[Control, ...]:
         return (Control("model", "--model <value>", "/model {value}", "screen"),
                 Control("effort", "--reasoning-effort <value>", "/effort {value}", "screen"))
 
     def interruptions(self):
-        return (grok_screen.COMMANDS, grok_screen.MODEL_PICKER)
+        return (grok_screen.COMMANDS, grok_screen.MODEL_PICKER, grok_screen.FOLDED_PASTE)
