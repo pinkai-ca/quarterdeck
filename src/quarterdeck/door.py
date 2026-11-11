@@ -189,9 +189,13 @@ class Door:
         follows, since a local command leaves no input in the record.
         """
         self.proof = proof
+        self.before_submit = None
         self.since = datetime.now(timezone.utc)
         if any(ord(c) < 32 and c not in "\n\t" or ord(c) == 127 for c in text):
             return Delivery("withheld", "message contains unsupported terminal control characters; revise it")
+        from . import paste_refusal
+        if reason:=paste_refusal.refused(self.seat,text,self.screen()):
+            return Delivery('withheld',reason)
         screen = self.clear_known()  # law: one-door
         if wall := self.wall(screen):
             return Delivery("withheld", wall)
@@ -208,12 +212,18 @@ class Door:
             return Delivery("blind", "launch changed before paste; no keys sent")
         if verify is not None and not verify():
             return Delivery('withheld', 'bound source changed before paste; no keys sent')
+        owned=paste_refusal.owner(self,text,screen)
         if proof:
             proof.save(phase="pasting")
         self.tmux.paste(pane.id, text)
         shown = self.box_shows(self.harness.box(text))
         if shown is None or not self.matches(self.harness.box(text), shown):  # law: one-door
+            if verify is None or verify():
+                if reason:=paste_refusal.clear(self,text,owned,shown,BOX_SECONDS):
+                    return Delivery('withheld',reason)
             seen = shown.box if shown else None
+            if proof and proof.data.get('paste_clear'):
+                return Delivery('blind','paste check failed; owned clear/empty outcome unconfirmed; inspect retained journal; never resent')
             return Delivery("blind", f"box showed {seen!r}, not the message; not submitted or cleared; needs a human")
         if proof and not proof.same_launch(self.seat):
             return Delivery("blind", "launch changed after paste; not submitted or cleared")

@@ -30,6 +30,34 @@ OUTPUTS = {"function_call_output", "custom_tool_call_output"}
 INPUT_IGNORED = ('token_usage_record', 'world_state')
 
 
+class EditorBox(Box):
+    """0.166.0 inserts an editor row when a logical line ends at the right edge."""
+
+    def matches(self,shown,columns=None,slack=0):
+        lines=self.text.rstrip('\n').split('\n')
+        if shown is None or not columns or columns<1:
+            return super().matches(shown,columns,slack)
+        if self.folded and re.fullmatch(self.folded,shown.strip()):
+            return True
+        rows=shown.rstrip('\n').split('\n');at=0
+        for index,line in enumerate(lines):
+            start=at
+            while at<len(rows):
+                at+=1
+                if Box(line,textwrap_ascii=True).matches('\n'.join(rows[start:at]),columns,slack):
+                    break
+                if not rows[at-1].strip(' '):
+                    return False
+            else:
+                return False
+            from .types import _cells
+            if index<len(lines)-1 and _cells(rows[at-1].rstrip(' '))==columns:
+                if at>=len(rows) or rows[at].strip(' '):
+                    return False
+                at+=1  # this one row is derived from the payload/geometry, never discarded generally
+        return at==len(rows)
+
+
 def compactions(record: Path):
     from .compactions import History, identity, read
 
@@ -586,7 +614,28 @@ class CodexHarness(Harness):
 
     def box(self, text: str) -> Box:
         """A long paste folds to ``[Pasted Content N chars]``, N its whole length (0.166.0); a short one shows whole."""
-        return Box(text, folded=rf"\[Pasted Content {len(text)} chars\]", textwrap_ascii=True)
+        return EditorBox(text, folded=rf"\[Pasted Content {len(text)} chars\]", textwrap_ascii=True)
+
+    def paste_clear_keys(self,text,screen,columns,version,cursor):
+        from .types import _cells
+        if (version!='0.166.0' or not text or text.endswith(' ')
+                or not self.box(text).matches(screen.box,columns) or (screen.box or '').startswith('[Pasted')
+                or any(_cells(line) is None for line in text.split('\n'))):
+            return None
+        content=text.rstrip('\n');trailing=len(text)-len(content)
+        last=content.split('\n')[-1];width=_cells(last)
+        if not last or width>=columns:
+            return None  # end-of-line cursor wrapping is not a clear-path proof
+        rows=screen.text.split('\n')
+        status=next((i for i in range(len(rows)-1,-1,-1) if STATUS_LINE.match(rows[i])),None)
+        if status is None:return None
+        row=next((i for i in range(status-1,-1,-1) if rows[i].strip(' ')),None)
+        expected=(2,row+trailing) if row is not None and trailing else (width+2,row)
+        if row is None or rows[row][2:].rstrip(' ')!=last or cursor!=expected or cursor[1]>=status:
+            return None
+        # Native 0.166.0, measured unsubmitted with cursor at the paste's end:
+        # kill the current logical line, then its preceding separator, once per line.
+        return ('C-a','C-k','BSpace')*len(text.split('\n'))
 
     def controls(self) -> tuple[Control, ...]:
         return (

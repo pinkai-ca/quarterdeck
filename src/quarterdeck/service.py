@@ -272,6 +272,9 @@ class Service:
 
     def deliver(self, seat: Seat, messages: list[post.Message], resend: bool = False) -> str:
         if resend:
+            from . import paste_refusal
+            if len(messages)==1 and (reason:=paste_refusal.refused(seat,post.typed(messages),Door(seat).screen())):
+                return f'{messages[0].short} to {seat.name} · withheld: {reason}'
             pending_delivery.explicit_resend(self, seat, messages)
         latest = self.attempts.last_results(seat.name)
         ordered = sorted(messages, key=lambda message: latest.get(message.id) == "withheld")

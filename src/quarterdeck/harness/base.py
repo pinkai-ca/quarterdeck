@@ -152,6 +152,10 @@ class Harness(ABC):
     def version(self) -> str | None:
         return program_version((self.program, "--version"))
 
+    def paste_clear_keys(self, text: str, screen: Screen, columns: int, version: str, cursor: tuple[int, int]):
+        """An adapter-proved clear for a whole visible unsubmitted paste, or unknown."""
+        return None
+
     def owns_launch(self, argv: tuple[str, ...] | list[str]) -> bool:
         return bool(argv) and Path(argv[0]).name == Path(self.program).name
 

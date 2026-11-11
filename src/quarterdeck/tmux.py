@@ -523,6 +523,30 @@ class Tmux:
     def keys(self, pane_id: str, *keys: str) -> None:
         self.run("send-keys", "-t", pane_id, *keys)
 
+    def editor_position(self,pane_id: str,expected_pid: int):
+        """One cursor/geometry reading bound to this exact native process."""
+        raw=self._invoke('display-message','-p','-t',pane_id,
+                         '#{pane_pid}\t#{cursor_x}\t#{cursor_y}\t#{pane_width}\t#{pane_height}').strip()
+        try:pid,x,y,width,height=map(int,raw.split('\t'))
+        except ValueError:return None
+        return (x,y,width,height) if pid==expected_pid else None
+
+    def clear_owned_paste(self,pane_id: str,expected_pid: int,position,keys):
+        """Refuse a changed cursor, geometry or process in the native key queue."""
+        if (not pane_id.startswith('%') or not pane_id[1:].isascii() or not pane_id[1:].isdigit()
+                or type(expected_pid) is not int or expected_pid<=0 or len(position)!=4
+                or any(type(n) is not int or n<0 for n in position)
+                or not keys or any(k not in ('C-a','C-k','BSpace') for k in keys)):
+            raise TmuxError('unproved paste clear identity or key path')
+        conditions=[f'#{{==:#{{{name}}},{value}}}' for name,value in zip(
+            ('pane_pid','cursor_x','cursor_y','pane_width','pane_height'),(expected_pid,*position))]
+        condition=conditions[0]
+        for item in conditions[1:]:condition=f'#{{&&:{condition},{item}}}'
+        refused='qd-paste-clear-identity-refused'
+        result=self._invoke('if-shell','-F','-t',pane_id,condition,
+                            shlex.join(['send-keys','-t',pane_id,*keys]),f'display-message -p {refused}')
+        if result.strip()==refused:raise TmuxError('owned paste changed before clear; no keys sent')
+
     # -- the status line ---------------------------------------------------------------
 
     def status_line(self, session: str, command: str, interval: int = 5) -> None:

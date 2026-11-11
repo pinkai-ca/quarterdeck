@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from .service import Service
 
 WAIT_SECONDS = 600  # intervention policy, not a claim about normal program latency
-TERMINAL = {"delivered", "cancelled", "carried", "abandoned"}
+TERMINAL = {"delivered", "cancelled", "carried", "abandoned", "withheld"}
 
 
 def identity(seat: Seat) -> dict[str, str | int | None]:
@@ -103,6 +103,9 @@ class Proof:
         def uncertain(reason: str) -> tuple[str, str, bool]:
             return inspection(seat, reason, self.data["attempts"]), "needs a human", False
 
+        if self.data.get('paste_clear') and phase!='withheld':
+            return uncertain('paste/submit outcome uncertain: owned unsubmitted-paste cleanup unconfirmed; never resent')
+
         if phase == "queued" and (not self.same_launch(seat) or (screen and screen.box == "")):
             return None
         if not self.same_launch(seat):
@@ -158,6 +161,16 @@ def validate(data: Any, seat: str) -> None:
         raise ValueError("invalid pending journal")
     if "screen_queue" in data and type(data["screen_queue"]) is not bool:
         raise ValueError("invalid screen queue evidence")
+    if 'paste_clear' in data:
+        from .paste_refusal import validate_clear
+        validate_clear(data['paste_clear'],identity)
+    if 'paste_refusal' in data or data['phase']=='withheld':
+        from .paste_refusal import validate as validate_refusal
+        validate_refusal(data['paste_refusal'])
+        if data['paste_refusal']['context']['identity']!=identity:
+            raise ValueError('paste refusal belongs to a different launch')
+        if data.get('paste_clear',{}).get('stage')!='empty_confirmed':
+            raise ValueError('paste refusal has no confirmed empty cleanup')
     if 'recovery' in data:
         from .recovery import validate as validate_recovery
         validate_recovery(data['recovery'])
@@ -301,7 +314,7 @@ def reconcile(service: Service) -> set[Path]:
                 if result and attempt.result != result:
                     service.attempts.close(attempt, result, "exact payload found in owned record after paste")
                 elif attempt.result is None:
-                    recovered = {"submitted": "pending", "queued": "queued", "cancelled": "withheld", "abandoned": "abandoned"}.get(proof.data["phase"], "blind")
+                    recovered = {"submitted": "pending", "queued": "queued", "cancelled": "withheld", "withheld":"withheld", "abandoned": "abandoned"}.get(proof.data["phase"], "blind")
                     service.attempts.close(attempt, recovered, "recovered durable paste/submit phase; never resent")
     return paths
 
