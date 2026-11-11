@@ -14,13 +14,14 @@ def words(value, fallback='error details unavailable'):
     return text[:160] or fallback
 
 
-def dispositions(inputs, turns):
+def dispositions(inputs, turns, extra=()):
     """Keep native acceptance, annotating only exact error-bound input identities."""
     failures={}
-    for turn in turns:
-        if turn.failure:
-            for item in turn.failure.inputs:
-                failures.setdefault((item.text.strip(),item.at),[]).append(turn.failure)
+    known=[turn.failure for turn in turns if turn.failure]
+    known.extend(f for f in extra if f and f not in known)
+    for failure in known:
+        for item in failure.inputs:
+            failures.setdefault((item.text.strip(),item.at),[]).append(failure)
     for index,item in enumerate(inputs):
         found=failures.get((item.text.strip(),item.at),())
         if not found or item.kind=='queued':

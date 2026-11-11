@@ -108,7 +108,7 @@ class Proof:
             if result and self.data.get("screen_queue"):
                 self.save(screen_queue=False)
             return result
-        except OSError:
+        except (OSError,ValueError,KeyError,TypeError):
             return None  # unreadable evidence never becomes success
 
     def reading(self, seat: Seat, screen: Screen | None, now: datetime | None = None) -> tuple[str, str, bool] | None:

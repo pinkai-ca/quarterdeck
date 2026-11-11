@@ -492,8 +492,8 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
             unknown.append(str(seat.error).partition(';')[0])
             continue
         launched = seat.launched()
-        from .turn_failure import obstruction
-        if reason:=obstruction(seat,store):
+        from .turn_failure import obstruction as failure_obstruction
+        if reason:=failure_obstruction(seat,store):
             turn_errors.append(f'{seat.name}: {reason}')  # law: nothing-waits-silently
             needs_human.append(seat.name)
         from .compaction import status as compaction_status

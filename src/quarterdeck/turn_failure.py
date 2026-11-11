@@ -1,7 +1,9 @@
 """Provider-error visibility and operational metadata, never a lifecycle or replay policy."""
 from datetime import datetime
 import json
+import os
 from pathlib import Path
+import stat
 
 from . import durable,post
 from .harness.base import record_fingerprint
@@ -9,6 +11,27 @@ from .harness.failures import words
 from .harness.types import TurnFailure
 
 FILE='turn-failure.json'
+MAX_BYTES=8192
+
+
+def metadata(path):
+    """Read only a bounded regular operational file, with stable opened identity."""
+    fd=os.open(path,os.O_RDONLY|os.O_NONBLOCK|os.O_NOFOLLOW)
+    try:
+        before=os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink!=1 or before.st_size>MAX_BYTES:
+            raise ValueError('unproved operational metadata')
+        raw=bytearray()
+        while len(raw)<=MAX_BYTES:
+            part=os.read(fd,min(4096,MAX_BYTES+1-len(raw)))
+            if not part:break
+            raw.extend(part)
+        after=os.fstat(fd)
+        stamp=lambda s:(s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns,s.st_ctime_ns,s.st_nlink)
+        if len(raw)>MAX_BYTES or len(raw)!=before.st_size or stamp(before)!=stamp(after):
+            raise ValueError('changing operational metadata')
+        return raw.decode('utf-8')
+    finally:os.close(fd)
 
 
 def identity(seat):
@@ -32,24 +55,32 @@ def publish(seat,record,state,turns,stamp=None):
                          'turn':current.index if current else None}
     path=seat.folder/FILE
     text=json.dumps(data,sort_keys=True)+'\n'
-    if not path.exists() or path.read_text()!=text:
+    try:previous=metadata(path)
+    except (OSError,ValueError):previous=None
+    if previous!=text:
         durable.replace_file(path,text)
 
 
 def cached(seat):
     """Automatic human status reads owned metadata and record stat, never conversation bytes."""
     try:
-        data=json.loads((seat.folder/FILE).read_text())
+        data=json.loads(metadata(seat.folder/FILE))
         if data.get('format')!=1 or data.get('identity')!=identity(seat):
             return None
-        if (seat.folder/'record').read_text().strip()!=data['record']:
+        if metadata(seat.folder/'record').strip()!=data['record']:
             return None
         failure=data['failure']
         if not failure:
             return None
+        if (not isinstance(failure,dict) or failure.get('kind') not in ('provider error','program error')
+                or not isinstance(failure.get('message'),str) or len(failure['message'])>160
+                or failure.get('model_output') is not None and type(failure['model_output']) is not bool
+                or type(failure.get('turn')) is not int or failure['turn']<0):
+            return None
         if data['fingerprint']!=json.loads(json.dumps(record_fingerprint(Path(data['record'])))):
             return TurnFailure('record changed; current error outcome unknown',None,kind='provider error reading unknown')
         at=datetime.fromisoformat(failure['at']) if failure.get('at') else None
+        if at is not None and at.tzinfo is None:return None
         return TurnFailure(words(failure['message']),at,model_output=failure['model_output'],kind=failure['kind'])
     except (OSError,ValueError,KeyError,TypeError):
         return None  # missing/unproved operational metadata establishes no current refusal

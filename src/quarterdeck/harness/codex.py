@@ -231,7 +231,8 @@ def inputs(record: Path) -> list[Input]:
         except (TypeError, ValueError, AttributeError, KeyError):
             found.skip(line, kind, 'malformed input row')
     from .failures import dispositions
-    return dispositions(found,_Reader.read_turns(record))
+    reading,turns=_Reader.read(record)
+    return dispositions(found,turns,(reading.failure,))
 
 
 class _Reader(JsonLinesReader):
@@ -241,7 +242,27 @@ class _Reader(JsonLinesReader):
     def __init__(self, record, snapshot=None):
         self.process_inputs = {}
         self.active_processes = {}
+        self.orphan_failure=None
+        self.unbound_inputs=[]
         super().__init__(record, snapshot)
+
+    @classmethod
+    def read_snapshot(cls,record,snapshot):
+        from dataclasses import replace
+        state,turns=super().read_snapshot(record,snapshot)
+        if not snapshot.raw.endswith('\n') or snapshot.skipped or state.pending_tools is None:
+            # Unknown/truncated rows can hide output. Never mutate cached turns
+            # or accounting when withholding a negative-output conclusion.
+            turns=[replace(t,failure=replace(t.failure,model_output=None))
+                   if t.failure and t.failure.model_output is False else t for t in turns]
+            if state.failure and state.failure.model_output is False:
+                state=replace(state,failure=replace(state.failure,model_output=None))
+        return state,turns
+
+    def state(self):
+        from dataclasses import replace
+        state=super().state()
+        return replace(state,failure=self.orphan_failure) if self.orphan_failure and self.open is None else state
 
     def take(self, entry: dict) -> None:
         kind = entry.get('type')
@@ -267,6 +288,8 @@ class _Reader(JsonLinesReader):
 
     def event(self, sub: str | None, payload: dict, at: datetime | None) -> None:
         if sub == "task_started":
+            self.orphan_failure=None
+            self.unbound_inputs=[]
             if self.open is not None:
                 self.end(at, completed=False)
             self.start_turn({"started": at, "input": "", "tokens": Tokens(), "measurements": 0, "response": False,
@@ -275,9 +298,11 @@ class _Reader(JsonLinesReader):
             info = payload.get("info")
             last = info.get("last_token_usage") if isinstance(info, dict) else None
             self.open["tokens"] = self.open["tokens"] + usage_tokens(last)
-            if isinstance(last,dict) and type(last.get('output_tokens')) is int and last['output_tokens']>0:
+            if isinstance(last,dict) and any(type(last.get(k)) is int and last[k]>0
+                                            for k in ('output_tokens','reasoning_output_tokens')):
                 self.open['model_output']=True
-            elif not isinstance(last,dict) or type(last.get('output_tokens')) is not int:
+            elif not isinstance(last,dict) or any(type(last.get(k)) is not int or last[k]<0
+                                                  for k in ('output_tokens','reasoning_output_tokens')):
                 self.open['model_output']=None if self.open['model_output'] is not True else True
             self.open["measurements"] += 1
             self.open["response"] = False
@@ -298,6 +323,12 @@ class _Reader(JsonLinesReader):
                 self.open['failure']=TurnFailure(words(error.get('message') if isinstance(error,dict) else None),
                                                 at,tuple(self.open['inputs']),output)
             self.end(at)
+        elif sub=='task_complete' and payload.get('error') is not None:
+            from .types import TurnFailure
+            from .failures import words
+            error=payload['error']
+            self.orphan_failure=TurnFailure(words(error.get('message') if isinstance(error,dict) else None),
+                                           at,tuple(self.unbound_inputs),None)
         elif sub in ('agent_message','agent_reasoning','agent_reasoning_raw_content') and self.open is not None:
             self.open['model_output']=True
         elif sub not in ('task_started', 'token_count', *ENDS_TURN, 'user_message', 'agent_message',
@@ -317,6 +348,8 @@ class _Reader(JsonLinesReader):
                 self.tools_known = False
         if sub == "message" and payload.get("role") == "user":
             text = _text(payload.get("content"))
+            if text and not text.startswith('<') and self.open is None:
+                self.unbound_inputs.append(Input(text,at))
             if text and not text.startswith("<") and self.open is not None:
                 self.last_input, self.last_input_at = text, at
                 self.open['inputs'].append(Input(text,at))
