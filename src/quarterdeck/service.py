@@ -746,7 +746,7 @@ class Service:
         pool = self.ship.pools[pool_name]
         if pool.kind in ("key", "endpoint"):  # no usage windows to read: a key is measured by spend, an endpoint has no quota
             return quota.cached_open(self.ship, self.ledger, pool_name, seat)
-        reader = harnesses.get(pool.provider)
+        reader = harnesses.native_for(pool.provider)
         if reader.background_usage or not reader.reads_usage:
             return quota.cached_open(self.ship, self.ledger, pool_name, seat)
         if not self.ledger.usage_known(pool_name, scope=quota.model_scope(seat, pool_name)):

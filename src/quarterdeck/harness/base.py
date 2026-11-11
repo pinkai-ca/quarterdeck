@@ -73,6 +73,7 @@ class Harness(ABC):
 
     name: str
     program: str
+    native_provider: str | None = None
     synthetic: bool = False
     credential_file: str | None = None
     usage_interval: int = 60
@@ -117,10 +118,16 @@ class Harness(ABC):
         By default a program runs on the pools of its own provider, a subscription or a key; a
         program that speaks to any OpenAI-compatible endpoint says so by taking endpoint pools instead.
         """
+        from ..providers import display
+        from . import native_name
+        company = display(pool.provider)
+        native = native_name(pool.provider)
+        if pool.kind == "subscription" and (self.native_provider != pool.provider or self.name != native):
+            return f"pool {pool.name} is a subscription for {company}; use its native harness {native or '(not installed)'}"
         if pool.kind == "endpoint":
-            return f"pool {pool.name} is an endpoint, and {self.name} runs on a {self.name} subscription or key"
-        if pool.provider != self.name:
-            return f"pool {pool.name} pays {pool.provider}, and this seat runs {self.name}"
+            return f"pool {pool.name} is an endpoint operated by {company}; {self.name} requires its native {display(self.native_provider) if self.native_provider else 'provider'} subscription or key"
+        if self.native_provider != pool.provider:
+            return f"pool {pool.name} pays {company}; harness {self.name} requires its own provider's key (native harness {native or 'not installed'})"
         return None
     # -- launch ------------------------------------------------------------------------
 

@@ -20,7 +20,7 @@ def live(token: str, expires_in: float = 3600) -> str:
 def ship_with_pool(tmp_path: Path, text: str) -> tuple[Ship, Pool, Path]:
     pool_dir = tmp_path / "pool"
     pool_dir.mkdir(parents=True)
-    pool = Pool("claude-secondary", "claude", config_dir=pool_dir)
+    pool = Pool("claude-secondary", "anthropic", config_dir=pool_dir)
     source = pool_dir / ".credentials.json"
     source.write_text(text)
     ship = Ship(tmp_path, "t", "operator", tmp_path, {pool.name: pool}, {}, {})
@@ -88,7 +88,7 @@ def test_the_pool_is_the_one_the_seat_was_launched_on(tmp_path: Path):
     ship, pool_a, source_a = ship_with_pool(tmp_path, live("a", 60))
     pool_b_dir = tmp_path / "pool-b"
     pool_b_dir.mkdir()
-    pool_b = Pool("claude-primary", "claude", config_dir=pool_b_dir)
+    pool_b = Pool("claude-primary", "anthropic", config_dir=pool_b_dir)
     (pool_b_dir / ".credentials.json").write_text(live("b", 3600))
     ship = Ship(tmp_path, "t", "operator", tmp_path, {pool_a.name: pool_a, pool_b.name: pool_b}, {}, {})
     pike = seat(tmp_path, "pike", pool_b, launched_pool="claude-secondary")  # declared B since, still running on A
@@ -107,6 +107,6 @@ def test_the_grant_expiry_is_read_as_metadata_and_warned_two_days_ahead(tmp_path
     later = datetime.now(timezone.utc) + timedelta(days=20)
     ship, pool, _ = ship_with_pool(tmp_path / "later", json.dumps({"claudeAiOauth": {"refreshToken": "x", "refreshTokenExpiresAt": int(later.timestamp() * 1000)}}))
     assert credential.login_needed(ship) == []
-    assert credential.grant_expiry(Pool("codex", "codex", config_dir=tmp_path)) is None, "no file, no claim"
-    assert credential.pool_file(Pool("api", "claude", api_key="env:K")) is None
+    assert credential.grant_expiry(Pool("codex", "openai", config_dir=tmp_path)) is None, "no file, no claim"
+    assert credential.pool_file(Pool("api", "anthropic", api_key="env:K")) is None
     assert credential.freshness(pool, tmp_path / "pool" / ".credentials.json") is not None

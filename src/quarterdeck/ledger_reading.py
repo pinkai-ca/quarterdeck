@@ -10,6 +10,7 @@ from .ledger import Budget, Ledger, PLUS_NOTE, UNATTRIBUTED, figure
 from .provenance import UNKNOWN
 from .ship import Ship
 from .usage_cache import Reading, parse
+from . import providers
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,8 @@ def notes(data: dict) -> list[str]:
 def collect(book: Ledger, ship: Ship | None = None, *, by: str | None = None, tools: bool = False) -> dict:
     data = {"available": True, "reason": None, "by": by, "kind": "tools" if tools else "rollup" if by else "pools",
             **uncertainty(book)}
+    if ship is not None:
+        data.update(providers.identities(ship))
     if tools:
         return {**data, "rows": [ToolRow(*r) for r in book.tools()]}
     if by:
@@ -53,7 +56,7 @@ def collect(book: Ledger, ship: Ship | None = None, *, by: str | None = None, to
     walls = book.walls(ship, now)
     pools = []
     for pool in (ship.pools.values() if ship else ()):
-        item = {"name": pool.name, "kind": pool.kind, "provider": pool.provider}
+        item = providers.pool_info(pool)
         if pool.kind == "key":
             budget = Budget.parse(pool.budget)
             since = budget.period_start(now) if budget else now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -77,10 +80,10 @@ def collect(book: Ledger, ship: Ship | None = None, *, by: str | None = None, to
             "walls": walls, "observed_walls": book.quota.walls(now)}
 
 
-def missing(*, by: str | None = None, tools: bool = False) -> dict:
+def missing(*, by: str | None = None, tools: bool = False, ship: Ship | None = None) -> dict:
     return {"available": False, "reason": "no ledger yet: the service writes it once the ship is up",
             "kind": "tools" if tools else "rollup" if by else "pools", "by": by,
-            "rows": [], "windows": [], "pools": []}
+            "rows": [], "windows": [], **(providers.identities(ship) if ship else {"pools": [], "harnesses": []})}
 
 
 def render(data: dict) -> list[str]:
@@ -92,6 +95,9 @@ def render(data: dict) -> list[str]:
         lines = render_tools(data)
     else:
         lines = render_pools(data)
+    if data["kind"] != "pools":
+        lines += [f"pool {p['name']} · provider {p['provider_name']} · {p['kind']} · native harness {p['native_harness'] or 'none'}"
+                  for p in data.get("pools", [])]
     return lines + notes(data)
 
 
@@ -128,7 +134,9 @@ def render_tools(data: dict) -> list[str]:
 
 
 def render_pools(data: dict) -> list[str]:
-    lines = ["pool window · used · freshness · reset · reading time (age)"]
+    lines = [f"pool {p['name']} · provider {p['provider_name']} · {p['kind']} · native harness {p['native_harness'] or 'none'}"
+             for p in data["pools"]]
+    lines.append("pool window · used · freshness · reset · reading time (age)")
     for window in data["windows"]:
         lines.append(window["reading"].describe(window["observed_at"], inspect_command=None) + ("  WALL" if window["wall"] else ""))
     for pool in data["pools"]:
@@ -143,7 +151,7 @@ def render_pools(data: dict) -> list[str]:
     for pool in data["pools"]:
         if pool["kind"] == "endpoint":
             lines.append(f"{pool['name']:<20} {'endpoint':<8} {pool['endpoint']} · no quota, no wall")
-    if len(lines) == 1:
+    if data["usage_absent_reason"]:
         lines.append(data["usage_absent_reason"])
     return lines + [f"{a['pool']} latest usage read: {a['error']}" for a in data["usage_attempts"] if a["error"]] + [
         "wall: " + w for w in data["observed_walls"]]

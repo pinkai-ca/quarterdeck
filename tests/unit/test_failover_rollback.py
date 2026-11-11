@@ -28,7 +28,7 @@ else:
     raise AssertionError('base unexpectedly accepted inline declarations')
 ''', r.seat.ship.folder)
         assert 'requires reversion' in text
-        r.seat.ship.file.write_text(original.replace('pool='+CHOICES, 'pool="first"'))
+        r.seat.ship.file.write_text(original.replace('pool='+CHOICES, 'pool="first"').replace('provider="openai"', 'provider="codex"').replace('provider="anthropic"', 'provider="claude"'))
         text = old('''
 import os, sys
 from datetime import datetime, timedelta, timezone

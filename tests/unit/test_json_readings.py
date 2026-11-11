@@ -125,7 +125,7 @@ def test_brief_sources_and_doctor_checks_are_data(invoke, monkeypatch):
         assert next(s for s in data["sources"] if s["name"] == "your seat")["path"] is None
     assert invoke("brief", "desk", json_output=False) == data["text"]
     monkeypatch.setattr(doctor, "checks", lambda ship: [Check("synthetic", True, "read without calls")])
-    assert invoke("doctor") == {"checks": [{"name": "synthetic", "passed": True, "detail": "read without calls"}]}
+    assert invoke("doctor")["checks"] == [{"name": "synthetic", "passed": True, "detail": "read without calls"}]
     assert invoke("doctor", json_output=False) == "PASS  synthetic · read without calls\n"
 
 

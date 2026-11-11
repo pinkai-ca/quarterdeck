@@ -12,6 +12,10 @@ from .costs import costed
 
 class EndpointHarness(Harness):
     def accepts(self, pool: Pool) -> str | None:
+        if pool.kind == "subscription":
+            from . import native_name
+            from ..providers import display
+            return f"pool {pool.name} is a subscription for {display(pool.provider)}; use its native harness {native_name(pool.provider) or '(not installed)'}"
         if pool.kind != "endpoint":
             return f'pool {pool.name} names no endpoint, and {self.name} runs on an endpoint pool: declare endpoint = "http://host:port/v1"'
         return None

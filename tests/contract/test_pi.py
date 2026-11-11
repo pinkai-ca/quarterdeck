@@ -102,7 +102,7 @@ def test_the_keys_the_controls_and_the_pool_it_runs_on():
     assert [(c.name, c.launch, c.session, c.confirmed_by) for c in harness.controls()] == [
         ("model", "--model <value>", None, "record"), ("effort", "--thinking <value>", None, "record")]
     assert harness.accepts(Pool("local", "local", endpoint="http://127.0.0.1:8000/v1")) is None
-    assert "names no endpoint" in harness.accepts(Pool("claude", "claude", config_dir=Path("/x")))
+    assert "native harness claude" in harness.accepts(Pool("claude", "claude", config_dir=Path("/x")))
 
 
 def test_the_record_reads_four_turns_a_steered_message_tools_and_the_aborted_step():

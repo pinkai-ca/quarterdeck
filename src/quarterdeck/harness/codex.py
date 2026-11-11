@@ -482,6 +482,7 @@ class CodexHarness(Harness):
         return ((None, "5h"), (None, "7d"))
 
     name = "codex"
+    native_provider = "openai"
     program = "codex"
     credential_file = "auth.json"
     home_variable = "CODEX_HOME"

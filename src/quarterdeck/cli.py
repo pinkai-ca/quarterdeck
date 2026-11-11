@@ -461,7 +461,7 @@ def cmd_ledger(args: argparse.Namespace) -> Reading:
     ship = load_ship(args)
     book = ledger.Ledger.reading(ship.runtime / "ledger.sqlite")  # a reading never writes the book
     if book is None:
-        data = ledger_reading.missing(by=args.by, tools=args.tools)
+        data = ledger_reading.missing(by=args.by, tools=args.tools, ship=ship)
     else:
         with book:
             data = ledger_reading.collect(book, ship, by=args.by, tools=args.tools)
@@ -490,7 +490,8 @@ def cmd_doctor(args: argparse.Namespace) -> Reading | list[str]:
         found = doctor.checks(ship)
         lines += ["", "checked again:"] + [str(c) for c in found]
     args.exit_code = 0 if all(c.passed for c in found) else 1
-    return lines if args.fix else Reading({"checks": found}, lambda d: [str(c) for c in d["checks"]])
+    from .providers import identities
+    return lines if args.fix else Reading({"checks": found, **identities(ship)}, lambda d: [str(c) for c in d["checks"]])
 
 
 def cmd_upgrade(args: argparse.Namespace) -> list[str]:

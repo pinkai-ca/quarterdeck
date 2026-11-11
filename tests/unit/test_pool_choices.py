@@ -9,11 +9,11 @@ def declaration(tmp_path, choices):
     (tmp_path / 'ship.toml').write_text('''[ship]
 name="synthetic"
 [pools.first]
-provider="codex"
+provider="openai"
 [pools.second]
-provider="claude"
+provider="anthropic"
 [pools.third]
-provider="claude"
+provider="anthropic"
 [sessions.crew]
 [seats.worker]
 session="crew"
@@ -41,7 +41,7 @@ def test_explicit_program_options_do_not_inherit_the_previous_program(tmp_path):
     ('["first", "first"]', 'unique'),
     ('["first", {pool="first",harness="codex",model="other"}]', 'unique'),
     ('["first", {pool="second",harness="claude"}]', 'explicit harness and model'),
-    ('["first", {pool="second",harness="codex",model="other"}]', 'pays claude'),
+    ('["first", {pool="second",harness="codex",model="other"}]', 'subscription for Anthropic; use its native harness claude'),
     ('["first", {pool="missing",harness="claude",model="other"}]', 'not declared'),
     ('["first", {pool="second",harness="claude",model="other",settings=17}]', 'settings'),
 ])

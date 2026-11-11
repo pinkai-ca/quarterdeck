@@ -43,6 +43,17 @@ class Pool:
     price: dict | None = None  # explicit USD rates per million tokens; validated on load
     output: int | None = None  # endpoint response allowance; omission preserves the native adapter default
 
+    def __post_init__(self):
+        if not isinstance(self.provider, str) or not self.provider.strip():
+            raise ShipError(f"pool {self.name}: provider must name a company or declared endpoint operator")
+        from .providers import canonical
+        object.__setattr__(self, "_provider_input", self.provider)
+        object.__setattr__(self, "provider", canonical(self.provider))
+
+    @property
+    def declared_provider(self) -> str:
+        return self._provider_input
+
     @property
     def kind(self) -> str:
         if self.endpoint:
@@ -272,9 +283,9 @@ def _validate(ship: Ship) -> None:
     from . import harness as harnesses  # the adapters import this module, so it is imported here, not above
 
     for pool in ship.pools.values():
-        if pool.kind != "endpoint" and pool.provider not in harnesses.NAMES:
+        if pool.kind != "endpoint" and harnesses.native_name(pool.provider) is None:
             raise ShipError(f"pool {pool.name}: unsupported {pool.kind} provider {pool.provider!r}; "
-                            f"choose one of {', '.join(harnesses.NAMES)}, or declare an endpoint URL")
+                            f"choose a company with a native harness, or declare an endpoint URL")
         if pool.config_dir and pool.api_key:
             raise ShipError(f"pool {pool.name}: declare config_dir (or home) or api_key, not both")
         if pool.endpoint and pool.config_dir:

@@ -17,7 +17,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from . import credential, endpoint, harness as harnesses, install, post, sandbox, servicectl, watch
+from . import credential, endpoint, harness as harnesses, install, post, providers, sandbox, servicectl, watch
 from .drill import Check, wait_for
 from .harness.base import key_environment, program_version
 from .seat import program_path, temporary_seat
@@ -46,7 +46,15 @@ def checks(ship: Ship) -> list[Check]:
         proven = version is not None and (ship.runtime / "proven" / f"{name}-{version}").exists()
         note = "synthetic program" if harness.synthetic else ("proven by qd check" if proven else f"unproven: qd check {name} proves it")
         found.append(Check(f"program {name}", True, f"{program} {version or 'version unknown'} · {note}"))
-    found += [pool_check(pool) for pool in ship.pools.values()]
+    for pool in ship.pools.values():
+        checked = pool_check(pool)
+        native = harnesses.native_name(pool.provider)
+        identity = f"provider {providers.display(pool.provider)} · {pool.kind} · native harness {native or 'none'}"
+        found.append(Check(checked.name, checked.passed, f"{identity} · {checked.detail}"))
+        if pool.declared_provider != pool.provider:
+            found.append(Check(f"provider spelling {pool.name}", True,
+                               f'in [pools.{pool.name}] change provider = "{pool.declared_provider}" to provider = "{pool.provider}"; '
+                               "the old spelling remains readable for compatibility"))
     if any(ship.jailed(seat.for_pool(pool), ship.pools[pool])
            for seat in ship.seats.values() for pool in seat.pools):
         version = program_version((sandbox.PROGRAM, "--version"))

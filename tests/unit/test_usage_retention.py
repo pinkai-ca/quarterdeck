@@ -224,7 +224,7 @@ def test_service_retention_partial_cadence_selection_presentation_and_observed_w
     original = tuple_of(rows(svc.ledger)["7d"])
     # Selection and status cannot make provider calls, even for a reader without usage support.
     seat = SimpleNamespace(harness=SimpleNamespace(reads_usage=False),
-                           spec=SimpleNamespace(for_pool=lambda name: SimpleNamespace(harness=ship.pools[name].provider, model=None)))
+                           spec=SimpleNamespace(for_pool=lambda name: SimpleNamespace(harness="antigravity", model=None)))
     assert svc.known_open(seat, "google")
     doc["command"]["data"]["groups"][-1]["buckets"][0]["id"] = "synthetic-conflict"
     svc.ledger.quota.usage_read("google", datetime.now(timezone.utc) - timedelta(seconds=301), None)
@@ -291,7 +291,7 @@ def test_inactive_non_google_fallback_recovers_at_attempt_cadence_across_restart
     def wrong_program(*args):
         pytest.fail('fallback usage was read by the source program')
     seat = SimpleNamespace(name="worker", harness=SimpleNamespace(reads_usage=False, usage=wrong_program),
-                           spec=SimpleNamespace(for_pool=lambda name: SimpleNamespace(harness=ship.pools[name].provider, model=None)))
+                           spec=SimpleNamespace(for_pool=lambda name: SimpleNamespace(harness="antigravity", model=None)))
     # The old good timestamp is only ten minutes old; retry must not wait an hour.
     assert not svc.known_open(seat, "fallback") and calls == [now]
     assert svc.ledger.pool_windows("fallback") == original
@@ -324,7 +324,7 @@ def test_fallback_key_and_no_usage_cases_do_not_query_provider(tmp_path: Path) -
     def forbidden(pool):
         raise AssertionError("key/no-usage pool must not query subscription usage")
     seat = SimpleNamespace(harness=SimpleNamespace(reads_usage=True, usage=forbidden),
-                           spec=SimpleNamespace(for_pool=lambda name: SimpleNamespace(harness=ship.pools[name].provider, model=None)))
+                           spec=SimpleNamespace(for_pool=lambda name: SimpleNamespace(harness="antigravity", model=None)))
     assert svc.known_open(seat, "key")
     seat.harness.reads_usage = False
     assert svc.known_open(seat, "unmeasured")

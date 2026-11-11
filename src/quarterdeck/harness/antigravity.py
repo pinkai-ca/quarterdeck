@@ -36,6 +36,7 @@ QUEUED_LINE = re.compile(r"^▸ (.*?)\s*\(alt\+m to send immediately\)\s*$")
 class AntigravityHarness(Harness):
     human_tool_policy = "Antigravity: no supported native question-tool exclusion proved; interactive asks still need a human."
     name = "antigravity"
+    native_provider = "google"
     program = "agy"
     home_variable = None  # no home switch: the seat runs in the program's own state directory
     reads_usage = True

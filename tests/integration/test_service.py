@@ -266,7 +266,7 @@ def test_every_turn_is_accounted_by_pool_seat_and_order(ship: shipmod.Ship, tmux
 
 def test_a_seat_moves_on_at_a_wall_and_stays(ship: shipmod.Ship, tmux: Tmux, capsys):
     text = (ship.folder / "ship.toml").read_text()
-    text = text.replace('[pools.fake]\nprovider = "fake"', '[pools.fake]\nprovider = "fake"\n\n[pools.fake-2]\nprovider = "fake"')
+    text = text.replace('[pools.fake]\nprovider = "synthetic"', '[pools.fake]\nprovider = "synthetic"\n\n[pools.fake-2]\nprovider = "synthetic"')
     text = text.replace('[seats.captain]\nsession = "bridge"\nrole = "captain"\npersona = "Picard"\nharness = "fake"\npool = "fake"',
                         '[seats.captain]\nsession = "bridge"\nrole = "captain"\npersona = "Picard"\nharness = "fake"\npool = ["fake", "fake-2"]')
     (ship.folder / "ship.toml").write_text(text)

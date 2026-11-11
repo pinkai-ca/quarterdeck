@@ -6,7 +6,7 @@ It is a control plane and nothing more. It is not the agents, not the code they 
 
 ## The shape of it
 
-A **ship** is one file, `ship.toml`, naming the tmux sessions, the seats in each, and every seat's role, program, pool, model and persona. A **pool** is one way of paying: a subscription, named by its credential directory; an API key, named by the variable that holds it; or an endpoint, a model served at a URL, local or remote, with no quota and no credential of its own. A **seat** is one running program in one pane under one role, with a home of its own built from the ship's files and nothing of the user's. Orders, reports, questions, answers and acknowledgments are immutable files in the **post**; the ship's one service types each message in full into its addressee's pane, through one door, or hands it to the seat's own watch in a session the human owns. The **watch** reads a seat from its record first and its screen second. The **ledger** accounts every turn by pool, by seat and by order, with the tool calls it made and what it cost the machine. Fourteen **laws** say what the framework itself guarantees, each tagged where the code enforces it and where a test tries to break it; `qd laws` lists them. The **drill** proves the whole thing on a fake harness, and `qd check` proves an installed program live.
+A **ship** is one file, `ship.toml`, naming the tmux sessions, the seats in each, and every seat's role, program, pool, model and persona. A **harness** is the terminal coding program. A **provider** is the company whose models or plans a pool uses, or the declared operator of its endpoint. A **pool** is one way of paying that provider: a subscription, named by its credential directory; an API key, named by the variable that holds it; or an endpoint, a model served at a URL, local or remote, with no quota and no credential of its own. A **seat** is one running program in one pane under one role, with a home of its own built from the ship's files and nothing of the user's. Orders, reports, questions, answers and acknowledgments are immutable files in the **post**; the ship's one service types each message in full into its addressee's pane, through one door, or hands it to the seat's own watch in a session the human owns. The **watch** reads a seat from its record first and its screen second. The **ledger** accounts every turn by pool, by seat and by order, with the tool calls it made and what it cost the machine. Fourteen **laws** say what the framework itself guarantees, each tagged where the code enforces it and where a test tries to break it; `qd laws` lists them. The **drill** proves the whole thing on a fake harness, and `qd check` proves an installed program live.
 
 Read [Design decisions](docs/DECISIONS.md) for the choices and their code and test evidence. The full design is `docs/DESIGN.md`.
 
@@ -51,7 +51,7 @@ by a newline. No table or Markdown wrapper is used for structured readings:
 
 - `status` and `watch` without a seat: seat readings, open order messages, and
   status facts. `status --line`: the facts themselves, including waiting counts,
-  warnings and the enabled cached usage windows.
+  operational warnings. Detailed status and ledger show cached provider allowances.
 - `watch <seat>`: the seat reading, full record state and parsed screen, with
   separate record absence/error fields. Observed model, declared model, harness
   and version remain separate; an unobserved value is `null`.
@@ -77,6 +77,10 @@ pair and latest error; `current`, `complete`, `reason` and `age_seconds` describ
 freshness at `observed_at`. Unknown token/price semantics and headline selection
 are the same as in text. Mutating commands, including `watch --save-screen` and
 `doctor --fix`, retain their proof output.
+
+Pool providers use company identifiers such as `anthropic`, `openai` and `google`; seats still name `claude`, `codex` and `antigravity` as harnesses. Subscriptions run only in the company's native harness. A native harness takes its own company's key; open harnesses OpenCode and pi take compatible endpoint pools with an optional key. An endpoint's operator is explicitly declared, regardless of the model's brand. Legacy native harness spellings on pools remain readable; `qd doctor` names the exact edits. Install the new reader before editing those spellings; restore old spellings and validate before downgrading.
+
+Structured readings separate `provider_id`/`provider_name`, harness/program and paying pool. Status, watch, doctor and Ledger add declared `pools` and `harnesses` metadata; Ledger replaces `pools[].provider` with `pools[].provider_id`. Seat readings add company identity and executable `program`. Native record/model provider IDs and stored launch harnesses retain their protocol meaning. The operational status line and its facts are unchanged.
 
 ### Seat cards
 

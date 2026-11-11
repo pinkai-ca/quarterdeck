@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import secrets
 
-from . import harness as harnesses, post, standing
+from . import harness as harnesses, post, providers, standing
 from .door import Door
 from .drill import Check, wait_for
 from .seat import Seat, temporary_seat
@@ -29,7 +29,8 @@ def check(ship: Ship, name: str, tmux: Tmux) -> list[Check]:
     if pool is None:
         raise ShipError(f"no pool in {ship.file} that {name} runs on; declare one to check it against")
     version = harness.version()
-    checks = [Check("installed", version is not None, f"{name} {version or 'not found on the PATH'}")]
+    checks = [Check("installed", version is not None,
+                    f"{name} {version or 'not found on the PATH'} · provider {providers.display(pool.provider)} · pool {pool.name}")]
     if version is None:
         return checks
     like = next((s.for_pool(pool.name) for s in ship.seats.values()

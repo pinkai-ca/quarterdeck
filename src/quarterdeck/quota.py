@@ -49,7 +49,7 @@ def cached_open(ship, book, pool_name: str, seat=None) -> bool:
     if pool.kind in ("key", "endpoint"):
         return not book.walled(pool_name, ship)
     scope = model_scope(seat, pool_name) if seat is not None else None
-    reader = harnesses.get(pool.provider)
+    reader = harnesses.native_for(pool.provider)
     if reader.background_usage or reader.reads_usage:
         return book.usage_known(pool_name, scope=scope) and not book.walled(pool_name, ship, scope=scope)
     return not book.walled(pool_name, ship, scope=scope)
@@ -206,7 +206,7 @@ def refresh_declared(service) -> None:
     for pool in service.ship.pools.values():
         if pool.kind != "subscription":
             continue
-        reader = harnesses.get(pool.provider)
+        reader = harnesses.native_for(pool.provider)
         if not reader.background_usage or not service.ledger.quota.due(pool.name, datetime.now(timezone.utc), reader.usage_interval):
             continue
         key = reader.shared_usage_key(pool)
@@ -216,7 +216,7 @@ def refresh_declared(service) -> None:
             for seat in service.resolved_seats():
                 launched = seat.launched()
                 if (launched is not None and launched.pool == pool.name
-                        and launch_reader(launched) == pool.provider and seat.spec.harness == pool.provider):
+                        and launch_reader(launched) == reader.name and seat.spec.harness == reader.name):
                     sources.append((seat.record(), launched.when))
             usage = replace(reader.usage_from_records(sources, datetime.now(timezone.utc))
                             or Usage((), datetime.now(timezone.utc), "provider usage unavailable"), called=False)

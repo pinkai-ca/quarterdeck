@@ -485,6 +485,7 @@ class ClaudeHarness(Harness):
     """Claude Code, proven on 2.1.317."""
 
     name = "claude"
+    native_provider = "anthropic"
     program = "claude"
     home_variable = "CLAUDE_CONFIG_DIR"
     keys = Keys(submit="Enter", send_now=("C-x", "C-s"), interrupt="Escape")

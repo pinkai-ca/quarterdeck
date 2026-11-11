@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from . import credential, ledger, pending as pending_delivery, post, quota, record_owner, recovery, servicectl as service
+from . import credential, ledger, pending as pending_delivery, post, providers, quota, record_owner, recovery, servicectl as service
 from .door import Door, Reading
 from .harness.base import same_name
 from .seat import Seat, UnresolvedSeat, seats
@@ -92,6 +92,9 @@ class SeatReading:
     declared_model: str | None = None
     version: str | None = None
     compaction: str | None = None
+    provider_id: str | None = None
+    provider_name: str | None = None
+    program: str | None = None
 
     @property
     def model_text(self) -> str:
@@ -137,7 +140,8 @@ def reading(seat: Seat | UnresolvedSeat, store: post.Store | None = None) -> Sea
     pool = launched.pool if launched and launched.pool in seat.ship.pools else seat.pool.name
     from .compaction import status as compaction_status
     return SeatReading(seat.name, act, door, order, tokens_today(seat), pool, running,
-                       seat.harness.name, seat.spec.model, version, compaction_status(seat))
+                       seat.harness.name, seat.spec.model, version, compaction_status(seat),
+                       seat.ship.pool(pool).provider, providers.display(seat.ship.pool(pool).provider), seat.harness.program)
 
 
 def tokens_today(seat: Seat | UnresolvedSeat) -> ledger.Count:
@@ -205,15 +209,15 @@ def status_reading(ship: Ship, tmux: Tmux) -> dict:
     store = post.Store(ship.runtime)
     return {"service": service_state(ship.runtime), "seats": [reading(seat, store) for seat in seats(ship, tmux, False)],
             "open_orders": [m for m in store.all() if m.kind == "order" and store.is_open(m)],
-            "facts": facts(ship, tmux), "usage": headline_readings(ship)}
+            "facts": facts(ship, tmux), "usage": headline_readings(ship), **providers.identities(ship)}
 
 
 def render_table(data: dict) -> list[str]:
     state = data["service"]
     head = f"service {state}" + ("; qd up restarts it" if state == "down" else "")
-    rows = [head, f"{'seat':<10} {'activity':<24} {'door':<40} {'order':<10} {'today':>8}  pool · model"]
+    rows = [head, f"{'seat':<10} {'activity':<24} {'door':<40} {'order':<10} {'today':>8}  harness · provider · pool · model"]
     for r in data["seats"]:
-        rows.append(f"{r.name:<10} {str(r.activity):<24} {str(r.door):<40} {r.order_text:<10} {str(r.today):>8}  {r.pool} · {r.model_text}")
+        rows.append(f"{r.name:<10} {str(r.activity):<24} {str(r.door):<40} {r.order_text:<10} {str(r.today):>8}  {r.harness_text} · {r.provider_name or 'unknown'} · {r.pool} · {r.model_text}")
         if r.compaction:
             rows.append(f"  {r.compaction}")
     rows.append(f"open orders: {len(data['open_orders'])}")
@@ -232,7 +236,7 @@ def seat_reading(seat: Seat | UnresolvedSeat) -> dict:
         return dict(seat=r, record=None, state=None, record_error=str(seat.error),
                     receipt_skips=dict(total=0, counts=[], examples=[], omitted=0),
                     receipt_error=str(seat.error), record_absent=str(seat.error),
-                    record_limits=None, screen=None, usage=headline_readings(seat.ship))
+                    record_limits=None, screen=None, usage=headline_readings(seat.ship), **providers.identities(seat.ship))
     record = seat.record()
     state, error = None, None
     skips, receipt_error = dict(total=0, counts=[], examples=[], omitted=0), None
@@ -251,14 +255,14 @@ def seat_reading(seat: Seat | UnresolvedSeat) -> dict:
             "receipt_skips": skips, "receipt_error": receipt_error,
             "record_absent": seat.join().reason if record is None else None,
             "record_limits": getattr(seat.harness, "record_limits", None),
-            "screen": Door(seat).screen(), "usage": headline_readings(seat.ship)}
+            "screen": Door(seat).screen(), "usage": headline_readings(seat.ship), **providers.identities(seat.ship)}
 
 
 def render_full(data: dict) -> list[str]:
     r = data["seat"]
     today = f"{r.today} tokens today" + (" (+: some turns were not measured)" if r.today.unmeasured else "")
     lines = [f"{r.name}: {r.activity} · door {r.door} · order {r.order_text} · {today}",
-             f"  {r.harness_text} · pool {r.pool} · model {r.model_text}"]
+             f"  {r.harness_text} · provider {r.provider_name or 'unknown'} · pool {r.pool} · model {r.model_text}"]
     if r.compaction:
         lines.append(f"  {r.compaction}")
     record, state = data["record"], data["state"]
@@ -356,7 +360,7 @@ def headline_readings(ship: Ship) -> list[dict]:
     from . import harness as harnesses
     from .ledger_reading import window_reading
 
-    readers = {p.name: harnesses.get(p.provider) for p in ship.pools.values() if p.kind == "subscription"}
+    readers = {p.name: harnesses.native_for(p.provider) for p in ship.pools.values() if p.kind == "subscription"}
     selected = {name: reader for name, reader in readers.items() if reader.reads_usage and reader.headline_windows()}
     if not selected:
         return []

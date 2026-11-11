@@ -50,7 +50,7 @@ def test_the_default_ship_is_the_smallest_crew_on_real_programs():
     assert ship.workspace == folder.parent.parent, "the crew works on the project folder the ship sits in"
     assert [(s.name, s.role, s.harness, s.persona) for s in ship.seats.values()] == [
         ("desk", "desk", "claude", "Maeve"), ("captain", "captain", "codex", "Picard"), ("engineering", "engineering", "codex", "Scott")]
-    assert {p.provider for p in ship.pools.values()} == {"claude", "codex"}
+    assert {p.provider for p in ship.pools.values()} == {"anthropic", "openai"}
     assert ship.session_of(ship.seat("desk")).human and not ship.session_of(ship.seat("captain")).human
     assert "the desk lands it" in (folder / "orders.md").read_text()
 
@@ -247,10 +247,10 @@ pool = "fake"
 def test_a_seat_whose_program_cannot_run_on_its_pool_is_refused_at_load(tmp_path: Path):
     codex = LOCAL + '[pools.codex]\nprovider = "codex"\nhome = "~/.codex"\n'
     for seat, reason in (
-        ('harness = "claude"\npool = "local-a"', "seat a: pool local-a is an endpoint, and claude runs on a claude subscription or key"),
-        ('harness = "opencode"\npool = "codex"', "seat a: pool codex names no endpoint, and opencode runs on an endpoint pool"),
-        ('harness = "pi"\npool = "fake"', "seat a: pool fake names no endpoint, and pi runs on an endpoint pool"),
-        ('harness = "fake"\npool = "codex"', "seat a: pool codex pays codex, and this seat runs fake"),
+        ('harness = "claude"\npool = "local-a"', "seat a: pool local-a is an endpoint operated by local; claude requires its native Anthropic subscription or key"),
+        ('harness = "opencode"\npool = "codex"', "seat a: pool codex is a subscription for OpenAI; use its native harness codex"),
+        ('harness = "pi"\npool = "fake"', "seat a: pool fake is a subscription for Synthetic; use its native harness fake"),
+        ('harness = "fake"\npool = "codex"', "seat a: pool codex is a subscription for OpenAI; use its native harness codex"),
         ('harness = "fake"\npool = []', "seat a: declare a pool"),
     ):
         (tmp_path / "ship.toml").write_text(codex + f'[seats.a]\nsession = "crew"\n{seat}\n')

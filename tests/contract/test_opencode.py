@@ -203,7 +203,7 @@ def test_the_keys_the_controls_and_the_pool_it_runs_on():
     assert not harness.reads_usage and not harness.remote_control
     assert [c.name for c in harness.controls()] == ["model"] and harness.control("model").session is None
     assert harness.accepts(Pool("local", "local", endpoint="http://127.0.0.1:8000/v1")) is None
-    assert "names no endpoint" in harness.accepts(Pool("codex", "codex", config_dir=Path("/x")))
+    assert "native harness codex" in harness.accepts(Pool("codex", "codex", config_dir=Path("/x")))
     assert "names no endpoint" in harness.accepts(Pool("api", "openai", api_key="env:KEY"))
 
 

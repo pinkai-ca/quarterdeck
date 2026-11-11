@@ -9,11 +9,11 @@ operator = "operator"            # what this ship calls its human
 workspace = "../.."              # the project the crew works on: here, the project folder this ship sits in
 
 [pools.claude]
-provider = "claude"
+provider = "anthropic"
 config_dir = "~/.claude"         # the Claude Code sign-in on this machine
 
 [pools.codex]
-provider = "codex"
+provider = "openai"
 home = "~/.codex"                # the Codex sign-in on this machine
 
 [sessions.bridge]

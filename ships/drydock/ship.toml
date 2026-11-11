@@ -6,7 +6,7 @@ name = "drydock"
 operator = "operator"            # what this ship calls its human
 
 [pools.fake]
-provider = "fake"                # the fake harness needs no credential
+provider = "synthetic"                # the fake harness needs no credential
 
 [sessions.bridge]
 title = "Bridge"

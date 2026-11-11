@@ -129,7 +129,7 @@ with Ledger(Path(sys.argv[1])) as book:
         assert all(r.current(at+timedelta(seconds=301)) for r in rows)
         assert book.walled("synthetic") == spent
         assert not book.quota.usage_notes()
-        ship = Ship(tmp_path, "synthetic", "operator", tmp_path, {"synthetic": Pool("synthetic", "claude")},
+        ship = Ship(tmp_path, "synthetic", "operator", tmp_path, {"synthetic": Pool("synthetic", "anthropic")},
                     {"crew": Session("crew", "Crew")}, {})
         seat = Seat(ship, SeatSpec("worker", "crew", "worker", "claude", ("synthetic",), model="claude-fable-5-2"), SimpleNamespace())
         assert quota.cached_open(ship, book, "synthetic", seat) == (not spent)

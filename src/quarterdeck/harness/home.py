@@ -38,9 +38,9 @@ def _newer(pool: Pool, link: Path, source: Path | None) -> bool:
     """A readable detached refresh: newer than the pool's own, or with no shared file to compare."""
     if link.is_symlink() or not link.exists():
         return False
-    from . import get  # the adapters import this module
+    from . import native_for  # the adapters import this module
 
-    reader = get(pool.provider)
+    reader = native_for(pool.provider)
     detached = reader.freshness(link)
     current = reader.freshness(source) if source is not None and source.exists() else None
     return detached is not None and (current is None or detached > current)

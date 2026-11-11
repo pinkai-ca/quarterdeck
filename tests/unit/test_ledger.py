@@ -99,10 +99,10 @@ def test_a_key_pools_budget_is_a_wall_when_its_spend_is_stated(tmp_path: Path):
     assert book.walls(ship) == ["anthropic-api budget"] and book.walled("anthropic-api", ship)
     assert book.walls() == [], "no ship, no budgets to know"
     lines = ledgermod.pools_table(book, ship)
-    assert lines[1].startswith("anthropic-api        spend    250.00 USD of 200 USD/month") and lines[1].endswith("WALL")
+    assert any(line.startswith("anthropic-api        spend    250.00 USD of 200 USD/month") and line.endswith("WALL") for line in lines)
     unpriced = claude.Turn(1, now - timedelta(minutes=1), now, "x", "y", "m", claude.Tokens())
     book.ingest("worker", "anthropic-api", tmp_path / "r2.jsonl", [unpriced], Store(tmp_path))
-    assert "1 turns with no price" in ledgermod.pools_table(book, ship)[1]
+    assert "1 turns with no price" in "\n".join(ledgermod.pools_table(book, ship))
     book.close()
     import pytest
 

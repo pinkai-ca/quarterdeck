@@ -27,7 +27,7 @@ WARN_AHEAD = timedelta(hours=48)
 def pool_file(pool: Pool) -> Path | None:
     if pool.kind == "endpoint":
         return None
-    name = harnesses.get(pool.provider).credential_file
+    name = harnesses.native_for(pool.provider).credential_file
     return pool.config_dir / name if pool.config_dir and name else None
 
 
@@ -35,7 +35,7 @@ def freshness(pool: Pool, path: Path) -> tuple[float, float] | None:
     """The pool adapter judges a detached credential; endpoint labels name no credential reader."""
     if pool.kind == "endpoint":
         return None
-    return harnesses.get(pool.provider).freshness(path)
+    return harnesses.native_for(pool.provider).freshness(path)
 
 
 def reseed(ship: Ship, seats: list[Seat]) -> list[str]:
@@ -92,7 +92,7 @@ def _install(winner: Path, source: Path) -> None:
 def grant_expiry(pool: Pool) -> datetime | None:
     """The grant's expiry, when the pool's adapter can read it."""
     source = pool_file(pool)
-    return harnesses.get(pool.provider).grant_expiry(source) if source is not None else None
+    return harnesses.native_for(pool.provider).grant_expiry(source) if source is not None else None
 
 
 def login_needed(ship: Ship, now: datetime | None = None) -> list[tuple[str, str]]:

@@ -24,6 +24,7 @@ DIALOG = re.compile(r"^┌ ([^─]+?) ─")
 
 class FakeHarness(Harness):
     name = "fake"
+    native_provider = "synthetic"
     program = sys.executable
     synthetic = True
     home_variable = "QD_FAKE_HOME"

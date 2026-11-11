@@ -21,7 +21,7 @@ def test_the_drydock_passes_every_check_on_a_machine_that_runs_the_tests(drydock
     assert all(c.passed for c in found), [str(c) for c in found if not c.passed]
     assert [c.name for c in found][:3] == ["ship file", "tmux", "git"]
     assert next(c.detail for c in found if c.name == "program fake").startswith(sys.executable)
-    assert next(c.detail for c in found if c.name == "pool fake") == "the program holds its own sign-in"
+    assert next(c.detail for c in found if c.name == "pool fake").endswith("the program holds its own sign-in")
     assert "service" not in [c.name for c in found], "no runtime yet, so nothing to say about its service"
     code, out = run(capsys, "--ship", str(drydock), "doctor")
     assert code == 0 and out.startswith("PASS  ship file · ship.toml: 3 seats, 1 pools, 3 sessions") and "FAIL" not in out

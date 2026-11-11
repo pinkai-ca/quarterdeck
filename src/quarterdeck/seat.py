@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import durable, harness as harnesses, input_receipt, pending, post, record_owner, ship as shipmod, standing
+from . import providers, durable, harness as harnesses, input_receipt, pending, post, record_owner, ship as shipmod, standing
 from .harness.base import Harness, Join
 from .provenance import remember_launch
 from .pricing import save_price, saved_price
@@ -164,6 +164,7 @@ class Seat:
         from . import credential
 
         selected = self.spec.for_pool(pool)
+        self._accept_pool(selected, self.ship.pool(pool))
         same_program = selected.harness == self.spec.harness
         if same_program:
             self.harness.preflight_resume(selected, self.home, self._resume_id)
@@ -380,7 +381,15 @@ class Seat:
         with self._lifecycle():
             return self._up(resume)
 
+    def _accept_pool(self, spec: SeatSpec | None = None, pool: Pool | None = None) -> None:
+        selected = spec or self.spec
+        paid = pool or self.pool
+        reader = harnesses.get(selected.harness)
+        if reason := reader.accepts(paid):
+            raise ShipError(f"{self.name}: {reason}")
+
     def _up(self, resume: bool = True) -> str:
+        self._accept_pool()
         from .recovery import require_clear
         require_clear(self)
         previous = self.launched()
@@ -441,7 +450,7 @@ class Seat:
         how = f"resumed {resume_id[:8]}" if resume_id else "fresh"
         carried_note = f" · {len(carried)} open message{'s' if len(carried) != 1 else ''} carried" if carried else ""
         jail_note = " · jailed: the operator's home hidden, the workspace writable" if jailed else ""
-        return f"{self.name} up in {pane.id} · {self.harness.name} {launched.version or ''} · pool {pool.name} · {how}{carried_note}{jail_note}"
+        return f"{self.name} up in {pane.id} · {self.harness.name} {launched.version or ''} · provider {providers.display(pool.provider)} · pool {pool.name} · {how}{carried_note}{jail_note}"
 
     def _resume_id(self) -> str | None:
         record = self.record()
@@ -550,6 +559,7 @@ class Seat:
     def restart(self) -> str:
         """Relaunch with resume: the conversation continues in a new process."""
         with self._lifecycle():
+            self._accept_pool()
             from .recovery import require_clear
             require_clear(self)
             self.harness.preflight_resume(self.spec, self.home, self._resume_id)
@@ -558,6 +568,7 @@ class Seat:
     def fresh(self) -> str:
         """Relaunch without resume: a new conversation that begins with the brief and the open messages."""
         with self._lifecycle():
+            self._accept_pool()
             from .recovery import require_clear
             require_clear(self)
             return self._down() + "\n" + self._up(resume=False)

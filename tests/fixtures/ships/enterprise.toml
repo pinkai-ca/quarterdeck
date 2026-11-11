@@ -4,23 +4,23 @@ operator = "Admiral"                 # what this ship calls its human
 workspace = "~/dev/quarterdeck"      # the default working directory of every seat
 
 [pools.claude-primary]
-provider = "claude"
+provider = "anthropic"
 config_dir = "~/.claude"
 
 [pools.claude-secondary]
-provider = "claude"
+provider = "anthropic"
 config_dir = "~/.config/claude-second"
 
 [pools.codex]
-provider = "codex"
+provider = "openai"
 home = "~/.codex"
 
 [pools.google]
-provider = "antigravity"
+provider = "google"
 config_dir = "~/.config/agy"
 
 [pools.anthropic-api]
-provider = "claude"
+provider = "anthropic"
 api_key = "env:ANTHROPIC_API_KEY"     # the key is named, never written here
 budget = "200 USD/month"             # optional: a wall when spent
 
