@@ -117,11 +117,17 @@ def test_headline_window_data_reaches_every_reading(invoke, drydock, monkeypatch
         assert data["usage"][0]["reading"]["used"] == .25
         assert data["usage"][0]["reading"]["window"] == "7d"
         assert data["usage"][0]["current"] is True
-        assert "fake 7d 25%" in invoke(*command, text=True)
+        text = invoke(*command, text=True)
+        if command == ("status", "--line"):
+            assert "fake 7d" not in text and "usage" not in text and "reset" not in text
+        else:
+            assert "fake 7d 25%" in text
     with Ledger(drydock / "runtime" / "ledger.sqlite") as book:
         book.record_usage("fake", Usage((), at + timedelta(seconds=5), "synthetic timeout"))
     data = invoke("status", "--line")
     assert data["usage"][0]["reading"]["used"] == .25
     assert data["usage"][0]["current"] is False
     assert "synthetic timeout" in data["usage"][0]["reason"]
-    assert "LAST KNOWN" in invoke("status", "--line", text=True)
+    assert "LAST KNOWN" in invoke("status", text=True)
+    text = invoke("status", "--line", text=True)
+    assert "LAST KNOWN" not in text and "fake 7d" not in text and "usage" not in text
