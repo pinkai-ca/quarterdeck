@@ -292,20 +292,21 @@ def test_model_period_can_match_the_five_hour_reset_without_defaulting_to_weekly
     {"scope": {"model": {"renamed_name": "synthetic secret value"}}},
     native_row(percent=True), native_row(severity=[]), native_row(is_active="false"),
     native_row(resets_at=[]), native_row(percent=200), native_row(scope={"model": {"display_name": "unrecognized secret model"}})])
-def test_unmapped_limits_expose_only_key_names_and_types_in_ledger_and_json(tmp_path, row):
+def test_limit_diagnostics_expose_only_key_names_and_types_in_ledger_and_json(tmp_path, row):
     from quarterdeck import ledger_reading
     from quarterdeck.harness.claude_limits import snapshot
     at = post.now()
     doc = {**body(), "limits": [row]}
     measured = snapshot(doc, at)
-    assert len(measured.diagnostics) == 1 and "unmapped limits: 1" in measured.diagnostics[0]
+    count = "unmapped limits: 1" if isinstance(row, dict) and "scope" in row and row["scope"] is None else "limits diagnostics: 1"
+    assert len(measured.diagnostics) == 1 and count in measured.diagnostics[0]
     with Ledger(tmp_path / "ledger.sqlite") as book:
         book.record_usage("synthetic", measured)
         data = ledger_reading.collect(book)
         text = "\n".join(ledger_reading.render(data))
         serialized = json.dumps(output.value(data))
         for rendered in (text, serialized):
-            assert "unmapped limits: 1" in rendered
+            assert count in rendered
             assert "synthetic secret value" not in rendered and "unrecognized secret model" not in rendered
         assert not book.walled("synthetic")
 

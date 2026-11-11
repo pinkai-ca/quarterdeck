@@ -16,6 +16,7 @@ class Window:
     error: str | None = None
     exhausted: bool = False  # An explicit native wall, independent of the reported fraction.
     uncertainty: str | None = None  # A complete measurement with unresolved scope/period evidence.
+    replaces: tuple[tuple[str, float], ...] = ()  # Prior name and proved maximum reset distance (seconds).
 
 
 @dataclass(frozen=True)
@@ -25,7 +26,7 @@ class Usage:
     error: str | None = None
     retry_after: float | None = None  # seconds a refusal asked to wait; held in memory, never stored
     called: bool = True  # False when the reader made no provider call (a record reader, no credential or token)
-    diagnostics: tuple[str, ...] = ()  # Safe field-name/type observations, never native values.
+    diagnostics: tuple[str, ...] = ()  # Safe schema observations with adapter-specific scalar allowlists.
 
 
 @dataclass(frozen=True)

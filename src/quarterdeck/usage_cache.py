@@ -132,6 +132,7 @@ class UsageCache:
         for window in usage.windows:
             grouped.setdefault(window.name, []).append(window)
         errors = ([usage.error] if usage.error else []) + list(usage.diagnostics)
+        accepted = []
         for name in sorted(set(previous) | set(grouped)):
             old, candidates = previous.get(name), grouped.get(name, [])
             new = candidates[0] if candidates else None
@@ -173,6 +174,41 @@ class UsageCache:
                              bucket, new.bucket_name, attempted_at.isoformat(), new.uncertainty, exhausted))
             if new.uncertainty:
                 errors.append(f"{name}: {new.uncertainty}")
+            accepted.append(new)
+        retired = self.reconcile(pool, previous, grouped, accepted, usage, attempted_at)
+        errors = [error for error in errors if not any(error.startswith(name + ": ") for name in retired)]
         if not grouped and not errors:
             errors.append("usage windows unavailable")
         return "; ".join(dict.fromkeys(errors)) or None
+
+
+    def reconcile(self, pool, previous, grouped, accepted, usage, attempted_at) -> set[str]:
+        """Retire one obsolete identity only on unique, newer same-group/cap/reset evidence."""
+        candidates = {}
+        if (usage.error or not aware(usage.read_at) or not aware(attempted_at)
+                or (attempted_at - usage.read_at).total_seconds() >= MAX_AGE):
+            return set()
+        for new in accepted:
+            if new.uncertainty:
+                continue
+            for name, tolerance in new.replaces:
+                old = previous.get(name)
+                if (old is None or name in grouped or not old.complete or old.group is None
+                        or old.group != new.group or old.bucket != new.bucket or old.blocks != new.blocks
+                        or usage.read_at <= parse(old.read_at)
+                        or (parse(old.attempted_at) is not None and usage.read_at <= parse(old.attempted_at))
+                        or type(tolerance) not in (int, float) or not math.isfinite(tolerance) or tolerance < 0
+                        or abs((new.resets_at - parse(old.resets_at)).total_seconds()) > tolerance):
+                    continue
+                candidates.setdefault(name, set()).add(new.name)
+        retired = set()
+        for name, names in candidates.items():
+            if len(names) != 1:
+                continue
+            old = previous[name]
+            deleted = self.db.execute("DELETE FROM pools WHERE pool=? AND window=? AND group_name IS ? AND bucket IS ? "
+                                      "AND resets_at IS ? AND read_at IS ? AND used IS ? AND blocks=?",
+                                      (pool, name, old.group, old.bucket, old.resets_at, old.read_at, old.used, old.blocks))
+            if deleted.rowcount == 1:
+                retired.add(name)
+        return retired

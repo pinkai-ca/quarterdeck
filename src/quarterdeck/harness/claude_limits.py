@@ -11,6 +11,10 @@ from .limits import Usage, Window
 PERIODS = {"five_hour": "5h", "seven_day": "7d"}
 FAMILIES = {"fable": "fable", "sonnet": "sonnet", "opus": "opus", "haiku": "haiku"}
 WALL_SEVERITIES = {"critical", "exceeded", "error"}
+NATIVE_PERIODS = {"weekly_scoped": "7d"}
+RENDER_GROUPS = {"session", "weekly"}  # Display group examples, never a period classifier.
+RESET_TOLERANCE = 2.0
+DIAGNOSTIC_WORD_MAX = 32
 
 
 def family(model: str | None) -> str | None:
@@ -24,9 +28,13 @@ def family(model: str | None) -> str | None:
 
 
 def shape(value, depth=0):
-    """Key names and types only, including malformed nested scope; never scalar values."""
+    """Only top-level kind/group may expose bounded ASCII words; everything else is types."""
     if isinstance(value, dict) and depth < 4:
-        return {key: shape(item, depth + 1) for key, item in value.items() if isinstance(key, str)}
+        return {key: ({"type": "str", "word": item}
+                      if depth == 0 and key in ("kind", "group") and isinstance(item, str)
+                      and re.fullmatch(r"[A-Za-z0-9_-]{1," + str(DIAGNOSTIC_WORD_MAX) + "}", item)
+                      else shape(item, depth + 1))
+                for key, item in value.items() if isinstance(key, str)}
     if isinstance(value, list) and depth < 4:
         return {"list_item_types": sorted({type(item).__name__ for item in value})}
     return type(value).__name__
@@ -34,6 +42,23 @@ def shape(value, depth=0):
 
 def fraction(value):
     return value / 100 if type(value) in (int, float) and math.isfinite(value) and 0 <= value <= 100 else None
+
+
+def period_for(row, reset, general):
+    kind = row.get("kind") if isinstance(row, dict) else None
+    if isinstance(kind, str) and kind in NATIVE_PERIODS:
+        return NATIVE_PERIODS[kind], None
+    matching = [period for period, known in general.items() if reset is not None
+                and abs((reset - known).total_seconds()) <= RESET_TOLERANCE]
+    if len(matching) == 1:
+        return matching[0], None
+    return "unknown period", "model allowance period unknown: no unique general reset match within 2 seconds"
+
+
+def model_window(canonical, period, used, reset, **metadata):
+    replaces = ((f"{canonical} / unknown period", RESET_TOLERANCE),) if canonical in FAMILIES and period != "unknown period" else ()
+    label = canonical if canonical != "unknown" else "unknown model"
+    return Window(f"{label} / {period}", used, reset, group=canonical, replaces=replaces, **metadata)
 
 
 def snapshot(data: dict, now) -> Usage:
@@ -71,13 +96,13 @@ def snapshot(data: dict, now) -> Usage:
             row = data[key]
             used = fraction(row.get("utilization")) if isinstance(row, dict) else None
             reset = when(row.get("resets_at")) if isinstance(row, dict) else None
-            keep(Window(f"{canonical} / {name}", used, reset, group=canonical,
+            keep(model_window(canonical, name, used, reset,
                         error=None if used is not None and reset else "model allowance fraction or reset unavailable"))
 
-    unmapped = []
+    unmapped, observations, container_notes = [], [], []
     limits = data.get("limits", [])
     if not isinstance(limits, list):
-        unmapped.append({"limits": shape(limits)})
+        container_notes.append("limits container unavailable; key/type shape: " + json.dumps(shape(limits), sort_keys=True))
         keep(Window("unknown model / unknown period", None, None, group="unknown",
                     error="model allowance list unavailable"))
         limits = []
@@ -90,19 +115,24 @@ def snapshot(data: dict, now) -> Usage:
         label = model.get("display_name") if isinstance(model, dict) else None
         canonical = family(label)
         reset = when(row.get("resets_at")) if isinstance(row, dict) else None
-        matching = [period for period, known in resets.items() if reset is not None and reset == known]
-        period = matching[0] if len(matching) == 1 else "unknown period"
+        period, uncertainty = period_for(row, reset, resets)
         used = fraction(row.get("percent")) if isinstance(row, dict) else None
         severity = row.get("severity") if isinstance(row, dict) else None
         active = row.get("is_active") if isinstance(row, dict) else None
         valid = canonical is not None and used is not None and reset is not None and isinstance(severity, str) and type(active) is bool
-        uncertainty = None if len(matching) == 1 else "model allowance period unknown: no unique general reset match"
         error = None if valid else "model allowance fields or family unavailable"
-        if error or uncertainty:
-            unmapped.append(shape(row))
-        keep(Window(f"{canonical or 'unknown model'} / {period}", used, reset, group=canonical or "unknown",
+        unknown_kind = isinstance(row, dict) and "kind" in row and (not isinstance(row["kind"], str) or row["kind"] not in NATIVE_PERIODS)
+        unknown_group = isinstance(row, dict) and "group" in row and (not isinstance(row["group"], str) or row["group"] not in RENDER_GROUPS)
+        if error or uncertainty or unknown_kind or unknown_group:
+            observations.append(shape(row))
+        keep(model_window(canonical or "unknown", period, used, reset,
                     error=error, exhausted=isinstance(severity, str) and severity.lower() in WALL_SEVERITIES,
                     uncertainty=uncertainty))
     windows.extend(scoped.values())
-    diagnostics = ((f"unmapped limits: {len(unmapped)}; key/type shapes: " + json.dumps(unmapped, sort_keys=True),) if unmapped else ())
+    diagnostics = list(container_notes)
+    if unmapped:
+        diagnostics.append(f"unmapped limits: {len(unmapped)}; key/type shapes: " + json.dumps(unmapped, sort_keys=True))
+    if observations:
+        diagnostics.append(f"limits diagnostics: {len(observations)}; key/type shapes: " + json.dumps(observations, sort_keys=True))
+    diagnostics = tuple(diagnostics)
     return Usage(tuple(windows), now, diagnostics=diagnostics) if windows else Usage((), now, "no utilization in response", diagnostics=diagnostics)
