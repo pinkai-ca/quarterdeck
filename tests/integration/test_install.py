@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -41,7 +42,7 @@ def test_upgrade_installs_the_checkout_as_the_ships_own_copy_and_qd_hands_off_to
     assert brief.stdout.startswith("# Standing orders for Picard"), "the installed copy carries the laws and the cards"
     laws = subprocess.run([str(installed_qd), "laws"], env=env, capture_output=True, text=True, timeout=60).stdout
     assert "one-door" in laws and "quarterdeck/door.py" in laws and "carried nowhere" not in laws
-    typed = subprocess.run([str(ROOT / ".venv" / "bin" / "qd"), "--ship", str(drydock), "doctor"], env=env, capture_output=True, text=True, timeout=120)
+    typed = subprocess.run([str(Path(sys.executable).parent / "qd"), "--ship", str(drydock), "doctor"], env=env, capture_output=True, text=True, timeout=120)
     assert f"runs its installed copy, commit {head[:7]}" in typed.stdout, typed.stderr
 
     # qd typed from this checkout hands off to the installed copy before doing anything
