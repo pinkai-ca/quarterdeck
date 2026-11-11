@@ -166,7 +166,7 @@ def test_service_uses_saved_pool_and_postlaunch_current_records_only(tmp_path, m
     svc.ledger.close()
 
 
-def test_status_headlines_preserve_both_windows_and_known_beats_unknown(tmp_path, monkeypatch):
+def test_status_headlines_preserve_both_windows_outside_the_text_line(tmp_path, monkeypatch):
     svc = make_service(tmp_path)
     svc.ship.pools.pop('two')
     monkeypatch.setattr(post, 'now', lambda: AT)
@@ -177,8 +177,7 @@ def test_status_headlines_preserve_both_windows_and_known_beats_unknown(tmp_path
     assert 'one 5h usage unknown' in full and 'one 7d 42% used' in full
     facts = watch.Facts('ok', 0, 0, 0, walls=['synthetic quota wall with reset 2032-01-01 05:00 UTC padding long padding'], usage=entries)
     line = facts.line()
-    assert len(line) <= 160 and 'one 7d 42%' in line and '+1 usage' in line
-    assert 'one 5h' not in line
+    assert line == 'service ok · 0 waiting'
     assert len(output.value(facts)['usage']) == 2
     svc.ledger.close()
 
@@ -259,10 +258,13 @@ def test_cli_status_and_line_json_are_cache_only_and_include_both_windows(tmp_pa
         assert len(data['usage']) == 2
         assert cli.main(['--ship', str(tmp_path), *verb]) == 0
         text = capsys.readouterr().out
-        assert 'one 5h' in text and 'one 7d' in text
-        if kind in ('five', 'both', 'partial'): assert 'one 5h 0%' in text
-        else: assert 'one 5h' in text and 'unknown' in text
-        if kind in ('seven', 'both'): assert 'one 7d 42%' in text
+        if '--line' in verb:
+            assert 'one 5h' not in text and 'one 7d' not in text and 'usage' not in text
+        else:
+            assert 'one 5h' in text and 'one 7d' in text
+            if kind in ('five', 'both', 'partial'): assert 'one 5h 0%' in text
+            else: assert 'one 5h' in text and 'unknown' in text
+            if kind in ('seven', 'both'): assert 'one 7d 42%' in text
         if '--line' in verb: assert len(text.rstrip()) <= 160
 
 
@@ -297,9 +299,10 @@ def test_crowded_codex_cli_keeps_both_windows_in_full_text_and_json(tmp_path, mo
     for verb in (['status'], ['status', '--line']):
         assert cli.main(['--ship', str(tmp_path), *verb]) == 0
         text = capsys.readouterr().out
-        assert 'one 7d 42%' in text
-        if '--line' in verb: assert '+1 usage' in text and 'one 5h' not in text and len(text.rstrip()) <= 160
-        else: assert 'one 5h usage unknown' in text
+        if '--line' in verb:
+            assert text.rstrip() == 'service ok · 0 waiting'
+        else:
+            assert 'one 7d 42%' in text and 'one 5h usage unknown' in text
         assert cli.main(['--ship', str(tmp_path), '--json', *verb]) == 0
         data = json.loads(capsys.readouterr().out)
         assert [row['reading']['window'] for row in data['usage']] == ['5h', '7d']

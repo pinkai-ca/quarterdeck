@@ -679,9 +679,7 @@ class Service:
                 continue
             if self.not_idle(seat):
                 continue
-            pools = list(seat.spec.pools)
-            start = pools.index(seat.pool.name)
-            ordered = pools[start + 1:] + pools[:start]
+            ordered = quota.candidate_pools(seat)
             target = next((p for p in ordered if self.known_open(seat, p)), None)
             if target is None:
                 continue  # every pool is walled or unread: a fact the status line shows, not a move
@@ -747,12 +745,10 @@ class Service:
         has only the Ledger's walls to go by, and the move says so."""
         pool = self.ship.pools[pool_name]
         if pool.kind in ("key", "endpoint"):  # no usage windows to read: a key is measured by spend, an endpoint has no quota
-            return not self.ledger.walled(pool_name, self.ship)
+            return quota.cached_open(self.ship, self.ledger, pool_name)
         reader = harnesses.get(pool.provider)
-        if reader.background_usage:
-            return self.ledger.usage_known(pool_name) and not self.ledger.walled(pool_name, self.ship)
-        if not reader.reads_usage:
-            return not self.ledger.walled(pool_name, self.ship)
+        if reader.background_usage or not reader.reads_usage:
+            return quota.cached_open(self.ship, self.ledger, pool_name)
         if not self.ledger.usage_known(pool_name):
             if quota.held(self, pool_name) or not self.ledger.quota.due(pool_name, post.now(), interval=reader.usage_interval):
                 return False  # retained failures retry by attempt time, including after a restart, and a refusal's hold
@@ -764,7 +760,7 @@ class Service:
                 self.log("failover", seat=seat.name, pool=pool_name, skipped=f"its usage could not be read: {usage.error}")
                 return False
             quota.record_read(self, pool_name, usage, reader.usage_interval, post.now())
-        return self.ledger.usage_known(pool_name) and not self.ledger.walled(pool_name, self.ship)
+        return quota.cached_open(self.ship, self.ledger, pool_name)
 
     def rebrief(self) -> None:
         """When the orders or a card change, every brief is rendered again and each seat is told."""

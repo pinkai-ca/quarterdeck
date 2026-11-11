@@ -289,7 +289,7 @@ def test_a_seat_moves_on_at_a_wall_and_stays(ship: shipmod.Ship, tmux: Tmux, cap
     assert captain.pool.name == "fake-2" and captain.launched().pool == "fake-2"
     notice = wait_for(lambda: [m for m in post.Store(ship.runtime).all() if m.sender == "ship" and "moved to pool" in m.body], seconds=10)[0]
     assert notice.body == "moved to pool fake-2 from fake at its wall"
-    assert "wall: fake 5h" in qd(capsys, "status", "--line")  # law: nothing-waits-silently
+    assert "held at limit" not in qd(capsys, "status", "--line")  # law: nothing-waits-silently
     service_progress(ship)
     assert captain.pool.name == "fake-2", "it stays, even though the first pool is the one declared first"
 

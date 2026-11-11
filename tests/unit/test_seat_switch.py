@@ -155,7 +155,7 @@ def test_failover_from_the_last_choice_uses_earlier_pool_evidence(running, earli
         r.svc.failover()
     assert r.seat.pool.name == "third" and len(r.launches) == 2
     facts = watch.facts(r.seat.ship, r.seat.tmux, login=[])
-    assert "third 5h" in facts.walls and "wall" in facts.line()
+    assert "third 5h" in facts.walls and "worker held at limit" in facts.line()
     if earlier != "ready":
         return
 

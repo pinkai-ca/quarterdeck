@@ -29,10 +29,14 @@ def test_snapshot_keeps_every_rendered_alarm_and_unknown_marker(live,monkeypatch
     ship,svc,lock=live
     facts=watch.Facts('ok',3,2,1,needs_human=['worker'],unarmed=['operator'],
                       walls=['synthetic unknown reset'],disks=[('synthetic',94)],login=[('synthetic','unknown')],
-                      queued=1,oldest_queued=2,pending=['worker: prior launch unconfirmed'],routes=['worker on fake/other'])
+                      queued=1,oldest_queued=2,pending=['worker: prior launch unconfirmed'],routes=['worker on fake/other'],
+                      held=['worker'],usage=[dict(pool='unused-provider',reading=None,reason='unknown')])
     monkeypatch.setattr(watch,'facts',lambda *args,**kwargs:facts)
     assert presentation.publish(ship,svc.tmux,svc.status_framework,svc.store,svc.attempts)
     assert presentation.cached_line(ship.folder)==facts.line()
+    assert 'usage' not in facts.line() and 'reset' not in facts.line()
+    (ship.runtime / presentation.NAME).unlink()
+    assert presentation.command_line(['--ship',str(ship.folder),'status','--line']) == facts.line()
 
 
 @pytest.mark.parametrize('change',['missing','corrupt','version','declaration','source','pid','start','heartbeat','busy','death','handoff'])

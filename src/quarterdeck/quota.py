@@ -12,6 +12,26 @@ from .provenance import UNKNOWN
 
 
 
+def candidate_pools(seat) -> tuple[str, ...]:
+    """Later declared choices, then earlier choices, excluding the current pool."""
+    pools = seat.spec.pools
+    current = pools.index(seat.pool.name)
+    return pools[current + 1:] + pools[:current]
+
+
+def cached_open(ship, book, pool_name: str) -> bool:
+    """Routing eligibility from existing evidence, with no provider read."""
+    from . import harness as harnesses
+
+    pool = ship.pools[pool_name]
+    if pool.kind in ("key", "endpoint"):
+        return not book.walled(pool_name, ship)
+    reader = harnesses.get(pool.provider)
+    if reader.background_usage or reader.reads_usage:
+        return book.usage_known(pool_name) and not book.walled(pool_name, ship)
+    return not book.walled(pool_name, ship)
+
+
 def stamp(at: datetime | None) -> str | None:
     return at.astimezone(timezone.utc).isoformat() if at is not None else None
 

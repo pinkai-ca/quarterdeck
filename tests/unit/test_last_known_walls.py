@@ -2,7 +2,7 @@
 
 Synthetic Claude pools and seat; no provider is read. Every reader of walls is asked
 what it says: the Ledger's walls() and walled(), the door's quota guard, failover's
-walled check (the same walled() on the seat's pool) and the status line's wall list.
+walled check (the same walled() on the seat's pool) and the status facts' wall list.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -49,7 +49,7 @@ def said(seat: Seat) -> dict:
     finally:
         book.close()
     return {"walls()": walls, "walled()": walled, "door guard": Door(seat).wall(None),
-            "failover walled": walled, "status line": watch.ledger_walls(seat.ship)}
+            "failover walled": walled, "status facts": watch.ledger_walls(seat.ship)}
 
 
 def spent(now: datetime, used: float = 1.0) -> Window:
@@ -61,12 +61,12 @@ def assert_wall(seat: Seat) -> None:
     assert [w for w in seen["walls()"] if w.startswith("claude-primary 5h")], seen
     assert seen["walled()"] and seen["failover walled"], seen
     assert seen["door guard"] and seen["door guard"].startswith("claude-primary 5h"), seen
-    assert [w for w in seen["status line"] if w.startswith("claude-primary 5h")], seen
+    assert [w for w in seen["status facts"] if w.startswith("claude-primary 5h")], seen
 
 
 def assert_no_wall(seat: Seat) -> None:
     seen = said(seat)
-    assert seen["walls()"] == [] and not seen["walled()"] and seen["door guard"] is None and seen["status line"] == [], seen
+    assert seen["walls()"] == [] and not seen["walled()"] and seen["door guard"] is None and seen["status facts"] == [], seen
 
 
 @pytest.mark.parametrize("age,failed_after", [(5, False), (5, True), (61, False), (90, True)],

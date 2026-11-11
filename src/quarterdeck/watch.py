@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from . import credential, ledger, pending as pending_delivery, post, record_owner, recovery, servicectl as service
+from . import credential, ledger, pending as pending_delivery, post, quota, record_owner, recovery, servicectl as service
 from .door import Door, Reading
 from .harness.base import same_name
 from .seat import Seat, UnresolvedSeat, seats
@@ -325,6 +325,7 @@ class Facts:
     unknown: list[str] = field(default_factory=list)
     queue_unknown: list[str] = field(default_factory=list)
     compactions: list[str] = field(default_factory=list)
+    held: list[str] = field(default_factory=list)
 
     def line(self) -> str:  # law: nothing-waits-silently
         parts = ["SERVICE DOWN" if self.service == "down" else f"service {self.service}"]
@@ -338,7 +339,7 @@ class Facts:
         parts += self.compactions
         parts += [f"{name} needs a human" for name in self.needs_human]
         parts += [f"{name}: no watch armed" for name in self.unarmed]
-        parts += [f"wall: {wall}" for wall in self.walls]
+        parts += [f"{name} held at limit" for name in self.held]
         parts += self.routes
         parts += self.pending
         parts += [f"disk: {name} {pct}%" for name, pct in self.disks]
@@ -445,6 +446,23 @@ def _mount(path: Path) -> str:
     return str(path) if str(path) != "/" else "root"
 
 
+def limit_holds(ship: Ship, selected: list[Seat | UnresolvedSeat]) -> tuple[list[str], list[str]]:
+    """Up seats at a limit with no eligible destination in the recorded evidence."""
+    up = [seat for seat in selected if not isinstance(seat, UnresolvedSeat) and seat.is_up]
+    if not up:
+        return [], []
+    try:
+        book = ledger.Ledger.reading(ship.runtime / "ledger.sqlite")
+        if book is None:
+            return [], []
+        with book:
+            held = [seat.name for seat in up if book.walled(seat.pool.name, ship)
+                    and not any(quota.cached_open(ship, book, pool) for pool in quota.candidate_pools(seat))]
+        return held, []  # law: nothing-waits-silently
+    except (OSError, sqlite3.Error):
+        return [], ["held seats unknown; ledger unreadable"]
+
+
 def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tuple[str, str]] | None = None,
           *, store=None, attempts=None) -> Facts:
     """Everything the status line says; cheap enough for tmux to ask every few seconds."""
@@ -453,7 +471,10 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
     records = attempts.all()
     latest = attempts.latest(attempts=records)
     waiting, needs_human, unarmed, pending_lines, routes, unknown, queue_unknown, compactions = [], [], [], [], [], [], [], []
-    for seat in seats(ship, tmux, False):
+    selected = seats(ship, tmux, False)
+    held, limit_unknown = limit_holds(ship, selected)
+    pending_lines += limit_unknown
+    for seat in selected:
         pending = attempts.undelivered(store, seat.name, results=latest)
         waiting += pending
         if isinstance(seat, UnresolvedSeat):
@@ -508,6 +529,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         unknown=unknown,
         queue_unknown=queue_unknown,
         compactions=compactions,
+        held=held,
         unarmed=unarmed,
         walls=walls if walls is not None else ledger_walls(ship),
         usage=headline_readings(ship),

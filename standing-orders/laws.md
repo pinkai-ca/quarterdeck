@@ -21,7 +21,7 @@ What the framework itself guarantees, enforced in code and tests. A rule nothing
 ## Watch
 
 - `record-first` Read a seat from its record first and its screen second. A reading that could not see something says so, and never reports a default as a fact.
-- `nothing-waits-silently` Every withheld or blind delivery, every seat needing a human, every wall, a filling disk, a grant about to expire and a dead service show in the status line of every ship session, refreshed by tmux itself and not by the service.
+- `nothing-waits-silently` Every withheld or blind delivery, every seat needing a human, every seat held at a limit with no eligible declared destination, a filling disk, a grant about to expire and a dead service show in the status line of every ship session. Tmux refreshes the line independently of the service. Its text contains operational alerts only. Detailed qd status and qd ledger show provider allowances.
 
 ## Post
 

@@ -14,12 +14,10 @@ def test_the_status_line_says_everything_that_waits():  # law: nothing-waits-sil
     assert quiet.line() == "service ok · 0 waiting"
     assert Facts(service="busy 23s", waiting=0, oldest=0, blind=0).line() == "service busy 23s · 0 waiting", "busy is not dead"
     loud = Facts(service="down", waiting=2, oldest=14, blind=1, needs_human=["laan"], unarmed=["desk"],
-                 walls=["claude-primary 7d"], disks=[("root", 94)], login=[("claude-secondary", "11-13 22:24")],
+                 held=["worker"], walls=["claude-primary 7d"], disks=[("root", 94)], login=[("claude-secondary", "11-13 22:24")],
                  queued=1, oldest_queued=31)
-    assert loud.line() == (
-        "SERVICE DOWN · 2 waiting, oldest 14m · 1 queued behind a turn, oldest 31m · 1 blind · laan needs a human"
-        " · desk: no watch armed · wall: claude-primary 7d · disk: root 94% · claude-secondary · login needed by 11-13 22:24"
-    )
+    assert loud.line() == ("SERVICE DOWN · 2 waiting · 1 queued · 1 blind · 1 need human · 1 unarmed"
+                           " · 1 held · 1 disk alerts · 1 login needed · details: qd status")
 
 
 def test_disks_names_only_the_nearly_full_filesystems(tmp_path: Path, monkeypatch):

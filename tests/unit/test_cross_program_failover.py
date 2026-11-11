@@ -130,7 +130,8 @@ def test_all_candidate_walls_hold_without_relaunch(running):
         r.svc.failover()
     assert r.seat.launched() == before and not r.launches
     line = watch.facts(r.seat.ship, r.seat.tmux, login=[]).line()
-    assert 'wall:' in line and all(pool in line for pool in ('first', 'second', 'third'))
+    assert 'worker held at limit' in line
+    assert all(pool not in line for pool in ('first', 'second', 'third'))
 
 
 @pytest.mark.parametrize('later_known', [False, True])

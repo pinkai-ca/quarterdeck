@@ -48,7 +48,7 @@ def ship_view(tmp_path, monkeypatch):
     return ship, tmux, add
 
 
-def test_routine_counts_keep_human_and_wall_names_in_the_line(ship_view, monkeypatch):
+def test_routine_counts_keep_human_names_without_showing_an_unused_wall(ship_view, monkeypatch):
     ship, tmux, add = ship_view
     names = ('alpha', 'bravo', 'charlie')
     seats = [add(name)[0] for name in names]
@@ -70,7 +70,7 @@ def test_routine_counts_keep_human_and_wall_names_in_the_line(ship_view, monkeyp
         print(f'WATCH {name}: {[row.strip() for row in rows if routine in row]}')
     assert detailed.count(f'  {routine}') == 3
     assert all(f'  {routine}' in rows for rows in watched)
-    assert len(line) <= WIDTH and 'helper needs a human' in line and 'wall: local-pool 5h' in line
+    assert len(line) <= WIDTH and 'helper needs a human' in line and 'local-pool' not in line
     assert 'compaction' not in line
 
 

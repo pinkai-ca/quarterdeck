@@ -1,4 +1,4 @@
-"""Subscription headlines are cached data, complete in JSON and bounded on a line."""
+"""Subscription readings stay complete in detailed text and JSON."""
 
 from datetime import datetime, timedelta, timezone
 import json
@@ -81,11 +81,13 @@ def test_no_seat_headlines_are_read_only_complete_data_in_text_and_json(tmp_path
             assert data['usage'][0]['current'] == (state == 'fresh')
         assert cli.main(['--ship', str(tmp_path), *verb]) == 0
         text = capsys.readouterr().out
-        assert 'claude' in text and 'google' in text
-        if state in ('stale', 'failed'):
-            assert 'LAST KNOWN' in text
         if verb == ['status', '--line']:
-            assert len(text.rstrip('\n')) <= 160 and 'reset' in text
+            assert len(text.rstrip('\n')) <= 160
+            assert 'claude' not in text and 'google' not in text and 'reset' not in text and 'usage' not in text
+        else:
+            assert 'claude' in text and 'google' in text
+            if state in ('stale', 'failed'):
+                assert 'LAST KNOWN' in text
     if before:
         assert (path.read_bytes(), path.stat().st_mtime_ns) == before
         with Ledger.reading(path) as book:
@@ -94,21 +96,22 @@ def test_no_seat_headlines_are_read_only_complete_data_in_text_and_json(tmp_path
         assert not path.exists()
 
 
-def test_overflow_names_omitted_usage_and_keeps_every_alert_category(tmp_path, monkeypatch):
+def test_alert_overflow_counts_held_seats_and_keeps_allowance_facts(tmp_path, monkeypatch):
     ship = ship_at(tmp_path)
     seed(ship)
     monkeypatch.setattr(post, 'now', lambda: AT)
     rows = watch.headline_readings(ship)
     ordinary = watch.Facts('ok', 0, 0, 0, usage=rows)
     assert len(ordinary.line()) <= 160
-    assert 'claude 5h 25%' in ordinary.line() and 'google 7d 75%' in ordinary.line()
+    assert ordinary.line() == 'service ok · 0 waiting'
     many = watch.Facts('down', 2, 4, 1, needs_human=['long-seat-name' * 20],
-                       walls=['long wall reason' * 20], pending=['pending uncertain' * 20],
+                       held=['worker'], walls=['long wall reason' * 20], pending=['pending uncertain' * 20],
                        unarmed=['other'], disks=[('disk', 95)], login=[('pool', 'soon')],
                        queued=2, usage=rows * 10)
     line = many.line()
     for label in ('SERVICE DOWN', 'waiting', 'queued', 'blind', 'need human', 'unarmed',
-                  'walls', 'pending', 'disk', 'login', 'usage', 'qd status'):
+                  'held', 'pending', 'disk', 'login', 'qd status'):
         assert label in line
+    assert 'walls' not in line and 'usage' not in line
     assert len(line) <= 160
     assert len(many.usage) == 20 and many.walls == ['long wall reason' * 20]
