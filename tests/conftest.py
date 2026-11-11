@@ -11,26 +11,57 @@ from pathlib import Path
 
 import pytest
 
+from tests.testrunner import layout
+
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
+SOCKET_LIMIT = 107   # bytes of a Unix socket path, without its terminating zero
+SOCKET_MARGIN = 12   # kept free below the limit on the deepest socket path the suite generates
+SESSION_PREFIX = 'u-'  # the session's container under the anchor: short, so the margin holds
 
 
 def socket_parent():
-    """Use the framework's ignored work/, including when these tests run in a linked worktree."""
+    """The fixed short anchor ``<project>/.testruns/s``, the project being the parent of the Git common
+    directory: one place for the checkout, every worktree and every run checkout of tests/testrun.py."""
     try:
         common = Path(subprocess.check_output(
             ['git', '-C', str(ROOT), 'rev-parse', '--path-format=absolute', '--git-common-dir'],
-            text=True, stderr=subprocess.PIPE).strip()).resolve()
-        project = common.parent
-        ignored = subprocess.run(['git', '-C', str(project), 'check-ignore', '--quiet', '--',
-                                  'work/.qd-test-sockets'], capture_output=True).returncode == 0
-    except (OSError, subprocess.CalledProcessError) as error:
-        raise pytest.UsageError(f'cannot verify framework socket anchor for {ROOT}') from error
-    anchor = project / 'work'
-    if (common.name != '.git' or not common.is_dir() or not ignored or anchor.resolve() != anchor
-            or not (ROOT == project or ROOT.is_relative_to(project / 'work'))):
-        raise pytest.UsageError(f'cannot verify framework ignored work/ socket anchor for {ROOT}')
+            text=True, stderr=subprocess.PIPE).strip())
+        if common.name != '.git' or common.is_symlink() or not common.is_dir():
+            raise OSError(f'Git common directory {common} is not a plain .git folder')
+        root = layout.Root(common.parent)  # verified, private, ignoring itself, proven ignored by Git
+        try:
+            os.close(root.child(layout.SOCKETS))
+        finally:
+            root.close()
+    except (OSError, subprocess.CalledProcessError, layout.Refused) as error:
+        raise pytest.UsageError(f'cannot verify the project-owned socket anchor for {ROOT}: {error}') from error
+    anchor = common.parent / layout.ROOT_NAME / layout.SOCKETS
+    if anchor.resolve() != anchor:
+        raise pytest.UsageError(f'cannot verify the project-owned socket anchor {anchor}: reached through a link')
     return anchor
+
+
+def plain_temp():
+    """TMPDIR of a plain pytest run: ``<project>/.testruns/t``, verified like the socket anchor."""
+    anchor = socket_parent()
+    root = layout.Root(anchor.parent.parent)
+    try:
+        os.close(root.child(layout.PLAIN_TEMP))
+    finally:
+        root.close()
+    return anchor.parent / layout.PLAIN_TEMP
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_configure(config):
+    """Pytest run directly puts its temporary products, basetemp included, under .testruns/t, where
+    pyproject's retention keeps only the last three sessions' failed trees. A run of tests/testrun.py has
+    already given the run its own TMPDIR, HOME and caches in its scratch, and is left as it is."""
+    if os.environ.get('TESTRUNS_RUN'):
+        return
+    os.environ['TMPDIR'] = str(plain_temp())
+    tempfile.tempdir = None  # gettempdir() reads TMPDIR again
 
 
 @contextmanager
@@ -66,15 +97,17 @@ def private_socket_root():
     previous = os.environ.get('TMUX_TMPDIR')
     parent = Path(previous).expanduser().resolve() if previous else socket_parent()
     parent.mkdir(parents=True, exist_ok=True)
-    sample = parent / 'qd-suite-12345678'
-    paths = [sample / 'qs-12345678/qd-pt-12345678/s-replacement',
-             sample / f'tmux-{os.getuid()}/qd-test-9999999999-abcdef-replacement',
-             sample / f'tmux-{os.getuid()}/qd-synthetic-attribution-no-server']
-    longest = max(len(os.fsencode(path)) for path in paths)
-    if longest >= 108:
-        raise pytest.UsageError(f'test socket anchor {parent} needs {longest} bytes; native limit is 107; '
-                                'choose a shorter project-owned TMUX_TMPDIR')
-    with socket_container(parent, 'qd-suite-') as folder:
+    sample = parent / (SESSION_PREFIX + '12345678')
+    generated = [sample / 'qs-12345678/qd-pt-12345678/s-replacement']  # the deepest socket the suite makes
+    legacy = [sample / f'tmux-{os.getuid()}/qd-test-9999999999-abcdef-replacement',
+              sample / f'tmux-{os.getuid()}/qd-synthetic-attribution-no-server']
+    deepest = max(len(os.fsencode(path)) for path in generated)
+    longest = max(len(os.fsencode(path)) for path in legacy)
+    if deepest + SOCKET_MARGIN > SOCKET_LIMIT or longest > SOCKET_LIMIT:
+        raise pytest.UsageError(f'test socket anchor {parent} gives sockets of {deepest} bytes (named probes '
+                                f'{longest}); the native limit is {SOCKET_LIMIT} and the suite keeps a margin '
+                                f'of {SOCKET_MARGIN}; the project path is too long for its .testruns/s anchor')
+    with socket_container(parent, SESSION_PREFIX) as folder:
         os.environ['TMUX_TMPDIR'] = str(folder)
         try:
             yield folder
@@ -118,7 +151,7 @@ def tmux():
     """A private tmux server for one test, never the user's."""
     from quarterdeck.tmux import Tmux
 
-    server = Tmux.private(ROOT / 'work')
+    server = Tmux.private(socket_parent())
     try:
         yield server
     finally:

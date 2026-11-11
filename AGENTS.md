@@ -8,7 +8,7 @@ For whoever works on the framework itself, person or agent. The design is `docs/
 - A harness is the terminal program, a provider is its company or a declared endpoint operator, and a pool is one payment/access choice. Native provider facts belong in each adapter. Use company identifiers in pool declarations; subscriptions run only in their native harness. Keep native record provider/model identifiers as source evidence. `providers.py` normalizes declared companies and builds public identity metadata.
 - Keep files small by splitting them by concept. About 400 lines is a good size to aim for; it is guidance, not a rule, and code is never compressed to fit a number.
 - `standing-orders/` holds the laws and the generic cards; each ship carries the orders and cards for its own crew and may replace any generic card. Two ships are tracked here: `ships/drydock/`, three fake seats for the tests and the drill, and `ships/default/`, the smallest crew on real programs. Every other ship under `ships/` is its own repository, ignored by this one, and its `runtime/` is a nested repository with no commits.
-- `tests/unit` is pure logic, `tests/integration` runs a private tmux server and the fake harness, `tests/contract` runs each adapter against recorded fixtures. Nothing in the suite spends real tokens: `qd check` and `qd drill --ship` do that, when asked.
+- `tests/testrun.py` and `tests/testrunner/` are the test tool, standard library only and imported by nothing in `src/`. `tests/unit` is pure logic, `tests/integration` runs a private tmux server and the fake harness, `tests/contract` runs each adapter against recorded fixtures. Nothing in the suite spends real tokens: `qd check` and `qd drill --ship` do that, when asked.
 - Work on the framework happens in worktrees under `work/`, inside the project folder and ignored; nothing is edited in the main checkout in place. A ship runs its own installed copy once `qd upgrade` has made one, and until then the main checkout, so main can move without the ship moving.
 
 ## Rules
@@ -23,7 +23,10 @@ For whoever works on the framework itself, person or agent. The design is `docs/
 ## Running
 
 ```
-python3 -m venv --system-site-packages .venv && .venv/bin/pip install -e .
-.venv/bin/python -m pytest -q            # one suite at a time, -n 8 at most
-.venv/bin/qd --help
+python3 -I tests/testrun.py run                      # the whole suite of this worktree's committed HEAD, -n 8
+python3 -I tests/testrun.py run tests/unit/test_x.py # named targets
+python3 -I tests/testrun.py clean --change <branch>  # after the branch is merged (or --drop --reason TEXT)
+python3 -m venv --system-site-packages .venv && .venv/bin/pip install -e .   # only to run qd itself from a worktree
 ```
+
+The test tool (`docs/DESIGN.md` section 15) is the one way to run the suite: one run at a time in the project, in fresh scratch under the ignored `.testruns/`, leaving its result, its report and each failing test's output, and nothing else. A worktree older than the tool is run with the main checkout's copy and `--target`.

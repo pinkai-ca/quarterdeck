@@ -133,9 +133,9 @@ tests/integration/test_door.py:41, 96, 163, 179, 203
 
 ## Working on it
 
-`AGENTS.md` is for whoever works on the framework itself. The tests run with `.venv/bin/python -m pytest -q`: unit tests, contract tests against recorded screens, and integration tests on a private tmux server with the fake harness. Nothing from a runtime may be tracked, and every law must be carried in code and tried by a test; two tests guard those.
+`AGENTS.md` is for whoever works on the framework itself. The tests run with `python3 -I tests/testrun.py run`, the repository's own test tool, in fresh scratch under the ignored `.testruns/`, leaving a result, a report and each failing test's output: unit tests, contract tests against recorded screens, and integration tests on a private tmux server with the fake harness. Nothing from a runtime may be tracked, and every law must be carried in code and tried by a test; two tests guard those.
 
-Pytest removes a passing test's scratch directory and keeps failed-test directories, with three sessions of ordinary temporary history. A run with an explicit `--basetemp` owns its own history: keep its result, report and failing output, and retain a failed-test directory only while it is needed as evidence. Do not retain successful suite trees. Socket namespaces have separate ownership and cleanup; this policy does not remove them.
+Pytest run directly keeps its temporary products under `.testruns/t`, removing a passing test's scratch and keeping only the last three sessions' failed trees. `tests/testrun.py clean --change <branch>` retires a merged or deliberately dropped change; `docs/DESIGN.md` section 15 has the whole contract.
 
 ## Authorship
 

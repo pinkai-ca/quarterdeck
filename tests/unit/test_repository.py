@@ -26,6 +26,7 @@ def test_nothing_from_a_runtime_is_tracked():  # law: nothing-leaks
     ignored = (ROOT / ".gitignore").read_text().splitlines()
     assert "ships/*/runtime/" in ignored and "ships/*" in ignored
     assert "!ships/drydock/" in ignored and "!ships/default/" in ignored and "work/" in ignored
+    assert ".testruns/" in ignored, "test runs, results and test sockets are never tracked"
     leaks = {}
     for path in files:
         if path.suffix not in TEXT and path.name != ".gitignore" or path == Path(__file__):

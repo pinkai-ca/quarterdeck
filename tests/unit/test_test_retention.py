@@ -1,4 +1,6 @@
-"""Completed runs discard successful scratch trees, keeping the result and failed-test evidence."""
+"""Pytest run directly, under the project's retention settings: completed runs discard successful scratch
+trees and keep only failed-test evidence. tests/testrun.py removes even those at a run's end, keeping the
+complete failure output in its results instead."""
 
 import os
 from pathlib import Path

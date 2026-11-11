@@ -90,13 +90,26 @@ def test_failed_real_namespace_setup_removes_only_its_owned_empty_container(monk
 def test_unset_fallback_refuses_a_symlink_outside_its_verified_project(tmp_path,monkeypatch):
     project=tmp_path/'synthetic-project';project.mkdir()
     conftest.git(project,'init','--quiet')
-    (project/'.gitignore').write_text('work/\n')
+    (project/'.gitignore').write_text('.testruns/\n')
     outside=tmp_path/'synthetic-outside';outside.mkdir()
-    (project/'work').symlink_to(outside,target_is_directory=True)
+    (project/'.testruns').symlink_to(outside,target_is_directory=True)
     monkeypatch.setattr(conftest,'ROOT',project)
-    with pytest.raises(pytest.UsageError,match='cannot verify framework ignored work/'):
+    with pytest.raises(pytest.UsageError,match='cannot verify the project-owned socket anchor'):
         conftest.socket_parent()
     assert not list(outside.iterdir())
+
+
+def test_the_anchor_is_the_projects_fixed_testruns_folder_with_a_margin(tmp_path,monkeypatch):
+    project=tmp_path/'synthetic-project';project.mkdir()
+    conftest.git(project,'init','--quiet')
+    monkeypatch.setattr(conftest,'ROOT',project)
+    anchor=conftest.socket_parent()
+    assert anchor==project/'.testruns'/'s' and anchor.is_dir() and not anchor.is_symlink()
+    assert (project/'.testruns'/'.gitignore').read_text()=='*\n'  # ignored even before .gitignore names it
+    assert conftest.git(project,'status','--porcelain')==''
+    real=conftest.socket_parent()
+    deepest=real/(conftest.SESSION_PREFIX+'12345678')/'qs-12345678/qd-pt-12345678/s-replacement'
+    assert len(os.fsencode(deepest))+conftest.SOCKET_MARGIN<=conftest.SOCKET_LIMIT
 
 
 @pytest.mark.parametrize('replace',[False,True])

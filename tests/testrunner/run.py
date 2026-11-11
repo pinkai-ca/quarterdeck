@@ -1,0 +1,350 @@
+"""``testrun.py run``: one run of a clean committed target, in fresh owned scratch, with a fixed ending.
+
+Stages: refuse a dirty target; hold the slot; recover this change's abandoned runs; make the run folder and
+its lock; check out the exact commit detached; make a venv on the ordinary ``python3`` with the system's
+read-only test tools; install the checkout editable with no index; prove the imports; compile the run's own
+code and make its package folders read-only; run pytest in its own session with the evidence plugin; then
+analyse, write the result, the report and every failure, and remove everything else.
+"""
+from __future__ import annotations
+
+import fcntl
+import json
+import os
+from pathlib import Path
+import shutil
+import signal
+import subprocess
+import sys
+import time
+
+from . import clean, environment, evidence, gitops, procs, report
+from .layout import RESULTS, RUNS, SOCKETS, Refused, Root, Slot, git_environment, identity, new_run_id, write_json
+
+GRACE = 15.0
+EXIT = {'passed': 0, 'failed': 1, 'refused': 2, 'timeout': 3, 'interrupted': 4, 'incomplete': 5, 'abandoned': 5,
+        'no-tests': 5}
+CLEANUP_HELD = 6
+PREFLIGHT = r'''
+import json, sys, sysconfig
+out = {"python": sys.version.split()[0], "executable": sys.executable, "prefix": sys.prefix,
+       "base_prefix": sys.base_prefix, "purelib": sysconfig.get_path("purelib"), "imports": {}}
+for name in ("pytest", "xdist"):
+    try:
+        module = __import__(name)
+        out[name] = {"version": getattr(module, "__version__", None), "file": module.__file__}
+    except ImportError:
+        out[name] = None
+for name in sys.argv[1:]:
+    out["imports"][name] = __import__(name).__file__
+print(json.dumps(out))
+'''
+
+
+class Stop(Exception):
+    """A signal or the time limit ended the run."""
+
+
+class Runner:
+    def __init__(self, args, runner_files: list[Path]):
+        self.args = args
+        self.runner_files = runner_files
+        self.signal = None
+        self.timed_out = False
+        self.deadline = None
+        self.console = None
+        self.last_exit = None
+        self.started = time.time()
+
+    # -- signals and process groups -------------------------------------------------------------------------
+    def on_signal(self, number, frame):
+        self.signal = number
+
+    def check(self):
+        if self.signal is not None:
+            raise Stop(f'signal {self.signal}')
+        if self.deadline is not None and time.monotonic() > self.deadline:
+            self.timed_out = True
+            raise Stop(f'time limit of {self.args.timeout} s')
+
+    def stop_group(self, process):
+        """SIGINT, then SIGTERM, then SIGKILL to the step's own session, each after a grace period."""
+        for number in (signal.SIGINT, signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(process.pid, number)
+            except ProcessLookupError:
+                return
+            try:
+                process.wait(GRACE)
+                return
+            except subprocess.TimeoutExpired:
+                continue
+
+    def sweep(self, pgid: int) -> int:
+        """Members left in a finished step's own group: ours by construction (its session, this boot, the run
+        lock held); terminated, then killed. Returns how many there were."""
+        left = procs.group_members(pgid)
+        if left:
+            for number in (signal.SIGTERM, signal.SIGKILL):
+                try:
+                    os.killpg(pgid, number)
+                except ProcessLookupError:
+                    break
+                deadline = time.monotonic() + 5
+                while procs.group_members(pgid) and time.monotonic() < deadline:
+                    time.sleep(0.1)
+                if not procs.group_members(pgid):
+                    break
+        return len(left)
+
+    def execute(self, argv, *, env, cwd, title):
+        """One step in its own session, its output appended to the console, the run lock inherited."""
+        self.console.write(f'\n## {title}\n$ {" ".join(map(str, argv))}\n')
+        self.console.flush()
+        process = subprocess.Popen([str(part) for part in argv], cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                                   stdout=self.console, stderr=subprocess.STDOUT, start_new_session=True,
+                                   pass_fds=(self.lock,))
+        self.state.setdefault('groups', []).append([process.pid, procs.start_time(process.pid)])
+        write_json(self.scratch_fd, 'state.json', self.state)
+        try:
+            while process.poll() is None:
+                try:
+                    self.check()
+                except Stop:
+                    self.stop_group(process)
+                    raise
+                time.sleep(0.2)
+        finally:
+            self.last_exit = process.returncode
+            self.survivors += self.sweep(process.pid)
+            self.console.write(f'## {title}: exit {process.returncode}\n')
+            self.console.flush()
+        return process.returncode
+
+    # -- the run --------------------------------------------------------------------------------------------
+    def main(self) -> int:
+        args = self.args
+        target = gitops.resolve(Path(args.target) if args.target else Path.cwd())
+        problems = gitops.dirty(target.top)
+        if problems:
+            shown = '\n  '.join(problems[:20]) + ('\n  ...' if len(problems) > 20 else '')
+            raise Refused(f'target {target.top} has uncommitted changes; commit them (a WIP commit is fine) so the '
+                          f'result names exactly what ran:\n  {shown}')
+        targets = [check_target(target.top, item) for item in args.targets]
+        change = None if (target.main_checkout or target.branch is None) else target.branch
+        root = Root(target.project)
+        slot = Slot(root)
+        self.run = new_run_id()
+        slot.acquire({'verb': 'run', 'run': self.run, 'change': change, 'seat': os.environ.get('QD_SEAT')}, args.wait)
+        for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            signal.signal(number, self.on_signal)
+        try:
+            for line in clean.recover(root, change):
+                print(line)
+            if change:
+                clean.register(root, target, self.run)  # a refusal here leaves nothing made
+            return self.within(root, target, targets, change)
+        finally:
+            slot.release()
+            root.close()
+
+    def within(self, root: Root, target, targets, change) -> int:
+        args, run = self.args, self.run
+        runs_fd = root.child(RUNS)
+        results_fd = root.child(RESULTS, run)
+        self.scratch_fd = root.child(RUNS, run)
+        scratch = root.path / RUNS / run
+        self.lock = os.open('lock', os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=self.scratch_fd)
+        fcntl.flock(self.lock, fcntl.LOCK_EX)  # this descriptor is inherited: held while any run process lives
+        self.survivors = 0
+        self.state = {'run': run, 'change': change, 'target': str(target.top), 'head': target.head,
+                      'pid': os.getpid(), 'pid_start': procs.start_time(os.getpid()), 'boot': procs.boot_id(),
+                      'scratch': identity(os.fstat(self.scratch_fd)), 'stage': 'setup'}
+        write_json(self.scratch_fd, 'state.json', self.state)
+        result = {'run': run, 'change': change, 'started': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
+                  'target': {'top': str(target.top), 'project': str(target.project), 'head': target.head,
+                             'tree': target.tree, 'branch': target.branch},
+                  'runner': {**gitops.runner_identity(self.runner_files), 'argv': sys.argv,
+                             'executable': sys.executable},
+                  'outcome': {'status': 'running', 'wrapper_exit': None}}
+        write_json(results_fd, 'result.json', result)
+        self.console = open(scratch / 'console.txt', 'a', encoding='utf-8', errors='replace')
+        if args.timeout:
+            self.deadline = time.monotonic() + args.timeout
+        sockets_before, target_before = socket_entries(root), None
+        pytest_exit, note = None, None
+        checkout = scratch / 'checkout'
+        try:  # from here every failure, the runner's own included, reaches the same fixed ending
+            env, settings = environment.build(scratch, run)
+            result['environment'] = {**settings, 'workers': args.workers, 'timeout': args.timeout,
+                                     'uid': os.getuid(), 'cpus': os.cpu_count()}
+            result['tools'] = environment.tool_versions(env)
+            target_before = {'tracked': gitops.tracked_manifest(target.top, target.head),
+                             'extra': gitops.extra_manifest(target.top)}
+            pytest_exit = self.setup_and_test(target, targets, scratch, checkout, env, result)
+        except Stop as stop:
+            note = str(stop)
+            pytest_exit = self.last_exit if self.state['stage'] == 'pytest' else None
+        except Refused as refused:
+            note = f'setup refused: {refused}'
+        except Exception as error:  # the runner's own failure: recorded, then the same fixed ending
+            note = f'runner error: {type(error).__name__}: {error}'
+        self.console.close()
+        console = (scratch / 'console.txt').read_text(encoding='utf-8', errors='replace')
+        found = evidence.analyse(scratch / 'evidence', pytest_exit)
+        if note:
+            found.update(complete=False, causes=[note, *found['causes']], counts=dict.fromkeys(evidence.CATEGORIES))
+        status = decide(found, self.timed_out, self.signal)
+        result['evidence'] = {key: value for key, value in found.items() if key != 'failures'}
+        result['failures'] = report.write_failures(results_fd, found['failures'])
+        result['manifests'] = {'target': manifests_target(target, target_before) if target_before else {}}
+        if getattr(self, 'checkout_before', None) is not None and checkout.is_dir():
+            result['manifests']['checkout'] = manifests_checkout(checkout, target.head, self.checkout_before)
+        result['ended'] = time.strftime('%Y-%m-%dT%H:%M:%S%z')
+        result['seconds'] = round(time.time() - self.started, 1)
+        result['outcome'] = {'status': status, 'wrapper_exit': EXIT[status], 'pytest_exit': pytest_exit,
+                             'signal': self.signal, 'note': note, 'group_survivors_stopped': self.survivors}
+        result['cleanup'] = {'outcome': 'pending'}
+        report.write(results_fd, result, console, found['failures'])
+        cleanup = clean.retire_run(root, runs_fd, run, self.state)
+        left = sorted(set(socket_entries(root)) - set(sockets_before))
+        cleanup['socket_entries_left'] = left  # attributed to no one with certainty: reported, never removed
+        if left and cleanup['outcome'] == 'complete':
+            cleanup['outcome'] = 'held'
+        result['cleanup'] = cleanup
+        if cleanup['outcome'] == 'held' and status == 'passed':
+            result['outcome']['wrapper_exit'] = CLEANUP_HELD
+        report.write(results_fd, result, console, found['failures'])
+        for fd in (self.lock, results_fd, runs_fd, self.scratch_fd):
+            os.close(fd)
+        where = root.path / RESULTS / run
+        print(f'run {run}: {status} · {summary(found)} · exits wrapper {result["outcome"]["wrapper_exit"]}, '
+              f'pytest {pytest_exit}, signal {self.signal}, cleanup {cleanup["outcome"]} '
+              f'({cleanup.get("removed", {}).get("files", 0)} files, {cleanup.get("removed", {}).get("bytes", 0)} bytes '
+              f'removed) · target {target.head[:12]} tree {target.tree[:12]} · {where / "result.json"} · '
+              f'{where / "report.md"}' + (f' · {len(result["failures"])} failure file(s)' if result['failures'] else ''))
+        return result['outcome']['wrapper_exit']
+
+    def setup_and_test(self, target, targets, scratch, checkout, env, result):
+        if self.execute(['git', '-C', target.project, 'worktree', 'add', '--detach', checkout, target.head],
+                        env=git_environment(), cwd=scratch, title='checkout') != 0:
+            raise Refused('git worktree add failed; see the console')
+        admin = gitops.git(checkout, 'rev-parse', '--absolute-git-dir').strip()
+        if Path(admin).parent != target.project / '.git' / 'worktrees':
+            raise Refused(f'run checkout admin {admin} is not under the project\'s .git/worktrees')
+        self.state.update(checkout=str(checkout), checkout_identity=identity(os.lstat(checkout)), admin=admin)
+        write_json(self.scratch_fd, 'state.json', self.state)
+        tree = gitops.git(checkout, 'rev-parse', 'HEAD^{tree}').strip()
+        result['checkout'] = {'path': str(checkout), 'tree': tree, 'admin': admin}
+        if tree != target.tree:
+            raise Refused(f'run checkout tree {tree} differs from target tree {target.tree}')
+        python = shutil.which('python3', path=env.get('PATH'))
+        if python is None:
+            raise Refused('no python3 on the ordinary PATH')
+        venv = scratch / 'venv'
+        if self.execute([python, '-m', 'venv', '--system-site-packages', '--without-pip', venv],
+                        env=env, cwd=scratch, title='venv') != 0:
+            raise Refused('making the run venv failed; see the console')
+        vpython = venv / 'bin' / 'python'
+        if self.execute([vpython, '-I', '-m', 'pip', 'install', '--no-deps', '--no-build-isolation', '--no-index',
+                         '-q', '-e', checkout], env=env, cwd=scratch, title='install') != 0:
+            raise Refused('editable install of the run checkout failed (it needs pip and setuptools in the system '
+                          'site-packages); see the console')
+        packages = sorted(path.parent.name for path in (checkout / 'src').glob('*/__init__.py'))
+        proof = subprocess.run([vpython, '-I', '-c', PREFLIGHT, *packages], cwd=scratch, env=env,
+                               capture_output=True, text=True, timeout=60)
+        if proof.returncode != 0:
+            raise Refused(f'import proof failed: {proof.stderr.strip()[-2000:]}')
+        found = json.loads(proof.stdout)
+        for name, file in found['imports'].items():
+            if not Path(file).resolve().is_relative_to(checkout):
+                raise Refused(f'{name} imports from {file}, not from the run checkout; refusing to test another tree')
+        if not found.get('pytest'):
+            raise Refused('the ordinary python3 provides no pytest')
+        if self.args.workers and not found.get('xdist'):
+            raise Refused('-n needs pytest-xdist, which the ordinary python3 does not provide; pass -n 0')
+        result['tools']['run_venv'] = found
+        purelib = Path(found['purelib'])
+        if not purelib.resolve().is_relative_to(venv):
+            raise Refused(f'the run venv\'s own site-packages {purelib} lies outside the run venv')
+        plugin = Path(__file__).with_name('evidence_plugin.py')
+        shutil.copyfile(plugin, purelib / 'qd_testrun_evidence.py')
+        result['tools']['evidence_plugin'] = {'source': str(plugin), 'blob': gitops.blob_sha(plugin.read_bytes())}
+        # The startup policy: the run's own code is complete, bytecode included, before its first reader, and
+        # its package folders cannot change while readers run. Only run-owned folders are compiled.
+        self.execute([vpython, '-I', '-m', 'compileall', '-q', checkout / 'src', checkout / 'tests', purelib],
+                     env=env, cwd=scratch, title='compile (a file that cannot compile is listed, not fatal)')
+        readonly = 0
+        for folder, _, _ in os.walk(checkout / 'src'):
+            os.chmod(folder, 0o555)
+            readonly += 1
+        result['checkout']['readonly_package_dirs'] = readonly
+        self.checkout_before = {'tracked': gitops.tracked_manifest(checkout, target.head),
+                                'extra': gitops.extra_manifest(checkout)}
+        argv = [vpython, '-m', 'pytest', '-q', '-rs', '-p', 'qd_testrun_evidence', '-p', 'no:cacheprovider',
+                f'--basetemp={scratch / "tmp" / "b"}']
+        if self.args.workers:
+            argv += ['-n', str(self.args.workers)]
+        result['argv'] = [str(part) for part in argv + targets]
+        self.state['stage'] = 'pytest'
+        write_json(self.scratch_fd, 'state.json', self.state)
+        return self.execute(argv + targets, env=env, cwd=checkout, title='pytest')
+
+
+def decide(found: dict, timed_out: bool, signalled) -> str:
+    if timed_out:
+        return 'timeout'
+    if signalled is not None:
+        return 'interrupted'
+    if not found['complete']:
+        return 'incomplete'
+    if not found['expected']:
+        return 'no-tests'
+    return 'failed' if (found['counts']['failed'] or found['counts']['error']) else 'passed'
+
+
+def check_target(top: Path, item: str) -> str:
+    path = item.split('::', 1)[0]
+    if not path or Path(path).is_absolute() or '..' in Path(path).parts or item.startswith('-'):
+        raise Refused(f'target {item!r} must be a path inside the worktree, relative to its top')
+    if not (top / path).exists():
+        raise Refused(f'target {item!r} does not exist in {top}')
+    return item
+
+
+def socket_entries(root: Root) -> list[str]:
+    try:
+        fd = root.child(SOCKETS)
+    except Refused:
+        return []
+    try:
+        return sorted(f'{name}:{os.stat(name, dir_fd=fd, follow_symlinks=False).st_ino}' for name in os.listdir(fd))
+    finally:
+        os.close(fd)
+
+
+def manifests_target(target, before: dict) -> dict:
+    tracked = gitops.tracked_manifest(target.top, target.head)
+    extra = gitops.extra_manifest(target.top)
+    head = gitops.git(target.top, 'rev-parse', 'HEAD').strip()
+    return {'head_before': target.head, 'head_after': head,
+            'tracked_before': before['tracked'], 'tracked_after': tracked,
+            'extra_before': before['extra'], 'extra_after': extra,
+            'extra_changes': gitops.compare(before['extra']['entries'], extra['entries']),
+            'unchanged': (head == target.head and tracked == before['tracked'] and extra == before['extra'])}
+
+
+def manifests_checkout(checkout: Path, head: str, before: dict) -> dict:
+    tracked = gitops.tracked_manifest(checkout, head)
+    extra = gitops.extra_manifest(checkout)
+    return {'tracked_before': before['tracked'], 'tracked_after': tracked,
+            'extra_before': {'count': before['extra']['count'], 'digest': before['extra']['digest']},
+            'extra_after': {'count': extra['count'], 'digest': extra['digest']},
+            'mutations': {'tracked': gitops.compare(before['tracked']['differ'], tracked['differ']),
+                          'extra': gitops.compare(before['extra']['entries'], extra['entries'])}}
+
+
+def summary(found: dict) -> str:
+    if found['complete']:
+        return ', '.join(f'{value} {key}' for key, value in found['counts'].items() if value) or 'no tests'
+    return 'evidence incomplete: ' + '; '.join(found['causes'][:3])
