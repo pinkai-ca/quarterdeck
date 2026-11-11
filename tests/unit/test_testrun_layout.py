@@ -127,7 +127,7 @@ def test_owned_removal_refuses_a_replaced_tree_and_removes_nothing(tmp_path):
     tree = tmp_path / 'tree'
     tree.mkdir()
     expected = layout.identity(os.lstat(tree))
-    tree.rmdir()
+    tree.rename(tmp_path / 'original')  # the original still exists, so the replacement has its own inode
     tree.mkdir()
     (tree / 'unrelated').write_text('not the tool\'s')
     parent = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
@@ -136,7 +136,41 @@ def test_owned_removal_refuses_a_replaced_tree_and_removes_nothing(tmp_path):
             owned.remove(parent, 'tree', expected, tree)
     finally:
         os.close(parent)
+    assert (tree / 'unrelated').exists() and (tmp_path / 'original').exists()
+
+
+def test_owned_removal_refuses_a_recreated_tree_even_when_its_inode_is_reused(tmp_path):
+    tree = tmp_path / 'tree'
+    tree.mkdir()
+    fd = os.open(tree, os.O_RDONLY | os.O_DIRECTORY)
+    token = owned.mark(fd)
+    os.close(fd)
+    expected = layout.identity(os.lstat(tree))
+    (tree / owned.MARKER).unlink()
+    tree.rmdir()
+    tree.mkdir()  # the filesystem may hand the freed inode number straight back
+    (tree / 'unrelated').write_text('not the tool\'s')
+    parent = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(layout.Refused, match='replaced|recreated'):
+            owned.remove(parent, 'tree', expected, tree, token)
+    finally:
+        os.close(parent)
     assert (tree / 'unrelated').exists()
+
+
+def test_owned_removal_accepts_its_own_marked_tree(tmp_path):
+    tree = tmp_path / 'tree'
+    tree.mkdir()
+    fd = os.open(tree, os.O_RDONLY | os.O_DIRECTORY)
+    token = owned.mark(fd)
+    os.close(fd)
+    parent = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        tally = owned.remove(parent, 'tree', layout.identity(os.lstat(tree)), tree, token)
+    finally:
+        os.close(parent)
+    assert not tree.exists() and tally.files == 1
 
 
 def test_owned_removal_refuses_a_link_in_place_of_the_tree(tmp_path):

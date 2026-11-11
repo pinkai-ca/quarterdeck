@@ -100,6 +100,9 @@ def test_unset_fallback_refuses_a_symlink_outside_its_verified_project(tmp_path,
 
 
 def test_the_anchor_is_the_projects_fixed_testruns_folder_with_a_margin(tmp_path,monkeypatch):
+    real=conftest.socket_parent()  # the real project's anchor, measured before ROOT is replaced
+    deepest=real/(conftest.SESSION_PREFIX+'12345678')/'qs-12345678/qd-pt-12345678/s-replacement'
+    assert len(os.fsencode(deepest))+conftest.SOCKET_MARGIN<=conftest.SOCKET_LIMIT
     project=tmp_path/'synthetic-project';project.mkdir()
     conftest.git(project,'init','--quiet')
     monkeypatch.setattr(conftest,'ROOT',project)
@@ -107,9 +110,6 @@ def test_the_anchor_is_the_projects_fixed_testruns_folder_with_a_margin(tmp_path
     assert anchor==project/'.testruns'/'s' and anchor.is_dir() and not anchor.is_symlink()
     assert (project/'.testruns'/'.gitignore').read_text()=='*\n'  # ignored even before .gitignore names it
     assert conftest.git(project,'status','--porcelain')==''
-    real=conftest.socket_parent()
-    deepest=real/(conftest.SESSION_PREFIX+'12345678')/'qs-12345678/qd-pt-12345678/s-replacement'
-    assert len(os.fsencode(deepest))+conftest.SOCKET_MARGIN<=conftest.SOCKET_LIMIT
 
 
 @pytest.mark.parametrize('replace',[False,True])

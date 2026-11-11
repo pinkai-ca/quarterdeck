@@ -4,6 +4,7 @@ recorded when the tool made it. A tree is fully measured and validated before th
 from __future__ import annotations
 
 import os
+import secrets
 import stat
 
 from .layout import DIRECTORY, Refused, identity
@@ -17,7 +18,22 @@ class Tally:
         return {'files': self.files, 'dirs': self.dirs, 'links': self.links, 'bytes': self.bytes}
 
 
-def _open_exact(parent_fd: int, name: str, expected, where) -> int:
+MARKER = '.owner'  # a random token written when the tool makes a directory, recorded in its state
+
+
+def mark(dir_fd: int) -> str:
+    """Write a new directory's owner token: identity alone cannot tell a recreated directory that reused the
+    original's inode number from the original."""
+    token = secrets.token_hex(16)
+    fd = os.open(MARKER, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dir_fd)
+    try:
+        os.write(fd, token.encode())
+    finally:
+        os.close(fd)
+    return token
+
+
+def _open_exact(parent_fd: int, name: str, expected, where, token=None) -> int:
     try:
         fd = os.open(name, DIRECTORY, dir_fd=parent_fd)
     except OSError as error:
@@ -29,6 +45,18 @@ def _open_exact(parent_fd: int, name: str, expected, where) -> int:
     if info.st_uid != os.getuid():
         os.close(fd)
         raise Refused(f'{where}: not this user\'s; nothing removed')
+    if token is not None:
+        try:
+            marker = os.open(MARKER, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)
+            try:
+                found = os.read(marker, 64).decode(errors='replace')
+            finally:
+                os.close(marker)
+        except OSError:
+            found = None
+        if found != token:
+            os.close(fd)
+            raise Refused(f'{where}: its owner token is missing or differs (recreated); nothing removed')
     return fd
 
 
@@ -64,8 +92,8 @@ def _walk(fd: int, device: int, where, tally: Tally, remove: bool) -> None:
                 os.unlink(name, dir_fd=fd)
 
 
-def measure(parent_fd: int, name: str, expected, where) -> Tally:
-    fd = _open_exact(parent_fd, name, expected, where)
+def measure(parent_fd: int, name: str, expected, where, token=None) -> Tally:
+    fd = _open_exact(parent_fd, name, expected, where, token)
     try:
         tally = Tally()
         _walk(fd, os.fstat(fd).st_dev, where, tally, remove=False)
@@ -74,10 +102,10 @@ def measure(parent_fd: int, name: str, expected, where) -> Tally:
         os.close(fd)
 
 
-def remove(parent_fd: int, name: str, expected, where) -> Tally:
+def remove(parent_fd: int, name: str, expected, where, token=None) -> Tally:
     """Validate the whole tree, then remove it; the counts are what was removed."""
-    tally = measure(parent_fd, name, expected, where)
-    fd = _open_exact(parent_fd, name, expected, where)
+    tally = measure(parent_fd, name, expected, where, token)
+    fd = _open_exact(parent_fd, name, expected, where, token)
     try:
         _walk(fd, os.fstat(fd).st_dev, where, Tally(), remove=True)
     finally:

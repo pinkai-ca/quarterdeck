@@ -23,7 +23,7 @@ def owned_paths(scratch: Path) -> dict[str, Path]:
             'PIP_CACHE_DIR': home / '.cache' / 'pip', 'TESTRUN_EVIDENCE': scratch / 'evidence'}
 
 
-def build(scratch: Path, run: str) -> tuple[dict, dict]:
+def build(scratch: Path, run: str, userbase: str | None = None) -> tuple[dict, dict]:
     stripped = sorted(name for name in os.environ
                       if (name.startswith(STRIP_PREFIXES) and name not in KEEP_GIT) or name in STRIP_NAMES)
     env = {name: value for name, value in os.environ.items() if name not in stripped}
@@ -32,6 +32,8 @@ def build(scratch: Path, run: str) -> tuple[dict, dict]:
         path.mkdir(mode=0o700, parents=True, exist_ok=True)
         env[name] = str(path)
     fixed = {'PIP_NO_INDEX': '1', 'PIP_NO_INPUT': '1', 'PIP_DISABLE_PIP_VERSION_CHECK': '1', 'TESTRUNS_RUN': run}
+    if userbase:
+        fixed['PYTHONUSERBASE'] = userbase  # the ordinary user site, resolved before HOME was replaced
     env.update(fixed)
     record = {'PATH': env.get('PATH', ''), 'removed_names': stripped,
               'owned': {name: str(path) for name, path in paths.items()}, 'fixed': fixed}

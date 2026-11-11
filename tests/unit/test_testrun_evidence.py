@@ -138,6 +138,6 @@ def test_failure_files_are_complete_and_the_report_summary_points_at_them(tmp_pa
     assert 'line 4999' in text and 'printed ```` with fences' in text
     rendered = (folder / 'report.md').read_text()
     assert 'failures/001.txt' in rendered and 'Summary truncated' in rendered and 'line 4999' not in rendered
-    assert '`````' in rendered  # a fence longer than any run of backticks inside
+    assert '````\nconsole ``` text' in rendered  # a fence longer than any run of backticks inside
     assert json.loads((folder / 'result.json').read_text())['format'] == 1
     assert sorted(path.name for path in folder.iterdir()) == ['failures', 'report.md', 'result.json']

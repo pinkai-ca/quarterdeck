@@ -18,7 +18,7 @@ import subprocess
 import sys
 import time
 
-from . import clean, environment, evidence, gitops, procs, report
+from . import clean, environment, evidence, gitops, owned, procs, report, usersite
 from .layout import RESULTS, RUNS, SOCKETS, Refused, Root, Slot, git_environment, identity, new_run_id, write_json
 
 GRACE = 15.0
@@ -29,7 +29,7 @@ PREFLIGHT = r'''
 import json, sys, sysconfig
 out = {"python": sys.version.split()[0], "executable": sys.executable, "prefix": sys.prefix,
        "base_prefix": sys.base_prefix, "purelib": sysconfig.get_path("purelib"), "imports": {}}
-for name in ("pytest", "xdist"):
+for name in ("pytest", "xdist", "execnet", "pip", "setuptools"):
     try:
         module = __import__(name)
         out[name] = {"version": getattr(module, "__version__", None), "file": module.__file__}
@@ -154,12 +154,13 @@ class Runner:
         results_fd = root.child(RESULTS, run)
         self.scratch_fd = root.child(RUNS, run)
         scratch = root.path / RUNS / run
+        owner = owned.mark(self.scratch_fd)
         self.lock = os.open('lock', os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=self.scratch_fd)
         fcntl.flock(self.lock, fcntl.LOCK_EX)  # this descriptor is inherited: held while any run process lives
         self.survivors = 0
         self.state = {'run': run, 'change': change, 'target': str(target.top), 'head': target.head,
                       'pid': os.getpid(), 'pid_start': procs.start_time(os.getpid()), 'boot': procs.boot_id(),
-                      'scratch': identity(os.fstat(self.scratch_fd)), 'stage': 'setup'}
+                      'scratch': identity(os.fstat(self.scratch_fd)), 'owner': owner, 'stage': 'setup'}
         write_json(self.scratch_fd, 'state.json', self.state)
         result = {'run': run, 'change': change, 'started': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
                   'target': {'top': str(target.top), 'project': str(target.project), 'head': target.head,
@@ -175,7 +176,11 @@ class Runner:
         pytest_exit, note = None, None
         checkout = scratch / 'checkout'
         try:  # from here every failure, the runner's own included, reaches the same fixed ending
-            env, settings = environment.build(scratch, run)
+            self.python = shutil.which('python3')
+            if self.python is None:
+                raise Refused('no python3 on the ordinary PATH')
+            self.user = usersite.resolve(self.python)  # before HOME is replaced
+            env, settings = environment.build(scratch, run, self.user['base'] if self.user['exists'] else None)
             result['environment'] = {**settings, 'workers': args.workers, 'timeout': args.timeout,
                                      'uid': os.getuid(), 'cpus': os.cpu_count()}
             result['tools'] = environment.tool_versions(env)
@@ -207,6 +212,15 @@ class Runner:
         result['cleanup'] = {'outcome': 'pending'}
         report.write(results_fd, result, console, found['failures'])
         cleanup = clean.retire_run(root, runs_fd, run, self.state)
+        if getattr(self, 'user_before', None) is not None:
+            after = usersite.stamps(self.user['site'])
+            moved = usersite.changed(self.user_before, after)
+            result['tools']['user_site']['bytecode_folders'] = {'before': self.user_before['count'],
+                                                                'digest_before': self.user_before['digest'],
+                                                                'digest_after': after['digest'], 'changed': moved}
+            if moved:  # the operator's user site must only be read: held, and reported, never repaired
+                cleanup['outcome'] = 'held'
+                cleanup['user_site_changed'] = moved
         left = sorted(set(socket_entries(root)) - set(sockets_before))
         cleanup['socket_entries_left'] = left  # attributed to no one with certainty: reported, never removed
         if left and cleanup['outcome'] == 'complete':
@@ -238,9 +252,7 @@ class Runner:
         result['checkout'] = {'path': str(checkout), 'tree': tree, 'admin': admin}
         if tree != target.tree:
             raise Refused(f'run checkout tree {tree} differs from target tree {target.tree}')
-        python = shutil.which('python3', path=env.get('PATH'))
-        if python is None:
-            raise Refused('no python3 on the ordinary PATH')
+        python = self.python
         venv = scratch / 'venv'
         if self.execute([python, '-m', 'venv', '--system-site-packages', '--without-pip', venv],
                         env=env, cwd=scratch, title='venv') != 0:
@@ -250,6 +262,14 @@ class Runner:
                          '-q', '-e', checkout], env=env, cwd=scratch, title='install') != 0:
             raise Refused('editable install of the run checkout failed (it needs pip and setuptools in the system '
                           'site-packages); see the console')
+        user = dict(self.user, path_line=None)
+        result['tools']['ordinary_python3'] = {'path': python, 'resolved': str(Path(python).resolve())}
+        result['tools']['user_site'] = user
+        if user['exists']:
+            purelib = Path(json.loads(subprocess.run(
+                [vpython, '-I', '-c', 'import json, sysconfig; print(json.dumps(sysconfig.get_path("purelib")))'],
+                capture_output=True, text=True, timeout=60, env=env, check=True).stdout))
+            user['path_line'] = str(usersite.add_path_line(purelib, user['site']))
         packages = sorted(path.parent.name for path in (checkout / 'src').glob('*/__init__.py'))
         proof = subprocess.run([vpython, '-I', '-c', PREFLIGHT, *packages], cwd=scratch, env=env,
                                capture_output=True, text=True, timeout=60)
@@ -259,10 +279,20 @@ class Runner:
         for name, file in found['imports'].items():
             if not Path(file).resolve().is_relative_to(checkout):
                 raise Refused(f'{name} imports from {file}, not from the run checkout; refusing to test another tree')
+        for name in ('pytest', 'xdist', 'execnet', 'pip', 'setuptools'):
+            if found.get(name):
+                found[name]['origin'] = origin(found[name]['file'], venv, user)
         if not found.get('pytest'):
             raise Refused('the ordinary python3 provides no pytest')
         if self.args.workers and not found.get('xdist'):
-            raise Refused('-n needs pytest-xdist, which the ordinary python3 does not provide; pass -n 0')
+            raise Refused('-n needs pytest-xdist, which neither the system nor the user site of the ordinary '
+                          'python3 provides; pass -n 0. Nothing is installed.')
+        from_user = [str(Path(found[name]['file']).parent) for name in ('pytest', 'xdist', 'execnet')
+                     if found.get(name) and found[name]['origin'] == 'user site']
+        stale = usersite.stale_bytecode(vpython, from_user, env)
+        if stale:
+            raise Refused(f'{len(stale)} module(s) of the test tools in the user site lack current bytecode, so the '
+                          f'run would write into the operator\'s user site; refusing. First: {stale[:3]}')
         result['tools']['run_venv'] = found
         purelib = Path(found['purelib'])
         if not purelib.resolve().is_relative_to(venv):
@@ -288,7 +318,17 @@ class Runner:
         result['argv'] = [str(part) for part in argv + targets]
         self.state['stage'] = 'pytest'
         write_json(self.scratch_fd, 'state.json', self.state)
+        self.user_before = usersite.stamps(user['site']) if user['exists'] else None
         return self.execute(argv + targets, env=env, cwd=checkout, title='pytest')
+
+
+def origin(file: str, venv: Path, user: dict) -> str:
+    path = Path(file).resolve()
+    if path.is_relative_to(venv):
+        return 'run venv'
+    if user.get('exists') and path.is_relative_to(Path(user['site']).resolve()):
+        return 'user site'
+    return 'system'
 
 
 def decide(found: dict, timed_out: bool, signalled) -> str:

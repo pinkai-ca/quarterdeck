@@ -13,7 +13,7 @@ from tests.integration.testrun_synthetic import (TOOL, WAIT_TEST, admin_entries,
 def leaves_only_the_fixed_ending(project, failures=0):
     run, = results(project)
     expected = ['report.md', 'result.json'] + (['failures'] if failures else [])
-    assert sorted(os.listdir(run)) == expected
+    assert sorted(os.listdir(run)) == sorted(expected)
     if failures:
         assert len(os.listdir(run / 'failures')) == failures
     assert scratch(project) == []
@@ -98,6 +98,11 @@ def test_every_category_is_proved_under_xdist(tmp_path):
     assert found['evidence']['complete'], found['evidence']['causes']
     assert found['evidence']['counts'] == {'passed': 2, 'failed': 1, 'error': 2, 'skipped': 1, 'xfailed': 1,
                                            'xpassed': 1}
+    tools = found['tools']
+    assert tools['run_venv']['xdist']['origin'] in ('user site', 'system') and tools['run_venv']['xdist']['version']
+    assert tools['run_venv']['pytest']['origin'] in ('user site', 'system')
+    if tools['user_site']['exists']:
+        assert tools['user_site']['path_line'] and tools['user_site']['bytecode_folders']['changed'] == []
     leaves_only_the_fixed_ending(project, failures=3)
 
 

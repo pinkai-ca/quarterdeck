@@ -32,7 +32,7 @@ testpaths = ["tests"]
 
 def commit(folder: Path, message: str) -> str:
     git(folder, 'add', '-A')
-    git(folder, 'commit', '-q', '-m', message)
+    git(folder, 'commit', '-q', '--allow-empty', '-m', message)
     return git(folder, 'rev-parse', 'HEAD')
 
 

@@ -55,7 +55,7 @@ def retire_run(root: Root, runs_fd: int, run: str, state: dict) -> dict:
     if note:
         return {'outcome': 'kept', 'reason': note['reason'], 'scratch': str(root.path / RUNS / run)}
     try:
-        tally = owned.remove(runs_fd, run, state['scratch'], root.path / RUNS / run)
+        tally = owned.remove(runs_fd, run, state['scratch'], root.path / RUNS / run, state.get('owner'))
     except Refused as refused:
         return {'outcome': 'held', 'reason': str(refused)}
     cleanup = {'outcome': 'complete', 'removed': tally.as_dict(), 'scratch': str(root.path / RUNS / run)}

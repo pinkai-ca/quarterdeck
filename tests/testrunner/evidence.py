@@ -117,6 +117,7 @@ def analyse(folder: Path, pytest_exit: int | None) -> dict:
         'xdist': xdist,
         'plugin': sorted({event.get('plugin') for event in starts if event.get('plugin') is not None}),
         'tools': sorted({(event.get('pytest'), event.get('xdist'), event.get('python')) for event in starts}),
+        'plugins': sorted({name for event in starts for name in event.get('plugins', [])}),
         'expected': len(expected),
         'deselected': len(deselected),
         'terminal': len(terminal & set(expected)),
