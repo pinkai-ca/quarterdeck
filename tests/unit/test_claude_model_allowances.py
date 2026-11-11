@@ -11,6 +11,7 @@ from quarterdeck.harness.limits import Usage, Window
 from quarterdeck.ledger import Ledger
 from .test_claude_usage_reads import Endpoint, ok, subscription
 from .test_cross_program_failover import running, usage  # noqa: F401
+from .test_price_rollback import old  # noqa: F401
 
 
 @pytest.fixture(autouse=True)
@@ -433,3 +434,45 @@ def test_unknown_or_ambiguous_model_cannot_prove_scoped_wall_or_destination_room
     choices["third"]["model"] = unknown
     r.seat.spec = replace(r.seat.spec, pool_choices=choices)
     assert not r.svc.known_open(r.seat, "third")
+
+
+@pytest.mark.parametrize("changed", ["used", "resets_at", "read_at", "group_name", "blocks"])
+def test_old_writer_cannot_leave_a_severity_wall_attached_to_a_replaced_measurement(tmp_path, changed):
+    from quarterdeck.harness.claude_limits import snapshot
+    at = post.now()
+    path = tmp_path / "ledger.sqlite"
+    with Ledger(path) as book:
+        book.record_usage("synthetic", snapshot({**body(), "limits": [native_row(35, "critical")]}, at))
+        assert book.walled("synthetic")
+        replacement = {"used": .2, "resets_at": (at+timedelta(days=8)).isoformat(),
+                       "read_at": (at+timedelta(seconds=1)).isoformat(), "group_name": "opus", "blocks": 0}[changed]
+        # The old schema writer updates ordinary columns and never touches the new evidence column.
+        book.db.execute(f"UPDATE pools SET {changed}=? WHERE window='fable / 7d'", (replacement,))
+        book.db.commit()
+    with Ledger.reading(path) as book:
+        assert not next(r for r in book.usage.rows() if r.window == "fable / 7d").exhausted
+        assert not book.walled("synthetic")
+        assert book.usage_known("synthetic") == (changed == "blocks")
+
+
+@pytest.mark.parametrize("old", ["2ac327daf56413395e7a4f6e7598c5906530570a"], indirect=True)
+def test_actual_settled_base_writer_invalidates_the_new_wall_evidence(tmp_path, old):
+    from quarterdeck.harness.claude_limits import snapshot
+    at = post.now()
+    path = tmp_path / "ledger.sqlite"
+    with Ledger(path) as book:
+        book.record_usage("synthetic", snapshot({**body(), "limits": [native_row(35, "critical")]}, at))
+        assert book.walled("synthetic")
+    old('''
+from datetime import datetime
+import sys
+from quarterdeck.ledger import Ledger
+from quarterdeck.harness.limits import Usage, Window
+with Ledger(Path(sys.argv[1])) as book:
+    reset=datetime.fromisoformat(sys.argv[3]); at=datetime.fromisoformat(sys.argv[2])
+    book.record_usage("synthetic", Usage((Window("fable / 7d", .2, reset, group="fable"),), at))
+''', path, (at+timedelta(seconds=1)).isoformat(), body()["seven_day"]["resets_at"])
+    with Ledger.reading(path) as book:
+        row = next(r for r in book.usage.rows() if r.group == "fable")
+        assert row.used == .2 and not row.exhausted and not book.walled("synthetic")
+        assert not book.usage_known("synthetic") and "no longer matches" in row.error

@@ -6,6 +6,8 @@ There is no reading-history table and rejected numeric values are not stored.
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
+import json
 import math
 import sqlite3
 
@@ -39,6 +41,14 @@ def invalid(used: object, reset: datetime | None, at: datetime | None) -> str | 
     if reset <= at:
         return "reset is not after the reading time"
     return None
+
+
+def exhaustion_evidence(pool, window, used, resets_at, read_at, blocks, group) -> str | None:
+    """Bind a native wall to its complete tuple; an older writer cannot leave a stale flag."""
+    if type(used) not in (int, float) or not isinstance(resets_at, str) or not isinstance(read_at, str):
+        return None
+    identity = (pool, window, float(used), resets_at, read_at, bool(blocks), group)
+    return "v1:" + hashlib.sha256(json.dumps(identity, separators=(",", ":")).encode()).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -102,10 +112,17 @@ class UsageCache:
 
     def rows(self, pool: str | None = None) -> list[Reading]:
         columns = {r[1] for r in self.db.execute("PRAGMA table_info(pools)")}
-        exhausted = "exhausted" if "exhausted" in columns else "0"
+        exhausted = "exhausted" if "exhausted" in columns else "''"
         sql = (f"SELECT pool,window,used,resets_at,read_at,blocks,group_name,bucket,bucket_name,attempted_at,error,{exhausted} FROM pools"
                + (" WHERE pool=?" if pool is not None else "") + " ORDER BY pool,window")
-        return [Reading(*r[:5], bool(r[5]), *r[6:11], bool(r[11])) for r in self.db.execute(sql, (pool,) if pool is not None else ())]
+        found = []
+        for row in self.db.execute(sql, (pool,) if pool is not None else ()):
+            bound = bool(row[11]) and row[11] == exhaustion_evidence(*row[:7])
+            error = row[10]
+            if row[11] and not bound:
+                error = error or "explicit wall evidence no longer matches the measurement"
+            found.append(Reading(*row[:5], bool(row[5]), *row[6:10], error, bound))
+        return found
 
     def record(self, pool: str, usage: Usage, attempted_at: datetime) -> str | None:
         previous = {r.window: r for r in self.rows(pool)}
@@ -143,13 +160,15 @@ class UsageCache:
                                     (pool, name, new.blocks, new.group, attempted_at.isoformat(), error))
                 continue
             bucket = new.bucket if new.bucket is not None else (old.bucket if old else None)
+            exhausted = exhaustion_evidence(pool, name, new.used, new.resets_at.isoformat(),
+                                            usage.read_at.isoformat(), new.blocks, new.group) if new.exhausted else ""
             self.db.execute("INSERT INTO pools (pool,window,used,resets_at,read_at,blocks,group_name,bucket,bucket_name,attempted_at,error,exhausted) "
                             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(pool,window) DO UPDATE SET "
                             "used=excluded.used,resets_at=excluded.resets_at,read_at=excluded.read_at,blocks=excluded.blocks,"
                             "group_name=excluded.group_name,bucket=excluded.bucket,bucket_name=excluded.bucket_name,"
                             "attempted_at=excluded.attempted_at,error=excluded.error,exhausted=excluded.exhausted",
                             (pool, name, new.used, new.resets_at.isoformat(), usage.read_at.isoformat(), new.blocks, new.group,
-                             bucket, new.bucket_name, attempted_at.isoformat(), new.uncertainty, new.exhausted))
+                             bucket, new.bucket_name, attempted_at.isoformat(), new.uncertainty, exhausted))
             if new.uncertainty:
                 errors.append(f"{name}: {new.uncertainty}")
         if not grouped and not errors:

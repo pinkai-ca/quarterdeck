@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS tool_calls (
 );
 CREATE TABLE IF NOT EXISTS pools (
     pool TEXT NOT NULL, window TEXT NOT NULL, used REAL, resets_at TEXT, read_at TEXT,
-    blocks INTEGER NOT NULL DEFAULT 1, group_name TEXT, bucket TEXT, bucket_name TEXT, exhausted INTEGER NOT NULL DEFAULT 0,
+    blocks INTEGER NOT NULL DEFAULT 1, group_name TEXT, bucket TEXT, bucket_name TEXT, exhausted TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (pool, window)
 );
 CREATE TABLE IF NOT EXISTS records (
@@ -87,7 +87,7 @@ CREATE TABLE IF NOT EXISTS records (
 # Columns added since a table was first written; an older file gains them when the service opens it.
 ADDED_COLUMNS = {
     "turns": (("unmeasured", "INTEGER NOT NULL DEFAULT 0"),),
-    "pools": (("blocks", "INTEGER NOT NULL DEFAULT 1"), ("group_name", "TEXT"), ("bucket", "TEXT"), ("bucket_name", "TEXT"), ("exhausted", "INTEGER NOT NULL DEFAULT 0")),
+    "pools": (("blocks", "INTEGER NOT NULL DEFAULT 1"), ("group_name", "TEXT"), ("bucket", "TEXT"), ("bucket_name", "TEXT"), ("exhausted", "TEXT NOT NULL DEFAULT ''")),
 }
 # A turn whose tokens are not wholly known: a step without usage, or a class an older row left null.
 PARTLY_UNMEASURED = "unmeasured > 0 OR read_cached IS NULL OR read_uncached IS NULL OR cache_written IS NULL OR written IS NULL"
