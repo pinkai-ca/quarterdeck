@@ -200,6 +200,8 @@ The private `HOME` is `GROK_HOME/user-home`; XDG paths stay inside it, and a fix
 
 Grok startup can fetch the public `xai-org` plugin marketplace catalog. The installed guides describe marketplace policy pins and pinned plugin auto-update control, but no supported seat setting suppressing the built-in public fetch/offering has been established; the card names this behavior instead of claiming it is disabled.
 
+The Grok fullscreen reader in `grok_screen.py` uses freshly measured 1.0.77 rounded composer boundaries, prompt, model/effort footer and hint rows. It opts into atomic styled reads, decodes SGR inside the adapter and returns plain `Screen.text`. The exact model argument hint requires the picker, command prefix and measured faint or RGB styling; brightness alone never discards content. The normal composer retains painted padding for the shared `Box` verifier. Unknown style/layout remains unknown. Commands and model picker dialogs are distinct from the composer. Working/queue/cancel facts remain provisional until ordinary native turns are measured.
+
 Doctor calls the native adapter's global preflight for a non-endpoint pool even without a seat, and checks each seat's actual harness for every declared pool choice with an explicit runtime home and ship-resolved cwd. Only failed seat readiness adds rows. A default adapter's output is unchanged, and an arbitrary endpoint operator never selects a native reader.
 
 First round: `claude`, `codex`, `antigravity`. GLM is `claude` with a different endpoint and model map, so it is configuration, not a new adapter. Added on 7 November 2026: `opencode` and `pi`, both on endpoint pools (section 4). One OpenAI-compatible server, a local vLLM in the first ship, serves either program; each adapter writes the provider into its program's own configuration under the pool's name, so the record of every turn names the pool that served it, and asks the endpoint what it serves when the seat home is built, so the ship file names the model and nothing more about it. A program that keeps every session of a data directory in one database, as OpenCode does, is given a data directory per launch, so that a record stays one file per launch and the join stays exact. Each adapter ships a card, `harnesses/<name>.md`, with the facts a seat needs about its own program, and a fixture set per proven version for the contract tests.
@@ -619,7 +621,7 @@ quarterdeck/                       the project folder: the framework repository
     presentation.py   disposable status text rendering and freshness checks; the console bootstrap's optional fast path,
                    never lifecycle, receipt or usage evidence
     harness/       base.py types.py home.py claude.py codex.py antigravity.py opencode.py pi.py grok.py fake.py; json_record.py limits.py sqlite_snapshot.py costs.py
-                   grok_record.py grok_usage.py grok_workspace.py   native ACP update stream, program-owned billing and read-only project scope
+                   grok_record.py grok_screen.py grok_usage.py grok_workspace.py   native ACP updates, fullscreen composer, program-owned billing and read-only project scope
                    opencode_record.py antigravity_record.py antigravity_wire.py antigravity_quota.py; simulator.py synthetic_record.py synthetic_control.py,
                    the fake program the drill runs, its records in Claude Code's or Codex's shape, and the rendezvous a test holds it at
     harness/codex_usage.py   Codex usage windows from the newest eligible snapshot in current launch records

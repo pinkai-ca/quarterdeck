@@ -15,7 +15,7 @@ from .home import credential, key_environment, merged, ship_template
 from .json_record import when
 from .limits import Usage
 from .types import Box, Control, Credential, Keys, Launch, Screen
-from . import grok_record, grok_usage, grok_workspace
+from . import grok_record, grok_screen, grok_usage, grok_workspace
 
 VENDORS = ("claude", "cursor", "codex")
 IMPORTS = ("rules", "hooks", "mcps", "skills", "agents", "sessions")
@@ -156,6 +156,7 @@ class GrokHarness(Harness):
     keys = Keys(submit="Enter", send_now=("Enter",), interrupt="C-c")
     reads_usage = True
     private_usage_home = True
+    styled_screen = True
     usage_interval = 300
     headline_window = (None, "7d")
     human_tools = ("ask_user_question",)
@@ -264,8 +265,11 @@ class GrokHarness(Harness):
         return grok_usage.billing(self.program, home, private_environment(home))
 
     def screen(self, text: str) -> Screen:
-        # Native screen facts are filled only after the installed-version measurement.
-        return Screen(text, box=None, unknown="Grok screen layout not yet measured")
+        return grok_screen.read(text)
+
+    def box_columns(self, pane_width: int) -> int | None:
+        # 1.0.77 fullscreen: two-cell margins, borders and the three-cell prompt.
+        return pane_width - 9 if pane_width >= 13 else None
 
     def box(self, text: str) -> Box:
         return Box(text)
@@ -273,3 +277,6 @@ class GrokHarness(Harness):
     def controls(self) -> tuple[Control, ...]:
         return (Control("model", "--model <value>", "/model {value}", "screen"),
                 Control("effort", "--reasoning-effort <value>", "/effort {value}", "screen"))
+
+    def interruptions(self):
+        return (grok_screen.COMMANDS, grok_screen.MODEL_PICKER)

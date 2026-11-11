@@ -1,0 +1,17 @@
+{
+  "lines": [
+    "  /sample/project                                                               ",
+    "                                                                                ",
+    "  ╭──────────────────────────────────────────────────────────────────────────╮  ",
+    "  \u001b[38;2;80;80;88m│\u001b[38;2;225;225;225m ❯ A synthetic sample has several words and punctuation. A synthetic      \u001b[38;2;80;80;88m│\u001b[39m  ",
+    "  \u001b[38;2;80;80;88m│\u001b[38;2;225;225;225m   sample has several words and punctuation. A synthetic sample has       \u001b[38;2;80;80;88m│\u001b[39m  ",
+    "  \u001b[38;2;80;80;88m│\u001b[38;2;225;225;225m   several words and punctuation. A synthetic sample has several words and\u001b[38;2;80;80;88m│\u001b[39m  ",
+    "  \u001b[38;2;80;80;88m│\u001b[38;2;225;225;225m   punctuation. A synthetic sample has several words and punctuation. A   \u001b[38;2;80;80;88m│\u001b[39m  ",
+    "  \u001b[38;2;80;80;88m│\u001b[38;2;225;225;225m   synthetic sample has several words and punctuation. A synthetic sample \u001b[38;2;80;80;88m│\u001b[39m  ",
+    "  \u001b[38;2;80;80;88m│\u001b[38;2;225;225;225m   has several words and punctuation. End.                                \u001b[38;2;80;80;88m│\u001b[39m  ",
+    "  ╰─────────────────────────────────────── Grok 4.7 (high) · always-approve ─╯  ",
+    "                                                                                ",
+    "  Enter:send  │  Alt+Enter:newline  │  Shift+Tab:mode  │  Ctrl+x:shortcuts      ",
+    "                                                                                "
+  ]
+}

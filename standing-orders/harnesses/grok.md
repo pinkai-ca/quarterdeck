@@ -39,4 +39,8 @@ Billing is read through Grok's own agent protocol in a separate private home, wi
 
 Native model and effort launch flags are `--model` and `--reasoning-effort`; their session forms are `/model` and `/effort`. Quarterdeck confirms a setting from resulting native state, not the command's echo.
 
-Version facts are being measured on 1.0.77. Live check, screen, queue and isolation acceptance must complete before this adapter is declared proven.
+The 1.0.77 fullscreen composer has a rounded border, an `❯` prompt and a footer naming the active model, effort and permission mode. Ordinary short and multiline drafts, word wrapping and Ctrl+C clearing of an unsent draft were measured. The model picker and Commands modal are recognized separately; the picker contains a draft, so its known cancellation key does not authorize discarding that draft automatically. Ctrl+C dismisses the picker; Escape closes Commands. A control must wait for the resulting composer state before another command is typed.
+
+Screen captures request native SGR in the same atomic pane read as identity. The adapter returns ordinary text. Native bright input, command color and muted argument hints differ; monochrome mode uses faint hints. Only the exact model argument hint in its measured picker is excluded from draft text. An identical bright literal stays content, and unknown styling or layout stays unknown. This does not establish arbitrary terminal themes or indexed color palettes.
+
+Version facts are being measured on 1.0.77. Working spinner, cancellation during a turn, queue behavior, completed native records, resume and exact input receipts still await ordinary native measurement. Installed live check and full acceptance remain outstanding.
