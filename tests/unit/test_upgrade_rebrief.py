@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import install, post, service, standing
+from quarterdeck import durable, install, post, service, standing
 from quarterdeck.ship import ShipError
 from quarterdeck.service import Service
 from quarterdeck.ship import load
@@ -227,12 +227,12 @@ def test_return_to_old_commit_is_new_event_but_only_content_changes_notify(upgra
 
 def test_posted_notices_do_not_duplicate_when_request_answer_write_is_interrupted(upgraded,monkeypatch):
     s=upgraded;change_archive(s)
-    original=Path.write_text;failed=[]
+    original=durable.replace_file;failed=[]
     def write(path,*args,**kwargs):
         if path.suffix=='.done' and path.name.startswith('upgrade-rebrief-') and not failed:
             failed.append(True);raise OSError('synthetic answer interruption')
         return original(path,*args,**kwargs)
-    monkeypatch.setattr(Path,'write_text',write)
+    monkeypatch.setattr(durable,'replace_file',write)
     with pytest.raises(OSError,match='answer interruption'):
         install.upgrade(s.ship,'changed',s.tmux)
     ids={m.id for m in notices(s)};assert len(ids)==2
