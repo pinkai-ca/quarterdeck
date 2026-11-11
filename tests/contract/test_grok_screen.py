@@ -42,9 +42,9 @@ def test_word_wrapped_draft_keeps_exact_word_separators():
     adapter = GrokHarness()
     screen = adapter.screen(fixture("draft-wrapped"))
     wanted = fixture("draft-wrapped-payload")
-    assert adapter.box_columns(80) == 71
-    assert adapter.box(wanted).matches(screen.box, 71)
-    assert not adapter.box(wanted.replace("several words", "severalwords")).matches(screen.box, 71)
+    assert adapter.box_columns(80) == 70
+    assert adapter.box(wanted).matches(screen.box, 70)
+    assert not adapter.box(wanted.replace("several words", "severalwords")).matches(screen.box, 70)
 
 
 @pytest.mark.parametrize("name", ["model-picker-color", "model-picker-mono"])
@@ -73,7 +73,7 @@ def test_commands_modal_is_distinct_from_underlying_composer():
     assert screen.interruption.key == "Escape"
 
 
-@pytest.mark.parametrize("change", ["boundary", "hint", "style", "terminal-control"])
+@pytest.mark.parametrize("change", ["boundary", "hint", "style", "terminal-control", "background", "row-width"])
 def test_unmeasured_ui_is_reported_unknown(change):
     text = fixture("draft-multiline")
     if change == "boundary":
@@ -82,6 +82,10 @@ def test_unmeasured_ui_is_reported_unknown(change):
         text = text.replace("Ctrl+x:shortcuts", "Changed native footer")
     elif change == "style":
         text = text.replace("225;225;225", "90;90;90")
+    elif change == "background":
+        text = text.replace("225;225;225m", "225;225;225m\x1b[48;2;200;0;0m")
+    elif change == "row-width":
+        text = text.replace("Last line: done.", "Last line: done. extra cells")
     else:
         text = "\x1b]unknown\x07" + text
     screen = GrokHarness().screen(text)
@@ -145,3 +149,57 @@ def test_multiple_empty_rows_are_not_assumed_to_be_an_empty_composer():
     screen = GrokHarness().screen(with_blank_rows(1, empty=True))
     assert screen.unknown
     assert screen.box == " " * 71 + "\n" + " " * 71
+
+
+@pytest.mark.parametrize("length", [70, 71, 140])
+def test_measured_unbroken_wrap_boundary(length):
+    adapter = GrokHarness()
+    text = fixture("idle-mono")
+    rows = text.splitlines()
+    at = next(i for i, row in enumerate(rows) if " ❯ " in row)
+    wanted = "S" * length
+    pieces = [wanted[i:i + 70] for i in range(0, length, 70)]
+    rows[at:at + 1] = ["  │ " + ("❯ " if i == 0 else "  ") + piece.ljust(71) + "│  "
+                       for i, piece in enumerate(pieces)]
+    screen = adapter.screen("\n".join(rows) + "\n")
+    assert screen.unknown is None
+    assert len(screen.box.split("\n")) == len(pieces)
+    assert adapter.box(wanted).matches(screen.box, adapter.box_columns(80))
+    assert not adapter.box(wanted + "S").matches(screen.box, adapter.box_columns(80))
+
+
+@pytest.mark.parametrize("leading,trailing,count", [(0, 0, 24), (0, 1, 24), (0, 2, 25), (1, 2, 26)])
+def test_folded_line_count_includes_blank_lines_except_final_terminator(leading, trailing, count):
+    adapter = GrokHarness()
+    screen = adapter.screen(fixture("folded-multiline").replace("Pasted: 24 lines", f"Pasted: {count} lines"))
+    # Keep the measured right border fixed when a display count changes width.
+    assert screen.unknown is None
+    wanted = "\n" * leading + "\n".join(f"Synthetic item {i}." for i in range(24)) + "\n" * trailing
+    assert adapter.box(wanted).matches(screen.box, adapter.box_columns(80))
+    assert not adapter.box(wanted + "\n\n").matches(screen.box, adapter.box_columns(80))
+
+
+def test_fold_chip_needs_measured_styling():
+    adapter = GrokHarness()
+    native = fixture("folded-multiline")
+    assert adapter.screen(native).unknown is None
+    changed = adapter.screen(native.replace("48;2;17;17;17", "48;2;60;60;60"))
+    assert changed.box is None and changed.unknown
+    assert "[Pasted: 24 lines]" in changed.text
+
+
+def test_literal_fold_spelling_is_retained_as_draft_text():
+    adapter = GrokHarness()
+    hint, token = "<model> [window] [effort]", "[Pasted: 24 lines]"
+    text = fixture("draft-literal-hint").replace(hint, token.ljust(len(hint)))
+    screen = adapter.screen(text)
+    assert screen.unknown is None
+    assert adapter.box("[Pasted: 24 lines]").matches(screen.box, adapter.box_columns(80))
+    assert not adapter.box("a different literal").matches(screen.box, adapter.box_columns(80))
+
+
+def test_clipped_single_line_viewport_cannot_prove_full_paste():
+    adapter = GrokHarness()
+    screen = adapter.screen(fixture("clipped-viewport"))
+    assert screen.unknown
+    assert not adapter.box("V" * 2000).matches(screen.box, adapter.box_columns(80))

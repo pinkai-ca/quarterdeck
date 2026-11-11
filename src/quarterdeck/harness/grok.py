@@ -268,11 +268,16 @@ class GrokHarness(Harness):
         return grok_screen.read(text)
 
     def box_columns(self, pane_width: int) -> int | None:
-        # 1.0.77 fullscreen: two-cell margins, borders and the three-cell prompt.
-        return pane_width - 9 if pane_width >= 13 else None
+        # 1.0.77 fullscreen: margins, borders, prompt and one reserved cursor cell.
+        # Native 80-column probes wrap 70/71/140 characters as 70, 70+1, 70+70.
+        return pane_width - 10 if pane_width >= 14 else None
 
     def box(self, text: str) -> Box:
-        return Box(text)
+        # Native line counting excludes one final LF terminator, while retaining
+        # leading and additional trailing blank lines. Single-line viewport
+        # clipping proves no fold and never matches a shorter visible tail.
+        lines = text.count("\n") + (not text.endswith("\n"))
+        return Box(text, folded=rf"\[Pasted: {lines} lines\]" if text else None)
 
     def controls(self) -> tuple[Control, ...]:
         return (Control("model", "--model <value>", "/model {value}", "screen"),

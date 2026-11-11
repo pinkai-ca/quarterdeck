@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .types import Interruption, Screen
+from .types import Interruption, Screen, _cells
 
 SGR = re.compile(r"\x1b\[([0-9;]*)m")
 FOOTER = re.compile(
@@ -24,20 +24,21 @@ MODEL_PICKER = Interruption("model picker", r"Grok [0-9.]+ \(current\)", "C-c")
 @dataclass(frozen=True)
 class Style:
     foreground: tuple[int, int, int] | None = None
+    background: tuple[int, int, int] | None = None
     faint: bool = False
 
 
 def characters(text: str) -> tuple[str, list[Style]] | None:
     """Decode the SGR subset tmux emits; other terminal controls stay unknown."""
     plain, styles, position = [], [], 0
-    foreground, faint = None, False
+    foreground, background, faint = None, None, False
     while position < len(text):
         if text[position] != "\x1b":
             char = text[position]
             if ord(char) < 32 and char != "\n":
                 return None
             plain.append(char)
-            styles.append(Style(foreground, faint))
+            styles.append(Style(foreground, background, faint))
             position += 1
             continue
         match = SGR.match(text, position)
@@ -48,13 +49,15 @@ def characters(text: str) -> tuple[str, list[Style]] | None:
         while at < len(codes):
             code = codes[at]
             if code == 0:
-                foreground, faint = None, False
+                foreground, background, faint = None, None, False
             elif code == 2:
                 faint = True
             elif code == 22:
                 faint = False
             elif code == 39:
                 foreground = None
+            elif code == 49:
+                background = None
             elif code in (38, 48):
                 if codes[at + 1:at + 2] == [2] and len(codes) >= at + 5:
                     rgb = tuple(codes[at + 2:at + 5])
@@ -62,10 +65,12 @@ def characters(text: str) -> tuple[str, list[Style]] | None:
                         return None
                     if code == 38:
                         foreground = rgb
+                    else:
+                        background = rgb
                     at += 4
                 else:
                     return None  # indexed palettes have not been measured
-            elif code not in (1, 3, 4, 7, 9, 23, 24, 27, 29, 49):
+            elif code not in (1, 3, 4, 7, 9, 23, 24, 27, 29):
                 return None
             at += 1
         position = match.end()
@@ -111,6 +116,8 @@ def read(text: str) -> Screen:
         # Use the border suffix rather than character offsets: wide user text
         # occupies terminal cells, not necessarily one Python character each.
         end = len(row) - len(rows[top][right + 1:]) - 1
+        if _cells(row[:end]) != right:
+            return Screen(plain, box=None, unknown="Grok composer row width is unmeasured", shows=shows)
         content = row[len(prefix):end]
         begin = offsets[index] + len(prefix)
         body.append((content, style[begin:begin + len(content)]))
@@ -128,9 +135,19 @@ def read(text: str) -> Screen:
         box = "/model " if hint else content
         return Screen(plain, box=box, interruption=MODEL_PICKER, shows=shows)
     for content, attributes in body:
+        token = content.rstrip(" ")
+        folded = (len(body) == 1 and re.fullmatch(r"\[Pasted: [1-9][0-9]* lines\]", token)
+                  and len(attributes) >= len(token)
+                  and all(not attribute.faint and attribute.background == (17, 17, 17)
+                          and attribute.foreground == ((65, 65, 65) if i in (0, len(token) - 1)
+                                                       else (200, 200, 200))
+                          for i, attribute in enumerate(attributes[:len(token)])))
+        if folded:
+            continue  # the measured count chip, never a generic muted placeholder
         for char, attribute in zip(content, attributes):
             if not char.isspace() and (attribute.faint or attribute.foreground not in
-                                      (None, (225, 225, 225), (122, 162, 247))):
+                                      (None, (225, 225, 225), (122, 162, 247))
+                                      or attribute.background not in (None, (20, 20, 20))):
                 return Screen(plain, box=None, unknown="unmeasured Grok composer text styling", shows=shows)
     box = "\n".join(content for content, _ in body)
     if len(body) > 1 and not body[-1][0].strip(" "):
