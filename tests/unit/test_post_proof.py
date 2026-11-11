@@ -82,3 +82,62 @@ def test_unavailable_recipient_reading_is_not_a_down_fact(tmp_path,monkeypatch,e
     def unreadable(*args): raise error
     monkeypatch.setattr(cli,'seat_of',unreadable)
     assert expected in cli.delivery_note(declaration(tmp_path),'recipient')
+
+
+@pytest.mark.parametrize('wire', ['[]', 'null', '{'], ids=['list', 'null', 'invalid-json'])
+@pytest.mark.parametrize('recipient', ['captain', 'desk'])
+def test_real_post_with_malformed_caller_launch_stores_once_without_recipient_reads(drydock, monkeypatch, capsys, wire, recipient):
+    from quarterdeck import post, seat, ship as shipmod
+    ship = shipmod.load(drydock)
+    transport = SimpleNamespace(pane=lambda *a: pytest.fail('no PID/pane read is permitted'))
+    sender = seat.Seat(ship, ship.seat('worker-1'), transport)
+    sender.folder.mkdir(parents=True)
+    path = sender.folder/'launch.json'
+    path.write_text(wire)
+    original = path.read_bytes()
+    monkeypatch.setenv('QD_SEAT', sender.name)
+    monkeypatch.setattr(cli.Tmux, 'default', lambda: transport)
+    real_seat_of = cli.seat_of
+    def caller_only(current, name):
+        assert name == sender.name, 'malformed caller evidence must not reach the recipient'
+        return real_seat_of(current, name)  # actual Seat and saved-launch reader
+    monkeypatch.setattr(cli, 'seat_of', caller_only)
+    monkeypatch.setattr(cli.service, 'alive', lambda *a: pytest.fail('no service PID read'))
+    monkeypatch.setattr(cli.post, 'watch_armed', lambda *a: pytest.fail('no watch PID read'))
+    try:
+        code = cli.main(['--ship', str(drydock), 'post', 'report', '--to', recipient,
+                         'Synthetic malformed caller evidence'])
+    finally:
+        messages = post.Store(ship.runtime).all()
+        assert len(messages) == 1 and messages[0].sender == sender.name and messages[0].to == recipient
+        assert path.read_bytes() == original, 'proof generation must never repair launch data'
+    output = capsys.readouterr().out
+    assert code == 0 and '· stored ·' in output
+    assert ('watch state is not visible here' if recipient == 'desk' else 'recipient state is not visible here') in output
+    assert 'is down' not in output and 'no watch armed' not in output
+
+
+@pytest.mark.parametrize('wire', ['[]', 'null', '{'], ids=['list', 'null', 'invalid-json'])
+def test_real_post_with_malformed_recipient_launch_keeps_storage_and_unknown_state(drydock, monkeypatch, capsys, wire):
+    from quarterdeck import post, seat, ship as shipmod
+    ship = shipmod.load(drydock)
+    transport = SimpleNamespace(pane=lambda *a: pytest.fail('malformed launch cannot establish a PID'))
+    recipient = seat.Seat(ship, ship.seat('captain'), transport)
+    recipient.folder.mkdir(parents=True)
+    path = recipient.folder/'launch.json'
+    path.write_text(wire)
+    original = path.read_bytes()
+    monkeypatch.delenv('QD_SEAT', raising=False)
+    monkeypatch.setattr(cli.Tmux, 'default', lambda: transport)
+    monkeypatch.setattr(cli.service, 'alive', lambda *a: pytest.fail('no service PID read'))
+    monkeypatch.setattr(cli.post, 'watch_armed', lambda *a: pytest.fail('no watch PID read'))
+    try:
+        code = cli.main(['--ship', str(drydock), 'post', 'report', '--to', recipient.name,
+                         'Synthetic malformed recipient evidence'])
+    finally:
+        messages = post.Store(ship.runtime).all()
+        assert len(messages) == 1 and messages[0].to == recipient.name
+        assert path.read_bytes() == original
+    output = capsys.readouterr().out
+    assert code == 0 and '· stored ·' in output and 'recipient state is unknown here' in output
+    assert 'is down' not in output

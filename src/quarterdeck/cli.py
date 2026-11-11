@@ -422,7 +422,7 @@ def _post_view_restricted(ship: shipmod.Ship) -> bool:
         return False
     try:
         launched = seat_of(ship, caller).launched()
-    except (ShipError, OSError, ValueError, TypeError):
+    except (ShipError, OSError, ValueError, TypeError, AttributeError):
         return True
     return launched is None or sandbox.seats_hidden(launched.argv) is not False
 
@@ -442,7 +442,7 @@ def delivery_note(ship: shipmod.Ship, to: str) -> str:
         up = seat.is_up
     except TmuxError:
         return "the service handles delivery; tmux is out of reach from here"
-    except (ShipError, OSError, ValueError, TypeError):
+    except (ShipError, OSError, ValueError, TypeError, AttributeError):
         return "the service handles delivery; recipient state is unknown here"
     if not up:
         return f"{to} is down; carried as its first message at qd up"
