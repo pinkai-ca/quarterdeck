@@ -19,17 +19,40 @@ def candidate_pools(seat) -> tuple[str, ...]:
     return pools[current + 1:] + pools[:current]
 
 
-def cached_open(ship, book, pool_name: str) -> bool:
+def model_scope(seat, pool_name: str, *, running: bool = False):
+    """Adapter-owned group applicability; source evidence differs from a resolved destination."""
+    from . import harness as harnesses
+
+    spec = None if running else seat.spec.for_pool(pool_name)
+    reader = seat.harness if running else harnesses.get(spec.harness)
+    if not reader.model_scoped_usage:
+        return None
+    if running:
+        from .watch import running_settings
+        model = running_settings(seat).get("model")
+    else:
+        model = spec.model
+    return lambda group: reader.usage_scope(group, model)
+
+
+def current_walled(seat, book) -> bool:
+    if not book.walled(seat.pool.name, seat.ship):
+        return False  # No model reading is needed unless this pool has a wall to scope.
+    return book.walled(seat.pool.name, seat.ship, scope=model_scope(seat, seat.pool.name, running=True))
+
+
+def cached_open(ship, book, pool_name: str, seat=None) -> bool:
     """Routing eligibility from existing evidence, with no provider read."""
     from . import harness as harnesses
 
     pool = ship.pools[pool_name]
     if pool.kind in ("key", "endpoint"):
         return not book.walled(pool_name, ship)
+    scope = model_scope(seat, pool_name) if seat is not None else None
     reader = harnesses.get(pool.provider)
     if reader.background_usage or reader.reads_usage:
-        return book.usage_known(pool_name) and not book.walled(pool_name, ship)
-    return not book.walled(pool_name, ship)
+        return book.usage_known(pool_name, scope=scope) and not book.walled(pool_name, ship, scope=scope)
+    return not book.walled(pool_name, ship, scope=scope)
 
 
 def stamp(at: datetime | None) -> str | None:

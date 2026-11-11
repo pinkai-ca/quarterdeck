@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS tool_calls (
 );
 CREATE TABLE IF NOT EXISTS pools (
     pool TEXT NOT NULL, window TEXT NOT NULL, used REAL, resets_at TEXT, read_at TEXT,
-    blocks INTEGER NOT NULL DEFAULT 1, group_name TEXT, bucket TEXT, bucket_name TEXT,
+    blocks INTEGER NOT NULL DEFAULT 1, group_name TEXT, bucket TEXT, bucket_name TEXT, exhausted INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (pool, window)
 );
 CREATE TABLE IF NOT EXISTS records (
@@ -87,7 +87,7 @@ CREATE TABLE IF NOT EXISTS records (
 # Columns added since a table was first written; an older file gains them when the service opens it.
 ADDED_COLUMNS = {
     "turns": (("unmeasured", "INTEGER NOT NULL DEFAULT 0"),),
-    "pools": (("blocks", "INTEGER NOT NULL DEFAULT 1"), ("group_name", "TEXT"), ("bucket", "TEXT"), ("bucket_name", "TEXT")),
+    "pools": (("blocks", "INTEGER NOT NULL DEFAULT 1"), ("group_name", "TEXT"), ("bucket", "TEXT"), ("bucket_name", "TEXT"), ("exhausted", "INTEGER NOT NULL DEFAULT 0")),
 }
 # A turn whose tokens are not wholly known: a step without usage, or a class an older row left null.
 PARTLY_UNMEASURED = "unmeasured > 0 OR read_cached IS NULL OR read_uncached IS NULL OR cache_written IS NULL OR written IS NULL"
@@ -336,14 +336,15 @@ class Ledger:
         query = "SELECT pool, window, used, resets_at, read_at FROM pools" + (" WHERE pool = ?" if pool else "") + " ORDER BY pool, window"
         return self.db.execute(query, (pool,) if pool else ()).fetchall()
 
-    def walls(self, ship: Ship | None = None, now: datetime | None = None) -> list[str]:
+    def walls(self, ship: Ship | None = None, now: datetime | None = None, *, scope=None) -> list[str]:
         """Pools with a window spent and not yet reset, ``subscription 7d``, and key pools past their budget."""
         now = now or datetime.now().astimezone()
         found = []
         for reading in self.usage.rows():
             # A spent window is a wall until its own reset. A failed or stale read keeps the
             # last complete measurement, marked last known; only a newer good reading replaces it.
-            if reading.blocks and reading.complete and reading.used >= 1.0 and parse(reading.resets_at) > now:
+            if ((scope is None or scope(reading.group) is True) and reading.blocks and reading.complete
+                    and (reading.used >= 1.0 or reading.exhausted) and parse(reading.resets_at) > now):
                 found.append(f"{reading.pool} {reading.window}" +
                              (f" · {reset_text(reading.resets_at)}" if reading.group is not None else "") +
                              ("" if reading.current(now) else " · last known"))
@@ -355,13 +356,13 @@ class Ledger:
                     found.append(f"{pool.name} budget")
         return found + self.quota.walls(now)
 
-    def walled(self, pool: str, ship: Ship | None = None) -> bool:
-        return any(w.split(" ")[0] == pool for w in self.walls(ship))
+    def walled(self, pool: str, ship: Ship | None = None, *, scope=None) -> bool:
+        return any(w.split(" ")[0] == pool for w in self.walls(ship, scope=scope))
 
-    def usage_known(self, pool: str) -> bool:
-        rows = [r for r in self.usage.rows(pool) if r.blocks]
+    def usage_known(self, pool: str, *, scope=None) -> bool:
+        rows = [r for r in self.usage.rows(pool) if r.blocks and (scope is None or scope(r.group) is not False)]
         now = datetime.now().astimezone()
-        return bool(rows) and all(r.current(now) for r in rows)
+        return bool(rows) and all((scope is None or scope(r.group) is True) and r.current(now) for r in rows)
 
 
 def attribution(store: Store, seat: str, turn: Turn) -> str:

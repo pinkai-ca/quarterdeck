@@ -489,6 +489,8 @@ class ClaudeHarness(Harness):
     home_variable = "CLAUDE_CONFIG_DIR"
     keys = Keys(submit="Enter", send_now=("C-x", "C-s"), interrupt="Escape")
     reads_usage = True
+    model_scoped_usage = True
+
     usage_interval = 300  # the account's other callers share the endpoint; a minute's reads were refused
     credential_file = ".credentials.json"
     headline_window = (None, "5h")
@@ -496,6 +498,16 @@ class ClaudeHarness(Harness):
     remote_control = True
     human_tools = ('AskUserQuestion',)
     human_tool_policy = "AskUserQuestion is denied by the native permissions policy."
+
+    def usage_scope(self, group: str | None, model: str | None) -> bool | None:
+        from .claude_limits import family
+        if group is None:
+            return True
+        known = family(model)
+        return group == known if known and group in ("fable", "opus", "haiku") else None
+
+    def is_headline(self, group: str | None, window: str) -> bool:
+        return group is not None or super().is_headline(group, window)
 
     def attribution_inputs(self, record: Path) -> list[Input]:
         from .claude_watch import inputs as watch_inputs
@@ -618,7 +630,6 @@ class ClaudeHarness(Harness):
 
 
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
-USAGE_WINDOWS = {"five_hour": "5h", "seven_day": "7d"}
 
 
 def usage(pool: Pool) -> Usage | None:
@@ -659,18 +670,8 @@ def usage(pool: Pool) -> Usage | None:
         return Usage((), now, "bad JSON")
     if not isinstance(data, dict):
         return Usage((), now, "bad JSON: not an object")
-    windows = []
-    for key, name in USAGE_WINDOWS.items():
-        window = data.get(key) or {}
-        if not isinstance(window, dict) or window.get("utilization") is None:
-            continue  # the provider reports no figure for this window
-        try:
-            used = float(window["utilization"]) / 100.0
-        except (TypeError, ValueError):
-            return Usage((), now, "bad JSON: utilization not a number")
-        resets = when(window.get("resets_at")) if window.get("resets_at") else None
-        windows.append(Window(name, used, resets))
-    return Usage(tuple(windows), now) if windows else Usage((), now, "no utilization in response")
+    from .claude_limits import snapshot
+    return snapshot(data, now)
 
 
 def _printable(value: str | None) -> str | None:

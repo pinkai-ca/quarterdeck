@@ -383,7 +383,8 @@ def headline_readings(ship: Ship) -> list[dict]:
                                       "note": f"provider reports no {key[2]} window"}
             except sqlite3.OperationalError:
                 return [{"pool": None, "reading": None, "reason": SCHEMA_BEHIND}]
-    return [found.get(key, item) for key, item in missing.items()]
+    return [found.get(key, item) for key, item in missing.items()] + [
+        item for key, item in found.items() if key not in missing]
 
 
 def reported_without(rows, key: tuple, fallback: tuple | None):
@@ -456,8 +457,8 @@ def limit_holds(ship: Ship, selected: list[Seat | UnresolvedSeat]) -> tuple[list
         if book is None:
             return [], []
         with book:
-            held = [seat.name for seat in up if book.walled(seat.pool.name, ship)
-                    and not any(quota.cached_open(ship, book, pool) for pool in quota.candidate_pools(seat))]
+            held = [seat.name for seat in up if quota.current_walled(seat, book)
+                    and not any(quota.cached_open(ship, book, pool, seat) for pool in quota.candidate_pools(seat))]
         return held, []  # law: nothing-waits-silently
     except (OSError, sqlite3.Error):
         return [], ["held seats unknown; ledger unreadable"]

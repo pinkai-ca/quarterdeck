@@ -675,7 +675,7 @@ class Service:
     def failover(self) -> None:
         """At a wall, try eligible later choices first, then earlier choices in declared order."""
         for seat in self.resolved_seats():
-            if recovery.held(seat) or len(seat.spec.pools) < 2 or not seat.is_up or not self.ledger.walled(seat.pool.name, self.ship):
+            if recovery.held(seat) or len(seat.spec.pools) < 2 or not seat.is_up or not quota.current_walled(seat, self.ledger):
                 continue
             if self.not_idle(seat):
                 continue
@@ -729,7 +729,7 @@ class Service:
         # The destination is read as failover would read it. Only a wall refuses the explicit act: a pool
         # whose usage is unknown, such as a background provider with no seat on it to read, is the human's call.
         unknown = not self.known_open(seat, pool)
-        if unknown and self.ledger.walled(pool, self.ship):
+        if unknown and self.ledger.walled(pool, self.ship, scope=quota.model_scope(seat, pool)):
             return f"{seat.name} not moved: {pool} is walled"
         came_from = seat.pool.name
         proof = seat.failover_to(pool)
@@ -745,11 +745,11 @@ class Service:
         has only the Ledger's walls to go by, and the move says so."""
         pool = self.ship.pools[pool_name]
         if pool.kind in ("key", "endpoint"):  # no usage windows to read: a key is measured by spend, an endpoint has no quota
-            return quota.cached_open(self.ship, self.ledger, pool_name)
+            return quota.cached_open(self.ship, self.ledger, pool_name, seat)
         reader = harnesses.get(pool.provider)
         if reader.background_usage or not reader.reads_usage:
-            return quota.cached_open(self.ship, self.ledger, pool_name)
-        if not self.ledger.usage_known(pool_name):
+            return quota.cached_open(self.ship, self.ledger, pool_name, seat)
+        if not self.ledger.usage_known(pool_name, scope=quota.model_scope(seat, pool_name)):
             if quota.held(self, pool_name) or not self.ledger.quota.due(pool_name, post.now(), interval=reader.usage_interval):
                 return False  # retained failures retry by attempt time, including after a restart, and a refusal's hold
             usage = reader.usage(pool)
@@ -760,7 +760,7 @@ class Service:
                 self.log("failover", seat=seat.name, pool=pool_name, skipped=f"its usage could not be read: {usage.error}")
                 return False
             quota.record_read(self, pool_name, usage, reader.usage_interval, post.now())
-        return quota.cached_open(self.ship, self.ledger, pool_name)
+        return quota.cached_open(self.ship, self.ledger, pool_name, seat)
 
     def rebrief(self) -> None:
         """When the orders or a card change, every brief is rendered again and each seat is told."""

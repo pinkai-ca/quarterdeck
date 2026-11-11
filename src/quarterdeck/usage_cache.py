@@ -54,6 +54,7 @@ class Reading:
     bucket_name: str | None
     attempted_at: str | None
     error: str | None
+    exhausted: bool = False
 
     @property
     def complete(self) -> bool:
@@ -100,16 +101,18 @@ class UsageCache:
         db.execute("UPDATE pools SET attempted_at=read_at WHERE attempted_at IS NULL")
 
     def rows(self, pool: str | None = None) -> list[Reading]:
-        sql = ("SELECT pool,window,used,resets_at,read_at,blocks,group_name,bucket,bucket_name,attempted_at,error FROM pools"
+        columns = {r[1] for r in self.db.execute("PRAGMA table_info(pools)")}
+        exhausted = "exhausted" if "exhausted" in columns else "0"
+        sql = (f"SELECT pool,window,used,resets_at,read_at,blocks,group_name,bucket,bucket_name,attempted_at,error,{exhausted} FROM pools"
                + (" WHERE pool=?" if pool is not None else "") + " ORDER BY pool,window")
-        return [Reading(*r[:5], bool(r[5]), *r[6:]) for r in self.db.execute(sql, (pool,) if pool is not None else ())]
+        return [Reading(*r[:5], bool(r[5]), *r[6:11], bool(r[11])) for r in self.db.execute(sql, (pool,) if pool is not None else ())]
 
     def record(self, pool: str, usage: Usage, attempted_at: datetime) -> str | None:
         previous = {r.window: r for r in self.rows(pool)}
         grouped: dict[str, list[Window]] = {}
         for window in usage.windows:
             grouped.setdefault(window.name, []).append(window)
-        errors = [usage.error] if usage.error else []
+        errors = ([usage.error] if usage.error else []) + list(usage.diagnostics)
         for name in sorted(set(previous) | set(grouped)):
             old, candidates = previous.get(name), grouped.get(name, [])
             new = candidates[0] if candidates else None
@@ -140,13 +143,15 @@ class UsageCache:
                                     (pool, name, new.blocks, new.group, attempted_at.isoformat(), error))
                 continue
             bucket = new.bucket if new.bucket is not None else (old.bucket if old else None)
-            self.db.execute("INSERT INTO pools (pool,window,used,resets_at,read_at,blocks,group_name,bucket,bucket_name,attempted_at,error) "
-                            "VALUES (?,?,?,?,?,?,?,?,?,?,NULL) ON CONFLICT(pool,window) DO UPDATE SET "
+            self.db.execute("INSERT INTO pools (pool,window,used,resets_at,read_at,blocks,group_name,bucket,bucket_name,attempted_at,error,exhausted) "
+                            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(pool,window) DO UPDATE SET "
                             "used=excluded.used,resets_at=excluded.resets_at,read_at=excluded.read_at,blocks=excluded.blocks,"
                             "group_name=excluded.group_name,bucket=excluded.bucket,bucket_name=excluded.bucket_name,"
-                            "attempted_at=excluded.attempted_at,error=NULL",
+                            "attempted_at=excluded.attempted_at,error=excluded.error,exhausted=excluded.exhausted",
                             (pool, name, new.used, new.resets_at.isoformat(), usage.read_at.isoformat(), new.blocks, new.group,
-                             bucket, new.bucket_name, attempted_at.isoformat()))
+                             bucket, new.bucket_name, attempted_at.isoformat(), new.uncertainty, new.exhausted))
+            if new.uncertainty:
+                errors.append(f"{name}: {new.uncertainty}")
         if not grouped and not errors:
             errors.append("usage windows unavailable")
         return "; ".join(dict.fromkeys(errors)) or None

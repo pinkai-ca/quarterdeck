@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from . import ledger as ledgermod, pending, input_receipt
+from . import ledger as ledgermod, pending, input_receipt, quota
 from .harness.base import Screen
 from .quota import reset_text, stamp
 from .seat import Seat
@@ -99,7 +99,7 @@ class Door:
             with book:
                 try:
                     known = book.quota.blocked(self.seat.name, pool) or next(
-                        (w for w in book.walls(self.seat.ship) if w.split(" ")[0] == pool), None)
+                        (w for w in book.walls(self.seat.ship, scope=quota.model_scope(self.seat, pool, running=True)) if w.split(" ")[0] == pool), None)
                     if known:
                         return known
                     if shown is not None and book.quota.recognized(self.seat.name, shown):

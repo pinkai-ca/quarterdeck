@@ -153,6 +153,12 @@ class Harness(ABC):
     def grant_expiry(self, path: Path) -> datetime | None:
         return None
 
+    model_scoped_usage = False
+
+    def usage_scope(self, group: str | None, model: str | None) -> bool | None:
+        """True when a window applies; None when its model scope cannot be established."""
+        return True  # Existing grouped adapters keep their pool-wide semantics.
+
     def shared_usage_key(self, pool: Pool) -> tuple | None:
         return None
 

@@ -19,7 +19,7 @@ from quarterdeck import quota, service as servicemod
 from quarterdeck.harness import claude
 from quarterdeck.harness.claude import ClaudeHarness
 from quarterdeck.service import Service
-from quarterdeck.ship import Pool, Session, Ship
+from quarterdeck.ship import Pool, SeatSpec, Session, Ship
 
 TOKEN = "synthetic-secret-token"
 ACCOUNT = "account-holder@example.invalid"
@@ -173,7 +173,8 @@ def test_a_live_seats_pool_is_read_every_five_minutes_and_held_by_retry_after(sh
 def test_a_destination_read_before_a_move_keeps_its_reason_and_honours_the_hold(ship_service, monkeypatch):
     ship, svc, clock = ship_service
     endpoint = Endpoint(monkeypatch, refused(429, "1200"), ok())
-    seat = SimpleNamespace(name="worker", harness=SimpleNamespace(reads_usage=False))
+    seat = SimpleNamespace(name="worker", harness=SimpleNamespace(reads_usage=False),
+                           spec=SeatSpec("worker", "crew", "worker", "claude", tuple(ship.pools)))
     assert not svc.known_open(seat, "claude-secondary") and endpoint.calls == 1
     assert usage_log(svc)[-1]["error"] == "HTTP 429, retry-after 1200" and usage_log(svc)[-1]["backoff"] == 1200
     failover = [json.loads(line) for line in svc.log_path.read_text().splitlines() if '"failover"' in line]
