@@ -14,14 +14,46 @@ from __future__ import annotations
 
 import os
 import shutil
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 from . import harness as harnesses
 from .seat import Seat
 from .ship import Pool, Ship
 
 WARN_AHEAD = timedelta(hours=48)
+
+
+@dataclass(frozen=True)
+class Participant:
+    """A real seat or a declared native usage reader sharing one pool's sign-in."""
+
+    name: str
+    home: Path
+    pool: str
+    usage_reader: bool = False
+
+
+def usage_home(ship: Ship, pool: Pool) -> Path:
+    # Encode a declared identity into one path component, including dots and slashes.
+    component = quote(pool.name, safe="").replace(".", "%2E")
+    return ship.runtime / "pool-usage" / component
+
+
+def participants(ship: Ship, seats: list[Seat]) -> list[Participant]:
+    result = []
+    for seat in seats:
+        launched = seat.launched()
+        pool = launched.pool if launched and launched.pool in ship.pools else seat.pool.name
+        result.append(Participant(seat.name, seat.home, pool))
+    for pool in ship.pools.values():
+        if pool.kind == "subscription" and getattr(harnesses.native_for(pool.provider), "private_usage_home", False):
+            home = usage_home(ship, pool)
+            if not home.is_symlink() and not home.parent.is_symlink():
+                result.append(Participant(f"usage reader for {pool.name}", home, pool.name, True))
+    return result
 
 
 def pool_file(pool: Pool) -> Path | None:
@@ -40,10 +72,9 @@ def freshness(pool: Pool, path: Path) -> tuple[float, float] | None:
 
 def reseed(ship: Ship, seats: list[Seat]) -> list[str]:
     """Reseed each pool from the newest seat that refreshed, then relink the detached seats; the proof lines."""
-    detached: dict[str, list[tuple[Path, Seat]]] = {}
-    for seat in seats:
-        launched = seat.launched()
-        pool_name = launched.pool if launched and launched.pool in ship.pools else seat.pool.name
+    detached: dict[str, list[tuple[Path, Participant]]] = {}
+    for seat in participants(ship, seats):
+        pool_name = seat.pool
         source = pool_file(ship.pools[pool_name])
         if source is None:
             continue
@@ -66,6 +97,9 @@ def reseed(ship: Ship, seats: list[Seat]) -> list[str]:
         if not source.exists():
             continue  # a pool with no credential yet and only stubs to offer: nothing to link to
         for link, seat in candidates:
+            if seat.usage_reader and freshness(pool, link) is None:
+                proofs.append(f"{seat.name} credential unreadable; detached file retained for a human")
+                continue
             link.unlink()
             link.symlink_to(source)
             proofs.append(f"{seat.name} relinked to {pool_name}")

@@ -760,7 +760,7 @@ class Service:
         if not self.ledger.usage_known(pool_name, scope=quota.model_scope(seat, pool_name)):
             if quota.held(self, pool_name) or not self.ledger.quota.due(pool_name, post.now(), interval=reader.usage_interval):
                 return False  # retained failures retry by attempt time, including after a restart, and a refusal's hold
-            usage = reader.usage(pool)
+            usage = quota.read_usage(self, pool, reader)
             if usage is None or usage.error:
                 from .harness.limits import Usage
                 usage = usage or Usage((), post.now(), "provider usage unavailable")

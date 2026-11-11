@@ -60,6 +60,7 @@ def checks(ship: Ship) -> list[Check]:
         version = program_version((sandbox.PROGRAM, "--version"))
         found.append(Check("sandbox", version is not None, f"bubblewrap {version}: jailed seats run in it" if version
                            else f"{sandbox.PROGRAM} is not on the PATH, and a seat is jailed; install bubblewrap, or set sandbox = false on it"))
+    found.extend(seat_readiness(ship))
     for seat in ship.seats.values():
         cwd = ship.cwd_of(seat)
         found.append(Check(f"seat {seat.name}", cwd.is_dir(), f"works in {cwd}" if cwd.is_dir()
@@ -72,6 +73,20 @@ def checks(ship: Ship) -> list[Check]:
     low = watch.disks([ship.runtime, ship.workspace, Path(tempfile.gettempdir())])
     found.append(Check("disk", not low, "room on every filesystem the ship writes to" if not low
                        else "nearly full: " + ", ".join(f"{mount} {pct}%" for mount, pct in low)))
+    return found
+
+
+def seat_readiness(ship: Ship) -> list[Check]:
+    """Only failed adapter preflights add rows; this neither joins nor launches a seat."""
+    found = []
+    for seat in ship.seats.values():
+        for choice in seat.pools:
+            selected = seat.for_pool(choice)
+            reader = harnesses.get(selected.harness)
+            try:
+                reader.preflight(ship.runtime / "seats" / seat.name / "home", ship.cwd_of(selected))
+            except ShipError as error:
+                found.append(Check(f"seat {seat.name} pool {choice} readiness", False, str(error)))
     return found
 
 
@@ -94,6 +109,10 @@ def pool_check(pool: Pool) -> Check:
             return Check(f"pool {pool.name}", True, endpoint.describe(pool))
         except ShipError as error:
             return Check(f"pool {pool.name}", False, f"{error}; start the server, or point the pool at one that answers")
+    try:
+        harnesses.native_for(pool.provider).preflight()
+    except ShipError as error:
+        return Check(f"pool {pool.name}", False, str(error))
     if pool.kind == "key":
         try:
             key_environment(pool, "KEY")

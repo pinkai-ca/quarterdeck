@@ -1,0 +1,275 @@
+"""Grok Build: a private GROK_HOME, native ACP records and program-owned billing."""
+
+from __future__ import annotations
+
+import copy
+import json
+import os
+import tomllib
+from datetime import datetime, timezone
+from pathlib import Path
+
+from ..ship import Pool, SeatSpec, ShipError, literal
+from .base import Harness, program_version
+from .home import credential, key_environment, merged, ship_template
+from .json_record import when
+from .limits import Usage
+from .types import Box, Control, Credential, Keys, Launch, Screen
+from . import grok_record, grok_usage, grok_workspace
+
+VENDORS = ("claude", "cursor", "codex")
+IMPORTS = ("rules", "hooks", "mcps", "skills", "agents", "sessions")
+COMPAT_ENV = {f"GROK_{vendor.upper()}_{kind.upper()}_ENABLED": "0"
+              for vendor in VENDORS for kind in IMPORTS}
+ENV = {**COMPAT_ENV, "GROK_DISABLE_AUTOUPDATER": "1", "GROK_PROMPT_SUGGESTIONS": "0",
+       "GROK_MEMORY": "0", "GROK_DISABLE_EXPERIMENTS": "1", "GROK_SUBAGENT_BUNDLE": "0",
+       "GROK_TELEMETRY_ENABLED": "0", "GROK_TELEMETRY_TRACE_UPLOAD": "0", "DISABLE_TELEMETRY": "1",
+       "GROK_STORAGE_MODE": "local"}
+MCP_POLICY_KEYS = ("allow_managed_mcp_servers_only", "enable_all_project_mcp_servers", "allowed_mcp_servers",
+                   "allowManagedMcpServersOnly", "enableAllProjectMcpServers", "allowedMcpServers")
+SETTINGS = {
+    "cli": {"auto_update": False, "use_leader": False},
+    "compat": {vendor: {kind: False for kind in IMPORTS} for vendor in VENDORS},
+    "keys": {"vim": "off"},
+    "memory": {"enabled": False},
+    "memory_v2": {"enabled": False, "batch_dream_enabled": False},
+    "features": {"managed_config": False, "telemetry": False, "subagent_bundle": False},
+    "telemetry": {"trace_upload": False},
+    "relay": {"enabled": False},
+    "ui": {"prompt_suggestions": False, "multiline_default": False,
+           "follow_up_behavior": "queue", "combine_queued_prompts": False,
+           "screen_mode": "fullscreen", "permission_mode": "always-approve"},
+}
+SYSTEM_CONFIG = Path("/etc/grok")
+INHERITED_REDIRECTS = ("GROK_AGENT", "GROK_MANAGED_CONFIG_URL", "GROK_FOLDER_TRUST", *grok_workspace.GIT_REDIRECTS)
+
+
+def present(path: Path) -> bool:
+    try:
+        path.lstat()
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        raise ShipError(f"{path}: native configuration presence is unreadable") from None
+
+
+def no_admin_layers(home: Path | None) -> None:
+    paths = [SYSTEM_CONFIG / "managed_config.toml", SYSTEM_CONFIG / "requirements.toml"]
+    if home is not None:
+        paths += [home / "managed_config.toml", home / "requirements.toml"]
+    for path in paths:
+        if present(path):
+            raise ShipError(f"{path}: unmanaged Grok admin configuration; retained; resolve before launch")
+
+
+def private_environment(home: Path) -> dict[str, str]:
+    user_home = home / "user-home"
+    return {**ENV, "GROK_HOME": str(home), "HOME": str(user_home),
+            "XDG_CONFIG_HOME": str(user_home / "config"), "XDG_DATA_HOME": str(user_home / "data"),
+            "XDG_CACHE_HOME": str(user_home / "cache"), "XDG_STATE_HOME": str(user_home / "state"),
+            # Guide 05: a nonempty JSON overlay wins over GROK_CONFIG_PATH. Neither
+            # inherited redirect is allowed to select an operator-owned overlay.
+            "GROK_CONFIG": "{}", "GROK_CONFIG_PATH": str(home / "config.toml")}
+
+
+def build_private_user_home(home: Path) -> None:
+    user_home = home / "user-home"
+    for path in (user_home, *(user_home / name for name in ("config", "data", "cache", "state"))):
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            raise ShipError(f"{path}: private Grok user home is not an owned directory")
+        path.mkdir(parents=True, exist_ok=True)
+
+
+def config_text(config: dict) -> str:
+    """Native configuration, including ship-owned nested tables and lists of tables."""
+    def value(item):
+        if isinstance(item, dict):
+            return "{ " + ", ".join(f"{literal(k)} = {value(v)}" for k, v in item.items()) + " }"
+        if isinstance(item, (list, tuple)):
+            return "[" + ", ".join(value(v) for v in item) + "]"
+        if isinstance(item, datetime):
+            return item.isoformat()
+        return literal(item)
+    return "\n".join(f"{literal(key)} = {value(item)}" for key, item in config.items()) + "\n"
+
+
+def auth_metadata(path: Path) -> dict | None:
+    """Only a single identifiable native refresh grant can establish freshness."""
+    try:
+        data = json.loads(path.read_text())
+        grants = [grant for grant in data.values() if isinstance(grant, dict)
+                  and isinstance(grant.get("refresh_token"), str) and grant["refresh_token"]]
+        return grants[0] if len(grants) == 1 else None
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+
+def no_extra_rules(config: dict, source: str) -> None:
+    """The guide's extra rule directories load independently of workspace trust."""
+    paths = config.get("paths", {})
+    if not isinstance(paths, dict):
+        raise ShipError(f"{source}: paths must be a table")
+    if "extra_rule_dirs" in paths:
+        raise ShipError(f"{source}: paths.extra_rule_dirs is not allowed in a Grok seat home")
+    for key, value in config.items():
+        if isinstance(value, dict):
+            no_extra_rules(value, f"{source}.{key}")
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                if isinstance(item, dict):
+                    no_extra_rules(item, f"{source}.{key}[{index}]")
+
+
+def no_folder_trust(home: Path) -> None:
+    """Retain unexpected native trust evidence and require a human to resolve it."""
+    path = home / "trusted_folders.toml"
+    if path.is_symlink():
+        raise ShipError(f"{path}: unexpected linked folder-trust state; retained for inspection")
+    try:
+        content = path.read_text()
+    except FileNotFoundError:
+        return
+    except (OSError, UnicodeError):
+        raise ShipError(f"{path}: folder-trust state unreadable; retained for inspection") from None
+    if content.strip():
+        raise ShipError(f"{path}: nonempty folder-trust state; Grok seats never grant trust; retained for inspection")
+
+
+def launch_home(home: Path, seat: SeatSpec) -> None:
+    """Check the native home again on fresh, restart and resume launch paths."""
+    no_folder_trust(home)
+    no_extra_rules(seat.settings, "seat settings")
+    try:
+        config = tomllib.loads((home / "config.toml").read_text())
+    except (OSError, ValueError, UnicodeError):
+        raise ShipError(f"{home}: Grok home configuration unreadable; rebuild the seat home") from None
+    no_extra_rules(config, "Grok home configuration")
+
+
+class GrokHarness(Harness):
+    name = "grok"
+    program = "grok"
+    native_provider = "xai"
+    home_variable = "GROK_HOME"
+    credential_file = "auth.json"
+    keys = Keys(submit="Enter", send_now=("Enter",), interrupt="C-c")
+    reads_usage = True
+    private_usage_home = True
+    usage_interval = 300
+    headline_window = (None, "7d")
+    human_tools = ("ask_user_question",)
+    human_tool_policy = "ask_user_question is removed outside human sessions."
+    reader = staticmethod(grok_record.Reader.read)
+    records = staticmethod(grok_record.records)
+    first_timestamp = staticmethod(grok_record.first_timestamp)
+    session_id = staticmethod(grok_record.session_id)
+    inputs = staticmethod(grok_record.inputs)
+
+    def preflight(self, home: Path | None = None, cwd: Path | None = None) -> None:
+        no_admin_layers(home)
+        for name in INHERITED_REDIRECTS:
+            if os.environ.get(name):
+                raise ShipError(f"Grok inherited configuration redirect {name} is set; clear it before launch")
+        if home is not None:
+            no_folder_trust(home)
+        if cwd is not None:
+            if home is None:
+                raise ShipError(f"{cwd}: Grok project discovery needs an explicit private home")
+            grok_workspace.check(cwd, private_environment(home))
+
+    def version(self) -> str | None:
+        return program_version(("env", *(f"{key}={value}" for key, value in ENV.items()), self.program, "--version"))
+
+    def freshness(self, path: Path) -> tuple[float, float] | None:
+        grant = auth_metadata(path)
+        if grant is not None and (expiry := when(grant.get("expires_at"))) is not None:
+            try:
+                return expiry.timestamp(), path.stat().st_mtime
+            except OSError:
+                return None
+        return None
+
+    def grant_expiry(self, path: Path) -> datetime | None:
+        grant = auth_metadata(path)
+        return when(grant.get("expires_at")) if grant else None
+
+    def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None) -> Credential | None:
+        self.preflight(home, seat.cwd)
+        template = ship_template(ship_home, "config.toml")
+        no_extra_rules(template, "ship Grok template")
+        no_extra_rules(seat.settings, "seat settings")
+        no_folder_trust(home)
+        home.mkdir(parents=True, exist_ok=True)
+        build_private_user_home(home)
+        settings = copy.deepcopy(merged(merged(SETTINGS, template), seat.settings))
+        # These native switches describe the adapter's input/launch contract.
+        settings = merged(settings, SETTINGS)
+        for key in MCP_POLICY_KEYS:
+            settings.pop(key, None)  # these config keys do not establish effective native policy
+        skills = settings.setdefault("skills", {})
+        if not isinstance(skills, dict):
+            raise ShipError("Grok settings skills must be a table")
+        ignored = skills.get("ignore", [])
+        if not isinstance(ignored, list) or not all(isinstance(path, str) for path in ignored):
+            raise ShipError("Grok settings skills.ignore must be a list of paths")
+        skills["ignore"] = list(dict.fromkeys([*ignored, str(home / "bundled" / "skills")]))
+        disabled = skills.get("disabled", [])
+        if not isinstance(disabled, list) or not all(isinstance(name, str) for name in disabled):
+            raise ShipError("Grok settings skills.disabled must be a list of names")
+        skills["disabled"] = list(dict.fromkeys([*disabled, "resume-claude", "resume-codex", "resume-cursor"]))
+        if not seat.human_session:
+            settings.setdefault("features", {})["ask_user_question"] = False
+        (home / "config.toml").write_text(config_text(settings))
+        return credential(pool, home / self.credential_file, "XAI_API_KEY")
+
+    def launch(self, seat: SeatSpec, pool: Pool, home: Path, brief: Path, resume: str | None, first: str | None) -> Launch:
+        self.preflight(home, seat.cwd)
+        launch_home(home, seat)
+        argv = [self.program, "--fullscreen", "--always-approve", "--sandbox", "off", "--no-memory",
+                "--leader-socket", str(home / "leader.sock"), "--rules", brief.read_text()]
+        if seat.cwd:
+            argv += ["--cwd", str(seat.cwd)]
+        if not seat.human_session:
+            argv += ["--disallowed-tools", "ask_user_question"]
+        if seat.model:
+            argv += ["--model", seat.model]
+        if seat.effort:
+            argv += ["--reasoning-effort", seat.effort]
+        if resume:
+            argv += ["--resume", resume]
+        if first:
+            argv.append(first)
+        return Launch(tuple(argv), {**private_environment(home), **key_environment(pool, "XAI_API_KEY")})
+
+    def usage(self, pool: Pool) -> Usage:
+        return Usage((), datetime.now(timezone.utc), "native billing requires a framework-owned home", called=False)
+
+    def usage_in_home(self, pool: Pool, home: Path) -> Usage:
+        try:
+            self.preflight(home)
+        except ShipError as error:
+            return Usage((), datetime.now(timezone.utc), str(error), called=False)
+        if pool.config_dir is None or not (pool.config_dir / self.credential_file).is_file():
+            return Usage((), datetime.now(timezone.utc), "native billing sign-in unavailable", called=False)
+        no_folder_trust(home)
+        home.mkdir(parents=True, exist_ok=True)
+        build_private_user_home(home)
+        (home / "config.toml").write_text(config_text(SETTINGS))
+        credential(pool, home / self.credential_file, "XAI_API_KEY")
+        try:
+            self.preflight(home, home)
+        except ShipError as error:
+            return Usage((), datetime.now(timezone.utc), str(error), called=False)
+        return grok_usage.billing(self.program, home, private_environment(home))
+
+    def screen(self, text: str) -> Screen:
+        # Native screen facts are filled only after the installed-version measurement.
+        return Screen(text, box=None, unknown="Grok screen layout not yet measured")
+
+    def box(self, text: str) -> Box:
+        return Box(text)
+
+    def controls(self) -> tuple[Control, ...]:
+        return (Control("model", "--model <value>", "/model {value}", "screen"),
+                Control("effort", "--reasoning-effort <value>", "/effort {value}", "screen"))

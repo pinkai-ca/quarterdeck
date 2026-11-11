@@ -206,6 +206,11 @@ class JsonLinesReader(RecordReader):
     label: str = "program"
 
     @classmethod
+    def identifies(cls, entry: dict) -> bool:
+        """Native envelope identification; adapters need not have a top-level type."""
+        return entry.get("type") in cls.kinds
+
+    @classmethod
     def read(cls, record: Path):
         with _read_lock:
             return cls.read_snapshot(record, _parsed(record))
@@ -241,7 +246,7 @@ class JsonLinesReader(RecordReader):
             for diagnostic in snapshot.skipped:
                 self.unknown_tools(*diagnostic)
         rows = [row for _, row in (snapshot.rows if snapshot is not None else _object_lines(record, self.unknown_tools))]
-        if rows and not any(row.get("type") in self.kinds for row in rows):
+        if rows and not any(self.identifies(row) for row in rows):
             raise RecordError(f"no {self.label} entries in this record: another program's file")
         self.take_rows(rows)
 

@@ -240,13 +240,14 @@ class Seat:
 
     def read_pane(self, history: int = 0) -> tuple[Pane, str] | None:
         """A fresh screen still belongs to the launch whose identity we checked."""
+        options = {"styles": True} if getattr(self.harness, "styled_screen", False) else {}
         if not hasattr(self.tmux, 'read_pane'):
             pane = self.pane()
-            return (pane, self.tmux.capture(pane.id, history=history)) if pane and not pane.dead else None
+            return (pane, self.tmux.capture(pane.id, history=history, **options)) if pane and not pane.dead else None
         launched = self.launched()
         if launched is None:
             return None
-        found = self.tmux.read_pane(launched.pane, history)
+        found = self.tmux.read_pane(launched.pane, history, **options)
         if (found is None or found[0].pid != launched.pid or found[0].dead
                 or self.launched() != launched):
             return None  # law: identity
@@ -336,7 +337,8 @@ class Seat:
                 turn_open = None
             if turn_open is not None:
                 return turn_open  # law: record-first
-        return self.harness.screen(self.tmux.capture(pane.id)).working
+        found = self.read_pane()
+        return bool(found and self.harness.screen(found[1]).working)
 
     def record(self) -> Path | None:
         return self.join().record

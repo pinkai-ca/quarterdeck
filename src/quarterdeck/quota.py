@@ -198,6 +198,29 @@ def last_read(service, pool: str) -> float:
     return service.usage_read[pool]
 
 
+def read_usage(service, pool, reader) -> Usage | None:
+    """One context for background, live and destination reads; only native clients create it."""
+    if not getattr(reader, "private_usage_home", False):
+        return reader.usage(pool)
+    from . import credential
+
+    def reconcile():
+        for proof in credential.reseed(service.ship, list(service.resolved_seats())):
+            service.log("credential", proof=proof)
+
+    home = credential.usage_home(service.ship, pool)
+    if home.is_symlink() or home.parent.is_symlink():
+        return Usage((), datetime.now(timezone.utc), "native usage home is a link; ownership unknown", called=False)
+    reconcile()  # never rebuild over a detached native refresh
+    link = home / reader.credential_file
+    if link.exists() and not link.is_symlink():
+        return Usage((), datetime.now(timezone.utc), "native usage credential detached and unreadable", called=False)
+    try:
+        return reader.usage_in_home(pool, home)
+    finally:
+        reconcile()  # a failed billing call can still have refreshed its sign-in
+
+
 def refresh_declared(service) -> None:
     """Adapters with background subscription reads run even with no active seat."""
     from . import harness as harnesses
@@ -221,7 +244,7 @@ def refresh_declared(service) -> None:
             usage = replace(reader.usage_from_records(sources, datetime.now(timezone.utc))
                             or Usage((), datetime.now(timezone.utc), "provider usage unavailable"), called=False)
         else:
-            usage = shared[key] if key is not None and key in shared else reader.usage(pool)
+            usage = shared[key] if key is not None and key in shared else read_usage(service, pool, reader)
         usage = usage or Usage((), datetime.now(timezone.utc), "provider usage unavailable")
         if key is not None:
             shared[key] = usage
@@ -237,7 +260,7 @@ def refresh(service, seat, live: bool, launched) -> None:
     if (pool.kind == "subscription" and not held(service, pool.name)
             and time.monotonic() - last_read(service, pool.name) >= reader.usage_interval):
         service.usage_read[pool.name] = time.monotonic()
-        usage = reader.usage(pool)
+        usage = read_usage(service, pool, reader)
         if usage is not None or reader.reads_usage:
             record_read(service, pool.name, usage or Usage((), datetime.now(timezone.utc), "provider usage unavailable"),
                         reader.usage_interval, datetime.now(timezone.utc))

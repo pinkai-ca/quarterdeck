@@ -91,6 +91,8 @@ class Harness(ABC):
     wrap_slack: int = 0  # columns the program keeps clear at the right when it wraps at a word, under the width where it breaks a word
     human_tools: tuple[str, ...] = ()
     human_tool_policy: str = "No native question-tool suppression proved for this adapter."
+    styled_screen: bool = False  # opt-in SGR evidence in the same atomic identity/screen reading
+    private_usage_home: bool = False  # native usage client needs framework-owned settings and state
 
     def thinking_recovery(self, home: Path, evidence: dict | None, version: str | None, seat: SeatSpec, pool: Pool):
         """A proved native off/restore client, or no supported automatic recovery."""
@@ -148,6 +150,14 @@ class Harness(ABC):
 
     def preflight_resume(self, seat: SeatSpec, home: Path, resume_id: Callable[[], str | None]) -> None:
         """Check a program-specific resume requirement before retiring its current launch."""
+
+    def preflight(self, home: Path | None = None, cwd: Path | None = None) -> None:
+        """Read-only launch readiness, also used by doctor; raise ShipError to refuse.
+
+        No harness program or provider call and no writes; a bounded local metadata
+        query may be used. Omitted context checks only
+        global requirements, never an inferred operator home or working directory.
+        """
 
     def version(self) -> str | None:
         return program_version((self.program, "--version"))
@@ -288,3 +298,7 @@ class Harness(ABC):
 
     def usage(self, pool: Pool) -> Usage | None:
         return None
+
+    def usage_in_home(self, pool: Pool, home: Path) -> Usage | None:
+        """A native usage client's owned context; ordinary readers keep their old call."""
+        return self.usage(pool)

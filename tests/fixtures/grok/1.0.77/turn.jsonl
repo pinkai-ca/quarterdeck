@@ -1,0 +1,7 @@
+{"timestamp":2208988800.0,"method":"session/update","params":{"sessionId":"synthetic-session","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"Count the sample rows."}}}}
+{"timestamp":2208988800.2,"method":"session/update","params":{"sessionId":"synthetic-session","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"A synthetic thought."}}}}
+{"timestamp":2208988800.3,"method":"session/update","params":{"sessionId":"synthetic-session","update":{"sessionUpdate":"tool_call","toolCallId":"synthetic-tool","title":"Shell","status":"in_progress"}}}
+{"timestamp":2208988801.3,"method":"session/update","params":{"sessionId":"synthetic-session","update":{"sessionUpdate":"tool_call_update","toolCallId":"synthetic-tool","status":"completed"}}}
+{"timestamp":2208988801.4,"method":"session/update","params":{"sessionId":"synthetic-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Three "}}}}
+{"timestamp":2208988801.5,"method":"session/update","params":{"sessionId":"synthetic-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"rows."}}}}
+{"timestamp":2208988802.0,"method":"_x.ai/session/update","params":{"sessionId":"synthetic-session","update":{"sessionUpdate":"turn_completed","stop_reason":"end_turn","usage":{"inputTokens":80,"cachedInputTokens":20,"outputTokens":12}}}}

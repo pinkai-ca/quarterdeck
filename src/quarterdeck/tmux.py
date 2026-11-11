@@ -458,13 +458,13 @@ class Tmux:
             return None
         return int(text) if text.isascii() and text.isdigit() else None
 
-    def read_pane(self, pane_id: str, history: int = 0) -> tuple[Pane, str] | None:
+    def read_pane(self, pane_id: str, history: int = 0, *, styles: bool = False) -> tuple[Pane, str] | None:
         """Read current identity and text in one server command queue, never from a cache."""
         if not pane_id.startswith('%') or not pane_id[1:].isascii() or not pane_id[1:].isdigit():
             return None
         try:
             output = self.run('display-message', '-p', '-t', pane_id, _FORMAT, ';',
-                              'capture-pane', '-p', '-J', '-t', pane_id, '-S', str(-history))
+                              'capture-pane', '-p', '-J', *(['-e'] if styles else []), '-t', pane_id, '-S', str(-history))
         except PrivateTmuxError:
             raise
         except TmuxError:
@@ -490,9 +490,9 @@ class Tmux:
             names.append(fields[1])
         return any(name in sessions for name in names)
 
-    def capture(self, pane_id: str, history: int = 0) -> str:
+    def capture(self, pane_id: str, history: int = 0, *, styles: bool = False) -> str:
         """Join only terminal-marked soft wraps; preserve application newlines."""
-        return self.run("capture-pane", "-p", "-J", "-t", pane_id, "-S", str(-history))
+        return self.run("capture-pane", "-p", "-J", *(['-e'] if styles else []), "-t", pane_id, "-S", str(-history))
 
     def session_environment(self, session: str, name: str) -> str | None:
         """A variable set on the session with ``new_session``; None when unset."""
