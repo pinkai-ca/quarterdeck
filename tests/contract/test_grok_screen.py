@@ -127,13 +127,16 @@ def with_blank_rows(count, *, interior=False, empty=False):
 
 
 @pytest.mark.parametrize("count", [1, 2, 3])
-def test_trailing_blank_rows_are_retained_and_reported_unknown(count):
+def test_trailing_blank_rows_are_retained_and_counted_exactly(count):
     adapter = GrokHarness()
     screen = adapter.screen(with_blank_rows(count))
-    assert screen.unknown == "Grok trailing blank input row or unmeasured padding"
+    assert screen.unknown is None
     assert len(screen.box.split("\n")) == 3 + count
     assert all(row == " " * 71 for row in screen.box.split("\n")[-count:])
-    assert not adapter.box("First synthetic line.\nSecond line has [brackets].\nLast line: done.").matches(screen.box, 71)
+    prefix = "First synthetic line.\nSecond line has [brackets].\nLast line: done."
+    assert adapter.box(prefix + "\n" * count).matches(screen.box, 70)
+    assert not adapter.box(prefix + "\n" * (count - 1)).matches(screen.box, 70)
+    assert not adapter.box(prefix + "\n" * (count + 1)).matches(screen.box, 70)
 
 
 def test_interior_blank_input_line_is_preserved():
@@ -147,8 +150,8 @@ def test_interior_blank_input_line_is_preserved():
 
 def test_multiple_empty_rows_are_not_assumed_to_be_an_empty_composer():
     screen = GrokHarness().screen(with_blank_rows(1, empty=True))
-    assert screen.unknown
     assert screen.box == " " * 71 + "\n" + " " * 71
+    assert not GrokHarness().box("\n").matches(screen.box, 70)
 
 
 @pytest.mark.parametrize("length", [70, 71, 140])
@@ -169,20 +172,22 @@ def test_measured_unbroken_wrap_boundary(length):
 
 
 @pytest.mark.parametrize("leading,trailing,count", [(0, 0, 24), (0, 1, 24), (0, 2, 25), (1, 2, 26)])
-def test_folded_line_count_never_proves_intended_content(leading, trailing, count):
+def test_folded_visual_comparison_is_derived_from_payload_line_count(leading, trailing, count):
     adapter = GrokHarness()
     screen = adapter.screen(fixture("folded-multiline").replace("Pasted: 24 lines", f"Pasted: {count} lines"))
     # Keep the measured right border fixed when a display count changes width.
     assert screen.unknown is None
-    assert screen.interruption.name == "folded paste: full content is not visible"
-    assert screen.interruption.key is None and screen.box is None
+    assert screen.interruption is None and screen.box is not None
     wanted = "\n" * leading + "\n".join(f"Synthetic item {i}." for i in range(24)) + "\n" * trailing
     collision = "\n" * leading + "\n".join(f"Different content {i}." for i in range(24)) + "\n" * trailing
-    assert not adapter.box(wanted).matches(screen.box, adapter.box_columns(80))
-    assert not adapter.box(collision).matches(screen.box, adapter.box_columns(80))
+    # This is only a visual projection: different text can share its count.
+    # Neither result confirms an input receipt or a delivered message.
+    assert wanted != collision
+    assert adapter.box(wanted).matches(screen.box, adapter.box_columns(80))
+    assert adapter.box(collision).matches(screen.box, adapter.box_columns(80))
     marker = f"[Pasted: {count} lines]"
-    assert not adapter.box(wanted).matches(marker, adapter.box_columns(80))
-    assert not adapter.box(collision).matches(marker, adapter.box_columns(80))
+    assert adapter.box(wanted).matches(marker, adapter.box_columns(80))
+    assert not adapter.box(wanted).matches(f"[Pasted: {count + 1} lines]", adapter.box_columns(80))
 
 
 def test_fold_chip_needs_measured_styling():
@@ -216,3 +221,61 @@ def test_whitespace_only_draft_never_matches_visually_empty_content(wanted):
     adapter = GrokHarness()
     screen = adapter.screen(fixture("idle-mono"))
     assert not adapter.box(wanted).matches(screen.box, adapter.box_columns(80))
+
+
+@pytest.mark.parametrize("mode", ["color", "mono"])
+@pytest.mark.parametrize("payload,count", [
+    ("Alpha.\nBeta.", None),
+    ("Alpha.\nBeta.\n", None),
+    ("Alpha.\nBeta.\nGamma.", None),
+    ("Alpha.\nBeta.\nGamma.\n", None),
+    ("Alpha.\nBeta.\nGamma.\nDelta.", 4),
+    ("Alpha.\nBeta.\nGamma.\nDelta.\n", 4),
+    ("Alpha.\nBeta.\nGamma.\nDelta.\nEpsilon.", 5),
+    ("Alpha.\nBeta.\nGamma.\n\n", 4),
+    ("\nAlpha.\nBeta.\nGamma.", 4),
+    ("\nAlpha.\nBeta.\n", None),
+    ("Alpha.\n\n\n", None),
+])
+def test_measured_fold_threshold_and_lf_shapes(mode, payload, count):
+    adapter = GrokHarness()
+    if count is not None:
+        text = fixture(f"fold-boundary-{mode}").replace("Pasted: 4 lines", f"Pasted: {count} lines")
+    else:
+        text = fixture(f"idle-{mode}")
+        rows = text.splitlines()
+        at = next(i for i, row in enumerate(rows) if " ❯ " in row)
+        plain = payload.split("\n")
+        if mode == "color":
+            rows[at:at + 1] = ["  \x1b[38;2;80;80;88m│\x1b[38;2;225;225;225m"
+                               + (" ❯ " if i == 0 else "   ") + row.ljust(71)
+                               + "\x1b[38;2;80;80;88m│\x1b[39m  " for i, row in enumerate(plain)]
+        else:
+            rows = [row.rstrip(" ") for row in rows]
+            rows[at:at + 1] = ["  │ " + ("❯ " if i == 0 else "  ") + row.ljust(71) + "│"
+                               for i, row in enumerate(plain)]
+        rows[-2] = "  Enter:send  │  Alt+Enter:newline  │  Shift+Tab:mode  │  Ctrl+x:shortcuts"
+        text = "\n".join(rows) + "\n"
+    screen = adapter.screen(text)
+    assert screen.unknown is None and screen.interruption is None
+    assert adapter.box(payload).matches(screen.box, adapter.box_columns(80))
+    if count is None:
+        assert adapter.box(payload).folded is None
+        assert not adapter.box(payload).matches("[Pasted: 3 lines]", 70)
+    else:
+        assert adapter.box(payload).folded is not None
+        assert not adapter.box(payload).matches(f"[Pasted: {count + 1} lines]", 70)
+
+
+@pytest.mark.parametrize("payload", [
+    "A.\r\nB.\r\nC.\r\nD.",
+    "A.\t\nB.\nC.\nD.",
+    "A.\v\nB.\nC.\nD.",
+    "A.\x85\nB.\nC.\nD.",
+    "A.\u2028\nB.\nC.\nD.",
+])
+def test_unmeasured_control_and_line_ending_layouts_have_no_projection(payload):
+    box = GrokHarness().box(payload)
+    assert box.folded is None
+    assert not box.matches(payload, 70)
+    assert not box.matches("[Pasted: 4 lines]", 70)

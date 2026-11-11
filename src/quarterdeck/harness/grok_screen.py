@@ -19,7 +19,18 @@ FOOTER = re.compile(
 MODEL_HINT = "<model> [window] [effort]"
 COMMANDS = Interruption("commands", r"┌─ Commands ─.*\[✗\].*┐", "Escape")
 MODEL_PICKER = Interruption("model picker", r"Grok [0-9.]+ \(current\)", "C-c")
-FOLDED_PASTE = Interruption("folded paste: full content is not visible", r"\[Pasted: [1-9][0-9]* lines\]")
+PASTE_FOLD_LINES = 4
+
+
+def paste_lines(text: str) -> int:
+    """1.0.77 counts LF lines, excluding exactly one final LF terminator."""
+    return text.count("\n") + (not text.endswith("\n")) if text else 0
+
+
+def lf_layout(text: str) -> bool:
+    """LF observations establish no other control or line-separator layout."""
+    return not any((ord(char) < 32 and char != "\n") or ord(char) == 127
+                   or char in "\x85\u2028\u2029" for char in text)
 
 
 @dataclass(frozen=True)
@@ -144,20 +155,15 @@ def read(text: str) -> Screen:
                                                        else (200, 200, 200))
                           for i, attribute in enumerate(attributes[:len(token)])))
         if folded:
-            # A line count is not an input-content proof. No automatic key is
-            # authorized here: a documented full-content path is still needed.
-            return Screen(plain, box=None, interruption=FOLDED_PASTE, shows=shows)
+            # Keep the native chip for the payload-derived Box comparison.
+            # It proves only the visual submission contract, never delivery.
+            continue
         for char, attribute in zip(content, attributes):
             if not char.isspace() and (attribute.faint or attribute.foreground not in
                                       (None, (225, 225, 225), (122, 162, 247))
                                       or attribute.background not in (None, (20, 20, 20))):
                 return Screen(plain, box=None, unknown="unmeasured Grok composer text styling", shows=shows)
     box = "\n".join(content for content, _ in body)
-    if len(body) > 1 and not body[-1][0].strip(" "):
-        # The native measurements so far establish no trailing pad-row rule.
-        # An explicit empty input line may paint identically: retain every row
-        # and hold instead of silently converting either case to a shorter draft.
-        return Screen(plain, box=box, unknown="Grok trailing blank input row or unmeasured padding", shows=shows)
     tail = "\n".join(rows[footer_at + 1:])
     if not ("Shift+Tab:mode" in tail and "Ctrl+x:shortcuts" in tail
             or re.search(r"Grok Build\s+1\.0\.77", tail)):

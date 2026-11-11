@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
@@ -148,11 +149,34 @@ def launch_home(home: Path, seat: SeatSpec) -> None:
 
 
 class GrokBox(Box):
-    """Only visible, unfolded content; whitespace-only drafts have no exact proof."""
+    """Measured visual projection, retaining every explicit blank input row."""
 
     def matches(self, shown: str | None, columns: int | None = None, slack: int = 0) -> bool:
+        if not grok_screen.lf_layout(self.text):
+            return False
         if self.text and not self.text.strip():
             return False  # native bare LF/spaces can paint exactly like no draft
+        if self.text.endswith("\n"):
+            if shown is None:
+                return False
+            if self.folded and re.fullmatch(self.folded, shown.strip()):
+                return True  # visual comparison only; the exact record confirms delivery
+            endings = 0
+            for char in reversed(self.text):
+                if char != "\n":
+                    break
+                endings += 1
+            rows = shown.split("\n")
+            painted = 0
+            for row in reversed(rows):
+                if row.strip(" "):
+                    break
+                painted += 1
+            if painted != endings:
+                return False
+            # Account for every terminal blank row before asking the unchanged
+            # shared matcher to verify the remaining visible text and wrapping.
+            return Box(self.text[:-endings]).matches("\n".join(rows[:-endings]), columns, slack)
         return super().matches(shown, columns, slack)
 
 
@@ -282,13 +306,16 @@ class GrokHarness(Harness):
         return pane_width - 10 if pane_width >= 14 else None
 
     def box(self, text: str) -> Box:
-        # Neither a native folded line count nor a clipped viewport establishes
-        # all content. Keep the shared matcher strict; no folded acceptance.
-        return GrokBox(text)
+        # The counted chip is the program's visual projection of this payload.
+        # Only inputs(record), never this comparison, can confirm delivery.
+        lines = grok_screen.paste_lines(text)
+        folded = (rf"\[Pasted: {lines} lines\]"
+                  if grok_screen.lf_layout(text) and lines >= grok_screen.PASTE_FOLD_LINES else None)
+        return GrokBox(text, folded=folded)
 
     def controls(self) -> tuple[Control, ...]:
         return (Control("model", "--model <value>", "/model {value}", "screen"),
                 Control("effort", "--reasoning-effort <value>", "/effort {value}", "screen"))
 
     def interruptions(self):
-        return (grok_screen.COMMANDS, grok_screen.MODEL_PICKER, grok_screen.FOLDED_PASTE)
+        return (grok_screen.COMMANDS, grok_screen.MODEL_PICKER)
