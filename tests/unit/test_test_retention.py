@@ -1,53 +1,66 @@
-"""Pytest run directly, under the project's retention settings: completed runs discard successful scratch
-trees and keep only failed-test evidence. tests/testrun.py removes even those at a run's end, keeping the
-complete failure output in its results instead."""
+"""Pytest run directly, under the project's retention settings: ordinary session history is bounded to the
+last three sessions, each keeping its trees, its result, report and failing output. tests/testrun.py removes
+all of its scratch at a run's end instead, keeping the complete failure output in its results."""
 
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
 
 ROOT = Path(__file__).resolve().parents[2]
-
-
-def run(folder, *, fail=False):
-    folder.mkdir()
-    test = folder / "test_synthetic.py"
-    test.write_text('''def test_passed(tmp_path):
-    (tmp_path / "passed-evidence").write_text("unneeded")
+TEST = '''def test_passed(tmp_path):
+    (tmp_path / "passed-evidence").write_text("kept with its session")
 
 def test_other(tmp_path):
     (tmp_path / "other-evidence").write_text("synthetic evidence")
-''' + ('    assert False, "synthetic failure"\n' if fail else '    assert True\n'))
+'''
+
+
+def session(folder, history, *, fail=False):
+    """One ordinary pytest session under the project's settings, its temporary root isolated in ``history``."""
+    folder.mkdir()
+    test = folder / "test_synthetic.py"
+    test.write_text(TEST + ('    assert False, "synthetic failure"\n' if fail else '    assert True\n'))
     report = folder / "report.xml"
+    env = {**os.environ, "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1", "PYTEST_ADDOPTS": "",
+           "PYTEST_DEBUG_TEMPROOT": str(history)}
     result = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
-                             "-c", str(ROOT / "pyproject.toml"), str(test),
-                             "--basetemp=" + str(folder / "scratch"), "--junitxml=" + str(report)],
-                            cwd=folder, env={**os.environ, "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1", "PYTEST_ADDOPTS": ""},
-                            capture_output=True, text=True, timeout=30)
+                             "-c", str(ROOT / "pyproject.toml"), "--rootdir", str(folder), str(test),
+                             "--junitxml=" + str(report)],
+                            cwd=folder, env=env, capture_output=True, text=True, timeout=60)
     (folder / "output.log").write_text(result.stdout + result.stderr)
     (folder / "result.txt").write_text(str(result.returncode))
     return result
 
 
-def test_completed_successful_runs_leave_no_test_trees_and_keep_their_results(tmp_path):
-    for number in range(3):
-        folder = tmp_path / str(number)
-        result = run(folder)
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert not list(folder.rglob("passed-evidence")) and not list(folder.rglob("other-evidence"))
-        assert (folder / "report.xml").is_file() and (folder / "result.txt").read_text() == "0"
-        assert "2 passed" in (folder / "output.log").read_text()
+def sessions(history):
+    owner, = history.iterdir()  # pytest-of-<user>
+    return sorted((path for path in owner.iterdir() if re.fullmatch(r"pytest-\d+", path.name)),
+                  key=lambda path: int(path.name.split("-")[1]))
 
 
-def test_a_failure_keeps_its_evidence_output_and_report_but_discards_passed_trees(tmp_path):
-    folder = tmp_path / "failed"
-    result = run(folder, fail=True)
+def test_ordinary_session_history_is_bounded_to_the_last_three(tmp_path):
+    history = tmp_path / "history"
+    history.mkdir()
+    for number in range(5):
+        result = session(tmp_path / str(number), history, fail=number == 3)
+        assert result.returncode == (1 if number == 3 else 0), result.stdout + result.stderr
+        assert (tmp_path / str(number) / "report.xml").is_file()
+    kept = sessions(history)
+    assert [path.name for path in kept] == ["pytest-2", "pytest-3", "pytest-4"]
+    for path in kept:  # each kept session keeps its trees whole: nothing is removed during a test's teardown
+        assert len(list(path.rglob("passed-evidence"))) == 1 and len(list(path.rglob("other-evidence"))) == 1
+
+
+def test_a_failed_session_keeps_its_output_report_and_tree(tmp_path):
+    history = tmp_path / "history"
+    history.mkdir()
+    result = session(tmp_path / "failed", history, fail=True)
     assert result.returncode == 1, result.stdout + result.stderr
-    assert not list(folder.rglob("passed-evidence"))
-    evidence, = folder.rglob("other-evidence")
+    evidence, = sessions(history)[0].rglob("other-evidence")
     assert evidence.read_text() == "synthetic evidence"
-    assert (folder / "result.txt").read_text() == "1"
-    assert 'failures="1"' in (folder / "report.xml").read_text()
-    assert "synthetic failure" in (folder / "output.log").read_text()
+    assert (tmp_path / "failed" / "result.txt").read_text() == "1"
+    assert 'failures="1"' in (tmp_path / "failed" / "report.xml").read_text()
+    assert "synthetic failure" in (tmp_path / "failed" / "output.log").read_text()

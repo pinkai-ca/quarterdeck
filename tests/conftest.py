@@ -56,7 +56,7 @@ def plain_temp():
 @pytest.hookimpl(tryfirst=True)
 def pytest_configure(config):
     """Pytest run directly puts its temporary products, basetemp included, under .testruns/t, where
-    pyproject's retention keeps only the last three sessions' failed trees. A run of tests/testrun.py has
+    pyproject's tmp_path_retention_count keeps only the last three sessions. A run of tests/testrun.py has
     already given the run its own TMPDIR, HOME and caches in its scratch, and is left as it is."""
     if os.environ.get('TESTRUNS_RUN'):
         return
