@@ -132,9 +132,12 @@ def read(text: str) -> Screen:
             if not char.isspace() and (attribute.faint or attribute.foreground not in
                                       (None, (225, 225, 225), (122, 162, 247))):
                 return Screen(plain, box=None, unknown="unmeasured Grok composer text styling", shows=shows)
-    while len(body) > 1 and not body[-1][0].strip(" "):
-        body.pop()
     box = "\n".join(content for content, _ in body)
+    if len(body) > 1 and not body[-1][0].strip(" "):
+        # The native measurements so far establish no trailing pad-row rule.
+        # An explicit empty input line may paint identically: retain every row
+        # and hold instead of silently converting either case to a shorter draft.
+        return Screen(plain, box=box, unknown="Grok trailing blank input row or unmeasured padding", shows=shows)
     tail = "\n".join(rows[footer_at + 1:])
     if not ("Shift+Tab:mode" in tail and "Ctrl+x:shortcuts" in tail
             or re.search(r"Grok Build\s+1\.0\.77", tail)):

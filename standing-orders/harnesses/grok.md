@@ -43,4 +43,6 @@ The 1.0.77 fullscreen composer has a rounded border, an `❯` prompt and a foote
 
 Screen captures request native SGR in the same atomic pane read as identity. The adapter returns ordinary text. Native bright input, command color and muted argument hints differ; monochrome mode uses faint hints. Only the exact model argument hint in its measured picker is excluded from draft text. An identical bright literal stays content, and unknown styling or layout stays unknown. This does not establish arbitrary terminal themes or indexed color palettes.
 
+Every painted input row is retained. Multiple rows ending in an all-space row are held as unknown: explicit trailing blank input lines and native padding have not yet been distinguished by measurement. The reader does not silently shorten either. Working state is also provisional; a recognized composer by itself is not evidence that no turn is running. Live delivery acceptance awaits the native working/queue stage.
+
 Version facts are being measured on 1.0.77. Working spinner, cancellation during a turn, queue behavior, completed native records, resume and exact input receipts still await ordinary native measurement. Installed live check and full acceptance remain outstanding.

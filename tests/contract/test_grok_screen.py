@@ -104,3 +104,44 @@ def test_unknown_muted_content_is_retained_in_screen_text():
     screen = GrokHarness().screen(text)
     assert screen.unknown and screen.box is None
     assert "<model> [window] [effort]" in screen.text
+
+
+def with_blank_rows(count, *, interior=False, empty=False):
+    """Author additional ordinary composer rows, without inventing native padding semantics."""
+    text = fixture("draft-multiline")
+    rows = text.splitlines()
+    first = next(i for i, row in enumerate(rows) if " ❯ " in row)
+    last = next(i for i, row in enumerate(rows) if row.startswith("  ╰"))
+    blank = "  │   " + " " * 71 + "│  "
+    if empty:
+        rows[first:last] = ["  │ ❯ " + " " * 71 + "│  "] + [blank] * count
+    elif interior:
+        rows[first + 1:first + 1] = [blank] * count
+    else:
+        rows[last:last] = [blank] * count
+    return "\n".join(rows) + "\n"
+
+
+@pytest.mark.parametrize("count", [1, 2, 3])
+def test_trailing_blank_rows_are_retained_and_reported_unknown(count):
+    adapter = GrokHarness()
+    screen = adapter.screen(with_blank_rows(count))
+    assert screen.unknown == "Grok trailing blank input row or unmeasured padding"
+    assert len(screen.box.split("\n")) == 3 + count
+    assert all(row == " " * 71 for row in screen.box.split("\n")[-count:])
+    assert not adapter.box("First synthetic line.\nSecond line has [brackets].\nLast line: done.").matches(screen.box, 71)
+
+
+def test_interior_blank_input_line_is_preserved():
+    adapter = GrokHarness()
+    screen = adapter.screen(with_blank_rows(1, interior=True))
+    wanted = "First synthetic line.\n\nSecond line has [brackets].\nLast line: done."
+    assert screen.unknown is None
+    assert adapter.box(wanted).matches(screen.box, 71)
+    assert not adapter.box(wanted.replace("\n\n", "\n")).matches(screen.box, 71)
+
+
+def test_multiple_empty_rows_are_not_assumed_to_be_an_empty_composer():
+    screen = GrokHarness().screen(with_blank_rows(1, empty=True))
+    assert screen.unknown
+    assert screen.box == " " * 71 + "\n" + " " * 71
