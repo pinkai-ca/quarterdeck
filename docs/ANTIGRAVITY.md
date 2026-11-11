@@ -1,6 +1,6 @@
 # The Antigravity record
 
-Antigravity (`agy`, proven on 1.5.2) keeps every conversation as a SQLite database under its own state directory, `~/.gemini/antigravity-cli/conversations/<id>.db`, in WAL mode, with protobuf messages in its rows. The program has no home switch, so a seat runs in the user's Antigravity state and its record sits in a folder shared with the user's own conversations. This page says what the adapter reads from that record and how, so that a reader of the code or a reviewer of a fixture can check it against the program.
+Antigravity (`agy`, record/screen contracts on 1.5.2 and 1.5.5) keeps every conversation as a SQLite database under its own state directory, `~/.gemini/antigravity-cli/conversations/<id>.db`, in WAL mode, with protobuf messages in its rows. The program has no home switch, so a seat runs in the user's Antigravity state and its record sits in a folder shared with the user's own conversations. This page says what the adapter reads from that record and how, so that a reader of the code or a reviewer of a fixture can check it against the program.
 
 ## Which record is the seat's
 
@@ -40,3 +40,31 @@ A turn ends at its last step's completion time; where the record states none, th
 When the program hits its quota it writes an error message step whose text reads `Individual quota reached … Resets in …`, and shows the same banner on the screen. The record's step is the canonical event, and its creation time anchors the reset. The service persists each such event once, by record and step, with the pool the seat was launched on at that time, and the door holds deliveries to that pool until the reset. A banner seen on the screen before the record shows it is persisted by the service under the launch it was seen on, its reset estimated from the first observation and labelled so; the record's event supersedes it when it appears. A banner the book already knows, even an expired one, is not a new wall.
 
 Usage comes from the program's own command, `agy -p /usage --output-format json`, which on 1.5.2 answers without opening a conversation. The service runs it every five minutes for every declared Google pool and reads each group's buckets: the Gemini 4 Argon weekly bucket is the pool's headline `7d` window, shown in detailed status and ledger with its reset, and the other buckets stay visible in `qd ledger` and block nothing. The book keeps one complete reading per window, its fraction, reset and reading time replaced together and only by another complete reading; a failed or partial read changes nothing of it but the time of the last attempt and its reason, and the figure is then shown as last known, dated, until a new reading arrives. A window that never read stays unknown. Only a current complete reading, within the hour and before its reset, can call a pool available or spent; a last-known figure can do neither, and an observed wall stands whatever the readings say. The program is found on the PATH as every launch finds it.
+
+
+## Version evidence
+
+| Native version | Evidence |
+|---|---|
+| 1.5.2 | Existing record/schema, screen, fold and control contract fixtures remain supported |
+| 1.5.5 | Live `qd check` passed on 11 November 2026 UTC (10 November, America/Vancouver), Gemini 3.8 Flash/medium, 220×50; separate opening and task turns, one task paste/submit, exact record receipt, file and post proof. New synthetic screen fixtures cover the native queue, edit hint, working/idle box and footer |
+
+These are measured versions, not launch pins. Other versions keep the ordinary best-effort rule and are not called proven by these fixtures.
+
+## Opening turn and queued input
+
+`--prompt-interactive` makes the brief a native model turn. The check waits, within its 180-second startup bound, for a recognized open idle door and a record proving at least one ended turn before sending the task. An empty composer while the opening answer is working is not that readiness proof. The task must then have its own exact input receipt and an additional ended turn.
+
+During ordinary work, 1.5.5 shows a queued envelope preview above the composer, an `alt+m to send immediately` hint, and `Press up to edit queued messages` below it. The record does not yet contain that queued input. The Door labels this **queued** only after matching the whole pasted box, submitting once into an unchanged launch, and observing an initially empty queue acquire one unique preview containing the complete transport kind/sender/short-id and a matching prefix, with the native edit hint and an empty recognized composer. Missing, foreign, ambiguous, already occupied or unreadable queue evidence supplies no such proof. A truncated body proves queue visibility only.
+
+| Stage | Reading and evidence |
+|---|---|
+| Working before input | Open, queues; native record activity and screen are reported separately |
+| Newly visible matching queue | `queued`, explicitly awaiting an exact record receipt; durable Proof stays `submitted` with optional `screen_queue: true` |
+| Native record takes the original payload | Shared timestamped exact-input rule confirms delivery; the marker becomes false and the Proof/attempt becomes `delivered` |
+| Queue disappears without a receipt | Pending; no second paste/submit. Missing record evidence never becomes delivery |
+| Record stays unknown or the bound expires | The existing 600-second pending policy calls for inspection; launch/box uncertainty remains visible immediately |
+
+A service restart reconciles the same payload, original timestamp and saved reader. Check transport uses the same Proof and, for a queued/pending submitted input, waits up to 180 seconds for exact consumption without resending. Task/report and ended-turn checks remain separate. A check that times out tears down its own seat and retains the abandoned, explicitly unconfirmed history; late receipts never authorize another submission. No record, token class, quota group or wall rule is rewritten.
+
+`screen_queue` is an optional boolean in the existing private pending journal; old readers continue to hold its `submitted` phase. Existing public queue result values remain, but `queued` may now explicitly describe screen-only queue evidence; its detail and the pending journal distinguish that from a record receipt. Status/watch show the pending wait. Only the record still yields `delivered`.

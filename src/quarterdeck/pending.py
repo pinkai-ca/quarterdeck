@@ -72,6 +72,8 @@ class Proof:
         if result == "withheld" and self.data["phase"] == "prepared":
             self.save(phase="cancelled")
         elif result in ("delivered", "queued"):
+            if result == "queued" and self.data.get("screen_queue"):
+                return  # visible native queue; submitted stays unresolved until the record confirms
             self.save(phase=result)
 
     def confirmed(self, seat: Seat) -> str | None:
@@ -86,8 +88,11 @@ class Proof:
         if not record:
             return None
         try:
-            return input_receipt.confirmed(name, Path(record), self.data["payload"],
-                                           datetime.fromisoformat(self.data["since"]))
+            result = input_receipt.confirmed(name, Path(record), self.data["payload"],
+                                             datetime.fromisoformat(self.data["since"]))
+            if result and self.data.get("screen_queue"):
+                self.save(screen_queue=False)
+            return result
         except OSError:
             return None  # unreadable evidence never becomes success
 
@@ -113,7 +118,8 @@ class Proof:
         age = ((now or post.now()) - datetime.fromisoformat(self.data["at"])).total_seconds()
         if age >= WAIT_SECONDS:
             return uncertain("pending delivery exceeded 600s; not resent; box and record need inspection")
-        reason = "waiting to be taken" if screen.box else "waiting for record confirmation"
+        reason = ("queued on screen; waiting for record confirmation" if self.data.get("screen_queue")
+                  else "waiting to be taken" if screen.box else "waiting for record confirmation")
         return (f"{reason} ({int(max(0, age))}s of 600s)", "record confirmation", True)
 
 
@@ -150,6 +156,8 @@ def validate(data: Any, seat: str) -> None:
             or (data["record"] is not None and not isinstance(data["record"], str))
             or (data["shown"] is not None and not isinstance(data["shown"], str))):
         raise ValueError("invalid pending journal")
+    if "screen_queue" in data and type(data["screen_queue"]) is not bool:
+        raise ValueError("invalid screen queue evidence")
     if 'recovery' in data:
         from .recovery import validate as validate_recovery
         validate_recovery(data['recovery'])

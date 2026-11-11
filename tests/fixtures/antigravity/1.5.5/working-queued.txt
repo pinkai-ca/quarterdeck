@@ -1,0 +1,8 @@
+> Synthetic opening brief
+○ Thought for 1.2s (Synthetic initial acknowledgement)
+⣯ Running command...
+▸ qd > order from issuer · ord-1234 · Synthetic... (alt+m to send immediately)
+────────────────────────────────────────────────────────────────────────────────
+>
+────────────────────────────────────────────────────────────────────────────────
+  Press up to edit queued messages                     Gemini 3.8 Flash · medium

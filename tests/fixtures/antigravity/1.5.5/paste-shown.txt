@@ -1,0 +1,8 @@
+> Synthetic opening brief
+○ Thought for 1.2s (Synthetic initial acknowledgement)
+⣯ Running command...
+────────────────────────────────────────────────────────────────────────────────
+> Synthetic paste
+  second line
+────────────────────────────────────────────────────────────────────────────────
+  ? for shortcuts                     Gemini 3.8 Flash · medium

@@ -13,14 +13,31 @@ from __future__ import annotations
 
 import secrets
 
-from . import harness as harnesses, post, providers, standing
-from .door import Door
+from . import harness as harnesses, pending, post, providers, standing
+from .door import Delivery, Door
 from .drill import Check, wait_for
 from .seat import Seat, temporary_seat
 from .ship import SeatSpec, Ship, ShipError
 from .tmux import Tmux
 
 PATIENCE = 180.0
+
+
+def ready_for_probe(seat: Seat, door: Door) -> bool:
+    """An opening prompt's own turn must finish before the check task is sent."""
+    opened = door.reading()
+    if not opened.open:
+        return False
+    if not seat.harness.opening_prompt_turn:
+        return True
+    record = seat.record()
+    if record is None or opened.working:
+        return False
+    try:
+        state = seat.harness.state(record)
+    except OSError:
+        return False
+    return state.turns is not None and state.turns >= 1 and state.turn_open is False and not state.queued
 
 
 def check(ship: Ship, name: str, tmux: Tmux) -> list[Check]:
@@ -59,10 +76,16 @@ def probe(ship: Ship, seat: Seat, orders: list[post.Message] | None = None) -> l
     launched = seat.up(resume=False)
     checks.append(Check("launch", seat.is_up, launched))
     door = Door(seat)
-    opened = wait_for(lambda: door.reading().open, PATIENCE / 3)
-    checks.append(Check("door open at start", bool(opened), str(door.reading())))
+    opened = wait_for(lambda: ready_for_probe(seat, door), PATIENCE if seat.harness.opening_prompt_turn else PATIENCE / 3)
+    checks.append(Check("door open at start", bool(opened), str(door.reading()) +
+                        (" · opening brief turn ended in the record" if opened and seat.harness.opening_prompt_turn else "")))
     if not opened:
         return checks
+    try:
+        initial = seat.harness.state(record) if (record := seat.record()) else None
+        before_turns = initial.turns if initial and initial.turns is not None else 0
+    except OSError:
+        before_turns = 0  # a minimum bound only; the later receipt and ended task are still required
     store, attempts = post.Store(ship.runtime), post.Attempts(ship.runtime)
     laws = (standing.FRAMEWORK_DIR / "laws.md").read_text().strip()
     order = store.new("order", "ship", seat.name,
@@ -75,11 +98,28 @@ def probe(ship: Ship, seat: Seat, orders: list[post.Message] | None = None) -> l
     launch = seat.launched()
     attempt = attempts.open(order, seat.name, launch.pane, launch.pid, launch.at)
     text = post.typed([order])
-    delivery = door.deliver(text)
+    proof = pending.Proof.begin(seat, attempt, text)
+    delivery = door.deliver(text, proof=proof)
+    proof.finish(delivery.result)
     attempts.close(attempt, delivery.result, delivery.detail)
-    taken = delivery.result in ("delivered", "queued")
+    route = str(delivery)
+    if delivery.result in ("queued", "pending") and proof.data["phase"] in ("submitted", "queued"):
+        # A known queue is not abandoned at the Door's short observation deadline.
+        # Only the original exact input receipt may promote it; never paste/submit again.
+        def consumed():
+            result = proof.confirmed(seat)
+            if result == "queued":
+                proof.finish(result)
+                attempts.close(attempt, result, "exact queued payload in the record after paste")
+            return result == "delivered"
+        if wait_for(consumed, PATIENCE):
+            proof.finish("delivered")
+            delivery = Delivery("delivered", "exact payload in the record after paste")
+            attempts.close(attempt, delivery.result, delivery.detail)
+            route += " → " + str(delivery)
+    taken = delivery.result == "delivered"
     checks.append(Check(f"a {len(text)}-character paste matched the box as the program shows it, submitted, confirmed",
-                        taken, str(delivery)))
+                        taken, route))
     if not taken:
         return checks
     closed = wait_for(lambda: store.closing_report(order), PATIENCE)
@@ -94,7 +134,7 @@ def probe(ship: Ship, seat: Seat, orders: list[post.Message] | None = None) -> l
             s = seat.harness.state(r)
         except OSError:
             return False
-        return s.turns is not None and s.turns >= 1 and s.turn_open is False
+        return s.turns is not None and s.turns >= before_turns + 1 and s.turn_open is False
 
     ended = wait_for(_turn_ended, 60)
     record = seat.record()

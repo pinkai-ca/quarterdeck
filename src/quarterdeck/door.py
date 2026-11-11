@@ -64,6 +64,7 @@ class Door:
         self.harness = seat.harness
         self.tmux = seat.tmux
         self.proof = None
+        self.before_submit = None
         self.since = datetime.now(timezone.utc)
 
     def screen(self) -> Screen | None:
@@ -220,6 +221,7 @@ class Door:
             return Delivery('blind', 'bound source changed after paste; not submitted or cleared')
         if proof:
             proof.save(phase="submitting", shown=shown.box)
+        self.before_submit = shown
         self.submit(pane.id)
         if proof:
             proof.save(phase="submitted")
@@ -297,6 +299,12 @@ class Door:
                     pass
             if result:
                 return Delivery(result, "exact payload in the record after paste")
+            if self.proof and self.before_submit is not None and self.proof.same_launch(self.seat):
+                screen = self.screen()
+                notice = self.harness.queued_input(text, self.before_submit, screen) if screen else None
+                if notice and self.proof.same_launch(self.seat):
+                    self.proof.save(screen_queue=True)
+                    return Delivery("queued", notice)
             if time.monotonic() >= deadline:
                 return Delivery("pending" if self.proof else "blind", "submitted once; waiting for record confirmation")
             time.sleep(0.2)

@@ -74,6 +74,7 @@ class Harness(ABC):
     name: str
     program: str
     native_provider: str | None = None
+    opening_prompt_turn: bool = False  # a fresh brief is itself a model turn
     synthetic: bool = False
     credential_file: str | None = None
     usage_interval: int = 60
@@ -128,6 +129,10 @@ class Harness(ABC):
             return f"pool {pool.name} is an endpoint operated by {company}; {self.name} requires its native {display(self.native_provider) if self.native_provider else 'provider'} subscription or key"
         if self.native_provider != pool.provider:
             return f"pool {pool.name} pays {company}; harness {self.name} requires its own provider's key (native harness {native or 'not installed'})"
+        return None
+
+    def queued_input(self, text: str, before: Screen, after: Screen) -> str | None:
+        """A newly visible native queue after one matched paste, never a record receipt."""
         return None
     # -- launch ------------------------------------------------------------------------
 

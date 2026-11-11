@@ -53,6 +53,11 @@ def test_real_check_probe_and_service_delivery_use_adapter_inputs(setup, monkeyp
     checks = check.probe(svc.ship, seat)
     transport = next(c for c in checks if "paste matched" in c.name)
     assert transport.passed is fresh
+    if not fresh:
+        assert pending.active(seat), "a stale receipt leaves the check's one submission held"
+    # Direct probe calls need the temporary owner's normal retirement before a
+    # different ordinary message can use this synthetic seat.
+    pending.abandon(svc.runtime, seat.name, "synthetic check transport ended")
     message = svc.store.new("order", "ship", seat.name, "second exact transport")
     svc.deliver(seat, [message])
     assert svc.attempts.latest()[message.id] == ("delivered" if fresh else "pending")

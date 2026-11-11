@@ -1,4 +1,4 @@
-"""Antigravity (``agy``), proven on 1.5.2.
+"""Antigravity (``agy``), record/screen contracts on 1.5.2 and 1.5.5.
 
 The program has no home switch: its state lives under ``~/.gemini/antigravity-cli``, so a seat passes
 its settings on the command line and joins the one conversation that appears after its launch, and
@@ -37,6 +37,7 @@ class AntigravityHarness(Harness):
     human_tool_policy = "Antigravity: no supported native question-tool exclusion proved; interactive asks still need a human."
     name = "antigravity"
     native_provider = "google"
+    opening_prompt_turn = True
     program = "agy"
     home_variable = None  # no home switch: the seat runs in the program's own state directory
     reads_usage = True
@@ -160,6 +161,28 @@ class AntigravityHarness(Harness):
         one trailing newline; one of many lines to ``[Pasted text #N +k lines]``, k the newlines. The box takes either."""
         chars, newlines = len(text.removesuffix("\n")), text.count("\n")
         return Box(text, folded=rf"\[Pasted text #\d+ (?:{chars} chars|\+{newlines} lines)\]")
+
+    def queued_input(self, text: str, before: Screen, after: Screen) -> str | None:
+        """1.5.5 shows an envelope preview and edit hint before persisting the input.
+
+        This proves queue visibility only after the Door matched the entire paste. Require
+        a previously empty queue, the complete transport identity in a unique preview,
+        and a now-empty recognized box. A shortened body never proves record delivery.
+        """
+        if (before.queued or after.box != "" or after.unknown or after.interruption
+                or QUEUED_PLACEHOLDER not in after.text):
+            return None
+        header = text.split("\n", 1)[0]
+        identity = re.match(r"^qd > (?:order|report|question|answer|ack) from [^·\n]+ · "
+                            r"(?:ord|rep|que|ans|ack)-[0-9a-f]{4}(?= · |$)", header)
+        if identity is None:
+            return None
+        previews = [match.group(1).removesuffix("...").removesuffix("…")
+                    for line in after.text.splitlines() if (match := QUEUED_LINE.match(line))]
+        if (len(previews) == 1 and previews[0].startswith(identity.group())
+                and header.startswith(previews[0])):
+            return "native queue preview and edit hint match the submitted envelope; awaiting exact record receipt"
+        return None
 
     def controls(self) -> tuple[Control, ...]:
         return (

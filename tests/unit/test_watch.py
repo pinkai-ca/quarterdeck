@@ -123,6 +123,7 @@ def test_check_probe_handles_unknown_turns_without_crashing(tmp_path: Path, monk
 
     store = post.Store(tmp_path)
     fake_harness = SimpleNamespace(
+        name="fake", opening_prompt_turn=False,
         state=lambda r: State(turn_open=None, turns=None, model="gemini-3.1-pro-high"),
     )
     fake_seat = SimpleNamespace(
@@ -134,9 +135,11 @@ def test_check_probe_handles_unknown_turns_without_crashing(tmp_path: Path, monk
         harness=fake_harness,
     )
     fake_ship = SimpleNamespace(runtime=tmp_path)
+    fake_seat.ship = fake_ship
+    fake_seat.pane = lambda: SimpleNamespace(id="%1", pid=4242)
     monkeypatch.setattr(check, "Door", lambda s: SimpleNamespace(
         reading=lambda: doormod.Reading(True, "empty box"),
-        deliver=lambda text: doormod.Delivery("delivered", "in the record"),
+        deliver=lambda text, **kwargs: doormod.Delivery("delivered", "in the record"),
     ))
 
     def fake_wait_for(pred, timeout):
