@@ -17,13 +17,13 @@ def ship_at(path):
     (path / 'ship.toml').write_text('''[ship]
 name="synthetic"
 [pools.claude]
-provider="claude"
+provider="anthropic"
 [pools.google]
-provider="antigravity"
+provider="google"
 [pools.unsupported]
-provider="pi"
+provider="synthetic"  # native program without a usage reader
 [pools.key]
-provider="claude"
+provider="anthropic"
 api_key="env:SYNTHETIC_UNUSED"
 [pools.local]
 provider="local"

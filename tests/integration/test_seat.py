@@ -34,7 +34,7 @@ def test_up_brings_up_every_declared_seat_in_its_session(ship: shipmod.Ship, tmu
     assert proofs[0] == "runtime/ fenced: nested repository created"
     assert "not its own repository" in proofs[1]
     assert [p.split(" ")[0] for p in proofs[2:]] == ["captain", "desk", "worker-1"]
-    assert all("· fake fake · pool fake · fresh" in p for p in proofs[2:])
+    assert all("· fake fake · provider Synthetic · pool fake · fresh" in p for p in proofs[2:])
     assert sorted(tmux.sessions()) == ["Bridge", "Crew", "Office"]
     assert [p.window for p in tmux.panes("Bridge")] == ["Picard"]
     assert [p.window for p in tmux.panes("Office")] == ["Maeve"]

@@ -71,6 +71,13 @@ def test_open_harnesses_have_no_native_company(program):
     assert harness.get(program).native_provider is None
 
 
+@pytest.mark.parametrize("program", ["opencode", "pi"])
+def test_an_unused_open_program_is_not_a_subscription_provider(tmp_path, program):
+    (tmp_path / "ship.toml").write_text(f'[ship]\nname="synthetic"\n[pools.unused]\nprovider="{program}"\n')
+    with pytest.raises(ShipError, match="unsupported subscription provider"):
+        load(tmp_path)
+
+
 @pytest.mark.parametrize("company,program", PAIRS)
 def test_native_harness_refuses_other_company_key_and_endpoints(tmp_path, company, program):
     other = "openai" if company != "openai" else "anthropic"

@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from quarterdeck import input_receipt, pending, post, watch
+from quarterdeck import harness, input_receipt, pending, post, watch
 from tests.antigravity_shapes import AntigravityShape
 from quarterdeck.record_owner import register
 from quarterdeck.service import Service
@@ -53,6 +53,9 @@ def test_claude_timestamped_queue_and_consumption_without_new_user_row(tmp_path:
 
 
 def bind(svc, old, name, path):
+    # This synthetic native seat must pay the company its substituted program uses.
+    pool = old.pool
+    svc.ship.pools[pool.name] = replace(pool, provider=harness.provider_of(name))
     svc.ship.seats[old.name] = replace(old.spec, harness=name)
     seat = svc.seat(old.name)
     launch_path = seat.folder / "launch.json"

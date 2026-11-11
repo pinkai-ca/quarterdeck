@@ -15,7 +15,7 @@ def declared(tmp_path, output, *, endpoint_url=True, context=98304):
     if endpoint_url:
         text += 'endpoint="http://example.invalid/v1"\n'
     else:
-        text = text.replace('provider="local"', 'provider="pi"')
+        text = text.replace('provider="local"', 'provider="openai"')
     text += f'context={context}\noutput={output}\n'
     (tmp_path / 'ship.toml').write_text(text)
     return ship.load(tmp_path).pool('local')
