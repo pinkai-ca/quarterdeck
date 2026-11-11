@@ -5,10 +5,12 @@ from __future__ import annotations
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from quarterdeck.harness.fake import FakeHarness
+from quarterdeck.harness.json_record import RecordError
 from quarterdeck.ship import Pool, SeatSpec
 from quarterdeck.tmux import Tmux
 
@@ -17,12 +19,67 @@ POOL = Pool("fake", "fake")
 
 def wait_for(predicate, seconds: float = 8.0):
     deadline = time.monotonic() + seconds
+    last_read_error = None
     while time.monotonic() < deadline:
-        value = predicate()
+        try:
+            value = predicate()
+        except RecordError as error:
+            if str(error) != "record changed while being read":
+                raise
+            last_read_error = error
+            value = None
         if value:
             return value
         time.sleep(0.05)
-    raise AssertionError("condition not met in time")
+    raise AssertionError("condition not met in time") from last_read_error
+
+
+@pytest.fixture
+def waiter_clock(monkeypatch):
+    clock = SimpleNamespace(now=0.0)
+
+    def sleep(seconds):
+        clock.now += seconds
+
+    monkeypatch.setattr(__name__ + ".time", SimpleNamespace(monotonic=lambda: clock.now, sleep=sleep))
+    return clock
+
+
+def test_wait_for_recovers_from_concurrent_record_writes(waiter_clock):
+    calls = []
+
+    def reading():
+        calls.append(waiter_clock.now)
+        if len(calls) < 3:
+            raise RecordError("record changed while being read")
+        return "fresh reading"
+
+    assert wait_for(reading, seconds=0.2) == "fresh reading"
+    assert calls == [0.0, 0.05, 0.1]
+
+
+def test_wait_for_keeps_the_last_record_refusal_at_its_deadline(waiter_clock):
+    errors = []
+
+    def reading():
+        error = RecordError("record changed while being read")
+        errors.append(error)
+        raise error
+
+    with pytest.raises(AssertionError, match="condition not met in time") as failed:
+        wait_for(reading, seconds=0.1)
+    assert len(errors) == 2 and waiter_clock.now == 0.1
+    assert failed.value.__cause__ is errors[-1]
+
+
+@pytest.mark.parametrize("error", [ValueError("unrelated"), RecordError("record is not UTF-8 JSON lines")])
+def test_wait_for_propagates_other_failures(waiter_clock, error):
+    def reading():
+        raise error
+
+    with pytest.raises(type(error)) as failed:
+        wait_for(reading)
+    assert failed.value is error and waiter_clock.now == 0.0
 
 
 def showing(seat: "Seat", test):

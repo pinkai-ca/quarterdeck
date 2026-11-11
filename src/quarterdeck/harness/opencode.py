@@ -25,6 +25,7 @@ from .endpoint import EndpointHarness
 from ..ship import Pool, SeatSpec, ShipError
 from .base import (Box, ship_template, trimmed, Control, Credential, Interruption, Keys, Launch, Screen, Tokens,
                    merged)
+from .types import _cells
 
 from .opencode_record import (DATA_PREFIX, RECORD, _Rows, _launch_number, data_dir_of, first_timestamp,
                               inputs, read, records, session_id, state)
@@ -46,6 +47,10 @@ PLACEHOLDER = re.compile(r'^Ask anything(?:…|\.\.\.) "[^"]*"\s*$')  # a fresh 
 WORKING = re.compile(r"\besc interrupt\b")
 QUEUED_TAG = re.compile(r"^\s*┃\s+QUEUED\s*$")
 COMPACT = re.compile(r"ctrl\+p cmd\s*$", re.M)
+SIDEBAR_FRAGMENT = re.compile(r" {4,}(\S+) *$")
+SIDEBAR_VERSION = re.compile(r" {4,}(• OpenCode \d+\.\d+\.\d+(?:[-+][\w.-]+)?) *$")
+SIDEBAR_FOLDER = re.compile(r"~?/(?:[^/\s]+/)*[^/\s]+/?")
+MODAL_HEADING = re.compile(r"^ +(?P<title>[^\s┃].*?) {2,}(?P<hint>esc(?:/enter)?) *$")
 
 
 def _bar(line: str) -> str | None:
@@ -54,6 +59,39 @@ def _bar(line: str) -> str | None:
         return ""
     found = BAR_TEXT.match(line)
     return found.group(1) if found else None
+
+
+def _wrapped_folder_pad(lines: list[str], rule_at: int) -> bool:
+    """Prove the native two-line folder in the session sidebar, beside the final pad and status."""
+    rule = lines[rule_at].rstrip(" ")
+    if not RULE.fullmatch(rule) or rule_at + 1 >= len(lines):
+        return False
+    pad, status, footer = lines[rule_at - 2], lines[rule_at - 1], lines[rule_at + 1]
+    first = SIDEBAR_FRAGMENT.search(pad)
+    last = SIDEBAR_FRAGMENT.search(status)
+    version = SIDEBAR_VERSION.search(footer)
+    if first is None or last is None or version is None:
+        return False
+    sidebar = len(rule) + 4  # the full composer rule ends four cells before the sidebar
+    if any(_cells(row[:part.start(1)]) != sidebar
+           for row, part in ((pad, first), (status, last), (footer, version))):
+        return False
+    pane_columns = sidebar + 40  # the verified session sidebar is forty cells wide
+    for row in lines[:rule_at - 2]:
+        heading = MODAL_HEADING.fullmatch(row)
+        if heading is None:
+            continue
+        left = _cells(row[:heading.start("title")])
+        right = _cells(row[:heading.end("hint")])
+        # Native selectors, prompts and info dialogs center this heading pair in the whole pane.
+        if left is None or right is None or left + right == pane_columns + pane_columns % 2:
+            return False
+    border = rule[:rule.index("╹")] + "┃"
+    left_status = status[:last.start(1)].rstrip(" ")
+    return (pad[:first.start(1)].rstrip(" ") == border and left_status.startswith(border + "  ")
+            and STATUS.fullmatch(left_status) is not None
+            and first.group(1).startswith(("/", "~/"))
+            and SIDEBAR_FOLDER.fullmatch(first.group(1) + last.group(1)) is not None)
 
 
 def question_stays_denied(raw: str | None) -> bool:
@@ -285,7 +323,7 @@ class OpenCodeHarness(EndpointHarness):
         if i >= 0 and QUEUED_TAG.match(lines[i]) and top < status_at and _bar(lines[top]) == "":
             top += 1  # the queued block's own closing pad
         rows = [_bar(line) for line in lines[top:status_at]]
-        if len(rows) < 2 or rows[0] != "" or rows[-1] != "":
+        if len(rows) < 2 or rows[0] != "" or (rows[-1] != "" and not _wrapped_folder_pad(lines, rule_at)):
             return Screen(text, box=None, working=working, unknown="no box drawn as 1.19.5 draws it", queued=queued)
         body = [row or "" for row in rows[1:-1]]
         body = trimmed(body)

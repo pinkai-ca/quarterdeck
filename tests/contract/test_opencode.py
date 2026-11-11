@@ -114,6 +114,81 @@ def test_a_working_seat_a_typed_box_and_a_queued_message():
     assert not screen("idle-after-queued").working and screen("idle-after-queued").queued == 0
 
 
+def test_the_425_column_working_box_ignores_the_wrapped_sidebar_folder_on_its_pad():
+    s = screen("working-wrapped-folder")
+    assert s.working and s.box == "" and s.unknown is None and s.queued == 0
+
+
+def test_a_wrapped_sidebar_does_not_change_the_draft_or_queued_count():
+    raw = (SCREENS / "working-wrapped-folder.txt").read_text()
+    lines = raw.splitlines()
+    pad = next(i for i, row in enumerate(lines) if row.endswith("/fixture/project/synthetic/folder/"))
+    draft = ["/fixture/project/synthetic/folder/", "    read /fixture/input.txt",
+             " " * 195 + "/fixture/other.txt", "Commands" + " " * 41 + "esc"]
+    lines[pad - 1:pad] = ["  ┃  " + row for row in draft]
+    lines[2:2] = ["  ┃", "  ┃  Queued input", "  ┃   QUEUED", "  ┃"]
+    s = OpenCodeHarness().screen("\n".join(lines))
+    assert s.working and s.queued == 1 and s.unknown is None
+    assert s.box == "\n".join(draft)
+
+
+@pytest.mark.parametrize("change", [
+    lambda text: text.replace("• OpenCode 1.19.5", "Unproved footer"),
+    lambda text: text.replace("/fixture/project/synthetic/folder/", " /fixture/project/synthetic/folder/"),
+    lambda text: text.replace("  ┃" + " " * 382 + "/fixture/", "  ┃  Unexpected prompt".ljust(385) + "/fixture/"),
+], ids=["missing-version", "misaligned-folder", "occupied-pad"])
+def test_an_unproved_sidebar_leaves_the_box_unknown(change):
+    raw = (SCREENS / "working-wrapped-folder.txt").read_text()
+    s = OpenCodeHarness().screen(change(raw))
+    assert s.working and s.box is None and s.unknown and s.interruption is None
+
+
+@pytest.mark.parametrize("search_row", ["Search", "model"], ids=["empty-filter", "filled-filter"])
+def test_the_native_command_palette_leaves_the_wrapped_box_unknown(search_row):
+    raw = (SCREENS / "working-wrapped-folder.txt").read_text()
+    # Ctrl+p draws the heading and key hint at fixed offsets. Typing changes the search row.
+    indent = " " * 187
+    overlay = indent + "Commands" + " " * 41 + "esc\n\n" + indent + search_row + "\n\n"
+    s = OpenCodeHarness().screen(overlay + raw)
+    assert s.working and s.box is None and s.unknown and s.interruption is None
+
+
+@pytest.mark.parametrize("title,left,hint_column,hint", [
+    ("Themes", 187, 236, "esc"),
+    ("Select model", 187, 236, "esc"),
+    ("Sessions", 173, 250, "esc"),
+    ("Rename Session", 185, 238, "esc"),
+    ("Status", 185, 238, "esc"),
+    ("Debug", 171, 252, "esc"),
+    ("Help", 185, 232, "esc/enter"),
+    ("Synthetic selector", 187, 236, "esc"),
+])
+@pytest.mark.parametrize("width", [160, 200, 425])
+def test_a_centered_native_modal_keeps_the_wrapped_composer_unknown(title, left, hint_column, hint, width):
+    raw = (SCREENS / "working-wrapped-folder.txt").read_text()
+    rows = []
+    for row in raw.splitlines():
+        if row.startswith("  ╹"):
+            row = row[:width - 44]
+        elif len(row) > 385:
+            row = row[:width - 44].rstrip(" ").ljust(width - 40) + row[385:]
+        rows.append(row)
+    raw = "\n".join(rows)
+    assert OpenCodeHarness().screen(raw).box == ""
+    shift = (width + width % 2 - 426) // 2
+    heading = (" " * (left + shift) + title).ljust(hint_column + shift) + hint
+    s = OpenCodeHarness().screen("\n" + heading + "\n\nSynthetic filter or content\n\n" + raw)
+    assert s.box is None and s.unknown and s.interruption is None and s.working
+
+
+def test_transcript_rows_with_dismiss_key_text_leave_the_composer_readable():
+    raw = (SCREENS / "working-wrapped-folder.txt").read_text()
+    transcript = ("     Themes     esc\n     Help     esc/enter\n"
+                  + "     An ordinary transcript row".ljust(236) + "esc\n")
+    s = OpenCodeHarness().screen(transcript + raw)
+    assert s.box == "" and s.unknown is None and s.working
+
+
 def test_the_model_picker_is_dismissed_with_escape_and_the_compact_layout_is_said_to_be_unread():
     picker = screen("model-picker")
     assert picker.box is None and picker.interruption is not None and picker.interruption.name == "model picker"
