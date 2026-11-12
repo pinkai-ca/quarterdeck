@@ -156,17 +156,29 @@ prefix-derived `box_columns` bound remains pane width minus two; native physical
 capacity at that bound is unproved. It is separate from the observed word-break
 budget, pane width minus three, including the word's following space.
 
-Offline measurements at widths 80 and 120 establish greedy whole-word placement,
-including an ordinary long ASCII line and the last-three dot edge cases. A word
-and its following space stay on the current row while their sum fits W-3;
-otherwise the whole word starts a continuation row. The broken row retains its
-trailing space. Admission is not restricted to three individual edge pairs.
+Offline measurements at widths 80 and 120 support a bounded whole-word
+projection, including the last-three dot edge cases. A word and its following
+space stay on the current row while their sum fits W-3. On overflow the current
+row must be nonempty. An inner break is the prefix through the word's first
+non-alphanumeric character that is not its last character. With no inner break,
+the whole word moves to a continuation. With one, the whole word moves only if
+that prefix also overflows the row; otherwise projection holds. No internal
+break is ever projected. The broken row retains its trailing space. Admission
+is not restricted to three individual edge pairs. Ordinary synthetic long-line
+coverage is distinct from the measured line's structural reproduction.
+The latter uses seventeen identical 17-character words joined by single spaces,
+with inner breaks after characters 10 and 13. Its independently relayed content
+rows have lengths 108/108/89 at width 120 and 72/72/72/72/17 at width 80;
+each broken row retains one space. Safe replacement words preserve those
+lengths and break positions rather than copying the original text. At width
+80 its final word takes the same whole-word move rule.
 A terminal LF retains the final empty content row (its two-space prefix leaves
 the cursor at x=2). No default-styled right padding is assumed, and the composer
 has no background.
 
-A final word without following space needing W-3/W-2 placement is unknown, as
-are unmeasured widths, long words, tabs, other
+A final word without following space stays when its row total is at most W-4;
+totals W-3 and W-2 hold. Past W-2 it uses the same nonempty-row and inner-prefix
+move-or-hold rule. Other unknowns include unmeasured widths, long words, tabs, other
 Unicode, repeated/edge-space wrapping and arbitrary internal-word breaks. One
 hyphen break in the measured footer is not a general hyphen algorithm: that
 83-character footer at width 80 still holds, while its width-120 unwrapped form

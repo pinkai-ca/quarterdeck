@@ -56,8 +56,13 @@ current one ends; it is not active-run delivery. The adapter withholds working
 delivery until its exact queue receipt is implemented. Supported ASCII and
 middle-dot rows are matched against the whole payload. The prefix-derived width
 bound is distinct from the measured W-3 word-plus-space budget at pane widths
-80 and 120. Whole words and their following space are placed greedily within
-that budget; unknown final-word or hyphen breaks and other Unicode still hold.
+80 and 120. Words and their following space stay while they fit that budget.
+On overflow, moving a whole word requires a nonempty row. Its first
+non-alphanumeric character before its end defines an inner prefix: if that
+prefix fits, projection holds; otherwise the word moves whole. A word without
+an inner break moves whole. Final words stay at row totals up to W-4, hold at
+W-3/W-2, and past W-2 use the same move-or-hold rule. No internal break is
+projected; other unknown wrapping and Unicode still hold.
 A native counted fold
 must name the full original character count; its marker is not a receipt. Use the
 record's model text, compared exactly after removing only one final newline from

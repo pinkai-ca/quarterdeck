@@ -177,3 +177,79 @@ def test_greedy_wrap_retains_each_break_space_across_a_long_ascii_line(columns):
         rows = ["introduction " + "word " * 20, "word " * 23, "word " * 15 + "ok"]
     screen = read(composer(rows, columns=columns))
     assert VisibleBox(text).matches(screen.box, columns - 2)
+
+
+@pytest.mark.parametrize("columns", [80, 120])
+def test_kept_long_line_structural_reproduction_moves_the_inner_prefix_whole(columns):
+    # Safe structural reproduction, not the original measured text: seventeen
+    # identical 17-character words with inner breaks after characters 10/13.
+    word = "synthetic-q3-wrap"
+    text = " ".join([word] * 17)
+    assert len(word) == 17 and word.index("-") == 9 and word[12] == "-"
+    assert len(text) == 305 and not text.endswith("\n")
+    if columns == 80:
+        rows = [(word + " ") * 4] * 4 + [word]
+        assert list(map(len, rows)) == [72, 72, 72, 72, 17]
+    else:
+        rows = [(word + " ") * 6] * 2 + [" ".join([word] * 5)]
+        assert list(map(len, rows)) == [108, 108, 89]
+    screen = read(composer(rows, columns=columns))
+    assert VisibleBox(text).matches(screen.box, columns - 2)
+
+
+@pytest.mark.parametrize("columns", [80, 120])
+def test_overflow_moves_whole_when_its_first_inner_prefix_also_overflows(columns):
+    prefix = "word " * ((columns - 5) // 5)
+    text = prefix + "abcd-ef end"
+    assert len(prefix) == columns - 5
+    screen = read(composer([prefix, "abcd-ef end"], columns=columns))
+    assert VisibleBox(text).matches(screen.box, columns - 2)
+
+
+@pytest.mark.parametrize("columns", [80, 120])
+@pytest.mark.parametrize("word", ["q-", "q."])
+def test_word_final_punctuation_is_not_an_inner_break(columns, word):
+    prefix = "word " * ((columns - 10) // 5) + "final "
+    text = prefix + word + " end"
+    assert len(prefix) == columns - 4
+    screen = read(composer([prefix, word + " end"], columns=columns))
+    assert VisibleBox(text).matches(screen.box, columns - 2)
+
+
+@pytest.mark.parametrize("columns", [80, 120])
+@pytest.mark.parametrize("word", ["a-b-cdefgh", "ab_cdefgh", "ab/cdefgh", "ab·cdefgh"])
+def test_overflow_holds_when_the_first_inner_prefix_would_fit(columns, word):
+    prefix = "word " * ((columns - 10) // 5)
+    assert len(prefix) == columns - 10
+    assert wrapped_rows(prefix + word + " end", columns - 2) is None
+
+
+@pytest.mark.parametrize("columns", [80, 120])
+def test_final_word_stays_at_the_last_supported_row_length(columns):
+    text = "word " * ((columns - 5) // 5) + "q"
+    assert len(text) == columns - 4
+    screen = read(composer([text], columns=columns))
+    assert VisibleBox(text).matches(screen.box, columns - 2)
+
+
+@pytest.mark.parametrize("columns", [80, 120])
+@pytest.mark.parametrize("word", ["qq", "qqq"])
+def test_final_word_placement_at_the_two_unknown_edge_lengths_holds(columns, word):
+    prefix = "word " * ((columns - 5) // 5)
+    assert len(prefix) == columns - 5
+    assert wrapped_rows(prefix + word, columns - 2) is None
+
+
+@pytest.mark.parametrize("columns", [80, 120])
+@pytest.mark.parametrize("word", ["done", "abcd-ef", "end-"])
+def test_final_word_past_the_unknown_edge_moves_by_the_same_prefix_rule(columns, word):
+    prefix = "word " * ((columns - 5) // 5)
+    text = prefix + word + "\n"
+    screen = read(composer([prefix, word, ""], columns=columns))
+    assert VisibleBox(text).matches(screen.box, columns - 2)
+
+
+@pytest.mark.parametrize("columns", [80, 120])
+def test_final_word_past_the_unknown_edge_holds_when_its_inner_prefix_fits(columns):
+    prefix = "word " * ((columns - 5) // 5)
+    assert wrapped_rows(prefix + "a-bc", columns - 2) is None

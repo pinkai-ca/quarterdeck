@@ -199,8 +199,9 @@ def wrapped_rows(text: str, columns: int | None) -> list[str] | None:
     """ASCII/middle-dot words with the observed word-plus-space budget.
 
     columns is the prefix-derived W-2 bound, not measured physical capacity.
-    At panes 80/120 only, the observed wrap budget is one less: W-3. Final
-    words near that edge and arbitrary internal-word breaks remain unknown.
+    At panes 80/120 only, the observed wrap budget is one less: W-3. A move
+    requires a nonempty row and no inner break that would fit on that row.
+    Final words at W-3/W-2 and all internal-word projections remain unknown.
     """
     if any(not (" " <= char <= "~" or char in "\n·") for char in text):
         return None
@@ -221,20 +222,24 @@ def wrapped_rows(text: str, columns: int | None) -> list[str] | None:
             return None  # repeated/edge-space wrapping was not established
         words, row = line.split(" "), ""
         for index, word in enumerate(words):
-            if index == len(words) - 1:
-                # No boundary case for a final word without a following space
-                # was measured. Never invent either placement or a move.
-                if len(row) + len(word) >= budget:
+            final = index == len(words) - 1
+            piece = word if final else word + " "
+            end = len(row) + len(piece)
+            if final and end in (budget, budget + 1):
+                return None  # final placement at W-3/W-2 is unmeasured
+            move_limit = budget + 1 if final else budget
+            if end > move_limit:
+                if not row:
                     return None
-                row += word
+                # A final punctuation character is not an inner break. Never
+                # project a split when an earlier non-alphanumeric prefix fits.
+                prefix = next((word[:at + 1] for at, char in enumerate(word[:-1])
+                               if not char.isalnum()), None)
+                if prefix is not None and len(row) + len(prefix) <= budget:
+                    return None
+                result.append(row)
+                row = piece
             else:
-                piece = word + " "
-                if len(row) + len(piece) > budget:
-                    if not row or "-" in word:
-                        return None  # one hyphen break is not a general rule
-                    result.append(row)
-                    row = piece
-                else:
-                    row += piece
+                row += piece
         result.append(row)
     return result
