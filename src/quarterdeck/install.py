@@ -169,13 +169,15 @@ def upgrade(ship: Ship, ref: str = "HEAD", tmux: Tmux | None = None) -> list[str
     repo = source_repo(ship)
     commit = git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}").decode().strip()
     runtime = ship.runtime
+    venv = runtime / "venv"
+    share = venv / "share" / "quarterdeck"
+    resources.share_path(share)
     staging = runtime / "upgrade" / commit
     shutil.rmtree(staging, ignore_errors=True)
     staging.mkdir(parents=True)
     with tarfile.open(fileobj=io.BytesIO(git(repo, "archive", "--format=tar", commit))) as archive:
         archive.extractall(staging, filter="data")
     resource_files = resources.plan(staging)
-    venv = runtime / "venv"
     existed = os.path.lexists(venv)
     previous = previous_install(runtime)
     direction = install_direction(repo, commit, previous)
@@ -184,31 +186,31 @@ def upgrade(ship: Ship, ref: str = "HEAD", tmux: Tmux | None = None) -> list[str
     snapshot = brief_snapshot(ship)  # last old-service offer, before live code/cards are replaced
     if not (venv / "bin" / "python").exists():
         _run([sys.executable, "-m", "venv", "--system-site-packages", str(venv)], "making the ship's own venv")
-    _run([str(venv / "bin" / "python"), "-m", "pip", "install", "--quiet", "--no-deps", "--no-build-isolation", str(staging)],
-         f"installing {commit[:7]}")
-    share = venv / "share" / "quarterdeck"
-    if resource_files is not None:
-        resources.synchronize(staging, share, resource_files)
-        have_laws = True
-    else:
-        have_laws = resources.fallback(staging, share)
-    shutil.rmtree(runtime / "upgrade", ignore_errors=True)
     record = {"commit": commit, "ref": ref, "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
               "previous": previous["commit"] if previous else None}
-    proof_command = "laws" if have_laws else "--help"
-    try:  # the installed copy answers for this ship before anything runs on it
+    proof_command = "resources"
+    _run([str(venv / "bin" / "python"), "-m", "pip", "install", "--quiet", "--no-deps", "--no-build-isolation", str(staging)],
+         f"installing {commit[:7]}")
+    try:  # every post-pip phase reports the actual installed target before anything runs on it
+        if resource_files is not None:
+            resources.synchronize(staging, share, resource_files)
+            have_laws = True
+        else:
+            have_laws = resources.fallback(staging, share)
+        shutil.rmtree(runtime / "upgrade", ignore_errors=True)
+        proof_command = "laws" if have_laws else "--help"
         version = subprocess.run([str(venv / "bin" / "qd"), "--version"], capture_output=True, text=True).stdout.strip()
         _run([str(venv / "bin" / "qd"), "--ship", str(ship.folder), proof_command],
              "proving the installed copy answers", timeout=60)
-    except (ShipError, OSError) as error:
-        if existed:
+        (runtime / RECORD).write_text(json.dumps(record, indent=2) + "\n")
+    except Exception as error:
+        if existed or proof_command == "resources":
             record.update(proof='failed', proof_command=proof_command)
             (runtime / RECORD).write_text(json.dumps(record, indent=2) + "\n")
             raise ShipError(f"installed {commit[:7]} code retained ({direction}); {proof_command} proof failed; "
                             f"service not restarted: {error}") from None
         shutil.rmtree(venv, ignore_errors=True)  # only a genuinely first install can discard its half-made environment
         raise
-    (runtime / RECORD).write_text(json.dumps(record, indent=2) + "\n")
     rebrief, request = queue_rebrief(ship, commit, previous, snapshot)
     before = (f"was {previous['commit'][:7]}" if previous else
               "previous installed commit unknown" if existed else "the ship ran the checkout before")
