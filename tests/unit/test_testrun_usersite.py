@@ -30,6 +30,8 @@ def test_anything_but_an_absolute_plain_path_is_refused(tmp_path, bad):
 
 
 def test_the_user_site_is_resolved_from_the_callers_environment(tmp_path, monkeypatch):
+    monkeypatch.delenv('TESTRUNS_RUN', raising=False)  # outside a run: the caller's own base, not a carried one
+    monkeypatch.delenv('TESTRUNS_USERBASE', raising=False)
     monkeypatch.setenv('PYTHONUSERBASE', str(tmp_path / 'base'))
     found = usersite.resolve(sys.executable)
     assert found['base'] == str(tmp_path / 'base') and found['site'].startswith(str(tmp_path / 'base'))
