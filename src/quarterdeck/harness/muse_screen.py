@@ -17,12 +17,37 @@ WORKING = re.compile(r"(?:Thinking|Double checking) \([0-9]+s · esc to interrup
 TRUST = Interruption("Muse workspace trust", r"Do you trust this workspace\?")
 
 
+def label(text: str) -> str:
+    """Recognize static words across line breaks without assuming menu layout."""
+    return r"[ \n]+".join(re.escape(word) for word in text.split(" "))
+
+
+OFFER_TITLE = label("You're using your quota fast")
+OFFER_OPTIONS = "|".join(label(text) for text in
+                         ("Keep going", "Switch to Spark", "Turn on contributor mode"))
+QUOTA_OFFER = Interruption("Muse quota offer: model switch or contributor mode",
+                           rf"(?s)(?=.*{OFFER_TITLE})(?=.*(?:{OFFER_OPTIONS}))")
+QUOTA_INCOMPLETE = Interruption("Muse quota offer: options unreadable", OFFER_TITLE)
+CONTRIBUTOR_ENABLED = Interruption("Muse contributor mode enabled", "|".join(label(text) + r"(?![A-Za-z])" for text in (
+    "Contributor mode on",
+    "Contributor mode is on, so your content may be used for product improvement. Turn it off in /settings.",
+    "Contributor mode is on for this session only: settings could not be saved.",
+)))
+MODEL_SWITCHED = Interruption("Muse model switch reported: Spark", label("Switched to Spark (saved as default)"))
+MODEL_CHOICES = (QUOTA_OFFER, QUOTA_INCOMPLETE, CONTRIBUTOR_ENABLED, MODEL_SWITCHED)
+
+
 def read(text: str) -> Screen:
     plain = SGR.sub("", text)
     if any(ord(char) < 32 and char != "\n" for char in plain):
         return Screen(plain, None, unknown="unmeasured Muse terminal control")
     if not plain.strip():
         return Screen(plain, None, starting=True)
+    for interruption in MODEL_CHOICES:
+        if interruption.seen_in(plain):
+            # An offered option proves neither selection nor a catalog id.
+            # No dismissal key is declared, even when the screen says esc.
+            return Screen(plain, None, interruption=interruption)
     if TRUST.seen_in(plain):
         return Screen(plain, None, interruption=TRUST)
     rows = plain.split("\n")

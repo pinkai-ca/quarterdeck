@@ -162,15 +162,20 @@ class MuseHarness(Harness):
                 Control("effort", "--reasoning-effort {value}", None, "record"))
 
     def interruptions(self):
-        return (muse_screen.TRUST,)
+        return (*muse_screen.MODEL_CHOICES, muse_screen.TRUST)
 
     def delivery_obstruction(self, state, screen):
+        if screen is not None and screen.interruption in muse_screen.MODEL_CHOICES:
+            return f"{screen.interruption.name}; all input held; needs a human"
         if ((state is not None and muse_home.contributor(state.model))
                 or (screen is not None and muse_home.contributor(screen.shows.get("model")))):
             return "Muse selected a contributor model; delivery held; needs a human"
         return None
 
     def interrupt_obstruction(self, state, screen):
+        if (screen is None or screen.unknown is not None or screen.starting
+                or screen.interruption is not None or screen.box is None):
+            return "Muse screen is not a clear working composer; no Escape sent"
         active = state.turn_open if state is not None else None
         if active is None and screen is not None and screen.unknown is None and screen.box is not None:
             active = screen.working

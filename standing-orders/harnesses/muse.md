@@ -22,6 +22,13 @@ has no permanent seat to copy. Contributor models are forbidden. A forbidden
 current model is a delivery fault; a launch argument alone does not prove the
 program's current model. Current model and effort schemas still need proof.
 
+The quota offer titled `You're using your quota fast`, offering `Keep going`,
+`Switch to Spark` or `Turn on contributor mode`, holds every input and reaches a
+person. Never answer or dismiss it, even when it says `esc close`. An offered
+choice is not a selected model or enabled contributor state. A displayed switch
+result or contributor-on notice also holds for a person; Spark is not a proved
+catalog id. Never change model or contributor mode through this dialog.
+
 Muse runs its versioned binary directly, with auto-update off, its approval
 judge off and its own sandbox disabled. Outside human sessions it requests
 suppression of the native question tool; effective tool permissions still need

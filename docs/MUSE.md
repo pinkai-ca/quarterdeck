@@ -114,6 +114,18 @@ child accounting remain missing; no launch setting supplies a current fact.
 
 The narrow screen reader recognizes the measured header, one-row composer
 between rules, footer and working indicator. An empty composer has no placeholder.
+Static strings from the pinned binary identify the separate quota-offer dialog:
+`You're using your quota fast` with `Keep going`, `Switch to Spark` or
+`Turn on contributor mode`. It is named, holds all input actions and reaches a
+person. A title with unreadable options remains a named hold. No key is declared,
+including for the `not active yet - esc close` hint. Offers never establish a
+selected model or enabled contributor state. Separate result labels
+`Switched to Spark (saved as default)` and `Contributor mode on`, and the
+established contributor-on notices, also hold for a person. Spark remains a
+display name, not a catalog-id mapping. These labels were read as static strings,
+not captured in offline TUI runs; positions, option order/preselection and keys
+remain unmeasured. No dialog ever changes a model or contributor setting through
+the Door. Independent action/alert/protection proof is still required.
 It does not discard faint text or infer folded/multiline payloads. Exact box
 comparison currently supports only a wholly visible single line. Folding,
 wrapping, safe clear keys and any required post-paste settle delay remain unknown.
