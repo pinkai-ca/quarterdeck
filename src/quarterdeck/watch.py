@@ -616,6 +616,7 @@ class Facts:
     pool_forecasts: list[str] = field(default_factory=list)
     pool_forecast_headlines: list[str] = field(default_factory=list)
     oldest_waiting_seat: str | None = None
+    usage_errors: list[str] = field(default_factory=list)
 
     def line(self) -> str:  # law: nothing-waits-silently
         from .headlines import status_line
@@ -1238,6 +1239,7 @@ def collect(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[
         ledger_recovery=ledger_recovery.alarms(ship.runtime),
         check_failed=check_outcome.alarms(outcomes),
         check_unknown=check_outcome.unknown_alarms(outcomes) + outcome_errors,
+        usage_errors=quota.pacing_alerts(ship, now),
         walls=walls if walls is not None else ledger_walls(ship),
         usage=headline_readings(ship),
         disks=disks([ship.runtime, ship.workspace, Path(tempfile.gettempdir())]),

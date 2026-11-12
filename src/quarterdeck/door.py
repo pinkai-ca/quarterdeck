@@ -684,7 +684,7 @@ class Door:
         if (speed == "interrupt" and not self.seat.session.human
                 and ((screen is not None and screen.working)
                      or self.adapter_hook("interrupt_obstruction") is not None)):
-            interrupted, detail = self._interrupt()
+            interrupted, detail = self._interrupt(for_delivery=True)
             if not interrupted:
                 return Delivery("withheld", detail)
             screen = self.settled()
@@ -932,7 +932,7 @@ class Door:
     def interrupt(self) -> str:
         return self._interrupt()[1]
 
-    def _interrupt(self) -> tuple[bool, str]:
+    def _interrupt(self, *, for_delivery: bool = False) -> tuple[bool, str]:
         """Re-read activity immediately; a delivery's earlier frame is not permission."""
         if self.seat.session.human:
             return False, f"{self.seat.name}: a human owns this session; no interrupt key sent"
@@ -945,6 +945,16 @@ class Door:
             screen, state = self.screen(), self.adapter_state()
             if delivery_hook is not None and (reason := delivery_hook(state, screen)):
                 return False, reason
+            activity = state.turn_open if state is not None else None
+            if (activity is None and screen is not None and screen.unknown is None
+                    and not screen.starting and screen.interruption is None and screen.box is not None):
+                activity = screen.working
+            if activity is False:
+                if self.seat.launched() != launched:
+                    return False, "launch changed before idle delivery; no key sent"
+                return for_delivery, f"{self.seat.name} is idle; no interrupt key sent"
+            if activity is not True:
+                return False, "current activity unknown; no interrupt key sent"
             if interrupt_hook is not None and (reason := interrupt_hook(state, screen)):
                 return False, reason
         pane = self.seat.pane()

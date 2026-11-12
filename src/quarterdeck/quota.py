@@ -348,21 +348,41 @@ class Quotas:
             if commit:
                 self.db.commit()
 
-    def usage_hold(self, pool: str) -> datetime | None:
+    def strict_attempt(self, pool: str, now: datetime | None = None) -> datetime | None:
+        """A strict floor needs sane local attempt evidence, never an indefinite future wait."""
+        at = self.last_attempt(pool)
+        now = now or datetime.now(timezone.utc)
+        if at is not None and (at.utcoffset() is None or at > now + timedelta(seconds=BACKOFF_MAX)):
+            raise ValueError("invalid stored usage attempt; usage held for a human")
+        return at
+
+    def usage_hold(self, pool: str, now: datetime | None = None) -> datetime | None:
         """An exact stored deadline, absent on older books; invalid evidence is an error."""
         if self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='usage_holds'").fetchone() is None:
             return None  # old read-only book; do not migrate or invent a deadline
         row = self.db.execute("SELECT retry_at,set_at,reason FROM usage_holds WHERE pool=?", (pool,)).fetchone()
         if row is None:
             return None
+        now = now or datetime.now(timezone.utc)
         try:
             deadline, at = datetime.fromisoformat(row[0]), datetime.fromisoformat(row[1])
             if (row[2] != "native refusal" or deadline.utcoffset() is None or at.utcoffset() is None
-                    or not 0 <= (deadline - at).total_seconds() <= BACKOFF_MAX):
+                    or not 0 <= (deadline - at).total_seconds() <= BACKOFF_MAX
+                    or max(deadline, at) > now + timedelta(seconds=BACKOFF_MAX)):
                 raise ValueError
         except (ValueError, TypeError, OverflowError):
             raise ValueError("invalid stored usage hold; usage held for a human") from None
         return deadline
+
+    def pacing_error(self, pool: str, *, strict: bool = False, now: datetime | None = None) -> str | None:
+        """Safe operational detail only; never includes stored values or provider content."""
+        try:
+            self.usage_hold(pool, now)
+            if strict:
+                self.strict_attempt(pool, now)
+        except (ValueError, TypeError, OverflowError, sqlite3.DatabaseError):
+            return "stored usage timing invalid; native reads held; needs a human"
+        return None
 
     def usage_notes(self) -> list[str]:
         notes = [f"{pool} latest usage read: {error}" for pool, error in
@@ -415,6 +435,27 @@ def held(service, pool: str) -> bool:
             service.log("usage", pool=pool, error=error, no_call=True)
         return True  # corrupt evidence never grants permission for another call
     return memory or (deadline is not None and datetime.now(timezone.utc) < deadline)
+
+
+def pacing_alerts(ship, now: datetime | None = None) -> list[str]:
+    """Read-only status-line and detailed-status alerts, including pools with no seat."""
+    from .harness import native_for
+    from .ledger import Ledger
+    try:
+        book = Ledger.reading(ship.runtime / "ledger.sqlite")
+        if book is None:
+            return []
+        with book:
+            alerts = []
+            for pool in ship.pools.values():
+                if pool.kind == "subscription":
+                    reader = native_for(pool.provider)
+                    error = book.quota.pacing_error(pool.name, strict=getattr(reader, "strict_usage_interval", False), now=now)
+                    if error:
+                        alerts.append(f"{pool.name}: {error}")
+            return alerts
+    except (OSError, sqlite3.DatabaseError):
+        return ["usage pacing evidence unreadable; needs a human"]
 
 
 def record_read(service, pool: str, usage: Usage, interval: int, attempted_at: datetime, *,
@@ -476,9 +517,30 @@ def last_read(service, pool: str) -> float:
     return service.usage_read[pool]
 
 
+def strict_ready(service, pool, reader) -> bool:
+    """One absolute floor for every opted-in live/background native read."""
+    if not getattr(reader, "strict_usage_interval", False):
+        return True
+    if held(service, pool.name):
+        return False
+    try:
+        at = service.ledger.quota.strict_attempt(pool.name)
+        elapsed = math.inf if at is None else max(0.0, (datetime.now(timezone.utc) - at).total_seconds())
+        return (elapsed >= reader.usage_interval
+                and time.monotonic() - last_read(service, pool.name) >= reader.usage_interval)
+    except (ValueError, TypeError, OverflowError, sqlite3.DatabaseError):
+        error = "stored usage attempt invalid; native reads held for a human"
+        if service.usage_logged.get(pool.name) != error:
+            service.usage_logged[pool.name] = error
+            service.log("usage", pool=pool.name, error=error, no_call=True)
+        return False
+
+
 def read_usage(service, pool, reader) -> Usage | None:
     """One context for background, live and destination reads; only native clients create it."""
     service.ledger.prepare_usage()  # settle prior intended pacing before another provider attempt
+    if not strict_ready(service, pool, reader):
+        return None  # not a new attempt: callers must not record or slide its floor
     if not getattr(reader, "private_usage_home", False):
         return reader.usage(pool)
     from . import credential
@@ -516,17 +578,8 @@ def refresh_declared(service) -> None:
         if not reader.background_usage and getattr(reader, 'idle_usage', False):
             refresh_idle(service, pool, reader)
             continue
-        if getattr(reader, "strict_usage_interval", False):
-            try:
-                at = service.ledger.quota.last_attempt(pool.name)
-                if at is not None and max(0.0, (datetime.now(timezone.utc) - at).total_seconds()) < reader.usage_interval:
-                    continue
-            except (ValueError, TypeError, sqlite3.DatabaseError):
-                error = "stored usage attempt unreadable; strict native usage floor unknown; held for a human"
-                if service.usage_logged.get(pool.name) != error:
-                    service.usage_logged[pool.name] = error
-                    service.log("usage", pool=pool.name, error=error, no_call=True)
-                continue
+        if not strict_ready(service, pool, reader):
+            continue
         if (not reader.background_usage or held(service, pool.name)
                 or not service.ledger.quota.due(pool.name, datetime.now(timezone.utc), reader.usage_interval)):
             continue
@@ -544,6 +597,8 @@ def refresh_declared(service) -> None:
                             or Usage((), datetime.now(timezone.utc), "provider usage unavailable"), called=False)
         else:
             usage = shared[key] if key is not None and key in shared else read_usage(service, pool, reader)
+        if usage is None and getattr(reader, "strict_usage_interval", False):
+            continue
         usage = usage or Usage((), datetime.now(timezone.utc), "provider usage unavailable")
         if key is not None:
             shared[key] = usage
@@ -581,10 +636,13 @@ def refresh(service, seat, live: bool, launched) -> None:
     from .seat import declared_launch_pool
     name = declared_launch_pool(seat, launched, seat.pool.name)
     pool = service.ship.pools[name] if name in service.ship.pools else seat.pool
-    if (pool.kind == "subscription" and not held(service, pool.name)
+    if (pool.kind == "subscription" and strict_ready(service, pool, reader) and not held(service, pool.name)
             and time.monotonic() - last_read(service, pool.name) >= reader.usage_interval):
-        service.usage_read[pool.name] = time.monotonic()
+        if not getattr(reader, "strict_usage_interval", False):
+            service.usage_read[pool.name] = time.monotonic()
         usage = read_usage(service, pool, reader)
+        if usage is None and getattr(reader, "strict_usage_interval", False):
+            return
         if usage is not None or reader.reads_usage:
             record_read(service, pool.name, usage or Usage((), datetime.now(timezone.utc), "provider usage unavailable"),
                         reader.usage_interval, datetime.now(timezone.utc))

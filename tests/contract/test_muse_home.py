@@ -5,6 +5,7 @@ from copy import deepcopy
 import pytest
 
 from quarterdeck.harness.muse_home import configuration, environment
+from quarterdeck.harness.muse_program import binary
 from quarterdeck.ship import ShipError
 
 
@@ -38,11 +39,22 @@ def test_contributor_choice_is_a_configuration_error_in_each_declared_layer(mode
         configuration(model, None, template, overrides)
 
 
-def test_environment_is_a_pure_plan_with_one_canonical_auth_path(tmp_path):
+def test_environment_is_a_pure_plan_without_an_unproved_auth_override(tmp_path):
     home = tmp_path / "synthetic-home"
     values = environment(home)
-    assert values["MUSE_AUTH_PATH"] == str(home / "auth.json")
+    assert set(values) == {"HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
+                           "XDG_STATE_HOME", "MUSE_NO_AUTO_UPDATE"}
     assert values["XDG_CONFIG_HOME"] == str(home / "config")
     assert values["XDG_DATA_HOME"] == str(home / "data")
-    assert values["MUSE_NO_AUTO_UPDATE"] == "1" and values["MUSE_LOGIN"] == "0"
+    assert values["MUSE_NO_AUTO_UPDATE"] == "1"
     assert not home.exists()
+
+
+def test_install_marker_selects_versioned_executable_as_file_data(tmp_path):
+    launcher = tmp_path / "muse"
+    native = tmp_path / "muse-bin-0.0.1-R1.1"
+    for item in (launcher, native):
+        item.write_text("synthetic executable placeholder")
+        item.chmod(0o755)
+    (tmp_path / ".muse-version").write_text("0.0.1-R1.1\n")
+    assert binary(str(launcher)) == native

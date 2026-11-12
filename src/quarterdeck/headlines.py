@@ -100,6 +100,7 @@ def sections(facts, *, detailed=False) -> Headline:
         humans,
         _named(seat_holds, 'seats held', singular='seat held'),
         _named(facts.sign_in_failures, 'sign-in failures', singular='sign-in failure'),
+        _named(facts.usage_errors, 'usage evidence needs human'),
         _named(facts.login, 'login needed', lambda row: f'{row[0]} login needed by {row[1]}'),
         _named(facts.disks, 'disk alerts', lambda row: f'disk: {row[0]} {row[1]}%', singular='disk alert'),
         _named(facts.held, 'held at limit', lambda name: f'{name} held at limit', singular='limit hold'),

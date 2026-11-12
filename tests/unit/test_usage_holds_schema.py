@@ -17,8 +17,8 @@ def test_side_table_retains_exact_deadline_across_reopen(tmp_path):
                           retry_at=deadline, retry_reason="native refusal")
     with sqlite3.connect(path) as db:
         reader = Quotas(db, create=False)
-        assert reader.usage_hold("synthetic-pool") == deadline
-        assert reader.usage_hold("synthetic-pool") == deadline
+        assert reader.usage_hold("synthetic-pool", NOW) == deadline
+        assert reader.usage_hold("synthetic-pool", NOW) == deadline
         assert reader.last_attempt("synthetic-pool") == NOW
         assert db.execute("SELECT set_at FROM usage_holds").fetchone() == (NOW.isoformat(),)
 
@@ -31,7 +31,7 @@ def test_previous_positional_writer_still_works_and_invalidates_old_hold():
                           retry_at=NOW + timedelta(hours=1), retry_reason="native refusal")
         db.execute("INSERT OR REPLACE INTO usage_reads VALUES (?,?,?)",
                    ("synthetic-pool", (NOW + timedelta(hours=2)).isoformat(), None))
-        assert writer.usage_hold("synthetic-pool") is None
+        assert writer.usage_hold("synthetic-pool", NOW + timedelta(hours=2)) is None
         assert writer.last_attempt("synthetic-pool") == NOW + timedelta(hours=2)
 
 
@@ -42,6 +42,6 @@ def test_old_read_only_shape_has_no_fabricated_hold_or_migration(tmp_path):
         db.execute("INSERT INTO usage_reads VALUES (?,?,?)", ("synthetic-pool", NOW.isoformat(), "old refusal"))
     with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as db:
         reader = Quotas(db, create=False)
-        assert reader.usage_hold("synthetic-pool") is None
+        assert reader.usage_hold("synthetic-pool", NOW) is None
         assert reader.last_attempt("synthetic-pool") == NOW
         assert db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall() == [("usage_reads",)]

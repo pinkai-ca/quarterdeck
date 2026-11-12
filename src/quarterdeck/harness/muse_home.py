@@ -45,12 +45,10 @@ def configuration(model: str | None, effort: str | None, template: dict, overrid
 def environment(home: Path) -> dict[str, str]:
     """Proposed paths only; caller must build/validate the private directories.
 
-    The canonical auth link stays directly in home for the existing shared
-    credential Participant/reseed machinery. Native MUSE_AUTH_PATH behavior
-    must be measured before this draft is used for a launch.
+    Credential location and native auth/login environment switches are omitted
+    until native validation establishes them; help/version do not load auth.
     """
     return {"HOME": str(home / "user-home"),
             "XDG_CONFIG_HOME": str(home / "config"), "XDG_DATA_HOME": str(home / "data"),
             "XDG_CACHE_HOME": str(home / "cache"), "XDG_STATE_HOME": str(home / "state"),
-            "MUSE_AUTH_PATH": str(home / "auth.json"),
-            "MUSE_NO_AUTO_UPDATE": "1", "MUSE_LOGIN": "0"}
+            "MUSE_NO_AUTO_UPDATE": "1"}

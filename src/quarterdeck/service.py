@@ -2809,7 +2809,7 @@ class Service:
         if pool.kind in ("key", "endpoint"):  # no usage windows to read: a key is measured by spend, an endpoint has no quota
             return quota.cached_open(self.ship, self.ledger, pool_name, seat)
         reader = harnesses.native_for(pool.provider)
-        if reader.background_usage or not reader.reads_usage:
+        if reader.background_usage or not reader.reads_usage or getattr(reader, "strict_usage_interval", False):
             return quota.cached_open(self.ship, self.ledger, pool_name, seat)
         if not self.ledger.usage_known(pool_name, scope=quota.model_scope(seat, pool_name)):
             if quota.held(self, pool_name) or not self.ledger.quota.due(pool_name, post.now(), interval=reader.usage_interval):
