@@ -94,7 +94,7 @@ def test_default_adapters_resolve_no_hook_and_do_no_extra_reads(editor, monkeypa
 
 def test_every_registered_adapter_keeps_the_no_op_defaults():
     from quarterdeck import harness as harnesses
-    for name in harnesses.NAMES:
+    for name in (name for name in harnesses.NAMES if name != "muse"):  # Muse: test_muse_m1_gates.py
         cls = type(harnesses.get(name))
         assert cls.delivery_obstruction is Harness.delivery_obstruction, name
         assert cls.interrupt_obstruction is Harness.interrupt_obstruction, name
