@@ -100,6 +100,42 @@ def test_native_nonrepository_grant_uses_the_workspace(tmp_path, monkeypatch):
     assert path.read_bytes() == before
 
 
+def test_boundary_nonrepository_grant_and_notice_roundtrip_on_restart(tmp_path, monkeypatch):
+    adapter, spec, pool, home, brief = prepared(tmp_path)
+    adapter.build_home(home, spec, pool, None)
+    path = write_native_grant(home, spec.cwd)
+    before = path.read_bytes()
+    hooks = spec.cwd / ".grok" / "hooks"
+    hooks.mkdir(parents=True)
+    (hooks / "boundary.json").write_text(json.dumps({"hooks": {"SessionStart": []}}))
+    (spec.cwd / ".grok" / "config.toml").write_text(
+        '[mcp_servers.synthetic_boundary]\ncommand = "synthetic-transport"\n')
+    monkeypatch.setattr(grok_workspace.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(
+        returncode=128, stdout="", stderr=(
+            "fatal: not a git repository (or any parent up to mount point /synthetic-mount)\n"
+            "Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).\n")))
+    marker_queries = []
+    original_lstat = Path.lstat
+    def metadata(candidate, *args, **kwargs):
+        if candidate.name == ".git":
+            marker_queries.append(candidate)
+            raise FileNotFoundError("synthetic absent repository marker")
+        return original_lstat(candidate, *args, **kwargs)
+    monkeypatch.setattr(Path, "lstat", metadata)
+    monkeypatch.setattr(grok_notice, "trust_root", grok_workspace.trust_root)
+    adapter.preflight(home, spec.cwd)
+    adapter.build_home(home, spec, pool, None)
+    for resume in (None, "synthetic-resume"):
+        launch = adapter.launch(spec, pool, home, brief, resume, None)
+        assert launch.argv[launch.argv.index("--cwd") + 1] == str(spec.cwd)
+        assert "--trust" in launch.argv
+        assert "boundary.json" in launch.notice and "synthetic_boundary" in launch.notice
+        assert "unknown" not in launch.notice
+        assert launch.notice == adapter.workspace_notice(home, spec.cwd)
+    assert set(marker_queries) == {folder / ".git" for folder in (spec.cwd, *spec.cwd.parents)}
+    assert path.read_bytes() == before
+
+
 def test_card_explains_native_trust_imports_and_configured_compatibility(tmp_path):
     adapter, spec, pool, home, brief = prepared(tmp_path)
     adapter.build_home(home, spec, pool, None)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import stat
 import subprocess
 import tomllib
@@ -47,9 +48,16 @@ def trust_root(cwd: Path, environment: dict[str, str]) -> Path:
             env={**os.environ, **environment, "LC_ALL": "C"},
             capture_output=True, text=True, timeout=5,
         )
-        if (done.returncode == 128 and done.stderr.strip()
-                == "fatal: not a git repository (or any of the parent directories): .git"):
-            # A rejected existing repository marker is not proof of no repository.
+        error = done.stderr.strip()
+        not_repository = error == "fatal: not a git repository (or any of the parent directories): .git"
+        boundary = re.fullmatch(
+            r"fatal: not a git repository \(or any parent up to mount point [^\r\n]+\)\n"
+            r"Stopping at filesystem boundary \(GIT_DISCOVERY_ACROSS_FILESYSTEM not set\)\.", error,
+        )
+        if done.returncode == 128 and not done.stdout.strip() and (not_repository or boundary is not None):
+            # Both answers need a positive no-marker walk all the way to /,
+            # including ancestors above a discovery boundary. Existing or
+            # unreadable metadata cannot establish a non-repository workspace.
             if has_repository_marker(cwd):
                 raise ValueError("existing repository marker")
             return cwd
