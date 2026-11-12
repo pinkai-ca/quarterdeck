@@ -385,6 +385,8 @@ class Attempts:
             if current.result in ("abandoned", "not-in-closed-record", *UNSETTLED):
                 return current  # terminal even if an old door/watch finishes after cleanup or a receipt
             done = replace(attempt, result=result, detail=detail)
+            if done == current:
+                return current  # current disk data only; no durability/repair assertion
             self._write(done)
             return done
 

@@ -10,6 +10,7 @@ from datetime import datetime
 from contextlib import contextmanager
 import fcntl
 import json
+import locale
 import re
 from pathlib import Path
 from typing import Any, Iterator, Sequence, TYPE_CHECKING
@@ -56,9 +57,22 @@ class Proof:
         self.path, self.data = path, data
 
     def save(self, **fields: Any) -> None:
-        self.data.update(fields)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        durable.replace_file(self.path, json.dumps(self.data, indent=2) + "\n")
+        merged = {**self.data, **fields}
+        text = json.dumps(merged, indent=2) + "\n"
+        encoding = locale.getpreferredencoding(False)
+        try:
+            try:
+                # Equality means only nothing to write, never durability or repair of an earlier failure.
+                unchanged = self.path.read_bytes() == text.encode(encoding)
+            except FileNotFoundError:
+                unchanged = False
+            if not unchanged:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                durable.replace_file(self.path, text, encoding=encoding)
+        except OSError as error:
+            error.add_note(f'pending journal: {self.path}')
+            raise  # preserve the original error; the service pass records it once
+        self.data = merged
 
     @classmethod
     def begin(cls, seat: Seat, attempt: post.Attempt, text: str) -> Proof:

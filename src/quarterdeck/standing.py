@@ -10,6 +10,7 @@ own folder. ``qd brief <seat>`` prints exactly what a seat reads at boot, and
 from __future__ import annotations
 
 import re
+import locale
 import tokenize
 import sys
 from dataclasses import dataclass
@@ -178,7 +179,14 @@ def laws_table(root: Path | None = None) -> list[str]:
 
 def render(ship: Ship, seat: SeatSpec, *, text: str | None = None) -> Path:
     folder = ship.runtime / "brief"
-    folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{seat.name}.md"
-    path.write_text(brief(ship, seat).text if text is None else text)
+    text = brief(ship, seat).text if text is None else text
+    encoding = locale.getpreferredencoding(False)
+    try:
+        if path.read_bytes() == text.encode(encoding):
+            return path
+    except FileNotFoundError:
+        pass
+    folder.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding=encoding)
     return path

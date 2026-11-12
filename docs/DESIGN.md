@@ -442,6 +442,29 @@ runtime/
 
 ## 7. Post
 
+Saving a delivery proof compares its newly merged, serialized JSON against the
+current file bytes using the same locale encoding, indentation and trailing
+newline as its writer. Equal bytes leave the file alone; a missing file is a
+first write. Equality means only nothing to write, never durability or that an
+earlier failed write was repaired or resolved. Different bytes still use
+`durable.replace_file` with its original
+file and directory synchronization. Other read errors and write errors propagate;
+the save publishes its merged in-memory data only after equality or successful
+replacement, never as an in-memory substitute for reading disk. Repeating a
+delivered finish therefore does not replace an unchanged journal, while normal
+receipt and attempt reconciliation still runs. This adds no reader cache or
+change to the durable writer's crash-safety contract.
+Errors retain their journal path in the exception trace. No repair flag or
+hidden same-process state changes a following pass's disk comparison. Attempt
+closure likewise skips a result/detail already present in its locked on-disk
+receipt, preserving first writes, terminal rules and real receipt changes.
+
+Brief rendering also compares the actual encoded file before rewriting it,
+including when a rebrief retries after another seat remains unresolved. First
+renders and changed text keep their existing write behavior. Heartbeat time and
+status collection timestamps continue advancing: freshness is real changed data,
+even when the displayed status text is the same.
+
 A post proof confirms storage and says only what its caller can observe. A seat's own saved launch establishes whether the managed jail hides other seats; the current declaration alone does not describe an already running launch. A missing, malformed or unreadable caller launch leaves that view unproved. In either case the proof reads no recipient launch, host service PID or watch PID: it names service delivery, or the declared human inbox route, and says that recipient/watch state is not visible. Hidden metadata is never a down or unarmed fact. This uses the existing own-seat mount and exposes no additional path, marker or environment variable. Unrestricted callers retain the normal up/down, service and watch proofs; failed recipient selection or unreachable transport is reported as unknown. Stored messages and delivery/receipt behavior do not change.
 
 A message is one immutable JSON file:
