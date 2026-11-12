@@ -190,6 +190,7 @@ class GrokHarness(Harness):
     keys = Keys(submit="Enter", interrupt="C-c")
     reads_usage = True
     private_usage_home = True
+    private_version_home = True
     styled_screen = True
     record_time_resolution = 1.0
     usage_interval = 300

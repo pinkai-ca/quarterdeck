@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from types import SimpleNamespace
+from functools import wraps
 
 import pytest
 
@@ -115,6 +116,23 @@ def test_legacy_no_argument_double_is_called_once_without_a_directory(tmp_path):
     assert calls == ["no arguments"] and not missing.exists()
 
 
+def test_accepting_home_without_opt_in_still_gets_one_no_argument_call(tmp_path):
+    parent = runtime(tmp_path)
+    calls = []
+    def version(home=None):
+        assert home is None
+        assert [path.name for path in parent.iterdir()] == [".git"]
+        return "synthetic-default"
+    @wraps(version)
+    def callback(*args, **kwargs):
+        calls.append((args, kwargs))
+        return version(*args, **kwargs)
+    adapter = SimpleNamespace(version=callback)
+    assert base._version_in_runtime(adapter, parent) == "synthetic-default"
+    assert calls == [((), {})]
+    assert [path.name for path in parent.iterdir()] == [".git"]
+
+
 def test_context_callback_error_is_not_retried_without_context(tmp_path):
     parent = runtime(tmp_path)
     calls = []
@@ -123,7 +141,7 @@ def test_context_callback_error_is_not_retried_without_context(tmp_path):
         assert home.parent == parent and list(home.iterdir()) == []
         raise TypeError("synthetic callback error")
     with pytest.raises(TypeError, match="synthetic callback error"):
-        base._version_in_runtime(SimpleNamespace(version=version), parent)
+        base._version_in_runtime(SimpleNamespace(version=version, private_version_home=True), parent)
     assert len(calls) == 1 and not calls[0].exists()
 
 

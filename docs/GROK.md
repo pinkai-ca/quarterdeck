@@ -46,9 +46,10 @@ not offer arbitrary exact-content proof for clipped or whitespace-only drafts.
   readiness and every seat's actual resolved pool/harness choice. No native call
   or mutation belongs in preflight.
 - `Harness.version(home: Path | None = None)` adds optional empty runtime context.
+  `Harness.private_version_home` defaults false; Grok explicitly sets true.
   Private dispatch at doctor, Seat launch and installed check preserves one old
-  no-context call for base/default, synthetic and legacy no-argument adapters,
-  with no fresh home. Only an explicit contextual override gets an empty
+  no-argument call and no fresh home for every adapter without that flag, even
+  when its method accepts a home parameter. Only the explicit flag gets an empty
   temporary directory in an existing owned real fenced runtime. Missing context
   creates nothing; an executed callback is never retried. Grok sets both HOME
   variables and keeps controlled native ENV; no-context basename lookup executes

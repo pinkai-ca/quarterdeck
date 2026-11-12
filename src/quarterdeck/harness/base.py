@@ -8,7 +8,6 @@ for the box and the dialogs.
 
 from __future__ import annotations
 
-import inspect
 import os
 import re
 import stat
@@ -73,16 +72,9 @@ def program_version(argv: tuple[str, ...]) -> str | None:
 
 
 def _version_in_runtime(harness, runtime: Path) -> str | None:
-    """Private dispatch: only an explicit contextual override gets a fresh home."""
+    """Only the adapter's explicit private-version-home flag creates a context."""
     version = harness.version
-    if getattr(version, "__func__", None) is Harness.version or getattr(harness, "synthetic", False):
-        return version()
-    try:
-        parameter = inspect.signature(version).parameters.get("home")
-    except (TypeError, ValueError):
-        parameter = None
-    if (parameter is None or parameter.default is not None
-            or parameter.kind not in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)):
+    if not getattr(harness, "private_version_home", False):
         return version()
     eligible = True
     try:
@@ -128,6 +120,7 @@ class Harness(ABC):
     human_tool_policy: str = "No native question-tool suppression proved for this adapter."
     styled_screen: bool = False  # opt-in SGR evidence in the same atomic identity/screen reading
     private_usage_home: bool = False  # native usage client needs framework-owned settings and state
+    private_version_home: bool = False  # version lookup needs a fresh empty runtime-owned home
     record_time_resolution: float = 0.0  # seconds; zero retains exact receipt-time comparisons
 
     def thinking_recovery(self, home: Path, evidence: dict | None, version: str | None, seat: SeatSpec, pool: Pool):
