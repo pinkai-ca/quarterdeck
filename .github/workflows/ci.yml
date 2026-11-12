@@ -26,7 +26,8 @@ jobs:
       - name: Install test prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install --yes git tmux bubblewrap python3-venv python3-setuptools python3-wheel
+          sudo apt-get install --yes git tmux bubblewrap python3-venv python3-setuptools python3-wheel \
+            python3-pytest python3-pytest-xdist
           # Only on this disposable runner, if Ubuntu blocks required namespaces.
           if ! bwrap --ro-bind / / true; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
@@ -42,10 +43,12 @@ jobs:
         run: |
           if [ '${{ matrix.python }}' = system ]; then
             echo PYTHON=/usr/bin/python3 >> "$GITHUB_ENV"
+            # Nested test-tool runs find their base interpreter as ordinary python3.
+            echo /usr/bin >> "$GITHUB_PATH"
           else
-            python -c 'import sys; assert sys.version.startswith("${{ matrix.python }}."), sys.version'
-            python -m pip install setuptools wheel
-            echo "PYTHON=$(python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
+            python3 -c 'import sys; assert sys.version.startswith("${{ matrix.python }}."), sys.version'
+            python3 -m pip install setuptools wheel pytest pytest-xdist
+            echo "PYTHON=$(python3 -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
           fi
       - name: Create a fresh Python environment
         # Distro build tools also serve the upgrade test's separate installation.
