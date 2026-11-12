@@ -75,8 +75,11 @@ def save(runtime: Path, seat: str, events: list[dict]) -> None:
 
 
 def excluded(runtime: Path, seat: str) -> frozenset[str]:
-    """Message ids never typed into this seat again (law: one-door). Read-only; an unreadable journal raises."""
-    return frozenset(q['message'] for event in load(runtime, seat) if event['stage'] != 'held' for q in event['quarantined'])
+    """Message ids never typed into this seat again (law: one-door). Read-only; an unreadable journal raises.
+
+    A claim keeps its quarantine when it is later held: its sender has been told it will not be typed again.
+    """
+    return frozenset(q['message'] for event in load(runtime, seat) for q in event['quarantined'])
 
 
 WITHHELD = 'withheld: refused by the provider · sender told'
@@ -187,6 +190,7 @@ def step(service: Service, seat: Seat) -> None:
             save(runtime, seat.name, events)
             service.log('refusal', seat=seat.name, stage='launched', successor=launch['at'])
         elif launch is None:
+            _tell(service, seat, event)
             event['stage'], event['reason'] = 'held', 'the automatic fresh start was interrupted; qd up'
             save(runtime, seat.name, events)
         else:
@@ -229,15 +233,22 @@ def step(service: Service, seat: Seat) -> None:
         relaunch(service, seat, events, event)
 
 
-def relaunch(service: Service, seat: Seat, events: list[dict], event: dict) -> None:
+def _tell(service: Service, seat: Seat, event: dict) -> None:
     for entry in event['quarantined']:
         if any(n['message'] == entry['message'] for n in event['notices']):
             _publish(service.store, notice(event, entry, seat.name))
+
+
+def relaunch(service: Service, seat: Seat, events: list[dict], event: dict) -> None:
+    _tell(service, seat, event)
     try:
         proof = seat.fresh()  # law: context-is-cache -- every open message but the refused one, in full
     except ShipError as error:
-        service.log('error', step='refusals', seat=seat.name, error=str(error))
-        return  # the claim stands; the next tick retries only while the refused launch is still the saved one
+        # Held, never retried: the quarantine and the notice stand, and a person or the systems seat starts it fresh.
+        event['stage'], event['reason'] = 'held', f'the automatic fresh start failed: {error}'
+        save(service.runtime, seat.name, events)
+        service.log('error', step='refusals', seat=seat.name, error=str(error), stage='held')
+        return
     event['stage'], event['successor'] = 'launched', (launch_key(seat) or {}).get('at')
     save(service.runtime, seat.name, events)
     service.log('fresh', seat=seat.name, proof=proof, reason='provider refusal')

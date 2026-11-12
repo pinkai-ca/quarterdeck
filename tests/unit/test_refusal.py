@@ -129,14 +129,43 @@ def test_a_claim_survives_a_crash_and_is_adopted_or_held_never_repeated(world, m
     world.launch('worker')
     refused = world.order('worker', 'The invented order the provider refused.')
     world.turn('worker', refused, error=REFUSED)
-    monkeypatch.setattr(Seat, 'fresh', lambda seat: (_ for _ in ()).throw(ShipError('synthetic lifecycle refusal')))
-    world.svc.refusals()
+    monkeypatch.setattr(Seat, 'fresh', lambda seat: (_ for _ in ()).throw(RuntimeError('synthetic service death')))
+    with pytest.raises(RuntimeError):
+        world.svc.refusals()  # the service dies mid-relaunch, after its durable claim
     events = refusal.load(world.svc.runtime, 'worker')
     assert [e['stage'] for e in events] == ['claimed'] and len(notices(world, 'tester')) == 1
     world.launch('worker')  # someone else's explicit fresh happened meanwhile
     world.svc.refusals()
     assert [e['stage'] for e in refusal.load(world.svc.runtime, 'worker')] == ['launched']
     assert len(notices(world, 'tester')) == 1, 'the fixed notice is published once'
+
+
+def test_a_failed_relaunch_is_held_once_shown_and_never_retried(world, monkeypatch):
+    world.launch('worker')
+    refused = world.order('worker', 'The invented order the provider refused.')
+    world.turn('worker', refused, error=REFUSED)
+    tried = []
+
+    def failing(seat):
+        tried.append(seat.name)
+        raise ShipError('synthetic lifecycle refusal')
+    monkeypatch.setattr(Seat, 'fresh', failing)
+
+    def failures():
+        lines = world.svc.log_path.read_text().splitlines() if world.svc.log_path.exists() else []
+        return [line for line in lines if '"step": "refusals"' in line]
+    world.svc.refusals()
+    events = refusal.load(world.svc.runtime, 'worker')
+    assert tried == ['worker'] and len(failures()) == 1
+    assert [e['stage'] for e in events] == ['held'] and 'synthetic lifecycle refusal' in events[0]['reason']
+    assert refusal.excluded(world.svc.runtime, 'worker') == {refused.id}, 'the quarantine stands'
+    assert len(notices(world, 'tester')) == 1, 'the sender was told once'
+    reason = turn_failure.obstruction(world.seat('worker'))
+    assert 'held:' in reason and 'inspect, then qd fresh worker' in reason
+    world.svc.refusals()
+    world.svc.refusals()
+    assert tried == ['worker'] and len(failures()) == 1, 'no retry and no second log on later ticks'
+    assert refusal.load(world.svc.runtime, 'worker') == events and len(notices(world, 'tester')) == 1
 
 
 def test_an_unreadable_journal_holds_every_launch(world):
