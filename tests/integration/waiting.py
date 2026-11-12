@@ -24,11 +24,12 @@ def wait_for(predicate, seconds: float = 10.0):
 
 @contextmanager
 def attached_client(command, attached):
-    """Own a terminal client and keep its output in the test run's temporary folder."""
+    """Own a terminal client. Its output is kept in a temporary file, embedded whole in an attach failure, and the
+    file is removed on every exit."""
     client_env = os.environ.copy()
     inherited_term = client_env.get('TERM')
     client_env['TERM'] = 'xterm-256color'
-    with tempfile.NamedTemporaryFile(prefix='tmux-client-', suffix='.log', delete=False) as output:
+    with tempfile.NamedTemporaryFile(prefix='tmux-client-', suffix='.log') as output:  # removed when closed
         client = subprocess.Popen(['script', '-qfc', command, '/dev/null'], stdin=subprocess.DEVNULL,
                                   stdout=output, stderr=subprocess.STDOUT, env=client_env)
         ready = False
@@ -51,4 +52,4 @@ def attached_client(command, attached):
             captured = output.read().decode('utf-8', errors='replace')
             raise AssertionError(f'{error}; tmux attach script exit={client.returncode}, '
                                  f'inherited TERM={inherited_term!r}, client TERM={client_env["TERM"]!r}, '
-                                 f'output={output.name}:\n{captured}') from error
+                                 f'output:\n{captured}') from error
