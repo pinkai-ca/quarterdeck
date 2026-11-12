@@ -6,6 +6,7 @@ import signal
 import time
 
 from tests.conftest import ROOT, git
+from tests.testrunner.report import NEVER_COLLECTED_DURING, NEVER_COLLECTED_SETUP
 from tests.integration.testrun_synthetic import (COLLECTION_WAIT, TOOL, WAIT_TEST, admin_entries, make, result, results,
                                                  scratch, start, started_marker, tool, tool_at_phase, wait_for)
 
@@ -136,17 +137,18 @@ def timed_out_with_the_fixed_ending(project, done, leapt):
     found = result(project)
     assert found['outcome']['status'] == 'timeout' and found['outcome']['note'] == f'time limit of {float(LIMIT)} s'
     assert not found['evidence']['complete'] and set(found['evidence']['counts'].values()) == {None}
-    leaves_only_the_fixed_ending(project)
-    return found
+    run = leaves_only_the_fixed_ending(project)
+    return found, (run / 'report.md').read_text()
 
 
 def test_a_time_limit_after_collection_names_what_never_finished_and_leaves_the_fixed_ending(tmp_path):
     project, worktree = make(tmp_path, {'test_wait.py': WAIT_TEST})
     done, leapt = tool_at_phase('.testruns/runs/*/tmp/started', 'run', '--target', str(worktree), '-n', '0',
                                 '--timeout', LIMIT, cwd=project)
-    found = timed_out_with_the_fixed_ending(project, done, leapt)
+    found, report = timed_out_with_the_fixed_ending(project, done, leapt)
     evidence = found['evidence']
     assert evidence['expected'] == 2 and evidence['terminal'] == 1, 'collection was known when the limit ended it'
+    assert 'Collection never finished' not in report and 'tests/test_wait.py::test_waits' in report
     assert evidence['missing'] == ['tests/test_wait.py::test_waits']
     assert evidence['observed_at_least']['passed'] == 1
 
@@ -157,11 +159,14 @@ def test_a_time_limit_during_setup_is_a_timeout_that_names_no_test(tmp_path):
     project, worktree = make(tmp_path, {'test_wait.py': WAIT_TEST})
     done, leapt = tool_at_phase('.testruns/runs/*/venv', 'run', '--target', str(worktree), '-n', '0',
                                 '--timeout', LIMIT, cwd=project)
-    found = timed_out_with_the_fixed_ending(project, done, leapt)
+    found, report = timed_out_with_the_fixed_ending(project, done, leapt)
     evidence = found['evidence']
     assert 'argv' not in found and found['outcome']['pytest_exit'] is None, 'pytest never started'
     assert 'the evidence plugin never started' in evidence['causes']
+    assert evidence['expected'] is None, 'an uncollected run states no expected count'
     assert evidence['missing'] == [] and evidence['terminal'] == 0
+    assert 'expected unknown' in report and report.count(NEVER_COLLECTED_SETUP) == 1
+    assert NEVER_COLLECTED_DURING not in report
     assert set(evidence['observed_at_least'].values()) == {0}
 
 
@@ -170,11 +175,14 @@ def test_a_time_limit_during_collection_is_a_timeout_that_names_no_test(tmp_path
     project, worktree = make(tmp_path, {'test_wait.py': WAIT_TEST, 'test_slow_collection.py': COLLECTION_WAIT})
     done, leapt = tool_at_phase('.testruns/runs/*/tmp/collecting', 'run', '--target', str(worktree), '-n', '0',
                                 '--timeout', LIMIT, cwd=project)
-    found = timed_out_with_the_fixed_ending(project, done, leapt)
+    found, report = timed_out_with_the_fixed_ending(project, done, leapt)
     evidence = found['evidence']
     assert found['outcome']['pytest_exit'] == 2 and evidence['plugin'], 'pytest started and was interrupted'
     assert 'internal error or interruption recorded' in evidence['causes']
+    assert evidence['expected'] is None, 'an uncollected run states no expected count'
     assert evidence['missing'] == [] and evidence['terminal'] == 0
+    assert 'expected unknown' in report and report.count(NEVER_COLLECTED_DURING) == 1
+    assert NEVER_COLLECTED_SETUP not in report
     assert set(evidence['observed_at_least'].values()) == {0}
 
 

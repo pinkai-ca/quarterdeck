@@ -118,6 +118,26 @@ def test_no_evidence_and_torn_lines_are_never_complete(tmp_path):
     assert not found['complete'] and found['problems']
 
 
+def test_a_run_stopped_before_collection_states_no_expected_count_and_says_where_it_stopped(tmp_path):
+    in_setup = evidence.analyse(tmp_path / 'absent', None)
+    write(tmp_path / 'e', 'main', START, {'kind': 'interrupt', 'text': 'KeyboardInterrupt'},
+          {'kind': 'finish', 'exitstatus': 2})
+    in_collection = evidence.analyse(tmp_path / 'e', 2)
+    write(tmp_path / 'f', 'main', START, {'kind': 'finish', 'exitstatus': 5})
+    unexplained = evidence.analyse(tmp_path / 'f', 5)
+    for found in (in_setup, in_collection, unexplained):
+        assert found['expected'] is None and found['missing'] == [] and not found['complete']
+        assert 'collection never finished (no collection was recorded)' in found['causes']
+        assert set(found['counts'].values()) == {None}
+    base = {'run': 'synthetic', 'target': {'top': '/t', 'head': 'h', 'tree': 't'}, 'runner': {},
+            'outcome': {'status': 'timeout', 'wrapper_exit': 3}}
+    setup_text = report.render(dict(base, evidence=in_setup), '', [])
+    collection_text = report.render(dict(base, evidence=in_collection), '', [])
+    assert 'expected unknown' in setup_text and 'expected unknown' in collection_text
+    assert report.NEVER_COLLECTED_SETUP in setup_text and report.NEVER_COLLECTED_DURING not in setup_text
+    assert report.NEVER_COLLECTED_DURING in collection_text and report.NEVER_COLLECTED_SETUP not in collection_text
+
+
 def test_failure_files_are_complete_and_the_report_summary_points_at_them(tmp_path):
     long = '\n'.join(f'line {n}' for n in range(5000))
     failures = [{'nodeid': 't::a', 'phase': 'call', 'node': 'gw0', 'longrepr': long,

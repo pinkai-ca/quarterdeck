@@ -1,6 +1,7 @@
 """What a run's recorded events prove: the expected set, what reached a terminal report, the counts, and each
 failure's complete text. A count is stated only when the events prove the run complete; otherwise it is
-``None`` (unknown) and the observed figure is given as a lower bound. Known collection errors stay known."""
+``None`` (unknown) and the observed figure is given as a lower bound. Known collection errors stay known. With
+no collection recorded, the expected count is ``None`` too: what pytest would have run is unknown, not empty."""
 from __future__ import annotations
 
 import json
@@ -51,13 +52,14 @@ def analyse(folder: Path, pytest_exit: int | None) -> dict:
             node_sets[event['node']] = event['nodeids']
     xdist = bool(node_sets) or any(role != 'main' for role in events)
     expected, collection_agreed = [], True
+    collected = [event for event in main if event['kind'] == 'collected']
+    collection_known = bool(node_sets or collected)
     if node_sets:
         sets = [tuple(ids) for ids in node_sets.values()]
         collection_agreed = all(set(ids) == set(sets[0]) for ids in sets)
         expected = sorted(set().union(*map(set, sets)))
-    else:
-        collected = [event for event in main if event['kind'] == 'collected']
-        expected = collected[-1]['nodeids'] if collected else []
+    elif collected:
+        expected = collected[-1]['nodeids']
     deselected = sorted({nodeid for role in events.values() for event in role if event['kind'] == 'deselected'
                          for nodeid in event['nodeids']})
     collect_errors = {}
@@ -89,6 +91,8 @@ def analyse(folder: Path, pytest_exit: int | None) -> dict:
         causes.append('the evidence plugin never started')
     if finish is None:
         causes.append('the session did not finish (no sessionfinish event)')
+    if not collection_known:
+        causes.append('collection never finished (no collection was recorded)')
     if problems:
         causes.append('torn evidence lines')
     if not collection_agreed:
@@ -118,7 +122,7 @@ def analyse(folder: Path, pytest_exit: int | None) -> dict:
         'plugin': sorted({event.get('plugin') for event in starts if event.get('plugin') is not None}),
         'tools': sorted({(event.get('pytest'), event.get('xdist'), event.get('python')) for event in starts}),
         'plugins': sorted({name for event in starts for name in event.get('plugins', [])}),
-        'expected': len(expected),
+        'expected': len(expected) if collection_known else None,
         'deselected': len(deselected),
         'terminal': len(terminal & set(expected)),
         'missing': missing,
