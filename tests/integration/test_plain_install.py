@@ -129,8 +129,13 @@ def test_wheel_installed_laws_and_fake_drydock(scratch, private_socket_root, cap
     assert Path(reading['drydock']) == share / 'ships/drydock'
     assert reading['user_site'] is False
     assert 'include-system-site-packages = false' in reading['system_site']
-    assert not any(Path(path).is_relative_to(ROOT) or Path(path).is_relative_to(source)
-                   for path in reading['sys_path'] if path)
+    # Nothing is imported from the checkout or the deleted archive. The installed prefix is the one place
+    # allowed, wherever the run's scratch lies: plain pytest in CI puts it inside the checkout.
+    entries = [Path(path) for path in reading['sys_path'] if path]
+    assert any(entry.is_relative_to(runtime) for entry in entries), entries
+    assert not any(entry.is_relative_to(source) for entry in entries), entries
+    assert not any(entry.is_relative_to(ROOT) and not entry.is_relative_to(runtime)
+                   for entry in entries), entries
     assert not list(runtime.rglob('*.egg-link'))
     assert not any('editable' in path.lower() for path in reading['files'])
 
