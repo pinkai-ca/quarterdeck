@@ -233,10 +233,13 @@ def test_selection_reads_only_its_journal_and_never_calls_full_validators(tmp_pa
         monkeypatch.setattr(target, name, forbidden)
     read = []
     original = cascade_runtime.read_file
-    monkeypatch.setattr(cascade_runtime, 'read_file', lambda path: read.append(path) or original(path))
+    monkeypatch.setattr(cascade_runtime, 'read_file',
+                        lambda path, **kwargs: read.append((path, kwargs)) or original(path, **kwargs))
     before = snapshot(tmp_path)
     assert thread_context.select(store, 'lead').incoming == [root, terminal]
-    assert read and set(read) == {journal(tmp_path, structure, root)}
+    assert read and {path for path, _ in read} == {journal(tmp_path, structure, root)}
+    assert all(type(kwargs.get('max_bytes')) is int and kwargs['max_bytes'] > 0 for _, kwargs in read), \
+        'every journal read is bounded'
     assert snapshot(tmp_path) == before
 
 
