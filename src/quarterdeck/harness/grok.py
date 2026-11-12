@@ -17,7 +17,7 @@ from .home import credential, key_environment, merged, ship_template
 from .json_record import when
 from .limits import Usage
 from .types import Box, Control, Credential, Keys, Launch, Screen
-from . import grok_record, grok_screen, grok_usage, grok_workspace
+from . import grok_notice, grok_record, grok_screen, grok_usage, grok_workspace
 
 VENDORS = ("claude", "cursor", "codex")
 IMPORTS = ("rules", "hooks", "mcps", "skills", "agents", "sessions")
@@ -195,6 +195,9 @@ class GrokHarness(Harness):
         if home is not None:
             grok_workspace.check(home, cwd, private_environment(home))
 
+    def workspace_notice(self, home: Path, cwd: Path) -> str | None:
+        return grok_notice.inventory(cwd, private_environment(home))
+
     def version(self, home: Path | None = None) -> str | None:
         from ..seat import program_path  # the same selected program as ordinary Seat launch
 
@@ -272,7 +275,8 @@ class GrokHarness(Harness):
             argv += ["--resume", resume]
         if first:
             argv.append(first)
-        return Launch(tuple(argv), {**private_environment(home), **key_environment(pool, "XAI_API_KEY")})
+        return Launch(tuple(argv), {**private_environment(home), **key_environment(pool, "XAI_API_KEY")},
+                      notice=self.workspace_notice(home, seat.cwd))
 
     def usage(self, pool: Pool) -> Usage:
         return Usage((), datetime.now(timezone.utc), "native billing requires a framework-owned home", called=False)

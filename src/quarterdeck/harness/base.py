@@ -188,6 +188,14 @@ class Harness(ABC):
         global requirements, never an inferred operator home or working directory.
         """
 
+    def workspace_notice(self, home: Path, cwd: Path) -> str | None:
+        """Read-only workspace information, never a content-based launch gate.
+
+        The default supplies no notice and performs no inventory or native call.
+        An adapter reports incomplete inventory as information, not a refusal.
+        """
+        return None
+
     def version(self, home: Path | None = None) -> str | None:
         """Optional empty runtime-owned context; default adapters keep their existing invocation."""
         return program_version((self.program, "--version"))

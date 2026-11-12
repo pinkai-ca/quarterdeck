@@ -77,16 +77,21 @@ def checks(ship: Ship) -> list[Check]:
 
 
 def seat_readiness(ship: Ship) -> list[Check]:
-    """Only failed adapter preflights add rows; this neither joins nor launches a seat."""
+    """Readiness failures and passing information notices; no seat is launched."""
     found = []
     for seat in ship.seats.values():
         for choice in seat.pools:
             selected = seat.for_pool(choice)
             reader = harnesses.get(selected.harness)
+            home = ship.runtime / "seats" / seat.name / "home"
+            cwd = ship.cwd_of(selected)
             try:
-                reader.preflight(ship.runtime / "seats" / seat.name / "home", ship.cwd_of(selected))
+                reader.preflight(home, cwd)
             except ShipError as error:
                 found.append(Check(f"seat {seat.name} pool {choice} readiness", False, str(error)))
+            notice = reader.workspace_notice(home, cwd)
+            if notice:
+                found.append(Check(f"seat {seat.name} pool {choice} workspace notice", True, notice))
     return found
 
 

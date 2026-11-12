@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from quarterdeck import doctor
-from quarterdeck.harness import grok
+from quarterdeck.harness import grok, grok_notice
 from quarterdeck.harness.grok import GrokHarness
 from quarterdeck.ship import Pool, SeatSpec, ShipError
 
@@ -18,6 +18,7 @@ from quarterdeck.ship import Pool, SeatSpec, ShipError
 def synthetic_native_paths(monkeypatch, tmp_path):
     """Ordinary home-output checks use fake admin paths, never actual /etc."""
     monkeypatch.setattr(grok, "SYSTEM_CONFIG", tmp_path / "synthetic-system")
+    monkeypatch.setattr(grok_notice, "trust_root", lambda cwd, environment: cwd)
     for name in grok.INHERITED_REDIRECTS:
         monkeypatch.delenv(name, raising=False)
 
@@ -141,12 +142,12 @@ def test_doctor_checks_the_resolved_harness_for_each_pool_choice(tmp_path):
         pool.name: {"harness": "grok", "model": "synthetic"},
         "synthetic-other": {"harness": "fake", "model": "synthetic"}})
     ship = SimpleNamespace(runtime=runtime, seats={spec.name: spec}, cwd_of=lambda selected: selected.cwd)
-    failed, = doctor.seat_readiness(ship)
+    failed, = (row for row in doctor.seat_readiness(ship) if not row.passed)
     assert failed.passed is False
     assert failed.name == f"seat {spec.name} pool {pool.name} readiness"
     assert str(admin) in failed.detail
     admin.unlink()
-    assert doctor.seat_readiness(ship) == []
+    assert all(row.passed for row in doctor.seat_readiness(ship))
 
 
 def test_memory_configuration_and_card_keep_online_behavior_unproved(tmp_path):

@@ -496,3 +496,4 @@ class Launch:
     env: dict[str, str] = field(default_factory=dict)
     price: dict | None = None
     recovery: dict | None = None  # adapter-owned effective-source evidence, captured before the pane opens
+    notice: str | None = None  # information-only workspace inventory, captured before the pane opens

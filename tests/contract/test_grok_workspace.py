@@ -16,6 +16,7 @@ from quarterdeck.ship import Pool, SeatSpec
 @pytest.fixture(autouse=True)
 def synthetic_native_paths(monkeypatch, tmp_path):
     monkeypatch.setattr(grok, "SYSTEM_CONFIG", tmp_path / "synthetic-system")
+    monkeypatch.setattr(grok_notice, "trust_root", lambda cwd, environment: cwd)
     for name in grok.INHERITED_REDIRECTS:
         monkeypatch.delenv(name, raising=False)
 
@@ -130,7 +131,10 @@ def test_notice_inventory_names_declared_sources_without_transport_or_hook_value
         "command": "synthetic-json-transport", "env": {"EXAMPLE": "synthetic-env-value"},
         "headers": {"Example": "synthetic-header-value"}}}}))
     monkeypatch.setattr(grok_notice, "trust_root", lambda cwd, environment: root)
-    notice = grok_notice.inventory(child, grok.private_environment(home))
+    notice = adapter.workspace_notice(home, child)
+    spec = replace(spec, cwd=child)
+    adapter.build_home(home, spec, pool, None)
+    assert adapter.launch(spec, pool, home, brief, None, None).notice == notice
     for name in ("synthetic_native", "synthetic_json", "SessionStart", "synthetic.json"):
         assert name in notice
     assert str(root) in notice and str(child) in notice
@@ -151,7 +155,9 @@ def test_notice_unknown_sources_are_information_without_a_workspace_refusal(tmp_
     assert ".mcp.json" in notice and str(agents) in notice
     assert "none declared" not in notice
     adapter.build_home(home, spec, pool, None)
-    assert "--trust" in adapter.launch(spec, pool, home, brief, None, None).argv
+    launch = adapter.launch(spec, pool, home, brief, None, None)
+    assert "--trust" in launch.argv
+    assert launch.notice == notice
 
 
 def test_notice_reports_unknown_scope_instead_of_an_empty_inventory(tmp_path, monkeypatch):

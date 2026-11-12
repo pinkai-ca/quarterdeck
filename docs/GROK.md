@@ -10,6 +10,7 @@ installed version is marked proven by adding fixtures.
 | --- | --- | --- |
 | Version context | Normal selected executable, never a PATH redirect. Existing eligible runtime supplies a fresh empty version-call home; both HOME variables are replaced. No-context lookup reads only the selected resolved basename and executes nothing. | No operator version cache is adopted. Missing runtime remains missing; installed version proof still belongs to the check. |
 | Home and launch | Private `GROK_HOME`, nested private `HOME`/XDG, native configuration, brief through `--rules`, updater off and normal credential linkage. Native `--trust` grants the whole repository root, or cwd outside a repository. The measured native store schema has one `folders."<absolute root>"` table with `trusted=true` and `decided_at` Unix seconds. The exact-grant guard never rewrites it; project contents never refuse a workspace. | Native validation established that project instructions/rules/skills load, project hooks run and project MCP servers start. Home `managed_config.toml` is deleted at every native start and supplies no enforcement; it is neither written nor accepted. Project hook/MCP imports are accepted as for a person trusting the folder; the earlier source-absent launch does not prove this contract. Public marketplace fetching and some native bundled capabilities remain, as listed in the card. No blanket background-work absence claim. |
+| Workspace notice | Doctor adds a passing information row per declared seat/pool. Grok launch carries the same names/source-only inventory into the optional launch record notice and its proof line. Read-only snapshots name direct hook events and MCP declarations, with escaped paths. | Unknown scope, unreadable/unrecognized sources and indirect plugin/agent imports remain explicitly unknown; inventory does not prove native activation. It never refuses, prompts or changes the jail. No command/URL/header/environment/token values are rendered. |
 | Records and unknowns | Native ACP envelopes through the shared JSON-lines snapshot/cache. Ordinary input chunks, completed/cancelled turns, tool invocation/update identity, malformed/foreign/empty/unknown evidence and incomplete physical-line diagnostics have synthetic cases. | An unknown row cannot establish tool-set clearance. Missing or malformed information stays unknown. |
 | Join | Adapter-owned UUIDv7 folder creation time, validated against every record row. Fractional launch boundaries and conflicting/non-v7 identities have synthetic cases. Normal first-record join and same-record resume were observed natively. | Shared join selection and ambiguity handling are unchanged. No whole-second row fallback, flooring or explicit `-s` launch option. |
 | Exact input receipts | Native whole input text with one-second row timestamps. Declared resolution affects only local receipt comparison. Fresh exact receipts were observed; ordinary same/prior-second and Claude/Codex regressions remain separate from join. | A queue card, fold count, screen echo or disappeared box never proves delivery. No resend of an uncertain input. |
@@ -48,6 +49,16 @@ not offer arbitrary exact-content proof for clipped or whitespace-only drafts.
   call or mutation belongs in preflight. A bounded local Git
   metadata query identifies only the exact native trust root when a grant exists;
   it never inventories project sources. Workspace contents never refuse readiness.
+- `Harness.workspace_notice(home, cwd) -> str | None` defaults to `None`, without
+  inventory, home creation or native/provider calls. Doctor adds a passing notice
+  row for each actual seat/pool when text exists; preflight keeps its separate
+  readiness contract. Grok launch fills the appended `Launch.notice`; Seat copies
+  it by keyword to appended `Launched.notice` and prints the persisted snapshot in
+  its launch proof. Both default to `None`, omitted on write; old records and
+  current positional callers remain compatible. Older revisions without this
+  field cannot read a launch record containing it; no record stripping or
+  speculative format migration is performed. Claude validation owns shared
+  default, old-record, persistence/proof and actual doctor/Seat callers.
 - `Harness.version(home: Path | None = None)` adds optional empty runtime context.
   `Harness.private_version_home` defaults false; Grok explicitly sets true.
   Private dispatch at doctor, Seat launch and installed check preserves one old

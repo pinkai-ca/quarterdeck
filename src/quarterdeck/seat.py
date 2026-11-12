@@ -44,12 +44,15 @@ class Launched:
     records_before: list[str] = field(default_factory=list)
     price: dict | None = None
     recovery: dict | None = None
+    notice: str | None = None
 
     def write(self, path: Path) -> None:
         data = asdict(self)
         price = data.pop("price")
         if data['recovery'] is None:
             data.pop('recovery')  # unchanged launch shape for programs without this optional proof
+        if data['notice'] is None:
+            data.pop('notice')
         durable.replace_file(path, json.dumps(data, indent=2) + "\n")
         save_price(path, price)
 
@@ -438,7 +441,7 @@ class Seat:
         at = datetime.now(timezone.utc).isoformat()  # before the program can write a record (law: one-record)
         pane = self._open_window(argv, launch.env, path)
         launched = Launched(pane.id, pane.pid, at, pool.name, resume_id, argv, _version_in_runtime(self.harness, self.ship.runtime), self.spec.harness,
-                            sorted(map(str, prior)), launch.price, launch.recovery)
+                            sorted(map(str, prior)), launch.price, launch.recovery, notice=launch.notice)
         launched.write(self.folder / "launch.json")
         if self.spec.pool_choices:
             self.move_to(pool.name)
@@ -452,7 +455,8 @@ class Seat:
         how = f"resumed {resume_id[:8]}" if resume_id else "fresh"
         carried_note = f" · {len(carried)} open message{'s' if len(carried) != 1 else ''} carried" if carried else ""
         jail_note = " · jailed: the operator's home hidden, the workspace writable" if jailed else ""
-        return f"{self.name} up in {pane.id} · {self.harness.name} {launched.version or ''} · provider {providers.display(pool.provider)} · pool {pool.name} · {how}{carried_note}{jail_note}"
+        notice_note = f" · {launched.notice}" if launched.notice else ""
+        return f"{self.name} up in {pane.id} · {self.harness.name} {launched.version or ''} · provider {providers.display(pool.provider)} · pool {pool.name} · {how}{carried_note}{jail_note}{notice_note}"
 
     def _resume_id(self) -> str | None:
         record = self.record()
