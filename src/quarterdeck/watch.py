@@ -338,6 +338,7 @@ class Facts:
     held: list[str] = field(default_factory=list)
     turn_errors: list[str] = field(default_factory=list)
     group_held: list[str] = field(default_factory=list)
+    cascade_held: list[str] = field(default_factory=list)
 
     def line(self) -> str:  # law: nothing-waits-silently
         parts = ["SERVICE DOWN" if self.service == "down" else f"service {self.service}"]
@@ -353,6 +354,7 @@ class Facts:
         parts += self.compactions
         parts += self.turn_errors
         parts += self.group_held
+        parts += self.cascade_held
         parts += [f"{name} needs a human" for name in self.needs_human]
         parts += [f"{name}: no watch armed" for name in self.unarmed]
         parts += [f"{name} held at limit" for name in self.held]
@@ -536,7 +538,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
     pending_lines += [f"request claimed: {path.name}; inspect requests/ before retrying"
                       for path in sorted((ship.runtime / "requests").glob("*.claimed"))]
     now = post.now()
-    from . import group_post
+    from . import cascade_runtime, group_post
     oldest = int(max(((now - m.at).total_seconds() for m in waiting), default=0) // 60)
     queued = [a for a in records if a.result == "queued" and latest.get(a.message) == 'queued']
     return Facts(
@@ -556,6 +558,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         held=held,
         turn_errors=turn_errors,
         group_held=group_post.holds(ship.runtime),
+        cascade_held=cascade_runtime.holds(ship.runtime),
         unarmed=unarmed,
         walls=walls if walls is not None else ledger_walls(ship),
         usage=headline_readings(ship),

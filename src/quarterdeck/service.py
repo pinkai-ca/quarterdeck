@@ -345,7 +345,9 @@ class Service:
 
     def cascades(self) -> None:
         from . import cascade
-        cascade.run(self)
+        changed = cascade.run(self)
+        for request, reason in changed:
+            self.log('cascade-held', request=request, reason=reason)
 
 
     def requests(self) -> None:

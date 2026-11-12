@@ -9,18 +9,28 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import shlex
 from dataclasses import asdict
 from pathlib import Path
 
-from . import durable, post
+from . import cascade_runtime, durable, post
 from .ship import Cascade, Ship, ShipError
 
 NOTE = "## Cascade note"
 ANSWER = "## Answer"
 EFFORTS = ("low", "medium", "high")
+
+
+class Stop(str):
+    """A fixed observation and explicit policy category, never inferred from its wording."""
+
+    category: str
+
+    def __new__(cls, reason: str, category: str = "seat"):
+        result = super().__new__(cls, reason)
+        result.category = category
+        return result
 
 
 def declaration(table: object) -> Cascade | None:
@@ -79,9 +89,41 @@ def save(path: Path, data: dict) -> None:
 
 
 def load(path: Path) -> dict:
-    data = json.loads((path / "state.json").read_text())
-    if not isinstance(data, dict) or data.get("format") != 1 or data.get("question") != path.name:
+    data = json.loads(cascade_runtime.read_file(path / "state.json"))
+    if (not isinstance(data, dict) or type(data.get("format")) is not int or data['format'] != 1
+            or data.get("question") != path.name or data.get('status') not in ('running', 'done', 'stopped')
+            or not isinstance(data.get('steps'), list) or not isinstance(data.get('intents'), dict)):
         raise ShipError("cascade: unknown or mismatched run journal; retained")
+    ring = declaration(data['declaration'])
+    if ring is None:
+        raise ShipError('cascade: run has no declaration; retained')
+    levels = laps(data['efforts'], ring.efforts)
+    total = 3 * len(levels)
+    if len(data['steps']) > total or data.get('stop_category') not in (None, 'seat', 'provider-refusal'):
+        raise ShipError('cascade: inconsistent run journal; retained')
+    last = None
+    for index, step in enumerate(data['steps']):
+        if (not isinstance(step, dict) or step.get('seat') != ring.seats[index % 3]
+                or type(step.get('lap')) is not int or step['lap'] != index // 3 + 1
+                or index < len(data['steps']) - 1 and 'report' not in step):
+            raise ShipError('cascade: inconsistent run step; retained')
+        if 'report' in step:
+            if not isinstance(step['report'], str) or 'order' not in step or 'effort' not in step:
+                raise ShipError('cascade: incomplete report association; retained')
+            last = step['report']
+    if data['last'] != last or data['status'] == 'done' and (len(data['steps']) != total or last is None):
+        raise ShipError('cascade: inconsistent completed steps; retained')
+    if data['status'] == 'stopped' and data.get('stop_category') is None:
+        raise ShipError('cascade: stopped run has no explicit stop category; retained')
+    if data['status'] != 'stopped' and (data['reason'] is not None or data.get('stop_category') is not None):
+        raise ShipError('cascade: inconsistent stop evidence; retained')
+    if data['status'] == 'stopped' and (not isinstance(data['reason'], str) or not data['reason']):
+        raise ShipError('cascade: stopped run has no fixed reason; retained')
+    notes = data['notes']
+    if (type(notes['size']) is not int or notes['size'] < 0 or not isinstance(notes['sha256'], str)
+            or re.fullmatch('[0-9a-f]{64}', notes['sha256']) is None
+            or notes['pending'] is not None and not isinstance(notes['pending'], str)):
+        raise ShipError('cascade: inconsistent notes evidence; retained')
     return data
 
 
@@ -99,6 +141,7 @@ def start(service, reference: str, caller: str, efforts: list[str] | None = None
     path = folder(ship.runtime, question.id)
     if (path / "state.json").exists():
         data = load(path)
+        Runner(ship, store, None, None).verify(data)
         if levels != data["efforts"]:
             raise ShipError("cascade: this question already started with different laps")
         return proof(path, data)
@@ -111,7 +154,8 @@ def start(service, reference: str, caller: str, efforts: list[str] | None = None
     durable.sync_folder(path.parent)
     durable.sync_folder(ship.runtime)
     data = dict(format=1, question=question.id, declaration=asdict(ring), efforts=levels,
-                status="running", steps=[], intents={}, last=None, reason=None,
+                status="running", steps=[], intents={}, last=None, reason=None, stop_category=None,
+                stopped_report=None,
                 notes=dict(size=0, sha256=hashlib.sha256(b"").hexdigest(),
                            pending=f"# Cascade notes\n\nQuestion: {question.id}\n\n"))
     save(path, data)
@@ -136,9 +180,10 @@ def note(body: str, limit: int) -> str:
 
 
 class Runner:
-    def __init__(self, ship: Ship, store: post.Store, health, effort):
+    def __init__(self, ship: Ship, store: post.Store, health, effort, *, refusal_check=None):
         self.ship, self.store = ship, store
         self.health, self.effort = health, effort
+        self.refusal_check = refusal_check or (lambda name, order: current_refusal(ship.runtime, name, order))
 
     def publish(self, path: Path, data: dict, key: str, kind: str, to: str, body: str) -> post.Message:
         intents = data["intents"]
@@ -148,11 +193,13 @@ class Runner:
             save(path, data)
         message = post.Message.from_json(json.dumps(intents[key]))
         target = self.store.dir / f"{message.id}.json"
-        if target.exists():
-            if post.Message.from_json(target.read_text()) != message:
-                raise ShipError("cascade: immutable publication intent conflicts with post; retained")
-        else:
+        try:
+            raw = cascade_runtime.read_file(target)
+        except FileNotFoundError:
             self.store.write(message)
+        else:
+            if post.Message.from_json(raw.decode('utf-8')) != message:
+                raise ShipError("cascade: immutable publication intent conflicts with post; retained")
         return message
 
     @staticmethod
@@ -161,30 +208,16 @@ class Runner:
         pending = evidence["pending"]
         if pending is None:
             return
-        target = path / "responses.md"
-        raw = target.read_bytes() if target.exists() else b""
-        offset, addition = evidence["size"], pending.encode("utf-8")
-        if (hashlib.sha256(raw[:offset]).hexdigest() != evidence["sha256"] or len(raw) < offset
-                or not addition.startswith(raw[offset:]) or len(raw) > offset + len(addition)):
-            raise ShipError("cascade notes changed outside their append intent; retained")
-        descriptor = os.open(target, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-        try:
-            view = memoryview(addition[len(raw) - offset:])
-            while view:
-                view = view[os.write(descriptor, view):]
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-        durable.sync_folder(path)
-        complete = raw[:offset] + addition
-        evidence.update(size=len(complete), sha256=hashlib.sha256(complete).hexdigest(), pending=None)
+        data['notes'] = cascade_runtime.append_notes(path, evidence)
         save(path, data)
 
-    def finish(self, path: Path, data: dict, reason: str | None) -> None:
+    def finish(self, path: Path, data: dict, reason: str | None, *, category: str = 'seat') -> None:
+        if category not in ('seat', 'provider-refusal'):
+            raise ShipError('cascade: unknown stop category; retained')
         if data["status"] == "running":
-            data.update(status="stopped" if reason else "done", reason=reason)
+            data.update(status="stopped" if reason else "done", reason=reason,
+                        stop_category=category if reason else None)
             save(path, data)
-        last = self.store.get(data["last"]).body if data["last"] else "No ring answer completed."
         where = path / "responses.md"
         current = data["steps"][-1] if data["steps"] else {}
         outstanding = (f"\nInterrupted order remains open: {current['order']}."
@@ -196,6 +229,18 @@ class Runner:
             observations.append(f"- {step['seat']} lap {step['lap']}: requested {observed['requested']}; "
                                 f"actual {observed['actual']}. {observed['detail']}")
         effort_summary = "\nEffort observations and limitations:\n" + ("\n".join(observations) or "No ring effort observed.")
+        if data.get('stop_category') == 'provider-refusal':
+            body = (f"Cascade stopped: provider refused this step.\nSeat: {current['seat']}; lap: {current['lap']}."
+                    + f"\nNotes: {where}" + effort_summary
+                    + f"\nLast completed report for a person to open: {data['last'] or 'none'}."
+                    + f"\nStopped step's filed report for a person to open: {data.get('stopped_report') or 'none'}."
+                      "\nThe last full answer is withheld because the step that carried it was refused."
+                      "\nConclude from completed notes only, naming the stop and effort limitations."
+                      " Do not automatically read or retype the referenced full report or refused step input."
+                      " Answer the original question once; this notice does not close it.")
+            self.publish(path, data, "final", "report", data["declaration"]["orchestrator"], body)
+            return
+        last = self.store.get(data["last"]).body if data["last"] else "No ring answer completed."
         body = (f"Cascade {data['status']}" + (f": {data['reason']}" if data["reason"] else ".")
                 + outstanding + f"\nNotes: {where}" + effort_summary
                 + "\nRead the notes and the last full answer below, then answer the original question once. "
@@ -205,19 +250,24 @@ class Runner:
 
     def advance(self, path: Path) -> None:
         data = load(path)
+        self.verify(data)
         if data["status"] != "running":
             self.finish(path, data, data["reason"])
             return
+        steps = data['steps']
+        if steps and 'report' not in steps[-1]:
+            current = steps[-1]
+            order = self.current_order(data)
+            if order is not None and (stop := self.refusal_check(current['seat'], order)) is not None:
+                filed = self.store.closing_report(order)
+                data['stopped_report'] = filed.id if filed is not None else None
+                self.finish(path, data, f"{current['seat']}: {stop}", category=stop.category)
+                return  # the filed report is neither accepted, parsed nor appended
         ring = data["declaration"]
         if self.ship.cascade is None or json.loads(json.dumps(asdict(self.ship.cascade))) != ring:
             self.finish(path, data, "cascade declaration changed")
             return
-        try:
-            self.append(path, data)
-        except (OSError, ShipError) as error:
-            self.finish(path, data, f"notes append unavailable: {error}")
-            return
-        steps = data["steps"]
+        self.append(path, data)
         total = len(ring["seats"]) * len(data["efforts"])
         if steps and "report" not in steps[-1]:
             current = steps[-1]
@@ -241,7 +291,8 @@ class Runner:
                 self.append(path, data)
             else:
                 if reason := self.health(current["seat"], order):
-                    self.finish(path, data, f"{current['seat']}: {reason}")
+                    self.finish(path, data, f"{current['seat']}: {reason}",
+                                category=reason.category if isinstance(reason, Stop) else 'seat')
                     return
                 self.dispatch(path, data, current)
                 return
@@ -253,9 +304,59 @@ class Runner:
         steps.append(current)
         save(path, data)
         if reason := self.health(current["seat"], None):
-            self.finish(path, data, f"{current['seat']}: {reason}")
+            self.finish(path, data, f"{current['seat']}: {reason}",
+                        category=reason.category if isinstance(reason, Stop) else 'seat')
             return
         self.dispatch(path, data, current)
+
+    def current_order(self, data: dict) -> post.Message | None:
+        current = data['steps'][-1]
+        if current.get('order'):
+            return self.store.get(current['order'])
+        intent = data['intents'].get(f"turn-{len(data['steps'])}")
+        return post.Message.from_json(json.dumps(intent)) if intent is not None else None
+
+    def verify(self, data: dict) -> None:
+        """Bind saved relay evidence to the ordinary canonical question and posts."""
+        question = self.store.get(data['question'])
+        ring = data['declaration']
+        if question.kind != 'question' or question.to != ring['orchestrator']:
+            raise ShipError('cascade: question differs from the run declaration')
+        expected = {f'turn-{index + 1}': ('order', step['seat'])
+                    for index, step in enumerate(data['steps'])}
+        if data['status'] != 'running':
+            expected['final'] = ('report', ring['orchestrator'])
+        for key, intent in data['intents'].items():
+            message = post.Message.from_json(json.dumps(intent))
+            if (key not in expected or (message.kind, message.to) != expected[key]
+                    or message.sender != post.SHIP or message.re != question.id
+                    or not re.fullmatch('[A-Za-z0-9_-]+', message.id)):
+                raise ShipError('cascade: publication intent differs from its run')
+            target = self.store.dir / (message.id + '.json')
+            try:
+                raw = cascade_runtime.read_file(target)
+            except FileNotFoundError:
+                continue  # a saved intent may precede publication
+            if post.Message.from_json(raw.decode('utf-8')) != message:
+                raise ShipError('cascade: immutable post differs from its publication intent')
+        for index, step in enumerate(data['steps']):
+            if 'order' in step:
+                intent = data['intents'][f'turn-{index + 1}']
+                if step['order'] != intent['id']:
+                    raise ShipError('cascade: current order differs from its intent')
+                self.store.get(step['order'])
+            if 'report' in step:
+                report = self.store.get(step['report'])
+                if (report.kind != 'report' or report.sender != step['seat']
+                        or report.to != post.SHIP or report.re != step['order']):
+                    raise ShipError('cascade: report differs from its step order')
+        if data.get('stopped_report') is not None:
+            current = data['steps'][-1]
+            order = self.current_order(data)
+            filed = self.store.get(data['stopped_report'])
+            if (data.get('stop_category') != 'provider-refusal' or 'report' in current or order is None
+                    or filed.kind != 'report' or filed.sender != current['seat'] or filed.re != order.id):
+                raise ShipError('cascade: stopped filed report differs from its step')
 
     def dispatch(self, path: Path, data: dict, current: dict) -> None:
         wanted = data["efforts"][current["lap"] - 1]
@@ -279,14 +380,30 @@ class Runner:
             save(path, data)
 
 
+def current_refusal(runtime: Path, name: str, order: post.Message) -> Stop | None:
+    """Only the existing exact-current-order exclusion fact; no new recognition."""
+    from . import refusal
+    try:
+        excluded = refusal.excluded(runtime, name)
+    except (refusal.JournalError, OSError):
+        raise cascade_runtime.ExclusionUnknown('cascade step exclusion evidence is unreadable') from None
+    return Stop('provider refused this step', 'provider-refusal') if order.id in excluded else None
+
+
 def health(service, name: str, order: post.Message | None = None) -> str | None:
     """Common positive seat failure, or a recorded failure tied to this step's taking."""
     from . import group_post, thread_context
     from .tmux import TmuxError
 
     try:
+        if order is not None:
+            try:
+                if stop := current_refusal(service.ship.runtime, name, order):
+                    return stop
+            except cascade_runtime.ExclusionUnknown:
+                return None
         if reason := group_post.current_seat_failure(service, name):
-            return reason
+            return Stop(reason)
         if order is None:
             return None  # order-free preflight cannot associate an old failed turn
         seat = service.seat(name)
@@ -315,7 +432,10 @@ def health(service, name: str, order: post.Message | None = None) -> str | None:
                 associated = bool(taken and any(turn.started >= max(taken) for turn in failed))
             if seat.launched() != launched or seat.record() != record:
                 return None
-            return failure.kind if associated else None  # category only, never a provider body
+            if associated:
+                return (Stop('provider refused this step', 'provider-refusal') if failure.kind == 'provider refusal'
+                        else Stop(failure.kind))  # category only, never a provider body
+            return None
     except (ShipError, OSError, TmuxError, ValueError, TypeError):
         return None  # absent, transitioning or unreadable evidence is not an early end
 
@@ -341,9 +461,24 @@ def effort(service, name: str, wanted: str) -> dict:
     return dict(requested=wanted, actual=actual, detail=detail)
 
 
-def run(service) -> None:
+def run(service) -> list[tuple[str, str]]:
     runner = Runner(service.ship, service.store, lambda name, order: health(service, name, order),
                     lambda name, wanted: effort(service, name, wanted))
+    changed = []
     for state in sorted((service.runtime / "ring").glob("*/state.json")):
-        path = folder(service.runtime, state.parent.name)
-        runner.advance(path)
+        path = None
+        question = state.parent.name
+        try:
+            path = folder(service.runtime, question)
+            runner.advance(path)
+            cascade_runtime.clear(service.runtime, question)
+        except Exception as error:  # each retained run is independent of the others
+            reason = cascade_runtime.error_reason(error)
+            try:
+                raw = cascade_runtime.read_file(state) if path is not None else b'unreadable'
+            except (OSError, ShipError):
+                raw = b'unreadable'
+            signature = hashlib.sha256(raw).hexdigest()
+            if cascade_runtime.hold(service.runtime, question, reason, signature):
+                changed.append((cascade_runtime.key(question), reason))
+    return changed

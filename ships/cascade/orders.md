@@ -17,5 +17,12 @@ pane is unknown; a failed older turn cannot end a new lap.
 An interrupted order remains open under ordinary post rules until its addressee reports;
 the service never forges that report or resumes an ended cascade from a late reply.
 
-The orchestrator receives one final service notice, with the notes path and the last full
-answer, and answers the original question once. Only that answer closes the question.
+The orchestrator receives one final service notice and answers the original question once.
+Ordinary completion and other stops include the last full answer. On a recognized provider
+refusal of the current step, the notice withholds both the full answer and refused input;
+it names the seat/lap, notes path and report identities for a person to open, distinguishing
+the last completed report from a report filed by the stopped step. Known exclusion wins
+before report acceptance: a stopped step's filed report stays immutable, without a note
+append, accepted-step marker or relay to the next seat. Unknown exclusion evidence holds.
+The orchestrator then concludes from completed notes only and never automatically reads or
+retypes those referenced full reports. Only its answer closes the original question.

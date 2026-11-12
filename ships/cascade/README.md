@@ -37,6 +37,14 @@ with no eligible destination, a failure tied to the current order, or a positive
 dead owned pane ends the run early with its location named. Missing panes and unreadable
 evidence are unknown; a failed older turn cannot stop a new lap. Late replies
 cannot restart it. An interrupted child order stays open until its addressee reports.
+On a recognized refusal of the current step, the final notice names the seat/lap, notes
+path and report identities for a person to open, distinguishing last completed from any
+stopped step's filed report. A known exclusion stops before report acceptance or relay,
+leaving a filed report immutable without appending its note. It withholds the full answer
+and refused input. The orchestrator concludes from completed notes only, names the stop,
+and never automatically opens or retypes the referenced full reports. Other stops retain
+the last full answer. Unreadable run evidence is held and shown in operational status;
+it does not become a successful completion.
 
 Effort changes use the program's existing confirmed in-session control. Where that control
 is unavailable, unconfirmed or interrupted, the lap keeps the current effort and says so in

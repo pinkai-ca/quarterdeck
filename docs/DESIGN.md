@@ -182,11 +182,33 @@ latest failed turn began at/after the order's measured native taking. Consumed q
 their consumption time. Posted-at and attempt clocks alone prove no taking. Unknown or
 unreadable evidence holds, and no reader forms are added. One immutable final service report
 tells the orchestrator where the notes are, includes requested and actual/unknown effort
-observations and limitations, and carries the last full answer. It does not answer
+observations and limitations, and normally carries the last full answer. An explicit
+`provider-refusal` stop category in the run journal instead withholds that full answer and
+refused step input. The service names the fixed category, seat/lap, notes path and last
+completed report id for a person to open. The orchestrator concludes from completed notes
+only, names the stop and never automatically reads/retypes the referenced report. The
+category comes only from recognized current-step failure evidence or that exact current
+order's membership in the existing exclusion set; an unreadable exclusion journal holds.
+Unlike the forum, which gives filed reports priority because they return only to the lead,
+the cascade checks known current-order exclusion before accepting a report because it would relay it onward.
+An already filed report remains immutable and is named separately by `stopped_report` for
+a person; it is not parsed, appended as a note, marked accepted or sent to the next seat.
+No reason/body substring classifier or Message fields are added. The notice does not answer
 the question. An interrupted child order stays open until its addressee reports; a late
 report cannot resume the ended run. The template beside drydock carries its own orders,
 cards and instructions and travels with the installed copy. There is no compiler, fleet
 raising or external workspace write in this cut.
+
+Each retained run is processed independently. Malformed, foreign, conflicting or unreadable
+run evidence produces a fixed derived hold under `runtime/post/cascade-holds/`, shown by
+read-only `Facts.cascade_held` even with the service down and counted on crowded status lines.
+The service logs changed holds after the pass, once per unchanged signature across restarts;
+successful recovery clears the derived hold. This leaves group behavior unchanged. The
+holds reader observes only fixed reasons/signatures, never report/provider bodies or usage.
+Untyped legacy stopped journals hold rather than guessing their stop category. Notes reads,
+prefix checks and suffix appends use one checked nofollow regular-file descriptor under a
+lock, with identity rechecked; an uncertain observation is retained, never a terminal
+success. `cascade_runtime.py` owns this runtime evidence and no native control or probe.
 
 ## 5. Harness adapters
 
@@ -401,6 +423,7 @@ runtime/
   post/attempts/       every delivery attempt, written before typing
   post/groups/         fixed group fanouts, per-copy terminal outcomes and notice intents
   post/group-holds/    derived per-group operational errors, read by status
+  post/cascade-holds/  derived per-run cascade operational errors, read by status
   post/inbox/<seat>.md what the seat reads: open obligations first
   brief/<seat>.md      what the seat read at boot
   ledger.sqlite        turns, tokens, tool calls, machine load, by pool, seat and order
@@ -755,6 +778,7 @@ quarterdeck/                       the project folder: the framework repository
     thread_context.py   open-root amendment selection, context-only own questions and exact whole-input consumed-bundle matching
     carriage.py         a launch's first message bounded in bytes: typed whole when short, else an account and a file read whole
     cascade.py          declared three-seat ring, runtime-only per-question journal and notes, immutable service relay intents and final notice
+    cascade_runtime.py  checked runtime file observations, once-only notes appends and derived cascade holds
     watch.py       reading a seat: activity and door; the status line
     output.py      one shape for every reading: rendered for a person, or serialized as JSON for a caller
     ledger.py      turns, tokens, tool calls, machine load, by pool, seat and order; opened read-only by every reading
