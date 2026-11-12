@@ -88,6 +88,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--adopt", action="store_true", help="write what the seat is running into the ship file")
     p = verb("controls", cmd_controls, "list a seat's controls with the form each has")
     p.add_argument("seat", nargs="?", help="default: this seat (QD_SEAT)")
+    p = verb("cascade", cmd_cascade, "start the declared ring once for a question to its orchestrator")
+    p.add_argument("--re", required=True, help="the question's id or short id")
+    p.add_argument("--efforts", help="fewer declared effort laps, comma separated, in the order named")
     verb("laws", cmd_laws, "the laws, each with the lines of code and test that carry it")
     p = verb("brief", cmd_brief, "print exactly what a seat reads at boot")
     p.add_argument("seat", nargs="?", help="default: this seat (QD_SEAT)")
@@ -165,6 +168,18 @@ def parse_value(raw: str) -> object:
 
 
 # -- seats -------------------------------------------------------------------------------
+
+
+def cmd_cascade(args: argparse.Namespace) -> str:
+    ship = load_ship(args)
+    if ship.cascade is None:
+        raise ShipError("no [cascade] declared in ship.toml")
+    caller = this_seat(ship, None, operator_too=True)
+    if caller not in (ship.cascade.orchestrator, ship.operator.lower()):
+        raise ShipError("only the orchestrator or operator starts the cascade")
+    question = post.Store(ship.runtime).get(args.re)
+    efforts = args.efforts.split(",") if args.efforts is not None else None
+    return service.request(ship.runtime, "cascade", question=question.id, caller=caller, efforts=efforts)
 
 
 def cmd_up(args: argparse.Namespace) -> list[str] | str:

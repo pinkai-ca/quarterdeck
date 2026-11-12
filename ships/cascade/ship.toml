@@ -1,0 +1,59 @@
+# Copy this complete folder for a cascade. The desk chooses credential pools before qd up.
+[ship]
+name = "cascade"
+operator = "operator"
+workspace = "."
+
+[cascade]
+seats = ["first", "second", "third"]
+orchestrator = "orchestrator"
+efforts = ["low", "medium", "high"]
+notes = "ring"                       # runtime/ring/<question>/responses.md, never the workspace
+note_chars = 800
+
+[pools.anthropic]
+provider = "anthropic"
+config_dir = "~/.claude"
+
+[pools.openai]
+provider = "openai"
+config_dir = "~/.codex"
+
+[pools.xai]
+provider = "xai"
+api_key = "GROK_API_KEY"
+
+[sessions.crew]
+title = "Cascade"
+
+[seats.orchestrator]
+session = "crew"
+role = "orchestrator"
+harness = "claude"
+pool = "anthropic"
+model = "opus"
+effort = "high"
+
+[seats.first]
+session = "crew"
+role = "ring"
+harness = "claude"
+pool = "anthropic"
+model = "sonnet"
+effort = "low"
+
+[seats.second]
+session = "crew"
+role = "ring"
+harness = "codex"
+pool = "openai"
+model = "gpt-6.1-terra"
+effort = "low"
+
+[seats.third]
+session = "crew"
+role = "ring"
+harness = "grok"
+pool = "xai"
+model = "grok-code-fast-1"
+effort = "low"

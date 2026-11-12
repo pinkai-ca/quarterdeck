@@ -110,6 +110,17 @@ class Group:
 
 
 @dataclass(frozen=True)
+class Cascade:
+    """An ordered ring; its per-question notes live only under the runtime."""
+
+    seats: tuple[str, str, str]
+    orchestrator: str
+    efforts: tuple[str, ...] = ("low", "medium", "high")
+    notes: str = "ring"
+    note_chars: int = 800
+
+
+@dataclass(frozen=True)
 class Ship:
     folder: Path
     name: str
@@ -119,6 +130,7 @@ class Ship:
     sessions: dict[str, Session]
     seats: dict[str, SeatSpec]
     groups: dict[str, Group] = field(default_factory=dict)
+    cascade: Cascade | None = None
 
     @property
     def file(self) -> Path:
@@ -197,6 +209,7 @@ def _from_text(text: str, folder: Path) -> Ship:
     }
     seats = {name: _seat(name, table, folder) for name, table in data.get("seats", {}).items()}
     groups = {name: _group(name, table) for name, table in data.get('groups', {}).items()}
+    from .cascade import declaration
     return Ship(
         folder=folder,
         name=head.get("name", folder.name),
@@ -206,6 +219,7 @@ def _from_text(text: str, folder: Path) -> Ship:
         sessions=sessions,
         seats=seats,
         groups=groups,
+        cascade=declaration(data.get("cascade")),
     )
 
 
@@ -356,6 +370,9 @@ def _validate(ship: Ship) -> None:
             raise ShipError(f"seat {seat.name}: fresh = {seat.fresh!r}; the one value is \"after-order\"")
         if seat.fresh_after_compactions is not None and (type(seat.fresh_after_compactions) is not int or seat.fresh_after_compactions < 0):
             raise ShipError(f"seat {seat.name}: fresh_after_compactions must be a nonnegative integer; 0 disables it")
+    if ship.cascade is not None:
+        from .cascade import validate
+        validate(ship)
 
 
 # -- the line editor -------------------------------------------------------------------

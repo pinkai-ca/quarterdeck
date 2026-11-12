@@ -30,6 +30,10 @@ def test_upgrade_installs_the_checkout_as_the_ships_own_copy_and_qd_hands_off_to
     record = json.loads((drydock / "runtime" / "installed.json").read_text())
     assert record["commit"] == head and record["previous"] is None
     assert not (drydock / "runtime" / "upgrade").exists(), "the staged source is gone once installed"
+    template = drydock / "runtime" / "venv" / "share" / "quarterdeck" / "ships" / "cascade"
+    assert load(template).cascade.seats == ("first", "second", "third")
+    assert (template / "roles" / "ring.md").is_file()
+    assert "tail -f" in (template / "README.md").read_text()
     assert subprocess.run([str(installed_qd), "--version"], capture_output=True, text=True).stdout.startswith("qd ")
     assert f"runs its installed copy, commit {head[:7]}" in doctor.framework_check(ship).detail
 

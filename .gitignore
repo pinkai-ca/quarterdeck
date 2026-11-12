@@ -1,8 +1,10 @@
-# Ships are their own repositories. Drydock, default and forum templates travel with the framework.
+# Ships are their own repositories. Drydock, default, forum and cascade templates
+# travel with the framework: fake tests, the smallest crew, independent review and a ring.
 ships/*
 !ships/drydock/
 !ships/default/
 !ships/forum/
+!ships/cascade/
 # A ship's state is fenced in a nested repository and never tracked anywhere.
 ships/*/runtime/
 # Worktrees for work on the framework itself live here, inside the project folder.

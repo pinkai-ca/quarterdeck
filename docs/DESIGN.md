@@ -152,6 +152,35 @@ Existing native harness spellings remain input aliases. Doctor prints the exact 
 
 Public readings use `provider_id` and `provider_name` for declared company identity, separately from `harness`, executable `program`, and paying `pool`. Pool metadata includes `native_harness`; harness metadata includes `native_provider_id`/`native_provider_name` (null for open harnesses). Status/watch/doctor and Ledger readings carry declared `pools` and `harnesses` collections. Ledger's former `pools[].provider` is replaced by `provider_id`; there is no same-name semantic switch. Usage groups/windows, launch/record harness names, native model/provider IDs and accounting pool names retain their source meaning. Status-line JSON facts and its operational-only text remain unchanged.
 
+An optional `[cascade]` declares three ordered `seats`, a separate `orchestrator`,
+`efforts` (default `low`, `medium`, `high`), `notes = "ring"` and `note_chars` (default
+800, at most 4000). The seats retain their conversations between laps; the real ring
+starts on three providers. The fake drydock may use one synthetic provider. An explicit
+`qd cascade --re QUESTION [--efforts low,high]` from the orchestrator or operator starts
+one active question, addressed to the orchestrator, once by its canonical post identity.
+The question remains open until the orchestrator's ordinary answer.
+
+The service publishes child orders as `ship` in the question's thread. Reports naturally
+return to `ship`, close only their ordinary child order, and are relayed whole to the next
+seat. A report begins with `## Cascade note`, a bounded note, then `## Answer` and the
+full answer. No intermediate report is addressed to the orchestrator. Only the service
+appends the note under seat and lap to `runtime/ring/<question>/responses.md`, with
+requested and observed/unknown effort. The journal beside it saves immutable post intents
+before publication and offset/hash byte-append intents before writing. Recovery finishes
+only the missing append suffix or publication; it never repeats a possibly typed control.
+Posts keep their existing JSON shape. A changed notes prefix holds that append and causes
+an early final notice; it is not rewritten. The notes path is independent of the workspace.
+
+The existing confirmed in-session control changes effort before the seat's next lap order.
+Unavailable, busy, unconfirmed or interrupted controls leave the current effort in place
+with an honest fallback; this cut adds no lifecycle transition. A wall, recorded failure
+category or dead owned pane ends the ring early. One immutable final service report tells
+the orchestrator where the notes are and includes the last full answer. It does not answer
+the question. An interrupted child order stays open until its addressee reports; a late
+report cannot resume the ended run. The template beside drydock carries its own orders,
+cards and instructions and travels with the installed copy. There is no compiler, fleet
+raising or external workspace write in this cut.
+
 ## 5. Harness adapters
 
 One class per agent program, on one interface, `Harness` in `harness/base.py`. A new adapter writes the members below; the rest is written once in the base. Every fact about a program lives in its adapter: no module outside `harness/` names a program, and a test holds the line.
@@ -679,11 +708,11 @@ Two tests guard the repository itself: no runtime content, seat id or credential
 
 ```
 quarterdeck/                       the project folder: the framework repository
-  LICENSE  README.md  pyproject.toml  .gitignore (ships/*, !ships/drydock/, !ships/default/, work/, .testruns/)
+  LICENSE  README.md  pyproject.toml  .gitignore (ships/*, !ships/drydock/, !ships/default/, !ships/forum/, !ships/cascade/, work/, .testruns/)
   AGENTS.md      for whoever works on Quarterdeck itself, person or agent; CLAUDE.md is one line that imports it
   src/quarterdeck/
     cli.py         the qd command
-    ship.py        ship.toml -> Ship: sessions, seats, roles, pools; the line editor; the fence
+    ship.py        ship.toml -> Ship: sessions, seats, roles, pools, optional groups and cascade; the line editor; the fence
     providers.py   declared companies, input normalization and public identities
     tmux.py        the only module that runs tmux
     tmux_socket.py   private endpoint ownership and namespace locking; no native command execution
@@ -718,6 +747,7 @@ quarterdeck/                       the project folder: the framework repository
     group_post.py  declared fanout, fixed intents and member outcomes, current dead/held-limit observation, terminal notices and derived group holds
     thread_context.py   open-root amendment selection, context-only own questions and exact whole-input consumed-bundle matching
     carriage.py         a launch's first message bounded in bytes: typed whole when short, else an account and a file read whole
+    cascade.py          declared three-seat ring, runtime-only per-question journal and notes, immutable service relay intents and final notice
     watch.py       reading a seat: activity and door; the status line
     output.py      one shape for every reading: rendered for a person, or serialized as JSON for a caller
     ledger.py      turns, tokens, tool calls, machine load, by pool, seat and order; opened read-only by every reading
@@ -742,6 +772,7 @@ quarterdeck/                       the project folder: the framework repository
     drydock/       ship.toml  orders.md    three fake seats, one in each kind of session: the tests and the drill run here
     default/       ship.toml  orders.md    the smallest crew on real programs, a desk, a captain and an engineer; copy it for a ship of your own
     forum/         ship.toml  orders.md  roles/lead.md  roles/reviewer.md; one lead and four independent reviewers
+    cascade/       ship.toml orders.md roles/ README.md    three providers in a service-relayed ring and one orchestrator; runtime notes only
     <yours>/       a nested repository, ignored above: ship.toml  orders.md  roles/  harnesses/  homes/  runtime/
     */runtime/     a nested repository with no commits: the fence around a ship's state
   work/            worktrees for work on the framework itself, ignored; the checkout above is what a running ship uses

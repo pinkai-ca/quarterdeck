@@ -102,7 +102,7 @@ class Service:
             self.ship = shipmod.load(self.ship.folder)  # law: ship-file
         except ShipError as error:
             self.log("error", step="load", error=str(error))
-        for step in (self.reconcile, self.account, self.groups, self.inboxes, self.recoveries, self.refusals, self.deliveries, self.follow, self.requests, self.compactions, self.fresh_after_order,
+        for step in (self.reconcile, self.account, self.groups, self.cascades, self.inboxes, self.recoveries, self.refusals, self.deliveries, self.follow, self.requests, self.compactions, self.fresh_after_order,
                      self.rebrief, self.credentials, self.failover):  # accounting before anything relaunches a seat
             self.heartbeat()  # before every step: a slow delivery or usage read reads as busy, never as dead
             try:
@@ -343,6 +343,11 @@ class Service:
         for request, reason in changed:
             self.log('group-held', request=request, reason=reason)
 
+    def cascades(self) -> None:
+        from . import cascade
+        cascade.run(self)
+
+
     def requests(self) -> None:
         """Each request answered alone, in name order: none keeps a later one waiting.
 
@@ -429,6 +434,9 @@ class Service:
 
     def answer(self, data: dict) -> str | None:
         kind = data["kind"]
+        if kind == "cascade":
+            from . import cascade
+            return cascade.start(self, data["question"], data["caller"], data.get("efforts"))
         if kind == 'rebrief':
             copy = install.installed(self.runtime)
             if copy is None or copy['commit'] != data['commit']:

@@ -152,10 +152,10 @@ def upgrade(ship: Ship, ref: str = "HEAD", tmux: Tmux | None = None) -> list[str
     _run([str(venv / "bin" / "python"), "-m", "pip", "install", "--quiet", "--no-deps", "--no-build-isolation", str(staging)],
          f"installing {commit[:7]}")
     share = venv / "share" / "quarterdeck"  # the framework's files beside the code: the laws, the cards, the drydock
-    for name in ("standing-orders", "ships/drydock", "ships/forum"):
+    for name in ("standing-orders", "ships/drydock", "ships/forum", "ships/cascade"):
         shutil.rmtree(share / name, ignore_errors=True)
-        if name == 'ships/forum' and not (staging / name).exists():
-            continue  # rolling back to a revision before the forum template
+        if name in ('ships/forum', 'ships/cascade') and not (staging / name).exists():
+            continue  # rolling back to a revision before an optional template
         shutil.copytree(staging / name, share / name)
     shutil.rmtree(runtime / "upgrade", ignore_errors=True)
     version = subprocess.run([str(venv / "bin" / "qd"), "--version"], capture_output=True, text=True).stdout.strip()
