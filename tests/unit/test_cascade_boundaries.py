@@ -71,8 +71,10 @@ pool = "test"
     monkeypatch.setattr(Seat, "fresh", fresh)
     # The service pass uses its own effort control; no control is exercised at this boundary.
     monkeypatch.setattr(cascade, "effort", lambda service, name, wanted: unchanged_effort(name, wanted))
+    # The production pass's wiring: both existing refusal sources gate a filed report.
     built.runner = cascade.Runner(built.svc.ship, built.svc.store,
-                                  lambda name, order: cascade.health(built.svc, name, order), unchanged_effort)
+                                  lambda name, order: cascade.health(built.svc, name, order), unchanged_effort,
+                                  refusal_check=lambda name, order: cascade.known_refusal(built.svc, name, order))
     built.question = built.order("conductor", "Invent a fictional footbridge.", sender="operator", kind="question")
     cascade.start(built.svc, built.question.id, "conductor")
     built.path = cascade.folder(built.svc.runtime, built.question.id)
