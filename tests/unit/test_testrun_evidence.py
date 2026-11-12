@@ -126,7 +126,8 @@ def test_a_run_stopped_before_collection_states_no_expected_count_and_says_where
     write(tmp_path / 'f', 'main', START, {'kind': 'finish', 'exitstatus': 5})
     unexplained = evidence.analyse(tmp_path / 'f', 5)
     for found in (in_setup, in_collection, unexplained):
-        assert found['expected'] is None and found['missing'] == [] and not found['complete']
+        assert found['expected'] is None and found['collection'] == 'none'
+        assert found['missing'] == [] and not found['complete']
         assert 'collection never finished (no collection was recorded)' in found['causes']
         assert set(found['counts'].values()) == {None}
     base = {'run': 'synthetic', 'target': {'top': '/t', 'head': 'h', 'tree': 't'}, 'runner': {},
@@ -136,6 +137,54 @@ def test_a_run_stopped_before_collection_states_no_expected_count_and_says_where
     assert 'expected unknown' in setup_text and 'expected unknown' in collection_text
     assert report.NEVER_COLLECTED_SETUP in setup_text and report.NEVER_COLLECTED_DURING not in setup_text
     assert report.NEVER_COLLECTED_DURING in collection_text and report.NEVER_COLLECTED_SETUP not in collection_text
+
+
+START_2 = {**START, 'plugin': 2}
+BASE = {'run': 'synthetic', 'target': {'top': '/t', 'head': 'h', 'tree': 't'}, 'runner': {},
+        'outcome': {'status': 'timeout', 'wrapper_exit': 3}}
+
+
+def test_an_interrupted_collection_keeps_what_it_collected_but_states_no_expected_count(tmp_path):
+    write(tmp_path / 'e', 'main', START_2, {'kind': 'collected', 'nodeids': ['t::a'], 'complete': False},
+          {'kind': 'interrupt', 'text': 'KeyboardInterrupt'}, {'kind': 'finish', 'exitstatus': 2})
+    found = evidence.analyse(tmp_path / 'e', 2)
+    assert found['collection'] == 'partial' and found['expected'] is None and not found['complete']
+    assert found['missing'] == ['t::a'], 'a test known to be collected and never reported stays named'
+    assert 'collection interrupted: the recorded collection is partial' in found['causes']
+    text = report.render(dict(BASE, evidence=found), '', [])
+    assert report.COLLECTION_INTERRUPTED in text and f'{report.PARTIAL_MISSING} (1):' in text
+    assert report.NEVER_COLLECTED_DURING not in text and report.PLUGIN_1 not in text
+
+
+def test_a_marked_collection_with_errors_is_complete_and_its_errors_stay_known(tmp_path):
+    write(tmp_path / 'e', 'main', START_2,
+          {'kind': 'collect', 'nodeid': 'tests/test_bad.py', 'outcome': 'failed', 'longrepr': 'SyntaxError', 'sections': []},
+          {'kind': 'collected', 'nodeids': ['t::a'], 'complete': True}, {'kind': 'finish', 'exitstatus': 2})
+    found = evidence.analyse(tmp_path / 'e', 2)
+    assert found['collection'] == 'complete' and found['expected'] == 1 and found['collection_errors'] == 1
+    assert not found['complete'] and found['missing'] == ['t::a']
+
+
+def test_every_xdist_worker_must_have_completed_its_own_collection(tmp_path):
+    ids = ['t::a', 't::b']
+    nodes = [{'kind': 'node_collected', 'node': node, 'nodeids': ids} for node in ('gw0', 'gw1')]
+    write(tmp_path / 'e', 'main', START_2, *nodes)
+    write(tmp_path / 'e', 'gw0', START_2, {'kind': 'collected', 'nodeids': ids, 'complete': True})
+    write(tmp_path / 'e', 'gw1', START_2, {'kind': 'collected', 'nodeids': ids[:1], 'complete': False})
+    found = evidence.analyse(tmp_path / 'e', None)
+    assert found['collection'] == 'partial' and found['expected'] is None
+    write(tmp_path / 'f', 'main', START_2, *nodes)
+    for node in ('gw0', 'gw1'):
+        write(tmp_path / 'f', node, START_2, {'kind': 'collected', 'nodeids': ids, 'complete': True})
+    assert evidence.analyse(tmp_path / 'f', None)['expected'] == 2
+
+
+def test_plugin_1_evidence_is_read_as_before_and_the_report_says_so(tmp_path):
+    write(tmp_path / 'e', 'main', START, {'kind': 'collected', 'nodeids': ['t::a']},
+          {'kind': 'interrupt', 'text': 'KeyboardInterrupt'}, {'kind': 'finish', 'exitstatus': 2})
+    found = evidence.analyse(tmp_path / 'e', 2)
+    assert found['collection'] == 'complete' and found['expected'] == 1 and found['missing'] == ['t::a']
+    assert report.PLUGIN_1 in report.render(dict(BASE, evidence=found), '', [])
 
 
 def test_failure_files_are_complete_and_the_report_summary_points_at_them(tmp_path):

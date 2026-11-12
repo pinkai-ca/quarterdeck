@@ -12,7 +12,7 @@ import time
 
 import pytest
 
-PLUGIN_VERSION = 1
+PLUGIN_VERSION = 2  # 2: a 'collected' event says whether the collection completed
 
 
 def _text(value):
@@ -30,6 +30,7 @@ class Recorder:
         workerinput = getattr(config, 'workerinput', None)
         self.role = workerinput['workerid'] if workerinput else 'main'
         self.file = open(os.path.join(folder, self.role + '.jsonl'), 'a', encoding='utf-8')
+        self.collection_complete = False
 
     def emit(self, kind, **fields):
         self.file.write(json.dumps({'kind': kind, 'role': self.role, 'at': time.time(), **fields}) + '\n')
@@ -54,8 +55,13 @@ class Recorder:
     def pytest_deselected(self, items):
         self.emit('deselected', nodeids=[item.nodeid for item in items])
 
+    @pytest.hookimpl(trylast=True)
+    def pytest_collection_modifyitems(self, session, config, items):
+        self.collection_complete = True  # pytest calls this only once collection has completed, errors included
+
     def pytest_collection_finish(self, session):
-        self.emit('collected', nodeids=[item.nodeid for item in session.items])
+        # pytest calls this from a ``finally``: an interrupted collection reaches it with a partial list
+        self.emit('collected', nodeids=[item.nodeid for item in session.items], complete=self.collection_complete)
 
     def pytest_runtest_logreport(self, report):
         self.emit('report', nodeid=report.nodeid, when=report.when, outcome=report.outcome,

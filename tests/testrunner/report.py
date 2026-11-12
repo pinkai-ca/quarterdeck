@@ -54,6 +54,11 @@ NEVER_COLLECTED_SETUP = ('Collection never finished: pytest\'s evidence recorder
                          'setup, before pytest ran. What it would have run is unknown.')
 NEVER_COLLECTED_DURING = ('Collection never finished: pytest started and the run stopped during its collection. What it '
                           'would have run is unknown.')
+COLLECTION_INTERRUPTED = ('Collection was interrupted: pytest recorded only part of it, so what it would have run is '
+                          'unknown.')
+PARTIAL_MISSING = 'Never reached a terminal report (partial, at least these, since collection did not finish)'
+PLUGIN_1 = ('Read under evidence plugin version 1, which does not mark a completed collection: a recorded collection '
+            'is taken as complete.')
 
 
 def render(result: dict, console: str, failures: list[dict]) -> str:
@@ -82,11 +87,17 @@ def render(result: dict, console: str, failures: list[dict]) -> str:
         out.append('Observed at least: ' + ', '.join(f'{key} {value}' for key, value in observed.items()) +
                    f'; collection errors {evidence.get("collection_errors")}; '
                    f'expected {"unknown" if expected is None else expected}, reached terminal {evidence.get("terminal")}')
-        if expected is None:
+        partial = evidence.get('collection') == 'partial'
+        if partial:
+            out.append(COLLECTION_INTERRUPTED)
+        elif expected is None:
             out.append(NEVER_COLLECTED_DURING if evidence.get('plugin') else NEVER_COLLECTED_SETUP)
         if evidence.get('missing'):
-            out.append(f'Never reached a terminal report ({len(evidence["missing"])}):')
+            out.append(f'{PARTIAL_MISSING if partial else "Never reached a terminal report"} '
+                       f'({len(evidence["missing"])}):')
             out.append(block('\n'.join(evidence['missing'])))
+    if any(version < 2 for version in evidence.get('plugin') or []):
+        out.append(PLUGIN_1)
     out += ['', '## Failures', '']
     if not failures:
         out.append('None recorded.')
