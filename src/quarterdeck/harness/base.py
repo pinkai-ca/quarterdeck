@@ -368,6 +368,22 @@ class Harness(ABC):
         return False
 
     grant_kind: str = "unknown"  # one of GRANT_KINDS: what the pool's grant needs at its end
+    def delivery_obstruction(self, state: State | None, screen: Screen | None) -> str | None:
+        """A current native fault that requires a human before any input action.
+
+        The default has no fault and causes no additional record/screen reads.
+        Overrides receive owned record evidence first, or None when unavailable;
+        they must not infer native settings from launch configuration.
+        """
+        return None
+
+    def interrupt_obstruction(self, state: State | None, screen: Screen | None) -> str | None:
+        """Why an interrupt cannot be sent now; default preserves existing keys.
+
+        An adapter with idle-key side effects can require positive activity from
+        the current record, with a recognized screen fallback when unknown.
+        """
+        return None
 
     def grant_expiry(self, path: Path) -> datetime | None:
         """A fixed grant's end, or a self-renewing grant's short access expiry; read as metadata, never a token."""

@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+import json
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from pathlib import Path
 
 from . import ledger as ledgermod, pending, input_receipt, quota, pane_obstruction
-from .harness.base import Screen
+from .harness.base import Harness, Screen, record_fingerprint
 from .harness.capabilities import persistent_screen_queue
 from .harness.types import _cells
 from .quota import reset_text, stamp
@@ -197,6 +199,57 @@ class Door:
             return ()
         return self.harness.screen(self.tmux.capture(pane.id, history=TRANSCRIPT_LINES)).echoes
 
+    def adapter_hook(self, name):
+        """No additional I/O for adapters retaining the default no-op hook."""
+        hook = getattr(self.harness, name, None)
+        return None if hook is None or getattr(hook, "__func__", None) is getattr(Harness, name) else hook
+
+    def adapter_state(self):
+        """Read an existing typed pin, never join/register a record in a reading."""
+        if self.seat.session.human:
+            return None
+        from . import record_owner
+        from .turn_failure import metadata
+        try:
+            launched = self.seat.launched()
+            if record_owner.launch_reader(launched) != self.harness.name:
+                return None
+            pointer = self.seat.folder / "record"
+            registry = self.seat.folder / record_owner.REGISTRY
+            pin, ownership = metadata(pointer), metadata(registry)
+            if not pin.strip():
+                return None
+            path = Path(pin.strip())
+            names = set()
+            for line in ownership.splitlines():
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if not isinstance(row, dict):
+                    return None
+                if row.get("record") == str(path):
+                    names.add(row.get("harness"))
+            if names != {self.harness.name}:
+                return None
+            before = record_fingerprint(path)
+            state = self.harness.state(path)
+            if (self.seat.launched() != launched or metadata(pointer) != pin
+                    or metadata(registry) != ownership or record_fingerprint(path) != before):
+                return None
+            return state
+        except (OSError, ValueError, TypeError, UnicodeError):
+            return None  # absence/unreadable/changing evidence is unknown
+
+    def adapter_obstruction(self, screen=UNCAPTURED) -> str | None:
+        hook = self.adapter_hook("delivery_obstruction")
+        if hook is None:
+            return None
+        if self.seat.session.human:
+            return "a human owns this session; its watch delivers"
+        if screen is UNCAPTURED:
+            screen = self.screen()
+        return hook(self.adapter_state(), screen)
+
     def wall(self, screen: Screen | None) -> str | None:
         """A quota wall on this seat's pool: the one the Ledger knows, or the banner on the screen.
 
@@ -293,6 +346,8 @@ class Door:
 
     def _base_reading(self, screen: Screen | None) -> Reading:
         """The existing admission reading; geometry diagnostics confer no authority."""
+        if reason := self.adapter_obstruction(screen):
+            return Reading(False, reason, "needs a human")  # law: nothing-waits-silently
         from .turn_failure import obstruction
         if reason := obstruction(self.seat):
             return Reading(False, reason, "needs a human")  # law: record-first
@@ -417,6 +472,8 @@ class Door:
 
     def initial_obstruction(self, screen: Screen | None) -> Reading | None:
         """Absence or an unknown initial frame holds without a replacement capture."""
+        if reason := self.adapter_obstruction(screen):
+            return Reading(False, reason, "needs a human")
         if screen is None or screen.unknown is not None or (screen.box is None and screen.interruption is None):
             return self._reading(screen)
         return None
@@ -521,6 +578,8 @@ class Door:
             screen = self.screen()
         if self.seat.session.human:
             return screen  # no key of ours is ever pressed in a human's session; the person answers there
+        if self.adapter_obstruction(screen):
+            return screen
         if (not pending.held(self.seat, screen, self.proof) and screen and screen.interruption
                 and screen.interruption.click is not None
                 and (screen.box is None if screen.interruption.by_label else screen.box is not None and not screen.box.strip())):
@@ -594,7 +653,9 @@ class Door:
         if hold := pending.held(self.seat, screen, proof):
             return Delivery("withheld", hold[0])
         if speed == "interrupt" and screen is not None and screen.working and not self.seat.session.human:
-            self.interrupt()
+            interrupted, detail = self._interrupt()
+            if not interrupted:
+                return Delivery("withheld", detail)
             screen = self.settled()
         reading = self._reading(screen) if screen is None else self.reading(screen)
         if not reading.open:
@@ -621,6 +682,8 @@ class Door:
             if shutdown.never_pasted(proof.data):
                 proof.save(phase="cancelled", resolution="service stopped before paste; never typed")
             return Delivery("withheld", "service stopping before paste")
+        if reason := self.adapter_obstruction():
+            return Delivery("withheld", reason)
         owned=paste_refusal.owner(self,text,screen)
         if proof:
             proof.save(phase="pasting")
@@ -644,6 +707,8 @@ class Door:
                     pane_obstruction.publish(proof)
                 except (OSError, ValueError, KeyError, TypeError):
                     pass  # optional reason metadata; never alter paste/clear/submit decisions
+            if reason := self.adapter_obstruction():
+                return Delivery("blind", f"{reason}; draft not submitted or cleared; needs a human")
             if verify is None or verify():
                 if reason:=paste_refusal.clear(self,text,owned,shown,BOX_SECONDS):
                     return Delivery('withheld', f'{diagnostic}; {reason}' if diagnostic else reason)
@@ -673,12 +738,15 @@ class Door:
             current = self.seat.pane()
             if current is None or current.in_mode or not proof.same_launch(self.seat):
                 return Delivery('blind', 'human wake pane changed after paste; not submitted or cleared')
-        self.submit(pane.id)
+        if reason := self.submit(pane.id):
+            return Delivery("blind", f"{reason}; draft not submitted or cleared; needs a human")
         if proof:
             proof.save(phase="submitted")
         if proof and shutdown.requested():
             return Delivery("pending", "submitted once before service stop; record confirmation remains pending")
         if speed == "now" and shown.working and self.harness.keys.send_now:
+            if reason := self.adapter_obstruction():
+                return Delivery("blind", f"{reason}; input already submitted; no further key sent")
             self.tmux.keys(pane.id, *self.harness.keys.send_now)
         if not confirm:
             return Delivery("typed", f"submitted in {pane.id}")
@@ -696,6 +764,8 @@ class Door:
         if not proof.same_launch(self.seat) or not verify():
             return Delivery('withheld', 'bound mode/source changed; no control key sent')
         pane = self.seat.pane()
+        if reason := self.adapter_obstruction():
+            return Delivery("withheld", reason)
         self.tmux.keys(pane.id, *keys)
         return Delivery('typed', 'one native mode-control queue sent')
 
@@ -818,8 +888,10 @@ class Door:
         except OSError:
             pass  # a log line never decides a delivery
 
-    def submit(self, pane_id: str) -> None:
+    def submit(self, pane_id: str) -> str | None:
         """Enter, or a raw carriage return when the pane is in copy mode, which swallows keys."""
+        if reason := self.adapter_obstruction():
+            return reason
         pane = self.tmux.pane(pane_id)
         if pane and pane.in_mode:
             self.tmux.paste(pane_id, "\r", bracketed=False)
@@ -827,16 +899,28 @@ class Door:
             self.tmux.keys(pane_id, self.harness.keys.submit)
 
     def interrupt(self) -> str:
+        return self._interrupt()[1]
+
+    def _interrupt(self) -> tuple[bool, str]:
+        """Re-read activity immediately; a delivery's earlier frame is not permission."""
         if self.seat.session.human:
-            return f"{self.seat.name}: a human owns this session; no interrupt key sent"
+            return False, f"{self.seat.name}: a human owns this session; no interrupt key sent"
+        interrupt_hook = self.adapter_hook("interrupt_obstruction")
+        delivery_hook = self.adapter_hook("delivery_obstruction")
+        if interrupt_hook is not None or delivery_hook is not None:
+            screen, state = self.screen(), self.adapter_state()
+            if delivery_hook is not None and (reason := delivery_hook(state, screen)):
+                return False, reason
+            if interrupt_hook is not None and (reason := interrupt_hook(state, screen)):
+                return False, reason
         pane = self.seat.pane()
         key = self.harness.keys.interrupt
         if pane is None:
-            return f"{self.seat.name} is not up"
+            return False, f"{self.seat.name} is not up"
         if key is None:
-            return f"{self.harness.name} has no interrupt key"
+            return False, f"{self.harness.name} has no interrupt key"
         self.tmux.keys(pane.id, *key.split())  # a program that wants the key twice names the sequence
-        return f"{self.seat.name} interrupted with {key} in {pane.id}"
+        return True, f"{self.seat.name} interrupted with {key} in {pane.id}"
 
     def confirm(self, text: str, seconds: float = CONFIRM_SECONDS) -> Delivery:
         """Only a fresh exact input in the owned record confirms acceptance."""
