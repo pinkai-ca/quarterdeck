@@ -3,8 +3,12 @@
 Copy this whole template to a ship folder of its own. From an installed ship copy it is at
 `runtime/venv/share/quarterdeck/ships/cascade`; in a checkout it is `ships/cascade`.
 The desk edits the copied ship file to choose its three providers, models and credential
-pools. The template uses Claude, Codex and Grok, with Claude as orchestrator. No compiler or
-`qd raise` is needed. All seats run in the crew session.
+pools. All three pools are native subscription examples: Claude, Codex and Grok, with Claude
+as orchestrator. The credential directories are editable examples. Before `qd up`, the desk
+must point the Grok pool at its native subscription directory containing `auth.json` and
+replace `REPLACE_WITH_AVAILABLE_SUBSCRIPTION_MODEL` with a model available on that subscription.
+This template claims no API model or live model availability. No compiler or `qd raise` is
+needed. All seats run in the crew session.
 
 ```
 qd --ship /path/to/my-cascade up

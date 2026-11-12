@@ -92,7 +92,8 @@ def test_fake_ring_relays_whole_reports_grows_same_file_changes_effort_and_notif
         wait_for(lambda: idle_after_delivery(ring, tmux, order), seconds=15)
         seat = seatmod.Seat(ring, ring.seat(order.to), tmux)
         expected = ("low", "medium", "high")[index // 3]
-        assert seat.harness.screen(tmux.capture(seat.pane().id)).shows["effort"] == expected
+        assert wait_for(lambda: seat.harness.screen(tmux.capture(seat.pane().id)).shows["effort"] == expected,
+                        seconds=15)
         if index == 3:
             assert "service stopped" in service.stop(ring.runtime)
             assert "service started" in service.start(ring)

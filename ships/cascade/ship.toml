@@ -21,7 +21,7 @@ config_dir = "~/.codex"
 
 [pools.xai]
 provider = "xai"
-api_key = "GROK_API_KEY"
+config_dir = "~/.grok"              # EDIT: directory holding the native subscription auth.json
 
 [sessions.crew]
 title = "Cascade"
@@ -55,5 +55,5 @@ session = "crew"
 role = "ring"
 harness = "grok"
 pool = "xai"
-model = "grok-code-fast-1"
+model = "REPLACE_WITH_AVAILABLE_SUBSCRIPTION_MODEL"  # REQUIRED: desk selects a model available on this subscription
 effort = "low"
