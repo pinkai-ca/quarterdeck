@@ -3,13 +3,12 @@ from __future__ import annotations
 
 from dataclasses import replace
 import shutil
-import subprocess
 
 import pytest
 
 from quarterdeck import seat as seatmod, service, ship as shipmod
 from quarterdeck.tmux import TmuxError
-from .waiting import wait_for
+from .waiting import attached_client
 
 
 @pytest.fixture
@@ -79,10 +78,7 @@ def test_another_process_in_the_pane_refuses_in_the_server(crew, tmux):
 def test_an_attached_client_typing_or_a_different_size_refuses_and_an_equal_size_switches(crew, tmux, monkeypatch):
     svc, seats = crew
     attach = f"stty cols 80 rows 24; exec tmux -S {tmux.socket} -N attach -t =Crew:"
-    client = subprocess.Popen(['script', '-qfc', attach, '/dev/null'], stdin=subprocess.DEVNULL,
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    try:
-        wait_for(lambda: tmux.session_view('Crew').inputs)
+    with attached_client(attach, lambda: tmux.session_view('Crew').inputs):
         seat = other(svc, seats, tmux)
         before, windows = shown(tmux)
         assert svc.show_window(seat) == 'a human is typing in the session', 'attaching is input'
@@ -97,6 +93,3 @@ def test_an_attached_client_typing_or_a_different_size_refuses_and_an_equal_size
         assert svc.show_window(seat) is None
         after, now = shown(tmux)
         assert after == target and sizes(now) == sizes(windows)
-    finally:
-        client.terminate()
-        client.wait(timeout=5)
