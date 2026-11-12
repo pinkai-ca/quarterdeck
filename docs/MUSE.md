@@ -5,6 +5,15 @@ harness and cannot launch a seat. No native Muse process or test run has been
 performed for this change. Installed launcher source selects the release named
 `1.4.15-R8339.1`; executed version proof remains pending.
 
+`muse_home.py` drafts pure configuration/environment output without creating a
+home or reading credentials. It seeds an explicitly declared noncontributor
+model and rejects contributor choices in each declaration layer. Historical
+personal-context keys are written in that output; their current-version effect
+is unproved. The proposed canonical auth link is `home/auth.json`, selected by
+`MUSE_AUTH_PATH`, with settings under `home/config/muse` and records under
+`home/data/muse`. Independent native validation must confirm those paths and
+schema before launch integration.
+
 The adapter must accept every ship-declared workspace and grant its native
 workspace trust automatically. Project instructions and tooling are disabled
 only where Muse supports that while trusted; otherwise they load, and the card
