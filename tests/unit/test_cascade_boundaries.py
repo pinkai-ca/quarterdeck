@@ -17,7 +17,7 @@ from quarterdeck import cascade, cascade_runtime, post, refusal, ship as shipmod
 from quarterdeck.seat import Seat
 from quarterdeck.ship import Cascade, Pool, SeatSpec, Session, Ship, ShipError
 from tests.unit import refusal_ship
-from tests.unit.refusal_ship import REFUSED, World
+from tests.unit.refusal_ship import OTHER, REFUSED, World
 
 RING = ("worker", "tester", "spock")
 HOLDS = (ShipError, ValueError, KeyError, TypeError)
@@ -150,6 +150,42 @@ def test_quarantine_seen_first_ends_the_ring_before_any_filed_report_is_accepted
     for _ in range(2):
         world.runner.advance(world.path)
     assert len(finals(world.svc.store, "conductor")) == 1
+
+
+@pytest.mark.parametrize("source", ["record", "record and journal", "other error"])
+def test_a_filed_report_never_outruns_a_refusal_of_its_own_step(world, source):
+    """A report filed in the turn its provider then refused is not relayed, whichever evidence shows the refusal.
+
+    Driven through the service's own cascade pass. An ordinary error keeps report-first precedence.
+    """
+    world.launch("worker")
+    assert cascade.run(world.svc) == []
+    order = step_order(world.svc.store, world.path)
+    report = reply(world.svc.store, order, note="A note filed before the refusal.",
+                   answer="An answer filed before the refusal.")
+    world.turn("worker", order, error=OTHER if source == "other error" else REFUSED)
+    if source == "record and journal":  # held: quarantined and told, not yet relaunched
+        refusal.save(world.svc.runtime, "worker", [{
+            "launch": refusal.launch_key(world.seat("worker")), "record": "synthetic", "turn": None,
+            "code": None, "words": "provider refusal", "stage": "held", "reason": "synthetic hold",
+            "successor": None, "notices": [],
+            "quarantined": [{"message": order.id, "sender": post.SHIP, "kind": "order"}]}])
+    notes = (world.path / "responses.md").read_bytes()
+    for _ in range(2):
+        assert cascade.run(world.svc) == []
+    data = cascade.load(world.path)
+    if source == "other error":
+        assert data["status"] == "running" and data["steps"][0]["report"] == report.id
+        assert step_order(world.svc.store, world.path).to == "tester" and finals(world.svc.store, "conductor") == []
+        return
+    assert data["status"] == "stopped" and data["stop_category"] == "provider-refusal"
+    assert data["stopped_report"] == report.id and "report" not in data["steps"][-1] and data["last"] is None
+    assert (world.path / "responses.md").read_bytes() == notes, "no note of the refused step"
+    assert not [m for m in world.svc.store.all() if m.kind == "order" and m.to == "tester"], "not relayed"
+    [final] = finals(world.svc.store, "conductor")
+    withheld(final, order.body, world.question.body, report.body)
+    assert report.id in final.body and world.svc.store.get(report.id).body == report.body
+    provider_words_absent(world)
 
 
 def test_an_unreadable_exclusion_journal_holds_visibly_without_accepting_or_guessing(world):
