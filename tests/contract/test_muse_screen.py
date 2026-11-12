@@ -158,4 +158,22 @@ def test_measured_middle_dot_edge_placements_keep_the_word_and_its_space(columns
 def test_unknown_final_word_and_internal_word_breaks_have_no_projection():
     assert wrapped_rows("x" * 77, 78) is None
     assert wrapped_rows("word " * 14 + "a-hyphenated-final-word", 78) is None
-    assert wrapped_rows("word " * 10 + "x" * 30 + " end", 78) is None
+
+
+def test_greedy_wrap_moves_a_whole_short_word_from_an_earlier_offset():
+    prefix = "word " * 10
+    text = prefix + "x" * 30 + " end"
+    screen = read(composer([prefix, "x" * 30 + " end"], columns=80))
+    assert VisibleBox(text).matches(screen.box, 78)
+
+
+@pytest.mark.parametrize("columns", [80, 120])
+def test_greedy_wrap_retains_each_break_space_across_a_long_ascii_line(columns):
+    text = "introduction " + "word " * 58 + "ok"
+    assert len(text) == 305
+    if columns == 80:
+        rows = ["introduction " + "word " * 12] + ["word " * 15] * 3 + ["word ok"]
+    else:
+        rows = ["introduction " + "word " * 20, "word " * 23, "word " * 15 + "ok"]
+    screen = read(composer(rows, columns=columns))
+    assert VisibleBox(text).matches(screen.box, columns - 2)

@@ -156,16 +156,17 @@ prefix-derived `box_columns` bound remains pane width minus two; native physical
 capacity at that bound is unproved. It is separate from the observed word-break
 budget, pane width minus three, including the word's following space.
 
-Offline measurements at widths 80 and 120 establish the last-three dot edge
-placements. The source projects only those established overflowing placements:
-a one-character word plus space after content of W-4 or W-3, or a two-character
-word plus space after W-5. The broken row retains its trailing space, and the
-next row starts with the moved word. A terminal LF retains the final empty
-content row (its two-space prefix leaves the cursor at x=2). No default-styled
-right padding is assumed, and the composer has no background.
+Offline measurements at widths 80 and 120 establish greedy whole-word placement,
+including an ordinary long ASCII line and the last-three dot edge cases. A word
+and its following space stay on the current row while their sum fits W-3;
+otherwise the whole word starts a continuation row. The broken row retains its
+trailing space. Admission is not restricted to three individual edge pairs.
+A terminal LF retains the final empty content row (its two-space prefix leaves
+the cursor at x=2). No default-styled right padding is assumed, and the composer
+has no background.
 
 A final word without following space needing W-3/W-2 placement is unknown, as
-are other overflow placements, unmeasured widths, long words, tabs, other
+are unmeasured widths, long words, tabs, other
 Unicode, repeated/edge-space wrapping and arbitrary internal-word breaks. One
 hyphen break in the measured footer is not a general hyphen algorithm: that
 83-character footer at width 80 still holds, while its width-120 unwrapped form

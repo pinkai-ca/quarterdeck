@@ -56,8 +56,9 @@ current one ends; it is not active-run delivery. The adapter withholds working
 delivery until its exact queue receipt is implemented. Supported ASCII and
 middle-dot rows are matched against the whole payload. The prefix-derived width
 bound is distinct from the measured W-3 word-plus-space budget at pane widths
-80 and 120. Only established edge moves are projected; unknown final-word or
-hyphen breaks and other Unicode still hold. A native counted fold
+80 and 120. Whole words and their following space are placed greedily within
+that budget; unknown final-word or hyphen breaks and other Unicode still hold.
+A native counted fold
 must name the full original character count; its marker is not a receipt. Use the
 record's model text, compared exactly after removing only one final newline from
 the typed form when it ends in exactly one. Never trim other whitespace or

@@ -232,9 +232,6 @@ def wrapped_rows(text: str, columns: int | None) -> list[str] | None:
                 if len(row) + len(piece) > budget:
                     if not row or "-" in word:
                         return None  # one hyphen break is not a general rule
-                    observed = ((budget - 1, 2), (budget, 2), (budget - 2, 3))
-                    if (len(row), len(piece)) not in observed:
-                        return None  # only the measured edge placements move
                     result.append(row)
                     row = piece
                 else:
