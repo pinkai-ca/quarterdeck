@@ -1086,3 +1086,28 @@ A positive decision saves a versioned `receipt_refresh` intent in that original 
 Rebrief uses one request kind, with hashes and launch snapshots in the existing spool; the copy journal stays in `installed.json`, not in a separate store. Ordinary service restarts do not create requests. A superseded target cannot announce its old revision using new brief text, and an older service's unknown-kind answer is reported as incomplete. Older versions still read the unchanged briefs, posts and installation metadata, but lack this re-brief operation. Sync from the updated checkout deliberately bypasses installed-copy handoff, leaving repair and historical rollback available even when the installed executable cannot start.
 
 `qd sync [ref]` is the canonical command; `qd upgrade [ref]` is its compatibility alias. Both use `cmd_upgrade` and its installed-copy handoff bypass, forwarding local references and the installed-copy `--back`/`--force` controls to the same `install.upgrade` API. The alias appends “`upgrade` is now `qd sync`” exactly once to the final proof line, including that string in JSON output; the proof-list shape is unchanged. No command fetches a remote. Internal installer, staging and rebrief names retain `upgrade` for compatibility with historical copies. Removing the alias is a separate change after the announced two-week compatibility period.
+
+## Guided setup
+
+`qd setup` uses registered adapters and doctor's program, payment and readiness rows to
+explain the programs available on the machine. It asks for programs, their declared
+payment, desk/captain/engineering mapping, workspace and ship name. Every answer has a
+flag or a field in one JSON answers file; without a terminal, a missing answer is named
+and refused. A key answer is only an environment variable name. Endpoint operator and
+model are explicit. Unknown sign-in stays unknown; setup never signs in, installs a
+program or answers a native account question.
+
+The default template supplies the crew shape and orders. Creation validates before
+writing, writes files atomically in one exclusively created ship folder, ignores its
+runtime and makes a scoped first commit. Reruns show the declaration and require a
+keep/update choice. Additions use whole validated ship edits; existing-seat changes use
+the same selection, application, refusal and defer path as `qd set`. Relaunch requirements
+are printed and stop the flow until the person applies them. Existing orders are preserved.
+
+Doctor rows precede explicit consent to `qd check` for each selected program. Only passing
+checks lead to a separate start answer, then existing up/status operations and desk access.
+Opening briefs may spend turns too. `setup.Operations` is the reusable boundary for all
+machine, account and live interactions; ordinary scripted tests replace that boundary or
+use version-only fake PATH executables. No second setup implementation or live provider
+is needed for those tests. Native sign-in remains the person's task, with an exact setup
+rerun command after a readiness refusal.

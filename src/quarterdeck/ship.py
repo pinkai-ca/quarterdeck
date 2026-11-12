@@ -603,6 +603,21 @@ def _write_atomically(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
+def create(folder: Path, text: str, orders: str) -> Ship:
+    """Create one new ship from a validated declaration; never replace an existing folder."""
+    _validate(_from_text(text, folder))
+    try:
+        folder.mkdir()  # exclusive creation; its parent must already exist
+    except FileExistsError:
+        raise ShipError(f"{folder} already exists; rerun qd setup to view or change its ship") from None
+    _write_atomically(folder / "ship.toml", text)
+    _write_atomically(folder / "orders.md", orders)
+    _write_atomically(folder / ".gitignore", f"/{RUNTIME}/\n")
+    _git(folder, "init", "--quiet")
+    commit(folder, ["ship.toml", "orders.md", ".gitignore"], "qd setup: declare crew")
+    return load(folder)
+
+
 # -- git -------------------------------------------------------------------------------
 
 

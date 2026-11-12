@@ -40,19 +40,11 @@ def checks(ship: Ship) -> list[Check]:
         version = program_version((program, flag))
         found.append(Check(program, version is not None, f"{program} {version}" if version else f"{program} is not on the PATH; install it"))
     found.append(framework_check(ship))
-    searched = program_path()
     versions = {}
     for name in sorted({seat.for_pool(pool).harness for seat in ship.seats.values() for pool in seat.pools}):
-        harness = harnesses.get(name)
-        program = harness.program
-        if shutil.which(program, path=searched) is None:
-            found.append(Check(f"program {name}", False, f"{program} is not on the PATH qd runs with; install it, or put it on that PATH"))
-            continue
-        version = _version_in_runtime(harness, ship.runtime)
+        row, version = program_observation(name, ship.runtime)
+        found.append(row)
         versions[name] = version
-        proven = version is not None and (ship.runtime / "proven" / f"{name}-{version}").exists()
-        note = "synthetic program" if harness.synthetic else ("proven by qd check" if proven else f"unproven: qd check {name} proves it")
-        found.append(Check(f"program {name}", True, f"{program} {version or 'version unknown'} · {note}"))
     for pool in ship.pools.values():
         checked = pool_check(pool)
         native = harnesses.native_name(pool.provider)
@@ -103,6 +95,24 @@ def shell_check() -> Check | None:
                  "qd acts on the ship qd default marks and says so. Exported from a start-up file, it would point every "
                  "shell, and anything started from one, at that ship unawares, and would still win over the mark after "
                  "the ship is moved or another is chosen; unset it there")
+
+
+def program_observation(name: str, runtime: Path | None = None) -> tuple[Check, str | None]:
+    """One program/version observation shared by doctor and setup readiness."""
+    reader = harnesses.get(name)
+    if shutil.which(reader.program, path=program_path()) is None:
+        return (Check(f"program {name}", False,
+                      f"{reader.program} is not on the PATH qd runs with; install it, or put it on that PATH"), None)
+    version = _version_in_runtime(reader, runtime) if runtime is not None else reader.version()
+    proven = runtime is not None and version is not None and (runtime / "proven" / f"{name}-{version}").exists()
+    note = "synthetic program" if reader.synthetic else ("proven by qd check" if proven else f"unproven: qd check {name} proves it")
+    return Check(f"program {name}", True, f"{reader.program} {version or 'version unknown'} · {note}"), version
+
+
+def program_check(name: str, runtime: Path | None = None) -> Check:
+    """The same program/version row for doctor and setup; no inferred runtime before creation."""
+    return program_observation(name, runtime)[0]
+
 
 
 def seat_readiness(ship: Ship, *, versions: dict[str, str | None] | None = None) -> list[Check]:

@@ -43,6 +43,7 @@ where = ["src"]
     "standing-orders/roles/worker.md",
 ]
 "share/quarterdeck/ships/drydock" = ["ships/drydock/orders.md", "ships/drydock/ship.toml"]
+"share/quarterdeck/ships/default" = ["ships/default/orders.md", "ships/default/ship.toml"]
 "share/quarterdeck/ships/forum" = [
     "ships/forum/README.md", "ships/forum/orders.md", "ships/forum/ship.toml",
 ]

@@ -31,8 +31,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     argv = list(argv if argv is not None else sys.argv[1:])
     argv = choose_default(args, argv)
-    if (args.run not in (cmd_upgrade, cmd_service)
-            and not (args.run is cmd_controls and getattr(args, 'harness', None))):
+    if (args.run not in (cmd_upgrade, cmd_service, cmd_setup)
+            and not (args.run is cmd_controls and getattr(args, "harness", None))):
         handoff(args, argv)
     try:
         result = args.run(args)
@@ -107,6 +107,10 @@ def build_parser() -> argparse.ArgumentParser:
         p = verbs.add_parser(name, help=help, description=help)
         p.set_defaults(run=run)
         return p
+
+    from . import setup
+    p = verb("setup", cmd_setup, "guide setup with installed programs; ask before live checks spend turns")
+    setup.arguments(p)
 
     p = verb("up", cmd_up, "bring up the ship (its service and every seat marked up, resuming) or one seat")
     p.add_argument("seat", nargs="?")
@@ -227,6 +231,14 @@ def parse_value(raw: str) -> object:
 
 
 # -- seats -------------------------------------------------------------------------------
+
+
+def cmd_setup(args: argparse.Namespace) -> list[str]:
+    from . import setup
+    try:
+        return setup.run(args)
+    except OSError as error:
+        raise ShipError(f"setup could not access its requested files: {error}; correct the path or permissions and rerun qd setup") from None
 
 
 def cmd_cascade(args: argparse.Namespace) -> str:
@@ -367,13 +379,16 @@ def cmd_stop(args: argparse.Namespace) -> str:
 
 
 def cmd_set(args: argparse.Namespace) -> list[str]:
-    ship = load_ship(args)
-    changes = list(args.changes)
-    if args.seat and "=" in args.seat:  # qd set model=x from inside a seat: the seat is this one
-        changes.insert(0, args.seat)
-        args.seat = None
-    seat = seat_of(ship, this_seat(ship, args.seat))
-    if args.adopt:
+    return set_seat(load_ship(args), args.seat, list(args.changes), adopt_running=args.adopt)
+
+
+def set_seat(ship: shipmod.Ship, name: str | None, changes: list[str], *, adopt_running: bool = False) -> list[str]:
+    """The qd set selection/write/application path, also used by setup's existing-seat edits."""
+    if name and "=" in name:  # qd set model=x from inside a seat: the seat is this one
+        changes.insert(0, name)
+        name = None
+    seat = seat_of(ship, this_seat(ship, name))
+    if adopt_running:
         return adopt(ship, seat)
     if not changes:
         raise ShipError("nothing to set: give KEY=VALUE pairs, as in model=MODEL, or --adopt")
