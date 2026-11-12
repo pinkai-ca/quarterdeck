@@ -102,7 +102,7 @@ class Service:
             self.ship = shipmod.load(self.ship.folder)  # law: ship-file
         except ShipError as error:
             self.log("error", step="load", error=str(error))
-        for step in (self.reconcile, self.account, self.inboxes, self.recoveries, self.refusals, self.deliveries, self.follow, self.requests, self.compactions, self.fresh_after_order,
+        for step in (self.reconcile, self.account, self.groups, self.inboxes, self.recoveries, self.refusals, self.deliveries, self.follow, self.requests, self.compactions, self.fresh_after_order,
                      self.rebrief, self.credentials, self.failover):  # accounting before anything relaunches a seat
             self.heartbeat()  # before every step: a slow delivery or usage read reads as busy, never as dead
             try:
@@ -335,6 +335,11 @@ class Service:
             if not path.exists() or path.read_text() != text:
                 post.render_inbox(self.runtime, self.store, name)
 
+    def groups(self) -> None:
+        """Recover fixed group copies and publish one all-filed or failure notice."""
+        from . import group_post
+        group_post.advance(self.ship, self.store,
+                           lambda name, copy: group_post.member_failure(self, name, copy))
 
     def requests(self) -> None:
         """Each request answered alone, in name order: none keeps a later one waiting.

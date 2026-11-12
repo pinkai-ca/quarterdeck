@@ -27,6 +27,15 @@ python3 -m venv --system-site-packages .venv && .venv/bin/pip install -e .
 
 A ship of your own is a folder under `ships/`, its own git repository, holding a `ship.toml` and an `orders.md`. `ships/default/` is the smallest crew on real programs, a desk on Claude Code with a captain and an engineer on Codex, using the sign-ins already on the machine; copy it and change what differs.
 
+[`ships/forum/`](ships/forum/README.md) is a complete lead-and-four-reviewer template.
+Set its pools and models for your machine, install it with `qd upgrade`, and bring
+it up with `qd up`. `qd post order --to reviewers --body-file brief.txt` files the
+same brief to each declared member under one request. The service tells the lead
+once when all have filed, or names a member that cannot proceed; the lead's card
+requires one combined report preserving dissent and adding no new analysis.
+Groups accept orders only. Each inbox and launch carries its own messages; the
+shared store stays readable, so reviewer independence is enforced by the cards.
+
 The example ship's names follow its Star Trek theme. Scott, the engineer, is addressed as `scott` in the commands below.
 
 Point `qd` at a ship with `--ship` or `QD_SHIP`. Then:

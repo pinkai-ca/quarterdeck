@@ -1,8 +1,8 @@
-# Ships are their own repositories. Two travel with the framework: the drydock, which runs on the
-# fake harness for the tests and the drill, and the default ship, the smallest crew on real programs.
+# Ships are their own repositories. Drydock, default and forum templates travel with the framework.
 ships/*
 !ships/drydock/
 !ships/default/
+!ships/forum/
 # A ship's state is fenced in a nested repository and never tracked anywhere.
 ships/*/runtime/
 # Worktrees for work on the framework itself live here, inside the project folder.

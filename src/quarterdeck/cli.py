@@ -100,7 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = verb("post", cmd_post, "send a message: order, report, question, answer or ack; or resend one")
     p.add_argument("kind", choices=(*post.KINDS, "resend"))
     p.add_argument("body", nargs="*", help="the text; '-' reads it from stdin; with resend, the message id")
-    p.add_argument("--to", help="the addressee seat (the referenced message's sender when --re is given)")
+    p.add_argument("--to", help="the addressee seat, or declared group for an order (default: referenced sender)")
     p.add_argument("--re", help="the message this answers, by id or short id")
     p.add_argument("--from", dest="sender", help="the sender, from a shell that is no seat (default: the operator); a seat always posts as itself")
     p.add_argument("--subject")
@@ -379,11 +379,13 @@ def cmd_post(args: argparse.Namespace) -> str:
     ship = load_ship(args)
     shipmod.fence(ship)  # the first file written into a runtime finds the fence already there
     store = post.Store(ship.runtime)
+    if args.to in ship.groups and args.kind != 'order':
+        raise ShipError(f'group {args.to}: {args.kind} is unsupported; groups accept orders only for now')
     if args.kind == "resend":
         if len(args.body) != 1:
             raise ShipError("resend takes one message id")
         return service.request(ship.runtime, "resend", message=store.get(args.body[0]).id)
-    body = read_body(args)
+    body = read_body(args, preserve=args.to in ship.groups)
     seat_here = os.environ.get("QD_SEAT")
     if seat_here and args.sender and args.sender != seat_here:
         raise ShipError(f"this shell is seat {seat_here}, which posts as itself; --from names a sender only from a shell that is no seat")
@@ -393,6 +395,17 @@ def cmd_post(args: argparse.Namespace) -> str:
         raise ShipError(f"a {args.kind} needs --to <seat>" + (" or --re <message>" if args.kind != "order" else ""))
     if to.lower() == ship.operator.lower():
         to = ship.operator.lower()
+    if to in ship.groups:
+        if args.kind != 'order':
+            raise ShipError(f'group {to}: {args.kind} is unsupported; groups accept orders only for now')
+        if not body.strip():
+            raise ShipError('an empty group order: give the brief, --body-file, or - for stdin')
+        from . import group_post
+        root, copies = group_post.submit(ship, store, to, sender, body, re=args.re,
+                                         subject=args.subject, due=args.due, speed=args.speed)
+        return (f'{root.short} to group {to} · request to {root.to} · '
+                f'{len(copies)} body-identical copies stored · common id {root.id} · '
+                f'{delivery_note(ship, root.to)}')
     if to not in ship.seats and to not in (ship.operator.lower(), post.SHIP):
         raise ShipError(f"no seat {to!r} to address; declared: {', '.join(ship.seats)}, "
                         f"the operator {ship.operator.lower()}, or {post.SHIP} for the ship's own notices")
@@ -402,12 +415,25 @@ def cmd_post(args: argparse.Namespace) -> str:
     return f"{message.short} to {to} · stored · {delivery_note(ship, to)}"
 
 
-def read_body(args: argparse.Namespace) -> str:
+def read_body(args: argparse.Namespace, *, preserve: bool = False) -> str:
+    if preserve:
+        try:
+            if args.body_file:
+                with open(args.body_file, encoding='utf-8', newline='') as stream:
+                    return stream.read()
+            if args.body == ['-']:
+                raw = getattr(sys.stdin, 'buffer', None)
+                return raw.read().decode('utf-8') if raw is not None else sys.stdin.read()
+        except UnicodeError:
+            raise ShipError('group brief must be valid UTF-8 text') from None
     if args.body_file:
-        return open(args.body_file).read().strip()
+        with open(args.body_file) as stream:
+            body = stream.read()
+        return body.strip()
     if args.body == ["-"]:
         return sys.stdin.read().strip()
-    body = " ".join(args.body).strip()
+    body = " ".join(args.body)
+    body = body if preserve else body.strip()
     if not body and args.kind == "ack":
         return "claimed"  # an ack needs no words: it names the order it claims
     if not body:

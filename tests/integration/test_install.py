@@ -40,6 +40,14 @@ def test_upgrade_installs_the_checkout_as_the_ships_own_copy_and_qd_hands_off_to
     assert own.returncode == 0 and own.stdout.startswith("SERVICE DOWN"), own.stderr
     brief = subprocess.run([str(installed_qd), "--ship", str(drydock), "brief", "captain"], env=env, capture_output=True, text=True, timeout=60)
     assert brief.stdout.startswith("# Standing orders for Picard"), "the installed copy carries the laws and the cards"
+    forum = drydock / 'runtime/venv/share/quarterdeck/ships/forum'
+    for relative in ('ship.toml', 'orders.md', 'roles/lead.md', 'roles/reviewer.md', 'README.md'):
+        assert (forum / relative).read_bytes() == (ROOT / 'ships/forum' / relative).read_bytes()
+    forum_brief = subprocess.run([str(installed_qd), '--ship', str(forum), 'brief', 'lead'],
+                                env=env, capture_output=True, text=True, timeout=60)
+    assert forum_brief.returncode == 0, forum_brief.stderr
+    assert 'You combine independent reviews.' in forum_brief.stdout
+    assert 'Every reviewer receives the same brief, byte for byte.' in forum_brief.stdout
     laws = subprocess.run([str(installed_qd), "laws"], env=env, capture_output=True, text=True, timeout=60).stdout
     assert "one-door" in laws and "quarterdeck/door.py" in laws and "carried nowhere" not in laws
     typed = subprocess.run([str(Path(sys.executable).parent / "qd"), "--ship", str(drydock), "doctor"], env=env, capture_output=True, text=True, timeout=120)

@@ -101,6 +101,15 @@ class SeatSpec:
 
 
 @dataclass(frozen=True)
+class Group:
+    """A declared group: one lead and the seats that receive the same brief."""
+
+    name: str
+    members: tuple[str, ...]
+    lead: str
+
+
+@dataclass(frozen=True)
 class Ship:
     folder: Path
     name: str
@@ -109,6 +118,7 @@ class Ship:
     pools: dict[str, Pool]
     sessions: dict[str, Session]
     seats: dict[str, SeatSpec]
+    groups: dict[str, Group] = field(default_factory=dict)
 
     @property
     def file(self) -> Path:
@@ -186,6 +196,7 @@ def _from_text(text: str, folder: Path) -> Ship:
         for name, table in data.get("sessions", {}).items()
     }
     seats = {name: _seat(name, table, folder) for name, table in data.get("seats", {}).items()}
+    groups = {name: _group(name, table) for name, table in data.get('groups', {}).items()}
     return Ship(
         folder=folder,
         name=head.get("name", folder.name),
@@ -194,7 +205,21 @@ def _from_text(text: str, folder: Path) -> Ship:
         pools=pools,
         sessions=sessions,
         seats=seats,
+        groups=groups,
     )
+
+
+def _group(name: str, table: dict) -> Group:
+    if not isinstance(table, dict) or set(table) - {'members', 'lead'}:
+        raise ShipError(f'group {name}: declare members and lead only')
+    members, lead = table.get('members'), table.get('lead')
+    if (not isinstance(members, list) or not members
+            or any(not isinstance(member, str) or not member for member in members)
+            or len(set(members)) != len(members)):
+        raise ShipError(f'group {name}: members must be a nonempty list of unique seat names')
+    if not isinstance(lead, str) or not lead:
+        raise ShipError(f'group {name}: declare a lead seat')
+    return Group(name, tuple(members), lead)
 
 
 def _pool(name: str, table: dict) -> Pool:
@@ -282,6 +307,16 @@ def _path(value: str, folder: Path) -> Path:
 def _validate(ship: Ship) -> None:
     from . import harness as harnesses  # the adapters import this module, so it is imported here, not above
 
+    for group in ship.groups.values():
+        if group.name in ship.seats or group.name.lower() in (ship.operator.lower(), 'ship'):
+            raise ShipError(f'group {group.name}: address also names a seat, operator or ship')
+        if group.lead not in ship.seats:
+            raise ShipError(f'group {group.name}: lead {group.lead!r} is not a declared seat')
+        for member in group.members:
+            if member not in ship.seats:
+                raise ShipError(f'group {group.name}: member {member!r} is not a declared seat')
+        if group.lead in group.members:
+            raise ShipError(f'group {group.name}: lead must be separate from its members')
     for pool in ship.pools.values():
         if pool.kind != "endpoint" and harnesses.native_name(pool.provider) is None:
             raise ShipError(f"pool {pool.name}: unsupported {pool.kind} provider {pool.provider!r}; "
