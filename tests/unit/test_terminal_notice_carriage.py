@@ -106,10 +106,11 @@ def test_running_cascade_report_is_history_and_requester_and_nested_root_rules_s
     root = store.new('question', 'issuer', 'lead', 'Plan a fictional garden.')
     cascade.start(SimpleNamespace(ship=ship, store=store), root.id, 'lead')
     recovery = store.new('report', post.SHIP, 'lead', 'Synthetic continuation.', re=root.id)
-    amendment = store.new('answer', 'issuer', 'lead', 'Include a path.', re=root.id)
+    amendment = store.new('report', 'issuer', 'lead', 'Include a path.', re=root.id)
     nested = store.new('order', 'another', 'lead', 'Measure the path.', re=root.id)
     nested_amendment = store.new('answer', 'another', 'lead', 'Use metres.', re=nested.id)
     delivered(store, root, recovery, amendment, nested, nested_amendment)
+    assert store.is_open(root)
     assert thread_context.select(store, 'lead').incoming == [root, amendment, nested, nested_amendment]
 
 
