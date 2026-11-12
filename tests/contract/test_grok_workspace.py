@@ -16,7 +16,7 @@ from quarterdeck.ship import Pool, SeatSpec
 @pytest.fixture(autouse=True)
 def synthetic_native_paths(monkeypatch, tmp_path):
     monkeypatch.setattr(grok, "SYSTEM_CONFIG", tmp_path / "synthetic-system")
-    monkeypatch.setattr(grok_notice, "trust_root", lambda cwd, environment: cwd)
+    monkeypatch.setattr(grok_notice, "trust_scope", lambda cwd, environment: (cwd, False))
     for name in grok.INHERITED_REDIRECTS:
         monkeypatch.delenv(name, raising=False)
 
@@ -122,7 +122,7 @@ def test_boundary_nonrepository_grant_and_notice_roundtrip_on_restart(tmp_path, 
             raise FileNotFoundError("synthetic absent repository marker")
         return original_lstat(candidate, *args, **kwargs)
     monkeypatch.setattr(Path, "lstat", metadata)
-    monkeypatch.setattr(grok_notice, "trust_root", grok_workspace.trust_root)
+    monkeypatch.setattr(grok_notice, "trust_scope", grok_workspace._trust_scope)
     adapter.preflight(home, spec.cwd)
     adapter.build_home(home, spec, pool, None)
     for resume in (None, "synthetic-resume"):
@@ -166,7 +166,7 @@ def test_notice_inventory_names_declared_sources_without_transport_or_hook_value
     (child / ".mcp.json").write_text(json.dumps({"mcpServers": {"synthetic_json": {
         "command": "synthetic-json-transport", "env": {"EXAMPLE": "synthetic-env-value"},
         "headers": {"Example": "synthetic-header-value"}}}}))
-    monkeypatch.setattr(grok_notice, "trust_root", lambda cwd, environment: root)
+    monkeypatch.setattr(grok_notice, "trust_scope", lambda cwd, environment: (root, True))
     notice = adapter.workspace_notice(home, child)
     spec = replace(spec, cwd=child)
     adapter.build_home(home, spec, pool, None)
@@ -185,7 +185,7 @@ def test_notice_unknown_sources_are_information_without_a_workspace_refusal(tmp_
     (spec.cwd / ".mcp.json").write_text("synthetic unrecognized document")
     agents = spec.cwd / ".grok" / "agents"
     agents.mkdir(parents=True)
-    monkeypatch.setattr(grok_notice, "trust_root", lambda cwd, environment: spec.cwd)
+    monkeypatch.setattr(grok_notice, "trust_scope", lambda cwd, environment: (spec.cwd, False))
     notice = grok_notice.inventory(spec.cwd, grok.private_environment(home))
     assert "unknown" in notice
     assert ".mcp.json" in notice and str(agents) in notice
@@ -201,8 +201,53 @@ def test_notice_reports_unknown_scope_instead_of_an_empty_inventory(tmp_path, mo
     def unavailable(cwd, environment):
         from quarterdeck.ship import ShipError
         raise ShipError("synthetic metadata unavailable")
-    monkeypatch.setattr(grok_notice, "trust_root", unavailable)
+    monkeypatch.setattr(grok_notice, "trust_scope", unavailable)
     notice = grok_notice.inventory(spec.cwd, grok.private_environment(home))
     assert "project hooks unknown" in notice
     assert "project MCP servers unknown" in notice
     assert "none declared" not in notice
+
+
+@pytest.mark.parametrize("repository", [False, True])
+def test_notice_wording_uses_the_positive_scope_fact_at_cwd(tmp_path, monkeypatch, repository):
+    adapter, spec, pool, home, brief = prepared(tmp_path)
+    monkeypatch.setattr(grok_notice, "trust_scope", lambda cwd, environment: (cwd, repository))
+    notice = adapter.workspace_notice(home, spec.cwd)
+    if repository:
+        assert f"(whole repository {json.dumps(str(spec.cwd))})" in notice
+        assert "no repository; grant" not in notice
+    else:
+        assert f"(no repository; grant {json.dumps(str(spec.cwd))})" in notice
+        assert "whole repository" not in notice
+
+
+def test_notice_lsp_presence_and_unknown_are_path_only_information(tmp_path, monkeypatch):
+    adapter, spec, pool, home, brief = prepared(tmp_path)
+    plugin = spec.cwd / ".grok" / "plugins" / "synthetic-plugin"
+    plugin.mkdir(parents=True)
+    direct = spec.cwd / ".grok" / "lsp.json"
+    plugin_file = plugin / ".lsp.json"
+    manifest = plugin / "plugin.json"
+    # No native serialization is established: these bytes are never parsed.
+    for path in (direct, plugin_file, manifest):
+        path.write_text("synthetic configuration values stay unread")
+    notice = adapter.workspace_notice(home, spec.cwd)
+    for path in (direct, plugin_file):
+        assert f"declared, shape unknown {json.dumps(str(path))}" in notice
+    assert "LSP:" in notice and str(manifest) in notice
+    assert "layout/activation unknown" in notice
+    assert "synthetic configuration values" not in notice
+    original_metadata = grok_notice.metadata
+    def unavailable(path):
+        if path in (direct, plugin_file):
+            return None, "metadata unreadable"
+        return original_metadata(path)
+    monkeypatch.setattr(grok_notice, "metadata", unavailable)
+    unknown = adapter.workspace_notice(home, spec.cwd)
+    assert "LSP: unknown:" in unknown
+    assert "declared, shape unknown" not in unknown
+    assert str(direct) in unknown and str(plugin_file) in unknown
+    assert "synthetic configuration values" not in unknown
+    adapter.build_home(home, spec, pool, None)
+    launch = adapter.launch(spec, pool, home, brief, None, None)
+    assert "--trust" in launch.argv and launch.notice == unknown

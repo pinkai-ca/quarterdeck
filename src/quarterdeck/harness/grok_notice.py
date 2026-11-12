@@ -1,4 +1,4 @@
-"""Information-only inventory of declared Grok workspace hooks and MCP sources.
+"""Information-only inventory of declared Grok workspace hooks, MCP and LSP.
 
 No command, URL, header, environment value or hook body is rendered or executed.
 Native activation and dynamic extensions are not inferred from a file inventory.
@@ -13,7 +13,7 @@ import tomllib
 from pathlib import Path
 
 from ..ship import ShipError
-from .grok_workspace import trust_root
+from .grok_workspace import _trust_scope as trust_scope
 
 MAX_BYTES = 1024 * 1024
 MAX_FILES = 512
@@ -67,8 +67,8 @@ def document(path: Path, *, toml: bool = False) -> tuple[dict | None, str | None
 
 def inventory(cwd: Path, environment: dict[str, str]) -> str:
     """Return a notice even for incomplete inventory; never a workspace refusal."""
-    imports = {"hooks": [], "MCP servers": []}
-    unknown = {"hooks": [], "MCP servers": []}
+    imports = {"hooks": [], "MCP servers": [], "LSP": []}
+    unknown = {"hooks": [], "MCP servers": [], "LSP": []}
 
     def unsure(kinds, path, reason):
         for kind in kinds:
@@ -93,8 +93,65 @@ def inventory(cwd: Path, environment: dict[str, str]) -> str:
             elif events:
                 imports["hooks"].append(f"{label(path)} events [{', '.join(label(name) for name in sorted(events))}]")
 
+    def lsp(path, *, manifest=False):
+        info, problem = metadata(path)
+        if problem or info is None:
+            if problem:
+                unsure(("LSP",), path, problem)
+            return
+        descriptor = None
+        try:
+            if not stat.S_ISREG(info.st_mode):
+                unsure(("LSP",), path, "linked or non-regular LSP source")
+                return
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            opened = os.fstat(descriptor)
+            after = path.lstat()
+            def identity(state):
+                return (state.st_dev, state.st_ino, state.st_mode, state.st_size,
+                        state.st_mtime_ns, state.st_ctime_ns)
+            if not stat.S_ISREG(opened.st_mode) or identity(info) != identity(opened) or identity(info) != identity(after):
+                unsure(("LSP",), path, "LSP source changed or unrecognized")
+            elif manifest:
+                unsure(("LSP",), path, "plugin manifest LSP layout/activation unknown")
+            else:
+                # Only locations are established, not JSON fields or types.
+                # Confirm readability without reading any configuration bytes.
+                imports["LSP"].append(f"declared, shape unknown {label(path)}")
+        except OSError:
+            unsure(("LSP",), path, "LSP source unreadable")
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+    def plugin_lsp(path):
+        info, problem = metadata(path)
+        if problem or info is None:
+            if problem:
+                unsure(("LSP",), path, problem)
+            return
+        if not stat.S_ISDIR(info.st_mode):
+            unsure(("LSP",), path, "linked or non-directory plugin source")
+            return
+        try:
+            plugins = []
+            for entry in path.iterdir():
+                if len(plugins) >= MAX_FILES:
+                    unsure(("LSP",), path, "plugin directory exceeds inventory bound")
+                    break
+                plugins.append(entry)
+            for plugin in sorted(plugins):
+                info, problem = metadata(plugin)
+                if problem or info is None or not stat.S_ISDIR(info.st_mode):
+                    unsure(("LSP",), plugin, problem or "unrecognized plugin source")
+                    continue
+                lsp(plugin / ".lsp.json")
+                lsp(plugin / "plugin.json", manifest=True)
+        except OSError:
+            unsure(("LSP",), path, "plugin directory unreadable")
+
     try:
-        root = trust_root(cwd, environment)
+        root, repository = trust_scope(cwd, environment)
         resolved = cwd.resolve(strict=True)
         relative = resolved.relative_to(root)
         scopes = [root]
@@ -103,7 +160,7 @@ def inventory(cwd: Path, environment: dict[str, str]) -> str:
         if len(scopes) > 128:
             raise ValueError("inventory scope bound")
     except (ShipError, OSError, RuntimeError, ValueError):
-        return (f"Grok trusted workspace {label(cwd)}: project hooks unknown; project MCP servers unknown "
+        return (f"Grok trusted workspace {label(cwd)}: project hooks unknown; project MCP servers unknown; LSP: unknown "
                 "(repository scope unreadable or unrecognized); inventory only, native activation not inspected")
 
     for folder in scopes:
@@ -124,6 +181,9 @@ def inventory(cwd: Path, environment: dict[str, str]) -> str:
             continue
         if info is None:
             continue
+
+        lsp(native / "lsp.json")
+        plugin_lsp(native / "plugins")
 
         path = native / "config.toml"
         data, problem = document(path, toml=True)
@@ -165,6 +225,8 @@ def inventory(cwd: Path, environment: dict[str, str]) -> str:
             detail = (known + "; " if known else "") + "unknown: " + "; ".join(unknown[kind])
         else:
             detail = known or "none declared in inspected sources"
-        parts.append(f"project {kind} {detail}")
-    return (f"Grok trusted workspace {label(cwd)} (whole repository {label(root)}): "
+        heading = "LSP:" if kind == "LSP" else f"project {kind}"
+        parts.append(f"{heading} {detail}")
+    scope = f"whole repository {label(root)}" if repository else f"no repository; grant {label(root)}"
+    return (f"Grok trusted workspace {label(cwd)} ({scope}): "
             + "; ".join(parts) + "; inventory only, native activation not inspected")

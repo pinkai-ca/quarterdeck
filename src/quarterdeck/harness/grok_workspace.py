@@ -38,6 +38,11 @@ def has_repository_marker(cwd: Path) -> bool:
 
 def trust_root(cwd: Path, environment: dict[str, str]) -> Path:
     """Resolve only the native trust identity, never inspect project sources."""
+    return _trust_scope(cwd, environment)[0]
+
+
+def _trust_scope(cwd: Path, environment: dict[str, str]) -> tuple[Path, bool]:
+    """The existing root result plus its positive repository/non-repository fact."""
     for name in GIT_REDIRECTS:
         if os.environ.get(name):
             raise ShipError(f"Grok trust-root redirect {name} is set; clear it before launch")
@@ -60,14 +65,14 @@ def trust_root(cwd: Path, environment: dict[str, str]) -> Path:
             # unreadable metadata cannot establish a non-repository workspace.
             if has_repository_marker(cwd):
                 raise ValueError("existing repository marker")
-            return cwd
+            return cwd, False
         roots = done.stdout.splitlines()
         if done.returncode != 0 or done.stderr.strip() or len(roots) != 1 or not Path(roots[0]).is_absolute():
             raise ValueError("ambiguous repository root")
         root = Path(roots[0]).resolve(strict=True)
         if not cwd.is_relative_to(root):
             raise ValueError("repository root is not an ancestor")
-        return root
+        return root, True
     except (OSError, RuntimeError, ValueError, UnicodeError, subprocess.TimeoutExpired):
         raise ShipError(f"{cwd}: Grok exact trust root is unreadable or unknown; retained trust state") from None
 
