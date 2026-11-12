@@ -584,6 +584,53 @@ def test_claude_target_without_standing_orders_fails_help_proof_with_marker(harn
     assert_failed_marker(h, command='--help')
 
 
+
+def test_claude_resource_failure_after_pip_is_a_retained_failure(harness, monkeypatch):
+    """After the first mutation nothing escapes past the record: a resource step failure is marked too."""
+    h = harness
+    existing_venv(h)
+    h.record.write_text(json.dumps(dict(commit=PRIOR, ref='old', at='2026-01-01T00:00:00+00:00', previous=None)))
+    h.running = True
+
+    def failing(source, share, files):
+        raise ShipError('synthetic resource step failure')
+
+    monkeypatch.setattr(install.resources, 'synchronize', failing)
+    with pytest.raises(ShipError, match='retained'):
+        install.upgrade(h.ship, 'HEAD', h.tmux)
+    assert (h.venv / 'bin/python').exists() and 'pip' in h.calls
+    assert not any(isinstance(call, tuple) and call[0] == 'proof' for call in h.calls)
+    assert not h.running
+    assert_failed_marker(h, previous=PRIOR, command='resources')
+
+
+@pytest.mark.parametrize('linked', ('venv', 'venv-share', 'managed-tree'))
+def test_claude_linked_environment_is_refused_before_any_mutation(harness, tmp_path, linked):
+    """A link would let the upgrade write outside the project folder: refused before stop, pip or record."""
+    h = harness
+    outside = tmp_path / 'outside-test'
+    write(outside / 'bin/python', '')
+    write(outside / 'share/quarterdeck/standing-orders/laws.md', 'not the ship runtime\n')
+    if linked == 'venv':
+        h.venv.symlink_to(outside, target_is_directory=True)
+    elif linked == 'venv-share':
+        existing_venv(h)
+        h.venv.joinpath('share').symlink_to(outside / 'share', target_is_directory=True)
+    else:
+        existing_venv(h)
+        (h.venv / 'share').mkdir()
+        h.share.symlink_to(outside / 'share/quarterdeck', target_is_directory=True)
+    h.record.write_text(json.dumps(dict(commit=PRIOR, ref='old', at='2026-01-01T00:00:00+00:00', previous=None)))
+    record = h.record.read_bytes()
+    before = files_under(outside)
+    h.running = True
+    with pytest.raises(ShipError):
+        install.upgrade(h.ship, 'HEAD', h.tmux)
+    assert h.calls == [] and h.running
+    assert h.record.read_bytes() == record
+    assert files_under(outside) == before
+    assert h.statuses == [] and not (h.runtime / 'requests').exists()
+
 # Direction is wording only ---------------------------------------------------------------------
 
 @pytest.fixture
