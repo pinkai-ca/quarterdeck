@@ -37,7 +37,7 @@ def body(tag: str, size: int) -> str:
         lines.append(item)
         total += len(item) + 1
         index += 1
-    return "\n".join(lines)[:size]
+    return "\n".join(lines)[:size - 1].rstrip() + "."  # the typed form strips trailing space; a body never ends in one
 
 
 def long_threads(store: post.Store, count: int = 4, size: int = 100_000) -> list[tuple[post.Message, post.Message]]:
