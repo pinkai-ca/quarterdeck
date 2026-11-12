@@ -27,7 +27,7 @@ from .harness.base import record_fingerprint
 from .seat import SEAT_HOLDS, Seat, UnresolvedSeat, launch_pool_refusal, leftover_seats, seats
 from .ship import Ship, ShipError
 from .servicectl import STALE_SECONDS
-from .tmux import Tmux
+from .tmux import Tmux, TmuxError
 from .usage_cache import MISSING
 
 STALL_SECONDS = 600
@@ -55,8 +55,13 @@ def activity(seat: Seat | UnresolvedSeat, now: datetime | None = None) -> Activi
     if isinstance(seat, UnresolvedSeat):
         return Activity('unknown', str(seat.error))
     now = now or datetime.now(timezone.utc)
-    pane = seat.pane()
+    try:
+        pane = seat.pane()
+    except (OSError, TmuxError):
+        return Activity("unknown", "could not read the owned pane")
     if pane is None:
+        if seat.is_working() is None:
+            return Activity("unknown", "owned pane identity or activity unreadable")
         return Activity("off", "no pane" if seat.launched() else "down")
     if pane.dead:
         return Activity("off", "exit status not yet known" if pane.exit_status is None else f"exited {pane.exit_status}")
@@ -66,7 +71,11 @@ def activity(seat: Seat | UnresolvedSeat, now: datetime | None = None) -> Activi
                 "record missing", "ambiguous", "record reader unknown", "record reader changed",
                 "record unreadable", "record pointer unreadable", "record pointer empty"):
             return Activity("unknown", join.reason)  # what the Watch cannot see, it says, never a default
-        return Activity("idle", join.reason or "")  # a seat that has never moved is idle, not stalled
+        screen = Door(seat).screen()
+        if screen is None or screen.working is None:
+            return Activity("unknown", join.reason or "could not see current activity")
+        return Activity("working" if screen.working is True else "idle",
+                        "screen reading; " + (join.reason or "record not joined"))
     try:
         state = seat.harness.state(join.record)
     except OSError as error:
@@ -86,7 +95,7 @@ def activity(seat: Seat | UnresolvedSeat, now: datetime | None = None) -> Activi
     if seat.harness.waiting_for_human(state):
         return Activity('needs a human', 'native question tool; ask through qd post question' +
                         (f" · {queue_detail}" if queue_detail else ""))
-    if not state.turn_open:
+    if state.turn_open is False:
         return Activity("idle", queue_detail or (f"{len(state.queued)} queued" if state.queued else ""))
     where = f"in {state.open_tool} {_ago(state.open_tool_since, now)}".rstrip() if state.open_tool else ""
     quiet = (now - state.last_write).total_seconds() if state.last_write else 0
@@ -539,6 +548,8 @@ def render_full(data: dict) -> list[str]:
         lines.append(f"  screen: box {screen.box!r} · working {'unknown, not seen' if screen.working is None else screen.working} · queued {screen.queued} · shows {screen.shows}")
         if screen.interruption or screen.unknown:
             lines.append(f"  notice: {screen.interruption.name if screen.interruption else 'unknown: ' + screen.unknown}")
+    else:
+        lines.append("  screen: working unknown (could not see screen)")
     return lines + render_headlines(data["usage"])
 
 

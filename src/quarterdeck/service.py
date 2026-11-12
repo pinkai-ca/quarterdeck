@@ -2024,7 +2024,7 @@ class Service:
                     continue  # an unreadable or uncertain record is no transition
                 before = self.working.get(seat.name)
                 self.working[seat.name] = working
-                if working and before is False:
+                if working is True and before is False:
                     refused = self.show_window(seat)
                     self.log("followed" if refused is None else "not followed", seat=seat.name,
                              **({"reason": refused} if refused else {}))
@@ -2035,7 +2035,7 @@ class Service:
             return False
         record = seat.record()
         if record is None:
-            return False  # a launch that has not written yet has not started working
+            return None  # a live launch without a record has no known activity baseline
         mark = (record, record_fingerprint(record))
         if self.work_marks.get(seat.name) == mark:
             return self.working.get(seat.name)
@@ -2044,7 +2044,7 @@ class Service:
         except OSError:
             return None
         self.work_marks[seat.name] = mark
-        return None if state.turn_open is None else bool(state.turn_open)
+        return state.turn_open
 
     def pane_died(self, seat: Seat, pane) -> None:
         """Log death from the pane already read; log again when a pending exit status becomes known."""

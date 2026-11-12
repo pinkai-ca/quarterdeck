@@ -17,9 +17,9 @@ def frame(text="", status="", working=False):
 
 def test_working_indicator_survives_reply_text_and_gate_until_terminal_frame():
     screen = read("A fictional reply.\n" + frame(working=True))
-    assert screen.box == "" and screen.working and screen.unknown is None
+    assert screen.box == "" and screen.working is True and screen.unknown is None
     idle = read(frame())
-    assert idle.box == "" and not idle.working and idle.unknown is None
+    assert idle.box == "" and idle.working is False and idle.unknown is None
     assert read(frame(status=" interrupting run")).unknown is not None
 
 
@@ -253,3 +253,47 @@ def test_final_word_past_the_unknown_edge_moves_by_the_same_prefix_rule(columns,
 def test_final_word_past_the_unknown_edge_holds_when_its_inner_prefix_fits(columns):
     prefix = "word " * ((columns - 5) // 5)
     assert wrapped_rows(prefix + "a-bc", columns - 2) is None
+
+
+@pytest.mark.parametrize("text", [
+    "",
+    " \n",
+    "Muse Code 1.4.15\n" + "─" * 80 + "\n❯",
+    "Muse Code 1.4.15\nA fictional dialog without a composer.",
+    "An unfamiliar program layout.",
+    frame().replace("❯", "unmeasured prompt"),
+    frame().replace("─" * 80 + "\necho", "─" * 79 + "\necho"),
+    frame("first\nunindented continuation"),
+    frame().replace("Launch overrides", "Unmeasured footer"),
+    frame() + "\x1b[?m",
+    frame() + "\x00",
+    composer(["An unfamiliar contextual hint."], foreground=MUTED),
+    composer(["A fictional draft."], foreground=(1, 2, 3)),
+    frame(colour("A fictional draft.", TYPED, (1, 2, 3))),
+    frame(status=" steering the running turn"),
+    frame(status=" interrupting run"),
+    "Do you trust this workspace?\n1 Trust and continue\n2 Quit\nEsc quits",
+    "You're using your quota fast\nKeep going",
+    "Switch to Spark",
+    "Turn on contributor mode",
+    "You're using your quota fast",
+    "Switched to Spark (saved as default)",
+    "Contributor mode on",
+])
+def test_unreadable_starting_redraw_and_dialog_frames_have_unknown_activity(text):
+    screen = read(text)
+    assert screen.working is None
+    assert screen.starting or screen.unknown is not None or screen.interruption is not None
+
+
+@pytest.mark.parametrize("status", [" steering the running turn", " interrupting run"])
+def test_transition_footer_does_not_hide_a_positive_working_indicator(status):
+    screen = read(frame(status=status, working=True))
+    assert screen.working is True and screen.unknown is None
+
+
+def test_unsupported_payload_projection_does_not_erase_visible_idle_activity():
+    text = "A fictional \u754c draft."
+    screen = read(composer([text]))
+    assert screen.working is False and screen.unknown is None
+    assert not VisibleBox(text).matches(screen.box, 78)

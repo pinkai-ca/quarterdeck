@@ -547,7 +547,7 @@ def arm(seat, revision, report, binding):
         state, screen = reading.state, Door(seat).screen()
         # The tool state is not asked here: the gate reads it once, after the turn has ended.
         if (state.queue_error or state.queued
-                or recovery.held(seat) or screen is None or screen.box != '' or screen.queued
+                or recovery.held(seat) or screen is None or screen.working is None or screen.box != '' or screen.queued
                 or screen.unknown or screen.interruption or screen.starting):
             raise ShipError('readiness cannot arm with queue/composer/recovery uncertainty')
         data['ready'] = bound

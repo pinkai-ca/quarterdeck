@@ -73,6 +73,13 @@ bracketed-paste path without an added sleep, never typed keys followed by Enter.
 Unmeasured wrapping/count forms and clear keys remain unknown. Never resend an
 uncertain message or paste again because of the native expansion hint.
 
+Unreadable, starting, redraw and dialog screens report unknown activity, never
+idle. A complete measured composer reports known idle or working; an unsupported
+payload projection does not erase an independently known activity reading.
+The current record remains first for lifecycle and routing. The Door separately
+requires a seen box and known activity; if the screen becomes unknown during a
+paste, the uncertain draft is retained without submit, clear or replay.
+
 Echo token zeros and child-session structure do not prove billed quantities or
 paid child turns. Allowance remains unknown. A future native usage reader must
 share one per-pool reader, a minimum 1800-second interval and refusal backoff;

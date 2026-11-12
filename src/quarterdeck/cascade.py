@@ -521,8 +521,9 @@ def effort(service, name: str, wanted: str) -> dict:
         control = seat.harness.control("effort")
         if seat.spec.pool_choices or control is None or control.session is None:
             detail = "No proven in-session effort control; kept current effort."
-        elif seat.is_working():
-            detail = "Previous turn still open; kept current effort."
+        elif (working := seat.is_working()) is not False:
+            detail = ("Previous turn still open; kept current effort." if working is True
+                      else "Current activity unknown; kept current effort.")
         else:
             result = service.control(seat, "effort", wanted)
             if result is not None and " · confirmed by " in result:

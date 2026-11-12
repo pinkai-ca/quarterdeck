@@ -182,10 +182,22 @@ class MuseHarness(Harness):
         if ((state is not None and muse_home.contributor(state.model))
                 or (screen is not None and muse_home.contributor(screen.shows.get("model")))):
             return "Muse selected a contributor model; delivery held; needs a human"
+        if screen is None:
+            return "Muse screen activity unavailable; input held"
+        if screen.interruption is not None:
+            return screen.interruption.name
+        if screen.unknown is not None:
+            return f"unknown dialog: {screen.unknown}"
+        if screen.starting:
+            return "starting, waiting for the input box"
+        if screen.box is None:
+            return "box not found on the screen"
+        if screen.working is None:
+            return "current activity unknown"
         return None
 
     def interrupt_obstruction(self, state, screen):
-        if (screen is None or screen.unknown is not None or screen.starting
+        if (screen is None or screen.working is None or screen.unknown is not None or screen.starting
                 or screen.interruption is not None or screen.box is None):
             return "Muse screen is not a clear working composer; no Escape sent"
         active = state.turn_open if state is not None else None

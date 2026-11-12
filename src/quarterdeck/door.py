@@ -89,7 +89,7 @@ class Reading:
     open: bool
     reason: str = ""
     clears: str = ""
-    working: bool = False
+    working: bool | None = None
     waiting: bool = False
     diagnostic: str = ""  # reason metadata only; never changes whether the door is open
     display_reason: str = ""  # presentation only; admission and repeated-frame confirmation keep reason
@@ -97,7 +97,7 @@ class Reading:
 
     def __str__(self) -> str:
         if self.open:
-            text = "open, queues" if self.working else "open"
+            text = "activity unknown" if self.working is None else ("open, queues" if self.working else "open")
         elif self.waiting:
             text = self.reason
         else:
@@ -135,16 +135,21 @@ class Door:
         self.since = datetime.now(timezone.utc)
 
     def screen(self) -> Screen | None:
-        self.captured_pane = None
-        if hasattr(self.seat, 'read_pane'):
-            found = self.seat.read_pane()
-            self.captured_pane = found[0] if found else None
-            return self.known(self.padded(self.harness.screen(found[1]))) if found else None
-        pane = self.seat.pane()
-        if pane is None or pane.dead:
+        try:
+            self.captured_pane = None
+            if hasattr(self.seat, 'read_pane'):
+                found = self.seat.read_pane()
+                self.captured_pane = found[0] if found else None
+                return self.known(self.padded(self.harness.screen(found[1]))) if found else None
+            pane = self.seat.pane()
+            if pane is None or pane.dead:
+                return None
+            self.captured_pane = pane
+            return self.known(self.padded(self.harness.screen(self.tmux.capture(pane.id))))
+
+        except (OSError, TmuxError):
+            self.captured_pane = None
             return None
-        self.captured_pane = pane
-        return self.known(self.padded(self.harness.screen(self.tmux.capture(pane.id))))
 
     def padded(self, screen: Screen | None) -> Screen | None:
         """A composer whose one row is only padding, in a program that draws typed spaces like its padding,
@@ -206,7 +211,7 @@ class Door:
 
     def adapter_state(self):
         """Current fresh-join facts only; resumed field recency is unproved."""
-        if self.seat.session.human:
+        if self.seat.session.human and not self.human_wake:
             return None
         from . import record_owner
         from .turn_failure import metadata
@@ -273,7 +278,7 @@ class Door:
         hook = self.adapter_hook("delivery_obstruction")
         if hook is None:
             return None
-        if self.seat.session.human:
+        if self.seat.session.human and not self.human_wake:
             return "a human owns this session; its watch delivers"
         if screen is UNCAPTURED:
             screen = self.screen()
@@ -313,27 +318,28 @@ class Door:
             return f"{pool} {shown.reason}{label} · {reset_text(stamp(shown.resets_at), from_screen=True)}"
         return None
 
-    def reading(self, screen: Screen | None = None) -> Reading:
-        """Can the typing path deliver, from the screen and the Ledger's walls; nothing is pressed, written or fetched."""
+    def reading(self, screen=UNCAPTURED) -> Reading:
+        """Omitted capture reads once; an explicitly unavailable frame never becomes idle."""
         from .turn_failure import obstruction
         if reason := obstruction(self.seat):
-            return Reading(False, reason, "needs a human")  # law: nothing-waits-silently
+            return Reading(False, reason, "needs a human")
         if self.seat.session.human:
             from .recovery import held
             if reason := held(self.seat):
                 return Reading(False, f"a human owns this session; {reason}", "needs a human")
             if not self.human_wake:
-                return Reading(False, "a human's session", "its watch delivers")  # law: one-door
+                return Reading(False, "a human's session", "its watch delivers")
             from .human_wake import candidate_hold, eligible, screen_hold
             if reason := candidate_hold(self.seat, self.proof):
                 return Reading(False, reason, "needs a human")
-            if screen is None:
+            if screen is UNCAPTURED:
                 if reason := eligible(self.seat, proof=self.proof):
                     return Reading(False, reason, "needs a human")
                 screen = self.screen()
             if reason := screen_hold(screen):
                 return Reading(False, reason, "needs a human")
-        screen = screen or self.screen()
+        if screen is UNCAPTURED:
+            screen = self.screen()
         return self._reading(screen)
 
     def _reading(self, screen: Screen | None) -> Reading:
@@ -376,7 +382,8 @@ class Door:
     def _base_reading(self, screen: Screen | None) -> Reading:
         """The existing admission reading; geometry diagnostics confer no authority."""
         if reason := self.adapter_obstruction(screen):
-            return Reading(False, reason, "needs a human")  # law: nothing-waits-silently
+            clears = "time" if reason == "starting, waiting for the input box" else "needs a human"
+            return Reading(False, reason, clears)  # law: nothing-waits-silently
         from .turn_failure import obstruction
         if reason := obstruction(self.seat):
             return Reading(False, reason, "needs a human")  # law: record-first
@@ -403,10 +410,12 @@ class Door:
             if self.starting_up():
                 return Reading(False, "starting, the input box is not drawn yet", "time")
             return Reading(False, "box not found on the screen", "needs a human")
+        if screen.working is None:
+            return Reading(False, "current activity unknown", "time")
         if screen.box.strip():
             return Reading(False, "text in the box", "needs a human")
-        if screen.working and not self.harness.queues_while_working(self.seat.spec):
-            return Reading(False, "working, program does not queue", "time")
+        if screen.working is True and not self.harness.queues_while_working(self.seat.spec):
+            return Reading(False, "working, program does not queue", "time", working=True)
         if not self.harness.startup_ready(getattr(self.seat, 'home', None)):
             return Reading(False, "starting, waiting for the program's startup choice", "time")
         return Reading(True, working=screen.working)
@@ -502,8 +511,10 @@ class Door:
     def initial_obstruction(self, screen: Screen | None) -> Reading | None:
         """Absence or an unknown initial frame holds without a replacement capture."""
         if reason := self.adapter_obstruction(screen):
-            return Reading(False, reason, "needs a human")
-        if screen is None or screen.unknown is not None or (screen.box is None and screen.interruption is None):
+            clears = "time" if reason == "starting, waiting for the input box" else "needs a human"
+            return Reading(False, reason, clears)
+        if (screen is None or screen.working is None or screen.unknown is not None
+                or (screen.box is None and screen.interruption is None)):
             return self._reading(screen)
         return None
 
@@ -613,7 +624,15 @@ class Door:
                 and screen.interruption.click is not None
                 and (screen.box is None if screen.interruption.by_label else screen.box is not None and not screen.box.strip())):
             return self.answer(screen)
+        if screen is None or screen.working is None:
+            return screen
         if not pending.held(self.seat, screen, self.proof) and screen and screen.interruption and screen.interruption.dismissable and not (screen.box or "").strip():
+            current = self.screen()
+            if (current is None or current.working is None or current.interruption != screen.interruption
+                    or (current.box or "").strip() or self.adapter_obstruction(current)):
+                return current
+            if self.proof and not self.proof.same_launch(self.seat):
+                return current
             self.tmux.keys(self.seat.pane().id, screen.interruption.key)
             time.sleep(SETTLE_SECONDS)
             screen = self.screen()
@@ -682,7 +701,7 @@ class Door:
         if hold := pending.held(self.seat, screen, proof):
             return Delivery("withheld", hold[0])
         if (speed == "interrupt" and not self.seat.session.human
-                and ((screen is not None and screen.working)
+                and ((screen is not None and screen.working is True)
                      or self.adapter_hook("interrupt_obstruction") is not None)):
             interrupted, detail = self._interrupt(for_delivery=True)
             if not interrupted:
@@ -713,7 +732,14 @@ class Door:
             if shutdown.never_pasted(proof.data):
                 proof.save(phase="cancelled", resolution="service stopped before paste; never typed")
             return Delivery("withheld", "service stopping before paste")
-        if reason := self.adapter_obstruction():
+        if not self.human_wake:
+            screen = self.screen()
+            current = self._reading(screen)
+            if not current.open:
+                return Delivery("withheld", str(current))
+            if proof and not proof.same_launch(self.seat):
+                return Delivery("blind", "launch changed at the final paste check; no keys sent")
+        if reason := self.adapter_obstruction(screen):
             return Delivery("withheld", reason)
         owned=paste_refusal.owner(self,text,screen)
         if proof:
@@ -721,13 +747,15 @@ class Door:
         self.tmux.paste(pane.id, text)
         shown = self.box_shows(self.harness.box(text))  # its event, not a guess at draw speed
         self.after_paste = shown
-        if shown is None or not self.matches(self.harness.box(text), shown):  # law: one-door
-            unread = shown is None or shown.box is None
-            if unread and proof and not self.seat.session.human:
-                try:  # what the reader could not read stays visible; a person's own screen is never kept
-                    proof.save(paste_screen=pending.screen_evidence(shown))
-                except (OSError, ValueError, TypeError):
-                    pass  # optional diagnosis; never alters paste/clear/submit decisions
+        unread = shown is None or shown.box is None
+        if unread and proof and not self.seat.session.human:
+            try:  # optional unread-screen evidence never grants an input action
+                proof.save(paste_screen=pending.screen_evidence(shown))
+            except (OSError, ValueError, TypeError):
+                pass
+        if shown is None or shown.working is None:
+            return Delivery("blind", "screen activity unknown after paste; draft not submitted or cleared; needs a human")
+        if not self.matches(self.harness.box(text), shown):  # law: one-door
             current = self.captured_pane
             diagnostic = self.short_pane_reason(text, current)
             if (diagnostic and proof and current and current.id == pane.id and current.pid == pane.pid
@@ -775,9 +803,12 @@ class Door:
             proof.save(phase="submitted")
         if proof and shutdown.requested():
             return Delivery("pending", "submitted once before service stop; record confirmation remains pending")
-        if speed == "now" and shown.working and self.harness.keys.send_now:
-            if reason := self.adapter_obstruction():
+        if speed == "now" and shown.working is True and self.harness.keys.send_now:
+            current = self.screen()
+            if reason := self.adapter_obstruction(current):
                 return Delivery("blind", f"{reason}; input already submitted; no further key sent")
+            if current is None or current.working is None or (proof and not proof.same_launch(self.seat)):
+                return Delivery("blind", "current activity or launch unknown; input already submitted; no further key sent")
             self.tmux.keys(pane.id, *self.harness.keys.send_now)
         if not confirm:
             return Delivery("typed", f"submitted in {pane.id}")
@@ -790,12 +821,18 @@ class Door:
         self.proof = proof
         screen = self.screen()
         reading = self.reading(screen)
-        if not reading.open or reading.working or screen.queued:
+        if not reading.open or reading.working is not False or screen is None or screen.queued:
             return Delivery('withheld', str(reading))
         if not proof.same_launch(self.seat) or not verify():
             return Delivery('withheld', 'bound mode/source changed; no control key sent')
         pane = self.seat.pane()
-        if reason := self.adapter_obstruction():
+        current = self.screen()
+        current_reading = self._reading(current)
+        if not current_reading.open or current_reading.working is not False or current.queued:
+            return Delivery("withheld", str(current_reading))
+        if not proof.same_launch(self.seat) or not verify():
+            return Delivery('withheld', 'bound mode/source changed at the control check; no key sent')
+        if reason := self.adapter_obstruction(current):
             return Delivery("withheld", reason)
         self.tmux.keys(pane.id, *keys)
         return Delivery('typed', 'one native mode-control queue sent')
@@ -852,7 +889,7 @@ class Door:
         deadline = time.monotonic() + seconds
         while True:
             screen = self.screen()
-            if screen is None or not screen.working or time.monotonic() > deadline:
+            if screen is None or screen.working is False or time.monotonic() > deadline:
                 return screen
             time.sleep(SETTLE_SECONDS)
 
@@ -860,6 +897,8 @@ class Door:
         pane = self.seat.pane()
         columns = self.harness.box_columns_for_screen(pane.width, screen) if pane else None
         shown = self.harness.box_comparison(screen, pane.width) if pane else screen.box
+        if screen.working is None:
+            return False
         if box.matches(shown, columns, self.harness.wrap_slack):
             return True
         scroll = getattr(self.harness, 'box_scroll', None)
@@ -891,6 +930,9 @@ class Door:
         foreign = None
         while True:
             screen = self.screen()
+            if screen is None or screen.working is None:
+                outcome = "activity unknown"
+                break
             if screen is not None and self.matches(box, screen):
                 outcome = "shown"
                 break
@@ -921,8 +963,20 @@ class Door:
 
     def submit(self, pane_id: str) -> str | None:
         """Enter, or a raw carriage return when the pane is in copy mode, which swallows keys."""
-        if reason := self.adapter_obstruction():
+        current = self.screen()
+        if reason := self.adapter_obstruction(current):
             return reason
+        if current is None or current.working is None:
+            return "current activity unknown before submit; no key sent"
+        if current.working is True and not self.harness.queues_while_working(self.seat.spec):
+            return "working, program does not queue; no submit key sent"
+        before = self.before_submit
+        if before is not None and (current.box != before.box
+                or getattr(current.box, 'columns', None) != getattr(before.box, 'columns', None)
+                or getattr(current.box, 'folded', False) != getattr(before.box, 'folded', False)):
+            return "composer changed before submit; draft not submitted or cleared"
+        if self.proof and not self.proof.same_launch(self.seat):
+            return "launch changed before submit; no key sent"
         pane = self.tmux.pane(pane_id)
         if pane and pane.in_mode:
             self.tmux.paste(pane_id, "\r", bracketed=False)

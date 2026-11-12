@@ -173,7 +173,7 @@ def test_check_probe_handles_unknown_turns_without_crashing(tmp_path: Path, monk
     fake_seat.ship = fake_ship
     fake_seat.pane = lambda: SimpleNamespace(id="%1", pid=4242)
     monkeypatch.setattr(check, "Door", lambda s: SimpleNamespace(
-        reading=lambda: doormod.Reading(True, "empty box"),
+        reading=lambda: doormod.Reading(True, "empty box", working=False),
         deliver=lambda text, **kwargs: doormod.Delivery("delivered", "in the record"),
     ))
 

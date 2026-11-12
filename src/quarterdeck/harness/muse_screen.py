@@ -105,35 +105,35 @@ class ComposerText(str):
 def read(text: str) -> Screen:
     decoded = characters(text)
     if decoded is None:
-        return Screen(text, None, unknown="unmeasured Muse terminal style or control")
+        return Screen(text, None, working=None, unknown="unmeasured Muse terminal style or control")
     plain, styles = decoded
     if not plain.strip():
-        return Screen(plain, None, starting=True)
+        return Screen(plain, None, working=None, starting=True)
     for interruption in MODEL_CHOICES:
         if interruption.seen_in(plain):
             # An offered option proves neither selection nor a catalog id.
             # No dismissal key is declared, even when the screen says esc.
-            return Screen(plain, None, interruption=interruption)
+            return Screen(plain, None, working=None, interruption=interruption)
     if TRUST.seen_in(plain):
-        return Screen(plain, None, interruption=TRUST)
+        return Screen(plain, None, working=None, interruption=TRUST)
     rows = plain.split("\n")
     offsets, offset = [], 0
     for row in rows:
         offsets.append(offset)
         offset += len(row) + 1
     if not any(row.strip() == "Muse Code 1.4.15" for row in rows):
-        return Screen(plain, None, unknown="unmeasured Muse header")
+        return Screen(plain, None, working=None, unknown="unmeasured Muse header")
     prompts = [index for index, row in enumerate(rows)
                if index > 0 and RULE.fullmatch(rows[index - 1])
                and (row.startswith("❯ ") or row == "❯")
                and styles[offsets[index]].background is None
                and styles[offsets[index]].foreground in (None, PROMPT)]
     if len(prompts) != 1:
-        return Screen(plain, None, unknown="Muse composer is not uniquely bound to its rule")
+        return Screen(plain, None, working=None, unknown="Muse composer is not uniquely bound to its rule")
     index = prompts[0]
     bottom = next((stop for stop in range(index + 1, len(rows)) if rows[stop] == rows[index - 1]), None)
     if bottom is None:
-        return Screen(plain, None, unknown="unmeasured Muse composer boundaries")
+        return Screen(plain, None, working=None, unknown="unmeasured Muse composer boundaries")
     body, body_styles = [], []
     for number in range(index, bottom):
         row = rows[number]
@@ -141,30 +141,30 @@ def read(text: str) -> Screen:
         if number == index and row == "❯":
             prefix = "❯"
         if not row.startswith(prefix):
-            return Screen(plain, None, unknown="unmeasured Muse continuation row")
+            return Screen(plain, None, working=None, unknown="unmeasured Muse continuation row")
         if any(style.background is not None for style in styles[offsets[number]:offsets[number] + len(prefix)]):
-            return Screen(plain, None, unknown="Muse composer prefix has an unmeasured background")
+            return Screen(plain, None, working=None, unknown="Muse composer prefix has an unmeasured background")
         start = offsets[number] + len(prefix)
         content = row[len(prefix):]
         attributes = styles[start:start + len(content)]
         if any(attribute.background is not None for attribute in attributes):
-            return Screen(plain, None, unknown="Muse composer has an unmeasured background")
+            return Screen(plain, None, working=None, unknown="Muse composer has an unmeasured background")
         body.append(content)
         body_styles.append(attributes)
     footer = "\n".join(rows[bottom + 1:])
     if not re.search(r"(?:echo|meta) · .+ · Launch overrides", footer):
-        return Screen(plain, None, unknown="unmeasured Muse footer")
+        return Screen(plain, None, working=None, unknown="unmeasured Muse footer")
     working = bool(WORKING.search("\n".join(rows[:index - 1])))
     folded = len(body) == 1 and FOLDED_INPUT.fullmatch(body[0]) is not None and EXPAND_HINT in footer
     if (not working and len(body) == 1 and body[0] == IDLE_HINT
             and all(style.foreground == MUTED for style in body_styles[0])):
         body = [""]
     elif not folded and any(style.foreground not in (None, TYPED) for attributes in body_styles for style in attributes):
-        return Screen(plain, None, unknown="unmeasured Muse composer text or contextual tip")
+        return Screen(plain, None, working=None, unknown="unmeasured Muse composer text or contextual tip")
     content = ComposerText("\n".join(body), len(rows[index - 1]) - 2, folded)
     # These transitional labels cannot establish a ready idle composer.
     if not working and any(label in footer for label in ("steering the running turn", "interrupting run")):
-        return Screen(plain, content, unknown="Muse turn transition still in progress")
+        return Screen(plain, content, working=None, unknown="Muse turn transition still in progress")
     return Screen(plain, content, working=working,
                   queued=int("Queued input · ↑ to edit" in plain))
 

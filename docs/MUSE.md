@@ -135,6 +135,18 @@ The first empty screen has no hint; later idle composers show the exact known
 contextual tip in RGB 103,108,116. Only that tip in an otherwise empty idle
 composer is empty. The identical text in typed RGB 204,211,219 stays input;
 unknown tips/styles hold. Faint attributes alone never discard text.
+Unknown activity is explicit: unreadable controls/style, starting or partial
+redraws, missing composer/boundaries, dialogs/results, unmeasured layouts or tips,
+and transitional footers without positive working evidence return `None` rather
+than idle. Complete measured idle/working frames still return false/true.
+Unsupported payload projection alone does not erase independently visible
+activity. Watch says it could not see when screen activity is unknown; a current
+record's true/false fact remains separate and authoritative for lifecycle and
+routing. No new screen veto is added to record-proved fresh/relaunch/failover.
+The Door has its own requirement: observed box and known activity before input,
+after paste and before submit/control. An unknown owned-paste frame is retained
+as uncertain, never replaced by a later frame to permit submit, clear or replay.
+An already submitted exact current-record input can still prove acceptance.
 Static strings from the pinned binary identify the separate quota-offer dialog:
 `You're using your quota fast` with `Keep going`, `Switch to Spark` or
 `Turn on contributor mode`. It is named, holds all input actions and reaches a
