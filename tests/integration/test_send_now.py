@@ -1,6 +1,7 @@
 """The real chord and Door's now speed consume one queued input within an open turn."""
 
 from datetime import datetime, timezone
+import time
 
 import pytest
 
@@ -10,6 +11,23 @@ from quarterdeck.input_receipt import confirmed
 
 from .test_service import ship, qd
 from .test_fakeharness import Seat, wait_for
+
+SETTLE = 1.0  # the fake begins a queued turn at once when one ends; a second turn would show well within this
+
+
+def ends_as_one_turn(harness, record, home, payload):
+    """Record first: wait, within a bound, for the record to show the running turn ended with its own reply.
+    Then, after a short settle, neither a second turn nor an interrupt may have stood in for consumption."""
+    def replies():
+        return [turn.reply for turn in harness.turns(record)]
+
+    ended = wait_for(replies)
+    time.sleep(SETTLE)
+    accepted = [e["text"] for e in events(home) if e["event"] == "accepted"]
+    assert len(accepted) == 1 and accepted[0] != payload, "the consumed input never began a turn of its own"
+    reply = f"done: {accepted[0].splitlines()[0]}"
+    assert ended == [reply] and wait_for(replies) == [reply], "no second turn or interrupt stood in for consumption"
+    assert wait_for(lambda: harness.state(record).turn_open is False)
 
 
 @pytest.mark.parametrize("shape", ["claude", "codex"])
@@ -41,8 +59,9 @@ def test_send_now_chord_consumes_once_at_the_next_tool_boundary(tmux, tmp_path, 
         assert confirmed(seat.harness, record, payload, since) == "delivered"
         tmux.keys(seat.pane.id, *seat.harness.keys.send_now)  # no remaining entry to consume twice
         consumed.release()
-    wait_for(lambda: not seat.screen().working)
-    assert len(seat.harness.turns(record)) == 1, "no second turn or interrupt stood in for consumption"
+    ends_as_one_turn(seat.harness, record, seat.home, payload)
+    screen = wait_for(lambda: (shown := seat.screen()).box is not None and not shown.working and shown)
+    assert screen.queued == 0, "nothing is left queued to run as a second turn"
     assert sum(e == {"event": "consumed", "text": payload} for e in events(seat.home)) == 1
     assert sum(e == {"event": "submitted", "text": payload} for e in events(seat.home)) == 1
 
@@ -71,7 +90,7 @@ def test_post_now_consumes_during_the_running_turn_through_the_service(ship, tmu
         assert wait_for(lambda: attempts.latest("captain").get(message.id) == "delivered")
         assert len(attempts.for_message(message.id)) == 1
         consumed.release()
-    wait_for(lambda: not captain.is_working())
-    assert len(captain.harness.turns(captain.record())) == 1
+    ends_as_one_turn(captain.harness, captain.record(), captain.home, payload)
+    assert not captain.is_working()
     assert sum(e == {"event": "consumed", "text": payload} for e in events(captain.home)) == 1
     assert sum(e == {"event": "submitted", "text": payload} for e in events(captain.home)) == 1
