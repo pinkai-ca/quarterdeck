@@ -231,7 +231,8 @@ class GrokHarness(Harness):
         except (OSError, RuntimeError):
             return None
         environment = {**ENV, "HOME": str(home), "GROK_HOME": str(home)}
-        return program_version(("env", *(f"{key}={value}" for key, value in environment.items()), str(program), "--version"))
+        return program_version(("env", "-i", f"PATH={os.environ.get('PATH', '')}",
+                                *(f"{key}={value}" for key, value in environment.items()), str(program), "--version"))
 
     def freshness(self, path: Path) -> tuple[float, float] | None:
         grant = auth_metadata(path)

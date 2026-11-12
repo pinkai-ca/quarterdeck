@@ -52,7 +52,8 @@ not offer arbitrary exact-content proof for clipped or whitespace-only drafts.
   when its method accepts a home parameter. Only the explicit flag gets an empty
   temporary directory in an existing owned real fenced runtime. Missing context
   creates nothing; an executed callback is never retried. Grok sets both HOME
-  variables and keeps controlled native ENV; no-context basename lookup executes
+  variables after `env -i`, supplying only caller PATH and controlled native ENV;
+  no-context basename lookup executes
   nothing and uses Seat's same selected program, without PATH rewriting.
 - `Harness.record_time_resolution` defaults to zero. Grok declares one second;
   the canonical receipt matcher floors only local `since`, preserving exact

@@ -3,6 +3,10 @@
 from pathlib import Path
 from types import SimpleNamespace
 from functools import wraps
+import json
+import os
+import subprocess
+import sys
 
 import pytest
 
@@ -37,15 +41,15 @@ def runtime(tmp_path):
 
 
 def assert_context(argv, parent, selected):
-    assert argv[0] == "env" and argv[-2:] == (str(selected.resolve()), "--version")
-    environment = dict(value.split("=", 1) for value in argv[1:-2])
+    assert argv[:2] == ("env", "-i") and argv[-2:] == (str(selected.resolve()), "--version")
+    environment = dict(value.split("=", 1) for value in argv[2:-2])
     home = Path(environment["HOME"])
     assert environment["GROK_HOME"] == str(home) and home.parent == parent
     assert home.is_dir() and not home.is_symlink() and list(home.iterdir()) == []
     assert environment["GROK_DISABLE_AUTOUPDATER"] == "1"
     assert environment["GROK_STORAGE_MODE"] == "local"
     assert all(environment[key] == value for key, value in grok.ENV.items())
-    assert "PATH" not in environment
+    assert environment["PATH"] == os.environ.get("PATH", "")
     return home
 
 
@@ -63,6 +67,43 @@ def test_context_replaces_both_inherited_homes_and_retires_empty_directory(tmp_p
     assert base._version_in_runtime(GrokHarness(), parent) == "8.6.4"
     assert len(executions) == 1 and not homes[0].exists()
     assert [p.name for p in parent.iterdir()] == [".git"]
+
+
+def test_contextual_child_receives_only_caller_path_and_controlled_environment(tmp_path, monkeypatch, selected):
+    program, executions = selected
+    parent = runtime(tmp_path)
+    # Observe the initial exec environment, before Python's locale adjustments.
+    # The stand-in's caller contains
+    # exclusively synthetic values, so even a regression cannot expose a grant.
+    caller = {"PATH": os.environ.get("PATH", ""),
+              "HOME": str(tmp_path / "synthetic-caller-home"),
+              "GROK_HOME": str(tmp_path / "synthetic-caller-grok-home"),
+              "GROK_MANAGED_CONFIG_URL": "https://synthetic.invalid/config",
+              "GROK_AGENT": "synthetic-agent",
+              "SYNTHETIC_FUTURE_REDIRECT": "synthetic-arbitrary-value"}
+    for name, value in caller.items():
+        monkeypatch.setenv(name, value)
+    program.write_text(f"#!{sys.executable} -IBS\n"
+        "import json, sys\nfrom pathlib import Path\n"
+        "items = Path('/proc/self/environ').read_bytes().split(b'\\0')\n"
+        "environment = dict(item.decode(errors='surrogateescape').split('=', 1) for item in items if item)\n"
+        "print(json.dumps({'environment': environment, 'argv': sys.argv[1:]}))\n")
+    observed = []
+    def lookup(argv):
+        executions.append(argv)
+        home = assert_context(argv, parent, program)
+        result = subprocess.run(argv, env=caller, capture_output=True, text=True, timeout=5, check=True)
+        child = json.loads(result.stdout)
+        assert child["argv"] == ["--version"]
+        assert child["environment"] == {**grok.ENV, "PATH": caller["PATH"], "HOME": str(home), "GROK_HOME": str(home)}
+        for name in ("GROK_MANAGED_CONFIG_URL", "GROK_AGENT", "SYNTHETIC_FUTURE_REDIRECT"):
+            assert name not in child["environment"]
+            assert not any(value.startswith(name + "=") for value in argv)
+        observed.append(child)
+        return "8.6.4"
+    monkeypatch.setattr(grok, "program_version", lookup)
+    assert base._version_in_runtime(GrokHarness(), parent) == "8.6.4"
+    assert len(executions) == len(observed) == 1
 
 
 def test_no_context_reads_only_the_selected_resolved_basename(selected):
