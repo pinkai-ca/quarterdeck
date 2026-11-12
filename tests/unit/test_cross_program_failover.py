@@ -3,6 +3,7 @@
 from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
+import json
 
 import pytest
 
@@ -168,7 +169,41 @@ def test_unknown_or_missing_saved_selection_does_not_choose_the_first_program(ru
         Seat(r.seat.ship, r.seat.ship.seat('worker'), r.seat.tmux)
 
 
-def test_unconfirmed_closed_submission_stays_held_on_its_original_identity(running):
+def test_unconfirmed_closed_submission_settles_absence_on_its_original_identity(running):
+    r = running
+    message = r.svc.store.new('order', 'issuer', 'worker', 'unconfirmed synthetic transport')
+    attempt = r.svc.attempts.open(message, 'worker', '%1', 101, r.seat.launched().at)
+    proof = pending.Proof.begin(r.seat, attempt, post.typed([message]))
+    proof.save(phase='submitted', shown=post.typed([message]))
+    r.svc.attempts.close(attempt, 'pending')
+    r.svc.store.new('report', 'worker', 'issuer', 'closed by the worker', re=message.id)
+    original = dict(proof.data)
+    r.svc.failover()
+    r.svc.reconcile()
+    settled = json.loads(proof.path.read_text())
+    assert settled['phase'] == 'not-in-closed-record' and not proof.same_launch(r.seat)
+    assert 'not in its closed launch record' in settled['resolution']
+    assert {key: settled[key] for key in original if key != 'phase'} == {
+        key: value for key, value in original.items() if key != 'phase'}
+    attempts = r.svc.attempts.for_message(message.id)
+    assert len(attempts) == 1 and attempts[0].path == attempt.path
+    assert attempts[0].result == 'not-in-closed-record'
+    assert (attempts[0].at, attempts[0].pane, attempts[0].pid, attempts[0].launched_at) == (
+        attempt.at, attempt.pane, attempt.pid, attempt.launched_at)
+    before = (proof.path.read_bytes(), proof.path.stat().st_mtime_ns,
+              attempt.path.read_bytes(), attempt.path.stat().st_mtime_ns)
+    r.svc.reconcile()
+    assert before == (proof.path.read_bytes(), proof.path.stat().st_mtime_ns,
+                      attempt.path.read_bytes(), attempt.path.stat().st_mtime_ns)
+    assert r.svc.attempts.for_message(message.id) == attempts
+    assert r.svc.attempts.latest()[message.id] == 'not-in-closed-record'
+    assert '--first' not in r.launches[0], 'a closed uncertain submission was not resent'
+    assert not r.svc.store.is_open(message) and not pending.detached(r.seat)
+    facts = watch.facts(r.seat.ship, r.seat.tmux, walls=[], login=[])
+    assert 'worker' not in facts.needs_human and not facts.pending
+
+
+def test_closed_submission_with_skipped_old_record_stays_held_on_its_original_identity(running):
     r = running
     message = r.svc.store.new('order', 'issuer', 'worker', 'unconfirmed synthetic transport')
     attempt = r.svc.attempts.open(message, 'worker', '%1', 101, r.seat.launched().at)
@@ -177,13 +212,18 @@ def test_unconfirmed_closed_submission_stays_held_on_its_original_identity(runni
     r.svc.attempts.close(attempt, 'pending')
     r.svc.store.new('report', 'worker', 'issuer', 'closed by the worker', re=message.id)
     original = proof.path.read_bytes()
+    attempts = r.svc.attempts.for_message(message.id)
     r.svc.failover()
+    # The same closed launch is now unreadable as complete input evidence.
+    with r.source.path.open('a') as stream:
+        stream.write(json.dumps(dict(type='unknown-input-kind', timestamp=post.now().isoformat())) + '\n')
     r.svc.reconcile()
     r.svc.reconcile()
     assert proof.path.read_bytes() == original and not proof.same_launch(r.seat)
+    assert r.svc.attempts.for_message(message.id) == attempts and len(attempts) == 1
     assert r.svc.attempts.latest()[message.id] == 'pending'
     assert '--first' not in r.launches[0], 'a closed uncertain submission was not resent'
-    assert pending.detached(r.seat)
+    assert not r.svc.store.is_open(message) and pending.detached(r.seat)
     facts = watch.facts(r.seat.ship, r.seat.tmux, walls=[], login=[])
     assert 'worker' in facts.needs_human and facts.pending
 
