@@ -25,9 +25,12 @@ def wait_for(predicate, seconds: float = 10.0):
 @contextmanager
 def attached_client(command, attached):
     """Own a terminal client and keep its output in the test run's temporary folder."""
+    client_env = os.environ.copy()
+    inherited_term = client_env.get('TERM')
+    client_env['TERM'] = 'xterm-256color'
     with tempfile.NamedTemporaryFile(prefix='tmux-client-', suffix='.log', delete=False) as output:
         client = subprocess.Popen(['script', '-qfc', command, '/dev/null'], stdin=subprocess.DEVNULL,
-                                  stdout=output, stderr=subprocess.STDOUT)
+                                  stdout=output, stderr=subprocess.STDOUT, env=client_env)
         ready = False
         try:
             try:
@@ -47,4 +50,5 @@ def attached_client(command, attached):
             output.seek(0)
             captured = output.read().decode('utf-8', errors='replace')
             raise AssertionError(f'{error}; tmux attach script exit={client.returncode}, '
-                                 f'TERM={os.environ.get("TERM")!r}, output={output.name}:\n{captured}') from error
+                                 f'inherited TERM={inherited_term!r}, client TERM={client_env["TERM"]!r}, '
+                                 f'output={output.name}:\n{captured}') from error
