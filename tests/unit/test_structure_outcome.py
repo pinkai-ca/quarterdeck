@@ -4,6 +4,7 @@ from contextlib import nullcontext
 from dataclasses import replace
 from datetime import timedelta
 from itertools import count
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -50,6 +51,9 @@ def structures(tmp_path, monkeypatch):
         launch.write(home.parent / 'launch.json')
         (home.parent / 'record').write_text(str(program.record.path))
         record_owner.register(home.parent, program.record.path, 'fake')
+        locks = ship.runtime / 'post/lifecycle'
+        locks.mkdir(parents=True, exist_ok=True)
+        (locks / f'{name}.lock').touch()
         pane = Pane(launch.pane, 'Synthetic', 'Synthetic', launch.pid, 100, 40, False, False, None)
         seat = SimpleNamespace(name=name, ship=ship, spec=specs[name], pool=ship.pools['fake'],
                                home=home, folder=home.parent, session=ship.sessions['crew'], harness=FakeHarness(),
@@ -204,7 +208,8 @@ def test_activity_or_unknown_evidence_resets_candidate(structures, monkeypatch, 
     elif change == 'missing-footer':
         seat.shown = '\n'.join(seat.shown.splitlines()[:-1])
     elif change == 'reader-unknown':
-        monkeypatch.setattr(record_owner, 'pinned_reader', lambda *args: None)
+        (seat.folder / record_owner.REGISTRY).write_text(
+            json.dumps(dict(record=str(program.record.path), harness=None)) + '\n')
     else:
         seat.current_launch = replace(seat.current_launch, at=(post.now() + timedelta(seconds=1)).isoformat())
     assert all('turn ended, no report' not in line for line in outcome.waits(case.ship, [seat]))
