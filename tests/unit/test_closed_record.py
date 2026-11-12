@@ -13,6 +13,7 @@ from quarterdeck import harness, pending, record_owner
 from quarterdeck.harness import closed_record
 from quarterdeck.harness.types import Input, Inputs
 from quarterdeck.seat import Launched
+from quarterdeck.tmux import TmuxError
 
 
 T0 = datetime(2025, 1, 1, tzinfo=timezone.utc)
@@ -171,6 +172,15 @@ def test_unsupported_bare_input_list_cannot_supply_absence(world, monkeypatch):
     world.live['pane'] = None
     monkeypatch.setattr(harness, 'get', lambda name: SimpleNamespace(inputs=lambda record: []))
     assert not closed_record.not_in_closed_record(world.seat, world.proof)
+
+
+def test_tmux_query_failure_holds_without_becoming_positive_pane_absence(world):
+    def unreadable(ident):
+        raise TmuxError('synthetic failed pane query')
+    world.seat.tmux.pane = unreadable
+    before = inventory(world.seat.folder)
+    assert not closed_record.not_in_closed_record(world.seat, world.proof)
+    assert inventory(world.seat.folder) == before
 
 
 def test_adapter_without_approved_diagnostic_coverage_holds(world, monkeypatch):

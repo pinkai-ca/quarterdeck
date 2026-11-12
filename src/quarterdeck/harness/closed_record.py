@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .. import harness, input_receipt, record_owner
+from ..tmux import TmuxError
 from .types import Inputs
 
 if TYPE_CHECKING:
@@ -61,5 +62,5 @@ def not_in_closed_record(seat: 'Seat', proof: 'Proof') -> bool:
             if item.at >= since and input_receipt.same_text(item.text, data['payload']):
                 return False
         return _closed(seat, data['identity'])
-    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, TmuxError):
         return False  # no default zero, guessed reader, or missing-pane error becomes absence
