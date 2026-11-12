@@ -14,9 +14,9 @@ import secrets
 from pathlib import Path
 
 
-def replace_file(path: Path, text: str) -> None:
-    """Put ``text`` at ``path`` whole, as ``Path.write_text`` would encode it, durably."""
-    data = text.encode(locale.getpreferredencoding(False))
+def replace_file(path: Path, text: str, *, encoding: str | None = None) -> None:
+    """Put ``text`` at ``path`` whole, as ``Path.write_text`` would encode it unless told otherwise, durably."""
+    data = text.encode(encoding or locale.getpreferredencoding(False))
     # A name of its own, so two writers never share (or rename away) one temporary;
     # it never ends in a reader's suffix, and a cut can only leave it unread beside the file.
     temporary = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")

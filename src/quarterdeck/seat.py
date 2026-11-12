@@ -22,7 +22,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import providers, durable, harness as harnesses, input_receipt, pending, post, record_owner, ship as shipmod, standing
-from .harness.base import Harness, Join, _version_in_runtime
+from . import carriage as carriagemod
+from .harness.base import Harness, Join, Launch, _version_in_runtime
 from .provenance import remember_launch
 from .pricing import save_price, saved_price
 from .ship import Pool, SeatSpec, Ship, ShipError
@@ -424,20 +425,41 @@ class Seat:
         resume_id = self._resume_id() if resume else None
         if resume and resume_id is None and prior:
             self.harness.preflight_resume(spec, self.home, lambda: None)
-        first, carried = self.first_message(resume_id=resume_id)  # read while the last record is still pinned
+        carriage = self.carriage(resume_id=resume_id)  # read while the last record is still pinned
+        carried = carriage.carried
         if not resume_id:
             (self.folder / "record").unlink(missing_ok=True)
-        launch = self.harness.launch(spec, pool, self.home, brief, resume_id, first)
         path = self._path()
-        if shutil.which(launch.argv[0], path=path) is None:
-            raise ShipError(f"{self.name}: {launch.argv[0]} is not on the PATH qd runs with; install it, or put it on that PATH")
-        argv = list(launch.argv)
         jailed = self.ship.jailed(self.spec, pool)
-        if jailed:
-            from . import sandbox  # the sandbox reads the ship and the standing orders, so it is imported here, not above
 
-            jail = sandbox.plan(self.ship, self.name, self.folder, self.home, self.ship.cwd_of(self.spec), launch.argv[0], path)
-            argv = sandbox.command(jail, argv)
+        def command(opening: str | None) -> tuple[Launch, list[str]]:
+            launch = self.harness.launch(spec, pool, self.home, brief, resume_id, opening)
+            if shutil.which(launch.argv[0], path=path) is None:
+                raise ShipError(f"{self.name}: {launch.argv[0]} is not on the PATH qd runs with; install it, or put it on that PATH")
+            argv = list(launch.argv)
+            if jailed:
+                from . import sandbox  # the sandbox reads the ship and the standing orders, so it is imported here, not above
+
+                jail = sandbox.plan(self.ship, self.name, self.folder, self.home, self.ship.cwd_of(self.spec), launch.argv[0], path)
+                argv = sandbox.command(jail, argv)
+            return launch, argv
+
+        def misfit(launch: Launch, argv: list[str]) -> str | None:
+            return carriagemod.misfit(["env", f"PATH={path}", *argv], launch.env)  # the words launch.sh hands to exec
+
+        carried_file = None
+        launch, argv = (None, None) if carriage.size > carriagemod.INLINE_BYTES else command(carriage.text)
+        if carriage.text and (launch is None or misfit(launch, argv)):
+            # law: context-is-cache -- too long for one argument: an account, and the whole carriage in a file read first
+            carried_file = carriagemod.write(self.folder, self.name, carriage)
+            for budget in carriagemod.ACCOUNT_BUDGETS:
+                launch, argv = command(carriagemod.account(carriage, carried_file, budget))
+                if not misfit(launch, argv):
+                    break
+        known = {**launch.env, "QD_SHIP": str(self.ship.folder), "QD_SEAT": self.name}  # a lower bound: tmux adds its own
+        if reason := carriagemod.refused(["env", f"PATH={path}", *argv], known):  # refused only where exec surely would
+            raise ShipError(f"{self.name}: exec would refuse this launch for its size, whatever it carries: {reason}; "
+                            "nothing was started")
         at = datetime.now(timezone.utc).isoformat()  # before the program can write a record (law: one-record)
         pane = self._open_window(argv, launch.env, path)
         launched = Launched(pane.id, pane.pid, at, pool.name, resume_id, argv, _version_in_runtime(self.harness, self.ship.runtime), self.spec.harness,
@@ -451,9 +473,12 @@ class Seat:
         attempts = post.Attempts(self.ship.runtime)
         for message in carried:
             attempt = attempts.open(message, self.name, pane.id, pane.pid, launched.at)
-            attempts.close(attempt, "launch", "carried as the first message of the launch")
+            attempts.close(attempt, "launch", f"carried in the launch's file {carried_file.name}; not confirmed read"
+                           if carried_file else "carried as the first message of the launch")
         how = f"resumed {resume_id[:8]}" if resume_id else "fresh"
         carried_note = f" · {len(carried)} open message{'s' if len(carried) != 1 else ''} carried" if carried else ""
+        if carried_file:
+            carried_note += f" in {carried_file.relative_to(self.ship.runtime)}"
         jail_note = " · jailed: the operator's home hidden, the workspace writable" if jailed else ""
         notice_note = f" · {launched.notice}" if launched.notice else ""
         return f"{self.name} up in {pane.id} · {self.harness.name} {launched.version or ''} · provider {providers.display(pool.provider)} · pool {pool.name} · {how}{carried_note}{jail_note}{notice_note}"
@@ -466,7 +491,12 @@ class Seat:
             return None
 
     def first_message(self, *, resume_id: str | None = None) -> tuple[str | None, list[post.Message]]:
-        """What the launch carries as its first message, under a header saying the seat was briefed.
+        """What the launch carries, whole, under a header saying the seat was briefed."""
+        carriage = self.carriage(resume_id=resume_id)
+        return carriage.text, carriage.carried
+
+    def carriage(self, *, resume_id: str | None = None) -> carriagemod.Carriage:
+        """What the launch carries, under a header saying the seat was briefed, with what an account of it needs.
 
         Every open root and its incoming thread amendments, plus unread work
         (law: context-is-cache). Own outgoing questions explain answers as
@@ -488,12 +518,17 @@ class Seat:
         withheld = [m for m in all_context.incoming if m.id in refused]
         # law: one-door -- exclusions remove incoming and context bodies before rendering
         if not selection.entries and not withheld:
-            return None, []
-        parts = [post.briefed_header(self.name, self.spec.role, list(selection.roots))]
+            return carriagemod.Carriage(None, [])
+        header = post.briefed_header(self.name, self.spec.role, list(selection.roots))
+        parts = [header]
         parts += [refusal.stub(m) for m in withheld]  # law: context-is-cache -- named, never retyped
         if selection.entries:
             parts.append(selection.render())
-        return "\n".join(parts), selection.incoming
+        root_ids = {m.id for m in selection.roots}
+        others = (sum(e.message.id not in root_ids for e in selection.entries)
+                  + sum(m.id not in root_ids for m in withheld))
+        return carriagemod.Carriage("\n".join(parts), selection.incoming, header, selection.roots,
+                                    frozenset(m.id for m in selection.roots if m.id in refused), others)
 
     def _consumed_messages(self, store: post.Store, attempts: post.Attempts, resume_id: str | None,
                            excluded: frozenset[str]) -> frozenset[str]:
