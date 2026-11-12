@@ -173,9 +173,16 @@ an early final notice; it is not rewritten. The notes path is independent of the
 
 The existing confirmed in-session control changes effort before the seat's next lap order.
 Unavailable, busy, unconfirmed or interrupted controls leave the current effort in place
-with an honest fallback; this cut adds no lifecycle transition. A wall, recorded failure
-category or dead owned pane ends the ring early. One immutable final service report tells
-the orchestrator where the notes are and includes the last full answer. It does not answer
+with an honest fallback in the notes and final notice; the orchestrator's card requires these
+limitations in its answer. This cut adds no lifecycle transition or launch-only restart.
+The shared `group_post.current_seat_failure` supplies positive owned-dead or held-limit with
+no eligible destination evidence. An absent pane is unknown. A recorded failure ends a lap
+only when existing canonical input matching ties its inputs to that step's order, or its
+latest failed turn began at/after the order's measured native taking. Consumed queues use
+their consumption time. Posted-at and attempt clocks alone prove no taking. Unknown or
+unreadable evidence holds, and no reader forms are added. One immutable final service report
+tells the orchestrator where the notes are, includes requested and actual/unknown effort
+observations and limitations, and carries the last full answer. It does not answer
 the question. An interrupted child order stays open until its addressee reports; a late
 report cannot resume the ended run. The template beside drydock carries its own orders,
 cards and instructions and travels with the installed copy. There is no compiler, fleet

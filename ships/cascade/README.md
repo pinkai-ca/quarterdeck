@@ -32,12 +32,15 @@ Each question has its own file. Nothing is written into an external workspace. O
 reports, journals and notes remain in the ship runtime and are never committed.
 
 Watch three seats take turns; the orchestrator receives no intermediate reports. At the
-end it gets one service notice and gives the question's sender one conclusion. A wall,
-recorded failure or dead owned pane ends the run early with its location named. Late replies
+end it gets one service notice and gives the question's sender one conclusion. A held limit
+with no eligible destination, a failure tied to the current order, or a positively
+dead owned pane ends the run early with its location named. Missing panes and unreadable
+evidence are unknown; a failed older turn cannot stop a new lap. Late replies
 cannot restart it. An interrupted child order stays open until its addressee reports.
 
 Effort changes use the program's existing confirmed in-session control. Where that control
-is unavailable, unconfirmed or interrupted, the lap keeps the current effort and says so.
+is unavailable, unconfirmed or interrupted, the lap keeps the current effort and says so in
+the notes and final service notice; the orchestrator includes these limitations in its answer.
 No restart is invented to make an effort change appear successful. Fake drydock validation
 uses three fake seats; the real template's provider/effort behavior still needs a separately
 released live proof on installed programs before a demonstration.

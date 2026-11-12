@@ -11,7 +11,9 @@ Each report preserves the original question and a complete answer, so the next s
 improve it without reading another seat's files. Do not change another seat or start a ship.
 
 An unproven effort control leaves the current effort in place; its actual or unknown effort
-is stated in the notes. A wall, a recorded failure or a dead owned pane ends the ring early.
+is stated in the notes. A held limit with no eligible destination, a positively dead owned
+pane, or a recorded failure associated with the current order ends the ring early. A missing
+pane is unknown; a failed older turn cannot end a new lap.
 An interrupted order remains open under ordinary post rules until its addressee reports;
 the service never forges that report or resumes an ended cascade from a late reply.
 

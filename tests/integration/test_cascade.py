@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import shutil
+import os
+import signal
 from pathlib import Path
 
 import pytest
@@ -130,9 +132,10 @@ def test_fake_ring_dead_owned_pane_stops_early_with_one_final(ring, tmux, capsys
     order = wait_for(lambda: active_order(ring, store), seconds=15)
     wait_for(lambda: idle_after_delivery(ring, tmux, order), seconds=15)
     seat = seatmod.Seat(ring, ring.seat("alpha"), tmux)
-    tmux.kill_window(seat.pane().id)
+    pane = wait_for(seat.pane, seconds=15)
+    os.kill(pane.pid, signal.SIGTERM)  # failed fake process leaves its owned pane visibly dead
     finals = wait_for(lambda: [m for m in store.for_seat("conductor") if m.sender == "ship"], seconds=15)
-    assert len(finals) == 1 and "alpha: dead or missing owned pane" in finals[0].body
+    assert len(finals) == 1 and "alpha: owned pane is dead" in finals[0].body
     service_progress(ring)
     assert len([m for m in store.for_seat("conductor") if m.sender == "ship"]) == 1
     assert not [m for m in store.all() if m.kind == "order" and m.to in ("beta", "gamma")]

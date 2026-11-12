@@ -189,9 +189,18 @@ class Runner:
         current = data["steps"][-1] if data["steps"] else {}
         outstanding = (f"\nInterrupted order remains open: {current['order']}."
                        if current.get("order") and "report" not in current else "")
+        observations = []
+        for step in data["steps"]:
+            observed = step.get("effort", dict(requested=data["efforts"][step["lap"] - 1], actual="unknown",
+                                               detail="No completed effort observation before the stop."))
+            observations.append(f"- {step['seat']} lap {step['lap']}: requested {observed['requested']}; "
+                                f"actual {observed['actual']}. {observed['detail']}")
+        effort_summary = "\nEffort observations and limitations:\n" + ("\n".join(observations) or "No ring effort observed.")
         body = (f"Cascade {data['status']}" + (f": {data['reason']}" if data["reason"] else ".")
-                + outstanding + f"\nNotes: {where}\nRead the notes and the last full answer below, then answer the original "
-                  "question once. This notice does not close that question.\n\nLast full answer:\n" + last)
+                + outstanding + f"\nNotes: {where}" + effort_summary
+                + "\nRead the notes and the last full answer below, then answer the original question once. "
+                  "Include unraised actual/unknown effort and its limitations in your conclusion; requested levels "
+                  "are not proof of escalation. This notice does not close that question.\n\nLast full answer:\n" + last)
         self.publish(path, data, "final", "report", data["declaration"]["orchestrator"], body)
 
     def advance(self, path: Path) -> None:
@@ -231,7 +240,7 @@ class Runner:
                 save(path, data)
                 self.append(path, data)
             else:
-                if reason := self.health(current["seat"]):
+                if reason := self.health(current["seat"], order):
                     self.finish(path, data, f"{current['seat']}: {reason}")
                     return
                 self.dispatch(path, data, current)
@@ -243,7 +252,7 @@ class Runner:
         current = dict(seat=ring["seats"][index % 3], lap=index // 3 + 1)
         steps.append(current)
         save(path, data)
-        if reason := self.health(current["seat"]):
+        if reason := self.health(current["seat"], None):
             self.finish(path, data, f"{current['seat']}: {reason}")
             return
         self.dispatch(path, data, current)
@@ -270,22 +279,45 @@ class Runner:
             save(path, data)
 
 
-def health(service, name: str) -> str | None:
-    seat = service.seat(name)
-    pane = seat.pane()
-    if pane is None or pane.dead:
-        return "dead or missing owned pane"
-    from . import quota
-    if quota.current_walled(seat, service.ledger):
-        return "pool wall"
-    record = seat.record()
+def health(service, name: str, order: post.Message | None = None) -> str | None:
+    """Common positive seat failure, or a recorded failure tied to this step's taking."""
+    from . import group_post, thread_context
+    from .tmux import TmuxError
+
     try:
-        state = seat.harness.state(record) if record else None
-    except OSError:
-        return None  # unknown reading does not invent an early end; the ordinary door holds
-    if state is not None and state.failure is not None and state.turn_open is False:
-        return state.failure.kind  # classification only; never copy a provider error body
-    return None
+        if reason := group_post.current_seat_failure(service, name):
+            return reason
+        if order is None:
+            return None  # order-free preflight cannot associate an old failed turn
+        seat = service.seat(name)
+        with seat._lifecycle(automatic=True):
+            launched = seat.launched()
+            record = seat.record() if launched is not None else None
+            if record is None:
+                return None
+            state = seat.harness.state(record)
+            failure = state.failure
+            if failure is None or state.turn_open is not False:
+                return None
+
+            def has_order(items):
+                return order.id in thread_context.consumed_ids(
+                    service.store, name, seat.spec.role, items)
+
+            associated = has_order(failure.inputs)
+            if not associated:
+                # Accepted inputs are direct takings; consumed queue entries retain
+                # their acceptance time, so their later consumed_at is the taking.
+                taken = [item.at if item.kind == 'accepted' else item.consumed_at
+                         for item in seat.harness.inputs(record) if has_order([item])]
+                failed = [turn for turn in state.completed_turns[-1:] if turn.failure == failure
+                          and turn.started is not None]
+                associated = bool(taken and any(turn.started >= max(taken) for turn in failed))
+            if seat.launched() != launched or seat.record() != record:
+                return None
+            return failure.kind if associated else None  # category only, never a provider body
+    except (ShipError, OSError, TmuxError, ValueError, TypeError):
+        return None  # absent, transitioning or unreadable evidence is not an early end
 
 
 def effort(service, name: str, wanted: str) -> dict:
@@ -310,7 +342,7 @@ def effort(service, name: str, wanted: str) -> dict:
 
 
 def run(service) -> None:
-    runner = Runner(service.ship, service.store, lambda name: health(service, name),
+    runner = Runner(service.ship, service.store, lambda name, order: health(service, name, order),
                     lambda name, wanted: effort(service, name, wanted))
     for state in sorted((service.runtime / "ring").glob("*/state.json")):
         path = folder(service.runtime, state.parent.name)
