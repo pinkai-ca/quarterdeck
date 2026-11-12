@@ -25,8 +25,9 @@ def label(text: str) -> str:
 OFFER_TITLE = label("You're using your quota fast")
 OFFER_OPTIONS = "|".join(label(text) for text in
                          ("Keep going", "Switch to Spark", "Turn on contributor mode"))
+SWITCH_OPTIONS = "|".join(label(text) for text in ("Switch to Spark", "Turn on contributor mode"))
 QUOTA_OFFER = Interruption("Muse quota offer: model switch or contributor mode",
-                           rf"(?s)(?=.*{OFFER_TITLE})(?=.*(?:{OFFER_OPTIONS}))")
+                           rf"(?:{SWITCH_OPTIONS})|(?s:(?=.*{OFFER_TITLE})(?=.*(?:{OFFER_OPTIONS})))")
 QUOTA_INCOMPLETE = Interruption("Muse quota offer: options unreadable", OFFER_TITLE)
 CONTRIBUTOR_ENABLED = Interruption("Muse contributor mode enabled", "|".join(label(text) + r"(?![A-Za-z])" for text in (
     "Contributor mode on",

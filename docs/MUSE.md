@@ -117,7 +117,9 @@ between rules, footer and working indicator. An empty composer has no placeholde
 Static strings from the pinned binary identify the separate quota-offer dialog:
 `You're using your quota fast` with `Keep going`, `Switch to Spark` or
 `Turn on contributor mode`. It is named, holds all input actions and reaches a
-person. A title with unreadable options remains a named hold. No key is declared,
+person. Either `Switch to Spark` or `Turn on contributor mode` also names the hold
+without a title, including when quoted in the transcript; `Keep going` alone
+does not. A title with unreadable options remains a named hold. No key is declared,
 including for the `not active yet - esc close` hint. Offers never establish a
 selected model or enabled contributor state. Separate result labels
 `Switched to Spark (saved as default)` and `Contributor mode on`, and the

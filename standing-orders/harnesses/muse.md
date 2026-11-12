@@ -24,7 +24,9 @@ program's current model. Current model and effort schemas still need proof.
 
 The quota offer titled `You're using your quota fast`, offering `Keep going`,
 `Switch to Spark` or `Turn on contributor mode`, holds every input and reaches a
-person. Never answer or dismiss it, even when it says `esc close`. An offered
+person. Never answer or dismiss it, even when it says `esc close`. Either
+switch or contributor option also holds without its title; `Keep going` alone
+does not identify the offer. An offered
 choice is not a selected model or enabled contributor state. A displayed switch
 result or contributor-on notice also holds for a person; Spark is not a proved
 catalog id. Never change model or contributor mode through this dialog.
