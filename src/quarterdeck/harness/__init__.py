@@ -7,7 +7,7 @@ from functools import lru_cache
 from ..ship import ShipError
 from .base import Harness
 
-NAMES = ("fake", "claude", "codex", "antigravity", "opencode", "pi", "grok")
+NAMES = ("fake", "claude", "codex", "antigravity", "opencode", "pi", "grok", "muse")
 MODULES = {
     "fake": ("fake", "FakeHarness"),
     "claude": ("claude", "ClaudeHarness"),
@@ -16,6 +16,7 @@ MODULES = {
     "opencode": ("opencode", "OpenCodeHarness"),
     "pi": ("pi", "PiHarness"),
     "grok": ("grok", "GrokHarness"),
+    "muse": ("muse", "MuseHarness"),
 }
 
 

@@ -1,4 +1,4 @@
-"""Muse event records; source-backed draft pending current-version echo measurement.
+"""Muse event records from safe current-version echo schemas.
 
 No record shape in this module establishes native permissions or isolation.
 Unknown fields retain unknown measurements instead of borrowing old defaults.
@@ -8,17 +8,74 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .json_record import JsonLinesReader, RecordError, object_lines, records_matching, when
 from .types import Input, Inputs, Tokens, ToolCall, Turn
 
 
+def event_time(value):
+    """Current native microseconds; ISO remains readable in historical fixtures."""
+    if type(value) is int:
+        try:
+            return datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(microseconds=value)
+        except OverflowError:
+            return None
+    return when(value)
+
+
+def accepted_text(payload: dict) -> str | None:
+    """The measured single text block, agreeing in both native representations.
+
+    No separator or multi-block rendering rule is established.
+    """
+    blocks, messages = payload.get("refill_blocks"), payload.get("model_messages")
+    if not isinstance(blocks, list) or len(blocks) != 1 or not isinstance(messages, list) or len(messages) != 1:
+        return None
+    if not isinstance(blocks[0], dict) or not isinstance(messages[0], dict):
+        return None
+    content = messages[0].get("content")
+    if not isinstance(content, list) or len(content) != 1 or not isinstance(content[0], dict):
+        return None
+    text = blocks[0].get("text")
+    if (blocks[0].get("kind") != "text" or content[0].get("kind") != "text"
+            or not isinstance(text, str) or content[0].get("text") != text):
+        return None
+    return text
+
+
+def session_identity(record: Path) -> str | None:
+    identities = set()
+    for _, row in object_lines(record):
+        for event in events(row):
+            stream = event.get("stream")
+            if isinstance(stream, dict) and stream.get("kind") == "session":
+                identity = stream.get("id")
+                if not isinstance(identity, str) or not identity:
+                    return None
+                identities.add(identity)
+    return record.parent.name if identities == {record.parent.name} else None
+
+
+def input_text(row: dict) -> str | None:
+    payload = row["payload"]
+    if isinstance(row.get("recorded_at"), str):
+        return accepted_text(payload) if "refill_blocks" in payload else payload.get("prompt")
+    stream = row.get("stream")
+    if (type(row.get("schema_version")) is not int or row["schema_version"] != 1 or not isinstance(stream, dict)
+            or stream.get("kind") != "session" or not isinstance(stream.get("id"), str)
+            or payload.get("source_session_id") != stream["id"]):
+        return None
+    return accepted_text(payload)
+
+
 def events(row: dict, skip=None):
     """Native flat rows or one retained-frame transaction, without rewriting it.
 
     Diagnostics deliberately contain neither event contents nor JSON errors.
-    The historical retained-frame envelope is not current-version proof.
+    Current echo proved retained frames for native permission events; support
+    for other retained payloads is structural, not a new native measurement.
     """
     if isinstance(row.get("payload_type"), str):
         if isinstance(row.get("payload"), dict):
@@ -56,25 +113,26 @@ def records(home: Path) -> list[Path]:
 
 def first_timestamp(record: Path):
     """Creation comes from the first native event, never the file's latest mtime."""
+    if session_identity(record) is None:
+        return None
     for _, row in object_lines(record):
         for event in events(row):
             if native(event):
-                return when(event.get("recorded_at"))
+                return event_time(event.get("recorded_at"))
     return None
 
 
 def session_id(record: Path) -> str | None:
-    # The store's directory identity is historical until validated at 1.4.15.
     if record.name != "session.jsonl" or not record.parent.name:
         return None
-    return record.parent.name
+    return session_identity(record)
 
 
 def inputs(record: Path) -> Inputs:
     """Exact accepted text; materialization is not guessed to be a queue.
 
-    Accepted intent is native acceptance evidence. Outcome details need the
-    current-version materialization schema before they can establish more.
+    Accepted intent is native acceptance evidence. Explicit materialization
+    linkage is available separately and never reclassifies acceptance as queue.
     """
     result = Inputs()
     rows = object_lines(record, result.skip)
@@ -84,7 +142,8 @@ def inputs(record: Path) -> Inputs:
         for event in events(row, lambda reason: result.skip(number, "envelope", reason)):
             if event["payload_type"] != "runtime.user_intent.accepted":
                 continue
-            text, at = event["payload"].get("prompt"), when(event.get("recorded_at"))
+            text = input_text(event)
+            at = event_time(event.get("recorded_at"))
             if not isinstance(text, str) or at is None:
                 result.skip(number, "runtime.user_intent.accepted", "text or timestamp unreadable")
             else:
@@ -103,21 +162,36 @@ class Reader(JsonLinesReader):
         self.execution_seen = False
         self.ended_runs = set()
         self.run_id = None
+        self.conversation = None
+        self.input_id = None
+        self.accepted = {}
+        self.started = {}
+        self.materialized = {}
         super().__init__(record, snapshot)
+        self.conversation = session_identity(record)
 
     def take(self, row: dict) -> None:
         for event in events(row, lambda reason: self.unknown_tools(reason)):
             self.take_event(event)
 
     def take_event(self, row: dict) -> None:
-        kind, payload, at = row["payload_type"], row["payload"], when(row.get("recorded_at"))
+        kind, payload, at = row["payload_type"], row["payload"], event_time(row.get("recorded_at"))
         if kind == "runtime.user_intent.accepted":
-            text = payload.get("prompt")
+            text = input_text(row)
             if isinstance(text, str):
                 self.last_input, self.last_input_at = text, at
+            intent = payload.get("intent_id")
+            if isinstance(intent, str) and intent:
+                self.input_id = intent
+                self.accepted[intent] = row
+            return
+        if kind == "runtime.user_intent.materialized":
+            intent = payload.get("intent_id")
+            if isinstance(intent, str) and intent:
+                self.materialized[intent] = row
             return
         if kind != "runtime.session":
-            # Configuration, tooling, materialization and new payloads require
+            # Configuration, tooling and other new payloads require
             # native schemas; absence of recognized tool evidence is unknown.
             self.tools_known = False
             return
@@ -138,6 +212,7 @@ class Reader(JsonLinesReader):
                 self.end(None)  # retain incomplete work, never invent completion
             prompt = event.get("prompt")
             self.execution_seen, self.run_id = True, run
+            self.started[run] = row
             self.start_turn(dict(started=at, input=prompt if isinstance(prompt, str) else "",
                                  reply=[], tools=[], tokens=Tokens.unknown()))
             return
@@ -157,26 +232,49 @@ class Reader(JsonLinesReader):
                 self.open["tools"].append(ToolCall(name if isinstance(name, str) and name else "?", None, None))
             self.tools_known = False  # names alone cannot prove outstanding calls
         elif action == "model_completed":
-            usage = event.get("usage")
-            count = usage.get("output_tokens") if isinstance(usage, dict) else None
-            if type(count) is int and count >= 0:
-                previous = self.open["tokens"].written
-                # No evidence yet establishes other token classes or input totals.
-                self.open["tokens"] = Tokens(written=previous + count, unmeasured=1)
+            # Echo zeros are not provider quantities. Cache/reasoning overlap
+            # is unmeasured; never turn these fields into billed token totals.
+            self.open["tokens"] = Tokens.unknown()
         elif action == "terminal":
             if isinstance(event.get("terminal"), str) and event["terminal"]:
                 self.ended_runs.add(run)
-                self.end(at)
+                self.end(at, event["terminal"])
             else:
                 self.tools_known = False
         else:
             self.tools_known = False
 
-    def end(self, at):
+    def end(self, at, reason=None):
         value = self.close_turn()
         self.record_turn(Turn(len(self.turns), value["started"], at, value["input"],
                               "\n".join(value["reply"]), None, value["tokens"],
-                              tuple(value["tools"]), subagent_turns=None, timed=at is not None), at)
+                              tuple(value["tools"]), subagent_turns=None, timed=at is not None,
+                              end_reason=reason), at)
+
+    def materialization(self, intent: str) -> str | None:
+        """Positive top-level-start linkage, never a guess from equal intent/run ids."""
+        accepted, materialized = self.accepted.get(intent), self.materialized.get(intent)
+        if accepted is None or materialized is None:
+            return None
+        left, right = accepted["payload"], materialized["payload"]
+        outcome = right.get("outcome")
+        if not isinstance(outcome, dict) or outcome.get("kind") != "top_level_turn_started":
+            return None
+        started = self.started.get(outcome.get("run_id"))
+        stream = accepted.get("stream")
+        if (started is None or not isinstance(stream, dict) or stream.get("kind") != "session"
+                or materialized.get("stream") != stream or started.get("stream") != stream
+                or type(accepted.get("sequence")) is not int or not isinstance(accepted.get("id"), str)
+                or right.get("envelope_record_id") != accepted["id"]
+                or right.get("envelope_sequence") != accepted["sequence"]
+                or left.get("source_session_id") != stream.get("id")
+                or right.get("source_session_id") != stream.get("id")
+                or outcome.get("run_started_session_record_id") != started.get("id")
+                or not isinstance(started.get("payload", {}).get("source_run_record_id"), str)
+                or outcome.get("run_started_source_record_id") != started["payload"]["source_run_record_id"]):
+            return None
+        return "top_level_turn_started"
 
     def state(self):
-        return replace(super().state(), turn_open=self.open is not None if self.execution_seen else None)
+        return replace(super().state(), turn_open=self.open is not None if self.execution_seen else None,
+                       conversation=self.conversation, input_id=self.input_id, work_id=self.run_id)

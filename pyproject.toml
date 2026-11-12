@@ -32,6 +32,7 @@ where = ["src"]
     "standing-orders/harnesses/codex.md",
     "standing-orders/harnesses/fake.md",
     "standing-orders/harnesses/grok.md",
+    "standing-orders/harnesses/muse.md",
     "standing-orders/harnesses/opencode.md",
     "standing-orders/harnesses/pi.md",
 ]
