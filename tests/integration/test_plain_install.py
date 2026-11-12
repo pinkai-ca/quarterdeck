@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -9,7 +10,10 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
 import zipfile
+
+import pytest
 
 from tests.integration.test_upgrade_resources import RESOURCE_ROOTS, ROOT, archive, environment, git
 
@@ -53,21 +57,52 @@ print(json.dumps(dict(prefix=str(prefix), origin=quarterdeck.__file__,
 '''
 
 
-def test_wheel_installed_laws_and_fake_drydock(tmp_path, private_socket_root, capsys):
+INSIDE_PREFIX = '.plain-install-inside-'
+
+
+@contextmanager
+def inside_checkout():
+    """A folder of this test's own directly in the checkout, as plain pytest's .testruns/t lies in CI's
+    checkout; removed on every exit, failure included, and nothing else in the checkout is touched."""
+    folder = Path(tempfile.mkdtemp(prefix=INSIDE_PREFIX, dir=ROOT))
+    made = folder.lstat()
+    try:
+        yield folder
+    finally:
+        now = folder.lstat()
+        assert (now.st_dev, now.st_ino) == (made.st_dev, made.st_ino) and folder.is_dir() \
+            and not folder.is_symlink(), f'{folder} was replaced; left for inspection'
+        shutil.rmtree(folder)
+        assert not folder.exists()
+
+
+@pytest.fixture(params=['run-temporary', 'inside-checkout'])
+def scratch(request, tmp_path):
+    """The run's own temporary folder (outside the checkout under tests/testrun.py, inside it under plain
+    pytest), and a folder inside the checkout in every runner, so both layouts are proven by any run."""
+    if request.param == 'run-temporary':
+        yield tmp_path
+        return
+    with inside_checkout() as folder:
+        assert folder.is_relative_to(ROOT)
+        yield folder
+
+
+def test_wheel_installed_laws_and_fake_drydock(scratch, private_socket_root, capsys):
     # HEAD is the tested target, including future fixes, never a pinned historical product.
     ref = git(ROOT, 'rev-parse', 'HEAD')
-    source = tmp_path / 'source'
+    source = scratch / 'source'
     archive(ref, source, RESOURCE_ROOTS)
     source_files = {path.relative_to(source).as_posix(): path.read_bytes()
                     for path in source.rglob('*') if path.is_file()}
     tracked = git(ROOT, 'ls-tree', '-r', '--name-only', ref).splitlines()
-    outside = tmp_path / 'outside'
+    outside = scratch / 'outside'
     outside.mkdir()
-    env = child_environment(tmp_path / 'child', private_socket_root)
+    env = child_environment(scratch / 'child', private_socket_root)
 
     # Only the build environment can see the test tool's read-only build tools.
-    build_python = environment(tmp_path / 'build-env')
-    output = tmp_path / 'wheels'
+    build_python = environment(scratch / 'build-env')
+    output = scratch / 'wheels'
     output.mkdir()
     command(build_python, '-I', '-c',
             'from setuptools.build_meta import build_wheel; import sys; build_wheel(sys.argv[1])',
@@ -76,14 +111,14 @@ def test_wheel_installed_laws_and_fake_drydock(tmp_path, private_socket_root, ca
     with zipfile.ZipFile(wheel) as built:
         wheel_files = {name: built.read(name) for name in built.namelist() if not name.endswith('/')}
 
-    runtime = tmp_path / 'installed'
+    runtime = scratch / 'installed'
     command(sys.executable, '-I', '-m', 'venv', runtime, cwd=outside, env=env)
     python, qd = runtime / 'bin/python', runtime / 'bin/qd'
     command(python, '-I', '-m', 'pip', 'install', '--no-index', '--no-deps', wheel,
             cwd=outside, env=env)
     # Neither the archive nor the build environment can rescue installed commands.
     shutil.rmtree(source)
-    shutil.rmtree(tmp_path / 'build-env')
+    shutil.rmtree(scratch / 'build-env')
     assert not source.exists()
     env['PATH'] = os.pathsep.join((str(runtime / 'bin'), '/usr/bin', '/bin'))
     reading = json.loads(command(python, '-I', '-c', INSPECT, cwd=outside, env=env))
@@ -145,7 +180,8 @@ def test_wheel_installed_laws_and_fake_drydock(tmp_path, private_socket_root, ca
 
     # No-capture output is kept in the main tool's report, including successful evidence.
     # The focused lease uses no xdist workers so these proof lines reach that console.
-    inventory = dict(source_ref=ref, wheel_sha256=hashlib.sha256(wheel.read_bytes()).hexdigest(),
+    inventory = dict(layout=dict(scratch=str(scratch), inside_checkout=scratch.is_relative_to(ROOT)),
+                     source_ref=ref, wheel_sha256=hashlib.sha256(wheel.read_bytes()).hexdigest(),
                      wheel_members=sorted(wheel_files), installed=reading,
                      resource_files=sorted(installed_resources),
                      source_input_sha256={name: hashlib.sha256(data).hexdigest()
