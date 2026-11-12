@@ -167,6 +167,7 @@ class Harness(ABC):
     sign_in_note: str = "Native sign-in command and declared-home behavior unknown; ask the person."
     sign_in_sources: tuple[str, ...] = ()
     usage_interval: int = 60
+    strict_usage_interval: bool = False  # new native walls cannot shorten an absolute read floor
     background_usage: bool = False
     # A reader that reads a pool with the pool's own sign-in, needing no seat: the service reads such a declared pool
     # on its tick even when no seat sits on it, paced at usage_interval, so an idle pool's figure is never days old.

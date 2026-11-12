@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import math
+import sqlite3
 import time
 
 from .harness.limits import Wall, Usage
@@ -160,6 +161,14 @@ class Quotas:
                     all_models INTEGER NOT NULL DEFAULT 0, evidence TEXT NOT NULL, error TEXT,
                     PRIMARY KEY (source, event));
                 CREATE TABLE IF NOT EXISTS usage_reads (pool TEXT PRIMARY KEY, at TEXT NOT NULL, error TEXT);
+                CREATE TABLE IF NOT EXISTS usage_holds (
+                    pool TEXT PRIMARY KEY, retry_at TEXT, set_at TEXT NOT NULL, reason TEXT NOT NULL);
+                CREATE TRIGGER IF NOT EXISTS usage_hold_insert AFTER INSERT ON usage_reads
+                    BEGIN DELETE FROM usage_holds WHERE pool=NEW.pool; END;
+                CREATE TRIGGER IF NOT EXISTS usage_hold_update AFTER UPDATE ON usage_reads
+                    BEGIN DELETE FROM usage_holds WHERE pool=OLD.pool OR pool=NEW.pool; END;
+                CREATE TRIGGER IF NOT EXISTS usage_hold_delete AFTER DELETE ON usage_reads
+                    BEGIN DELETE FROM usage_holds WHERE pool=OLD.pool; END;
             """)
             db.executescript(extra_usage.SCHEMA)
             if "group_name" not in self.columns():  # an older book gains the refused limit's model group
@@ -322,9 +331,15 @@ class Quotas:
         row = self.db.execute("SELECT at FROM usage_reads WHERE pool=?", (pool,)).fetchone()
         return datetime.fromisoformat(row[0]) if row else None
 
-    def usage_read(self, pool: str, at: datetime, error: str | None, *, commit: bool = True) -> None:
+    def usage_read(self, pool: str, at: datetime, error: str | None, *,
+                   retry_at: datetime | None = None, retry_reason: str | None = None,
+                   commit: bool = True) -> None:
         def write():
+            # Preserve the three-column attempt writer and its invalidation triggers.
             self.db.execute("INSERT OR REPLACE INTO usage_reads VALUES (?,?,?)", (pool, stamp(at), error))
+            if retry_reason is not None:
+                self.db.execute("INSERT OR REPLACE INTO usage_holds (pool,retry_at,set_at,reason) VALUES (?,?,?,?)",
+                                (pool, stamp(retry_at), stamp(at), retry_reason))
 
         if self.commit_attempt is not None:
             self.commit_attempt(write, commit=commit)
@@ -333,9 +348,34 @@ class Quotas:
             if commit:
                 self.db.commit()
 
+    def usage_hold(self, pool: str) -> datetime | None:
+        """An exact stored deadline, absent on older books; invalid evidence is an error."""
+        if self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='usage_holds'").fetchone() is None:
+            return None  # old read-only book; do not migrate or invent a deadline
+        row = self.db.execute("SELECT retry_at,set_at,reason FROM usage_holds WHERE pool=?", (pool,)).fetchone()
+        if row is None:
+            return None
+        if row[2] == "invalid retry delay":
+            raise ValueError("invalid native retry delay; usage held for a human")
+        try:
+            deadline, at = datetime.fromisoformat(row[0]), datetime.fromisoformat(row[1])
+            if (row[2] != "native refusal" or deadline.utcoffset() is None or at.utcoffset() is None
+                    or not 0 <= (deadline - at).total_seconds() <= BACKOFF_MAX):
+                raise ValueError
+        except (ValueError, TypeError, OverflowError):
+            raise ValueError("invalid stored usage hold; usage held for a human") from None
+        return deadline
+
     def usage_notes(self) -> list[str]:
-        return [f"{pool} latest usage read: {error}" for pool, error in
-                self.db.execute("SELECT pool,error FROM usage_reads WHERE error IS NOT NULL ORDER BY pool")]
+        notes = [f"{pool} latest usage read: {error}" for pool, error in
+                 self.db.execute("SELECT pool,error FROM usage_reads WHERE error IS NOT NULL ORDER BY pool")]
+        if self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='usage_holds'").fetchone():
+            for pool, in self.db.execute("SELECT pool FROM usage_holds ORDER BY pool").fetchall():
+                try:
+                    self.usage_hold(pool)
+                except (ValueError, sqlite3.DatabaseError) as error:
+                    notes.append(f"{pool}: {error}")
+        return notes
 
 
 def observe_screen(book, seat, screen, launched, now: datetime | None = None, *, commit: bool = True) -> None:
@@ -364,7 +404,19 @@ BACKOFF_MAX = 3600  # a refusal holds its pool at most an hour
 
 def held(service, pool: str) -> bool:
     """A pool whose last read was refused with a Retry-After is not read again before it."""
-    return time.monotonic() < service.usage_hold.get(pool, 0.0)
+    memory = time.monotonic() < service.usage_hold.get(pool, 0.0)
+    reader = getattr(service.ledger.quota, "usage_hold", None)
+    if reader is None:
+        return memory
+    try:
+        deadline = reader(pool)
+    except (ValueError, sqlite3.DatabaseError):
+        error = "stored usage hold unreadable or invalid; native usage held for a human"
+        if service.usage_logged.get(pool) != error:
+            service.usage_logged[pool] = error
+            service.log("usage", pool=pool, error=error, no_call=True)
+        return True  # corrupt evidence never grants permission for another call
+    return memory or (deadline is not None and datetime.now(timezone.utc) < deadline)
 
 
 def record_read(service, pool: str, usage: Usage, interval: int, attempted_at: datetime, *,
@@ -375,18 +427,37 @@ def record_read(service, pool: str, usage: Usage, interval: int, attempted_at: d
     repeats each interval unchanged, so it is logged only when its reason differs from the
     pool's last logged one, and again once a good read has come between.
     """
+    retry_at, retry_reason, hold = None, None, None
+    if usage.error and usage.retry_after is not None:
+        delay = usage.retry_after
+        if type(delay) not in (int, float) or not math.isfinite(delay):
+            retry_reason = "invalid retry delay"
+            usage = replace(usage, error=f"{usage.error}; invalid retry delay; usage held for a human")
+        else:
+            hold = min(max(delay, interval), BACKOFF_MAX)
+            retry_at = attempted_at + timedelta(seconds=hold)
+            retry_reason = "native refusal"
     service.usage_read[pool] = time.monotonic()
-    service.ledger.record_usage(pool, usage, attempted_at=attempted_at)
+    if retry_reason is None:
+        service.ledger.record_usage(pool, usage, attempted_at=attempted_at)
+    else:
+        service.ledger.record_usage(pool, usage, attempted_at=attempted_at,
+                                    retry_at=retry_at, retry_reason=retry_reason)
     if not usage.error:
+        service.usage_hold.pop(pool, None)
         service.usage_logged.pop(pool, None)
         return
     if not usage.called and service.usage_logged.get(pool) == usage.error:
         return
     service.usage_logged[pool] = usage.error
     entry = {"pool": pool, "error": usage.error}
-    if usage.retry_after is not None or backoff is not None:
-        hold = min(max(usage.retry_after if usage.retry_after is not None else backoff, interval), BACKOFF_MAX)
+    if retry_at is not None:
+        remaining = max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
+        service.usage_hold[pool] = time.monotonic() + remaining
+    elif usage.retry_after is None and backoff is not None:
+        hold = min(max(backoff, interval), BACKOFF_MAX)
         service.usage_hold[pool] = time.monotonic() + hold
+    if hold is not None:
         entry["backoff"] = round(hold)
     if not usage.called:
         entry["no_call"] = True
@@ -444,6 +515,17 @@ def refresh_declared(service) -> None:
         if not reader.background_usage and getattr(reader, 'idle_usage', False):
             refresh_idle(service, pool, reader)
             continue
+        if getattr(reader, "strict_usage_interval", False):
+            try:
+                at = service.ledger.quota.last_attempt(pool.name)
+                if at is not None and max(0.0, (datetime.now(timezone.utc) - at).total_seconds()) < reader.usage_interval:
+                    continue
+            except (ValueError, TypeError, sqlite3.DatabaseError):
+                error = "stored usage attempt unreadable; strict native usage floor unknown; held for a human"
+                if service.usage_logged.get(pool.name) != error:
+                    service.usage_logged[pool.name] = error
+                    service.log("usage", pool=pool.name, error=error, no_call=True)
+                continue
         if (not reader.background_usage or held(service, pool.name)
                 or not service.ledger.quota.due(pool.name, datetime.now(timezone.utc), reader.usage_interval)):
             continue

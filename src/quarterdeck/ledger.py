@@ -677,11 +677,13 @@ class Ledger:
 
     # -- pools -----------------------------------------------------------------------------
 
-    def record_usage(self, pool: str, usage: Usage, attempted_at: datetime | None = None) -> None:
+    def record_usage(self, pool: str, usage: Usage, attempted_at: datetime | None = None, *,
+                     retry_at: datetime | None = None, retry_reason: str | None = None) -> None:
         attempted_at = attempted_at or (usage.read_at if aware(usage.read_at) else datetime.now().astimezone())
         def write():
             error = self.usage.record(pool, usage, attempted_at)
-            self.quota.usage_read(pool, attempted_at, error, commit=False)
+            self.quota.usage_read(pool, attempted_at, error, retry_at=retry_at,
+                                  retry_reason=retry_reason, commit=False)
 
         self._commit_usage_attempt(write)
 

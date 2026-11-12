@@ -40,7 +40,9 @@ The shared source draft adds optional delivery-fault and interrupt-obstruction
 hooks, preserving no-op defaults and avoiding extra reads for existing adapters.
 The Door reads a typed pin without joining or writing, and checks faults before
 input actions. The background usage path also honors the existing in-memory
-refusal hold. Independent enforcement tests are pending. The existing ledger
-persists attempt time and error but not refusal deadlines, so durable backoff
-is not established. Its normal due calculation may refresh early after a wall;
-an absolute thirty-minute Muse floor still needs an approved shared extension.
+refusal hold. Independent enforcement tests are pending. The pacing source now
+adds a default-false strict interval capability and records anchored refusal
+deadlines in a `usage_holds` side table, preserving the old `usage_reads` shape.
+Malformed retry evidence holds for a human. Old writers remain compatible;
+older services retain their memory-only backoff behavior across rollback.
+Synthetic schema examples and independent enforcement coverage remain unrun.
