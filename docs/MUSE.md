@@ -47,8 +47,13 @@ remain required before acceptance.
 
 The shared source draft adds optional delivery-fault and interrupt-obstruction
 hooks, preserving no-op defaults and avoiding extra reads for existing adapters.
-The Door reads a typed pin without joining or writing, and checks faults before
-input actions. The background usage path also honors the existing in-memory
+The Door requires a bounded read-only exact current fresh join, native
+creation/conversation identity, and stable current launch/pane evidence before
+supplying record state. Historical reader ownership is insufficient; fresh
+state before its proved join and all resumed record state remain unknown.
+Muse's current native identity/schema facts are still pending. No generic
+current-state accessor, store or launch rewrite is added. The Door checks faults
+before input actions. The background usage path also honors the existing in-memory
 refusal hold. Independent enforcement tests are pending. The pacing source now
 adds a default-false strict interval capability and records anchored refusal
 deadlines in a `usage_holds` side table, preserving the old `usage_reads` shape.

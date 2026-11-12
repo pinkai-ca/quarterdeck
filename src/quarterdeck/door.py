@@ -205,21 +205,30 @@ class Door:
         return None if hook is None or getattr(hook, "__func__", None) is getattr(Harness, name) else hook
 
     def adapter_state(self):
-        """Read an existing typed pin, never join/register a record in a reading."""
+        """Current fresh-join facts only; resumed field recency is unproved."""
         if self.seat.session.human:
             return None
         from . import record_owner
         from .turn_failure import metadata
         try:
             launched = self.seat.launched()
-            if record_owner.launch_reader(launched) != self.harness.name:
+            if (record_owner.launch_reader(launched) != self.harness.name
+                    or launched.resume is not None):
+                return None
+            pane = self.seat.pane()
+            if pane is None or pane.dead or pane.id != launched.pane or pane.pid != launched.pid:
                 return None
             pointer = self.seat.folder / "record"
             registry = self.seat.folder / record_owner.REGISTRY
-            pin, ownership = metadata(pointer), metadata(registry)
+            journal = self.seat.folder / "record-launches.jsonl"
+            pin, ownership, launches = metadata(pointer), metadata(registry), metadata(journal)
             if not pin.strip():
                 return None
             path = Path(pin.strip())
+            if (not path.is_absolute() or not isinstance(launched.records_before, list)
+                    or not all(isinstance(item, str) and item for item in launched.records_before)
+                    or path in {Path(item) for item in launched.records_before}):
+                return None
             names = set()
             for line in ownership.splitlines():
                 if not line.strip():
@@ -231,10 +240,30 @@ class Door:
                     names.add(row.get("harness"))
             if names != {self.harness.name}:
                 return None
+            joined = set()
+            for line in launches.splitlines():
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if not isinstance(row, dict):
+                    return None
+                if row.get("at") == launched.at:
+                    joined.add((row.get("record"), row.get("pool"), row.get("harness")))
+            if joined != {(str(path), launched.pool, self.harness.name)}:
+                return None  # a historical reader binding supplies no current join
             before = record_fingerprint(path)
+            first, conversation = self.harness.first_timestamp(path), self.harness.session_id(path)
+            if (not isinstance(first, datetime) or first.utcoffset() is None or launched.when.utcoffset() is None
+                    or first < launched.when or not isinstance(conversation, str) or not conversation):
+                return None
             state = self.harness.state(path)
+            if state.conversation != conversation:
+                return None  # native state must positively identify this fresh conversation
+            pane = self.seat.pane()
             if (self.seat.launched() != launched or metadata(pointer) != pin
-                    or metadata(registry) != ownership or record_fingerprint(path) != before):
+                    or metadata(registry) != ownership or metadata(journal) != launches
+                    or pane is None or pane.dead or pane.id != launched.pane or pane.pid != launched.pid
+                    or record_fingerprint(path) != before):
                 return None
             return state
         except (OSError, ValueError, TypeError, UnicodeError):
