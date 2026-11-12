@@ -62,6 +62,8 @@ def laps(value: object, allowed: tuple[str, ...]) -> list[str]:
 
 
 def validate(ship: Ship) -> None:
+    from . import harness
+
     ring = ship.cascade
     for name in (*ring.seats, ring.orchestrator):
         spec = ship.seat(name)
@@ -70,9 +72,9 @@ def validate(ship: Ship) -> None:
         if spec.fresh == "after-order":
             raise ShipError(f"cascade: {name} must keep its conversation between laps; remove fresh=after-order")
     providers = {ship.pool(ship.seat(name).pools[0]).provider for name in ring.seats}
-    synthetic = all(ship.seat(name).harness == "fake" for name in ring.seats)
+    synthetic = all(harness.get(ship.seat(name).harness).synthetic for name in ring.seats)
     if len(providers) != 3 and not synthetic:
-        raise ShipError("cascade: the three ring seats must start on three providers (fake drydock excepted)")
+        raise ShipError("cascade: the three ring seats must start on three providers (synthetic drydock excepted)")
 
 
 def folder(runtime: Path, question: str) -> Path:
