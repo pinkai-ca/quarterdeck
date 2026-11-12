@@ -125,14 +125,16 @@ def amends(message: post.Message, root: post.Message, seat: str,
     nearest message from the seat, below the root, is that question), whoever
     sent it; or when the root's own sender sent it, unless it is a report or
     an answer replying directly to an order the seat gave: that closes or
-    answers the seat's own sub-order, which is history. Everything else in
-    the thread is history too; open messages are roots of their own.
+    answers the seat's own sub-order, which is history. A question never
+    amends: an open one addressed to the seat is a root of its own, and one
+    already answered is settled history. Everything else in the thread is
+    history too; open messages are roots of their own.
     """
     parent = thread.get(message.re) if message.re else None
     if (message.kind == 'answer' and (own := _nearest_own(message, root, seat, thread)) is not None
             and own.kind == 'question'):
         return True
-    if message.sender != root.sender:
+    if message.sender != root.sender or message.kind == 'question':
         return False
     return not (message.kind in ('report', 'answer') and parent is not None
                 and parent.id != root.id and parent.sender == seat and parent.kind == 'order')

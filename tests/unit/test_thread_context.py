@@ -211,3 +211,20 @@ def test_excluded_amendments_answers_and_context_never_supply_a_body(tmp_path):
     only_answer_excluded = thread_context.select(store, 'worker', excluded={m['own_answer'].id})
     assert m['own_q'] not in [entry.message for entry in only_answer_excluded.entries]
     assert not list((tmp_path / 'post' / 'attempts').glob('*.json'))
+
+
+def test_requester_question_already_answered_is_history_while_an_open_one_is_a_root(tmp_path):
+    store, add = graph(tmp_path)
+    root = add('order', 'issuer', 'worker', 'Open task.')
+    settled = add('question', 'issuer', 'worker', 'Requester question the seat answered.', root)
+    add('answer', 'worker', 'issuer', 'The seat answered it.', settled)
+    pending = add('question', 'issuer', 'worker', 'Requester question still open.', root)
+    amendment = add('answer', 'issuer', 'worker', 'Requester amendment.', root)
+    assert not store.is_open(settled) and store.is_open(pending)
+    selection = thread_context.select(store, 'worker')
+    assert selection.roots == (root, pending)
+    assert selection.incoming == [root, pending, amendment]
+    assert settled.body not in selection.render()
+    unread = thread_context.select(store, 'worker', [settled])
+    assert unread.incoming == [root, pending, amendment, settled], 'unread still arrives whatever its kind'
+    assert unread.render().count(settled.body) == 1
