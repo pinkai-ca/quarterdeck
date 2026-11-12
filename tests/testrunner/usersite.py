@@ -4,9 +4,10 @@ A venv never sees its user's site-packages, and the run's HOME is its own, so to
 ``pip --user`` (pytest-xdist, typically) would vanish. The user site is resolved from the ordinary ``python3``
 in the caller's own environment before HOME is replaced, and the run venv gets one ``.pth`` file holding that
 directory as a plain path line. Python appends a plain line to ``sys.path`` and does not process the ``.pth``
-files or finders inside the directory it names, so the user's own editable installs and startup hooks stay
-out. The directory is only read: the bytecode of the tools taken from it must already be current (the run
-would otherwise write into it, and refuses), and every bytecode folder in it is stamped before and after.
+files or finders inside the directory it names, and every interpreter of the run starts with PYTHONNOUSERSITE,
+so none processes a user site of its own: the user's own editable installs and startup hooks stay out. The
+directory is only read: the bytecode of the tools taken from it must already be current (the run would
+otherwise write into it, and refuses), and every bytecode folder in it is stamped before and after.
 """
 from __future__ import annotations
 
@@ -19,8 +20,7 @@ import subprocess
 from .layout import Refused, write_new
 
 PATH_LINE = 'qd-testrun-usersite.pth'
-RESOLVE = ('import json, site; print(json.dumps({"base": site.getuserbase(), "site": site.getusersitepackages(), '
-           '"enabled": bool(site.ENABLE_USER_SITE)}))')
+RESOLVE = 'import json, site; print(json.dumps({"base": site.getuserbase(), "site": site.getusersitepackages()}))'
 
 CURRENT = r'''
 import importlib.util, json, os, sys
@@ -50,12 +50,17 @@ print(json.dumps(stale))
 
 
 def resolve(python: str) -> dict:
-    """The user site as the ordinary interpreter computes it, in the caller's environment (HOME untouched)."""
-    done = subprocess.run([python, '-B', '-c', RESOLVE], capture_output=True, text=True, timeout=60,
-                          env=dict(os.environ))
+    """The user site as the ordinary interpreter computes it, in the caller's environment (HOME untouched), or,
+    for a run started inside a run, at the base the outer run carried."""
+    env = dict(os.environ)
+    if env.get('TESTRUNS_RUN') and env.get('TESTRUNS_USERBASE'):  # a run inside a run: HOME is already replaced
+        env['PYTHONUSERBASE'] = env['TESTRUNS_USERBASE']
+    # -s: the asking interpreter computes the user site and processes nothing in it
+    done = subprocess.run([python, '-s', '-B', '-c', RESOLVE], capture_output=True, text=True, timeout=60, env=env)
     if done.returncode != 0:
         raise Refused(f'could not ask the ordinary {python} for its user site: {done.stderr.strip()[-500:]}')
     found = json.loads(done.stdout)
+    found['enabled'] = not os.environ.get('PYTHONNOUSERSITE')  # in the caller's own environment
     site = Path(found['site'])
     found['exists'] = site.is_absolute() and site.is_dir() and not site.is_symlink()
     return found

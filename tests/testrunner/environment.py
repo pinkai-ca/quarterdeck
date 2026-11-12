@@ -1,6 +1,10 @@
 """The run's environment: the caller's ordinary one, PATH untouched, minus what contaminates where the target
 is imported from or how Python, pip, pytest and git start, plus owned locations for every generated product.
-Only names are recorded for what was removed; the values recorded are PATH and the run's own paths."""
+Only names are recorded for what was removed; the values recorded are PATH and the run's own paths.
+
+PYTHONNOUSERSITE is fixed, so no interpreter of the run, pytest's, an xdist worker's or a child a test starts,
+processes a user site: the operator's user site reaches the run only as the run venv's plain path line. Its
+base is carried under the tool's own name, read by nothing but a run started inside this one."""
 from __future__ import annotations
 
 import os
@@ -11,7 +15,7 @@ import subprocess
 STRIP_PREFIXES = ('PYTHON', 'PIP_', 'PYTEST_', 'GIT_', 'XDG_')
 STRIP_NAMES = ('VIRTUAL_ENV', 'VIRTUAL_ENV_PROMPT', 'CONDA_PREFIX', 'CONDA_DEFAULT_ENV', '__PYVENV_LAUNCHER__',
                'TMUX_TMPDIR', 'TMPDIR', 'TEMP', 'TMP', 'HOME', 'QD_SHIP', 'QD_SEAT', 'QD_TMUX_SOCKET',
-               'TESTRUN_EVIDENCE', 'TESTRUNS_RUN')
+               'TESTRUN_EVIDENCE', 'TESTRUNS_RUN', 'TESTRUNS_USERBASE')
 KEEP_GIT = ('GIT_CONFIG_NOSYSTEM',)  # nothing else of git's environment may redirect a test's repository
 
 
@@ -31,9 +35,10 @@ def build(scratch: Path, run: str, userbase: str | None = None) -> tuple[dict, d
     for name, path in paths.items():
         path.mkdir(mode=0o700, parents=True, exist_ok=True)
         env[name] = str(path)
-    fixed = {'PIP_NO_INDEX': '1', 'PIP_NO_INPUT': '1', 'PIP_DISABLE_PIP_VERSION_CHECK': '1', 'TESTRUNS_RUN': run}
+    fixed = {'PIP_NO_INDEX': '1', 'PIP_NO_INPUT': '1', 'PIP_DISABLE_PIP_VERSION_CHECK': '1',
+             'PYTHONNOUSERSITE': '1', 'TESTRUNS_RUN': run}
     if userbase:
-        fixed['PYTHONUSERBASE'] = userbase  # the ordinary user site, resolved before HOME was replaced
+        fixed['TESTRUNS_USERBASE'] = userbase  # resolved before HOME was replaced; for a run inside this one only
     env.update(fixed)
     record = {'PATH': env.get('PATH', ''), 'removed_names': stripped,
               'owned': {name: str(path) for name, path in paths.items()}, 'fixed': fixed}

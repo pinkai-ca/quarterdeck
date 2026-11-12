@@ -181,6 +181,8 @@ def test_a_busy_slot_refuses_and_names_its_holder(tmp_path):
     slot = layout.Slot(root)
     slot.acquire({'verb': 'synthetic-holder', 'seat': 'synthetic'})
     try:
+        for folder, _, _ in os.walk(site):
+            os.chmod(folder, 0o555)  # read-only, as the operator's user site is to a run
         done = tool('run', '--target', str(worktree), cwd=project)
         assert done.returncode == 2 and 'busy: verb synthetic-holder' in done.stderr
         done = tool('run', '--target', str(worktree), '--wait', '1', cwd=project)
@@ -221,3 +223,67 @@ def test_the_run_owns_its_startup_bytecode_for_isolated_children(tmp_path):
     # pytest writes its rewritten test modules under tests/; the package's own bytecode never changes
     assert [name for name in mutations['extra']['added'] if name.startswith('src/')] == []
     assert 'PYTHONDONTWRITEBYTECODE' not in found['environment']['fixed']
+
+
+def test_no_interpreter_of_the_run_processes_the_user_site_and_its_tools_still_import(tmp_path):
+    """A test-owned HOME whose user site holds a startup hook that leaves a marker, an ordinary module and the
+    run's pytest-xdist. pytest, its xdist workers and a child a test starts all import the module through the
+    run venv's plain path line, and nothing in the whole run, resolving the user site included, runs the hook."""
+    import compileall
+    import importlib.metadata
+    import shutil
+    import subprocess
+    home, markers = tmp_path / 'home', tmp_path / 'markers'
+    env = {name: value for name, value in os.environ.items()
+           if name not in ('PYTHONUSERBASE', 'PYTHONNOUSERSITE', 'TESTRUNS_USERBASE')}
+    env.update(HOME=str(home), SYNTH_MARKERS=str(markers))
+    python = shutil.which('python3', path=env.get('PATH'))
+    site = Path(subprocess.run([python, '-s', '-c', 'import site; print(site.getusersitepackages())'], env=env,
+                               text=True, capture_output=True, check=True).stdout.strip())
+    assert site.is_relative_to(home)
+    site.mkdir(parents=True)
+    markers.mkdir()
+    (site / 'synth_hook.pth').write_text(
+        'import os, pathlib; pathlib.Path(os.environ["SYNTH_MARKERS"]).joinpath(str(os.getpid())).touch()\n')
+    (site / 'synth_usertool.py').write_text('VALUE = "user site"\n')
+    for name in ('pytest-xdist', 'execnet'):  # the run's -n reaches xdist only through this user site
+        found = importlib.metadata.distribution(name)
+        for top in {Path(str(item)).parts[0] for item in found.files or []} - {'..', '__pycache__'}:
+            source = Path(found.locate_file(top))
+            if source.is_dir():
+                shutil.copytree(source, site / top, symlinks=True, ignore=shutil.ignore_patterns('__pycache__'))
+            elif source.suffix == '.py':
+                shutil.copy2(source, site / top)
+    assert compileall.compile_dir(str(site), quiet=1)
+    project, worktree = make(tmp_path, {'test_usersite.py': '''
+        import json, os, subprocess, sys
+        import pytest
+        PROBE = ("import json, sys, synth_usertool; "
+                 "print(json.dumps([sys.flags.no_user_site, synth_usertool.__file__]))")
+        @pytest.mark.parametrize("round", range(4))
+        def test_worker_and_child(round):
+            import synth_usertool
+            assert os.environ.get("PYTEST_XDIST_WORKER") and os.environ["PYTHONNOUSERSITE"] == "1"
+            assert sys.flags.no_user_site == 1 and "PYTHONUSERBASE" not in os.environ
+            child = subprocess.run([sys.executable, "-c", PROBE], capture_output=True, text=True, check=True)
+            assert json.loads(child.stdout) == [1, synth_usertool.__file__]
+            assert os.listdir(os.environ["SYNTH_MARKERS"]) == []
+        '''})
+    try:
+        for folder, _, _ in os.walk(site):
+            os.chmod(folder, 0o555)  # read-only, as the operator's user site is to a run
+        done = tool('run', '--target', str(worktree), '-n', '2', cwd=project, env=env)
+    finally:
+        for folder, _, _ in os.walk(site):
+            os.chmod(folder, 0o755)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert os.listdir(markers) == []
+    found = result(project)
+    assert found['outcome']['status'] == 'passed' and found['evidence']['counts']['passed'] == 5
+    fixed = found['environment']['fixed']
+    assert fixed['PYTHONNOUSERSITE'] == '1' and 'PYTHONUSERBASE' not in fixed
+    user = found['tools']['user_site']
+    assert user['site'] == str(site) and user['exists'] and user['path_line']
+    assert user['bytecode_folders']['changed'] == [] and user['bytecode_folders']['before'] >= 3
+    assert found['tools']['run_venv']['xdist']['origin'] == 'user site'
+    leaves_only_the_fixed_ending(project)
