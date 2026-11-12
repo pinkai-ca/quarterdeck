@@ -146,6 +146,8 @@ def object_lines(record: Path, skip=None) -> list[tuple[int, dict]]:
 
 def input_rows(record: Path, kinds: tuple[str, ...], label: str, evidence):
     rows = _object_lines(record, evidence.skip)
+    if not rows:
+        evidence.skip(0, 'record', 'no recognized native history')
     if rows and not any(row.get('type') in kinds for _, row in rows):
         raise RecordError(f"no {label} entries in this record: another program's file")
     return rows
@@ -166,7 +168,12 @@ def input_reader(relevant):
                     result = read(record)
                 if _snapshots.get(Path(record)) is snapshot and snapshot.raw.endswith('\n'):
                     snapshot.inputs[read] = result, len(snapshot.rows), len(snapshot.skipped)
-                return deepcopy(result)
+                result = deepcopy(result)
+                last = len(snapshot.raw.splitlines())
+                if (snapshot.raw and not snapshot.raw.endswith('\n')
+                        and not any(line == last for line, _, _ in snapshot.skipped)):
+                    result.skip(last, 'record', 'unterminated final row')
+                return result
         return cached
     return decorate
 

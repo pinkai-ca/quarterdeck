@@ -21,8 +21,8 @@ from .. import endpoint
 from ..pricing import Price, amount
 from .endpoint import EndpointHarness
 from .costs import CostStep, costed, model_name
-from .json_record import JsonLinesReader
-from .types import CappedGeneration
+from .json_record import JsonLinesReader, input_reader, input_rows
+from .types import CappedGeneration, Inputs
 
 from ..ship import Pool, SeatSpec, ShipError
 from .base import (Box, ship_template, trimmed, Input, Control, Credential, Harness, Interruption, Keys, Launch, RecordError, Screen, State, Tokens,
@@ -239,21 +239,42 @@ turns = _Reader.read_turns
 read = _Reader.read
 
 
+@input_reader(lambda row: row.get('type') not in ('session', 'model_change', 'thinking_level_change'))
 def inputs(record: Path) -> list[Input]:
     """Every user message with the time it entered the record, for the delivery receipt."""
-    found = []
+    found = Inputs()
     opened = False
-    for entry in entries(record):
+    for line, entry in input_rows(record, _Reader.kinds, _Reader.label, found):
         try:
+            kind = entry.get('type')
+            if kind not in _Reader.kinds:
+                found.skip(line, 'unknown', 'unknown row kind')
+                continue
+            if kind != 'message':
+                continue
             message = entry.get("message")
-            if entry.get("type") == "message" and isinstance(message, dict) and message.get("role") == "user":
+            if not isinstance(message, dict):
+                raise TypeError
+            if message.get("role") == "user":
+                content = message.get('content')
+                if not isinstance(content, (str, list)):
+                    raise TypeError
+                if isinstance(content, list) and (not content or any(
+                        not isinstance(block, dict) or block.get('type') != 'text'
+                        or not isinstance(block.get('text'), str) for block in content)):
+                    found.skip(line, 'message', 'unknown user-message content')
+                    if not any(isinstance(block, dict) and block.get('type') == 'text'
+                               and isinstance(block.get('text'), str) for block in content):
+                        continue
                 at = when(entry.get("timestamp"))
                 found.append(Input(_text(message.get("content")), at, "consumed" if opened else "accepted", at if opened else None))
                 opened = True
-            elif entry.get("type") == "message" and isinstance(message, dict) and message.get("role") == "assistant":
+            elif message.get("role") == "assistant":
                 opened = message.get("stopReason") not in ENDS_TURN
+            elif message.get('role') not in ('toolResult', 'branchSummary', 'compactionSummary'):
+                found.skip(line, 'message', 'unknown message role')
         except (TypeError, ValueError, AttributeError, KeyError):
-            continue
+            found.skip(line, 'message', 'malformed input row')
     return found
 
 

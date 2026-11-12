@@ -96,3 +96,28 @@ def test_equal_timestamp_thread_members_use_immutable_id_order(tmp_path):
     earlier = replace(later, id='ans-synthetic-0000', body='First amendment.')
     store.write(earlier)
     assert thread_context.select(store, 'worker').incoming == [root, earlier, later]
+
+
+def test_exclusions_remove_incoming_and_context_bodies_without_closing_roots(tmp_path):
+    store, add = graph(tmp_path)
+    root = add('order', 'issuer', 'worker', 'Excluded root body.')
+    question = add('question', 'worker', 'issuer', 'Excluded own question body.', root)
+    answer = add('answer', 'issuer', 'worker', 'Visible amendment.', question)
+    other = add('answer', 'issuer', 'worker', 'Excluded answer body.', root)
+    selection = thread_context.select(store, 'worker', [root, other],
+                                      excluded={root.id, question.id, other.id})
+    assert selection.roots == (root,) and store.is_open(root)
+    assert selection.incoming == [answer]
+    assert selection.entries == (thread_context.Entry(answer),)
+    assert selection.render() == post.typed([answer])
+    assert all(message.body not in selection.render() for message in (root, question, other))
+    assert not list((tmp_path / 'post' / 'attempts').glob('*.json'))
+
+
+def test_excluded_only_answer_does_not_pull_in_its_own_question_bridge(tmp_path):
+    store, add = graph(tmp_path)
+    root = add('order', 'issuer', 'worker', 'Visible task.')
+    question = add('question', 'worker', 'issuer', 'Unneeded question body.', root)
+    answer = add('answer', 'issuer', 'worker', 'Excluded amendment body.', question)
+    selection = thread_context.select(store, 'worker', excluded={answer.id})
+    assert selection.entries == (thread_context.Entry(root),)

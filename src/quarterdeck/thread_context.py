@@ -38,7 +38,7 @@ class Selection:
 
 
 def select(store: post.Store, seat: str, extra: Iterable[post.Message] = (), *,
-           consumed: Collection[str] = ()) -> Selection:
+           consumed: Collection[str] = (), excluded: Collection[str] = ()) -> Selection:
     """Carry open roots and their incoming amendments once, in root/thread order.
 
     ``consumed`` must describe the actual conversation being resumed, never a
@@ -47,6 +47,7 @@ def select(store: post.Store, seat: str, extra: Iterable[post.Message] = (), *,
     Unread/queued messages join the same inventory through ``extra``. Only the
     seat's own outgoing questions on a selected incoming message's ancestry
     supply explanatory context; other participants' bodies remain private.
+    Excluded ids retain their open-root identity but never supply any body.
     """
     messages = store.all()
     by_id = {message.id: message for message in messages}
@@ -60,7 +61,7 @@ def select(store: post.Store, seat: str, extra: Iterable[post.Message] = (), *,
     entries = []
 
     def append(message: post.Message, context_only: bool = False) -> None:
-        if message.id not in seen:
+        if message.id not in seen and message.id not in excluded:
             seen.add(message.id)
             entries.append(Entry(message, context_only))
 
@@ -75,6 +76,7 @@ def select(store: post.Store, seat: str, extra: Iterable[post.Message] = (), *,
             waiting.extend(children.get(message.id, ()))
         incoming = {message.id for message in descendants.values()
                     if message.to == seat and message.kind != 'ack'
+                    and message.id not in excluded
                     and (message.id not in consumed or message.id in root_ids)}
         bridges = set()
         for message_id in incoming:
