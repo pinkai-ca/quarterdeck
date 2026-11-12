@@ -121,3 +121,93 @@ def test_excluded_only_answer_does_not_pull_in_its_own_question_bridge(tmp_path)
     answer = add('answer', 'issuer', 'worker', 'Excluded amendment body.', question)
     selection = thread_context.select(store, 'worker', excluded={answer.id})
     assert selection.entries == (thread_context.Entry(root),)
+
+
+def suborder_thread(tmp_path):
+    """One open order whose thread holds every edge the narrow rule decides."""
+    store, add = graph(tmp_path)
+    m = {}
+    m['root'] = add('order', 'issuer', 'worker', 'Open task.')
+    m['sub'] = add('order', 'worker', 'helper', 'Sub-order to a helper.', m['root'])
+    m['sub_report'] = add('report', 'helper', 'worker', 'Helper closes the sub-order.', m['sub'])
+    m['sub_answer'] = add('answer', 'helper', 'worker', 'Helper progress on the sub-order.', m['sub'])
+    m['helper_q'] = add('question', 'helper', 'worker', 'Helper asked, worker answered.', m['sub'])
+    own_reply = add('answer', 'worker', 'helper', 'Worker answers the helper.', m['helper_q'])
+    m['helper_on_answer'] = add('answer', 'helper', 'worker', 'Helper replies to that answer.', own_reply)
+    m['up'] = add('order', 'worker', 'issuer', 'Sub-order up to the issuer.', m['root'])
+    m['up_report'] = add('report', 'issuer', 'worker', 'Issuer closes the worker sub-order.', m['up'])
+    m['up_answer'] = add('answer', 'issuer', 'worker', 'Issuer answers the worker sub-order.', m['up'])
+    m['amend'] = add('answer', 'issuer', 'worker', 'Requester amends the open task.', m['root'])
+    m['correction'] = add('answer', 'issuer', 'worker', 'Requester correction under the history.', m['sub_report'])
+    m['report_amend'] = add('report', 'issuer', 'worker', 'Requester report in the thread.', m['root'])
+    m['own_q'] = add('question', 'worker', 'helper', 'Own question to the helper.', m['sub'])
+    m['own_answer'] = add('answer', 'helper', 'worker', 'Helper answers the own question.', m['own_q'])
+    m['third'] = add('answer', 'bystander', 'worker', 'Bystander note on the open task.', m['root'])
+    m['open_q'] = add('question', 'helper', 'worker', 'Helper question still open.', m['sub'])
+    m['open_q_amend'] = add('report', 'helper', 'worker', 'Helper amends its open question.', m['open_q'])
+    add('ack', 'issuer', 'worker', 'Acknowledgment only.', m['root'])
+    return store, m
+
+
+HISTORY = ('sub_report', 'sub_answer', 'helper_q', 'helper_on_answer', 'up_report', 'up_answer', 'third')
+
+
+def test_fresh_start_carries_amendments_own_answers_and_open_roots_not_suborder_history(tmp_path):
+    store, m = suborder_thread(tmp_path)
+    selection = thread_context.select(store, 'worker')
+    assert selection.roots == (m['root'], m['open_q'])
+    assert selection.incoming == [m['root'], m['amend'], m['correction'], m['report_amend'], m['own_answer'],
+                                  m['open_q'], m['open_q_amend']]
+    assert [entry.message for entry in selection.entries if entry.context_only] == [m['own_q']]
+    rendered = selection.render()
+    assert all(m[name].body not in rendered for name in HISTORY)
+    assert all(m[name].body in store.get(m[name].id).body for name in HISTORY), 'history stays in the store'
+    assert rendered.index(m['own_q'].body) < rendered.index(m['own_answer'].body)
+
+
+def test_unread_and_queued_history_still_arrives_once_whatever_its_kind(tmp_path):
+    store, m = suborder_thread(tmp_path)
+    unread = [m['up_report'], m['sub_report'], m['amend'], m['sub_report'], m['third']]
+    selection = thread_context.select(store, 'worker', unread)
+    carried = [m['root'], m['amend'], m['correction'], m['report_amend'], m['own_answer'], m['open_q'], m['open_q_amend']]
+    assert selection.incoming == carried + [m['sub_report'], m['up_report'], m['third']]
+    assert len({entry.message.id for entry in selection.entries}) == len(selection.entries)
+    resumed = thread_context.select(store, 'worker', [m['sub_report']],
+                                    consumed={m['root'].id, m['amend'].id, m['sub_report'].id})
+    assert resumed.incoming == [m['root'], m['correction'], m['report_amend'], m['own_answer'],
+                                m['open_q'], m['open_q_amend']]
+
+
+def test_requester_answer_amending_an_open_order_follows_its_root(tmp_path):
+    store, add = graph(tmp_path)
+    root = add('order', 'requester', 'worker', 'Do the task.')
+    amendment = add('answer', 'requester', 'worker', 'Also cover the second case.', root)
+    assert store.is_open(root)
+    selection = thread_context.select(store, 'worker')
+    assert selection.incoming == [root, amendment]
+    assert selection.render().index(root.body) < selection.render().index(amendment.body)
+
+
+def test_nested_root_amendments_follow_their_own_sender_in_thread_order(tmp_path):
+    store, add = graph(tmp_path)
+    root = add('order', 'issuer', 'worker', 'Outer task.')
+    nested = add('order', 'second', 'worker', 'Nested open order from another seat.', root)
+    issuer_note = add('answer', 'issuer', 'worker', 'Outer requester on the nested order.', nested)
+    nested_amend = add('answer', 'second', 'worker', 'Nested requester amends.', nested)
+    later = add('answer', 'issuer', 'worker', 'Outer amendment, later.', root)
+    selection = thread_context.select(store, 'worker')
+    assert selection.roots == (root, nested)
+    assert selection.incoming == [root, nested, issuer_note, nested_amend, later]
+
+
+def test_excluded_amendments_answers_and_context_never_supply_a_body(tmp_path):
+    store, m = suborder_thread(tmp_path)
+    excluded = {m['amend'].id, m['own_answer'].id, m['open_q'].id, m['own_q'].id}
+    selection = thread_context.select(store, 'worker', [m['amend']], excluded=excluded)
+    assert selection.roots == (m['root'], m['open_q']) and store.is_open(m['open_q'])
+    assert selection.incoming == [m['root'], m['correction'], m['report_amend'], m['open_q_amend']]
+    rendered = selection.render()
+    assert all(m[name].body not in rendered for name in ('amend', 'own_answer', 'open_q', 'own_q', *HISTORY))
+    only_answer_excluded = thread_context.select(store, 'worker', excluded={m['own_answer'].id})
+    assert m['own_q'] not in [entry.message for entry in only_answer_excluded.entries]
+    assert not list((tmp_path / 'post' / 'attempts').glob('*.json'))
