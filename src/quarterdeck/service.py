@@ -699,7 +699,7 @@ class Service:
                 stamp, evidence = None, None
                 try:
                     stamp = (owned.name, record_fingerprint(record))
-                    evidence = (stamp, owned.reason, record_fingerprint(seat.folder / record_owner.REGISTRY), prepared[1])
+                    evidence = (stamp, owned.reason, record_fingerprint(record_owner.registry(seat.home.parent)), prepared[1])
                     # New launch/price evidence must be reconciled even if record bytes stand still.
                     if marks.get(record) == stamp and prepared[2] is None:
                         continue

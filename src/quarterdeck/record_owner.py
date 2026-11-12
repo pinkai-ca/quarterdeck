@@ -22,6 +22,11 @@ if TYPE_CHECKING:
 REGISTRY = "record-readers.jsonl"
 
 
+def registry(folder: Path) -> Path:
+    """Reader registry in a seat's runtime folder."""
+    return folder / REGISTRY
+
+
 def launch_reader(launched: Launched | None) -> str | None:
     if launched is None:
         return None
@@ -50,16 +55,17 @@ def events(path: Path) -> list[dict[str, Any]]:
 def register(folder: Path, record: Path, name: str | None) -> None:
     folder.mkdir(parents=True, exist_ok=True)
     row = {"record": str(record), "harness": name}
-    with (folder / REGISTRY).open("a+") as stream:
+    path = registry(folder)
+    with path.open("a+") as stream:
         fcntl.flock(stream, fcntl.LOCK_EX)
-        if row not in events(folder / REGISTRY):
+        if row not in events(path):
             stream.write(json.dumps(row) + "\n")
 
 
 def bindings(seat: Seat) -> dict[Path, set[str]]:
     folder = seat.home.parent
     found: dict[Path, set[str]] = {}
-    saved = events(folder / REGISTRY)
+    saved = events(registry(folder))
     registered = {Path(row["record"]) for row in saved}
     for row in [*saved, *events(folder / "record-launches.jsonl")]:
         names = found.setdefault(Path(row["record"]), set())
@@ -105,7 +111,7 @@ def records(seat: Seat) -> list[Owned]:
     try:
         found = bindings(seat)
     except OSError as error:
-        return [Owned(seat.home.parent / REGISTRY, None, None, f"{error}; inspect ownership for {seat.name} with qd watch {seat.name}")]
+        return [Owned(registry(seat.home.parent), None, None, f"{error}; inspect ownership for {seat.name} with qd watch {seat.name}")]
     known = {name for names in found.values() for name in names if name in harnesses.NAMES}
     if name := launch_reader(seat.launched()):
         known.add(name)
