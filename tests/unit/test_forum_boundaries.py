@@ -57,6 +57,7 @@ class World:
         ledger.Ledger(self.ship.runtime / 'ledger.sqlite').close()  # the book the status reading opens read-only
 
         def walled(seat, book):
+            book.db.execute('SELECT count(*) FROM sqlite_master').fetchone()  # read the handed book, as the real reader does
             self.wall_reads.append((seat.name, seat.pool.name))
             return seat.pool.name in self.walls
 
