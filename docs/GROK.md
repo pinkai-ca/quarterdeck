@@ -71,7 +71,9 @@ configuration, receipt precision, join-time boundaries and ledger ingestion;
 they make no provider call. Version cases use synthetic selected files and
 subprocess stubs, including normal doctor/check context propagation and missing
 runtime behavior. Independent validation owns normal Seat launch propagation and
-its lifecycle interactions.
+its lifecycle interactions; `test_grok_shared_paths.py` carries that, with the
+shared receipt proof, styled pane read, usage-reader reseed and usage
+orchestration call sites, all synthetic.
 
 Shared receipt callers are `pending.Proof.confirmed`,
 `delivery_record.receipt`/`receipt_anywhere`, `Door.confirm`, drill receipt checks
