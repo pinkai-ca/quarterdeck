@@ -66,14 +66,15 @@ class World:
         self.tmux = SimpleNamespace(pane=self.panes.get, paste=forbidden, keys=forbidden,
                                     read_pane=lambda ident, history=0, **kw: None)
         self.svc = Service(shipmod.load(tmp_path), self.tmux)
-        self.clock = post.now() - timedelta(minutes=30)
+        self.clock = post.now()
         self.rows: dict[str, list[dict]] = {}
 
     def seat(self, name):
         return self.svc.seat(name)
 
     def stamp(self, seconds=1):
-        self.clock += timedelta(seconds=seconds)
+        """Strictly later than the last row and never before now, so a row follows the attempt it answers."""
+        self.clock = max(self.clock + timedelta(seconds=seconds), post.now())
         return self.clock.isoformat()
 
     def launch(self, name):
