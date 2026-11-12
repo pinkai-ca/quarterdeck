@@ -342,7 +342,7 @@ def test_wheel_and_sdist_carry_declared_resources(revisions, tmp_path):
     output = tmp_path / 'dist'
     output.mkdir()
     run(python, '-c', 'from setuptools.build_meta import build_sdist, build_wheel; '
-        'import sys; build_sdist(sys.argv[1]); build_wheel(sys.argv[1])', output, cwd=source)
+        'import sys; output_dir = sys.argv[1]; build_sdist(output_dir); build_wheel(output_dir)', output, cwd=source)
     wanted = expected(source)
     wheel, = output.glob('*.whl')
     with zipfile.ZipFile(wheel) as built:
