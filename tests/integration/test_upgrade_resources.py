@@ -21,6 +21,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 # The real historical installer has no forum/cascade copy or target-resource helper.
 PREDECESSOR = '5f0f54510c3f65cc05cb2921f79bcb0ec520067d'
+# Single managed-resource catalog for source archives and declaration drift coverage.
 RESOURCE_ROOTS = ('standing-orders', 'ships/drydock', 'ships/forum', 'ships/cascade')
 
 
@@ -93,6 +94,20 @@ def contents(folder):
 def expected(source):
     declaration = tomllib.loads((source / 'pyproject.toml').read_text())['tool']['setuptools']['data-files']
     return {name: (source / name).read_bytes() for names in declaration.values() for name in names}
+
+
+def test_managed_resources_match_tracked_files_and_declaration():
+    tracked = set(filter(None, git(ROOT, 'ls-files', '--cached', '-z', '--',
+                                   *RESOURCE_ROOTS).split('\0')))
+    assert tracked, 'Git inventory contains no managed resource files'
+    declaration = tomllib.loads((ROOT / 'pyproject.toml').read_text())['tool']['setuptools']['data-files']
+    declared = {name for names in declaration.values() for name in names}
+    omitted = sorted(tracked - declared)
+    missing = sorted(name for name in declared if not (ROOT / name).is_file())
+    assert not omitted and not missing, (
+        f'Tracked resources omitted from data-files: {omitted}\n'
+        f'Declared data-files missing on disk: {missing}'
+    )
 
 
 def incumbent(python, revisions):
