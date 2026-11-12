@@ -116,17 +116,53 @@ def consumed_ids(store: post.Store, seat: str, role: str, inputs: Iterable[Input
     return frozenset(consumed)
 
 
+def amends(message: post.Message, root: post.Message, seat: str,
+           thread: dict[str, post.Message]) -> bool:
+    """Whether a message addressed to the seat in an open root's thread changes what the root asks.
+
+    Decided by the explicit reply graph and the senders alone, never by what a
+    body says. It amends when it answers one of the seat's own questions (its
+    nearest message from the seat, below the root, is that question), whoever
+    sent it; or when the root's own sender sent it, unless it is a report or
+    an answer replying directly to an order the seat gave: that closes or
+    answers the seat's own sub-order, which is history. Everything else in
+    the thread is history too; open messages are roots of their own.
+    """
+    parent = thread.get(message.re) if message.re else None
+    if (message.kind == 'answer' and (own := _nearest_own(message, root, seat, thread)) is not None
+            and own.kind == 'question'):
+        return True
+    if message.sender != root.sender:
+        return False
+    return not (message.kind in ('report', 'answer') and parent is not None
+                and parent.id != root.id and parent.sender == seat and parent.kind == 'order')
+
+
+def _nearest_own(message: post.Message, root: post.Message, seat: str,
+                 thread: dict[str, post.Message]) -> post.Message | None:
+    parent, visited = message.re, set()
+    while parent in thread and parent != root.id and parent not in visited:
+        visited.add(parent)
+        ancestor = thread[parent]
+        if ancestor.sender == seat:
+            return ancestor
+        parent = ancestor.re
+    return None
+
+
 def select(store: post.Store, seat: str, extra: Iterable[post.Message] = (), *,
            consumed: Collection[str] = (), excluded: Collection[str] = ()) -> Selection:
-    """Carry open roots and their incoming amendments once, in root/thread order.
+    """Carry open roots and what amends them once, in root/thread order.
 
     ``consumed`` must describe the actual conversation being resumed, never a
     retired conversation or launch receipt. A new conversation passes no ids.
     Open roots always return, preserving canonical ``Store.is_open`` semantics.
-    Unread/queued messages join the same inventory through ``extra``. Only the
-    seat's own outgoing questions on a selected incoming message's ancestry
-    supply explanatory context; other participants' bodies remain private.
-    Excluded ids retain their open-root identity but never supply any body.
+    A root's thread contributes only what amends it (see ``amends``) and the
+    open roots inside it; delivered history stays in the inbox and the store.
+    Unread/queued messages join the same inventory through ``extra``, whatever
+    their kind. Only the seat's own outgoing questions on a carried message's
+    ancestry supply explanatory context; other participants' bodies remain
+    private. Excluded ids retain their open-root identity but never supply any body.
     """
     messages = store.all()
     by_id = {message.id: message for message in messages}
@@ -144,6 +180,7 @@ def select(store: post.Store, seat: str, extra: Iterable[post.Message] = (), *,
             seen.add(message.id)
             entries.append(Entry(message, context_only))
 
+    threads = {}
     for root in roots:
         descendants = {}
         waiting = [root]
@@ -153,12 +190,18 @@ def select(store: post.Store, seat: str, extra: Iterable[post.Message] = (), *,
                 continue
             descendants[message.id] = message
             waiting.extend(children.get(message.id, ()))
-        incoming = {message.id for message in descendants.values()
-                    if message.to == seat and message.kind != 'ack'
-                    and message.id not in excluded
-                    and (message.id not in consumed or message.id in root_ids)}
-        bridges = set()
-        for message_id in incoming:
+        threads[root.id] = descendants
+    # Each root judges amendments by its own sender; a nested root's amendments keep thread order in its ancestors.
+    incoming, bridges = set(), set()
+    for root in roots:
+        descendants = threads[root.id]
+        carried = {message.id for message in descendants.values()
+                   if message.to == seat and message.kind != 'ack'
+                   and message.id not in excluded
+                   and (message.id in root_ids
+                        or message.id not in consumed and amends(message, root, seat, descendants))}
+        incoming |= carried
+        for message_id in carried:
             parent = descendants[message_id].re
             visited = set()
             while parent in descendants and parent not in visited:
@@ -167,8 +210,9 @@ def select(store: post.Store, seat: str, extra: Iterable[post.Message] = (), *,
                 if message.sender == seat and message.kind == 'question' and message.to != seat:
                     bridges.add(parent)
                 parent = message.re
+    for root in roots:
         append(root)
-        for message in sorted(descendants.values(), key=lambda message: (message.at, message.id)):
+        for message in sorted(threads[root.id].values(), key=lambda message: (message.at, message.id)):
             if message.id in incoming:
                 append(message)
             elif message.id in bridges:
