@@ -1,4 +1,4 @@
-"""qd-fakeharness: a small terminal program in the shape of Claude Code or Codex.
+"""qd-fakeharness: a small terminal program in the shape of Claude Code, Codex or pi.
 
 It shows a box that folds a long paste, a dialog, a program that queues while working and
 one that does not; it takes a message, works through steps, writes the record in the
@@ -7,11 +7,12 @@ run as tool calls, so a drill can ask it to do something and check that it did; 
 ``{this}`` is the id of the order or question being worked, read from its header as an
 agent would.
 
-    qd-fakeharness --as claude|codex [--model M] [--effort E] [--brief FILE] [--resume ID] [--first TEXT]
+    qd-fakeharness --as claude|codex|pi [--model M] [--effort E] [--brief FILE] [--resume ID] [--first TEXT]
 
 Its home is ``QD_FAKE_HOME``; its own keys arrive as ``QD_FAKE_<KEY>``: QUEUES (1 or 0),
 DIALOG (daybreak, unknown), STEPS, STEP_SECONDS, and ACCEPT_SECONDS, the time it takes to
-write a submitted message into its record, as a real program may.
+write a submitted message into its record, as a real program may. For pi-shaped records,
+END_REASON selects the measured stop or length terminal label (default stop).
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .synthetic_record import ClaudeShape, CodexShape
+from .synthetic_record import ClaudeShape, CodexShape, PiShape
 from .synthetic_control import event, pause
 
 RULE = "─" * 40
@@ -53,8 +54,13 @@ class Program:
         self.accept_seconds = float(os.environ.get("QD_FAKE_ACCEPT_SECONDS", "0"))
         self.dialog = DIALOGS.get(os.environ.get("QD_FAKE_DIALOG", ""))
         self.model, self.effort = args.model, args.effort
-        shape = ClaudeShape if args.shape == "claude" else CodexShape
+        shape = {"claude": ClaudeShape, "codex": CodexShape, "pi": PiShape}[args.shape]
         self.record = shape(self.home, Path.cwd(), args.resume or str(uuid.uuid4()), self.model)
+        if args.shape == 'pi':
+            reason = os.environ.get('QD_FAKE_END_REASON', 'stop')
+            if reason not in ('stop', 'length'):
+                raise ValueError('fake pi end_reason must be stop or length')
+            self.record.end_reason = reason
         self.box = ""
         self.queue: list[str] = []
         self.enqueued: list[str] = []
@@ -344,7 +350,7 @@ class Program:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="qd-fakeharness", description=__doc__.split("\n\n")[0])
-    parser.add_argument("--as", dest="shape", choices=("claude", "codex"), default="claude")
+    parser.add_argument("--as", dest="shape", choices=("claude", "codex", "pi"), default="claude")
     parser.add_argument("--model", default="fake-1")
     parser.add_argument("--effort", default="medium")
     parser.add_argument("--brief")

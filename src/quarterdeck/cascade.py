@@ -7,6 +7,8 @@ It is never a second transport: ordinary post delivery still goes through the do
 
 from __future__ import annotations
 
+from contextlib import nullcontext
+
 import hashlib
 import json
 import re
@@ -182,9 +184,10 @@ def note(body: str, limit: int) -> str:
 
 
 class Runner:
-    def __init__(self, ship: Ship, store: post.Store, health, effort, *, refusal_check=None):
+    def __init__(self, ship: Ship, store: post.Store, health, effort, *, refusal_check=None, outcomes=None):
         self.ship, self.store = ship, store
         self.health, self.effort = health, effort
+        self.outcomes = outcomes
         self.refusal_check = refusal_check or (lambda name, order: current_refusal(ship.runtime, name, order))
 
     def publish(self, path: Path, data: dict, key: str, kind: str, to: str, body: str) -> post.Message:
@@ -220,6 +223,10 @@ class Runner:
             data.update(status="stopped" if reason else "done", reason=reason,
                         stop_category=category if reason else None)
             save(path, data)
+        from .structure_outcome import clear_wait
+        for step in data['steps']:
+            if step.get('order'):
+                clear_wait(self.ship.runtime, step['order'])
         where = path / "responses.md"
         current = data["steps"][-1] if data["steps"] else {}
         outstanding = (f"\nInterrupted order remains open: {current['order']}."
@@ -275,7 +282,27 @@ class Runner:
             current = steps[-1]
             order = self.store.get(current["order"]) if current.get("order") else None
             report = self.store.closing_report(order) if order else None
+            if report is None:
+                if reason := self.health(current["seat"], order):
+                    self.finish(path, data, f"{current['seat']}: {reason}",
+                                category=reason.category if isinstance(reason, Stop) else 'seat')
+                    return
+                observation = self.outcomes(current['seat'], order) if self.outcomes else nullcontext(None)
+                stopped = False
+                with observation as ended:
+                    report = self.store.closing_report(order) if order else None
+                    if ended is not None and report is None:
+                        # Save the existing terminal state while ownership and
+                        # report admission are still held; publish afterward.
+                        data.update(status='stopped', reason=f"{current['seat']}: {ended} (lap {current['lap']})", stop_category='seat')
+                        save(path, data)
+                        stopped = True
+                if stopped:
+                    self.finish(path, data, data['reason'])
+                    return
             if report is not None:
+                from .structure_outcome import clear_wait
+                clear_wait(self.ship.runtime, order.id)
                 if report.to != post.SHIP:
                     self.finish(path, data, f"{current['seat']}: report was not addressed to ship")
                     return
@@ -292,10 +319,6 @@ class Runner:
                 save(path, data)
                 self.append(path, data)
             else:
-                if reason := self.health(current["seat"], order):
-                    self.finish(path, data, f"{current['seat']}: {reason}",
-                                category=reason.category if isinstance(reason, Stop) else 'seat')
-                    return
                 self.dispatch(path, data, current)
                 return
         if len(steps) == total:
@@ -485,9 +508,11 @@ def effort(service, name: str, wanted: str) -> dict:
 
 
 def run(service) -> list[tuple[str, str]]:
+    from . import structure_outcome
     runner = Runner(service.ship, service.store, lambda name, order: health(service, name, order),
                     lambda name, wanted: effort(service, name, wanted),
-                    refusal_check=lambda name, order: known_refusal(service, name, order))
+                    refusal_check=lambda name, order: known_refusal(service, name, order),
+                    outcomes=lambda name, order: structure_outcome.observe(service, name, order))
     changed = []
     for state in sorted((service.runtime / "ring").glob("*/state.json")):
         path = None

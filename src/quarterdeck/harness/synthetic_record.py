@@ -1,4 +1,4 @@
-"""The fake harness's records, written in Claude Code's or Codex's shape; the Antigravity shape here serves the contract tests.
+"""The fake harness's records, written in Claude Code, Codex or measured pi shape.
 
 The control plane reads them with the real adapters' readers, so the fake drill exercises
 the same code the real seats are read with.
@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import claude, codex
+from . import claude, codex, pi
 
 
 def now() -> datetime:
@@ -185,3 +185,72 @@ class CodexShape(_Writer):
 
     def turns_before(self) -> int:
         return len(codex.turns(self.path))
+
+
+class PiShape(_Writer):
+    """Measured pi session/message/parent shape, with invented synthetic content."""
+
+    def __init__(self, home: Path, cwd: Path, session: str, model: str):
+        super().__init__(home / "pi-sessions" / f"{session}.jsonl")
+        self.model, self.end_reason, self.parent, self.turn = model, 'stop', None, 0
+        if self.path.exists():
+            rows = pi.entries(self.path)
+            self.parent = rows[-1].get('id')
+            self.turn = len(pi.turns(self.path))
+        else:
+            self.write(dict(type='session', version=3, id=session, timestamp=now().isoformat(), cwd=str(cwd)))
+
+    def entry(self, kind, **fields):
+        identity = 'synthetic-' + uuid.uuid4().hex + '-zzzz'
+        self.write(dict(type=kind, id=identity, parentId=self.parent, timestamp=now().isoformat(), **fields))
+        self.parent = identity
+
+    def begin(self, text, model, effort):
+        self.text, self.model = text, model
+        self.entry('model_change', provider='synthetic', modelId=model)
+        self.entry('thinking_level_change', thinkingLevel=effort)
+        self.entry('message', message=dict(role='user', content=[dict(type='text', text=text)]))
+
+    def assistant(self, content, stop):
+        counts = tokens_for(self.text, '', self.turn)
+        self.entry('message', message=dict(role='assistant', content=content, stopReason=stop,
+                   model=self.model, provider='synthetic', usage=dict(input=counts['read_uncached'],
+                   cacheRead=counts['read_cached'], cacheWrite=counts['cache_written'],
+                   output=counts['written'], totalTokens=sum(counts.values()))))
+
+    def tool_start(self, name, input_):
+        self.call, self.tool_name = 'tool-' + uuid.uuid4().hex + '-zzzz', name
+        self.assistant([dict(type='toolCall', id=self.call, name=name, arguments=dict(command=input_))], 'toolUse')
+
+    def tool_end(self, output, failed):
+        self.entry('message', message=dict(role='toolResult', toolCallId=self.call, toolName=self.tool_name,
+                                          isError=failed, content=[dict(type='text', text=output)]))
+
+    def end(self, reply):
+        content = ([dict(type='thinking', thinking='Synthetic bounded reasoning.')] if self.end_reason == 'length'
+                   else [dict(type='text', text=reply)])
+        self.assistant(content, self.end_reason)
+        self.turn += 1
+
+    def abort(self):
+        self.assistant([], 'aborted')
+        self.turn += 1
+
+    def queued(self, text):
+        pass  # pi records steered input only upon consumption; screen carries visible queue evidence
+
+    def dequeued(self, text):
+        pass
+
+    def consumed(self, text):
+        self.entry('message', message=dict(role='user', content=[dict(type='text', text=text)]))
+
+    def command(self, text, output):
+        if text.startswith('/effort '):
+            self.entry('thinking_level_change', thinkingLevel=text.split(' ', 1)[1])
+        elif text.startswith('/model '):
+            self.model = text.split(' ', 1)[1]
+            self.entry('model_change', provider='synthetic', modelId=self.model)
+
+    def turns_before(self):
+        return self.turn

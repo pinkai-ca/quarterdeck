@@ -3,7 +3,9 @@
 Improve the answer in the current order. Preserve its question, correct errors, keep useful
 earlier reasoning and give a complete answer that the next seat can use on its own.
 
-Report once with `qd post report --re <current-order> --body-file <your-report-file>`.
+Write your report draft under `$QD_SHIP/runtime/seats/$QD_SEAT/`, then file it once with
+`qd post report --re <current-order> --body-file "$QD_SHIP/runtime/seats/$QD_SEAT/report.txt"`.
+An answer typed in the pane is not filed. Only `qd post report` files it.
 The sender of the order is `ship`, so the report goes to the service automatically.
 Never address the next seat or the orchestrator. Begin the report exactly like this:
 

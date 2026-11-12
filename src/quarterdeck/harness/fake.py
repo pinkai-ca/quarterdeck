@@ -1,7 +1,7 @@
 """The fake harness adapter: the reference implementation of the interface.
 
 It launches ``qd-fakeharness`` and reads what it writes. A seat's ``settings`` are the
-fake program's own keys (``as``, ``queues``, ``dialog``, ``steps``, ``step_seconds``),
+fake program's own keys (``as``, ``queues``, ``dialog``, ``steps``, ``step_seconds``, and pi-shaped ``end_reason``),
 passed verbatim as ``QD_FAKE_<KEY>`` at launch.
 """
 
@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..ship import Pool, SeatSpec
-from . import claude, codex
+from . import claude, codex, pi
 from .base import Box, Input, Control, Credential, Harness, Interruption, Keys, Launch, Screen, State, Turn
 
 RULE = re.compile(r"^─{8,}\s*$")
@@ -76,10 +76,12 @@ class FakeHarness(Harness):
 
     @staticmethod
     def _reader(record: Path):
+        if record.parent.name == "pi-sessions":
+            return pi
         return codex if "sessions" in record.parts else claude
 
     def records(self, home: Path) -> list[Path]:
-        files = claude.records(home) + codex.records(home)
+        files = claude.records(home) + codex.records(home) + list((home / "pi-sessions").glob("*.jsonl"))
         return sorted(files, key=lambda p: p.stat().st_mtime)
 
     def first_timestamp(self, record: Path) -> datetime | None:

@@ -185,6 +185,7 @@ class _Reader(JsonLinesReader):
                     from .types import TurnFailure
                     self.open["failure"] = TurnFailure(words(message.get("errorMessage")), at, tuple(self.open["inputs"]),
                                                        True if self.open["activity"] else None, "program error")
+                self.open["end_reason"] = message["stopReason"]
                 self.end(at)
         elif role == "toolResult":
             self.close_tool(message.get("toolCallId"), at, bool(message.get("isError")), message.get("toolName") or "?")
@@ -232,7 +233,8 @@ class _Reader(JsonLinesReader):
         turn = self.close_turn()
         self.record_turn(costed(Turn(len(self.turns), turn["started"] or at, at or turn["started"], turn["input"], turn["reply"],
                                     self.model, turn["tokens"], tuple(turn["tools"]), cost_steps=tuple(turn["costs"]),
-                                    failure=turn.get("failure"))), at)
+                                    failure=turn.get("failure"), inputs=tuple(turn["inputs"]),
+                                    end_reason=turn.get("end_reason"))), at)
 
 state = _Reader.read_state
 turns = _Reader.read_turns

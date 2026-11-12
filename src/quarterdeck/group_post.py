@@ -6,15 +6,17 @@ all reply to that root. The journal adds no fields to the immutable Message form
 
 from __future__ import annotations
 
+from contextlib import ExitStack, nullcontext
 import hashlib
 import json
 from pathlib import Path
 
-from . import durable, post
+from . import durable, post, structure_outcome
 from .ship import Ship, ShipError
 
 FAILURE_REASONS = frozenset({'member no longer declared', 'provider refused this copy',
-                             'owned pane is dead', 'held at limit with no eligible destination'})
+                             'owned pane is dead', 'held at limit with no eligible destination',
+                             *structure_outcome.REASONS})
 HOLD_REASONS = frozenset({'group evidence is malformed JSON', 'group evidence is inconsistent',
                           'group evidence is unreadable', 'group coordination could not finish'})
 
@@ -132,7 +134,7 @@ def _fanout(store: post.Store, data: dict) -> None:
         _publish(store, _message(item))
 
 
-def advance(ship: Ship, store: post.Store, failures=None) -> list[tuple[str, str]]:
+def advance(ship: Ship, store: post.Store, failures=None, *, outcomes=None) -> list[tuple[str, str]]:
     """Recover partial fanouts and finish groups, from local evidence only.
 
     ``failures(member, copy)`` returns a fixed, content-free reason or None. No
@@ -147,7 +149,7 @@ def advance(ship: Ship, store: post.Store, failures=None) -> list[tuple[str, str
     with post.admission(ship.runtime, '@groups'):
         for path in sorted(folder.glob('*.json')):
             try:
-                _advance_one(path, store, failures)
+                _advance_one(path, store, failures, outcomes)
                 hold = ship.runtime / 'post/group-holds' / path.name
                 if hold.exists():
                     hold.unlink()
@@ -159,38 +161,58 @@ def advance(ship: Ship, store: post.Store, failures=None) -> list[tuple[str, str
     return changed
 
 
-def _advance_one(path: Path, store: post.Store, failures) -> None:
+def _advance_one(path: Path, store: post.Store, failures, outcomes=None) -> None:
     data = _load(path)
     _fanout(store, data)
+    copies = [_message(item) for item in data['copies']]
+    runtime = store.dir.parent.parent
     if data['notice'] is None:
-        copies = [_message(item) for item in data['copies']]
-        reports = {m.to: report for m in copies if (report := store.closing_report(m)) is not None}
-        outcomes = dict(data.get('failed', {}))
+        saved = dict(data.get('failed', {}))
         for copy in copies:
-            if copy.to not in reports and copy.id not in outcomes and failures is not None:
-                reason = failures(copy.to, copy)
+            if store.closing_report(copy) is not None:
+                structure_outcome.clear_wait(runtime, copy.id)
+                continue
+            if copy.id in saved:
+                continue
+            reason = failures(copy.to, copy) if failures is not None else None
+            observation = outcomes(copy.to, copy) if reason is None and outcomes is not None else nullcontext(None)
+            with observation as ended:
+                # The observer holds member admission and current lifecycle until
+                # this copy's outcome is saved. A concurrent report wins here.
+                if store.closing_report(copy) is not None:
+                    structure_outcome.clear_wait(runtime, copy.id)
+                    continue
+                reason = reason or ended
                 if reason is not None:
                     if reason not in FAILURE_REASONS:
                         raise ShipError('unknown group member outcome')
-                    outcomes[copy.id] = dict(member=copy.to, reason=reason)
-        if outcomes != data.get('failed', {}):
-            data['failed'] = outcomes
+                    saved[copy.id] = dict(member=copy.to, reason=reason)
+                    data['failed'] = saved
+                    _save(path, data)
+                    structure_outcome.clear_wait(runtime, copy.id)
+        # Freeze the notice against all concurrent closing reports. Take locks in
+        # Store.write's order, then publish only after releasing them.
+        with ExitStack() as admission:
+            for name in sorted({data['lead'], *(m.to for m in copies)}):
+                admission.enter_context(post.admission(runtime, name))
+            reports = {m.to: report for m in copies if (report := store.closing_report(m)) is not None}
+            failed = {m.to: saved[m.id]['reason'] for m in copies if m.to not in reports and m.id in saved}
+            if len(reports) + len(failed) != len(copies):
+                return
+            root = _message(data['root'])
+            title = 'all filed' if len(reports) == len(copies) else 'member failed'
+            lines = [f'group {data["group"]} · {root.id} · {title}', '', 'Filed reports:']
+            lines += [f'- {member}: {report.id}' for member, report in reports.items()] or ['- none']
+            if failed:
+                lines += ['', 'Failed members:'] + [f'- {member}: {reason}' for member, reason in failed.items()]
+            lines += ['', 'Every member has filed or positively failed.',
+                      'Combine only the filed reports, retain every dissent, and add no new judgment.',
+                      f'Report once to {root.sender} with qd post report --re {root.id}.']
+            notice = store.prepare('report', post.SHIP, data['lead'], '\n'.join(lines), re=root.id)
+            data['notice'] = _encoded(notice)
             _save(path, data)
-        failed = {m.to: outcomes[m.id]['reason'] for m in copies if m.to not in reports and m.id in outcomes}
-        if len(reports) + len(failed) != len(copies):
-            return
-        root = _message(data['root'])
-        title = 'all filed' if len(reports) == len(copies) else 'member failed'
-        lines = [f'group {data["group"]} · {root.id} · {title}', '', 'Filed reports:']
-        lines += [f'- {member}: {report.id}' for member, report in reports.items()] or ['- none']
-        if failed:
-            lines += ['', 'Failed members:'] + [f'- {member}: {reason}' for member, reason in failed.items()]
-        lines += ['', 'Every member has filed or positively failed.',
-                  'Combine only the filed reports, retain every dissent, and add no new judgment.',
-                  f'Report once to {root.sender} with qd post report --re {root.id}.']
-        notice = store.prepare('report', post.SHIP, data['lead'], '\n'.join(lines), re=root.id)
-        data['notice'] = _encoded(notice)
-        _save(path, data)  # a cut before/after publication reuses this notice
+    for copy in copies:
+        structure_outcome.clear_wait(runtime, copy.id)
     _publish(store, _message(data['notice']))
 
 

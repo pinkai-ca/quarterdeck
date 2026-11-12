@@ -154,6 +154,9 @@ class Turn:
     unpriced_steps: int = 0
     failure: TurnFailure | None = None
 
+    inputs: tuple[Input, ...] | None = None  # explicit per-turn membership; old readers leave it unknown
+    end_reason: str | None = None  # native terminal reason, only where the reader preserves it
+
     @property
     def seconds(self) -> float | None:
         if not self.timed or self.started is None or self.ended is None:

@@ -82,6 +82,8 @@ class Service:
         self.blind_checked = -BLIND_INTERVAL  # when the blind attempts were last read against the records
         self.next_status = 0.0
         self.status_checked: float | None = None
+        from .structure_outcome import Passes
+        self.structure_passes = Passes()
 
     def run(self) -> None:
         self.lock = acquire_lock(self.runtime)  # one service per ship, for its whole life
@@ -102,6 +104,7 @@ class Service:
             self.ship = shipmod.load(self.ship.folder)  # law: ship-file
         except ShipError as error:
             self.log("error", step="load", error=str(error))
+        self.structure_passes.begin()
         for step in (self.reconcile, self.account, self.groups, self.cascades, self.inboxes, self.recoveries, self.refusals, self.deliveries, self.follow, self.requests, self.compactions, self.fresh_after_order,
                      self.rebrief, self.credentials, self.failover):  # accounting before anything relaunches a seat
             self.heartbeat()  # before every step: a slow delivery or usage read reads as busy, never as dead
@@ -110,6 +113,7 @@ class Service:
             except Exception as error:  # one failing step never stops the others
                 self.log("error", step=step.__name__, error=repr(error), trace=traceback.format_exc())
             self.status_due()
+        self.structure_passes.finish()
 
     def status_due(self) -> None:
         now = time.monotonic()
@@ -337,9 +341,10 @@ class Service:
 
     def groups(self) -> None:
         """Recover fixed group copies and publish one all-filed or failure notice."""
-        from . import group_post
+        from . import group_post, structure_outcome
         changed = group_post.advance(self.ship, self.store,
-                                     lambda name, copy: group_post.member_failure(self, name, copy))
+                                     lambda name, copy: group_post.member_failure(self, name, copy),
+                                     outcomes=lambda name, copy: structure_outcome.observe(self, name, copy))
         for request, reason in changed:
             self.log('group-held', request=request, reason=reason)
 

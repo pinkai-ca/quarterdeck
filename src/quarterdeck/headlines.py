@@ -17,7 +17,8 @@ def status_line(facts, alerts: list[str]) -> str:
               (len(facts.routes), "on fallback"), (len(facts.unknown), "selection unknown"),
               (len(facts.queue_unknown), "queue unknown"), (len(facts.compactions), "compaction readings"),
               (len(facts.turn_errors), "turn errors"), (facts.unsettled, "unsettled after an error"),
-              (len(facts.group_held), "groups held"), (len(facts.cascade_held), "cascades held")]
+              (len(facts.group_held), "groups held"), (len(facts.cascade_held), "cascades held"),
+              (len(facts.structure_waiting), "structure waits")]
     parts += [f"{count} {label}" for count, label in counts if count]
     parts.append("details: qd status")
     return SEPARATOR.join(parts)
