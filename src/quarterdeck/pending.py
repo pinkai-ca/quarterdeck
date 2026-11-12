@@ -24,7 +24,13 @@ if TYPE_CHECKING:
     from .service import Service
 
 WAIT_SECONDS = 600  # intervention policy, not a claim about normal program latency
-TERMINAL = {"delivered", "cancelled", "carried", "abandoned", "withheld", "refused"}
+TERMINAL = {"delivered", "cancelled", "carried", "abandoned", "withheld", "unacted", "uncertain"}
+# unacted: the record ended its turn in an error with proved no model output; uncertain: output unknown.
+# Neither is ever typed again by a tick (law: one-door).
+UNSETTLED = {
+    "unacted": "turn ended in a recorded error before any model output; not received; carried at the next start",
+    "uncertain": "turn ended in a recorded error and its model output is unknown; never resent; inspect the record",
+}
 
 
 def identity(seat: Seat) -> dict[str, str | int | None]:
@@ -69,9 +75,8 @@ class Proof:
         return self.data["identity"] == identity(seat)
 
     def finish(self, result: str) -> None:
-        if result in ('refused','uncertain'):
-            self.save(phase=result,resolution=('ended provider error; proved no model output; held for explicit start'
-                       if result=='refused' else 'provider error output/receipt is uncertain; never resent'))
+        if result in ("unacted", "uncertain"):
+            self.save(phase=result, resolution=UNSETTLED[result])
         elif result == "withheld" and self.data["phase"] == "prepared":
             self.save(phase="cancelled")
         elif result in ("delivered", "queued"):
@@ -91,24 +96,12 @@ class Proof:
         if not record:
             return None
         try:
-            before=None
-            if self.data.get('carriage'):
-                from . import record_owner
-                start=datetime.fromisoformat(self.data['identity']['launch'])
-                if datetime.fromisoformat(self.data['since'])!=start:
-                    return None
-                later=[datetime.fromisoformat(e['at']) for e in record_owner.events(seat.folder/'record-launches.jsonl')
-                       if e.get('record')==record and datetime.fromisoformat(e['at'])>start]
-                current=seat.launched()
-                if current and current.when>start:
-                    later.append(current.when)
-                before=min(later) if later else None
             result = input_receipt.confirmed(name, Path(record), self.data["payload"],
-                                             datetime.fromisoformat(self.data["since"]),before=before)
+                                             datetime.fromisoformat(self.data["since"]))
             if result and self.data.get("screen_queue"):
                 self.save(screen_queue=False)
             return result
-        except (OSError,ValueError,KeyError,TypeError):
+        except OSError:
             return None  # unreadable evidence never becomes success
 
     def reading(self, seat: Seat, screen: Screen | None, now: datetime | None = None) -> tuple[str, str, bool] | None:
@@ -166,7 +159,7 @@ def validate(data: Any, seat: str) -> None:
     from .harness import NAMES
 
     identity = data["identity"]
-    if (data["seat"] != seat or data["phase"] not in TERMINAL | {"prepared", "pasting", "submitting", "submitted", "queued",'uncertain'}
+    if (data["seat"] != seat or data["phase"] not in TERMINAL | {"prepared", "pasting", "submitting", "submitted", "queued"}
             or not isinstance(data["payload"], str) or not isinstance(identity["pane"], str)
             or not isinstance(identity["pid"], int) or identity["harness"] not in NAMES
             or not isinstance(data["attempts"], list) or not data["attempts"]
@@ -186,8 +179,6 @@ def validate(data: Any, seat: str) -> None:
             raise ValueError('paste refusal belongs to a different launch')
         if data.get('paste_clear',{}).get('stage')!='empty_confirmed':
             raise ValueError('paste refusal has no confirmed empty cleanup')
-    if 'carriage' in data and type(data['carriage']) is not bool:
-        raise ValueError('invalid carriage evidence')
     if 'recovery' in data:
         from .recovery import validate as validate_recovery
         validate_recovery(data['recovery'])
@@ -315,26 +306,24 @@ def reconcile(service: Service) -> set[Path]:
                 continue
             phase = proof.data["phase"]
             carried = [attempts[n] for n in proof.data["attempts"]]
-            result = ('refused' if phase=='refused' else proof.confirmed(seat)
-                      if phase=='delivered' or phase not in TERMINAL else None)
-            if result and phase!=result:
-                proof.finish(result)
-                phase=proof.data['phase']
-            if phase not in TERMINAL and phase!='uncertain' and all(any(a.message == old.message and a.seat == old.seat
+            if phase not in TERMINAL and all(any(a.message == old.message and a.seat == old.seat
                     and a.result == "launch" and a.launched_at != old.launched_at and a.when >= old.when
                     for a in attempts.values()) for old in carried):
                 proof.save(phase="carried", resolution="carried by a later explicit launch; old submission unconfirmed")
                 phase = "carried"
-                result=None
-            if phase=='delivered' and result is None:
-                result='delivered'  # unreadable evidence cannot erase a previously proved receipt
+            result = "delivered" if phase == "delivered" else None
+            if phase not in TERMINAL:
+                result = proof.confirmed(seat)
+            if result:
+                proof.finish(result)
             for filename in proof.data["attempts"]:
                 attempt = attempts[filename]
                 paths.add(attempt.path)
                 if result and attempt.result != result:
                     service.attempts.close(attempt, result, "exact payload found in owned record after paste")
                 elif attempt.result is None:
-                    recovered = {"submitted": "pending", "queued": "queued", "cancelled": "withheld", "withheld":"withheld", "abandoned": "abandoned"}.get(proof.data["phase"], "blind")
+                    recovered = {"submitted": "pending", "queued": "queued", "cancelled": "withheld", "withheld":"withheld", "abandoned": "abandoned",
+                                 "unacted": "unacted", "uncertain": "uncertain"}.get(proof.data["phase"], "blind")
                     service.attempts.close(attempt, recovered, "recovered durable paste/submit phase; never resent")
     return paths
 

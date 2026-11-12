@@ -195,7 +195,8 @@ def _input_relevant(row):
         return True
     if not isinstance(payload, dict):
         return kind in ('event_msg', 'response_item')
-    return kind in ('event_msg','response_item')  # output/error rows can revoke an earlier receipt
+    return (kind == 'event_msg' and payload.get('type') in {'task_started', *ENDS_TURN}
+            or kind == 'response_item' and payload.get('role') == 'user')
 
 
 @input_reader(_input_relevant)
@@ -230,9 +231,22 @@ def inputs(record: Path) -> list[Input]:
             seen = True
         except (TypeError, ValueError, AttributeError, KeyError):
             found.skip(line, kind, 'malformed input row')
-    from .failures import dispositions
-    reading,turns=_Reader.read(record)
-    return dispositions(found,turns,(reading.failure,))
+    return found
+
+
+REFUSAL_CODES = {'cyber_policy'}  # law: record-first -- the one native refusal form these records are known to carry
+
+
+def _failure(error, at, inputs, output):
+    """A recorded turn error. Only a known refusal code is a refusal; a message alone is a provider error."""
+    from .failures import words
+    from .types import TurnFailure
+    known = isinstance(error, dict) and isinstance(error.get('message'), str) and bool(error['message'].strip())
+    code = error.get('codex_error_info') if isinstance(error, dict) else None
+    code = code if isinstance(code, str) and code.isidentifier() and len(code) <= 64 else None
+    kind = 'provider refusal' if code in REFUSAL_CODES and known else 'provider error'
+    return TurnFailure(words(error.get('message') if isinstance(error, dict) else None), at, inputs,
+                       output if known else None, kind, code)
 
 
 class _Reader(JsonLinesReader):
@@ -242,33 +256,22 @@ class _Reader(JsonLinesReader):
     def __init__(self, record, snapshot=None):
         self.process_inputs = {}
         self.active_processes = {}
-        self.orphan_failure=None
-        self.unbound_inputs=[]
+        self.orphan_failure = None  # an error ending no turn this record opened
+        self.unbound_inputs = []
         super().__init__(record, snapshot)
 
-    @classmethod
-    def read_snapshot(cls,record,snapshot):
-        from dataclasses import replace
-        state,turns=super().read_snapshot(record,snapshot)
-        if not snapshot.raw.endswith('\n') or snapshot.skipped or state.pending_tools is None:
-            # Unknown/truncated rows can hide output. Never mutate cached turns
-            # or accounting when withholding a negative-output conclusion.
-            turns=[replace(t,failure=replace(t.failure,model_output=None))
-                   if t.failure and t.failure.model_output is False else t for t in turns]
-            if state.failure and state.failure.model_output is False:
-                state=replace(state,failure=replace(state.failure,model_output=None))
-        return state,turns
-
     def state(self):
-        from dataclasses import replace
-        state=super().state()
-        return replace(state,failure=self.orphan_failure) if self.orphan_failure and self.open is None else state
+        state = super().state()
+        if self.orphan_failure is not None and self.open is None:
+            from dataclasses import replace
+            state = replace(state, failure=self.orphan_failure)
+        return state
 
     def take(self, entry: dict) -> None:
         kind = entry.get('type')
         if kind in (*INPUT_IGNORED, 'compacted'):
-            if kind=='compacted' and self.open is not None:
-                self.open['model_output']=True
+            if kind == 'compacted' and self.open is not None:
+                self.open['model_output'] = True  # the program worked inside this turn
             return  # known non-execution metadata, independent of accounting format markers
         if kind not in ('session_meta', 'turn_context', 'event_msg', 'response_item'):
             self.tools_known = False
@@ -288,49 +291,42 @@ class _Reader(JsonLinesReader):
 
     def event(self, sub: str | None, payload: dict, at: datetime | None) -> None:
         if sub == "task_started":
-            self.orphan_failure=None
-            self.unbound_inputs=[]
+            self.orphan_failure = None
+            self.unbound_inputs = []
             if self.open is not None:
                 self.end(at, completed=False)
             self.start_turn({"started": at, "input": "", "tokens": Tokens(), "measurements": 0, "response": False,
-                             "tools": [], "reply": "", 'inputs':[], 'model_output':False})
+                             "tools": [], "reply": "", "inputs": [], "model_output": False})
         elif sub == "token_count" and self.open is not None:
             info = payload.get("info")
             last = info.get("last_token_usage") if isinstance(info, dict) else None
             self.open["tokens"] = self.open["tokens"] + usage_tokens(last)
-            if isinstance(last,dict) and any(type(last.get(k)) is int and last[k]>0
-                                            for k in ('output_tokens','reasoning_output_tokens')):
-                self.open['model_output']=True
-            elif not isinstance(last,dict) or any(type(last.get(k)) is not int or last[k]<0
-                                                  for k in ('output_tokens','reasoning_output_tokens')):
-                self.open['model_output']=None if self.open['model_output'] is not True else True
+            if isinstance(last, dict):
+                counts = [last.get(k) for k in ('output_tokens', 'reasoning_output_tokens')]
+                if any(type(n) is int and n > 0 for n in counts):
+                    self.open['model_output'] = True  # the model produced something, shown or not
+                elif any(type(n) is not int or n < 0 for n in counts) and self.open['model_output'] is not True:
+                    self.open['model_output'] = None  # an unreadable count cannot prove no output
+            elif info is not None and self.open['model_output'] is not True:
+                self.open['model_output'] = None
             self.open["measurements"] += 1
             self.open["response"] = False
         elif sub in ENDS_TURN and self.open is not None:
             if payload.get("last_agent_message"):
                 self.open["reply"] = payload["last_agent_message"]
-                self.open['model_output']=True
-            if sub=='task_complete' and payload.get('error') is not None:
-                from .types import TurnFailure
-                from .failures import words
-                error=payload['error']
-                known=isinstance(error,dict) and isinstance(error.get('message'),str) and bool(error['message'].strip())
-                output=self.open['model_output']
-                if output is not True and (not known or 'last_agent_message' not in payload
-                        or payload['last_agent_message'] is not None or not self.tools_known
-                        or at is None or self.open['started'] is None or at<self.open['started']):
-                    output=None
-                self.open['failure']=TurnFailure(words(error.get('message') if isinstance(error,dict) else None),
-                                                at,tuple(self.open['inputs']),output)
+                self.open["model_output"] = True
+            if sub == 'task_complete' and payload.get('error') is not None:
+                output = self.open['model_output']
+                if output is not True and ('last_agent_message' not in payload or payload['last_agent_message'] is not None
+                                           or not self.tools_known or at is None or self.open['started'] is None
+                                           or at < self.open['started']):
+                    output = None  # missing or odd fields are unknown, never zero output
+                self.open['failure'] = _failure(payload['error'], at, tuple(self.open['inputs']), output)
             self.end(at)
-        elif sub=='task_complete' and payload.get('error') is not None:
-            from .types import TurnFailure
-            from .failures import words
-            error=payload['error']
-            self.orphan_failure=TurnFailure(words(error.get('message') if isinstance(error,dict) else None),
-                                           at,tuple(self.unbound_inputs),None)
-        elif sub in ('agent_message','agent_reasoning','agent_reasoning_raw_content') and self.open is not None:
-            self.open['model_output']=True
+        elif sub == 'task_complete' and payload.get('error') is not None:
+            self.orphan_failure = _failure(payload['error'], at, tuple(self.unbound_inputs), None)  # no turn opened it
+        elif sub in ('agent_message', 'agent_reasoning', 'agent_reasoning_raw_content') and self.open is not None:
+            self.open['model_output'] = True
         elif sub not in ('task_started', 'token_count', *ENDS_TURN, 'user_message', 'agent_message',
                          'agent_reasoning', 'agent_reasoning_raw_content', 'context_compacted',
                          'thread_settings_applied', 'thread_goal_updated', 'model_reroute',
@@ -349,10 +345,10 @@ class _Reader(JsonLinesReader):
         if sub == "message" and payload.get("role") == "user":
             text = _text(payload.get("content"))
             if text and not text.startswith('<') and self.open is None:
-                self.unbound_inputs.append(Input(text,at))
+                self.unbound_inputs.append(Input(text, at))
             if text and not text.startswith("<") and self.open is not None:
                 self.last_input, self.last_input_at = text, at
-                self.open['inputs'].append(Input(text,at))
+                self.open['inputs'].append(Input(text, at))
                 if self.open["input"]:
                     self.consumed.append(text)  # a message taken into the running turn
                 else:
@@ -361,13 +357,15 @@ class _Reader(JsonLinesReader):
             self.open["reply"] = _text(payload.get("content")) or self.open["reply"]
             self.open["response"] = True
             if _text(payload.get('content')):
-                self.open['model_output']=True
-        elif sub=='reasoning' and self.open is not None:
-            self.open['model_output']=True  # reasoning activity disqualifies unacted replay, even without final text
+                self.open['model_output'] = True
+            elif self.open['model_output'] is False:
+                self.open['model_output'] = None  # an assistant row without readable text is not proof of none
+        elif sub == 'reasoning' and self.open is not None:
+            self.open['model_output'] = True  # reasoning is model output, even without final text
         elif sub in CALLS:
             if self.open is not None:
                 self.open["response"] = True
-                self.open['model_output']=True
+                self.open['model_output'] = True
             name = payload.get('name', '?')
             call = payload.get('call_id')
             if payload.get('status') not in (None, 'completed'):

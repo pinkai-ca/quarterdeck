@@ -1,33 +1,14 @@
-"""Bounded error readings and exact input disposition; native facts stay in adapters."""
-from dataclasses import replace
+"""Bounded first words of a recorded error; the native facts stay in each adapter."""
 import re
 
-from .types import TurnFailure
-
 ANSI = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
+WORDS = 16
+CHARS = 160
 
 
 def words(value, fallback='error details unavailable'):
-    if not isinstance(value,str) or not value.strip():
+    """The error's first words, control sequences and characters removed, never its whole text."""
+    if not isinstance(value, str) or not value.strip():
         return fallback
-    text=' '.join(''.join(c for c in ANSI.sub('',value) if c.isprintable() or c.isspace()).split()[:16])
-    return text[:160] or fallback
-
-
-def dispositions(inputs, turns, extra=()):
-    """Keep native acceptance, annotating only exact error-bound input identities."""
-    failures={}
-    known=[turn.failure for turn in turns if turn.failure]
-    known.extend(f for f in extra if f and f not in known)
-    for failure in known:
-        for item in failure.inputs:
-            failures.setdefault((item.text.strip(),item.at),[]).append(failure)
-    for index,item in enumerate(inputs):
-        found=failures.get((item.text.strip(),item.at),())
-        if not found or item.kind=='queued':
-            continue
-        value=('uncertain' if len(found)!=1 or found[0].model_output is None else
-               'refused' if found[0].model_output is False else None)
-        if value:
-            inputs[index]=replace(item,disposition=value)
-    return inputs
+    text = ' '.join(''.join(c for c in ANSI.sub('', value) if c.isprintable() or c.isspace()).split()[:WORDS])
+    return text[:CHARS] or fallback

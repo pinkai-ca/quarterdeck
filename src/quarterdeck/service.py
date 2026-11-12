@@ -43,7 +43,6 @@ STATUS_INTERVAL = 0.7  # presentation only; rendering age and owner are checked 
 # These go to the desk as well as the systems seat; every other alarm goes to the systems
 # seat alone while one is up. With no systems seat up, every alarm goes to the desk.
 PERSON_ONLY = (
-    'provider error','program error',
     "login",
     "paste/submit outcome uncertain",
     "pending delivery",
@@ -103,7 +102,7 @@ class Service:
             self.ship = shipmod.load(self.ship.folder)  # law: ship-file
         except ShipError as error:
             self.log("error", step="load", error=str(error))
-        for step in (self.reconcile, self.account, self.inboxes, self.recoveries, self.deliveries, self.follow, self.requests, self.compactions, self.fresh_after_order,
+        for step in (self.reconcile, self.account, self.inboxes, self.recoveries, self.refusals, self.deliveries, self.follow, self.requests, self.compactions, self.fresh_after_order,
                      self.rebrief, self.credentials, self.failover):  # accounting before anything relaunches a seat
             self.heartbeat()  # before every step: a slow delivery or usage read reads as busy, never as dead
             try:
@@ -185,7 +184,7 @@ class Service:
                 if attempt.pane is None:
                     self.attempts.judge(attempt, "blind", "a watch opened it and never reported printing it; qd post resend")
                     continue
-            elif not (result in ('delivered','launch','uncertain','carrying') or result == "queued" and attempt.message in queued
+            elif not (result == "queued" and attempt.message in queued
                       or result == "blind" and retry_blind and attempt.message in blind):
                 continue
             try:
@@ -195,9 +194,6 @@ class Service:
                 continue
             message = self.store.get(attempt.message)
             seen = delivery_record.receipt_anywhere(seat, message, attempt.receipt_since)
-            if seen in ('refused','uncertain'):
-                self.attempts.close(attempt,seen,f'native accepted input; ended error disposition {seen}; no automatic replay')
-                continue
             if result is None:
                 if self.attempts.judge(attempt, seen or "blind", "found in the record on reconciliation" if seen else
                                       "the service died mid-delivery and the record does not show it; qd post resend"):  # law: one-door
@@ -209,13 +205,20 @@ class Service:
                 self.attempts.close(attempt, seen, "found in the record later")
                 self.log("reconciled", message=message.id, seat=seat.name, result=seen,
                          detail="a blind attempt, found in the record later")
+        from . import turn_failure
+        turn_failure.settle(self)  # after receipts: a turn that ended in an error unsettles what it took
+
+    def refusals(self) -> None:
+        """A crew seat whose provider refused its conversation starts fresh, once, without the refused message."""
+        from . import refusal
+        refusal.run(self)
 
     def deliveries(self) -> None:
         results = self.attempts.latest()
         for seat in self.resolved_seats():
             if seat.session.human:
                 from . import turn_failure
-                if recovery.held(seat) or turn_failure.obstruction(seat,self.store):
+                if recovery.held(seat) or turn_failure.obstruction(seat, self.store):
                     self.needs_human(seat)
                 continue
             pending = [m for m in self.attempts.undelivered(self.store, seat.name, results=results) if self._due(m, seat)]
@@ -267,7 +270,9 @@ class Service:
                    if spec.role == "systems" and spec.name != seat.name and self._up(spec.name)]
         if not systems:
             return desks
-        return (systems + [name for name in desks if name not in systems]) if person_only(reason) else systems
+        from .turn_failure import KINDS
+        mine = seat.session.human and reason.startswith(KINDS)  # the desk keeps the Admiral's own seats
+        return (systems + [name for name in desks if name not in systems]) if person_only(reason) or mine else systems
 
     def _up(self, name: str) -> bool:
         try:
@@ -441,6 +446,10 @@ class Service:
             reserved, transitioning = compaction.withheld(self.runtime, seat.name)
             if transitioning or message.id in reserved:
                 return f"{message.short}: held for the compaction successor"
+            from . import refusal
+            if message.id in refusal.excluded(self.runtime, seat.name):
+                return (f"{message.short}: {seat.name}'s provider refused its conversation at this message; "
+                        f"it is not typed again (law: one-door); send a reworded message instead")
             if seat.session.human:  # the Office is reached by its watch alone: the message is offered to it again
                 self.attempts.close(self.attempts.open(message, seat.name, None, None, None), "resend", "re-offered to the watch")
                 return f"{message.short} re-offered to {seat.name}'s watch; " + ("it prints it now" if post.watch_armed(self.runtime, seat.name) else "no watch is armed yet")
@@ -666,10 +675,10 @@ class Service:
                     self.ledger.mark_record(record, seat.name, pool, str(error))
                     self.log("error", step="account", seat=seat.name, record=record.name, error=str(error))
                     continue
-                if record==current:
-                    from . import turn_failure
-                    turn_failure.publish(seat,record,state,turns,stamp[1])
                 self.ledger.quota.record(record, seat.name, state.walls, self.ledger.provenance, post.now())
+                if record == current and seat.session.human:
+                    from . import turn_failure
+                    turn_failure.publish(seat, record, state, turns, stamp[1])  # what a human seat's status line may read
                 self.read_marks[record] = stamp
                 incomplete = "incomplete turn state in record" if (state.turns is None or state.turn_open is None) else None
                 self.ledger.mark_record(record, seat.name, pool, incomplete)

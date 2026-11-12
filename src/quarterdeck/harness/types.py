@@ -23,7 +23,6 @@ class Input:
     at: datetime | None
     kind: str = "accepted"
     consumed_at: datetime | None = None
-    disposition: str | None = None  # refused: proved unacted; uncertain: error/output evidence cannot settle receipt
 
 
 class Inputs(list[Input]):
@@ -118,13 +117,18 @@ class ToolCall:
 
 @dataclass(frozen=True)
 class TurnFailure:
-    """Explicit ended error and its input/output evidence; absent output certainty is unknown."""
+    """An ended turn's recorded error and its input/output evidence; absent output certainty is unknown.
+
+    ``kind`` is ``provider refusal`` only for a native form the adapter positively classifies as the
+    provider refusing the conversation; any other recorded error is ``provider error`` or ``program error``.
+    """
 
     message: str
     at: datetime | None
     inputs: tuple[Input, ...] = ()
     model_output: bool | None = None
     kind: str = 'provider error'
+    code: str | None = None  # the native error classification, verbatim, when the record names one
 
 
 @dataclass(frozen=True)

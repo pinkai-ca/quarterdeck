@@ -197,17 +197,17 @@ class _Session:
                 tools.append(ToolCall(running[0], None, None))  # left running when the program moved on: its end unknown
         if closed:
             self.ended_at = ended if timed else None
-            failure=None
-            if completed and last.get('error'):
-                from .types import TurnFailure
+            failure = None
+            if completed and last.get('error'):  # law: record-first
                 from .failures import words
-                error=last['error']
-                detail=error.get('message') or _object(error.get('data')).get('message') if isinstance(error,dict) else None
-                activity=any(p.get('type') in ('tool','reasoning') or p.get('type')=='text' and p.get('text')
-                             for _,parts in steps for p in parts)
-                failure=TurnFailure(words(detail),ended,(self.inputs[-1],),True if activity else None,'program error')
+                from .types import TurnFailure
+                error = _object(last['error'])
+                detail = error.get('message') or _object(error.get('data')).get('message')
+                activity = any(p.get('type') in ('tool', 'reasoning') or p.get('type') == 'text' and p.get('text')
+                               for _, parts in steps for p in parts)  # model output; no proof of its absence is recorded
+                failure = TurnFailure(words(detail), ended, (self.inputs[-1],), True if activity else None, 'program error')
             self.turns.append(costed(Turn(index, at, ended, text, reply, model, tokens, tuple(tools), timed=timed,
-                                          cost_steps=tuple(costs),failure=failure)))
+                                          cost_steps=tuple(costs), failure=failure)))
             if completed:
                 self.completed_turns.append(self.turns[-1])
         else:
@@ -363,6 +363,4 @@ read = _Reader.read
 
 def inputs(record: Path) -> list[Input]:
     """The active root's inputs, with the same session-aware queue boundaries as its state."""
-    from .failures import dispositions
-    active=_Reader(record).active
-    return dispositions(active.inputs,active.turns)
+    return _Reader(record).active.inputs

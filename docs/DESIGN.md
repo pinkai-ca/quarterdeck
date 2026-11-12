@@ -265,6 +265,32 @@ Ordinary restart, down, stop, fresh and failover keep their existing guards. The
 
 The tmux status line shows actionable compaction readings: threshold work, readiness for manual fresh, unknown readings and claimed transitions. Below-threshold counts and routine disabled state are shown in detailed `qd status` and `qd watch`. The line can summarize alert categories by count when they exceed its display budget.
 
+**Turns that end in an error.** An adapter reads a turn's recorded error into the turn and the seat's state (law: record-first): its kind, the native code verbatim where the record names one, its first sixteen words with control characters removed, the inputs the turn took, and whether the model produced output, which is true on any model text, reasoning, tool call or positive output count, false only when every row of the turn is known and complete and the record states no final message, and unknown otherwise. A later turn clears it from the state; the turn keeps it, and the Ledger's turn is unchanged. Kinds: a `provider refusal` is only a native form the adapter positively classifies as the provider refusing the conversation; any other recorded error is a `provider error` or a `program error`. A refusal is never an allowance wall, and a wall is never read from a turn error.
+
+What each adapter's record shows, by the evidence it was measured on:
+
+| Harness | Recorded turn error | Refusal form | Model output |
+| --- | --- | --- | --- |
+| Codex 0.166.0 | `task_complete.error` with `message` and `codex_error_info`, `last_agent_message` null | `codex_error_info` `cyber_policy`, the only one; any other code or none is a provider error | absent only with complete known rows; real refusals usually carry reasoning or output tokens |
+| pi 0.74.2 | assistant `stopReason` `error` with `errorMessage` (adapter source; synthetic test) | none known | never proved absent |
+| OpenCode 1.19.5 | the closing step's `error` (adapter source) | none known | never proved absent |
+| Claude Code 2.1.317 | API errors are synthetic assistant rows already read as a wall or a login | unknown for this version; a later, unpinned version has been seen to write a refusal stop with a companion row, not yet measured into fixtures | unknown |
+| Grok 1.0.77, Antigravity 1.5.x | only native rate-limit and quota errors, read as walls | unknown | unknown |
+
+The door holds while the latest turn is a refusal, whatever is open, since the next message would go into the conversation the provider refused; after any other error it holds while an order or question is open to the seat. Either hold names the error and raises the ordinary alarm: the status line of every ship session carries it (law: nothing-waits-silently), the systems seat is told, and for a seat in a human session the desk too. A seat in a human session is read from `runtime/seats/<seat>/turn-failure.json`, written by the service from its own reading of the record: kind, code, first words, time and output certainty, bound to the launch and the record's fingerprint, and never an input, reply or subject; a changed record reads as unknown until the service reads it again, so an old refusal never stands as a current fact.
+
+A message the door typed into a turn that ended in an error is not settled as received (law: one-door). Where the record proves no model output the attempt and its journal read `unacted`: no tick types it again, and the next start carries it as an unread message. Where output is unknown they read `uncertain`: nothing types it again and it waits for a hand, as a blind delivery does. Where the record shows output, its receipt stands. Both results are terminal for the attempt, so a late receipt cannot turn them into a delivery, and the status line counts them.
+
+**Provider refusals.** A crew seat whose current launch's latest turn is a provider refusal is started fresh by the service, once, without the refused message. The service acts only when the turn has ended with a known-empty queue and tool set; an open turn, queued input or a running tool waits with the door held. The refused message is the single ship message the door typed on this launch whose whole envelope is an input of the refused turn. No input, an input the door did not type (a human's text, or the launch's carried first message), an input matching several messages, or several messages in the turn are ambiguous; so are an unknown queue or tool set. Ambiguity is held, shown and alarmed for the systems seat or a person; nothing is quarantined on a guess.
+
+`runtime/seats/<seat>/refusal.json` (format 1) keeps one event per refused turn, keyed by the launch's pane, process and time and the turn's end, written durably before any act: the refused message and its sender, the fixed identity and time of the sender's notice, and the stage, `claimed`, `launched` with the successor launch's time, or `held` with its reason. The sender receives a report from `ship` that refers to the refused message, says the seat's provider refused its conversation at it and that it will not be typed again, and quotes none of it; then the ordinary `qd fresh` lifecycle relaunches the seat. A claim that finds a different launch adopts it; one that finds the seat down is held; one whose relaunch was refused tries again only while the refused launch is still the saved one. A launch begun by an automatic refusal fresh that is itself refused before it completes a turn normally is held for a person: the ship does not start a seat fresh twice in a row for refusals.
+
+The refused message stays open and whole in the store; nothing closes it or calls it delivered. It is withheld from this seat for good: the launch's first message carries it as a one-line notice, its id, kind and sender, `withheld: refused by the provider · sender told`, without its subject or body (law: context-is-cache), the inbox and `qd inbox` show it the same way, no tick types it, and `qd post resend` refuses it with the reason. A reworded message is a new message. The seat may close a withheld order with an ordinary report saying it was not acted on. An unreadable refusal journal holds: a launch refuses to carry anything and the inbox withholds every body until it is inspected.
+
+Seats in a human session get no automatic fresh start; the desk acts, as for every other automatic lifecycle act there. No subscription moves on a refusal. Other programs' errors are shown and alarmed but never start a seat fresh until their refusal form is measured into fixtures.
+
+The journal phases `unacted` and `uncertain`, the attempt results of the same names, `refusal.json` and `turn-failure.json` are new runtime evidence; no post, Ledger or launch format changes. An older framework rejects the new journal phases as unknown and holds, and does not honor the refusal journal: before rolling back, stop the service, resolve any claimed refusal event and remember that a quarantined message would be carried again by older code.
+
 **Launch retirement.** A down, restart or fresh start retires the saved launch's window before forgetting its launch metadata. A present pane with another PID, a changed saved launch, failed native close or unconfirmed disappearance is a visible refusal; it preserves the evidence and blocks a new launch. The one exception is a launch from an earlier tmux server lifetime: pane ids start again from %0 when the server restarts, as after a reboot, while `launch.json` survives, so another program's new pane can carry a saved id. When the running server's own start (`#{start_time}`, whole seconds) is later than the time `launch.json` was written, the saved pane cannot be in this server, so the launch reads as gone: up, down and fresh proceed, and the other pane is left alone. The file's write time is the bound because it is written after its pane exists; the launch's `at` is stamped before the window opens, and opening it can start the server. An unreadable start, or a restart within the same second as the write, keeps the refusal. The native close queue checks the expected PID in the server performing the kill, so a replacement after the caller's check is retained. A matching failed pane may be retired when up is retried. Closing the owned window ends its program and the ordinary bubblewrap jail's descendants; the process/window regression counts repeated fresh starts and final down. This is no authority to adopt unidentified historical windows, match titles or sweep processes. Native records and provenance remain intact.
 
 Lifecycle callers on the same runtime and seat take one nonblocking advisory file lock through startup preparation, native retirement, metadata publication/removal and the full restart/fresh/failover stop/select/start sequence. Competing CLI/service callers visibly refuse immediately; independent seats remain independent. The empty `runtime/post/lifecycle/<seat>.lock` inode is retained outside removable seat homes, never unlinked by lifecycle cleanup, and its non-inheritable descriptor releases on failure or process exit. It carries no ownership, recovery or configuration authority and changes no launch/Proof/record schema. Upgrades must quiesce old lifecycle callers: older binaries ignore this new coordination file, so mixed old/new lifecycle operations are unsupported. All participating callers must preserve the lock inode; external replacement/removal is outside this advisory protocol.
@@ -417,6 +443,7 @@ Two readings, taken together, because they answer two different questions.
 - `working`: a turn is open and steps keep coming, with the open tool call named: `working, in Bash 3m`.
 - `stalled`: a turn is open and ten minutes have passed without a step, with the open tool call named: `stalled, in Bash 14m`. A seat that has never moved is idle, not stalled.
 - `off`: no harness is running in the pane, with the reason: exited with a code, crashed, no pane.
+- `refused` or `failed`: the last turn ended in an error the record names, with its kind, its native code where the record gives one, and its first words: `refused, provider refusal (cyber_policy): <first words>`; `failed, program error: ...`. Never `idle`.
 
 **Door**, from the screen, answers "can the typing path deliver":
 
@@ -425,7 +452,7 @@ Two readings, taken together, because they answer two different questions.
 
 Text in the box that the door did not type is an obstruction and nothing more is done about it: nothing is typed, nothing is lifted, nothing is restored. The message waits in the inbox, the status line names the seat as needing a human, and the alarm's recipients are told once. This is the whole of the guarding, and why a half-written message can never be sent: the door types only into an empty box, so the human's text is never in the box when the ship's goes in.
 
-A reading the Watch could not take is `unknown`, with what it could not see. Unknown is never dressed as a state. Error is not a state either: a seat's own failure shows as `off` with its exit or as `obstructed` with the banner, and the Watch's own failure is `unknown`.
+A reading the Watch could not take is `unknown`, with what it could not see. Unknown is never dressed as a state. Error is not a state either, except a turn the record says ended in one: a seat's own failure shows as `off` with its exit or as `obstructed` with the banner, a recorded turn error as `refused` or `failed`, and the Watch's own failure is `unknown`.
 
 ```
 seat    activity              door                              order      today
@@ -567,7 +594,7 @@ A test fails when a law has no carrier, or a tag names a law that does not exist
 
 - `identity` A seat's identity is its pane id, process id and record. Names and titles are display.
 - `one-door` Everything typed into a seat goes through one path, in one process: it clears what it knows how to clear, refuses what it does not, types once into an empty box, checks the box as the program shows it, submits, and confirms by the record. It never types into a session the human owns. Never resend what you cannot confirm.
-- `context-is-cache` After any restart or fresh start a seat receives its brief and every open message in full, so a seat may be relaunched at any time and the ship loses nothing it sent.
+- `context-is-cache` After any restart or fresh start a seat receives its brief and every open message in full, except a message its provider refused, which it receives as a notice without the text while the sender is told; so a seat may be relaunched at any time and the ship loses nothing it sent.
 
 **Watch**
 
@@ -630,6 +657,8 @@ quarterdeck/                       the project folder: the framework repository
     compaction.py  the threshold, handoff, readiness and transition journal for fresh starts after compaction
     input_receipt.py   the one rule that matches a delivery to the record's evidence of its input
     paste_refusal.py   owned unsubmitted-paste cleanup and scoped negative evidence
+    turn_failure.py    a turn ended in a recorded error: the door's hold, its alarm, and the receipts it unsettles
+    refusal.py     a provider-refused crew seat started fresh once, the refused message withheld and its sender told
     service.py     the ship's one long-running process: inboxes, deliveries, attempts, deferred controls, the heartbeat,
                    the machine sample; the one writer of the Ledger
     servicectl.py  the service's lock, heartbeat, start, stop and requests

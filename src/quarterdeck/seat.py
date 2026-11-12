@@ -392,8 +392,6 @@ class Seat:
 
     def _up(self, resume: bool = True) -> str:
         self._accept_pool()
-        from . import turn_failure
-        turn_failure.require_clear(self)
         from .recovery import require_clear
         require_clear(self)
         previous = self.launched()
@@ -424,7 +422,6 @@ class Seat:
         if resume and resume_id is None and prior:
             self.harness.preflight_resume(spec, self.home, lambda: None)
         first, carried = self.first_message()  # read while the last record is still pinned
-        unacted={m.id for m in turn_failure.unacted(self,post.Store(self.ship.runtime),post.Attempts(self.ship.runtime))}
         if not resume_id:
             (self.folder / "record").unlink(missing_ok=True)
         launch = self.harness.launch(spec, pool, self.home, brief, resume_id, first)
@@ -449,16 +446,9 @@ class Seat:
             self.record()  # retain the resumed record's new pool boundary immediately
         self._survives(pane.id, launch.argv[0])
         attempts = post.Attempts(self.ship.runtime)
-        opened=[]
         for message in carried:
             attempt = attempts.open(message, self.name, pane.id, pane.pid, launched.at)
-            opened.append(attempt)
-            attempts.close(attempt, 'carrying' if message.id in unacted else "launch",
-                           "carried as first input; destination record confirmation pending")
-        if opened and first:
-            proof=pending.Proof.begin(self,opened[0],first)
-            proof.save(at=launched.at,since=launched.at,phase='submitted',carriage=True,
-                       attempts=[a.path.name for a in opened])
+            attempts.close(attempt, "launch", "carried as the first message of the launch")
         how = f"resumed {resume_id[:8]}" if resume_id else "fresh"
         carried_note = f" · {len(carried)} open message{'s' if len(carried) != 1 else ''} carried" if carried else ""
         jail_note = " · jailed: the operator's home hidden, the workspace writable" if jailed else ""
@@ -481,12 +471,22 @@ class Seat:
         with post.admission(self.ship.runtime, self.name):
             open_messages = store.open_for(self.name)
             unread = attempts.undelivered(store, self.name, for_launch=True)
-        from . import turn_failure
-        carried = set(open_messages) | set(unread) | set(self._queued_unread(store, attempts)) | set(turn_failure.unacted(self,store,attempts))
-        if not carried:
+        carried = set(open_messages) | set(unread) | set(self._queued_unread(store, attempts))
+        from . import refusal
+        try:
+            refused = refusal.excluded(self.ship.runtime, self.name)
+        except refusal.JournalError as error:
+            raise ShipError(f"{self.name}: {error}; inspect it before a launch carries anything") from None
+        withheld = sorted((m for m in carried if m.id in refused), key=lambda m: (m.at, m.id))
+        carried -= set(withheld)  # law: one-door -- a message its provider refused is never typed again
+        if not carried and not withheld:
             return None, []
         ordered = sorted(carried, key=lambda m: (m.at, m.id))
-        return post.briefed_header(self.name, self.spec.role, open_messages) + "\n" + post.typed(ordered), ordered
+        parts = [post.briefed_header(self.name, self.spec.role, open_messages)]
+        parts += [refusal.stub(m) for m in withheld]  # law: context-is-cache -- named, never retyped
+        if ordered:
+            parts.append(post.typed(ordered))
+        return "\n".join(parts), ordered
 
     def _queued_unread(self, store: post.Store, attempts: post.Attempts) -> list[post.Message]:
         """Carry queued messages whose exact input has not been consumed since their latest attempt."""
@@ -573,8 +573,6 @@ class Seat:
         """Relaunch with resume: the conversation continues in a new process."""
         with self._lifecycle():
             self._accept_pool()
-            from . import turn_failure
-            turn_failure.require_clear(self)
             from .recovery import require_clear
             require_clear(self)
             self.harness.preflight_resume(self.spec, self.home, self._resume_id)
@@ -584,8 +582,6 @@ class Seat:
         """Relaunch without resume: a new conversation that begins with the brief and the open messages."""
         with self._lifecycle():
             self._accept_pool()
-            from . import turn_failure
-            turn_failure.require_clear(self)
             from .recovery import require_clear
             require_clear(self)
             return self._down() + "\n" + self._up(resume=False)

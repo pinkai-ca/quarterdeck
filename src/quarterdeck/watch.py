@@ -65,9 +65,11 @@ def activity(seat: Seat | UnresolvedSeat, now: datetime | None = None) -> Activi
     except OSError as error:
         return Activity("unknown", f"record unreadable: {error}")
     queue_detail = f"queue unknown: {state.queue_error}" if state.queue_error else ""
-    if getattr(state,'failure',None) and state.turn_open is False:
-        failure=state.failure
-        return Activity('refused' if failure.kind=='provider error' else 'failed',f'{failure.kind}: {failure.message}')  # law: record-first
+    if state.failure is not None and state.turn_open is False:  # law: record-first -- an error is never plain idle
+        from .turn_failure import REFUSAL, describe
+        queued = f"{len(state.queued)} queued" if state.queued else ""
+        return Activity("refused" if state.failure.kind == REFUSAL else "failed",
+                        " · ".join(filter(None, (describe(state.failure), queue_detail or queued))))
     if state.turn_open is None:
         return Activity("unknown", " · ".join(filter(None, ("turn state unknown in record", queue_detail))))
     if seat.harness.waiting_for_human(state):
@@ -319,6 +321,7 @@ class Facts:
     waiting: int
     oldest: int
     blind: int
+    unsettled: int = 0  # typed into a turn that ended in a recorded error: unacted or uncertain
     needs_human: list[str] = field(default_factory=list)
     unarmed: list[str] = field(default_factory=list)
     walls: list[str] = field(default_factory=list)
@@ -342,6 +345,8 @@ class Facts:
             parts.append(f"{self.queued} queued behind a turn, oldest {self.oldest_queued}m")
         if self.blind:
             parts.append(f"{self.blind} blind")
+        if self.unsettled:
+            parts.append(f"{self.unsettled} unsettled after an error")  # law: nothing-waits-silently
         parts += self.unknown
         parts += self.queue_unknown
         parts += self.compactions
@@ -493,8 +498,8 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
             continue
         launched = seat.launched()
         from .turn_failure import obstruction as failure_obstruction
-        if reason:=failure_obstruction(seat,store):
-            turn_errors.append(f'{seat.name}: {reason}')  # law: nothing-waits-silently
+        if reason := failure_obstruction(seat, store):
+            turn_errors.append(f"{seat.name}: {reason}")  # law: nothing-waits-silently
             needs_human.append(seat.name)
         from .compaction import status as compaction_status
         if detail := compaction_status(seat, alerts_only=True):
@@ -503,7 +508,8 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
             routes.append(f"{seat.name} on {seat.harness.name}/{launched.pool}")
         if seat.session.human:
             if reason := recovery.held(seat):
-                needs_human.append(seat.name)
+                if seat.name not in needs_human:
+                    needs_human.append(seat.name)
                 pending_lines.append(f"{seat.name}: {reason}")
             if pending and not post.watch_armed(ship.runtime, seat.name):
                 unarmed.append(seat.name)
@@ -535,6 +541,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         waiting=len(waiting),
         oldest=oldest,
         blind=sum(result == 'blind' for result in latest.values()),
+        unsettled=sum(result in post.UNSETTLED for result in latest.values()),
         queued=len(queued),
         oldest_queued=int(max(((now - a.when).total_seconds() for a in queued), default=0) // 60),
         needs_human=needs_human,

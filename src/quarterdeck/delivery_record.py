@@ -17,14 +17,13 @@ def receipt(reader, record, message: post.Message, since: datetime) -> str | Non
 
 def receipt_anywhere(seat: Seat, message: post.Message, since: datetime) -> str | None:
     """Acceptance in the current or a historically owned record, read by its saved reader."""
-    results=set()
+    queued = None
     for owned in record_owner.records(seat):
         if owned.reader is None:
             continue
         result = receipt(owned.reader, owned.path, message, since)
-        if result:
-            results.add(result)
-    settled=results-{'queued'}
-    if 'uncertain' in settled or len(settled)>1:
-        return 'uncertain'
-    return next(iter(settled)) if settled else 'queued' if results else None
+        if result == "delivered":
+            return result
+        if result == "queued":
+            queued = result
+    return queued

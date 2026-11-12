@@ -258,11 +258,31 @@ def briefed_header(seat: str, role: str, open_messages: list[Message]) -> str:
 
 
 def inbox_reading(store: Store, seat: str) -> dict:
-    messages = store.for_seat(seat)
+    messages = [_shown(m, withheld) for withheld in [_withheld(store, seat)] for m in store.for_seat(seat)]
     return {"seat": seat, "open": [m for m in messages if store.is_open(m)],
             "received": list(reversed([m for m in messages if not store.is_open(m)])),
             "closed_by": {m.id: closed.id for m in messages if m.kind == "order"
                           and (closed := store.closing_report(m))}}
+
+
+def _withheld(store: Store, seat: str) -> frozenset[str] | None:
+    """What this seat's provider refused, never shown it again; None when that cannot be read."""
+    from . import refusal
+    try:
+        return refusal.excluded(store.dir.parent.parent, seat)
+    except refusal.JournalError:
+        return None
+
+
+def _shown(message: Message, withheld: frozenset[str] | None) -> Message:
+    """The refused message as a notice without its subject or body (law: context-is-cache).
+
+    An unreadable refusal journal withholds every body: the store keeps the text, nothing is lost.
+    """
+    from .refusal import WITHHELD
+    if withheld is None:
+        return replace(message, subject=None, body='withheld: refusal journal unreadable; inspect runtime/seats')
+    return replace(message, subject=None, body=WITHHELD) if message.id in withheld else message
 
 
 def inbox_text(store: Store, seat: str) -> str:
@@ -305,6 +325,9 @@ def render_inbox(runtime: Path, store: Store, seat: str) -> Path:
 # -- delivery attempts -----------------------------------------------------------------------
 
 ACCEPTED = ("delivered", "queued", "launch", "watch")
+# Typed and taken, but the turn ended in a recorded error: unacted proved no model output, so the
+# next start carries it; uncertain could not tell, so it waits for a hand (law: one-door).
+UNSETTLED = ("unacted", "uncertain")
 
 
 @dataclass(frozen=True)
@@ -359,8 +382,8 @@ class Attempts:
     def close(self, attempt: Attempt, result: str, detail: str = "") -> Attempt:
         with self._locked():
             current = Attempt(**json.loads(attempt.path.read_text()), path=attempt.path)
-            if current.result in ("abandoned","refused"):
-                return current  # terminal even if an old door/watch finishes after cleanup
+            if current.result in ("abandoned", *UNSETTLED):
+                return current  # terminal even if an old door/watch finishes after cleanup or a receipt
             done = replace(attempt, result=result, detail=detail)
             self._write(done)
             return done
@@ -453,8 +476,8 @@ class Attempts:
         never wakes, so it is never delivered at all (law: open-until-closed).
         """
         skip = {m for m, r in (self.latest() if results is None else results).items()
-                if r in (*ACCEPTED, "blind", None, "pending", "abandoned",'uncertain','carrying')
-                or r=='refused' and not for_launch}
+                if r in (*ACCEPTED, "blind", None, "pending", "abandoned", "uncertain")
+                or r == "unacted" and not for_launch}  # law: one-door
         if not for_launch:
             from .compaction import withheld
             reserved, transitioning = withheld(store.dir.parent.parent, seat)
