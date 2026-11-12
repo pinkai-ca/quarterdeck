@@ -39,7 +39,8 @@ evidence are unknown; a failed older turn cannot stop a new lap. Late replies
 cannot restart it. An interrupted child order stays open until its addressee reports.
 On a recognized refusal of the current step, the final notice names the seat/lap, notes
 path and report identities for a person to open, distinguishing last completed from any
-stopped step's filed report. A known exclusion stops before report acceptance or relay,
+stopped step's filed report. Exact known exclusion or an existing reader refusal positively
+associated with the current order stops before report acceptance or relay,
 leaving a filed report immutable without appending its note. It withholds the full answer
 and refused input. The orchestrator concludes from completed notes only, names the stop,
 and never automatically opens or retypes the referenced full reports. Other stops retain

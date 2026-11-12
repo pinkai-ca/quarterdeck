@@ -190,7 +190,13 @@ only, names the stop and never automatically reads/retypes the referenced report
 category comes only from recognized current-step failure evidence or that exact current
 order's membership in the existing exclusion set; an unreadable exclusion journal holds.
 Unlike the forum, which gives filed reports priority because they return only to the lead,
-the cascade checks known current-order exclusion before accepting a report because it would relay it onward.
+the cascade checks exact current-order exclusion and the existing positively associated
+reader refusal before accepting a report because it would relay it onward.
+One `associated_failure` helper retains the existing native match and lifecycle/launch
+rechecks; the service's pre-report callback and ordinary health share that proof. The
+callback promotes only the existing provider-refusal category, so dead/limit and generic
+errors remain report-first and cannot mask a positive associated reader refusal. Unknown
+native evidence supplies no positive refusal; an unreadable exclusion journal still holds.
 An already filed report remains immutable and is named separately by `stopped_report` for
 a person; it is not parsed, appended as a note, marked accepted or sent to the next seat.
 No reason/body substring classifier or Message fields are added. The notice does not answer

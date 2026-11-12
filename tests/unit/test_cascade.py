@@ -346,6 +346,14 @@ def test_current_failed_turn_at_or_after_measured_taking_ends_lap(ring, monkeypa
     assert cascade.health(service, "alpha", order) == "program error"
 
 
+def test_generic_associated_failure_does_not_become_a_pre_report_override(ring, monkeypatch):
+    service, order, evidence, turn = ordinary_failure(ring, monkeypatch)
+    evidence["inputs"] = [Input(post.typed([order]), turn.started)]
+    assert cascade.associated_failure(service, "alpha", order) == "program error"
+    assert cascade.known_refusal(service, "alpha", order) is None
+    assert cascade.health(service, "alpha", order) == "program error"
+
+
 def test_exact_failed_input_bundle_associates_order_without_guessing_turn_start(ring, monkeypatch):
     service, order, evidence, turn = ordinary_failure(ring, monkeypatch)
     bundle = post.briefed_header("alpha", "ring", [order]) + "\n" + post.typed([order])

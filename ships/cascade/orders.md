@@ -21,7 +21,8 @@ The orchestrator receives one final service notice and answers the original ques
 Ordinary completion and other stops include the last full answer. On a recognized provider
 refusal of the current step, the notice withholds both the full answer and refused input;
 it names the seat/lap, notes path and report identities for a person to open, distinguishing
-the last completed report from a report filed by the stopped step. Known exclusion wins
+the last completed report from a report filed by the stopped step. Exact known exclusion
+or an existing reader refusal positively associated with the current order wins
 before report acceptance: a stopped step's filed report stays immutable, without a note
 append, accepted-step marker or relay to the next seat. Unknown exclusion evidence holds.
 The orchestrator then concludes from completed notes only and never automatically reads or

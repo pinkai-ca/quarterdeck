@@ -390,22 +390,12 @@ def current_refusal(runtime: Path, name: str, order: post.Message) -> Stop | Non
     return Stop('provider refused this step', 'provider-refusal') if order.id in excluded else None
 
 
-def health(service, name: str, order: post.Message | None = None) -> str | None:
-    """Common positive seat failure, or a recorded failure tied to this step's taking."""
-    from . import group_post, thread_context
+def associated_failure(service, name: str, order: post.Message) -> Stop | None:
+    """The existing exact native association, under unchanged lifecycle/launch checks."""
+    from . import thread_context
     from .tmux import TmuxError
 
     try:
-        if order is not None:
-            try:
-                if stop := current_refusal(service.ship.runtime, name, order):
-                    return stop
-            except cascade_runtime.ExclusionUnknown:
-                return None
-        if reason := group_post.current_seat_failure(service, name):
-            return Stop(reason)
-        if order is None:
-            return None  # order-free preflight cannot associate an old failed turn
         seat = service.seat(name)
         with seat._lifecycle(automatic=True):
             launched = seat.launched()
@@ -440,6 +430,37 @@ def health(service, name: str, order: post.Message | None = None) -> str | None:
         return None  # absent, transitioning or unreadable evidence is not an early end
 
 
+def known_refusal(service, name: str, order: post.Message) -> Stop | None:
+    """Both existing refusal sources, without consulting dead/limit/generic outcomes."""
+    if stop := current_refusal(service.ship.runtime, name, order):
+        return stop  # unknown journal still raises the existing visible-HOLD exception
+    stop = associated_failure(service, name, order)
+    return stop if stop is not None and stop.category == 'provider-refusal' else None
+
+
+def health(service, name: str, order: post.Message | None = None) -> str | None:
+    """Ordinary health reuses the same associated failure proof, with no copied match."""
+    from . import group_post
+    from .tmux import TmuxError
+
+    try:
+        associated = None
+        if order is not None:
+            try:
+                if stop := current_refusal(service.ship.runtime, name, order):
+                    return stop
+            except cascade_runtime.ExclusionUnknown:
+                return None
+            associated = associated_failure(service, name, order)
+            if associated is not None and associated.category == 'provider-refusal':
+                return associated
+        if reason := group_post.current_seat_failure(service, name):
+            return Stop(reason)
+        return associated
+    except (ShipError, OSError, TmuxError, ValueError, TypeError):
+        return None
+
+
 def effort(service, name: str, wanted: str) -> dict:
     from .watch import running_settings
     seat = service.seat(name)
@@ -463,7 +484,8 @@ def effort(service, name: str, wanted: str) -> dict:
 
 def run(service) -> list[tuple[str, str]]:
     runner = Runner(service.ship, service.store, lambda name, order: health(service, name, order),
-                    lambda name, wanted: effort(service, name, wanted))
+                    lambda name, wanted: effort(service, name, wanted),
+                    refusal_check=lambda name, order: known_refusal(service, name, order))
     changed = []
     for state in sorted((service.runtime / "ring").glob("*/state.json")):
         path = None
