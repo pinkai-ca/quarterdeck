@@ -52,6 +52,9 @@ input actions. The background usage path also honors the existing in-memory
 refusal hold. Independent enforcement tests are pending. The pacing source now
 adds a default-false strict interval capability and records anchored refusal
 deadlines in a `usage_holds` side table, preserving the old `usage_reads` shape.
-Malformed retry evidence holds for a human. Old writers remain compatible;
+Malformed/nonfinite native retry delay means an ordinary refusal held for the
+upper bound of 3600 seconds from the attempt, then eligible to read subject to
+the strict floor. Corrupt stored hold evidence instead requires a human and
+withholds native reads. Old writers remain compatible;
 older services retain their memory-only backoff behavior across rollback.
 Synthetic schema examples and independent enforcement coverage remain unrun.

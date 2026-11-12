@@ -355,8 +355,6 @@ class Quotas:
         row = self.db.execute("SELECT retry_at,set_at,reason FROM usage_holds WHERE pool=?", (pool,)).fetchone()
         if row is None:
             return None
-        if row[2] == "invalid retry delay":
-            raise ValueError("invalid native retry delay; usage held for a human")
         try:
             deadline, at = datetime.fromisoformat(row[0]), datetime.fromisoformat(row[1])
             if (row[2] != "native refusal" or deadline.utcoffset() is None or at.utcoffset() is None
@@ -431,12 +429,15 @@ def record_read(service, pool: str, usage: Usage, interval: int, attempted_at: d
     if usage.error and usage.retry_after is not None:
         delay = usage.retry_after
         if type(delay) not in (int, float) or not math.isfinite(delay):
-            retry_reason = "invalid retry delay"
-            usage = replace(usage, error=f"{usage.error}; invalid retry delay; usage held for a human")
+            hold = BACKOFF_MAX
+            # Unknown remote delay is an ordinary bounded refusal, not corrupt
+            # local evidence. Neither the remote error nor delay is logged.
+            usage = replace(usage, error="native usage refused; retry delay unavailable; hold 3600 seconds",
+                            retry_after=BACKOFF_MAX)
         else:
             hold = min(max(delay, interval), BACKOFF_MAX)
-            retry_at = attempted_at + timedelta(seconds=hold)
-            retry_reason = "native refusal"
+        retry_at = attempted_at + timedelta(seconds=hold)
+        retry_reason = "native refusal"
     service.usage_read[pool] = time.monotonic()
     if retry_reason is None:
         service.ledger.record_usage(pool, usage, attempted_at=attempted_at)
