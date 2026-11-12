@@ -48,7 +48,7 @@ def test_two_equal_creation_candidates_stay_ambiguous(tmp_path):
     assert joined.record is None and "ambiguous" in joined.reason
 
 
-@pytest.mark.parametrize("identity", ["not-a-uuid", "00000000-0000-4000-8000-000000000001"])
+@pytest.mark.parametrize("identity", ["not-a-uuid", str(UUID(int=1, version=4))])
 def test_non_v7_folder_is_unknown_without_row_timestamp_fallback(tmp_path, identity):
     path = native_record(tmp_path, identity)
     assert first_timestamp(path) is None and get("grok").join(tmp_path, SECOND).record is None
