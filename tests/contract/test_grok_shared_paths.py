@@ -311,7 +311,8 @@ def test_seat_launch_reads_the_selected_version_in_a_fresh_runtime_home(tmp_path
         return Pane("%7", "crew", "worker", 1007, 80, 24, False, False, None)
 
     def version(argv):
-        environment = dict(value.split("=", 1) for value in argv[1:-2])
+        assert argv[:2] == ("env", "-i"), "nothing inherited beyond what the command names"
+        environment = dict(value.split("=", 1) for value in argv[2:-2])
         home = Path(environment["HOME"])
         executions.append({"home": home, "grok_home": environment["GROK_HOME"], "program": argv[-2],
                            "empty": home.is_dir() and not home.is_symlink() and list(home.iterdir()) == [],
