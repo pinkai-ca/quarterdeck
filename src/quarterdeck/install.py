@@ -137,7 +137,7 @@ def previous_install(runtime: Path) -> dict | None:
     """Bad prior metadata makes direction unknown; its raw content is never an error message."""
     try:
         record = installed(runtime)
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError, RecursionError):
         return None
     if (not isinstance(record, dict) or not isinstance(record.get('commit'), str)
             or not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', record['commit'])):
