@@ -43,7 +43,9 @@ jobs:
         run: |
           if [ '${{ matrix.python }}' = system ]; then
             echo PYTHON=/usr/bin/python3 >> "$GITHUB_ENV"
-            # Nested test-tool runs find their base interpreter as ordinary python3.
+            # Later steps find the distro's python3 first on PATH until a venv is activated.
+            # The test step's .venv/bin still comes before it there: nested test-tool runs
+            # get /usr/bin/python3 as their base because .venv was made from it.
             echo /usr/bin >> "$GITHUB_PATH"
           else
             python3 -c 'import sys; assert sys.version.startswith("${{ matrix.python }}."), sys.version'

@@ -5,7 +5,9 @@ holds byte copies of this checkout's tests/__init__.py, tests/conftest.py, tests
 pyproject.toml, plus one synthetic test, so the real session guard runs while collection is limited by
 what the checkout contains: pytest's own argv is never changed. Its .venv/bin/activate is a stated shim
 that puts a `python` running this run's interpreter first on PATH. The workflow's test step is taken verbatim from
-.github/workflows/ci.yml and run as GitHub runs a step, under bash --noprofile --norc -eo pipefail.
+.github/workflows/ci.yml and run as GitHub runs a step that sets no shell: `bash -e <script>`, with BASH_ENV
+unset as it is on the runner. The stricter `--noprofile --norc -eo pipefail` is what GitHub uses only when a
+step names `shell: bash`; this one does not.
 
 Only the refusal paths are proved here. A short RUNNER_TEMP would need a folder outside the run's own
 scratch, which is not allowed; the success path is left to the first private GitHub run.
@@ -15,6 +17,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -24,7 +27,8 @@ from tests import conftest
 HOSTED = "/home/runner/work/quarterdeck/quarterdeck"  # GitHub's default workspace for this repository
 STEP = "- name: Unit, contract and integration tests"
 SYNTHETIC_TEST = "def test_synthetic_session_reaches_a_test():\n    pass\n"
-DROPPED = ("TMUX_TMPDIR", "TMUX", "TMUX_PANE", "QD_SHIP", "QD_SEAT", "QD_TMUX_SOCKET", "TESTRUNS_RUN", "RUNNER_TEMP")
+DROPPED = ("TMUX_TMPDIR", "TMUX", "TMUX_PANE", "QD_SHIP", "QD_SEAT", "QD_TMUX_SOCKET", "TESTRUNS_RUN", "RUNNER_TEMP",
+           "BASH_ENV")  # bash -e reads BASH_ENV when it is set; the runner sets none
 
 
 def deepest(anchor: Path) -> int:
@@ -90,16 +94,23 @@ def test_a_hosted_length_checkout_refuses_its_own_anchor_without_a_supplied_root
 
 
 def test_the_workflow_step_on_a_too_long_runner_temp_fails_and_leaves_it_empty(tmp_path):
-    """The candidate step itself, on a RUNNER_TEMP too long for the unchanged guard: nonzero, nothing retained."""
+    """The candidate step itself, on a RUNNER_TEMP too long for the unchanged guard: nonzero, nothing retained.
+    The refusal must name the step's own mktemp anchor under RUNNER_TEMP. The checkout's own anchor is too long
+    as well, so a step that lost its export of TMUX_TMPDIR would still fail, but on the checkout's anchor."""
     folder = checkout(tmp_path)
     runner_temp = tmp_path / ("synthetic-runner-temp-" + "w" * 40)
     runner_temp.mkdir()
     assert deepest(runner_temp / "qs.XXXXXXXX") + conftest.SOCKET_MARGIN > conftest.SOCKET_LIMIT
     script = tmp_path / "synthetic-step.sh"
     script.write_text(step_body())
-    done = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", str(script)], cwd=folder,
+    done = subprocess.run(["bash", "-e", str(script)], cwd=folder,
                           env=environment(RUNNER_TEMP=str(runner_temp)), capture_output=True, text=True, timeout=180)
     output = done.stdout + done.stderr
     assert done.returncode != 0 and "too long" in output, output[-2000:]
+    named = set(re.findall(r"test socket anchor (/\S*) gives sockets", output))  # not the traceback's {parent}
+    owned = re.compile(re.escape(str(runner_temp.resolve())) + r"/qs\.[A-Za-z0-9]{8}")
+    assert len(named) == 1 and owned.fullmatch(next(iter(named))), \
+        f"the refusal must name the step's own mktemp anchor under RUNNER_TEMP, not {sorted(named)}"
+    assert "/.testruns/s gives sockets" not in output, "the checkout's own anchor must not be the refusal's cause"
     assert "Private CI socket anchor retained" not in output
     assert list(runner_temp.iterdir()) == [], "the step removes its own empty anchor and nothing else is left"
