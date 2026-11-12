@@ -386,7 +386,7 @@ def test_terminal_notice_amends_open_root_in_fresh_context(forum):
     assert thread_context.select(store, 'lead').incoming == []
 
 
-def test_ship_amendment_rule_is_only_report_to_seat_directly_on_root(forum):
+def test_ship_amendment_requires_verified_terminal_metadata_on_direct_report(forum):
     store = post.Store(forum.runtime)
     root = store.new('order', 'operator', 'lead', BODY)
     child = store.new('order', 'lead', 'reviewer-1', BODY, re=root.id)
@@ -396,9 +396,10 @@ def test_ship_amendment_rule_is_only_report_to_seat_directly_on_root(forum):
     other_to = store.new('report', post.SHIP, 'reviewer-2', 'Other recipient.', re=root.id)
     peer = store.new('report', 'reviewer-1', 'lead', 'Peer report.', re=root.id)
     graph = {m.id: m for m in store.all()}
-    assert thread_context.amends(direct, root, 'lead', graph)
+    assert not thread_context.amends(direct, root, 'lead', graph)
+    assert thread_context.amends(direct, root, 'lead', graph, terminal_notice=True)
     assert all(not thread_context.amends(m, root, 'lead', graph) for m in (nested, answer, other_to, peer))
-    assert thread_context.select(store, 'lead').incoming == [root, direct]
+    assert thread_context.select(store, 'lead').incoming == [root]
 
 
 def test_bad_group_is_held_once_while_another_group_finishes_same_pass(forum, monkeypatch):

@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from collections.abc import Collection, Iterable
 from datetime import datetime
+import json
 import re
 
 from . import post
@@ -116,13 +117,94 @@ def consumed_ids(store: post.Store, seat: str, role: str, inputs: Iterable[Input
     return frozenset(consumed)
 
 
+def _terminal_notice(store: post.Store, message: post.Message, root: post.Message,
+                     seat: str, by_id: dict[str, post.Message]) -> bool:
+    """Recognize a published terminal intent by metadata only, without repairing it.
+
+    A group's saved notice is its terminal marker. A cascade additionally saves
+    done/stopped. Neither an arbitrary report on the same root nor the existence
+    of a structure alone establishes that this candidate is its terminal notice.
+    Do not call the structures' full validators: those compare message bodies.
+    """
+    if not (message.sender == post.SHIP and message.kind == 'report' and message.to == seat
+            and root.to == seat and message.re == root.id):
+        return False
+    if re.fullmatch(r'[A-Za-z0-9_-]+', root.id) is None:
+        return False
+
+    from . import cascade_runtime, group_post
+    from .ship import ShipError
+
+    def matches(saved, actual):
+        if not isinstance(saved, dict) or actual is None:
+            return False
+        expected = dict(id=actual.id, kind=actual.kind, to=actual.to,
+                        at=actual.at.isoformat(), re=actual.re, subject=actual.subject,
+                        due=actual.due, speed=actual.speed)
+        expected['from'] = actual.sender
+        return all(saved[key] == value for key, value in expected.items())
+
+    runtime = store.dir.parent.parent
+    group = runtime / 'post' / 'groups' / (root.id + '.json')
+    cascade = runtime / 'ring' / root.id / 'state.json'
+    try:
+        paths = []
+        for path in (group, cascade):
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                continue
+            paths.append(path)
+        if len(paths) != 1:
+            return False  # no evidence, or competing structures on this root
+        data = json.loads(cascade_runtime.read_file(paths[0]))
+        if not isinstance(data, dict) or type(data.get('format')) is not int or data['format'] != 1:
+            return False
+        if paths[0] == cascade:
+            ring = data['declaration']
+            if (root.kind != 'question' or data['question'] != root.id
+                    or data['status'] not in ('done', 'stopped') or not isinstance(ring, dict)
+                    or ring['orchestrator'] != seat or not isinstance(ring['seats'], list)
+                    or len(ring['seats']) != 3
+                    or any(not isinstance(name, str) or not name or name == seat for name in ring['seats'])
+                    or len(set(ring['seats'])) != 3 or not isinstance(data['intents'], dict)):
+                return False
+            return matches(data['intents']['final'], message)
+
+        if (root.kind != 'order' or data['lead'] != seat
+                or not isinstance(data['group'], str) or not data['group']
+                or not matches(data['root'], root) or not matches(data['notice'], message)
+                or not isinstance(data['copies'], list) or not data['copies']):
+            return False
+        members, identities = {}, {root.id, message.id}
+        for saved in data['copies']:
+            if not isinstance(saved, dict):
+                return False
+            copy = by_id.get(saved['id'])
+            if (not matches(saved, copy) or copy.kind != 'order' or copy.sender != seat
+                    or copy.re != root.id or copy.id in identities or copy.to in members.values()
+                    or not isinstance(copy.to, str) or not copy.to or copy.to == seat
+                    or (copy.subject, copy.due, copy.speed) != (root.subject, root.due, root.speed)):
+                return False
+            identities.add(copy.id)
+            members[copy.id] = copy.to
+        failed = data.get('failed', {})
+        return isinstance(failed, dict) and all(
+            identity in members and isinstance(outcome, dict) and set(outcome) == {'member', 'reason'}
+            and outcome['member'] == members[identity] and outcome['reason'] in group_post.FAILURE_REASONS
+            for identity, outcome in failed.items())
+    except (OSError, ValueError, KeyError, TypeError, ShipError):
+        return False  # unknown evidence grants no exception; no repair or derived artifact
+
+
 def amends(message: post.Message, root: post.Message, seat: str,
-           thread: dict[str, post.Message]) -> bool:
+           thread: dict[str, post.Message], *, terminal_notice: bool = False) -> bool:
     """Whether a message addressed to the seat in an open root's thread changes what the root asks.
 
     Decided by the explicit reply graph and the senders alone, never by what a
     body says. A ship report addressed to the seat directly on the open root
-    amends it, so terminal notices survive a fresh context. It also amends
+    amends it only with verified structure-terminal metadata supplied by select.
+    Other such reports are history, even when the root's sender is ship. It also amends
     when it answers one of the seat's own questions (its
     nearest message from the seat, below the root, is that question), whoever
     sent it; or when the root's own sender sent it, unless it is a report or
@@ -135,7 +217,7 @@ def amends(message: post.Message, root: post.Message, seat: str,
     parent = thread.get(message.re) if message.re else None
     if (message.sender == post.SHIP and message.kind == 'report' and message.to == seat
             and root.to == seat and message.re == root.id):
-        return True
+        return terminal_notice
     if (message.kind == 'answer' and (own := _nearest_own(message, root, seat, thread)) is not None
             and own.kind == 'question'):
         return True
@@ -206,7 +288,9 @@ def select(store: post.Store, seat: str, extra: Iterable[post.Message] = (), *,
                    if message.to == seat and message.kind != 'ack'
                    and message.id not in excluded
                    and (message.id in root_ids
-                        or message.id not in consumed and amends(message, root, seat, descendants))}
+                        or message.id not in consumed and amends(
+                            message, root, seat, descendants,
+                            terminal_notice=_terminal_notice(store, message, root, seat, by_id)))}
         incoming |= carried
         for message_id in carried:
             parent = descendants[message_id].re
