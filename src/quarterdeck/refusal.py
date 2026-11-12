@@ -112,8 +112,11 @@ def state_note(seat: Seat) -> str:
     event = _event_for(events, launch, failure) if failure and launch else None
     if event is None:
         return 'automatic fresh pending'
+    if event['stage'] == 'held' and not event['quarantined']:
+        return (f"held: {event['reason']}; the refused message is not identified and must be kept out by hand "
+                f"before any qd fresh {seat.name}")
     if event['stage'] == 'held':
-        return f"held: {event['reason']}; inspect, then qd fresh {seat.name}"
+        return f"held: {event['reason']}; the refused message is withheld; inspect, then qd fresh {seat.name}"
     return 'automatic fresh claimed; waiting for the relaunch'
 
 
@@ -151,8 +154,9 @@ def _after_auto_fresh(events: list[dict], launch: dict, state) -> bool:
 
 def notice(event: dict, entry: dict, seat: str) -> post.Message:
     body = (f"{seat}'s provider refused its conversation at your {entry['kind']} {post.short_of(entry['message'])} "
-            f"({event['code'] or 'refusal'}, {event['turn'] or 'time unknown'}). The ship started {seat} fresh "
-            f"without it and will not type it to {seat} again. It stays open: send a reworded message, or close it.")
+            f"({event['code'] or 'refusal'}, {event['turn'] or 'time unknown'}). The ship will not type it to {seat} "
+            f"again: a fresh start of {seat} carries only a notice of it. It stays open: send a reworded message, "
+            f"or close it.")  # the same words at every stage, so a republication matches the published notice
     record = next(n for n in event['notices'] if n['message'] == entry['message'])
     return post.Message(record['id'], 'report', post.SHIP, entry['sender'], datetime.fromisoformat(record['at']),
                         body, re=entry['message'])
@@ -183,6 +187,9 @@ def step(service: Service, seat: Seat) -> None:
     events = load(runtime, seat.name)
     launch = launch_key(seat)
     for event in events:
+        if event['stage'] == 'held':
+            _tell(service, seat, event)  # completes a notice a crash left between the durable hold and its publication
+    for event in events:
         if event['stage'] != 'claimed':
             continue
         if launch is not None and launch != event['launch']:
@@ -211,26 +218,30 @@ def step(service: Service, seat: Seat) -> None:
     event = {'launch': launch, 'record': str(record), 'turn': failure.at.isoformat() if failure.at else None,
              'code': failure.code, 'words': describe(failure), 'quarantined': [], 'notices': [],
              'stage': 'held', 'reason': None, 'successor': None}
-    if state.queue_error or state.pending_tools is None:
+    # A named refused message is quarantined and its sender told whether or not the fresh start may proceed;
+    # what cannot be named is never quarantined on a guess (law: context-is-cache).
+    message, why = culprit(seat, failure, launch, service.store, service.attempts)
+    if message is not None:
+        event['quarantined'] = [{'message': message.id, 'sender': message.sender, 'kind': message.kind}]
+        if message.sender in service.ship.seats:
+            intent = service.store.prepare('report', post.SHIP, message.sender, '', re=message.id)
+            event['notices'] = [{'message': message.id, 'id': intent.id, 'at': intent.at.isoformat()}]
+    if message is None:
+        event['reason'] = why
+    elif state.queue_error or state.pending_tools is None:
         event['reason'] = 'its queue or tool set is unknown in the record; an empty one is not proved'
     elif _after_auto_fresh(events, launch, state):
         event['reason'] = 'refused again before the fresh conversation completed a turn; not started fresh twice'
     else:
-        message, why = culprit(seat, failure, launch, service.store, service.attempts)
-        if message is None:
-            event['reason'] = why
-        else:
-            event['stage'] = 'claimed'
-            event['quarantined'] = [{'message': message.id, 'sender': message.sender, 'kind': message.kind}]
-            if message.sender in service.ship.seats:
-                intent = service.store.prepare('report', post.SHIP, message.sender, '', re=message.id)
-                event['notices'] = [{'message': message.id, 'id': intent.id, 'at': intent.at.isoformat()}]
+        event['stage'] = 'claimed'
     events.append(event)
-    save(runtime, seat.name, events)  # the claim is durable before any notice or relaunch
+    save(runtime, seat.name, events)  # the quarantine and the claim are durable before any notice or relaunch
     service.log('refusal', seat=seat.name, stage=event['stage'], reason=event['reason'],
                 quarantined=[q['message'] for q in event['quarantined']])
     if event['stage'] == 'claimed':
         relaunch(service, seat, events, event)
+    else:
+        _tell(service, seat, event)
 
 
 def _tell(service: Service, seat: Seat, event: dict) -> None:

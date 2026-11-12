@@ -80,9 +80,11 @@ def test_an_ambiguous_refused_input_is_held_and_shown_never_guessed(world, case)
     world.svc.refusals()
     assert world.fresh == [] and notices(world) == []
     events = refusal.load(world.svc.runtime, 'worker')
-    assert [e['stage'] for e in events] == ['held'] and events[0]['quarantined'] == []
+    assert [e['stage'] for e in events] == ['held'] and events[0]['quarantined'] == [], 'nothing quarantined on a guess'
+    assert refusal.excluded(world.svc.runtime, 'worker') == frozenset()
     reason = turn_failure.obstruction(seat)
-    assert 'held:' in reason and 'qd fresh worker' in reason
+    assert 'held:' in reason and 'not identified and must be kept out by hand before any qd fresh worker' in reason
+    assert 'inspect, then qd fresh' not in reason, 'no unqualified cue to start it fresh by hand'
     world.svc.refusals()
     assert world.fresh == [], 'a held refusal is not retried by itself'
 
@@ -92,10 +94,13 @@ def test_a_fresh_conversation_refused_again_before_a_normal_turn_is_held_not_sta
     world.turn('worker', world.order('worker', 'First invented refused order.'), error=REFUSED)
     world.svc.refusals()
     assert len(world.fresh) == 1
-    world.turn('worker', world.order('worker', 'Second invented refused order.'), error=REFUSED)
+    second = world.order('worker', 'Second invented refused order.')
+    world.turn('worker', second, error=REFUSED)
     world.svc.refusals()
     assert len(world.fresh) == 1
-    assert refusal.load(world.svc.runtime, 'worker')[-1]['stage'] == 'held'
+    held = refusal.load(world.svc.runtime, 'worker')[-1]
+    assert held['stage'] == 'held' and [q['message'] for q in held['quarantined']] == [second.id]
+    assert second.id in refusal.excluded(world.svc.runtime, 'worker') and len(notices(world, 'tester')) == 2
     assert 'not started fresh twice' in turn_failure.obstruction(world.seat('worker'))
 
 
@@ -193,12 +198,34 @@ def test_the_inbox_shows_the_refused_message_as_a_notice_and_the_store_keeps_its
     assert world.svc.store.get(refused.id).body == refused.body, 'the post itself is unchanged'
 
 
-def test_an_unknown_tool_set_holds_rather_than_starting_fresh(world):
+def test_an_unknown_tool_set_holds_only_the_fresh_start_and_still_quarantines_and_tells(world, monkeypatch):  # law: context-is-cache
     world.launch('worker')
+    other = world.order('worker', 'An earlier invented order that stays open.', sender='spock')
+    refused = world.order('worker', 'The invented order the provider refused.')
     world.event('worker', {'type': 'task_started'})
-    world.typed('worker', world.order('worker'))
+    world.typed('worker', refused)
     world.item('worker', {'type': 'future_execution_item'})
     world.event('worker', {'type': 'task_complete', 'error': REFUSED, 'last_agent_message': None})
-    world.svc.refusals()
-    assert world.fresh == []
-    assert 'tool set is unknown' in refusal.load(world.svc.runtime, 'worker')[0]['reason']
+    publish = refusal._publish
+
+    def dies(store, message):
+        raise RuntimeError('synthetic service death after the durable hold')
+    monkeypatch.setattr(refusal, '_publish', dies)
+    with pytest.raises(RuntimeError):
+        world.svc.refusals()
+    events = refusal.load(world.svc.runtime, 'worker')
+    assert [e['stage'] for e in events] == ['held'] and 'tool set is unknown' in events[0]['reason']
+    assert events[0]['quarantined'] == [{'message': refused.id, 'sender': 'tester', 'kind': 'order'}]
+    assert refusal.excluded(world.svc.runtime, 'worker') == {refused.id} and notices(world) == []
+    monkeypatch.setattr(refusal, '_publish', publish)
+    for _ in range(3):
+        world.svc.refusals()
+    assert world.fresh == [] and refusal.load(world.svc.runtime, 'worker') == events
+    told = notices(world, 'tester')
+    assert len(told) == 1 and told[0].re == refused.id and refused.body not in told[0].body, 'one notice, completed after the crash'
+    reason = turn_failure.obstruction(world.seat('worker'))
+    assert 'withheld; inspect, then qd fresh worker' in reason
+    first, carried = world.seat('worker').first_message()  # a person's qd fresh
+    assert [m.id for m in carried] == [other.id] and other.body in first
+    assert refused.body not in first and refused.short in first and refusal.WITHHELD in first
+    assert world.svc.store.is_open(refused) and world.svc.store.get(refused.id).body == refused.body
