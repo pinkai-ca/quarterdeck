@@ -16,6 +16,7 @@ import zipfile
 import pytest
 
 from tests.integration.test_upgrade_resources import RESOURCE_ROOTS, ROOT, archive, environment, git
+from tests.testrunner import layout
 
 
 def command(*argv, cwd, env, timeout=180):
@@ -62,9 +63,14 @@ INSIDE_PREFIX = '.plain-install-inside-'
 
 @contextmanager
 def inside_checkout():
-    """A folder of this test's own directly in the checkout, as plain pytest's .testruns/t lies in CI's
-    checkout; removed on every exit, failure included, and nothing else in the checkout is touched."""
-    folder = Path(tempfile.mkdtemp(prefix=INSIDE_PREFIX, dir=ROOT))
+    """A folder of this test's own under the checkout's ignored .testruns, as plain pytest's .testruns/t
+    lies in CI's checkout; removed on every exit, failure included. A kill that skips the removal leaves
+    it ignored, never untracked, and nothing else in the checkout is touched."""
+    root = layout.Root(ROOT)  # makes .testruns, private and ignoring itself, where absent; refuses a link
+    try:
+        folder = Path(tempfile.mkdtemp(prefix=INSIDE_PREFIX, dir=root.path))
+    finally:
+        root.close()
     made = folder.lstat()
     try:
         yield folder
@@ -84,7 +90,7 @@ def scratch(request, tmp_path):
         yield tmp_path
         return
     with inside_checkout() as folder:
-        assert folder.is_relative_to(ROOT)
+        assert folder.is_relative_to(ROOT) and folder.parent == ROOT / layout.ROOT_NAME
         yield folder
 
 
