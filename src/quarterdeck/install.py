@@ -198,15 +198,20 @@ def upgrade(ship: Ship, ref: str = "HEAD", tmux: Tmux | None = None) -> list[str
         else:
             have_laws = resources.fallback(staging, share)
         shutil.rmtree(runtime / "upgrade", ignore_errors=True)
-        proof_command = "laws" if have_laws else "--help"
+        proof_command = "--version"
         version = subprocess.run([str(venv / "bin" / "qd"), "--version"], capture_output=True, text=True).stdout.strip()
+        proof_command = "laws" if have_laws else "--help"
         _run([str(venv / "bin" / "qd"), "--ship", str(ship.folder), proof_command],
              "proving the installed copy answers", timeout=60)
         (runtime / RECORD).write_text(json.dumps(record, indent=2) + "\n")
     except Exception as error:
         if existed or proof_command == "resources":
             record.update(proof='failed', proof_command=proof_command)
-            (runtime / RECORD).write_text(json.dumps(record, indent=2) + "\n")
+            try:
+                (runtime / RECORD).write_text(json.dumps(record, indent=2) + "\n")
+            except Exception as record_error:
+                raise ShipError(f"installed {commit[:7]} code retained ({direction}); {proof_command} proof failed; "
+                                f"failed record NOT written; service not restarted: {record_error}") from None
             raise ShipError(f"installed {commit[:7]} code retained ({direction}); {proof_command} proof failed; "
                             f"service not restarted: {error}") from None
         shutil.rmtree(venv, ignore_errors=True)  # only a genuinely first install can discard its half-made environment
