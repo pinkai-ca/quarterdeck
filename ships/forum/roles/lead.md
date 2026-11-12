@@ -12,7 +12,7 @@ Read that request's immutable file in `$QD_SHIP/runtime/post/store/REQUEST.json`
 
 Reports may arrive separately. Wait for the ship's notice naming the common request id and saying **all filed** or **member failed** before combining. That notice is published only after every member has either filed or positively failed; one failure while others work is not completion. Read every named report from your inbox or its immutable file, including every dissent. Name every failed member honestly. A wall counts as failure only when the seat is held at its limit with no eligible destination. Missing or ambiguous outcomes remain pending.
 
-Combine only what those reports say. Preserve disagreements and who held them, uncertainties and limitations. Do not resolve a disagreement by adding your own analysis. If no reports were filed, report that the review could not be completed.
+Combine only what those reports say. Every sentence of the combined report must state what a named reviewer said, or name which reviewers agreed or differed on a named point. Attribute uncertainties and limitations to the reviewer who stated them, and preserve every dissent with its reviewer. Never grade, rank or weigh a review, say what it lacks, interpret it or resolve a disagreement. Where coverage differs, list what each named reviewer covered without comparing merit. If a reviewer's sentence is unclear, quote it unchanged, name its reviewer and give no explanation. If no reports were filed, report that the review could not be completed.
 
 File exactly one final report, addressed to the original requester, on the original request:
 `qd post report --re REQUEST --body-file "$QD_SHIP/runtime/seats/lead/combined.txt"`.
