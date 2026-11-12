@@ -465,15 +465,37 @@ def test_claude_proof_timeout_retains_code_with_marker(harness):
     assert_failed_marker(h)
 
 
-def test_claude_missing_installed_command_is_a_retained_failure_not_a_raw_error(harness):
+@pytest.mark.parametrize('command', ('missing', 'not-executable'))
+def test_claude_installed_version_failure_is_marked_as_the_version_step(harness, command):
+    """The marker names the step that actually failed: the version query, never a proof that did not run."""
     h = harness
     existing_venv(h)
     h.pip_writes_qd = False
-    with pytest.raises(ShipError, match='retained'):
+    if command == 'not-executable':
+        write(h.venv / 'bin/qd', '#!/bin/sh\necho "qd synthetic-test"\n').chmod(0o644)
+    with pytest.raises(ShipError, match=r'retained.*--version proof failed'):
         install.upgrade(h.ship, 'HEAD', h.tmux)
     assert (h.venv / 'bin/python').exists()
-    assert ('proof', 'laws') not in h.calls
-    assert_failed_marker(h)
+    assert not any(isinstance(call, tuple) and call[0] == 'proof' for call in h.calls)
+    assert_failed_marker(h, command='--version')
+
+
+def test_claude_unwritable_failure_record_is_a_plain_retained_error(harness):
+    """When even the failed marker cannot be written, the error says so and nothing restarts."""
+    h = harness
+    existing_venv(h)
+    h.record.mkdir()  # a directory where the record belongs: unreadable as evidence and unwritable
+    h.running = True
+    h.proof_error = ShipError('proving the installed copy answers failed: synthetic')
+    with pytest.raises(ShipError) as raised:
+        install.upgrade(h.ship, 'HEAD', h.tmux)
+    message = str(raised.value).lower()
+    assert TARGET[:7] in message and 'retained' in message
+    assert 'not written' in message and 'restart' in message
+    assert h.record.is_dir() and not any(h.record.iterdir())
+    assert (h.venv / 'bin/python').exists() and (h.venv / 'bin/qd').exists()
+    assert h.calls.count('stop') == 1 and 'start' not in h.calls and not h.running
+    assert h.statuses == [] and not (h.runtime / 'requests').exists()
 
 
 CORRUPT_RECORDS = {
