@@ -16,6 +16,7 @@ import io
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -26,7 +27,7 @@ from uuid import uuid4
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import servicectl
+from . import resources, servicectl
 from .ship import Ship, ShipError
 from .tmux import Tmux
 
@@ -132,6 +133,37 @@ def git(repo: Path, *args: str) -> bytes:
     return done.stdout
 
 
+def previous_install(runtime: Path) -> dict | None:
+    """Bad prior metadata makes direction unknown; its raw content is never an error message."""
+    try:
+        record = installed(runtime)
+    except (OSError, ValueError, TypeError):
+        return None
+    if (not isinstance(record, dict) or not isinstance(record.get('commit'), str)
+            or not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', record['commit'])):
+        return None
+    return record
+
+
+def install_direction(repo: Path, commit: str, previous: dict | None) -> str:
+    """Read-only report wording; direction never permits, blocks or discards an install."""
+    if previous is None:
+        return 'unknown'
+    if previous['commit'] == commit:
+        return 'same commit'
+    if previous.get('previous') == commit:
+        return 'rollback'
+    for older, newer, direction in ((commit, previous['commit'], 'rollback'),
+                                     (previous['commit'], commit, 'forward')):
+        result = subprocess.run(['git', '-C', str(repo), 'merge-base', '--is-ancestor', older, newer],
+                                capture_output=True)
+        if result.returncode == 0:
+            return direction
+        if result.returncode != 1:
+            return 'unknown'
+    return 'unknown'
+
+
 def upgrade(ship: Ship, ref: str = "HEAD", tmux: Tmux | None = None) -> list[str]:
     """Install the framework at ``ref`` as the ship's own copy and run the service on it; the proof lines."""
     repo = source_repo(ship)
@@ -142,35 +174,50 @@ def upgrade(ship: Ship, ref: str = "HEAD", tmux: Tmux | None = None) -> list[str
     staging.mkdir(parents=True)
     with tarfile.open(fileobj=io.BytesIO(git(repo, "archive", "--format=tar", commit))) as archive:
         archive.extractall(staging, filter="data")
-    previous = installed(runtime)
+    resource_files = resources.plan(staging)
+    venv = runtime / "venv"
+    existed = os.path.lexists(venv)
+    previous = previous_install(runtime)
+    direction = install_direction(repo, commit, previous)
     was_running = servicectl.alive(runtime)
     stopped = servicectl.stop(runtime) if was_running else None
     snapshot = brief_snapshot(ship)  # last old-service offer, before live code/cards are replaced
-    venv = runtime / "venv"
     if not (venv / "bin" / "python").exists():
         _run([sys.executable, "-m", "venv", "--system-site-packages", str(venv)], "making the ship's own venv")
     _run([str(venv / "bin" / "python"), "-m", "pip", "install", "--quiet", "--no-deps", "--no-build-isolation", str(staging)],
          f"installing {commit[:7]}")
-    share = venv / "share" / "quarterdeck"  # the framework's files beside the code: the laws, the cards, the drydock
-    for name in ("standing-orders", "ships/drydock", "ships/forum", "ships/cascade"):
-        shutil.rmtree(share / name, ignore_errors=True)
-        if name in ('ships/forum', 'ships/cascade') and not (staging / name).exists():
-            continue  # rolling back to a revision before an optional template
-        shutil.copytree(staging / name, share / name)
+    share = venv / "share" / "quarterdeck"
+    if resource_files is not None:
+        resources.synchronize(staging, share, resource_files)
+        have_laws = True
+    else:
+        have_laws = resources.fallback(staging, share)
     shutil.rmtree(runtime / "upgrade", ignore_errors=True)
-    version = subprocess.run([str(venv / "bin" / "qd"), "--version"], capture_output=True, text=True).stdout.strip()
-    try:  # the installed copy answers for this ship before anything runs on it
-        _run([str(venv / "bin" / "qd"), "--ship", str(ship.folder), "laws"], "proving the installed copy answers", timeout=60)
-    except ShipError:
-        shutil.rmtree(venv, ignore_errors=True)  # a copy that cannot answer is not left where every qd would hand off to it
-        raise
     record = {"commit": commit, "ref": ref, "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
               "previous": previous["commit"] if previous else None}
+    proof_command = "laws" if have_laws else "--help"
+    try:  # the installed copy answers for this ship before anything runs on it
+        version = subprocess.run([str(venv / "bin" / "qd"), "--version"], capture_output=True, text=True).stdout.strip()
+        _run([str(venv / "bin" / "qd"), "--ship", str(ship.folder), proof_command],
+             "proving the installed copy answers", timeout=60)
+    except (ShipError, OSError) as error:
+        if existed:
+            record.update(proof='failed', proof_command=proof_command)
+            (runtime / RECORD).write_text(json.dumps(record, indent=2) + "\n")
+            raise ShipError(f"installed {commit[:7]} code retained ({direction}); {proof_command} proof failed; "
+                            f"service not restarted: {error}") from None
+        shutil.rmtree(venv, ignore_errors=True)  # only a genuinely first install can discard its half-made environment
+        raise
     (runtime / RECORD).write_text(json.dumps(record, indent=2) + "\n")
     rebrief, request = queue_rebrief(ship, commit, previous, snapshot)
-    before = f"was {previous['commit'][:7]}" if previous else "the ship ran the checkout before"
+    before = (f"was {previous['commit'][:7]}" if previous else
+              "previous installed commit unknown" if existed else "the ship ran the checkout before")
     back = f"qd upgrade {previous['commit'][:7]} rolls back" if previous else "removing runtime/venv returns it to the checkout"
     proofs = [f"installed {commit[:7]} ({ref}) into runtime/venv · {version} · {before} · {back}"]
+    if resource_files is None:
+        proofs.append(resources.FALLBACK)
+        if not have_laws:
+            proofs.append(resources.NO_LAWS)
     if was_running:
         proofs.append(stopped)
         proofs.append(servicectl.start(ship, qd=venv / "bin" / "qd"))

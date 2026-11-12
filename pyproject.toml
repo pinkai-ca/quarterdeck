@@ -23,6 +23,38 @@ qd-fakeharness = "quarterdeck.fakeharness:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# The one resource declaration: individual source files, preserving their directories.
+[tool.setuptools.data-files]
+"share/quarterdeck/standing-orders" = ["standing-orders/laws.md"]
+"share/quarterdeck/standing-orders/harnesses" = [
+    "standing-orders/harnesses/antigravity.md",
+    "standing-orders/harnesses/claude.md",
+    "standing-orders/harnesses/codex.md",
+    "standing-orders/harnesses/fake.md",
+    "standing-orders/harnesses/grok.md",
+    "standing-orders/harnesses/opencode.md",
+    "standing-orders/harnesses/pi.md",
+]
+"share/quarterdeck/standing-orders/roles" = [
+    "standing-orders/roles/captain.md",
+    "standing-orders/roles/desk.md",
+    "standing-orders/roles/engineering.md",
+    "standing-orders/roles/hand.md",
+    "standing-orders/roles/worker.md",
+]
+"share/quarterdeck/ships/drydock" = ["ships/drydock/orders.md", "ships/drydock/ship.toml"]
+"share/quarterdeck/ships/forum" = [
+    "ships/forum/README.md", "ships/forum/orders.md", "ships/forum/ship.toml",
+]
+"share/quarterdeck/ships/forum/roles" = ["ships/forum/roles/lead.md", "ships/forum/roles/reviewer.md"]
+"share/quarterdeck/ships/forum/work" = ["ships/forum/work/README.md"]
+"share/quarterdeck/ships/cascade" = [
+    "ships/cascade/README.md", "ships/cascade/orders.md", "ships/cascade/ship.toml",
+]
+"share/quarterdeck/ships/cascade/roles" = [
+    "ships/cascade/roles/orchestrator.md", "ships/cascade/roles/ring.md",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["-p", "no:cacheprovider"]

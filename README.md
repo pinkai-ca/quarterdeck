@@ -16,6 +16,29 @@ Read [Design decisions](docs/DECISIONS.md) for the choices and their code and te
 
 Python 3.12 or later, tmux 3.x, git. The framework uses the standard library only.
 
+Wheels and source distributions declare the laws, role and harness cards, and the
+drydock, forum and cascade templates through the explicit file list in
+`pyproject.toml`. One `qd upgrade` installs new target templates even when the
+incumbent predates them. Updated upgrade code replaces the managed
+`share/quarterdeck` tree with the target's declared files, removing stale resources
+on rollback. For targets before that declaration, it reads a supported literal
+copy step without executing target source. If that old shape is unsupported,
+upgrade copies only the target's standing orders and drydock where present,
+then proves the installed laws and prints one fallback line; extra templates
+may remain. A target with no standing orders uses `--help` proof and explicitly
+reports unavailable laws/cards and potentially unusable seat briefs.
+Read commands never repair the share tree.
+
+If installed proof fails, an environment that existed before the upgrade is
+retained and its installation record names the target with a failed-proof marker.
+Upgrade reports failure and leaves the service stopped; doctor marks that proof
+as failed. Only a genuinely first install may remove its half-made environment.
+
+This resource mechanism also supports ordinary packaging. Fresh installed
+`qd laws` and fake-drill acceptance remain separate checks. An installed package
+omits the repository tests, test runner, design documentation and development
+ships such as `ships/default`; it contains only the explicitly listed templates.
+
 ```
 git clone <this repository> quarterdeck && cd quarterdeck
 python3 -m venv --system-site-packages .venv && .venv/bin/pip install -e .

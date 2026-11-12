@@ -99,6 +99,9 @@ def framework_check(ship: Ship) -> Check:
     """Which framework the ship runs: its own installed copy, or the checkout it sits in."""
     copy = install.installed(ship.runtime)
     if copy:
+        if copy.get('proof') == 'failed':
+            return Check("framework", False, f"installed target {copy['commit'][:7]} code retained; "
+                         f"{copy.get('proof_command', 'installed')} proof failed; upgrade did not restart service")
         return Check("framework", True, f"the ship runs its installed copy, commit {copy['commit'][:7]} since {copy['at'][:16]}; qd upgrade adopts another")
     try:
         head = install.git(install.source_repo(ship), "rev-parse", "--short", "HEAD").decode().strip()

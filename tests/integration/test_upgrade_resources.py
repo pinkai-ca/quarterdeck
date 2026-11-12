@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 import importlib.util
 import io
 import json
@@ -23,10 +24,12 @@ PREDECESSOR = '5f0f54510c3f65cc05cb2921f79bcb0ec520067d'
 RESOURCE_ROOTS = ('standing-orders', 'ships/drydock', 'ships/forum', 'ships/cascade')
 
 
-def run(*command, cwd=None):
+def run(*command, cwd=None, failure=False):
     done = subprocess.run([str(arg) for arg in command], cwd=cwd, capture_output=True,
                           text=True, timeout=180, env=dict(os.environ, PIP_NO_INDEX='1',
                                                         PIP_DISABLE_PIP_VERSION_CHECK='1'))
+    if failure:
+        return done
     assert done.returncode == 0, (command, done.returncode, done.stdout, done.stderr)
     return done.stdout
 
@@ -39,7 +42,7 @@ def archive(ref, destination, roots):
     done = subprocess.run(['git', '-C', str(ROOT), 'archive', ref, 'pyproject.toml',
                            'README.md', 'LICENSE', 'src', *roots], capture_output=True, timeout=30)
     assert done.returncode == 0, done.stderr.decode()
-    destination.mkdir(parents=True)
+    destination.mkdir(parents=True, exist_ok=True)
     with tarfile.open(fileobj=io.BytesIO(done.stdout)) as source:
         source.extractall(destination, filter='data')
 
@@ -68,7 +71,7 @@ def install(python, source):
     run(python, '-m', 'pip', 'install', '--quiet', '--no-deps', '--no-build-isolation', source)
 
 
-def upgrade(python, ship, ref, original=None):
+def upgrade(python, ship, ref, original=None, failure=False):
     """Run the actually installed incumbent, leaving its upgrade function unchanged."""
     script = '''
 import hashlib, json, pathlib, sys
@@ -78,8 +81,8 @@ if sys.argv[3]:
     assert hashlib.sha256(pathlib.Path(install.__file__).read_bytes()).hexdigest() == sys.argv[3]
 print(json.dumps(install.upgrade(load(pathlib.Path(sys.argv[1])), sys.argv[2])))
 '''
-    output = run(python, '-c', script, ship, ref, original or '', cwd=ship.parent)
-    return json.loads(output)
+    output = run(python, '-c', script, ship, ref, original or '', cwd=ship.parent, failure=failure)
+    return output if failure else json.loads(output)
 
 
 def contents(folder):
@@ -92,16 +95,38 @@ def expected(source):
     return {name: (source / name).read_bytes() for names in declaration.values() for name in names}
 
 
-def historical_target(legacy, target):
-    """Restore the archived real predecessor, retaining only the synthetic ship/repository."""
-    for name in ('pyproject.toml', 'README.md', 'LICENSE'):
-        shutil.copy2(legacy / name, target / name)
-    shutil.rmtree(target / 'src')
-    shutil.copytree(legacy / 'src', target / 'src')
-    for root in RESOURCE_ROOTS:
-        shutil.rmtree(target / root)
-        if (legacy / root).exists():
-            shutil.copytree(legacy / root, target / root)
+def incumbent(python, revisions):
+    install(python, revisions.repo)
+    (revisions.ship / 'runtime/installed.json').write_text(json.dumps(dict(
+        commit=revisions.target, ref=revisions.target, previous=None, at='2026-01-01T00:00:00Z')))
+
+
+def failing_command(source):
+    project = source / 'pyproject.toml'
+    project.write_text(project.read_text().replace('qd = "quarterdeck:main"',
+                                                   'qd = "quarterdeck.resource_test_failure:main"'))
+    (source / 'src/quarterdeck/resource_test_failure.py').write_text('''
+import sys
+def main():
+    if '--version' in sys.argv:
+        print('synthetic proof-failure target')
+        return
+    print('synthetic installed proof failed', file=sys.stderr)
+    raise SystemExit(2)
+''')
+
+
+@dataclass
+class Revisions:
+    legacy: Path
+    original: bytes
+    repo: Path
+    target: str
+    ship: Path
+    old: str
+    unsupported: str
+    no_orders: str
+    failed_proof: str
 
 
 @pytest.fixture
@@ -112,20 +137,39 @@ def revisions(tmp_path):
     assert b'resources.plan' not in original
     assert b'"ships/forum"' not in original and b'"ships/cascade"' not in original
     repo = tmp_path / 'repo'
-    archive('HEAD', repo, RESOURCE_ROOTS)
+    shutil.copytree(legacy, repo)
     git(repo, 'init', '--quiet')
     (repo / '.git/info/exclude').write_text(
         'ships/resource-test/\n*.egg-info/\nbuild/\ndist/\n__pycache__/\n')
+    old = commit(repo, 'Unchanged historical predecessor for installation test')
+    installer = repo / 'src/quarterdeck/install.py'
+    dynamic = original.replace(b'for name in ("standing-orders", "ships/drydock"):',
+                               b'for name in tuple(["standing-orders", "ships/drydock"]):')
+    assert dynamic != original
+    installer.write_bytes(dynamic)
+    unsupported = commit(repo, 'Historical installer with unsupported copy tuple shape')
+    shutil.rmtree(repo / 'standing-orders')
+    no_orders = commit(repo, 'Historical target with no standing orders')
+    installer.write_bytes(original)
+    shutil.copytree(legacy / 'standing-orders', repo / 'standing-orders')
+    failing_command(repo)
+    failed_proof = commit(repo, 'Historical fake command that fails installed proof')
+    # Candidate is a genuine descendant of each historical rollback target.
+    for name in ('src', *RESOURCE_ROOTS):
+        if (repo / name).exists():
+            shutil.rmtree(repo / name)
+    archive('HEAD', repo, RESOURCE_ROOTS)
     target = commit(repo, 'Target resources for installation test')
     # Only upgrade-owned paths are involved; the synthetic ship has fake programs.
     ship = repo / 'ships/resource-test'
     shutil.copytree(repo / 'ships/drydock', ship)
     (ship / 'runtime').mkdir()
-    return legacy, original, repo, target, ship
+    return Revisions(legacy, original, repo, target, ship, old, unsupported, no_orders, failed_proof)
 
 
 def test_real_predecessor_bootstraps_target_once(revisions):
-    legacy, original, target, ref, ship = revisions
+    legacy, original, target, ref, ship = (revisions.legacy, revisions.original, revisions.repo,
+                                         revisions.target, revisions.ship)
     python = environment(ship / 'runtime/venv')
     install(python, legacy)
     share = ship / 'runtime/venv/share/quarterdeck'
@@ -140,9 +184,9 @@ def test_real_predecessor_bootstraps_target_once(revisions):
 
 
 def test_declared_target_removes_stale_templates(revisions):
-    _, _, target, _, ship = revisions
+    target, ship = revisions.repo, revisions.ship
     python = environment(ship / 'runtime/venv')
-    install(python, target)
+    incumbent(python, revisions)
     # A newer declared template precedes rollback to the original target declaration.
     newer = target / 'ships/extra-test/orders.md'
     newer.parent.mkdir()
@@ -166,16 +210,15 @@ def test_declared_target_removes_stale_templates(revisions):
 
 
 def test_real_predeclaration_rollback_removes_new_templates(revisions):
-    legacy, _, target, _, ship = revisions
+    legacy, target, ship = revisions.legacy, revisions.repo, revisions.ship
     python = environment(ship / 'runtime/venv')
-    install(python, target)
+    incumbent(python, revisions)
     stale = ship / 'runtime/venv/share/quarterdeck/ships/stale-test/orders.md'
     stale.parent.mkdir()
     stale.write_text('Stale synthetic template.\n')
     # Use the entire original installer and resources, not a retrofitted old copy loop.
-    historical_target(legacy, target)
-    rollback = commit(target, 'Restore historical resource contract for rollback test')
-    proofs = upgrade(python, ship, rollback)
+    assert git(target, 'merge-base', revisions.old, revisions.target) == revisions.old
+    proofs = upgrade(python, ship, revisions.old)
     share = ship / 'runtime/venv/share/quarterdeck'
     wanted = {f'{root}/{name}': data for root in ('standing-orders', 'ships/drydock')
               for name, data in contents(legacy / root).items()}
@@ -183,28 +226,118 @@ def test_real_predeclaration_rollback_removes_new_templates(revisions):
     assert not any('unsupported legacy' in line for line in proofs)
 
 
-def test_unsupported_legacy_rollback_keeps_pip_result(revisions):
-    legacy, original, target, _, ship = revisions
+def test_unsupported_legacy_rollback_copies_target_baseline(revisions):
+    legacy, target, ship = revisions.legacy, revisions.repo, revisions.ship
     python = environment(ship / 'runtime/venv')
-    install(python, target)
-    # Only make the real old tuple dynamic; the rest of the old installer stays original.
-    old_source = original.replace(b'for name in ("standing-orders", "ships/drydock"):',
-                                  b'for name in tuple(["standing-orders", "ships/drydock"]):')
-    assert old_source != original
-    historical_target(legacy, target)
-    (target / 'src/quarterdeck/install.py').write_bytes(old_source)
-    rollback = commit(target, 'Use unsupported historical loop shape for fallback test')
+    incumbent(python, revisions)
     share = ship / 'runtime/venv/share/quarterdeck'
     (share / 'ships/stale-test').mkdir()
     (share / 'ships/stale-test/orders.md').write_text('Left by earlier manual copy.\n')
-    proofs = upgrade(python, ship, rollback)
+    assert git(target, 'merge-base', revisions.unsupported, revisions.target) == revisions.unsupported
+    proofs = upgrade(python, ship, revisions.unsupported)
     assert (share / 'ships/stale-test/orders.md').read_text() == 'Left by earlier manual copy.\n'
     assert sum('unsupported legacy copy step' in line for line in proofs) == 1
-    assert json.loads((ship / 'runtime/installed.json').read_text())['commit'] == rollback
+    for root in ('standing-orders', 'ships/drydock'):
+        assert contents(share / root) == contents(legacy / root)
+    assert json.loads((ship / 'runtime/installed.json').read_text())['commit'] == revisions.unsupported
+
+
+def test_no_standing_orders_reports_help_only(revisions):
+    ship = revisions.ship
+    python = environment(ship / 'runtime/venv')
+    incumbent(python, revisions)
+    proofs = upgrade(python, ship, revisions.no_orders)
+    assert sum('laws/cards unavailable' in line for line in proofs) == 1
+    assert any('--help proof only' in line for line in proofs)
+    assert not (ship / 'runtime/venv/share/quarterdeck/standing-orders/laws.md').exists()
+    assert json.loads((ship / 'runtime/installed.json').read_text())['commit'] == revisions.no_orders
+
+
+def test_failed_rollback_proof_retains_target_and_truthful_record(revisions):
+    ship = revisions.ship
+    python = environment(ship / 'runtime/venv')
+    incumbent(python, revisions)
+    assert git(revisions.repo, 'merge-base', revisions.failed_proof, revisions.target) == revisions.failed_proof
+    result = upgrade(python, ship, revisions.failed_proof, failure=True)
+    assert result.returncode != 0 and 'synthetic installed proof failed' in result.stderr
+    assert 'retained' in result.stderr and 'service not restarted' in result.stderr
+    assert python.exists()
+    assert (python.parent / 'qd').is_file()
+    record = json.loads((ship / 'runtime/installed.json').read_text())
+    assert record['commit'] == revisions.failed_proof and record['previous'] == revisions.target
+    assert record['proof'] == 'failed' and record['proof_command'] == 'laws'
+    assert not (ship / 'runtime/requests').exists()
+
+
+@pytest.mark.parametrize('prior_record', ('missing-test', 'corrupt-test'))
+def test_failed_unknown_direction_proof_retains_code(revisions, prior_record):
+    ship = revisions.ship
+    python = environment(ship / 'runtime/venv')
+    incumbent(python, revisions)
+    record_path = ship / 'runtime/installed.json'
+    if prior_record == 'missing-test':
+        record_path.unlink()
+    else:
+        record_path.write_text('{not valid JSON')
+    result = upgrade(python, ship, revisions.failed_proof, failure=True)
+    assert result.returncode != 0 and 'synthetic installed proof failed' in result.stderr
+    assert 'retained (unknown)' in result.stderr and python.exists()
+    record = json.loads(record_path.read_text())
+    assert record['commit'] == revisions.failed_proof and record['previous'] is None
+    assert record['proof'] == 'failed' and record['proof_command'] == 'laws'
+    assert not (ship / 'runtime/requests').exists()
+
+
+def test_failed_forward_proof_retains_code(revisions):
+    ship = revisions.ship
+    python = environment(ship / 'runtime/venv')
+    incumbent(python, revisions)
+    failing_command(revisions.repo)
+    forward = commit(revisions.repo, 'New fake command that fails installed proof')
+    assert git(revisions.repo, 'merge-base', revisions.target, forward) == revisions.target
+    result = upgrade(python, ship, forward, failure=True)
+    assert result.returncode != 0 and 'synthetic installed proof failed' in result.stderr
+    assert 'retained (forward)' in result.stderr and python.exists()
+    record = json.loads((ship / 'runtime/installed.json').read_text())
+    assert record['commit'] == forward and record['previous'] == revisions.target
+    assert record['proof'] == 'failed' and record['proof_command'] == 'laws'
+    assert not (ship / 'runtime/requests').exists()
+
+
+def test_genuine_first_install_proof_failure_removes_half_made_venv(revisions, monkeypatch):
+    from quarterdeck import install as current
+    from quarterdeck.ship import ShipError, load
+
+    original_run = current._run
+
+    def with_owned_build_tools(argv, doing, timeout=None):
+        if argv[1:3] == ['-m', 'venv']:
+            environment(Path(argv[-1]))
+        else:
+            original_run(argv, doing, timeout=timeout)
+
+    # Supply the same read-only build tools as other synthetic venvs; pip and proof are real.
+    monkeypatch.setattr(current, '_run', with_owned_build_tools)
+    assert not (revisions.ship / 'runtime/venv').exists()
+    with pytest.raises(ShipError, match='synthetic installed proof failed'):
+        current.upgrade(load(revisions.ship), revisions.failed_proof)
+    assert not (revisions.ship / 'runtime/venv').exists()
+    assert not (revisions.ship / 'runtime/installed.json').exists()
+    assert not (revisions.ship / 'runtime/requests').exists()
+
+
+def test_doctor_marks_retained_failed_proof_as_failed(revisions):
+    from quarterdeck.doctor import framework_check
+    from quarterdeck.ship import load
+
+    record = dict(commit=revisions.failed_proof, ref=revisions.failed_proof,
+                  previous=revisions.target, at='2026-01-01T00:00:00Z', proof='failed', proof_command='laws')
+    (revisions.ship / 'runtime/installed.json').write_text(json.dumps(record))
+    assert not framework_check(load(revisions.ship)).passed
 
 
 def test_wheel_and_sdist_carry_declared_resources(revisions, tmp_path):
-    _, _, source, _, _ = revisions
+    source = revisions.repo
     python = environment(tmp_path / 'build-venv')
     output = tmp_path / 'dist'
     output.mkdir()
