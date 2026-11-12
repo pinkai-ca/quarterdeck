@@ -283,3 +283,79 @@ def test_a_line_that_needs_no_wrap_projects_unchanged_at_an_unmeasured_width():
     text = FILLER * 18 + "tail\n"
     screen = read(styled([text[:-1], ""], 100))
     assert VisibleBox(text).matches(screen.box, 98)
+
+
+# -- the ruled greedy move: a word moves whole only when no inner break could fit ------------------------
+
+
+def pad(length: int) -> str:
+    """Ordinary filler of exactly this length ending in one space: letters only, single spaces."""
+    count, rest = divmod(length, 5)
+    if rest == 0:
+        return FILLER * count
+    if rest == 1:
+        return FILLER * (count - 1) + "qqqqq "
+    return FILLER * count + "q" * (rest - 1) + " "
+
+
+def projected(rows, columns):
+    text = "".join(rows)
+    screen = read(styled(rows, columns))
+    assert screen.unknown is None
+    return VisibleBox(text).matches(screen.box, columns - 2)
+
+
+@pytest.mark.parametrize("columns,per_row", [(80, 4), (120, 6)])
+def test_s3b_305_character_line_of_hyphenated_words_wraps_as_kept(columns, per_row):
+    word = "synthetic-qq-wrap"
+    assert len(word) == 17 and word.index("-") + 1 == 10
+    text = " ".join([word] * 17)
+    assert len(text) == 305
+    full, last = divmod(17, per_row)
+    rows = [(word + " ") * per_row] * full + [" ".join([word] * last)]
+    assert 18 * per_row + 10 > columns - 3  # kept fact: no first break fitted, the word moved whole
+    screen = read(styled(rows, columns))
+    assert screen.unknown is None
+    assert VisibleBox(text).matches(screen.box, columns - 2)
+
+
+@pytest.mark.parametrize("columns", [80, 120])
+@pytest.mark.parametrize("shape", ["first hyphen fits", "first slash fits, first hyphen does not",
+                                   "leading double dash with room for one"])
+def test_a_crossing_word_with_room_for_its_first_break_holds(columns, shape):
+    budget = columns - 3
+    line = {"first hyphen fits": pad(budget - 3) + "qq-rstuv tail",
+            "first slash fits, first hyphen does not": pad(budget - 4) + "qq/rs-tuvw tail",
+            "leading double dash with room for one": pad(budget - 1) + "--re ord-tail"}[shape]
+    assert len(line) > budget
+    assert wrapped_rows(line, columns - 2) is None
+
+
+@pytest.mark.parametrize("columns", [80, 120])
+def test_a_final_word_ending_at_w_minus_4_stays_on_its_row(columns):
+    first, second = pad(columns - 4), pad(columns - 8) + "tail"
+    assert len(first) == columns - 4 and len(second) == columns - 4
+    assert projected([first, second], columns)
+
+
+@pytest.mark.parametrize("columns", [80, 120])
+@pytest.mark.parametrize("end", [3, 2])
+def test_a_final_word_ending_in_the_edge_band_holds(columns, end):
+    line = pad(columns - 4) + pad(columns - end - 4) + "tail"
+    assert wrapped_rows(line, columns - 2) is None
+
+
+@pytest.mark.parametrize("columns", [80, 120])
+def test_a_final_hyphen_free_word_past_w_minus_2_moves_whole(columns):
+    word = "syntheticqqwrapxy"
+    first = pad(columns - 10)
+    assert len(first) + len(word) > columns - 2
+    assert projected([first, word], columns)
+
+
+@pytest.mark.parametrize("columns", [80, 120])
+def test_a_word_ending_in_punctuation_whose_space_crosses_moves_whole(columns):
+    # A trailing mark is not a break inside the word: the word moves whole.
+    first = pad(columns - 8)
+    assert len(first) + len("ends.") == columns - 3
+    assert projected([first, "ends. tail"], columns)
