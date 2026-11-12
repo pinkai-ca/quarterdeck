@@ -65,13 +65,25 @@ def test_account_tracks_wal_fingerprint_and_retries_after_transient_read_error(t
     rec.begin("turn 1", "gemini-3.1-pro-high", "high")
     rec.end("reply 1")
 
-    # Simulate a transient RecordError on the first account() pass: read_marks must NOT be set, so the next pass retries
+    # The service's retry bound runs on a monotonic clock the test moves; nothing else about time changes.
+    import os
+    import time as real_time
+
+    from quarterdeck import attribution_cache, service as service_module
+
+    clock = SimpleNamespace(now=1000.0)
+    moved = SimpleNamespace(**{name: getattr(real_time, name) for name in dir(real_time) if not name.startswith("_")})
+    moved.monotonic = lambda: clock.now
+    monkeypatch.setattr(service_module, "time", moved)
+    monkeypatch.setattr(attribution_cache, "time", moved)
+
+    # Simulate a transient RecordError on the first account() pass: read_marks must NOT be set, so a later pass retries
     orig_read = antigravity.read
-    calls = {"n": 0}
+    failing = {"next": True}
 
     def flaky_read(path: Path):
-        calls["n"] += 1
-        if calls["n"] == 1:
+        if failing["next"]:
+            failing["next"] = False
             raise RecordError("transient concurrent write")
         return orig_read(path)
 
@@ -81,9 +93,28 @@ def test_account_tracks_wal_fingerprint_and_retries_after_transient_read_error(t
     assert svc.ledger.ingested(rec.path) == 0 and rec.path not in svc.read_marks
     assert svc.ledger.incomplete_records() == [(str(rec.path), "scott", "google", "transient concurrent write")]
     assert svc.ledger.rollup("seat")[0].unmeasured == 1, "nothing read yet, and the figure says so with a +"
+    # Record, registry and launch evidence unchanged: no re-read inside the bound, though a read would now succeed
+    for step in (0.0, service_module.ACCOUNT_RETRY - 1):
+        clock.now += step
+        svc.account()
+        assert svc.ledger.ingested(rec.path) == 0 and rec.path not in svc.read_marks
+        assert svc.ledger.incomplete_records() == [(str(rec.path), "scott", "google", "transient concurrent write")]
+    clock.now += 1  # the bound itself: the unchanged record is read again and recovers
     svc.account()
     assert svc.ledger.ingested(rec.path) == 1 and rec.path in svc.read_marks
     assert svc.ledger.incomplete_records() == [] and svc.ledger.rollup("seat")[0].turns == 1
+
+    # A source change is retried at once, with no clock movement: the first change meets another transient
+    # error, the second change is read in the same instant and clears it
+    failing["next"] = True
+    os.utime(rec.path, ns=(rec.path.stat().st_atime_ns, rec.path.stat().st_mtime_ns + 1_000_000))
+    svc.account()
+    assert svc.ledger.incomplete_records() == [(str(rec.path), "scott", "google", "transient concurrent write")]
+    assert rec.path not in svc.read_marks and svc.ledger.ingested(rec.path) == 1
+    os.utime(rec.path, ns=(rec.path.stat().st_atime_ns, rec.path.stat().st_mtime_ns + 1_000_000))
+    svc.account()
+    assert svc.ledger.incomplete_records() == [] and rec.path in svc.read_marks
+    assert svc.ledger.ingested(rec.path) == 1 and svc.ledger.rollup("seat")[0].turns == 1
 
     # Now hold a writer connection open and write Turn 2 only to the WAL (main .db mtime frozen)
     writer = sqlite3.connect(rec.path)
