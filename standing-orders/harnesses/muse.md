@@ -53,8 +53,11 @@ native end-of-turn gate, after reply text appears. Escape cancels a working run
 and retains draft text; no Escape is sent while idle or activity is unknown.
 Enter during a working turn queues a steer that starts a new run after the
 current one ends; it is not active-run delivery. The adapter withholds working
-delivery until its exact queue receipt is implemented. Supported ASCII wrapping
-and multiline rows are matched against the whole payload. A native counted fold
+delivery until its exact queue receipt is implemented. Supported ASCII and
+middle-dot rows are matched against the whole payload. The prefix-derived width
+bound is distinct from the measured W-3 word-plus-space budget at pane widths
+80 and 120. Only established edge moves are projected; unknown final-word or
+hyphen breaks and other Unicode still hold. A native counted fold
 must name the full original character count; its marker is not a receipt. Use the
 record's model text, compared exactly after removing only one final newline from
 the typed form when it ends in exactly one. Never trim other whitespace or

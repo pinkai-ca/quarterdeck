@@ -94,7 +94,7 @@ def characters(text: str):
 
 
 class ComposerText(str):
-    """Visible content plus its measured boundary width and native fold hint."""
+    """Content, prefix-derived width bound and fold hint; not a capacity claim."""
 
     def __new__(cls, text, columns=None, folded=False):
         value = super().__new__(cls, text)
@@ -196,26 +196,48 @@ def counted_characters(text: str) -> str | None:
 
 
 def wrapped_rows(text: str, columns: int | None) -> list[str] | None:
-    """Measured ASCII words, retained wrap-space, and explicit newline rows.
+    """ASCII/middle-dot words with the observed word-plus-space budget.
 
-    Unknown long words, tabs and Unicode are not assigned an imagined layout.
+    columns is the prefix-derived W-2 bound, not measured physical capacity.
+    At panes 80/120 only, the observed wrap budget is one less: W-3. Final
+    words near that edge and arbitrary internal-word breaks remain unknown.
     """
-    if any(not (" " <= char <= "~" or char == "\n") for char in text):
+    if any(not (" " <= char <= "~" or char in "\n·") for char in text):
         return None
     result = []
     for line in text.split("\n"):
         if columns is None:
             result.append(line)
             continue
-        if columns < 1 or any(len(word) >= columns for word in line.split(" ")):
+        budget = columns - 1
+        if budget < 1 or any(len(word) >= budget for word in line.split(" ")):
             return None
-        if len(line) > columns and (line.startswith(" ") or line.endswith(" ") or "  " in line):
-            return None  # no measured repeated/edge-space word-wrap algorithm
-        while len(line) > columns:
-            stop = line.rfind(" ", 0, columns)
-            if stop < 0:
-                return None
-            result.append(line[:stop + 1])
-            line = line[stop + 1:]
-        result.append(line)
+        if len(line) < budget:
+            result.append(line)
+            continue
+        if columns not in (78, 118):
+            return None  # no wrap-budget extrapolation to an unmeasured pane
+        if line.startswith(" ") or line.endswith(" ") or "  " in line:
+            return None  # repeated/edge-space wrapping was not established
+        words, row = line.split(" "), ""
+        for index, word in enumerate(words):
+            if index == len(words) - 1:
+                # No boundary case for a final word without a following space
+                # was measured. Never invent either placement or a move.
+                if len(row) + len(word) >= budget:
+                    return None
+                row += word
+            else:
+                piece = word + " "
+                if len(row) + len(piece) > budget:
+                    if not row or "-" in word:
+                        return None  # one hyphen break is not a general rule
+                    observed = ((budget - 1, 2), (budget, 2), (budget - 2, 3))
+                    if (len(row), len(piece)) not in observed:
+                        return None  # only the measured edge placements move
+                    result.append(row)
+                    row = piece
+                else:
+                    row += piece
+        result.append(row)
     return result

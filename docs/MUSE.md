@@ -149,15 +149,29 @@ display name, not a catalog-id mapping. These labels were read as static strings
 not captured in offline TUI runs; positions, option order/preselection and keys
 remain unmeasured. No dialog ever changes a model or contributor setting through
 the Door. Independent action/alert/protection proof is still required.
-The payload-derived box projection supports measured ASCII words shorter than
-the content width (pane columns minus two), retained wrap spaces and explicit
-newlines. Long words, tabs, Unicode wrapping and ambiguous repeated/edge spaces
-on wrapped lines remain unknown. No default-styled right padding is assumed.
-This means a short, uncollapsed canonical post containing the header's middle
-dot currently holds at box confirmation. Its collapsed count measurement does
-not establish an unfolded cell/wrap rule. An existing-evidence clarification or
-separately granted offline case must precede that small source extension and
-normal real-Door M1 replay; no live trial or permissive matcher substitutes.
+The payload-derived box projection supports ASCII plus the separately measured
+one-cell middle dot U+00B7, retained wrap spaces and explicit newline rows. A
+short canonical header is no longer excluded merely for its middle dot. The
+prefix-derived `box_columns` bound remains pane width minus two; native physical
+capacity at that bound is unproved. It is separate from the observed word-break
+budget, pane width minus three, including the word's following space.
+
+Offline measurements at widths 80 and 120 establish the last-three dot edge
+placements. The source projects only those established overflowing placements:
+a one-character word plus space after content of W-4 or W-3, or a two-character
+word plus space after W-5. The broken row retains its trailing space, and the
+next row starts with the moved word. A terminal LF retains the final empty
+content row (its two-space prefix leaves the cursor at x=2). No default-styled
+right padding is assumed, and the composer has no background.
+
+A final word without following space needing W-3/W-2 placement is unknown, as
+are other overflow placements, unmeasured widths, long words, tabs, other
+Unicode, repeated/edge-space wrapping and arbitrary internal-word breaks. One
+hyphen break in the measured footer is not a general hyphen algorithm: that
+83-character footer at width 80 still holds, while its width-120 unwrapped form
+fits the supported range. Literal short canonical fixtures and the measured
+edge shapes have source coverage; the actual Door remains unproved until its
+separately granted M1 stage. No live trial substitutes for that proof.
 A counted collapsed marker also needs the native expansion-hint footer and N
 equal to the full original typed-form character count, including any final LF.
 There is no guessed collapse threshold. Current count support is printable ASCII,

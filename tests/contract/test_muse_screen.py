@@ -1,12 +1,17 @@
 """Synthetic layouts constrained to the safe offline TUI description."""
 
+from datetime import datetime, timezone
+
+import pytest
+
 from quarterdeck.harness.muse_screen import (EXPAND_HINT, IDLE_HINT, MUTED, PROMPT, TYPED,
                                            TRUST, VisibleBox, counted_characters, read, wrapped_rows)
 
 
 def frame(text="", status="", working=False):
+    rule = "─" * 80
     return ("Muse Code 1.4.15\n" + ("Thinking (2s · esc to interrupt)\n" if working else "")
-            + "────────────────────\n❯ " + text + "\n────────────────────\n"
+            + rule + "\n❯ " + text + "\n" + rule + "\n"
             + "echo · synthetic-folder · Launch overrides" + status)
 
 
@@ -29,7 +34,7 @@ def test_no_placeholder_is_discarded_and_queue_is_only_screen_evidence():
 def test_trust_requires_a_person_and_unknown_layout_never_supplies_a_box():
     screen = read("Do you trust this workspace?\n1 Trust and continue\n2 Quit\nEsc quits")
     assert screen.interruption == TRUST and not TRUST.dismissable
-    assert read(frame().replace("────────────────────", "unmeasured border")).unknown is not None
+    assert read(frame().replace("─" * 80, "unmeasured border")).unknown is not None
     assert read("An unfamiliar screen.").box is None
 
 
@@ -74,12 +79,13 @@ def test_multiline_and_explicit_blank_rows_keep_their_exact_shape():
 
 
 def test_ascii_word_wrap_keeps_the_break_space_and_uses_the_pane_width():
-    text = "alpha beta gamma delta"
-    narrow = read(composer(["alpha beta gamma ", "delta"], columns=20))
-    wide = read(composer([text], columns=80))
-    assert VisibleBox(text).matches(narrow.box, 18)
-    assert VisibleBox(text).matches(wide.box, 78)
-    assert not VisibleBox(text).matches(narrow.box, 78)
+    prefix = "word " * 15
+    text = prefix + "xy completion"
+    narrow = read(composer([prefix, "xy completion"], columns=80))
+    wide = read(composer([text], columns=120))
+    assert VisibleBox(text).matches(narrow.box, 78)
+    assert VisibleBox(text).matches(wide.box, 118)
+    assert not VisibleBox(text).matches(narrow.box, 118)
 
 
 def test_counted_fold_is_a_projection_of_the_full_original_form():
@@ -104,3 +110,52 @@ def test_marker_counts_each_tab_as_four_without_expanding_the_input():
     text = "A fictional ending\t"
     assert counted_characters(text) == str(len(text) + 3)
     assert text.endswith("\t")
+
+
+@pytest.mark.parametrize("columns", [80, 120])
+def test_short_canonical_post_retains_middle_dots_and_its_final_empty_row(columns):
+    from quarterdeck.harness import get
+    from quarterdeck.harness.types import Input
+    from quarterdeck.post import Message, typed
+
+    at = datetime(2040, 1, 1, tzinfo=timezone.utc)
+    message = Message("ord-synthetic-item", "order", "synthetic", "synthetic", at,
+                      "Check · one · two · three · four.")
+    text = typed([message])
+    rows = text.split("\n")
+    assert text.count("·") == 6 and rows[-1] == ""
+    assert all(len(row) < columns - 3 for row in rows)
+    screen = read(composer(rows, columns=columns))
+    harness = get("muse")
+    assert screen.box == text and not screen.box.folded
+    assert harness.box(text).matches(screen.box, harness.box_columns(columns))
+    assert harness.expected_input(Input(text[:-1], at), text) == text[:-1]
+
+
+@pytest.mark.parametrize("columns", [80, 120])
+@pytest.mark.parametrize("dot_offset", [-4, -3, -2])
+def test_measured_middle_dot_edge_placements_keep_the_word_and_its_space(columns, dot_offset):
+    tail = "· " + "z" * 21
+    if dot_offset == -4:
+        prefix = "word " * ((columns - 10) // 5) + "final "
+        rows = [prefix, tail, ""]
+        assert len(prefix) == columns - 4
+    elif dot_offset == -3:
+        prefix = "word " * ((columns - 5) // 5) + "x "
+        rows = [prefix, tail, ""]
+        assert len(prefix) == columns - 3
+    else:
+        prefix = "word " * ((columns - 5) // 5)
+        rows = [prefix, "xy " + tail, ""]
+        prefix += "xy "
+        assert len(prefix) == columns - 2
+    text = prefix + tail + "\n"
+    assert text.index("·") == columns + dot_offset
+    screen = read(composer(rows, columns=columns))
+    assert VisibleBox(text).matches(screen.box, columns - 2)
+
+
+def test_unknown_final_word_and_internal_word_breaks_have_no_projection():
+    assert wrapped_rows("x" * 77, 78) is None
+    assert wrapped_rows("word " * 14 + "a-hyphenated-final-word", 78) is None
+    assert wrapped_rows("word " * 10 + "x" * 30 + " end", 78) is None

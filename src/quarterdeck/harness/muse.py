@@ -148,7 +148,7 @@ class MuseHarness(Harness):
         return muse_screen.read(text)
 
     def box_columns(self, pane_width):
-        return pane_width - 2
+        return pane_width - 2  # prefix-derived bound; native wrap budget is separate
 
     def box(self, text):
         return muse_screen.VisibleBox(text)
