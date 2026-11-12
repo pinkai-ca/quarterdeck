@@ -4,6 +4,8 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from quarterdeck.harness.grok_record import Reader, first_timestamp, inputs, session_id
 from quarterdeck.harness.grok_usage import decode
 
@@ -30,7 +32,8 @@ def test_native_input_and_origin():
     record = FIXTURES / "turn.jsonl"
     evidence, = inputs(record)
     assert evidence.text == "Count the sample rows."
-    assert evidence.at == first_timestamp(record)
+    assert evidence.at == datetime(2040, 1, 1, tzinfo=timezone.utc)
+    assert first_timestamp(record) is None  # this readable fixture is not in a UUIDv7 session folder
     assert session_id(record) == "synthetic-session"
 
 
@@ -67,3 +70,23 @@ def test_explicit_zero_is_a_measured_weekly_window():
     usage = decode(payload, datetime(2040, 1, 2, tzinfo=timezone.utc))
     assert usage.windows[0].used == 0
     assert usage.error is None
+
+
+@pytest.mark.parametrize("percent", [True, -1, "12", None, float("inf")])
+def test_invalid_percent_is_unknown_with_the_weekly_reset_retained(percent):
+    payload = json.loads((FIXTURES / "billing.json").read_text())
+    payload["config"]["creditUsagePercent"] = percent
+    usage = decode(payload, datetime(2040, 1, 2, tzinfo=timezone.utc))
+    assert usage.windows[0].used is None and usage.windows[0].resets_at is not None
+    assert usage.error == "billing percentage absent or unreadable"
+
+
+def test_retry_record_wall_does_not_invent_reset_or_a_five_hour_window(tmp_path):
+    row = {"timestamp": 2208988800, "method": "_x.ai/session/update", "params": {
+        "sessionId": "synthetic-wall", "update": {"sessionUpdate": "retry_state", "error_type": "rate_limited"}}}
+    record = tmp_path / "updates.jsonl"
+    record.write_text(json.dumps(row) + "\n")
+    state, turns = Reader.read(record)
+    assert turns == [] and state.turn_open is None
+    wall, = state.walls
+    assert wall.signature == "grok:rate_limited" and wall.resets_at is None

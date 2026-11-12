@@ -186,7 +186,7 @@ class GrokHarness(Harness):
     native_provider = "xai"
     home_variable = "GROK_HOME"
     credential_file = "auth.json"
-    keys = Keys(submit="Enter", send_now=("Enter",), interrupt="C-c")
+    keys = Keys(submit="Enter", interrupt="C-c")
     reads_usage = True
     private_usage_home = True
     styled_screen = True

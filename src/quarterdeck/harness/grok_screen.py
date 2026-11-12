@@ -27,6 +27,8 @@ HINT_STATES = {
     ("Shift+Tab:mode", "Ctrl+c:cancel", "Ctrl+b:send to bg", "Ctrl+x:shortcuts"): True,
     # At 80 columns the working draft drops Ctrl+x, while retaining cancel.
     ("Enter:queue", "Alt+Enter:newline", "Shift+Tab:mode", "Ctrl+c:cancel"): True,
+    ("Enter:send now", "Shift+Tab:mode", "Ctrl+c:cancel", "Ctrl+b:send to bg"): True,
+    ("Enter:send now", "Shift+Tab:mode", "Ctrl+c:cancel", "Ctrl+;:queue"): True,
 }
 
 

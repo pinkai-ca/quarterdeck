@@ -4,4 +4,4 @@
 {"timestamp":2208988801.3,"method":"session/update","params":{"sessionId":"synthetic-session","update":{"sessionUpdate":"tool_call_update","toolCallId":"synthetic-tool","status":"completed"}}}
 {"timestamp":2208988801.4,"method":"session/update","params":{"sessionId":"synthetic-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Three "}}}}
 {"timestamp":2208988801.5,"method":"session/update","params":{"sessionId":"synthetic-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"rows."}}}}
-{"timestamp":2208988802.0,"method":"_x.ai/session/update","params":{"sessionId":"synthetic-session","update":{"sessionUpdate":"turn_completed","stop_reason":"end_turn","usage":{"inputTokens":80,"cachedInputTokens":20,"outputTokens":12}}}}
+{"timestamp":2208988802.0,"method":"_x.ai/session/update","params":{"sessionId":"synthetic-session","update":{"sessionUpdate":"turn_completed","stop_reason":"end_turn","usage":{"inputTokens":80,"cachedReadTokens":20,"outputTokens":12,"cacheCreationTokens":0}}}}

@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import math
-from dataclasses import replace
-from datetime import datetime, timezone
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from uuid import UUID
 
 from .json_record import JsonLinesReader, RecordError, entries, input_reader, object_lines, records_matching, when
 from .limits import Wall
-from .types import Input, Inputs, Tokens, Turn
+from .types import Input, Inputs, Tokens, ToolCall, Turn
 
 METHODS = ("session/update", "_x.ai/session/update")
 
@@ -36,7 +37,22 @@ def records(home: Path) -> list[Path]:
 
 
 def first_timestamp(record: Path) -> datetime | None:
-    return next((timestamp(row.get("timestamp")) for row in entries(record) if update(row) is not None), None)
+    """Join-only creation time: every native row must agree with the UUIDv7 folder."""
+    try:
+        identity = UUID(record.parent.name)
+        if identity.version != 7:
+            return None
+        created = datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(milliseconds=identity.int >> 80)
+    except (ValueError, OverflowError):
+        return None
+    skipped = []
+    rows = object_lines(record, lambda *reason: skipped.append(reason))
+    if skipped or not rows:
+        return None
+    for _, row in rows:
+        if update(row) is None or row["params"].get("sessionId") != record.parent.name:
+            return None
+    return created
 
 
 def session_id(record: Path) -> str | None:
@@ -73,12 +89,33 @@ def inputs(record: Path) -> Inputs:
 
 
 def usage_tokens(usage: object) -> Tokens:
-    if not isinstance(usage, dict):
+    fields = ("cachedReadTokens", "inputTokens", "cacheCreationTokens", "outputTokens")
+    if not isinstance(usage, dict) or not all(field in usage for field in fields):
         return Tokens.unknown()
-    measured = Tokens.from_usage(usage, ("cachedInputTokens", "inputTokens", "cacheWriteTokens", "outputTokens"))
+    measured = Tokens.from_usage(usage, fields)
     if not measured.complete or measured.read_cached > measured.read_uncached:
         return Tokens.unknown()
+    if measured.cache_written:
+        return Tokens.unknown()  # nonzero creation's relationship to inputTokens is unmeasured
     return replace(measured, read_uncached=measured.read_uncached - measured.read_cached)
+
+
+def usage_model(usage: object) -> str | None:
+    models = usage.get("modelUsage") if isinstance(usage, dict) else None
+    if isinstance(models, dict) and len(models) == 1:
+        model, value = next(iter(models.items()))
+        if isinstance(model, str) and model and isinstance(value, dict):
+            return model
+    return None  # mixed or absent model evidence is not the previous turn's model
+
+
+@dataclass
+class Call:
+    started: datetime | None
+    result: ToolCall
+    finished: bool = False
+    turn: int | None = None
+    slot: int = 0
 
 
 class Reader(JsonLinesReader):
@@ -91,7 +128,12 @@ class Reader(JsonLinesReader):
     def __init__(self, record: Path, snapshot=None):
         self.walls = []
         self.execution_seen = False
+        self.calls: dict[str, Call] = {}
+        self.completed_prompts: set[str] = set()
         super().__init__(record, snapshot)
+
+    def start_turn(self, turn: dict) -> None:
+        super().start_turn({**turn, "calls": []})
 
     def ensure_turn(self):
         """Keep ended native work even when its initiating input was unavailable."""
@@ -123,16 +165,31 @@ class Reader(JsonLinesReader):
         elif kind == "agent_thought_chunk":
             self.ensure_turn()
         elif kind == "tool_call":
-            self.ensure_turn()
-            call = event.get("toolCallId")
-            self.open_call(call, event.get("title"), at)
+            call, name = event.get("toolCallId"), event.get("title")
+            if not isinstance(call, str) or not call:
+                self.tools_known = False
+                return
+            if not isinstance(name, str) or not name:
+                name = "?"
+                self.tools_known = False
+            if call not in self.calls:
+                self.ensure_turn()
+                self.open_call(call, name, at)
+                self.calls[call] = Call(at, ToolCall(name, None, None), slot=len(self.open["calls"]))
+                self.open["calls"].append(call)
+            elif self.calls[call].result.name != name:
+                self.tools_known = False
             if event.get("status") in ("completed", "failed"):
-                self.close_tool(call, at, event["status"] == "failed")
+                self.finish_call(call, at, event["status"] == "failed")
         elif kind == "tool_call_update":
-            self.ensure_turn()
             if event.get("status") in ("completed", "failed"):
-                self.close_tool(event.get("toolCallId"), at, event["status"] == "failed")
+                self.finish_call(event.get("toolCallId"), at, event["status"] == "failed")
         elif kind == "turn_completed":
+            prompt = event.get("prompt_id")
+            if isinstance(prompt, str) and prompt:
+                if prompt in self.completed_prompts:
+                    return
+                self.completed_prompts.add(prompt)
             self.ensure_turn()
             self.end(at, event)
         elif kind == "retry_state":
@@ -148,17 +205,46 @@ class Reader(JsonLinesReader):
         elif kind not in ("plan", "available_commands_update", "session_info_update"):
             self.tools_known = False
 
+    def finish_call(self, call, at, failed):
+        item = self.calls.get(call) if isinstance(call, str) else None
+        if item is None:
+            self.tools_known = False
+            return
+        if item.finished:
+            if item.result.failed != failed:
+                self.tools_known = False
+            return
+        seconds = (at - item.started).total_seconds() if at and item.started else None
+        item.result = ToolCall(item.result.name, seconds if seconds is not None and seconds >= 0 else None, failed)
+        item.finished = True
+        self.live_tools.pop(call, None)
+        self.pending.pop(call, None)
+        if item.turn is not None:
+            previous = self.turns[item.turn]
+            tools = list(previous.tools)
+            tools[item.slot] = item.result
+            revised = replace(previous, tools=tuple(tools))
+            self.turns[item.turn] = revised
+            self.completed_turns = [revised if turn.index == item.turn else turn for turn in self.completed_turns]
+
     def end(self, at, event=None):
         if self.open is None:
             return
         value = self.close_turn()
         event = event or {}
+        calls = [self.calls[call] for call in value["calls"]]
+        for item in calls:
+            item.turn = len(self.turns)
+        self.model = usage_model(event.get("usage"))
         self.record_turn(Turn(
             len(self.turns), value["started"], at, value["input"], value["reply"], self.model,
-            usage_tokens(event.get("usage")), tuple(value["tools"]), subagent_turns=None,
+            usage_tokens(event.get("usage")), tuple(item.result for item in calls), subagent_turns=None,
             timed=at is not None,
         ), at)
 
     def state(self):
-        return replace(super().state(), walls=tuple(self.walls),
+        state = super().state()
+        if self.open is None and self.live_tools:
+            state = replace(state, pending_tools=None)  # ended root does not supply a missing tool result
+        return replace(state, walls=tuple(self.walls),
                        turn_open=self.open is not None if self.execution_seen else None)

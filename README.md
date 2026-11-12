@@ -2,6 +2,8 @@
 
 Quarterdeck runs a crew of coding agents as visible terminal sessions under one human's command. Each agent is an ordinary terminal program, Claude Code, Codex, Antigravity, OpenCode, pi or Grok Build, in its own tmux window, where the human can read it and type into it at any time. Quarterdeck seats the agents, carries orders and reports between them, watches them, and accounts for what they spend.
 
+Grok Build uses provider `xai` and harness `grok`. It requires a workspace without project instruction, rule, tool or extension sources throughout its Git scope; a clean child of an instruction-bearing repository is insufficient. Its [contract inventory](docs/GROK.md) distinguishes measured 1.0.77 behavior from remaining limits and installed acceptance.
+
 It is a control plane and nothing more. It is not the agents, not the code they write, and not the way they review or land that code. Those rules are the ship's standing orders, which Quarterdeck carries to every seat and does not enforce in code.
 
 ## The shape of it

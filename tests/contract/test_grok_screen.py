@@ -309,3 +309,21 @@ def test_transcript_working_words_do_not_replace_native_hint_evidence():
     screen = GrokHarness().screen(text)
     assert screen.unknown is None
     assert screen.working is False  # read from the known idle hint, not transcript text
+
+
+@pytest.mark.parametrize("name", ["queued-tool", "queued-response"])
+def test_measured_queued_footer_does_not_supply_a_record_receipt(name):
+    adapter = GrokHarness()
+    before = adapter.screen(fixture("working-tool"))
+    after = adapter.screen(fixture(name))
+    assert after.unknown is None and after.working is True
+    assert after.box is not None and not after.box.strip()
+    assert "▾ Queued 1" in after.text
+    assert adapter.queued_input("A fictional payload.", before, after) is None
+    assert adapter.keys.submit == "Enter" and adapter.keys.interrupt == "C-c"
+    assert adapter.keys.send_now is None
+
+
+def test_unmeasured_queued_control_stays_unknown():
+    screen = GrokHarness().screen(fixture("queued-response").replace("Ctrl+;:queue", "Ctrl+;:steer"))
+    assert screen.unknown == "unmeasured Grok composer hint" and screen.box is None
