@@ -88,7 +88,16 @@ def confirmed(reader: str | Harness, record: Path, text: str | tuple[str, ...], 
     queued = False
     forms, ignoring = message_forms(harness, record, text, since)
     for item in harness.inputs(record):
-        if item.at is None or item.at < since or not same_input(item.text, forms, ignoring):
+        if item.at is None or item.at < since:
+            continue
+        project = getattr(harness, "expected_input", None)
+        expected = tuple(value for form in forms
+                         if (value := project(item, form) if project is not None else form) is not None)
+        if getattr(harness, "exact_input_text", False):
+            matches = any(without(item.text, ignoring) == without(form, ignoring) for form in expected)
+        else:
+            matches = same_input(item.text, expected, ignoring)
+        if not matches:
             continue
         if item.kind == "accepted":
             return "delivered"

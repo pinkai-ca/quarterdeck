@@ -7,12 +7,22 @@ Unknown fields retain unknown measurements instead of borrowing old defaults.
 from __future__ import annotations
 
 import json
-from dataclasses import replace
+import re
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .json_record import JsonLinesReader, RecordError, object_lines, records_matching, when
 from .types import Input, Inputs, Tokens, ToolCall, Turn
+
+FOLDED_INPUT = re.compile(r"\[Pasted Content ([1-9][0-9]*) chars\]")
+
+
+@dataclass(frozen=True)
+class CollapsedInput(Input):
+    """Native model text and the original marker's count; no recorded text rewrite."""
+
+    characters: str = ""
 
 
 def event_time(value):
@@ -26,7 +36,7 @@ def event_time(value):
 
 
 def accepted_text(payload: dict) -> str | None:
-    """The measured single text block, agreeing in both native representations.
+    """The model's single exact text block, with its native refill evidence.
 
     No separator or multi-block rendering rule is established.
     """
@@ -38,11 +48,27 @@ def accepted_text(payload: dict) -> str | None:
     content = messages[0].get("content")
     if not isinstance(content, list) or len(content) != 1 or not isinstance(content[0], dict):
         return None
-    text = blocks[0].get("text")
+    text, model = blocks[0].get("text"), content[0].get("text")
     if (blocks[0].get("kind") != "text" or content[0].get("kind") != "text"
-            or not isinstance(text, str) or content[0].get("text") != text):
+            or not isinstance(text, str) or not isinstance(model, str)):
         return None
-    return text
+    if text == model:
+        return model
+    marker = FOLDED_INPUT.fullmatch(text)
+    # This is the text actually given to the model, not a reconstruction of
+    # the original draft. The adapter's receipt projection owns the measured
+    # single-final-newline transform and checks the original marker count.
+    return model if marker is not None else None
+
+
+def collapsed_count(payload: dict) -> str | None:
+    model = accepted_text(payload)
+    blocks = payload.get("refill_blocks")
+    if model is None or not isinstance(blocks, list) or len(blocks) != 1:
+        return None
+    text = blocks[0].get("text")
+    marker = FOLDED_INPUT.fullmatch(text) if isinstance(text, str) else None
+    return marker[1] if marker is not None and text != model else None
 
 
 def session_identity(record: Path) -> str | None:
@@ -147,7 +173,8 @@ def inputs(record: Path) -> Inputs:
             if not isinstance(text, str) or at is None:
                 result.skip(number, "runtime.user_intent.accepted", "text or timestamp unreadable")
             else:
-                result.append(Input(text, at))
+                count = collapsed_count(event["payload"])
+                result.append(CollapsedInput(text, at, characters=count) if count is not None else Input(text, at))
     return result
 
 

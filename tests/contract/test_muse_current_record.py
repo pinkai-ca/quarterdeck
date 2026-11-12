@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from quarterdeck.harness.muse_record import Reader, first_timestamp, inputs, session_id
+from quarterdeck.harness.muse_record import CollapsedInput, Reader, first_timestamp, inputs, session_id
 
 MOMENT = 2208988800123456
 SESSION = "synthetic-session"
@@ -105,3 +105,61 @@ def test_cancelled_terminal_ends_only_the_named_run(tmp_path):
     state, turns = Reader.read(path)
     assert state.turn_open is False and turns[0].end_reason == "cancelled"
     assert not turns[0].tokens.complete and turns[0].failure is None
+
+
+def test_collapsed_input_keeps_model_text_and_original_count_separate(tmp_path):
+    original = "first \nsecond\n\n "
+    row = accepted(original)
+    row["payload"]["refill_blocks"][0]["text"] = f"[Pasted Content {len(original)} chars]"
+    model = "first \nsecond"
+    row["payload"]["model_messages"][0]["content"][0]["text"] = model
+    path = save(tmp_path, [row])
+    item, = inputs(path)
+    assert isinstance(item, CollapsedInput)
+    assert item.text == "first \nsecond" and item.characters == str(len(original))
+    assert item.at.microsecond == 123456 and item.kind == "accepted"
+
+
+def test_unfolded_input_keeps_boundary_and_internal_whitespace_verbatim(tmp_path):
+    original = " first \nsecond\n"
+    item, = inputs(save(tmp_path, [accepted(original)]))
+    assert type(item) is not CollapsedInput and item.text == original
+
+
+def test_muse_collapsed_receipt_uses_model_text_and_the_original_form_count(tmp_path):
+    from quarterdeck.harness import get
+    from quarterdeck.input_receipt import confirmed
+
+    original = "first \nsecond\n"
+    row = accepted(original)
+    row["payload"]["refill_blocks"][0]["text"] = f"[Pasted Content {len(original)} chars]"
+    row["payload"]["model_messages"][0]["content"][0]["text"] = original[:-1]
+    path = save(tmp_path, [row])
+    harness = get("muse")
+    item, = inputs(path)
+    assert harness.expected_input(item, original) == "first \nsecond"
+    assert confirmed(harness, path, original, first_timestamp(path)) == "delivered"
+
+
+def test_muse_unfolded_receipt_uses_the_same_single_final_newline_projection(tmp_path):
+    from quarterdeck.harness import get
+    from quarterdeck.input_receipt import confirmed
+
+    original = "first \nsecond\n"
+    path = save(tmp_path, [accepted(original[:-1])])
+    harness = get("muse")
+    item, = inputs(path)
+    assert type(item) is not CollapsedInput
+    assert harness.expected_input(item, original) == "first \nsecond"
+    assert confirmed(harness, path, original, first_timestamp(path)) == "delivered"
+
+
+def test_existing_non_muse_receipt_keeps_its_boundary_whitespace_compatibility(tmp_path, monkeypatch):
+    from quarterdeck.harness import get
+    from quarterdeck.harness.types import Input
+    from quarterdeck.input_receipt import confirmed
+
+    harness = get("fake")
+    at = datetime(2040, 1, 1, tzinfo=timezone.utc)
+    monkeypatch.setattr(harness, "inputs", lambda record: [Input(" A fictional record. ", at)])
+    assert confirmed(harness, tmp_path / "unused-record", "\nA fictional record.\n", at) == "delivered"

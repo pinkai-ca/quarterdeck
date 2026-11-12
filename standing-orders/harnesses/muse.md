@@ -45,14 +45,24 @@ names your private temporary folder. This is distinct from endpoint jails and
 changes no system or operator files. Offline proof of the real adapter mask
 must precede any live stage.
 
-The empty box has no placeholder. A working indicator remains through the
+The initial empty box has no hint. A known grey contextual hint after a turn
+counts as empty only with its measured color; the same bright literal text is
+input. Unknown hints/styles hold. Transcript input echoes have a background;
+the composer has none and sits below its rule. A working indicator remains through the
 native end-of-turn gate, after reply text appears. Escape cancels a working run
 and retains draft text; no Escape is sent while idle or activity is unknown.
 Enter during a working turn queues a steer that starts a new run after the
 current one ends; it is not active-run delivery. The adapter withholds working
-delivery until its exact queue receipt is implemented. Only an observed whole
-single-line paste can currently match; wrapping, folding, clear keys and the
-required settle interval remain unproved. Never resend an uncertain message.
+delivery until its exact queue receipt is implemented. Supported ASCII wrapping
+and multiline rows are matched against the whole payload. A native counted fold
+must name the full original character count; its marker is not a receipt. Use the
+record's model text, compared exactly after removing only one final newline from
+the typed form when it ends in exactly one. Never trim other whitespace or
+internal line-end spaces. The marker counts a tab as four without changing the
+payload; interior-tab behavior remains unmeasured. Use the
+bracketed-paste path without an added sleep, never typed keys followed by Enter.
+Unmeasured wrapping/count forms and clear keys remain unknown. Never resend an
+uncertain message or paste again because of the native expansion hint.
 
 Echo token zeros and child-session structure do not prove billed quantities or
 paid child turns. Allowance remains unknown. A future native usage reader must

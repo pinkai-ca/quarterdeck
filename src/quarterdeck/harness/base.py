@@ -244,6 +244,15 @@ class Harness(ABC):
         text and each form before comparing. The default is none.
         """
         return frozenset()
+    exact_input_text: bool = False  # opt-in literal equality, without boundary whitespace normalization
+
+    def expected_input(self, item: Input, text: str) -> str | None:
+        """Adapter-owned native input projection; default identity, no I/O.
+
+        None leaves this evidence unmatched. Never rewrite recorded text or
+        derive an expectation from a stale/foreign record here.
+        """
+        return text
 
     def thinking_recovery(self, home: Path, evidence: dict | None, version: str | None, seat: SeatSpec, pool: Pool):
         """A proved native off/restore client, or no supported automatic recovery."""

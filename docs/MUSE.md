@@ -89,12 +89,26 @@ Current events carry integer microseconds. Session identity must agree with the
 root directory; conflicting identity supplies neither conversation nor join
 time. The first native event supplies creation time, never mtime.
 
-Exact current accepted text requires one text refill block and one matching
-model-message text block, with source session matching the session stream.
-Several blocks, conflicting text and unsupported schema remain unreadable
-receipts; no separator or concatenation is invented. Historical ISO/direct-prompt
+Current accepted text requires one text refill block and one model-message text
+block, with source session matching the session stream. Ordinary refill/model
+text agrees. A collapsed refill instead carries `[Pasted Content N chars]`;
+the reader retains the model text and original count separately, never treating
+the marker as the message. Several blocks, unrelated conflicting text and
+unsupported schema remain unreadable receipts; no separator or concatenation
+is invented. Historical ISO/direct-prompt
 synthetic rows remain readable, separately from current-version evidence.
 Accepted text proves acceptance, not queuing or active-run delivery.
+
+The canonical receipt matcher has a default identity `expected_input` hook and
+default-false `exact_input_text` capability, preserving other adapters' existing
+comparison without extra I/O. Muse opts into exact recorded model text versus
+its expected typed form. For a form ending in exactly one LF, the expectation
+removes that single final character, collapsed or not. It never uses a general
+trim, deletes other whitespace or changes internal line-end spaces. An input
+with a native collapsed marker also needs the original full count to agree.
+Native model text is never rewritten. Different remaining text, an unsupported
+form or an unproved count cannot confirm delivery. Multi-LF endings and terminal
+tabs are not assigned a broader end transform.
 
 Run starts, committed replies and terminals are distinguished from task lifecycle
 rows. Materialization can be inspected only with explicit accepted event
@@ -112,8 +126,15 @@ child accounting remain missing; no launch setting supplies a current fact.
 
 ## Door and remaining proof
 
-The narrow screen reader recognizes the measured header, one-row composer
-between rules, footer and working indicator. An empty composer has no placeholder.
+The styled screen reader recognizes the measured header, composer between full
+width rules, footer and working indicator. It selects the no-background prompt
+directly below its rule, not the only prompt in the frame. Transcript echoes
+with background RGB 38,56,84 cannot replace the composer. Two-space continuation
+prefixes are removed while all input rows, break spaces and blank rows remain.
+The first empty screen has no hint; later idle composers show the exact known
+contextual tip in RGB 103,108,116. Only that tip in an otherwise empty idle
+composer is empty. The identical text in typed RGB 204,211,219 stays input;
+unknown tips/styles hold. Faint attributes alone never discard text.
 Static strings from the pinned binary identify the separate quota-offer dialog:
 `You're using your quota fast` with `Keep going`, `Switch to Spark` or
 `Turn on contributor mode`. It is named, holds all input actions and reaches a
@@ -128,11 +149,28 @@ display name, not a catalog-id mapping. These labels were read as static strings
 not captured in offline TUI runs; positions, option order/preselection and keys
 remain unmeasured. No dialog ever changes a model or contributor setting through
 the Door. Independent action/alert/protection proof is still required.
-It does not discard faint text or infer folded/multiline payloads. Exact box
-comparison currently supports only a wholly visible single line. Folding,
-wrapping, safe clear keys and any required post-paste settle delay remain unknown.
-The normal Door checks the box before one submit and confirms by the record;
-there is no retry of an uncertain submission.
+The payload-derived box projection supports measured ASCII words shorter than
+the content width (pane columns minus two), retained wrap spaces and explicit
+newlines. Long words, tabs, Unicode wrapping and ambiguous repeated/edge spaces
+on wrapped lines remain unknown. No default-styled right padding is assumed.
+This means a short, uncollapsed canonical post containing the header's middle
+dot currently holds at box confirmation. Its collapsed count measurement does
+not establish an unfolded cell/wrap rule. An existing-evidence clarification or
+separately granted offline case must precede that small source extension and
+normal real-Door M1 replay; no live trial or permissive matcher substitutes.
+A counted collapsed marker also needs the native expansion-hint footer and N
+equal to the full original typed-form character count, including any final LF.
+There is no guessed collapse threshold. Current count support is printable ASCII,
+LF, tabs and the middle dot established by the canonical-post measurement; other
+unmeasured character counts remain unknown. The expected marker count uses four
+for each tab, without expanding or rewriting the payload. Unfolded tab layout
+and interior-tab transport/model semantics remain unmeasured; an unexpected
+record difference still holds. The expansion hint is prose, never permission to
+paste twice.
+The normal Door uses its bracketed paste, checks the box, submits once and
+confirms by the owned record. That path needed no added settle in offline
+measurement; no shared sleep or typed-key substitute is introduced. Safe clear
+keys remain unknown, and an uncertain submission is never retried.
 
 A single Escape cancels a working run and retains draft text. Guarded positive
 idle interrupt-speed delivery uses no key; unknown activity holds. Current fresh
@@ -155,8 +193,8 @@ context, including pools without a permanent seat, and never demand-read a
 destination gate. Replacement/reseed freshness and grant expiry need safe auth
 metadata before implementation.
 
-Still owed: offline actual-launch mask/permission proof, ordinary source tests,
-interactive import suppression and full composer/queue schema, resume carriage,
+Still owed: offline actual-launch mask/permission and corrected-reader proof,
+ordinary source tests, interactive import suppression and full queue schema, resume carriage,
 current controls/contributor evidence, auth and credential replacement, subscribed
 catalog/allowance proof, native-tool can-post and installed check, affected proof,
 exact-tip full, review and signature. Live work needs separate authorization.

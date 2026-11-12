@@ -24,6 +24,8 @@ class MuseHarness(Harness):
     home_variable = None
     opening_prompt_turn = True
     private_version_home = True
+    styled_screen = True
+    exact_input_text = True
     strict_usage_interval = True
     usage_interval = 1800
     background_usage = True
@@ -146,10 +148,20 @@ class MuseHarness(Harness):
         return muse_screen.read(text)
 
     def box_columns(self, pane_width):
-        return None  # wrapping/folding is not established
+        return pane_width - 2
 
     def box(self, text):
         return muse_screen.VisibleBox(text)
+
+    def expected_input(self, item, text):
+        if isinstance(item, muse_record.CollapsedInput):
+            count = muse_screen.counted_characters(text)
+            if count is None or item.characters != count:
+                return None
+        # post.typed has exactly one terminal LF. Native model text removes
+        # that one character, collapsed or not. No rstrip or tab expansion:
+        # other end whitespace and every internal byte remain untouched.
+        return text[:-1] if text.endswith("\n") and not text.endswith("\n\n") else text
 
     def queues_while_working(self, seat):
         # S3 measured steer/new-run behavior, but its exact queue receipt
