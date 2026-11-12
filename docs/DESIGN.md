@@ -749,6 +749,8 @@ Four layers:
 
 Two tests guard the repository itself: no runtime content, seat id or credential pattern in any tracked file, and every `runtime/` ignored; every law carried somewhere, every law tag real, and every law's test attempting its violation. File size is guidance, about 400 lines, split by concept and never compressed to fit a number.
 
+Hosted CI gives only its pytest step a fresh private `TMUX_TMPDIR`, created by `mktemp -d` with owner-only permissions as `$RUNNER_TEMP/qs.XXXXXXXX`. This keeps socket length independent of the checkout path. The session fixture still budgets the effective anchor in filesystem bytes, with the same 107-byte limit and 12-byte margin; an overly long runner temporary path still refuses. The step retains a directory descriptor, compares device/inode identity and rejects a link before empty-only `rmdir` on exit. A failed test command keeps its nonzero status even if cleanup fails; cleanup failure after success fails the step and reports the retained path. No recursive removal or peer cleanup is allowed. Uncatchable process death may leave this invocation's directory for the disposable runner to retire. The separate fake-harness drill and the unset-variable project fallback are unchanged.
+
 ## 13. Repository layout
 
 ```

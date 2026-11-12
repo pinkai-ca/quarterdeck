@@ -60,6 +60,24 @@ jobs:
       - name: Unit, contract and integration tests
         run: |
           . .venv/bin/activate
+          # Keep the existing socket-length guard independent of the checkout path.
+          ci_socket_anchor="$(mktemp -d "${RUNNER_TEMP:?}/qs.XXXXXXXX")"
+          exec {ci_socket_fd}<"$ci_socket_anchor"
+          cleanup_ci_socket_anchor() {
+            ci_test_status=$?
+            trap - EXIT
+            if ! { [ ! -L "$ci_socket_anchor" ] &&
+                   ci_socket_current="$(stat -c '%d:%i' -- "$ci_socket_anchor")" &&
+                   ci_socket_original="$(stat -Lc '%d:%i' -- "/proc/$$/fd/$ci_socket_fd")" &&
+                   [ "$ci_socket_current" = "$ci_socket_original" ] &&
+                   rmdir -- "$ci_socket_anchor"; }; then
+              echo "Private CI socket anchor retained: $ci_socket_anchor" >&2
+              if [ "$ci_test_status" -eq 0 ]; then ci_test_status=1; fi
+            fi
+            exit "$ci_test_status"
+          }
+          trap cleanup_ci_socket_anchor EXIT
+          export TMUX_TMPDIR="$ci_socket_anchor"
           env -u QD_SHIP -u QD_SEAT python -m pytest -q -rs -n 8
       - name: Fake-harness drill
         run: |
