@@ -102,7 +102,7 @@ def test_watch_reports_unknown_screen_separately_from_record_idle(monkeypatch, s
                           harness_text="muse", provider_name="Meta", pool="synthetic", model_text="-",
                           compaction=None)
     monkeypatch.setattr(watch, "render_headlines", lambda usage: [])
-    text = "\n".join(watch.render_full(dict(seat=row, record=None, record_absent="not joined",
+    text = "\n".join(watch.render_full(dict(seat=row, record=None, state=None, record_absent="not joined",
                                            record_limits=None, screen=screen, usage={})))
     assert "synthetic: idle" in text
     assert "working unknown (could not see" in text
