@@ -234,6 +234,7 @@ def test_the_record_reads_five_turns_their_tools_and_tokens_and_marks_the_aborte
     assert aborted.tokens.unmeasured == 1 and not aborted.tokens.complete and aborted.tokens.written == 102
     assert [(t.name, t.failed) for t in aborted.tools] == [("bash", True), ("bash", True), ("bash", False)], "an aborted command did not fail; the program stopped it"
     assert aborted.tools[-1].seconds == pytest.approx(48.681) and aborted.ended == datetime(2026, 11, 8, 1, 5, 44, 903000, tzinfo=UTC)
+    assert aborted.failure is None and state.failure is None, "an interrupt is recorded as an error but fails nothing"
 
 
 def test_an_open_turn_shows_its_running_tool_and_a_message_typed_meanwhile_is_queued_and_receipted(tmp_path: Path):

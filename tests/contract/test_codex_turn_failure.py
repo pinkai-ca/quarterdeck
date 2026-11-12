@@ -154,3 +154,61 @@ def test_a_pi_error_stop_is_a_program_error_with_output_never_proved_absent(tmp_
     failure = pi.state(record).failure
     assert failure.kind == 'program error' and failure.model_output is None
     assert failure.message == 'Synthetic local server unavailable'
+
+
+def opencode_error_turn(tmp_path: Path, error, parts=()):
+    """One OpenCode 1.19.5 turn whose closing step carries ``error`` in the pinned record's shape; invented rows."""
+    import sqlite3
+    from quarterdeck.harness import opencode
+    from tests.contract.test_opencode import SCHEMA
+    record = tmp_path / 'home' / 'data-001' / 'opencode' / 'opencode.db'
+    record.parent.mkdir(parents=True)
+    ms = int(START.timestamp() * 1000)
+    con = sqlite3.connect(record)
+    for statement in SCHEMA:
+        con.execute(statement)
+    con.execute('INSERT INTO session VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                ('ses-synthetic', 'synthetic', 'synthetic', '/synthetic', 'Synthetic', '1.19.5', ms, ms, None, None, None))
+    rows = [('message', 'u1', ms + 1, {'role': 'user', 'time': {'created': ms + 1}, 'model': {'modelID': 'synthetic-model'}}),
+            ('part', 'u1-text', ms + 1, {'type': 'text', 'text': TEXT}, 'u1'),
+            ('message', 'a1', ms + 2, {'role': 'assistant', 'parentID': 'u1', 'modelID': 'synthetic-model', 'cost': 0,
+                                       'tokens': {'input': 0, 'output': 0, 'reasoning': 0, 'cache': {'read': 0, 'write': 0}},
+                                       'time': {'created': ms + 2, 'completed': ms + 3}, 'error': error})]
+    rows += [('part', f'a1-{n}', ms + 2, data, 'a1') for n, data in enumerate(parts)]
+    for kind, name, at, data, *owner in rows:
+        if kind == 'message':
+            con.execute('INSERT INTO message VALUES (?,?,?,?,?)', (name, 'ses-synthetic', at, at, json.dumps(data)))
+        else:
+            con.execute('INSERT INTO part VALUES (?,?,?,?,?,?)', (name, owner[0], 'ses-synthetic', at, at, json.dumps(data)))
+    con.commit()
+    con.close()
+    return opencode.read(record)
+
+
+def test_an_opencode_closing_step_error_is_a_program_error_with_output_never_proved_absent(tmp_path):  # law: record-first
+    long = 'Synthetic local endpoint unreachable ' + ' '.join(f'word{n}' for n in range(30))
+    state, turns = opencode_error_turn(tmp_path, {'name': 'SyntheticProviderError', 'data': {'message': long}})
+    failure = state.failure
+    assert state.turn_open is False and failure is not None and turns[-1].failure == failure
+    assert failure.kind == 'program error' and failure.code is None, 'never a provider refusal, so never an automatic fresh start'
+    assert failure.message == ' '.join(long.split()[:16])
+    assert failure.model_output is None, 'OpenCode records no proof that the model wrote nothing'
+    assert [i.text for i in failure.inputs] == [TEXT]
+    assert state.walls == (), 'a turn error is never read as an allowance wall'
+
+
+@pytest.mark.parametrize('error,parts,output,message', [
+    ({'name': 'SyntheticProviderError', 'data': {'message': 'Invented'}}, [{'type': 'text', 'text': 'Partial invented answer'}],
+     True, 'Invented'),
+    ({'name': 'SyntheticProviderError', 'data': {}}, [], None, 'error details unavailable'),
+    ({'message': 'Invented top-level message'}, [], None, 'Invented top-level message'),
+], ids=['model-output', 'no-message', 'top-level-message'])
+def test_opencode_error_output_and_words_are_read_from_the_record_only(tmp_path, error, parts, output, message):
+    failure = opencode_error_turn(tmp_path, error, parts)[0].failure
+    assert failure.kind == 'program error' and failure.model_output is output and failure.message == message
+
+
+def test_an_opencode_interrupt_ends_the_turn_and_fails_nothing(tmp_path):
+    """The pinned record names an interrupted step MessageAbortedError: the door's own interrupt must not hold it."""
+    state, turns = opencode_error_turn(tmp_path, {'name': 'MessageAbortedError', 'data': {'message': 'Aborted'}})
+    assert state.turn_open is False and state.failure is None and turns[-1].failure is None

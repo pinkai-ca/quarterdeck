@@ -24,6 +24,7 @@ DATA_PREFIX = "data-"
 RECORD = Path("opencode") / "opencode.db"
 RUNNING = {"pending", "running"}
 ENDS_TURN = ("stop", "length", "content-filter")
+ABORTED = "MessageAbortedError"  # the program's name for an interrupted step, as the pinned 1.19.5 record shows
 
 
 def _ms(value) -> datetime | None:
@@ -198,10 +199,12 @@ class _Session:
         if closed:
             self.ended_at = ended if timed else None
             failure = None
-            if completed and last.get('error'):  # law: record-first
+            error = _object(last.get('error'))
+            # An interrupt, the person's or the door's, is recorded as an error named MessageAbortedError; it ends the turn
+            # without failing it, so it neither holds the door nor unsettles the interrupted message.
+            if completed and last.get('error') and error.get('name') != ABORTED:  # law: record-first
                 from .failures import words
                 from .types import TurnFailure
-                error = _object(last['error'])
                 detail = error.get('message') or _object(error.get('data')).get('message')
                 activity = any(p.get('type') in ('tool', 'reasoning') or p.get('type') == 'text' and p.get('text')
                                for _, parts in steps for p in parts)  # model output; no proof of its absence is recorded

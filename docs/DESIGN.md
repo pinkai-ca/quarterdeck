@@ -273,7 +273,7 @@ What each adapter's record shows, by the evidence it was measured on:
 | --- | --- | --- | --- |
 | Codex 0.166.0 | `task_complete.error` with `message` and `codex_error_info`, `last_agent_message` null | `codex_error_info` `cyber_policy`, the only one; any other code or none is a provider error | absent only with complete known rows; real refusals usually carry reasoning or output tokens |
 | pi 0.74.2 | assistant `stopReason` `error` with `errorMessage` (adapter source; synthetic test) | none known | never proved absent |
-| OpenCode 1.19.5 | the closing step's `error` (adapter source) | none known | never proved absent |
+| OpenCode 1.19.5 | the closing step's `error`, except `MessageAbortedError`, an interrupt (pinned record; synthetic test) | none known | never proved absent |
 | Claude Code 2.1.317 | API errors are synthetic assistant rows already read as a wall or a login | unknown for this version; a later, unpinned version has been seen to write a refusal stop with a companion row, not yet measured into fixtures | unknown |
 | Grok 1.0.77, Antigravity 1.5.x | only native rate-limit and quota errors, read as walls | unknown | unknown |
 
