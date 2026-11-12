@@ -42,6 +42,16 @@ def upgraded(drydock, tmp_path, monkeypatch):
     with tarfile.open(fileobj=archive,mode='w') as bundle:
         bundle.add(framework,arcname='standing-orders')
         bundle.add(drydock,arcname='ships/drydock',filter=lambda info:None if '/runtime' in info.name else info)
+        declaration={}
+        for member in bundle.getmembers():
+            if member.isfile():
+                destination='share/quarterdeck/'+Path(member.name).parent.as_posix()
+                declaration.setdefault(destination,[]).append(member.name)
+        metadata=('[tool.setuptools.data-files]\n'+''.join(
+            f'{json.dumps(destination)} = {json.dumps(sorted(names))}\n'
+            for destination,names in sorted(declaration.items()))).encode()
+        info=tarfile.TarInfo('pyproject.toml');info.size=len(metadata)
+        bundle.addfile(info,BytesIO(metadata))
     def git(repo,*args):
         return (NEW+'\n').encode() if args[0]=='rev-parse' else archive.getvalue()
     monkeypatch.setattr(install,'source_repo',lambda ship:tmp_path)
