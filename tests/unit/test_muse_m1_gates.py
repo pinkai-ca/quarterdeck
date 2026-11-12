@@ -274,3 +274,18 @@ def test_the_off_notice_is_not_misread_as_contributor_on_and_a_contributor_recor
     assert muse_screen.read(composer(above=CONTRIBUTOR_OFF_NOTICE + "\n")).interruption is None
     held = MuseHarness().delivery_obstruction(State(model="synthetic-catalog-model-contributor"), None)
     assert held and "contributor" in held
+
+
+@pytest.mark.parametrize("option", ["Switch to Spark", "Turn on contributor mode"])
+def test_a_model_or_data_use_option_without_its_title_still_holds(option):
+    """The captain's rule: either label anywhere names a held quota offer; a quoted line is a safe false hold."""
+    for text in (composer(above=f"  {option}\n"), offer(option, title=False) + composer(),
+                 offer(option, title=False, wrap=True) + composer()):
+        screen = muse_screen.read(text)
+        assert screen.interruption in muse_screen.MODEL_CHOICES and screen.box is None
+        assert MuseHarness().delivery_obstruction(None, screen)
+
+
+def test_keep_going_alone_is_too_ordinary_to_hold():
+    screen = muse_screen.read(composer(above="  Keep going\n"))
+    assert screen.interruption is None and screen.box == ""
