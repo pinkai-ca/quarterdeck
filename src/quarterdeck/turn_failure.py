@@ -112,8 +112,9 @@ def current(seat: Seat) -> TurnFailure | None:
     """The latest ended turn's failure in the seat's own record; a later turn clears it."""
     if seat.session.human:
         return cached(seat)
+    read = getattr(seat, 'record', None)  # a reading-only stand-in without a record shows no failure
     try:
-        record = seat.record()
+        record = read() if read is not None else None
         return getattr(seat.harness.state(record), 'failure', None) if record is not None else None  # law: record-first
     except OSError:
         return None  # the unreadable record is reported by the ordinary reading
