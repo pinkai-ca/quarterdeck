@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import textwrap
@@ -66,6 +67,35 @@ def tool(*args: str, cwd: Path, env: dict | None = None, timeout: float = 300) -
                           capture_output=True, text=True, timeout=timeout)
 
 
+LEAP_SECONDS = 86400.0
+LEAP = r'''
+import pathlib, sys, time, types
+sys.dont_write_bytecode = True
+tool, gate, leap = pathlib.Path(sys.argv[1]), sys.argv[2], float(sys.argv[3])
+sys.path.insert(0, str(tool.parent))
+from testrunner import cli, run
+project, real, leapt = pathlib.Path.cwd(), time.monotonic, []
+def monotonic():
+    if not leapt and next(project.glob(gate), None) is not None:
+        leapt.append(real())
+        print(f"leapt at {leapt[0]!r}", file=sys.stderr, flush=True)
+    return real() + (leap if leapt else 0.0)
+run.time = types.SimpleNamespace(monotonic=monotonic, time=time.time, sleep=time.sleep, strftime=time.strftime)
+sys.exit(cli.main(sys.argv[4:], [tool, *sorted((tool.parent / "testrunner").glob("*.py"))]))
+'''
+
+
+def tool_at_phase(gate: str, *args: str, cwd: Path, timeout: float = 300) -> tuple[subprocess.CompletedProcess, float]:
+    """The tool, its time-limit clock alone leaping a day ahead when ``gate`` (a glob under the project) first
+    exists, so the limit ends the run in the phase the gate marks, however fast setup is. The real time of the
+    leap is returned, on the system-wide monotonic clock."""
+    done = subprocess.run([sys.executable, '-I', '-c', LEAP, str(TOOL), gate, str(LEAP_SECONDS), *args], cwd=cwd,
+                          env=dict(os.environ), capture_output=True, text=True, timeout=timeout)
+    leapt = re.search(r'^leapt at (\S+)$', done.stderr, re.M)
+    assert leapt, 'the gate never opened, so no limit was forced:\n' + done.stdout + done.stderr
+    return done, float(leapt.group(1))
+
+
 def start(*args: str, cwd: Path) -> subprocess.Popen:
     return subprocess.Popen([sys.executable, '-I', str(TOOL), *args], cwd=cwd, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True)
@@ -118,4 +148,17 @@ def test_waits():
         if release.exists():
             return
         time.sleep(0.1)
+'''
+
+
+COLLECTION_WAIT = '''
+import os, pathlib, time
+marker = pathlib.Path(os.environ["TMPDIR"]) / "collecting"
+marker.write_text(str(os.getpid()))
+for _ in range(1200):
+    if marker.with_name("release").exists():
+        break
+    time.sleep(0.1)
+def test_collected_late():
+    pass
 '''

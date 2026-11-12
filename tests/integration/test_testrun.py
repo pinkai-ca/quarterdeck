@@ -6,8 +6,8 @@ import signal
 import time
 
 from tests.conftest import ROOT, git
-from tests.integration.testrun_synthetic import (TOOL, WAIT_TEST, admin_entries, make, result, results, scratch,
-                                                 start, started_marker, tool, wait_for)
+from tests.integration.testrun_synthetic import (COLLECTION_WAIT, TOOL, WAIT_TEST, admin_entries, make, result, results,
+                                                 scratch, start, started_marker, tool, tool_at_phase, wait_for)
 
 
 def leaves_only_the_fixed_ending(project, failures=0):
@@ -125,16 +125,57 @@ def test_no_tests_is_its_own_ending(tmp_path):
     leaves_only_the_fixed_ending(project)
 
 
-def test_the_time_limit_stops_the_run_and_still_leaves_the_fixed_ending(tmp_path):
-    project, worktree = make(tmp_path, {'test_wait.py': WAIT_TEST})
-    began = time.monotonic()
-    done = tool('run', '--target', str(worktree), '-n', '0', '--timeout', '8', cwd=project)
+# The time limit is forced in a chosen phase by a test-owned clock that leaps past it when the phase's gate first
+# exists. The limit then cannot run out in setup on a slow machine and pass for, or fail, the phase under test.
+LIMIT = '600'  # never reached in real time: only the leap ends these runs
+
+
+def timed_out_with_the_fixed_ending(project, done, leapt):
     assert done.returncode == 3, done.stdout + done.stderr
-    assert time.monotonic() - began < 90
+    assert time.monotonic() - leapt < 90, 'the run did not stop promptly once its limit had passed'
     found = result(project)
-    assert found['outcome']['status'] == 'timeout' and set(found['evidence']['counts'].values()) == {None}
-    assert 'tests/test_wait.py::test_waits' in found['evidence']['missing']
+    assert found['outcome']['status'] == 'timeout' and found['outcome']['note'] == f'time limit of {float(LIMIT)} s'
+    assert not found['evidence']['complete'] and set(found['evidence']['counts'].values()) == {None}
     leaves_only_the_fixed_ending(project)
+    return found
+
+
+def test_a_time_limit_after_collection_names_what_never_finished_and_leaves_the_fixed_ending(tmp_path):
+    project, worktree = make(tmp_path, {'test_wait.py': WAIT_TEST})
+    done, leapt = tool_at_phase('.testruns/runs/*/tmp/started', 'run', '--target', str(worktree), '-n', '0',
+                                '--timeout', LIMIT, cwd=project)
+    found = timed_out_with_the_fixed_ending(project, done, leapt)
+    evidence = found['evidence']
+    assert evidence['expected'] == 2 and evidence['terminal'] == 1, 'collection was known when the limit ended it'
+    assert evidence['missing'] == ['tests/test_wait.py::test_waits']
+    assert evidence['observed_at_least']['passed'] == 1
+
+
+def test_a_time_limit_during_setup_is_a_timeout_that_names_no_test(tmp_path):
+    """The shape GitHub's slower runners showed: the limit ends the run before pytest starts, so nothing was
+    collected and no test can be named as missing."""
+    project, worktree = make(tmp_path, {'test_wait.py': WAIT_TEST})
+    done, leapt = tool_at_phase('.testruns/runs/*/venv', 'run', '--target', str(worktree), '-n', '0',
+                                '--timeout', LIMIT, cwd=project)
+    found = timed_out_with_the_fixed_ending(project, done, leapt)
+    evidence = found['evidence']
+    assert 'argv' not in found and found['outcome']['pytest_exit'] is None, 'pytest never started'
+    assert 'the evidence plugin never started' in evidence['causes']
+    assert evidence['missing'] == [] and evidence['terminal'] == 0
+    assert set(evidence['observed_at_least'].values()) == {0}
+
+
+def test_a_time_limit_during_collection_is_a_timeout_that_names_no_test(tmp_path):
+    """pytest has started but not finished collecting: what it would have run is unknown, not empty."""
+    project, worktree = make(tmp_path, {'test_wait.py': WAIT_TEST, 'test_slow_collection.py': COLLECTION_WAIT})
+    done, leapt = tool_at_phase('.testruns/runs/*/tmp/collecting', 'run', '--target', str(worktree), '-n', '0',
+                                '--timeout', LIMIT, cwd=project)
+    found = timed_out_with_the_fixed_ending(project, done, leapt)
+    evidence = found['evidence']
+    assert found['outcome']['pytest_exit'] == 2 and evidence['plugin'], 'pytest started and was interrupted'
+    assert 'internal error or interruption recorded' in evidence['causes']
+    assert evidence['missing'] == [] and evidence['terminal'] == 0
+    assert set(evidence['observed_at_least'].values()) == {0}
 
 
 def test_an_interruption_stops_the_runs_own_group_and_leaves_the_fixed_ending(tmp_path):
