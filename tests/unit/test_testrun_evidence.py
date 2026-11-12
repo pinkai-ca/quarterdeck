@@ -179,6 +179,44 @@ def test_every_xdist_worker_must_have_completed_its_own_collection(tmp_path):
     assert evidence.analyse(tmp_path / 'f', None)['expected'] == 2
 
 
+def test_a_started_or_lost_worker_without_its_own_marked_collection_leaves_the_collection_partial(tmp_path):
+    ids = ['t::a', 't::b']
+    nodes = [{'kind': 'node_collected', 'node': node, 'nodeids': ids} for node in ('gw0', 'gw1')]
+    marked = {'kind': 'collected', 'nodeids': ids, 'complete': True}
+    for folder, extra in (('started', None), ('lost', 'gw2')):
+        down = [{'kind': 'node_down', 'node': extra, 'error': 'synthetic worker lost'}] if extra else []
+        write(tmp_path / folder, 'main', START_2, *nodes, *down)
+        for node in ('gw0', 'gw1'):
+            write(tmp_path / folder, node, START_2, marked)
+        if not extra:
+            write(tmp_path / folder, 'gw2', START_2)  # its recorder started; no collection arrived
+        found = evidence.analyse(tmp_path / folder, None)
+        assert found['collection'] == 'partial' and found['expected'] is None, folder
+        assert found['missing'] == ids, 'what the reporting workers collected stays named'
+
+
+def test_versions_that_differ_or_are_missing_leave_the_collection_unverified(tmp_path):
+    marked = {'kind': 'collected', 'nodeids': ['t::a'], 'complete': True}
+    unversioned = {key: value for key, value in START.items() if key != 'plugin'}
+    for folder, first in (('mixed', START), ('missing', unversioned)):
+        write(tmp_path / folder, 'main', first, {'kind': 'node_collected', 'node': 'gw0', 'nodeids': ['t::a']})
+        write(tmp_path / folder, 'gw0', START_2, marked)
+        found = evidence.analyse(tmp_path / folder, None)
+        assert found['collection'] == 'unverified' and found['expected'] is None, folder
+        assert any(cause.startswith('evidence plugin versions differ or are missing') for cause in found['causes'])
+        assert found['missing'] == ['t::a']
+        text = report.render(dict(BASE, evidence=found), '', [])
+        assert report.COLLECTION_UNVERIFIED in text and report.PLUGIN_1 not in text
+
+
+def test_a_collection_recorded_with_no_start_is_not_complete(tmp_path):
+    write(tmp_path / 'e', 'main', {'kind': 'collected', 'nodeids': ['t::a'], 'complete': True},
+          {'kind': 'finish', 'exitstatus': 1})
+    found = evidence.analyse(tmp_path / 'e', 1)
+    assert found['collection'] == 'unverified' and found['expected'] is None and not found['complete']
+    assert 'the evidence plugin never started' in found['causes']
+
+
 def test_plugin_1_evidence_is_read_as_before_and_the_report_says_so(tmp_path):
     write(tmp_path / 'e', 'main', START, {'kind': 'collected', 'nodeids': ['t::a']},
           {'kind': 'interrupt', 'text': 'KeyboardInterrupt'}, {'kind': 'finish', 'exitstatus': 2})

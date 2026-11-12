@@ -56,7 +56,9 @@ NEVER_COLLECTED_DURING = ('Collection never finished: pytest started and the run
                           'would have run is unknown.')
 COLLECTION_INTERRUPTED = ('Collection was interrupted: pytest recorded only part of it, so what it would have run is '
                           'unknown.')
-PARTIAL_MISSING = 'Never reached a terminal report (partial, at least these, since collection did not finish)'
+COLLECTION_UNVERIFIED = ('A collection was recorded, but the evidence plugin versions of its processes differ or are '
+                         'missing, so whether it completed is unknown.')
+PARTIAL_MISSING = 'Never reached a terminal report (partial, at least these: collection is not known to have finished)'
 PLUGIN_1 = ('Read under evidence plugin version 1, which does not mark a completed collection: a recorded collection '
             'is taken as complete.')
 
@@ -87,16 +89,18 @@ def render(result: dict, console: str, failures: list[dict]) -> str:
         out.append('Observed at least: ' + ', '.join(f'{key} {value}' for key, value in observed.items()) +
                    f'; collection errors {evidence.get("collection_errors")}; '
                    f'expected {"unknown" if expected is None else expected}, reached terminal {evidence.get("terminal")}')
-        partial = evidence.get('collection') == 'partial'
-        if partial:
+        partial = evidence.get('collection') in ('partial', 'unverified')
+        if evidence.get('collection') == 'partial':
             out.append(COLLECTION_INTERRUPTED)
+        elif evidence.get('collection') == 'unverified':
+            out.append(COLLECTION_UNVERIFIED)
         elif expected is None:
             out.append(NEVER_COLLECTED_DURING if evidence.get('plugin') else NEVER_COLLECTED_SETUP)
         if evidence.get('missing'):
             out.append(f'{PARTIAL_MISSING if partial else "Never reached a terminal report"} '
                        f'({len(evidence["missing"])}):')
             out.append(block('\n'.join(evidence['missing'])))
-    if any(version < 2 for version in evidence.get('plugin') or []):
+    if evidence.get('plugin') == [1] and evidence.get('collection') != 'unverified':
         out.append(PLUGIN_1)
     out += ['', '## Failures', '']
     if not failures:

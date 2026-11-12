@@ -2,8 +2,9 @@
 failure's complete text. A count is stated only when the events prove the run complete; otherwise it is
 ``None`` (unknown) and the observed figure is given as a lower bound. Known collection errors stay known. With
 no collection recorded, or only part of one, the expected count is ``None`` too: what pytest would have run is
-unknown, not empty. Evidence plugin 2 marks a collection that completed; plugin 1 evidence, which cannot tell,
-is read as before: a recorded collection is taken as complete."""
+unknown, not empty. Evidence plugin 2 marks a collection that completed, and every recorded process must have
+marked its own; plugin 1 evidence, which cannot tell, is read as before when every process reports version 1: a
+recorded collection is taken as complete. Versions that differ or are missing leave the collection unverified."""
 from __future__ import annotations
 
 import json
@@ -43,6 +44,11 @@ def category(report: dict) -> str | None:
     return None
 
 
+def marked_complete(events: list[dict]) -> bool:
+    """Whether these events hold a collection its recorder marked complete (evidence plugin 2)."""
+    return any(event['kind'] == 'collected' and event.get('complete') is True for event in events)
+
+
 def analyse(folder: Path, pytest_exit: int | None) -> dict:
     events, problems = load(folder)
     main = events.get('main', [])
@@ -53,21 +59,31 @@ def analyse(folder: Path, pytest_exit: int | None) -> dict:
         if event['kind'] == 'node_collected':
             node_sets[event['node']] = event['nodeids']
     xdist = bool(node_sets) or any(role != 'main' for role in events)
-    expected, collection_agreed, completed = [], True, False
+    expected, collection_agreed = [], True
     collected = [event for event in main if event['kind'] == 'collected']
-    marked = bool(starts) and all(isinstance(event.get('plugin'), int) and event['plugin'] >= 2 for event in starts)
+    versions = [event.get('plugin') for event in starts]
+    legacy = bool(versions) and all(type(version) is int and version == 1 for version in versions)
+    marked = bool(versions) and all(type(version) is int and version >= 2 for version in versions)
+    # Every recorded worker counts: those the controller knows (a collection or a node going down) and every
+    # worker whose own recorder started. Each must have marked its own collection complete; none is inferred.
+    workers = (set(node_sets) | {event['node'] for event in main if event['kind'] == 'node_down'}
+               | {role for role, items in events.items() if role != 'main' and any(e['kind'] == 'start' for e in items)})
     if node_sets:
         sets = [tuple(ids) for ids in node_sets.values()]
         collection_agreed = all(set(ids) == set(sets[0]) for ids in sets)
         expected = sorted(set().union(*map(set, sets)))
-        # each worker's own collection must have completed; the controller's set comes from the same finally
-        completed = all(any(event['kind'] == 'collected' and event.get('complete') for event in events.get(node, []))
-                        for node in node_sets)
     elif collected:
         expected = collected[-1]['nodeids']
-        completed = bool(collected[-1].get('complete'))
-    collection = ('none' if not (node_sets or collected) else
-                  'complete' if completed or not marked else 'partial')
+    completed = (all(marked_complete(events.get(worker, [])) for worker in workers)
+                 and (bool(node_sets) or marked_complete(collected[-1:])))
+    if not (node_sets or collected):
+        collection = 'none'
+    elif legacy:
+        collection = 'complete'  # plugin 1 cannot tell a completed collection: read as before
+    elif not marked:
+        collection = 'unverified'  # versions differ or are missing: whether it completed is unknown
+    else:
+        collection = 'complete' if completed else 'partial'
     collection_known = collection == 'complete'
     deselected = sorted({nodeid for role in events.values() for event in role if event['kind'] == 'deselected'
                          for nodeid in event['nodeids']})
@@ -104,6 +120,9 @@ def analyse(folder: Path, pytest_exit: int | None) -> dict:
         causes.append('collection never finished (no collection was recorded)')
     elif collection == 'partial':
         causes.append('collection interrupted: the recorded collection is partial')
+    elif collection == 'unverified':
+        causes.append('evidence plugin versions differ or are missing across processes: whether the recorded '
+                      'collection completed is unknown')
     if problems:
         causes.append('torn evidence lines')
     if not collection_agreed:
