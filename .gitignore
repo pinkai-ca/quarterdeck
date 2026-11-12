@@ -7,6 +7,7 @@ ships/*
 ships/*/runtime/
 # Worktrees for work on the framework itself live here, inside the project folder.
 work/
+!ships/forum/work/
 # Test runs, their results and reports, and the native test sockets (tests/testrun.py, tests/conftest.py).
 .testruns/
 

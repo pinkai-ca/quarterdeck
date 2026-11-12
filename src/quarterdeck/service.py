@@ -338,8 +338,10 @@ class Service:
     def groups(self) -> None:
         """Recover fixed group copies and publish one all-filed or failure notice."""
         from . import group_post
-        group_post.advance(self.ship, self.store,
-                           lambda name, copy: group_post.member_failure(self, name, copy))
+        changed = group_post.advance(self.ship, self.store,
+                                     lambda name, copy: group_post.member_failure(self, name, copy))
+        for request, reason in changed:
+            self.log('group-held', request=request, reason=reason)
 
     def requests(self) -> None:
         """Each request answered alone, in name order: none keeps a later one waiting.

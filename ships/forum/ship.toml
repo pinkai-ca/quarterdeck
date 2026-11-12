@@ -3,7 +3,7 @@
 [ship]
 name = "forum"
 operator = "operator"
-workspace = "."
+workspace = "work"
 
 [pools.claude]
 provider = "anthropic"

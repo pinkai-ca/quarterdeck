@@ -121,7 +121,9 @@ def amends(message: post.Message, root: post.Message, seat: str,
     """Whether a message addressed to the seat in an open root's thread changes what the root asks.
 
     Decided by the explicit reply graph and the senders alone, never by what a
-    body says. It amends when it answers one of the seat's own questions (its
+    body says. A ship report addressed to the seat directly on the open root
+    amends it, so terminal notices survive a fresh context. It also amends
+    when it answers one of the seat's own questions (its
     nearest message from the seat, below the root, is that question), whoever
     sent it; or when the root's own sender sent it, unless it is a report or
     an answer replying directly to an order the seat gave: that closes or
@@ -131,6 +133,9 @@ def amends(message: post.Message, root: post.Message, seat: str,
     history too; open messages are roots of their own.
     """
     parent = thread.get(message.re) if message.re else None
+    if (message.sender == post.SHIP and message.kind == 'report' and message.to == seat
+            and root.to == seat and message.re == root.id):
+        return True
     if (message.kind == 'answer' and (own := _nearest_own(message, root, seat, thread)) is not None
             and own.kind == 'question'):
         return True

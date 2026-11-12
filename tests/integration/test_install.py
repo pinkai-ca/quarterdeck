@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from quarterdeck import cli, doctor, install
+from quarterdeck import cli, doctor, install, sandbox
 from quarterdeck.ship import load
 from quarterdeck.tmux import Tmux
 
@@ -41,13 +41,26 @@ def test_upgrade_installs_the_checkout_as_the_ships_own_copy_and_qd_hands_off_to
     brief = subprocess.run([str(installed_qd), "--ship", str(drydock), "brief", "captain"], env=env, capture_output=True, text=True, timeout=60)
     assert brief.stdout.startswith("# Standing orders for Picard"), "the installed copy carries the laws and the cards"
     forum = drydock / 'runtime/venv/share/quarterdeck/ships/forum'
-    for relative in ('ship.toml', 'orders.md', 'roles/lead.md', 'roles/reviewer.md', 'README.md'):
+    for relative in ('ship.toml', 'orders.md', 'roles/lead.md', 'roles/reviewer.md', 'README.md', 'work/README.md'):
         assert (forum / relative).read_bytes() == (ROOT / 'ships/forum' / relative).read_bytes()
     forum_brief = subprocess.run([str(installed_qd), '--ship', str(forum), 'brief', 'lead'],
                                 env=env, capture_output=True, text=True, timeout=60)
     assert forum_brief.returncode == 0, forum_brief.stderr
     assert 'You combine independent reviews.' in forum_brief.stdout
     assert 'Every reviewer receives the same brief, byte for byte.' in forum_brief.stdout
+    # Positive launch-plan construction only; no provider or native sandbox runs.
+    template = load(forum)
+    local = template.seat('reviewer-4')
+    assert template.jailed(local)
+    assert template.cwd_of(local) == forum / 'work'
+    assert (template.cwd_of(local) / 'README.md').is_file()
+    monkeypatch.setattr(sandbox, 'available', lambda: True)
+    monkeypatch.setattr(sandbox, 'program_folders', lambda *args: [])
+    monkeypatch.setattr(sandbox, 'git_identity', lambda workspace: ())
+    planned = sandbox.plan(template, local.name, template.runtime / 'seats' / local.name,
+                           template.runtime / 'seats' / local.name / 'home', template.cwd_of(local),
+                           sys.executable, '', home=drydock / 'synthetic-operator')
+    assert planned.workspace == forum / 'work'
     laws = subprocess.run([str(installed_qd), "laws"], env=env, capture_output=True, text=True, timeout=60).stdout
     assert "one-door" in laws and "quarterdeck/door.py" in laws and "carried nowhere" not in laws
     typed = subprocess.run([str(Path(sys.executable).parent / "qd"), "--ship", str(drydock), "doctor"], env=env, capture_output=True, text=True, timeout=120)

@@ -6,11 +6,17 @@ all reply to that root. The journal adds no fields to the immutable Message form
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
 from . import durable, post
 from .ship import Ship, ShipError
+
+FAILURE_REASONS = frozenset({'member no longer declared', 'provider refused this copy',
+                             'owned pane is dead', 'held at limit with no eligible destination'})
+HOLD_REASONS = frozenset({'group journal is malformed JSON', 'group evidence is inconsistent',
+                          'group evidence is unreadable', 'group coordination could not finish'})
 
 
 def _folder(ship: Ship) -> Path:
@@ -60,6 +66,14 @@ def _load(path: Path) -> dict:
         notice = _message(data['notice'])
         if notice.to != root.to or notice.sender != post.SHIP or notice.kind != 'report' or notice.re != root.id:
             raise ShipError(f'inconsistent group notice in {path}; retained')
+    failed = data.get('failed', {})
+    members = {m.id: m.to for m in copies}
+    if (not isinstance(failed, dict) or any(
+            identity not in members or not isinstance(outcome, dict)
+            or set(outcome) != {'member', 'reason'} or outcome['member'] != members[identity]
+            or not isinstance(outcome['reason'], str) or outcome['reason'] not in FAILURE_REASONS
+            for identity, outcome in failed.items())):
+        raise ShipError(f'inconsistent member outcomes in {path}; retained')
     return data
 
 
@@ -106,7 +120,7 @@ def submit(ship: Ship, store: post.Store, group_name: str, sender: str, body: st
                 copies.append(post.Message(copy.id, copy.kind, copy.sender, copy.to, copy.at,
                                            copy.body, root.id, copy.subject, copy.due, copy.speed))
             data = dict(format=1, group=group_name, lead=group.lead,
-                        root=_encoded(root), copies=[_encoded(m) for m in copies], notice=None)
+                        root=_encoded(root), copies=[_encoded(m) for m in copies], notice=None, failed={})
             _save(path, data)  # intent precedes every immutable post
         _fanout(store, data)
         return root, tuple(_message(item) for item in data['copies'])
@@ -118,42 +132,113 @@ def _fanout(store: post.Store, data: dict) -> None:
         _publish(store, _message(item))
 
 
-def advance(ship: Ship, store: post.Store, failures=None) -> None:
+def advance(ship: Ship, store: post.Store, failures=None) -> list[tuple[str, str]]:
     """Recover partial fanouts and finish groups, from local evidence only.
 
     ``failures(member, copy)`` returns a fixed, content-free reason or None. No
-    deadline or missing report alone proves failure. Filed reports take priority.
-    Membership is the saved snapshot, even if the declaration changes later.
+    deadline or missing report alone proves failure. Positive member outcomes are
+    saved for this copy alone; filed reports take priority before the final notice.
+    Return newly changed held-group errors, for logging after the whole pass.
     """
     folder = _folder(ship)
     if not folder.exists():
-        return
+        return []
+    changed = []
     with post.admission(ship.runtime, '@groups'):
         for path in sorted(folder.glob('*.json')):
-            data = _load(path)
-            _fanout(store, data)
-            if data['notice'] is None:
-                copies = [_message(item) for item in data['copies']]
-                reports = {m.to: report for m in copies if (report := store.closing_report(m)) is not None}
-                failed = {m.to: reason for m in copies if m.to not in reports and failures is not None
-                          and (reason := failures(m.to, m))}
-                if len(reports) != len(copies) and not failed:
-                    continue
-                root = _message(data['root'])
-                title = 'all filed' if len(reports) == len(copies) else 'member failed'
-                lines = [f'group {data["group"]} · {root.id} · {title}', '', 'Filed reports:']
-                lines += [f'- {member}: {report.id}' for member, report in reports.items()] or ['- none']
-                if failed:
-                    lines += ['', 'Failed members:'] + [f'- {member}: {reason}' for member, reason in failed.items()]
-                pending = [m.to for m in copies if m.to not in reports and m.to not in failed]
-                if pending:
-                    lines += ['', 'Not yet filed: ' + ', '.join(pending)]
-                lines += ['', 'Combine only the filed reports, retain every dissent, and add no new judgment.',
-                          f'Report once to {root.sender} with qd post report --re {root.id}.']
-                notice = store.prepare('report', post.SHIP, data['lead'], '\n'.join(lines), re=root.id)
-                data['notice'] = _encoded(notice)
-                _save(path, data)  # a cut before/after publication reuses this notice
-            _publish(store, _message(data['notice']))
+            try:
+                _advance_one(path, store, failures)
+                hold = ship.runtime / 'post/group-holds' / path.name
+                if hold.exists():
+                    hold.unlink()
+                    durable.sync_folder(hold.parent)
+            except Exception as error:  # one malformed journal cannot stall healthy groups
+                reason = _error_reason(error)
+                if _hold(ship.runtime, path, reason):
+                    changed.append((path.stem, reason))
+    return changed
+
+
+def _advance_one(path: Path, store: post.Store, failures) -> None:
+    data = _load(path)
+    _fanout(store, data)
+    if data['notice'] is None:
+        copies = [_message(item) for item in data['copies']]
+        reports = {m.to: report for m in copies if (report := store.closing_report(m)) is not None}
+        outcomes = dict(data.get('failed', {}))
+        for copy in copies:
+            if copy.to not in reports and copy.id not in outcomes and failures is not None:
+                reason = failures(copy.to, copy)
+                if reason is not None:
+                    if reason not in FAILURE_REASONS:
+                        raise ShipError('unknown group member outcome')
+                    outcomes[copy.id] = dict(member=copy.to, reason=reason)
+        if outcomes != data.get('failed', {}):
+            data['failed'] = outcomes
+            _save(path, data)
+        failed = {m.to: outcomes[m.id]['reason'] for m in copies if m.to not in reports and m.id in outcomes}
+        if len(reports) + len(failed) != len(copies):
+            return
+        root = _message(data['root'])
+        title = 'all filed' if len(reports) == len(copies) else 'member failed'
+        lines = [f'group {data["group"]} · {root.id} · {title}', '', 'Filed reports:']
+        lines += [f'- {member}: {report.id}' for member, report in reports.items()] or ['- none']
+        if failed:
+            lines += ['', 'Failed members:'] + [f'- {member}: {reason}' for member, reason in failed.items()]
+        lines += ['', 'Every member has filed or positively failed.',
+                  'Combine only the filed reports, retain every dissent, and add no new judgment.',
+                  f'Report once to {root.sender} with qd post report --re {root.id}.']
+        notice = store.prepare('report', post.SHIP, data['lead'], '\n'.join(lines), re=root.id)
+        data['notice'] = _encoded(notice)
+        _save(path, data)  # a cut before/after publication reuses this notice
+    _publish(store, _message(data['notice']))
+
+
+def _error_reason(error: Exception) -> str:
+    if isinstance(error, json.JSONDecodeError):
+        return 'group journal is malformed JSON'
+    if isinstance(error, (ShipError, ValueError, KeyError, TypeError)):
+        return 'group evidence is inconsistent'
+    if isinstance(error, OSError):
+        return 'group evidence is unreadable'
+    return 'group coordination could not finish'
+
+
+def _hold(runtime: Path, journal: Path, reason: str) -> bool:
+    try:
+        signature = hashlib.sha256(journal.read_bytes()).hexdigest()
+    except OSError:
+        signature = hashlib.sha256(b'unreadable').hexdigest()
+    data = dict(format=1, request=journal.stem, reason=reason, signature=signature)
+    path = runtime / 'post/group-holds' / journal.name
+    try:
+        if json.loads(path.read_text()) == data:
+            return False
+    except (OSError, ValueError):
+        pass
+    _save(path, data)
+    return True
+
+
+def holds(runtime: Path) -> list[str]:
+    """Read-only derived operational holds; never parse review bodies or repair state."""
+    folder = runtime / 'post/group-holds'
+    try:
+        paths = sorted(folder.glob('*.json'))
+    except OSError:
+        return ['groups held: hold evidence unreadable']
+    lines = []
+    for path in paths:
+        reason = 'hold evidence unreadable'
+        try:
+            data = json.loads(path.read_text())
+            if (data['format'] == 1 and data['request'] == path.stem
+                    and data['reason'] in HOLD_REASONS and isinstance(data['signature'], str)):
+                reason = data['reason']
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        lines.append(f'{post.short_of(path.stem)} group held: {reason}')
+    return lines
 
 
 def member_failure(service, name: str, copy: post.Message) -> str | None:
@@ -164,25 +249,42 @@ def member_failure(service, name: str, copy: post.Message) -> str | None:
     """
     if name not in service.ship.seats:
         return 'member no longer declared'
-    from . import quota, refusal
+    from . import refusal
     if copy.id in refusal.excluded(service.runtime, name):
         return 'provider refused this copy'
+    return current_seat_failure(service, name)
+
+
+def current_seat_failure(service, name: str) -> str | None:
+    """Positive current dead/held-limit evidence, also usable without an order.
+
+    This bounded common observation never reads a refusal journal. None means
+    no proved terminal failure, including missing or transitioning lifecycle
+    evidence. No readiness is disarmed and no provider allowance is refreshed.
+    """
+    from . import watch
+    from .tmux import TmuxError
+
+    if name not in service.ship.seats:
+        return None
     try:
         seat = service.seat(name)
-    except ShipError:
-        return None  # unresolved selection is not a proved member failure
-    launched = seat.launched()
-    if launched is None:
+        # Observe under the existing lifecycle lock without disarming readiness
+        # or beginning a transition. A busy/unknown transition remains pending.
+        with seat._lifecycle(automatic=True):
+            launched = seat.launched()
+            if launched is None:
+                return None
+            pane = seat.pane()
+            if pane is None:
+                return None  # absence alone is not a positively settled failure
+            reason = None
+            if pane.dead:
+                reason = 'owned pane is dead'
+            else:
+                held, unknown = watch.limit_holds(service.ship, [seat])
+                if name in held and not unknown:
+                    reason = 'held at limit with no eligible destination'
+            return reason if seat.launched() == launched else None
+    except (ShipError, OSError, TmuxError):
         return None
-    pane = seat.pane()
-    if pane is not None and pane.dead:
-        return 'owned pane is dead'
-    if pane is None:
-        # A matching saved launch with an absent pane is positively down. A
-        # reused pane id belongs to someone else, so it supplies no failure fact.
-        if service.tmux.pane(launched.pane) is None:
-            return 'saved launch pane is absent'
-        return None
-    if quota.current_walled(seat, service.ledger):
-        return 'current pool is at its wall'
-    return None

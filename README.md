@@ -31,10 +31,10 @@ A ship of your own is a folder under `ships/`, its own git repository, holding a
 Set its pools and models for your machine, install it with `qd upgrade`, and bring
 it up with `qd up`. `qd post order --to reviewers --body-file brief.txt` files the
 same brief to each declared member under one request. The service tells the lead
-once when all have filed, or names a member that cannot proceed; the lead's card
+once when every member has filed or positively failed, naming any failures; the lead's card
 requires one combined report preserving dissent and adding no new analysis.
 Groups accept orders only. Each inbox and launch carries its own messages; the
-shared store stays readable, so reviewer independence is enforced by the cards.
+shared store stays readable and writable, so reviewer independence is instruction-only.
 
 The example ship's names follow its Star Trek theme. Scott, the engineer, is addressed as `scott` in the commands below.
 

@@ -1,14 +1,20 @@
 """Synthetic group orders and crash recovery; no program or provider is invoked."""
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from dataclasses import replace
+from datetime import timedelta
 import json
 import io
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import cli, group_post, post, ship as shipmod, thread_context
+from quarterdeck import cli, group_post, post, service, ship as shipmod, thread_context, watch
+from quarterdeck.harness import get as get_harness
+from quarterdeck.harness.limits import Usage, Window
+from quarterdeck.ledger import Ledger
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -34,6 +40,7 @@ def test_optional_groups_preserve_existing_ship_constructors(forum):
     old = shipmod.Ship(forum.folder, forum.name, forum.operator, forum.workspace,
                       forum.pools, forum.sessions, forum.seats)
     assert old.groups == {}
+    assert watch.Facts('ok', 0, 0, 0).group_held == []
     assert forum.groups['reviewers'] == shipmod.Group(
         'reviewers', ('reviewer-1', 'reviewer-2', 'reviewer-3', 'reviewer-4'), 'lead')
 
@@ -112,17 +119,21 @@ def test_partial_reports_remain_pending_then_all_filed_notice_is_once(forum):
     assert notices(post.Store(forum.runtime)) == [notice]
 
 
-def test_failure_notice_is_terminal_and_names_unfiled_members(forum):
+def test_failure_notice_waits_for_every_other_member_then_is_terminal(forum):
     store = post.Store(forum.runtime)
     _, copies = group_post.submit(forum, store, 'reviewers', 'operator', BODY)
     reports = filed(store, copies[:1])
-    group_post.advance(forum, store,
-                       lambda member, copy: 'owned pane is dead' if member == copies[1].to else None)
+    failure = lambda member, copy: 'owned pane is dead' if member == copies[1].to else None
+    group_post.advance(forum, store, failure)
+    assert notices(store) == [], 'one failed member does not discard two still working'
+    reports += filed(store, copies[2:])
+    group_post.advance(forum, post.Store(forum.runtime))
     notice, = notices(store)
     assert 'member failed' in notice.body
     assert reports[0].id in notice.body and f'{copies[1].to}: owned pane is dead' in notice.body
-    assert 'Not yet filed: reviewer-3, reviewer-4' in notice.body
-    filed(store, copies[1:])
+    assert all(report.id in notice.body for report in reports)
+    assert 'Not yet filed:' not in notice.body
+    filed(store, copies[1:2])
     group_post.advance(forum, post.Store(forum.runtime))
     assert notices(post.Store(forum.runtime)) == [notice]
 
@@ -179,14 +190,15 @@ def test_notice_crash_reuses_its_saved_identity(forum, monkeypatch, after_public
         original(store, message)
 
     monkeypatch.setattr(group_post, '_publish', cut)
-    with pytest.raises(RuntimeError, match='synthetic notice crash'):
-        group_post.advance(forum, store)
+    changed = group_post.advance(forum, store)
+    assert changed and group_post.holds(forum.runtime)
     path, = (forum.runtime / 'post/groups').glob('*.json')
     intent = json.loads(path.read_text())['notice']
     monkeypatch.setattr(group_post, '_publish', original)
     group_post.advance(forum, post.Store(forum.runtime))
     notice, = notices(post.Store(forum.runtime))
     assert notice.id == intent['id'] and notice.body == intent['body']
+    assert group_post.holds(forum.runtime) == []
 
 
 def test_repeated_and_concurrent_forwarding_reuses_one_run(forum):
@@ -299,3 +311,157 @@ def test_invalid_group_stdin_publishes_no_posts(forum, monkeypatch, raw):
         cli.cmd_post(args)
     assert post.Store(forum.runtime).all() == []
     assert not (forum.runtime / 'post/groups').exists()
+
+
+def test_saved_member_failure_survives_restart_until_siblings_finish(forum):
+    store = post.Store(forum.runtime)
+    _, copies = group_post.submit(forum, store, 'reviewers', 'operator', BODY)
+    group_post.advance(forum, store, lambda member, copy: 'owned pane is dead' if copy == copies[0] else None)
+    assert notices(store) == []
+    path, = (forum.runtime / 'post/groups').glob('*.json')
+    assert json.loads(path.read_text())['failed'] == {
+        copies[0].id: {'member': copies[0].to, 'reason': 'owned pane is dead'}}
+    reports = filed(store, copies[1:])
+    group_post.advance(forum, post.Store(forum.runtime))
+    notice, = notices(store)
+    assert f'{copies[0].to}: owned pane is dead' in notice.body
+    assert all(report.id in notice.body for report in reports)
+
+
+def test_report_before_terminal_notice_supersedes_saved_member_failure(forum):
+    store = post.Store(forum.runtime)
+    _, copies = group_post.submit(forum, store, 'reviewers', 'operator', BODY)
+    group_post.advance(forum, store, lambda member, copy: 'owned pane is dead' if copy == copies[0] else None)
+    assert notices(store) == []
+    filed(store, copies)
+    group_post.advance(forum, post.Store(forum.runtime))
+    notice, = notices(store)
+    assert 'all filed' in notice.body and 'Failed members:' not in notice.body
+
+
+@pytest.mark.parametrize('destination_used,expected', [(0.2, None), (1.0, 'held at limit with no eligible destination')])
+def test_wall_outcome_uses_existing_status_destination_eligibility(forum, destination_used, expected):
+    pools = {name: shipmod.Pool(name, 'openai') for name in ('first', 'second')}
+    spec = shipmod.SeatSpec('reviewer-1', 'forum', 'reviewer', 'codex', ('first', 'second'))
+    ship = replace(forum, pools=pools, seats={spec.name: spec})
+    ship.runtime.mkdir(parents=True)
+    with Ledger(ship.runtime / 'ledger.sqlite') as book:
+        now = post.now()
+        reset = now + timedelta(hours=1)
+        book.record_usage('first', Usage((Window('window', 1.0, reset),), now))
+        book.record_usage('second', Usage((Window('window', destination_used, reset),), now))
+    launched = SimpleNamespace(pane='%1', pid=100, at=now.isoformat())
+    seat = SimpleNamespace(name=spec.name, ship=ship, spec=spec, pool=pools['first'],
+                           harness=get_harness('codex'), is_up=True,
+                           launched=lambda: launched, pane=lambda: SimpleNamespace(dead=False),
+                           _lifecycle=lambda **kwargs: nullcontext())
+    observed = SimpleNamespace(ship=ship, seat=lambda name: seat)
+    held, unknown = watch.limit_holds(ship, [seat])
+    assert unknown == []
+    assert held == ([] if expected is None else [seat.name])
+    assert group_post.current_seat_failure(observed, seat.name) == expected
+
+
+def test_unknown_status_note_does_not_become_a_member_failure(forum, monkeypatch):
+    launched = SimpleNamespace(pane='%1', pid=100, at=post.now().isoformat())
+    seat = SimpleNamespace(launched=lambda: launched, pane=lambda: SimpleNamespace(dead=False),
+                           _lifecycle=lambda **kwargs: nullcontext())
+    observed = SimpleNamespace(ship=forum, seat=lambda name: seat)
+    monkeypatch.setattr(watch, 'limit_holds', lambda ship, selected: (['reviewer-1'], ['reading unknown']))
+    assert group_post.current_seat_failure(observed, 'reviewer-1') is None
+
+
+def test_terminal_notice_amends_open_root_in_fresh_context(forum):
+    store = post.Store(forum.runtime)
+    root, copies = group_post.submit(forum, store, 'reviewers', 'operator', BODY)
+    filed(store, copies)
+    group_post.advance(forum, store)
+    notice, = notices(store)
+    attempts = post.Attempts(forum.runtime)
+    for message in (root, notice):
+        attempts.close(attempts.open(message, 'lead', '%1', 100, root.at.isoformat()), 'delivered')
+    assert thread_context.select(store, 'lead').incoming == [root, notice]
+    assert thread_context.select(store, 'lead', consumed={notice.id}).incoming == [root]
+    store.new('report', 'lead', 'operator', 'Combined filed reports.', re=root.id)
+    assert thread_context.select(store, 'lead').incoming == []
+
+
+def test_ship_amendment_rule_is_only_report_to_seat_directly_on_root(forum):
+    store = post.Store(forum.runtime)
+    root = store.new('order', 'operator', 'lead', BODY)
+    child = store.new('order', 'lead', 'reviewer-1', BODY, re=root.id)
+    direct = store.new('report', post.SHIP, 'lead', 'Terminal notice.', re=root.id)
+    nested = store.new('report', post.SHIP, 'lead', 'Child report.', re=child.id)
+    answer = store.new('answer', post.SHIP, 'lead', 'Other kind.', re=root.id)
+    other_to = store.new('report', post.SHIP, 'reviewer-2', 'Other recipient.', re=root.id)
+    peer = store.new('report', 'reviewer-1', 'lead', 'Peer report.', re=root.id)
+    graph = {m.id: m for m in store.all()}
+    assert thread_context.amends(direct, root, 'lead', graph)
+    assert all(not thread_context.amends(m, root, 'lead', graph) for m in (nested, answer, other_to, peer))
+    assert thread_context.select(store, 'lead').incoming == [root, direct]
+
+
+def test_bad_group_is_held_once_while_another_group_finishes_same_pass(forum, monkeypatch):
+    second = replace(forum.groups['reviewers'], name='second')
+    forum = replace(forum, groups={**forum.groups, 'second': second})
+    store = post.Store(forum.runtime)
+    bad, _ = group_post.submit(forum, store, 'reviewers', 'operator', BODY)
+    good, copies = group_post.submit(forum, store, 'second', 'operator', BODY)
+    filed(store, copies)
+    path = forum.runtime / 'post/groups' / f'{bad.id}.json'
+    original = path.read_text()
+    path.write_text('{')
+    events = []
+    monkeypatch.setattr(group_post, 'member_failure', lambda *args: None)
+
+    def observe():
+        return SimpleNamespace(ship=forum, store=post.Store(forum.runtime), runtime=forum.runtime,
+                               log=lambda event, **data: events.append((event, data)))
+
+    service.Service.groups(observe())
+    assert len(events) == 1 and events[0][0] == 'group-held'
+    assert events[0][1] == {'request': bad.id, 'reason': 'group journal is malformed JSON'}
+    assert len(notices(store)) == 1 and notices(store)[0].re == good.id
+    alerts = group_post.holds(forum.runtime)
+    assert len(alerts) == 1 and 'group held' in alerts[0]
+    monkeypatch.setattr(watch, 'seats', lambda *args: [])
+    monkeypatch.setattr(watch, 'disks', lambda paths: [])
+    facts = watch.facts(forum, SimpleNamespace(), walls=[], login=[], store=store)
+    assert facts.group_held == alerts
+    assert alerts[0] in facts.line()
+    crowded = replace(facts, pending=['x' * 200])
+    assert '1 groups held' in crowded.line()
+    service.Service.groups(observe())
+    assert len(events) == 1, 'a new service instance does not repeat an unchanged error'
+    path.write_text('[')
+    service.Service.groups(observe())
+    assert len(events) == 2, 'changed source evidence gets one new error log'
+    path.write_text(original)
+    service.Service.groups(observe())
+    assert group_post.holds(forum.runtime) == [] and len(events) == 2
+    assert len(notices(store)) == 1
+
+
+@pytest.mark.parametrize('malformed', [None, [], {'unknown-copy': {'member': 'reviewer-1', 'reason': 'owned pane is dead'}}])
+def test_malformed_saved_outcomes_hold_the_group(forum, malformed):
+    store = post.Store(forum.runtime)
+    root, _ = group_post.submit(forum, store, 'reviewers', 'operator', BODY)
+    path = forum.runtime / 'post/groups' / f'{root.id}.json'
+    data = json.loads(path.read_text())
+    data['failed'] = malformed
+    path.write_text(json.dumps(data))
+    changed = group_post.advance(forum, store)
+    assert changed == [(root.id, 'group evidence is inconsistent')]
+    assert notices(store) == [] and len(group_post.holds(forum.runtime)) == 1
+
+
+def test_older_group_journal_without_outcomes_remains_readable(forum):
+    store = post.Store(forum.runtime)
+    _, copies = group_post.submit(forum, store, 'reviewers', 'operator', BODY)
+    path, = (forum.runtime / 'post/groups').glob('*.json')
+    data = json.loads(path.read_text())
+    del data['failed']
+    path.write_text(json.dumps(data))
+    filed(store, copies)
+    assert group_post.advance(forum, store) == []
+    assert 'all filed' in notices(store)[0].body

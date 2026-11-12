@@ -1,6 +1,8 @@
 """A five-seat forum on the fake program and a private tmux server, never a provider."""
 
 from pathlib import Path
+import os
+import signal
 import shutil
 
 import pytest
@@ -89,18 +91,25 @@ def test_fake_forum_files_four_identical_reviews_and_one_notice(forum, tmux, cap
         reread.ledger.close()
 
 
-def test_fake_forum_names_an_absent_saved_member_once(forum, tmux, capsys):
+def test_fake_forum_waits_for_reports_and_names_a_positive_dead_member_once(forum, tmux, capsys):
     qd(capsys, 'up')
     member = seatmod.Seat(forum, forum.seat('reviewer-4'), tmux)
     pane = member.pane()
-    tmux.kill_window(pane.id, expected_pid=pane.pid)
-    qd(capsys, 'post', 'order', '--to', 'reviewers', 'Review this fictional proposal independently.')
+    os.kill(pane.pid, signal.SIGTERM)
+    wait_for(lambda: member.pane() and member.pane().dead, seconds=15)
+    body = ('Review this fictional proposal independently.\n'
+            '$ if [ "$QD_SEAT" != lead ]; then '
+            'qd post report --re {this} "review:$QD_SEAT; independent report"; fi')
+    qd(capsys, 'post', 'order', '--to', 'reviewers', body)
     store = post.Store(forum.runtime)
     root, = store.open_for('lead')
     notices = wait_for(lambda: [m for m in store.for_seat('lead') if m.sender == post.SHIP
                                 and m.re == root.id and 'member failed' in m.body], seconds=30)
     assert len(notices) == 1
-    assert 'reviewer-4: saved launch pane is absent' in notices[0].body
+    assert 'reviewer-4: owned pane is dead' in notices[0].body
+    copies = [m for m in store.all() if m.kind == 'order' and m.re == root.id]
+    reports = [store.closing_report(m) for m in copies if m.to != member.name]
+    assert len(reports) == 3 and all(report and report.id in notices[0].body for report in reports)
     assert store.is_open(root)
     service.stop(forum.runtime)
     reread = service.Service(forum, tmux)

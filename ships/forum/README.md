@@ -23,15 +23,22 @@ template is then at `runtime/venv/share/quarterdeck/ships/forum`, beside the dry
 it can be copied for another ship. `standing.project_dir()` locates this resource
 root from either the checkout or the installed Python interpreter.
 
+The tracked `work/` directory is the workspace, separate from the ship folder so
+the endpoint reviewer can use the normal sandbox launch plan. Cards use absolute
+`$QD_SHIP/runtime/...` output paths from that working directory.
+
 Posting to `reviewers` stores an ordinary request to the lead and four orders with
 different ids, the same parent request id, and identical bodies. Alternatively,
 post to `lead`; its card forwards that original request to the group without making
 a second root. Each report closes only its reviewer's copy. The service posts one
-all-filed or named member-failure notice; the lead then combines the named reports,
+all-filed or named member-failure notice after every reviewer has filed or
+positively failed; a first failure never discards still-working reviewers. A wall
+counts as failure only when no eligible destination remains. The lead checks for
+that notice at every start with the request still open, then combines the named reports,
 keeps dissent, adds no new analysis, and reports once on the root to its requester.
 
 The inbox and launch carriage select each seat's own messages. The shared post
-store remains readable: reviewer independence is card-enforced, not a filesystem
+store remains readable and writable: reviewer independence is instruction-only, not a filesystem
 boundary, and complete detection of reads is not promised. There is no fleet,
 compiler, `qd raise`, automatic model binding or external notification here.
 
