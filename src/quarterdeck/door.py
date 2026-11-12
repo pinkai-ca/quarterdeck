@@ -652,7 +652,9 @@ class Door:
             return Delivery("withheld", wall)
         if hold := pending.held(self.seat, screen, proof):
             return Delivery("withheld", hold[0])
-        if speed == "interrupt" and screen is not None and screen.working and not self.seat.session.human:
+        if (speed == "interrupt" and not self.seat.session.human
+                and ((screen is not None and screen.working)
+                     or self.adapter_hook("interrupt_obstruction") is not None)):
             interrupted, detail = self._interrupt()
             if not interrupted:
                 return Delivery("withheld", detail)
@@ -907,7 +909,10 @@ class Door:
             return False, f"{self.seat.name}: a human owns this session; no interrupt key sent"
         interrupt_hook = self.adapter_hook("interrupt_obstruction")
         delivery_hook = self.adapter_hook("delivery_obstruction")
-        if interrupt_hook is not None or delivery_hook is not None:
+        guarded = interrupt_hook is not None or delivery_hook is not None
+        launched = None
+        if guarded:
+            launched = self.seat.launched()
             screen, state = self.screen(), self.adapter_state()
             if delivery_hook is not None and (reason := delivery_hook(state, screen)):
                 return False, reason
@@ -919,6 +924,8 @@ class Door:
             return False, f"{self.seat.name} is not up"
         if key is None:
             return False, f"{self.harness.name} has no interrupt key"
+        if guarded and self.seat.launched() != launched:
+            return False, "launch changed before interrupt; no key sent"
         self.tmux.keys(pane.id, *key.split())  # a program that wants the key twice names the sequence
         return True, f"{self.seat.name} interrupted with {key} in {pane.id}"
 
