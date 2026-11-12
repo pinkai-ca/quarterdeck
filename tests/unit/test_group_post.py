@@ -420,7 +420,7 @@ def test_bad_group_is_held_once_while_another_group_finishes_same_pass(forum, mo
 
     service.Service.groups(observe())
     assert len(events) == 1 and events[0][0] == 'group-held'
-    assert events[0][1] == {'request': bad.id, 'reason': 'group journal is malformed JSON'}
+    assert events[0][1] == {'request': bad.id, 'reason': 'group evidence is malformed JSON'}
     assert len(notices(store)) == 1 and notices(store)[0].re == good.id
     alerts = group_post.holds(forum.runtime)
     assert len(alerts) == 1 and 'group held' in alerts[0]

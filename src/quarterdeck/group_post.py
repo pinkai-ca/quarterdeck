@@ -15,7 +15,7 @@ from .ship import Ship, ShipError
 
 FAILURE_REASONS = frozenset({'member no longer declared', 'provider refused this copy',
                              'owned pane is dead', 'held at limit with no eligible destination'})
-HOLD_REASONS = frozenset({'group journal is malformed JSON', 'group evidence is inconsistent',
+HOLD_REASONS = frozenset({'group evidence is malformed JSON', 'group evidence is inconsistent',
                           'group evidence is unreadable', 'group coordination could not finish'})
 
 
@@ -196,7 +196,7 @@ def _advance_one(path: Path, store: post.Store, failures) -> None:
 
 def _error_reason(error: Exception) -> str:
     if isinstance(error, json.JSONDecodeError):
-        return 'group journal is malformed JSON'
+        return 'group evidence is malformed JSON'
     if isinstance(error, (ShipError, ValueError, KeyError, TypeError)):
         return 'group evidence is inconsistent'
     if isinstance(error, OSError):
