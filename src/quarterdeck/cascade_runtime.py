@@ -76,16 +76,30 @@ def checked_file(path: Path, *, append: bool = False):
         os.close(parent)
 
 
-def _read(descriptor: int) -> bytes:
+def _read(descriptor: int, *, max_bytes: int | None = None) -> bytes:
+    if max_bytes is not None:
+        if type(max_bytes) is not int or max_bytes < 0:
+            raise ValueError('read limit must be a nonnegative integer')
+        if os.fstat(descriptor).st_size > max_bytes:
+            raise ShipError('cascade runtime file exceeds read limit')
     pieces = []
-    while piece := os.read(descriptor, 65536):
+    size = 0
+    while max_bytes is None or size < max_bytes:
+        count = 65536 if max_bytes is None else min(65536, max_bytes - size)
+        piece = os.read(descriptor, count)
+        if not piece:
+            break
         pieces.append(piece)
+        size += len(piece)
+    if max_bytes is not None and os.fstat(descriptor).st_size > max_bytes:
+        raise ShipError('cascade runtime file exceeds read limit')
     return b''.join(pieces)
 
 
-def read_file(path: Path) -> bytes:
+def read_file(path: Path, *, max_bytes: int | None = None) -> bytes:
+    """Read through the checked descriptor, optionally capping actual bytes read."""
     with checked_file(path) as (descriptor, verify):
-        raw = _read(descriptor)
+        raw = _read(descriptor) if max_bytes is None else _read(descriptor, max_bytes=max_bytes)
         verify()
         return raw
 

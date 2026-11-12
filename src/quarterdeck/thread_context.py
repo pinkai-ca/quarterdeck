@@ -157,7 +157,7 @@ def _terminal_notice(store: post.Store, message: post.Message, root: post.Messag
             paths.append(path)
         if len(paths) != 1:
             return False  # no evidence, or competing structures on this root
-        data = json.loads(cascade_runtime.read_file(paths[0]))
+        data = json.loads(cascade_runtime.read_file(paths[0], max_bytes=1024 * 1024))
         if not isinstance(data, dict) or type(data.get('format')) is not int or data['format'] != 1:
             return False
         if paths[0] == cascade:
@@ -193,7 +193,7 @@ def _terminal_notice(store: post.Store, message: post.Message, root: post.Messag
             identity in members and isinstance(outcome, dict) and set(outcome) == {'member', 'reason'}
             and outcome['member'] == members[identity] and outcome['reason'] in group_post.FAILURE_REASONS
             for identity, outcome in failed.items())
-    except (OSError, ValueError, KeyError, TypeError, ShipError):
+    except (OSError, ValueError, KeyError, TypeError, RecursionError, ShipError):
         return False  # unknown evidence grants no exception; no repair or derived artifact
 
 
