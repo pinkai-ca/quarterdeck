@@ -355,6 +355,8 @@ def test_a_linked_notes_file_is_never_followed_and_holds_visibly_until_restored(
     # Only the notes boundary is exercised: the pass's seat readings and controls are stand-ins.
     monkeypatch.setattr(cascade, "health", lambda service, name, order=None: None)
     monkeypatch.setattr(cascade, "effort", lambda service, name, wanted: unchanged_effort(name, wanted))
+    # The pass's refusal gate still reads the real exclusion journal; only its record half is a stand-in.
+    monkeypatch.setattr(cascade, "associated_failure", lambda service, name, order: None)
     notes = ring.path / "responses.md"
     original = notes.read_bytes()
     target = ring.outside / "followed.md"
