@@ -15,10 +15,10 @@ GIT_REDIRECTS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_CONFIG", "GI
 
 
 def launch_args(cwd: Path | None) -> list[str]:
-    """Keep the native trust choice local while project-tool policy is decided.
+    """Use the maker's trusted-folder behavior, including project hooks and MCP.
 
-    Native --trust grants the repository root, including for a nested cwd.
-    This candidate awaits a decision on its project hooks and MCP imports.
+    Native --trust grants the whole repository, including for a nested cwd.
+    Operator HOME stays private; workspace extensions run as for a trusting user.
     """
     if cwd is None:
         raise ShipError("Grok launch needs the seat's explicit declared workspace")
