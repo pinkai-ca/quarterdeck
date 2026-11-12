@@ -7,7 +7,6 @@ import json
 import os
 import re
 import shutil
-import stat
 import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,13 +43,7 @@ SETTINGS = {
            "screen_mode": "fullscreen", "permission_mode": "always-approve"},
 }
 SYSTEM_CONFIG = Path("/etc/grok")
-INHERITED_REDIRECTS = ("GROK_AGENT", "GROK_MANAGED_CONFIG_URL", "GROK_FOLDER_TRUST")
-# Guides 10 (managed hooks only) and 09 (native MCP lockdown). These are fixed
-# ship output, not a template overlay or an assertion of measured enforcement.
-MANAGED_CONFIG = ("allow_managed_hooks_only = true\n"
-                  "allow_managed_mcp_servers_only = true\n"
-                  "enable_all_project_mcp_servers = false\n"
-                  "allowed_mcp_servers = []\n")
+INHERITED_REDIRECTS = ("GROK_AGENT", "GROK_MANAGED_CONFIG_URL", "GROK_FOLDER_TRUST", *grok_workspace.GIT_REDIRECTS)
 
 
 def present(path: Path) -> bool:
@@ -66,61 +59,10 @@ def present(path: Path) -> bool:
 def no_admin_layers(home: Path | None) -> None:
     paths = [SYSTEM_CONFIG / "managed_config.toml", SYSTEM_CONFIG / "requirements.toml"]
     if home is not None:
-        paths += [home / "requirements.toml"]
+        paths += [home / "managed_config.toml", home / "requirements.toml"]
     for path in paths:
         if present(path):
             raise ShipError(f"{path}: unmanaged Grok admin configuration; retained; resolve before launch")
-
-    if home is not None:
-        managed_configuration(home)
-
-
-def managed_configuration(home: Path, *, required: bool = False) -> None:
-    """Accept only the fixed ship-written native policy, retaining other state."""
-    path = home / "managed_config.toml"
-    try:
-        info = path.lstat()
-    except FileNotFoundError:
-        if not required:
-            return
-        raise ShipError(f"{path}: ship Grok managed configuration missing; rebuild the seat home") from None
-    except OSError:
-        raise ShipError(f"{path}: Grok managed configuration unreadable; retained") from None
-    descriptor = None
-    try:
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
-            raise ValueError("unexpected managed configuration")
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        opened = os.fstat(descriptor)
-        if not stat.S_ISREG(opened.st_mode) or opened.st_uid != os.getuid():
-            raise ValueError("unexpected managed configuration")
-        with os.fdopen(descriptor, "rb") as stream:
-            descriptor = None
-            content = stream.read(len(MANAGED_CONFIG.encode()) + 1)
-        after = path.lstat()
-        def identity(state):
-            return (state.st_dev, state.st_ino, state.st_mode, state.st_uid,
-                    state.st_size, state.st_mtime_ns, state.st_ctime_ns)
-        if (content != MANAGED_CONFIG.encode() or identity(info) != identity(opened)
-                or identity(info) != identity(after)):
-            raise ValueError("unexpected managed configuration")
-    except (OSError, ValueError):
-        raise ShipError(f"{path}: unexpected Grok managed configuration; retained; rebuild from ship settings") from None
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
-
-
-def write_managed_configuration(home: Path) -> None:
-    managed_configuration(home)
-    path = home / "managed_config.toml"
-    try:
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    except FileExistsError:
-        managed_configuration(home, required=True)
-        return
-    with os.fdopen(descriptor, "w") as stream:
-        stream.write(MANAGED_CONFIG)
 
 
 def private_environment(home: Path) -> dict[str, str]:
@@ -183,8 +125,6 @@ def no_extra_rules(config: dict, source: str) -> None:
 
 def launch_home(home: Path, seat: SeatSpec) -> None:
     """Check the native home again on fresh, restart and resume launch paths."""
-    grok_workspace.check(home, seat.cwd)
-    managed_configuration(home, required=True)
     no_extra_rules(seat.settings, "seat settings")
     try:
         config = tomllib.loads((home / "config.toml").read_text())
@@ -253,7 +193,7 @@ class GrokHarness(Harness):
             if os.environ.get(name):
                 raise ShipError(f"Grok inherited configuration redirect {name} is set; clear it before launch")
         if home is not None:
-            grok_workspace.check(home, cwd)
+            grok_workspace.check(home, cwd, private_environment(home))
 
     def version(self, home: Path | None = None) -> str | None:
         from ..seat import program_path  # the same selected program as ordinary Seat launch
@@ -292,10 +232,8 @@ class GrokHarness(Harness):
         template = ship_template(ship_home, "config.toml")
         no_extra_rules(template, "ship Grok template")
         no_extra_rules(seat.settings, "seat settings")
-        grok_workspace.check(home, seat.cwd)
         home.mkdir(parents=True, exist_ok=True)
         build_private_user_home(home)
-        write_managed_configuration(home)
         settings = copy.deepcopy(merged(merged(SETTINGS, template), seat.settings))
         # These native switches describe the adapter's input/launch contract.
         settings = merged(settings, SETTINGS)
@@ -318,14 +256,12 @@ class GrokHarness(Harness):
         return credential(pool, home / self.credential_file, "XAI_API_KEY")
 
     def launch(self, seat: SeatSpec, pool: Pool, home: Path, brief: Path, resume: str | None, first: str | None) -> Launch:
-        if seat.cwd is None:
-            raise ShipError("Grok launch needs the seat's explicit declared workspace")
+        workspace_args = grok_workspace.launch_args(seat.cwd)
         self.preflight(home, seat.cwd)
         launch_home(home, seat)
-        argv = [self.program, "--fullscreen", "--always-approve", "--sandbox", "off", "--no-memory", "--trust",
+        argv = [self.program, "--fullscreen", "--always-approve", "--sandbox", "off", "--no-memory",
                 "--leader-socket", str(home / "leader.sock"), "--rules", brief.read_text()]
-        if seat.cwd:
-            argv += ["--cwd", str(seat.cwd)]
+        argv += workspace_args
         if not seat.human_session:
             argv += ["--disallowed-tools", "ask_user_question"]
         if seat.model:
@@ -348,10 +284,8 @@ class GrokHarness(Harness):
             return Usage((), datetime.now(timezone.utc), str(error), called=False)
         if pool.config_dir is None or not (pool.config_dir / self.credential_file).is_file():
             return Usage((), datetime.now(timezone.utc), "native billing sign-in unavailable", called=False)
-        grok_workspace.check(home, None)
         home.mkdir(parents=True, exist_ok=True)
         build_private_user_home(home)
-        write_managed_configuration(home)
         (home / "config.toml").write_text(config_text(SETTINGS))
         credential(pool, home / self.credential_file, "XAI_API_KEY")
         try:

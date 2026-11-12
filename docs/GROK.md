@@ -9,7 +9,7 @@ installed version is marked proven by adding fixtures.
 | Contract | Implementation and evidence | Remaining limits |
 | --- | --- | --- |
 | Version context | Normal selected executable, never a PATH redirect. Existing eligible runtime supplies a fresh empty version-call home; both HOME variables are replaced. No-context lookup reads only the selected resolved basename and executes nothing. | No operator version cache is adopted. Missing runtime remains missing; installed version proof still belongs to the check. |
-| Home and launch | Private `GROK_HOME`, nested private `HOME`/XDG, native configuration, brief through `--rules`, updater off and normal credential linkage. Declared workspace trust through `--trust`; project contents never refuse a workspace. Fixed managed hooks/MCP policy is written in the private native home. | Trust-store format, online managed-file persistence and hooks/MCP enforcement require independent native validation; the earlier source-absent launch does not prove this contract. Public marketplace fetching and some native bundled capabilities remain, as listed in the card. No blanket background-work absence claim. |
+| Home and launch | Private `GROK_HOME`, nested private `HOME`/XDG, native configuration, brief through `--rules`, updater off and normal credential linkage. Native `--trust` grants the whole repository root, or cwd outside a repository. The measured native store schema has one `folders."<absolute root>"` table with `trusted=true` and `decided_at` Unix seconds. The exact-grant guard never rewrites it; project contents never refuse a workspace. | Native validation established that project instructions/rules/skills load, project hooks run and project MCP servers start. Home `managed_config.toml` is deleted at every native start and supplies no enforcement; it is neither written nor accepted. Acceptance of project hook/MCP imports awaits a decision before landing; the earlier source-absent launch does not prove this contract. Public marketplace fetching and some native bundled capabilities remain, as listed in the card. No blanket background-work absence claim. |
 | Records and unknowns | Native ACP envelopes through the shared JSON-lines snapshot/cache. Ordinary input chunks, completed/cancelled turns, tool invocation/update identity, malformed/foreign/empty/unknown evidence and incomplete physical-line diagnostics have synthetic cases. | An unknown row cannot establish tool-set clearance. Missing or malformed information stays unknown. |
 | Join | Adapter-owned UUIDv7 folder creation time, validated against every record row. Fractional launch boundaries and conflicting/non-v7 identities have synthetic cases. Normal first-record join and same-record resume were observed natively. | Shared join selection and ambiguity handling are unchanged. No whole-second row fallback, flooring or explicit `-s` launch option. |
 | Exact input receipts | Native whole input text with one-second row timestamps. Declared resolution affects only local receipt comparison. Fresh exact receipts were observed; ordinary same/prior-second and Claude/Codex regressions remain separate from join. | A queue card, fold count, screen echo or disappeared box never proves delivery. No resend of an uncertain input. |
@@ -23,8 +23,8 @@ installed version is marked proven by adding fixtures.
 | Installed acceptance | Normal can-post permissions are configured; the installed check must prove launch, long-paste receipt, file task and one `qd post` in a declared workspace containing both `AGENTS.md` and `CLAUDE.md`. | Installed `qd check grok`, final affected checks and an exact-tip full suite remain separate acceptance obligations. A check mark belongs to the ship that actually ran the check. |
 
 Compared with Claude Code and Codex, Grok loads trusted project instructions/rules/skills that
-Claude Code excludes with `--setting-sources user`. Hooks/MCP suppression under
-trust remains unproved until independent native validation. Grok has no proved immediate-send action or remote-control support, no established
+Claude Code excludes with `--setting-sources user`. Project hooks run and project MCP servers start under
+trust. Their acceptance awaits a decision before landing. Grok has no proved immediate-send action or remote-control support, no established
 subagent/compaction accounting and no measured screen-only quota wall. It does
 not offer arbitrary exact-content proof for clipped or whitespace-only drafts.
 
@@ -44,8 +44,10 @@ not offer arbitrary exact-content proof for clipped or whitespace-only drafts.
   algorithm before and after billing, including failures.
 - Read-only `Harness.preflight(home=None, cwd=None)` defaults to no operation.
   Grok build, launch/resume and billing use it; doctor checks global native pool
-  readiness and every seat's actual resolved pool/harness choice. No native call, Git discovery
-  or mutation belongs in preflight. Workspace contents never refuse readiness.
+  readiness and every seat's actual resolved pool/harness choice. No native Grok
+  call or mutation belongs in preflight. A bounded local Git
+  metadata query identifies only the exact native trust root when a grant exists;
+  it never inventories project sources. Workspace contents never refuse readiness.
 - `Harness.version(home: Path | None = None)` adds optional empty runtime context.
   `Harness.private_version_home` defaults false; Grok explicitly sets true.
   Private dispatch at doctor, Seat launch and installed check preserves one old
@@ -68,7 +70,7 @@ The ordinary source targets are `test_grok.py`, `test_grok_home.py`,
 `test_grok_record.py`, `test_grok_credentials.py`, `test_grok_join_time.py` and
 `test_grok_version.py`
 under `tests/contract/`. These cover native-format decoders and synthetic
-configuration (including native trust and fixed managed-policy output), receipt
+configuration (including native trust schema and launch output), receipt
 precision, join-time boundaries and ledger ingestion;
 they make no provider call. Version cases use synthetic selected files and
 subprocess stubs, including normal doctor/check context propagation and missing

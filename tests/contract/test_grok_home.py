@@ -44,24 +44,6 @@ def test_launch_grants_workspace_trust_in_its_private_native_home(tmp_path):
         assert launch.env["GROK_HOME"] == str(home)
 
 
-def test_home_writes_the_fixed_guide_backed_managed_pins(tmp_path):
-    adapter, spec, pool, home, brief = synthetic(tmp_path)
-    adapter.build_home(home, spec, pool, None)
-    path = home / "managed_config.toml"
-    expected = {"allow_managed_hooks_only": True,
-                "allow_managed_mcp_servers_only": True,
-                "enable_all_project_mcp_servers": False,
-                "allowed_mcp_servers": []}
-    assert tomllib.loads(path.read_text()) == expected
-    assert path.read_text() == grok.MANAGED_CONFIG
-    before = path.stat().st_mtime_ns
-    adapter.preflight(home, spec.cwd)
-    adapter.build_home(home, spec, pool, None)
-    adapter.launch(spec, pool, home, brief, None, None)
-    assert path.read_text() == grok.MANAGED_CONFIG
-    assert path.stat().st_mtime_ns == before
-
-
 def test_guide_home_explicitly_disables_memory_capture_and_dream(tmp_path):
     adapter, spec, pool, home, brief = synthetic(tmp_path)
     spec = replace(spec, settings={"memory": {"enabled": True},
@@ -116,14 +98,14 @@ def test_launch_declares_private_home_and_configuration_paths(tmp_path, monkeypa
     assert launch.env["GROK_CONFIG_PATH"] == str(home / "config.toml")
 
 
-def test_native_policy_is_separate_from_the_user_configuration(tmp_path):
+def test_home_does_not_write_native_policy_files(tmp_path):
     adapter, spec, pool, home, brief = synthetic(tmp_path)
     adapter.build_home(home, spec, pool, None)
     config = tomllib.loads((home / "config.toml").read_text())
     assert config["features"]["managed_config"] is False
     assert not set(grok.MCP_POLICY_KEYS).intersection(config)
     assert not (home / "requirements.toml").exists()
-    assert (home / "managed_config.toml").read_text() == grok.MANAGED_CONFIG
+    assert not (home / "managed_config.toml").exists()
 
 
 def test_admin_layer_readiness_names_fake_paths_and_preserves_content(tmp_path):
