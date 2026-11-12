@@ -72,7 +72,8 @@ def test_fake_forum_files_four_identical_reviews_and_one_notice(forum, tmux, cap
         reviewer = seatmod.Seat(forum, forum.seat(copy.to), tmux)
         wait_for(lambda: reviewer.record() and reviewer.harness.turns(reviewer.record()), seconds=15)
         inputs = reviewer.harness.inputs(reviewer.record())
-        assert any(copy.id in item.text for item in inputs)
+        envelope = post.typed([copy]).strip()
+        assert any(envelope in item.text for item in inputs)
         inbox = post.inbox_reading(store, reviewer.name)
         assert all(message.to == reviewer.name for message in inbox['open'] + inbox['received'])
     qd(capsys, 'post', 'report', '--from', 'lead', '--re', root.id,
