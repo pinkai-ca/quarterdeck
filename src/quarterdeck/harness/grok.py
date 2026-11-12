@@ -86,22 +86,41 @@ def managed_configuration(home: Path, *, required: bool = False) -> None:
         raise ShipError(f"{path}: ship Grok managed configuration missing; rebuild the seat home") from None
     except OSError:
         raise ShipError(f"{path}: Grok managed configuration unreadable; retained") from None
+    descriptor = None
     try:
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                or path.read_bytes() != MANAGED_CONFIG.encode()):
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            raise ValueError("unexpected managed configuration")
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or opened.st_uid != os.getuid():
+            raise ValueError("unexpected managed configuration")
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = None
+            content = stream.read(len(MANAGED_CONFIG.encode()) + 1)
+        after = path.lstat()
+        def identity(state):
+            return (state.st_dev, state.st_ino, state.st_mode, state.st_uid,
+                    state.st_size, state.st_mtime_ns, state.st_ctime_ns)
+        if (content != MANAGED_CONFIG.encode() or identity(info) != identity(opened)
+                or identity(info) != identity(after)):
             raise ValueError("unexpected managed configuration")
     except (OSError, ValueError):
         raise ShipError(f"{path}: unexpected Grok managed configuration; retained; rebuild from ship settings") from None
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def write_managed_configuration(home: Path) -> None:
     managed_configuration(home)
     path = home / "managed_config.toml"
     try:
-        with path.open("x") as stream:
-            stream.write(MANAGED_CONFIG)
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     except FileExistsError:
         managed_configuration(home, required=True)
+        return
+    with os.fdopen(descriptor, "w") as stream:
+        stream.write(MANAGED_CONFIG)
 
 
 def private_environment(home: Path) -> dict[str, str]:

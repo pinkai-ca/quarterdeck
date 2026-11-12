@@ -24,7 +24,7 @@ def prepared(tmp_path):
     home = tmp_path / "seat-home"
     brief = tmp_path / "brief.txt"
     brief.write_text("The ship's orders take precedence over project files.")
-    pool = Pool("synthetic-key", "xai", )
+    pool = Pool("synthetic-pool", "xai")
     spec = SeatSpec("synthetic-seat", "synthetic-session", "worker", "grok", (pool.name,), cwd=cwd)
     return GrokHarness(), spec, pool, home, brief
 
