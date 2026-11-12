@@ -181,8 +181,6 @@ def test_a_busy_slot_refuses_and_names_its_holder(tmp_path):
     slot = layout.Slot(root)
     slot.acquire({'verb': 'synthetic-holder', 'seat': 'synthetic'})
     try:
-        for folder, _, _ in os.walk(site):
-            os.chmod(folder, 0o555)  # read-only, as the operator's user site is to a run
         done = tool('run', '--target', str(worktree), cwd=project)
         assert done.returncode == 2 and 'busy: verb synthetic-holder' in done.stderr
         done = tool('run', '--target', str(worktree), '--wait', '1', cwd=project)
