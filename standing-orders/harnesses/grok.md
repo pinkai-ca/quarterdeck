@@ -4,7 +4,7 @@ Your program is Grok Build, from xAI. The subscription pool names provider `xai`
 
 Quarterdeck supplies a seat-owned `GROK_HOME`, a private `HOME` inside it, the brief through `--rules`, and a link to the pool's `auth.json`. XDG folders stay inside the private `HOME`; the fixed configuration overlay does not adopt an operator file. The service reconciles native credential refreshes with the pool and sibling seats. Leave sign-in and settings to that machinery. Self-update and prompt suggestions are configured off. Nonhuman sessions request normal tools approved and the native `ask_user_question` tool removed; ask through `qd post question`.
 
-Key pools export `XAI_API_KEY` as the other adapters do. All-adapter key isolation is tracked separately under ord-e2c7; it is outside this adapter change.
+Key pools export `XAI_API_KEY` as the other adapters do. All-adapter key isolation is tracked separately; it is outside this adapter change.
 
 Version lookup uses the same selected executable as launch, without changing PATH. With an existing eligible ship runtime, doctor, Seat launch and installed check supply a fresh empty directory and set both version-call `HOME` and `GROK_HOME` to it; this is separate from the credential/config home. This contextual invocation uses `env -i` with only the caller PATH, controlled native environment and those two private HOME values; other caller variables are absent. Without that context, no Grok process runs: only the resolved selected filename `grok-<version>-linux-x86_64` can supply a version, otherwise it stays unknown. No operator `version.json` is read, and a missing runtime is not created or fenced for this lookup.
 
