@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import pytest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -250,3 +251,175 @@ def test_an_unjudged_tool_call_and_an_unread_record_are_marked_not_hidden(tmp_pa
     book.mark_record(record,'worker','pool-a',None)
     assert book.rollup('order')[0].turns == 1 and book.rollup('order')[0].unmeasured == 0
     book.close()
+
+
+def accounting_example(tmp_path, monkeypatch, count):
+    """Real accounting and SQLite, with source values supplied without a program."""
+    import json
+    from types import SimpleNamespace
+    from quarterdeck import record_owner, service
+    from quarterdeck.harness.base import State, Tokens, ToolCall, Turn
+    from quarterdeck.harness.fake import FakeHarness
+    from quarterdeck.harness.limits import Wall
+    from quarterdeck.service import Service
+    from quarterdeck.ship import Ship
+
+    ship = Ship(tmp_path, 'synthetic', 'operator', tmp_path, {}, {}, {})
+    svc = Service(ship, SimpleNamespace())
+    folder = ship.runtime / 'seats' / 'worker-z'
+    home = folder / 'home'
+    home.mkdir(parents=True)
+    record = home / 'record-z'
+    record.write_text('synthetic first revision')
+    at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    reader = FakeHarness()
+    seat = SimpleNamespace(name='worker-z', home=home, folder=folder, harness=reader,
+                           session=SimpleNamespace(human=False), pane=lambda: None,
+                           launched=lambda: None, record=lambda: record)
+    record_owner.register(folder, record, 'fake')
+    launches = [dict(record=str(record), at=(at-timedelta(seconds=i+1)).isoformat(),
+                     pool='pool-z', harness='fake') for i in range(count)]
+    (folder / 'record-launches.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in launches))
+    turns = [Turn(i, at+timedelta(seconds=i*2), at+timedelta(seconds=i*2+1),
+                  'synthetic input', 'synthetic reply', 'model-z', Tokens(1,2,3,4),
+                  (ToolCall('synthetic-tool', 0.5, False),), cost=0.25) for i in range(count)]
+    walls = tuple(Wall(f'synthetic-wall-z{i}', at, at+timedelta(hours=1), signature=f'synthetic-z{i}')
+                  for i in range(count))
+    state = State(turns=count, turn_open=False, walls=walls)
+    reads = []
+
+    def read(path):
+        from dataclasses import replace
+        assert not svc.ledger.db.in_transaction, 'program record reads precede the write transaction'
+        reads.append(path)
+        return replace(state, turns=len(turns)), turns
+
+    monkeypatch.setattr(reader, 'read', read)
+    monkeypatch.setattr(FakeHarness, 'attribution_inputs', lambda self, path: [])
+    monkeypatch.setattr(service.machine, 'processes', lambda: {})
+    monkeypatch.setattr(svc, 'resolved_seats', lambda: [seat])
+    monkeypatch.setattr(record_owner, 'records', lambda owner: [record_owner.Owned(record, 'fake', reader)])
+    return svc, seat, record, turns, reads, at
+
+
+def sql_writes(trace):
+    return [sql for sql in trace if sql.lstrip().upper().startswith(
+        ('BEGIN', 'COMMIT', 'INSERT', 'REPLACE', 'UPDATE', 'DELETE'))]
+
+
+@pytest.mark.parametrize('count', [1, 48])
+def test_account_pass_commits_once_for_history_and_writes_nothing_when_unchanged(tmp_path, monkeypatch, count):
+    svc, seat, record, turns, reads, at = accounting_example(tmp_path, monkeypatch, count)
+    trace = []
+    svc.ledger.db.set_trace_callback(trace.append)
+    svc.account()
+    assert trace.count('COMMIT') == 1
+    assert svc.ledger.db.execute('SELECT COUNT(*) FROM record_launches').fetchone() == (count,)
+    assert svc.ledger.db.execute('SELECT COUNT(*) FROM wall_events').fetchone() == (count,)
+    assert svc.ledger.db.execute('SELECT COUNT(*),SUM(written),SUM(cost) FROM turns').fetchone() == (count, 4*count, 0.25*count)
+    assert svc.ledger.tools() == [('synthetic-tool', count, count*0.5, 0, 0, 0)]
+    assert svc.ledger.rollup('pool')[0].key == 'pool-z'
+    before = svc.ledger.db.total_changes
+    for _ in range(3):
+        trace.clear()
+        svc.account()
+        assert sql_writes(trace) == []
+        assert svc.ledger.db.total_changes == before
+    assert reads == [record]
+    # A growing record with the same completed turns must not rewrite old walls or turns.
+    record.write_text('synthetic second revision; only metadata changed')
+    trace.clear()
+    svc.account()
+    assert sql_writes(trace) == [] and svc.ledger.db.total_changes == before
+    assert reads == [record, record]
+    svc.ledger.close()
+
+
+def test_standalone_writers_skip_equal_rows_and_keep_committed_results_readable(tmp_path):
+    import sqlite3
+    from quarterdeck.harness.limits import Wall
+
+    path, record = tmp_path/'ledger.sqlite', tmp_path/'record-z'
+    at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    with Ledger(path) as book:
+        assert book.db.execute('PRAGMA synchronous').fetchone() == (3,)
+        assert book.db.execute('PRAGMA journal_mode').fetchone() == ('delete',)
+        wall = Wall('synthetic-wall-z', at, at+timedelta(hours=1), signature='synthetic-z')
+        assert book.provenance.remember(record, 'worker-z', 'pool-z', at)
+        book.quota.observe(str(record), 'worker-z', 'pool-z', wall, at)
+        book.mark_record(record, 'worker-z', 'pool-z', 'synthetic unavailable measurement')
+        trace, before = [], book.db.total_changes
+        book.db.set_trace_callback(trace.append)
+        assert not book.provenance.remember(record, 'worker-z', 'pool-z', at)
+        book.quota.observe(str(record), 'worker-z', 'pool-z', wall, at+timedelta(minutes=1))
+        book.mark_record(record, 'worker-z', 'pool-z', 'synthetic unavailable measurement')
+        book.mark_record(tmp_path/'other-record-z', 'worker-z', 'pool-z', None)
+        assert sql_writes(trace) == [] and book.db.total_changes == before
+        # A legacy-layout SQL reader can consume the committed existing tables.
+        with sqlite3.connect(f'file:{path}?mode=ro', uri=True) as old_reader:
+            assert old_reader.execute('SELECT seat,pool FROM record_launches').fetchall() == [('worker-z','pool-z')]
+        with Ledger.reading(path) as reading:
+            assert reading.incomplete_records() == [(str(record),'worker-z','pool-z','synthetic unavailable measurement')]
+
+
+def test_account_pass_reconciles_new_turn_metadata_launch_prices_and_posts(tmp_path, monkeypatch):
+    import json
+    from dataclasses import replace
+
+    svc, seat, record, turns, reads, at = accounting_example(tmp_path, monkeypatch, 1)
+    order = post.Message('ord-task-z', 'order', 'issuer-z', 'worker-z', at-timedelta(minutes=1), 'synthetic task')
+    svc.store.write(order)
+    svc.account()
+    assert svc.ledger.db.execute('SELECT order_id FROM turns').fetchone() == (order.id,)
+    trace = []
+    svc.ledger.db.set_trace_callback(trace.append)
+    turns.append(replace(turns[0], index=1, started=at+timedelta(seconds=4), ended=at+timedelta(seconds=5)))
+    turns[0] = replace(turns[0], tokens=turns[0].tokens.__class__(1,2,3,9), cost=0.5)
+    record.write_text('synthetic new turn and late measurement')
+    svc.account()
+    assert trace.count('COMMIT') == 1
+    assert svc.ledger.db.execute('SELECT COUNT(*),SUM(written),SUM(cost) FROM turns').fetchone() == (2,13,0.75)
+    trace.clear()
+    # Pricing/launch evidence can change while source bytes remain unchanged.
+    journal = seat.folder/'record-launches.jsonl'
+    launch = json.loads(journal.read_text())
+    launch['price'] = {'synthetic-model-z': 2}
+    journal.write_text(json.dumps(launch)+'\n')
+    svc.account()
+    assert trace.count('COMMIT') == 1 and reads == [record, record, record]
+    assert svc.ledger.db.execute('SELECT price FROM launch_prices').fetchone() == (json.dumps(launch['price'],sort_keys=True),)
+    # A new related post replays attribution even though record and launch bytes stand still.
+    trace.clear()
+    report = post.Message('rep-done-z', 'report', 'worker-z', 'issuer-z', at+timedelta(milliseconds=500), 'synthetic done', order.id)
+    svc.store.write(report)
+    svc.account()
+    assert trace.count('COMMIT') <= 1
+    assert svc.ledger.attributions.details()[0]['orders'] == [order.id]
+    assert reads == [record, record, record]
+    trace.clear()
+    svc.account()
+    assert sql_writes(trace) == []
+    svc.ledger.close()
+
+
+def test_account_pass_keeps_due_usage_attempt_outside_record_transaction(tmp_path, monkeypatch):
+    from quarterdeck import service
+
+    svc, seat, record, turns, reads, at = accounting_example(tmp_path, monkeypatch, 1)
+    pending = [Usage((Window('synthetic-window-z', 0.25, at+timedelta(hours=1)),), at, called=False)]
+
+    def refresh(instance, current, live, launched):
+        assert not instance.ledger.db.in_transaction
+        if pending:
+            instance.ledger.record_usage('pool-z', pending.pop(), attempted_at=at)
+
+    monkeypatch.setattr(service.quota, 'refresh', refresh)
+    trace = []
+    svc.ledger.db.set_trace_callback(trace.append)
+    svc.account()
+    assert trace.count('COMMIT') == 2, 'one record batch plus one separately owned actual usage attempt'
+    assert svc.ledger.db.execute('SELECT at FROM usage_reads WHERE pool=?', ('pool-z',)).fetchone() == (at.isoformat(),)
+    trace.clear()
+    svc.account()
+    assert sql_writes(trace) == []
+    svc.ledger.close()

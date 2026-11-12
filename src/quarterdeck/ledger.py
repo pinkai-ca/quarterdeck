@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import sqlite3
 import json
+from contextlib import contextmanager
+from copy import copy
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -163,6 +165,10 @@ class Ledger:
             return
         path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path)
+        self.db.execute("PRAGMA synchronous=EXTRA")
+        if self.db.execute("PRAGMA synchronous").fetchone() != (3,):
+            self.db.close()
+            raise RuntimeError("ledger writer requires synchronous=EXTRA")
         self.db.executescript(SCHEMA)
         for table, columns in ADDED_COLUMNS.items():
             present = {row[1] for row in self.db.execute(f"PRAGMA table_info({table})")}
@@ -190,19 +196,45 @@ class Ledger:
     def __exit__(self, *exc) -> None:
         self.close()
 
+    @contextmanager
+    def record_pass(self):
+        """One lazy transaction; speculative reader caches become public only after commit.
+
+        Record writers inside this boundary explicitly use commit=False. Usage
+        attempts own separate transactions and must run outside this boundary.
+        """
+        if self.db.in_transaction:
+            raise RuntimeError("record accounting requires its own transaction")
+        staged = copy(self)
+        staged.provenance = copy(self.provenance)
+        staged.provenance.sources = dict(self.provenance.sources)
+        staged.attributions = copy(self.attributions)
+        staged.attributions.sources = dict(self.attributions.sources)
+        staged.attributions.retries = dict(self.attributions.retries)
+        with self.db:
+            yield staged
+        self.provenance.sources = staged.provenance.sources
+        self.attributions.sources = staged.attributions.sources
+        self.attributions.retries = staged.attributions.retries
+        self.attributions.last = staged.attributions.last
+
     # -- turns -----------------------------------------------------------------------------
 
     def ingested(self, record: Path) -> int:
         """How many turns of this record are already in the Ledger."""
         return self.db.execute("SELECT COUNT(*) FROM turns WHERE record = ?", (str(record),)).fetchone()[0]
 
-    def mark_record(self, record: Path, seat: str, pool: str, error: str | None) -> None:
+    def mark_record(self, record: Path, seat: str, pool: str, error: str | None, *, commit: bool = True) -> None:
         """Note a record that could not be read, or clear the note: its seat's figures carry a ``+`` while it stands."""
+        old = self.db.execute("SELECT seat,pool,error FROM records WHERE record=?", (str(record),)).fetchone()
+        if (error is None and old is None) or old == (seat, pool, error):
+            return
         if error is None:
             self.db.execute("DELETE FROM records WHERE record = ?", (str(record),))
         else:
             self.db.execute("INSERT OR REPLACE INTO records VALUES (?,?,?,?)", (str(record), seat, pool, error))
-        self.db.commit()
+        if commit and self.db.in_transaction:
+            self.db.commit()
 
     def incomplete_records(self) -> list[tuple[str, str, str, str]]:
         errors = self.db.execute("SELECT record, seat, pool, error FROM records ORDER BY record").fetchall()
@@ -210,7 +242,7 @@ class Ledger:
                 for s, p in self.provenance.owners(r, seat, pool)]
 
     def ingest(self, seat: str, pool: str, record: Path, turns: list[Turn], store: Store,
-               machine: dict[int, Machine] | None = None) -> int:
+               machine: dict[int, Machine] | None = None, *, commit: bool = True) -> int:
         """Write the turns of a record not yet written, or changed since; the count written. Reading twice counts once."""
         stored = self.db.cursor()
         stored.row_factory = sqlite3.Row  # only stored source rows use names; public query tuples stay unchanged
@@ -262,7 +294,8 @@ class Ledger:
             self.db.execute("DELETE FROM tool_calls WHERE record = ? AND turn = ?", (str(record), turn.index))
             self.db.executemany(f"INSERT INTO tool_calls ({', '.join(TOOL_COLUMNS)}) "
                                 f"VALUES ({', '.join(':' + name for name in TOOL_COLUMNS)})", tool_rows)
-        self.db.commit()
+        if commit and self.db.in_transaction:
+            self.db.commit()
         return changed
 
     def rollup(self, by: str) -> list[Row]:

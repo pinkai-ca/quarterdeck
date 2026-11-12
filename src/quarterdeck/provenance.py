@@ -6,6 +6,7 @@ import fcntl
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from .harness.base import record_fingerprint
 
 UNKNOWN = "-"
 
@@ -28,6 +29,7 @@ def remember_launch(folder: Path, record: Path, launched) -> None:
 class Provenance:
     def __init__(self, db, create: bool = True):
         self.db = db
+        self.sources = {}
         if create:  # a reading opens the book read-only and makes no table
             db.execute("""CREATE TABLE IF NOT EXISTS record_launches (
                 record TEXT NOT NULL, at TEXT NOT NULL, seat TEXT NOT NULL, pool TEXT NOT NULL,
@@ -36,34 +38,56 @@ class Provenance:
                 record TEXT NOT NULL, at TEXT NOT NULL, seat TEXT NOT NULL, pool TEXT NOT NULL, price TEXT,
                 PRIMARY KEY (record, at, seat, pool))""")
 
-    def remember(self, record: Path, seat: str, pool: str, at: datetime, price: dict | None = None) -> bool:
+    def remember(self, record: Path, seat: str, pool: str, at: datetime, price: dict | None = None,
+                 *, commit: bool = True) -> bool:
         stamp = at.astimezone(timezone.utc).isoformat()
         key = (str(record), stamp, seat, pool)
         saved = json.dumps(price, sort_keys=True) if price is not None else None
-        changed = self.db.execute("INSERT OR IGNORE INTO record_launches VALUES (?,?,?,?)", key).rowcount
-        inserted = self.db.execute("INSERT OR IGNORE INTO launch_prices VALUES (?,?,?,?,?)", (*key, saved)).rowcount
+        changed = not self.db.execute("SELECT 1 FROM record_launches WHERE record=? AND at=? AND seat=? AND pool=?", key).fetchone()
+        if changed:
+            self.db.execute("INSERT INTO record_launches VALUES (?,?,?,?)", key)
+        previous = self.db.execute("SELECT price FROM launch_prices WHERE record=? AND at=? AND seat=? AND pool=?", key).fetchone()
+        inserted = previous is None
+        if inserted:
+            self.db.execute("INSERT INTO launch_prices VALUES (?,?,?,?,?)", (*key, saved))
         if not inserted and saved is not None:
-            previous = self.db.execute("SELECT price FROM launch_prices WHERE record=? AND at=? AND seat=? AND pool=?", key).fetchone()[0]
+            previous = previous[0]
             if previous != saved:
                 # Contradictory snapshots at one launch are unknown, never last-writer-wins.
                 saved = saved if previous is None else "{}"
                 if previous != saved:
                     changed = True
                     self.db.execute("UPDATE launch_prices SET price=? WHERE record=? AND at=? AND seat=? AND pool=?", (saved, *key))
-        self.db.commit()
+        if commit and self.db.in_transaction:
+            self.db.commit()
         return bool(changed or inserted)
 
-    def sync(self, seat, current: Path | None, launched) -> set[Path]:
+    def prepare(self, seat, current: Path | None, launched):
+        """Read launch evidence before the record transaction; cache the pre-read stamp."""
+        path = seat.home.parent / "record-launches.jsonl"
+        active = ({"record": str(current), "at": launched.at, "pool": launched.pool,
+                   "price": getattr(launched, "price", None)} if current is not None and launched is not None else None)
+        stamp = (record_fingerprint(path), json.dumps(active, sort_keys=True))
+        if self.sources.get(path) == stamp:
+            return path, stamp, None
+        events = [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path.is_file() else []
+        if active is not None:
+            events.append(active)
+        return path, stamp, events
+
+    def sync(self, seat, current: Path | None, launched, *, commit: bool = True, prepared=None) -> set[Path]:
         """Import the journal and current proven join, even if record bytes have not changed."""
         changed = set()
-        path = seat.home.parent / "record-launches.jsonl"
-        events = [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path.is_file() else []
-        if current is not None and launched is not None:
-            events.append({"record": str(current), "at": launched.at, "pool": launched.pool, "price": getattr(launched, "price", None)})
+        path, stamp, events = prepared if prepared is not None else self.prepare(seat, current, launched)
+        if events is None:
+            return changed
         for event in events:
             record = Path(event["record"])
-            if self.remember(record, seat.name, event["pool"], datetime.fromisoformat(event["at"]), event.get("price")):
+            if self.remember(record, seat.name, event["pool"], datetime.fromisoformat(event["at"]), event.get("price"), commit=False):
                 changed.add(record)
+        if commit and self.db.in_transaction:
+            self.db.commit()
+        self.sources[path] = stamp
         return changed
 
     def resolve(self, record: Path, started: datetime | None, ended: datetime | None, seat: str, pool: str) -> tuple[str, str]:

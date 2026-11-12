@@ -16,6 +16,7 @@ import signal
 import sys
 import time
 import traceback
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 
@@ -37,6 +38,7 @@ from .tmux import Tmux, TmuxError
 TICK = 1.0
 TYPING_QUIET = 30  # seconds since a client's last key or mouse input before its session may be switched
 STATUS_INTERVAL = 0.7  # presentation only; rendering age and owner are checked independently
+ACCOUNT_RETRY = 60.0  # unchanged transient source failures, never provider pacing
 
 # Door alarms only a person can clear: a sign-in (every adapter names that dialog "login"),
 # or a delivery whose paste or submit outcome is uncertain (the pending journal's own reasons).
@@ -77,6 +79,7 @@ class Service:
         self.usage_hold: dict[str, float] = {}  # a refused pool's Retry-After, by the monotonic clock
         self.usage_logged: dict[str, str] = {}  # each pool's last logged usage failure
         self.read_marks: dict[Path, tuple] = {}  # record -> the fingerprint it was last read at
+        self.account_errors: dict[Path, tuple] = {}  # evidence, error, next transient read time
         self.working: dict[str, bool] = {}  # seat -> whether its record last showed a turn open
         self.work_marks: dict[str, tuple] = {}  # seat -> (record, fingerprint) its working state was read at
         self.blind_checked = -BLIND_INTERVAL  # when the blind attempts were last read against the records
@@ -670,54 +673,91 @@ class Service:
 
 
     def account(self) -> None:
-        """Ingest every ended turn of every record in each seat's home, sample a running seat's machine use,
-        and refresh its pool usage at the provider cadence. A record a relaunch left behind is still accounted
-        (law: every-turn-accounted); one whose file has not moved is not read again."""
+        """Read sources first, commit record accounting once, then make due usage attempts.
+
+        Program/screen/provider calls never run under the record write lock.
+        Checkpoints and machine/source caches describe only committed accounting.
+        """
         table = machine.processes()
+        observations, notices, human_readings = [], [], []
+        marks, errors = dict(self.read_marks), dict(self.account_errors)
+        meters = deepcopy(self.meters)
         for seat in self.resolved_seats():
             pane, launched = seat.pane(), seat.launched()
             live = pane is not None and not pane.dead
             current = seat.record()
-            for changed in self.ledger.provenance.sync(seat, current, launched):
-                self.read_marks.pop(changed, None)
-            meter = self.meters.get(seat.name)
+            prepared = self.ledger.provenance.prepare(seat, current, launched)
+            meter = meters.get(seat.name)
             if live:
                 if meter is None or meter.root != pane.pid:
-                    meter = self.meters[seat.name] = machine.Meter(pane.pid)  # a new process starts a new meter
+                    meter = meters[seat.name] = machine.Meter(pane.pid)
                 meter.sample(table)
+            reads = []
             for owned in record_owner.records(seat):  # law: every-turn-accounted
                 record = owned.path
                 pool = launched.pool if (record == current and launched) else UNKNOWN
+                stamp, evidence = None, None
                 try:
                     stamp = (owned.name, record_fingerprint(record))
-                    if self.read_marks.get(record) == stamp:
+                    evidence = (stamp, owned.reason, record_fingerprint(seat.folder / record_owner.REGISTRY), prepared[1])
+                    # New launch/price evidence must be reconciled even if record bytes stand still.
+                    if marks.get(record) == stamp and prepared[2] is None:
+                        continue
+                    prior = errors.get(record)
+                    if (prior is not None and prior[0] == evidence and
+                            (owned.reader is None or time.monotonic() < prior[2])):
                         continue
                     state, turns = owned.read()
                 except OSError as error:
-                    self.ledger.mark_record(record, seat.name, pool, str(error))
-                    self.log("error", step="account", seat=seat.name, record=record.name, error=str(error))
+                    message = str(error)
+                    prior = errors.get(record)
+                    if prior is None or prior[:2] != (evidence, message):
+                        notices.append(("error", dict(step="account", seat=seat.name, record=record.name, error=message)))
+                    errors[record] = evidence, message, time.monotonic() + ACCOUNT_RETRY
+                    reads.append((record, pool, stamp, None, (), message, owned.reader))
                     continue
-                self.ledger.quota.record(record, seat.name, state.walls, self.ledger.provenance, post.now())
-                if record == current and seat.session.human:
-                    from . import turn_failure
-                    turn_failure.publish(seat, record, state, turns, stamp[1])  # what a human seat's status line may read
-                self.read_marks[record] = stamp
-                incomplete = "incomplete turn state in record" if (state.turns is None or state.turn_open is None) else None
-                self.ledger.mark_record(record, seat.name, pool, incomplete)
-                if turns:
-                    qualify = getattr(owned.reader, "price_turn", lambda turn, price: turn)
-                    turns = [qualify(t, self.ledger.provenance.price(record, t.started, t.ended)) for t in turns]
-                    figures = {turns[-1].index: meter.result()} if live and record == current and meter and state.turn_open is False else {}
-                    written = self.ledger.ingest(seat.name, UNKNOWN, record, turns, self.store, figures)
-                    if written:
-                        if live and record == current:
-                            self.meters[seat.name] = machine.Meter(pane.pid)
-                        self.log("ledger", seat=seat.name, record=record.name, turns=written)
-            if live and seat.harness.screen_walls:
-                quota.observe_screen(self.ledger, seat, Door(seat).screen(), launched)  # the one place a screen's wall is written
+                errors.pop(record, None)
+                reads.append((record, pool, stamp, state, turns, None, owned.reader))
+            screen = Door(seat).screen() if live and seat.harness.screen_walls else None
+            observations.append((seat, pane, launched, live, current, prepared, reads, screen))
+
+        with self.ledger.record_pass() as book:
+            for seat, pane, launched, live, current, prepared, reads, screen in observations:
+                for changed in book.provenance.sync(seat, current, launched, commit=False, prepared=prepared):
+                    marks.pop(changed, None)
+                meter = meters.get(seat.name)
+                for record, pool, stamp, state, turns, error, reader in reads:
+                    if error is not None:
+                        book.mark_record(record, seat.name, pool, error, commit=False)
+                        marks.pop(record, None)
+                        continue
+                    book.quota.record(record, seat.name, state.walls, book.provenance, post.now(), commit=False)
+                    incomplete = "incomplete turn state in record" if (state.turns is None or state.turn_open is None) else None
+                    book.mark_record(record, seat.name, pool, incomplete, commit=False)
+                    if turns:
+                        qualify = getattr(reader, "price_turn", lambda turn, price: turn)
+                        turns = [qualify(t, book.provenance.price(record, t.started, t.ended)) for t in turns]
+                        figures = {turns[-1].index: meter.result()} if live and record == current and meter and state.turn_open is False else {}
+                        written = book.ingest(seat.name, UNKNOWN, record, turns, self.store, figures, commit=False)
+                        if written:
+                            if live and record == current:
+                                meters[seat.name] = machine.Meter(pane.pid)
+                            notices.append(("ledger", dict(seat=seat.name, record=record.name, turns=written)))
+                    marks[record] = stamp
+                    if record == current and seat.session.human:
+                        human_readings.append((seat, record, state, turns, stamp[1]))
+                quota.observe_screen(book, seat, screen, launched, commit=False)
+            book.attributions.replay(self.store, self.runtime, commit=False, retry_interval=ACCOUNT_RETRY)
+
+        self.read_marks, self.account_errors, self.meters = marks, errors, meters
+        for event, data in notices:
+            self.log(event, **data)
+        for seat, record, state, turns, stamp in human_readings:
+            from . import turn_failure
+            turn_failure.publish(seat, record, state, turns, stamp)
+        for seat, _, launched, live, _, _, _, _ in observations:
             quota.refresh(self, seat, live, launched)
         quota.refresh_declared(self)
-        self.ledger.attributions.replay(self.store, self.runtime)
 
     def failover(self) -> None:
         """At a wall, try eligible later choices first, then earlier choices in declared order."""

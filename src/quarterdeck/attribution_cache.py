@@ -2,6 +2,7 @@
 
 from collections import defaultdict
 import json
+import time
 from os.path import abspath
 from pathlib import Path
 
@@ -25,6 +26,7 @@ class Attribution:
         self.db = db
         self.sources = {}
         self.last = None
+        self.retries = {}
         if create:
             db.execute('''CREATE TABLE IF NOT EXISTS turn_attribution (
                 record TEXT NOT NULL, turn INTEGER NOT NULL, identity TEXT NOT NULL,
@@ -63,7 +65,7 @@ class Attribution:
         self.db.execute('INSERT OR REPLACE INTO turn_attribution VALUES (?,?,?,?,?,?,?,?,?,?)', values)
         return 1
 
-    def replay(self, store, runtime, bindings=None):
+    def replay(self, store, runtime, bindings=None, *, commit=True, retry_interval=0):
         """All stored keys, including retired seats; called by the service, never a reading.
 
         Retained exact-envelope evidence survives a missing source if the stored
@@ -103,8 +105,9 @@ class Attribution:
             stamp = (reader, None)
             try:
                 stamp = (reader, record_fingerprint(Path(record))) if reader in harness.NAMES else (reader, None)
-                if record in self.sources and self.sources[record][0] == stamp and not self.sources[record][2]:
-                    continue
+                if prior is not None and prior[0] == stamp:
+                    if not prior[2] or reader not in harness.NAMES or time.monotonic() < self.retries.get(record, 0):
+                        continue
                 if reader not in harness.NAMES:
                     raise OSError('record reader unavailable or ambiguous')
                 inputs = harness.get(reader).attribution_inputs(Path(record))
@@ -112,8 +115,8 @@ class Attribution:
             except (OSError, ValueError, KeyError, TypeError) as exc:
                 inputs, error = [], f'record attribution evidence unavailable: {type(exc).__name__}'
             self.sources[record] = stamp, inputs, error
-            changed |= (prior is None or error is not None
-                        or source_evidence(prior) != source_evidence(self.sources[record]))
+            self.retries[record] = time.monotonic() + retry_interval if error else 0
+            changed |= prior is None or source_evidence(prior) != source_evidence(self.sources[record])
         stamp = tuple(store.all())
         invalid = self.db.execute('''SELECT count(*) FROM turns t LEFT JOIN turn_attribution a
             ON a.record=t.record AND a.turn=t.turn WHERE a.valid IS NULL OR a.valid=0''').fetchone()[0]
@@ -163,6 +166,7 @@ class Attribution:
                 if overlap:
                     verdict = Verdict('unresolved', verdict.orders, 'received message overlaps recorded turn intervals', verdict.evidence)
                 written += self.put(row, received, verdict)
-        self.db.commit()
+        if commit and self.db.in_transaction:
+            self.db.commit()
         self.last = stamp
         return written

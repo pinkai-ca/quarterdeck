@@ -79,24 +79,39 @@ class Quotas:
                 CREATE TABLE IF NOT EXISTS usage_reads (pool TEXT PRIMARY KEY, at TEXT NOT NULL, error TEXT);
             """)
 
-    def observe(self, source: str, seat: str, pool: str, event: Wall, now: datetime) -> None:
-        self.db.execute("INSERT OR IGNORE INTO wall_events VALUES (?,?,?,?,?,?,?,?,?,?,0)",
-                        (source, event.key, seat, pool, stamp(event.at), stamp(event.resets_at), stamp(now),
-                         event.reason, event.error_id, event.signature))
+    def observe(self, source: str, seat: str, pool: str, event: Wall, now: datetime,
+                *, commit: bool = True) -> None:
+        old = self.db.execute("SELECT pool,at,resets_at FROM wall_events WHERE source=? AND event=?",
+                              (source, event.key)).fetchone()
+        if old is None:
+            self.db.execute("INSERT INTO wall_events VALUES (?,?,?,?,?,?,?,?,?,?,0)",
+                            (source, event.key, seat, pool, stamp(event.at), stamp(event.resets_at), stamp(now),
+                             event.reason, event.error_id, event.signature))
         # Only fill missing evidence. A duplicate observation never shifts a known time/reset.
-        self.db.execute("UPDATE wall_events SET pool=CASE WHEN pool=? THEN ? ELSE pool END, "
-                        "at=COALESCE(at,?), resets_at=COALESCE(resets_at,?) WHERE source=? AND event=?",
-                        (UNKNOWN, pool, stamp(event.at), stamp(event.resets_at), source, event.key))
+        else:
+            filled = (pool if old[0] == UNKNOWN else old[0],
+                      old[1] if old[1] is not None else stamp(event.at),
+                      old[2] if old[2] is not None else stamp(event.resets_at))
+            if old != filled:
+                self.db.execute("UPDATE wall_events SET pool=?,at=?,resets_at=? WHERE source=? AND event=?",
+                                (*filled, source, event.key))
         if not source.startswith("screen:"):
-            self.db.execute("UPDATE wall_events SET superseded=1 WHERE source LIKE 'screen:%' AND seat=? "
-                            "AND (signature=? OR (error_id IS NOT NULL AND error_id=?))",
-                            (seat, event.signature, event.error_id))
-        self.db.commit()
+            matches = self.db.execute("SELECT source,event FROM wall_events WHERE superseded=0 "
+                                      "AND source LIKE 'screen:%' AND seat=? "
+                                      "AND (signature=? OR (error_id IS NOT NULL AND error_id=?))",
+                                      (seat, event.signature, event.error_id)).fetchall()
+            if matches:
+                self.db.executemany("UPDATE wall_events SET superseded=1 WHERE source=? AND event=?", matches)
+        if commit and self.db.in_transaction:
+            self.db.commit()
 
-    def record(self, record, seat: str, events: tuple[Wall, ...], provenance, now: datetime) -> None:
+    def record(self, record, seat: str, events: tuple[Wall, ...], provenance, now: datetime,
+               *, commit: bool = True) -> None:
         for event in events:
             owner, pool = provenance.resolve(record, event.at, event.at, seat, UNKNOWN)
-            self.observe(str(record), owner, pool, event, now)
+            self.observe(str(record), owner, pool, event, now, commit=False)
+        if commit and self.db.in_transaction:
+            self.db.commit()
 
     def active(self, now: datetime | None = None) -> list[tuple]:
         now = now or datetime.now(timezone.utc)
@@ -138,7 +153,7 @@ class Quotas:
                 self.db.execute("SELECT pool,error FROM usage_reads WHERE error IS NOT NULL ORDER BY pool")]
 
 
-def observe_screen(book, seat, screen, launched, now: datetime | None = None) -> None:
+def observe_screen(book, seat, screen, launched, now: datetime | None = None, *, commit: bool = True) -> None:
     """A quota banner on a seat's screen, persisted once by the service under the launch it was seen on.
 
     The record's own quota errors are persisted beside it when the record is read; a banner the
@@ -151,7 +166,8 @@ def observe_screen(book, seat, screen, launched, now: datetime | None = None) ->
     if event is None or book.quota.recognized(seat.name, event):
         return
     source = f"screen:{seat.name}:{launched.at if launched else 'unknown-launch'}"
-    book.quota.observe(source, seat.name, launched.pool if launched else UNKNOWN, replace(event, key=event.error_id or event.key), now)
+    book.quota.observe(source, seat.name, launched.pool if launched else UNKNOWN,
+                       replace(event, key=event.error_id or event.key), now, commit=commit)
 
 
 BACKOFF_MAX = 3600  # a refusal holds its pool at most an hour
