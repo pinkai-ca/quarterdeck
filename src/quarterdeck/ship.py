@@ -613,8 +613,13 @@ def create(folder: Path, text: str, orders: str) -> Ship:
     _write_atomically(folder / "ship.toml", text)
     _write_atomically(folder / "orders.md", orders)
     _write_atomically(folder / ".gitignore", f"/{RUNTIME}/\n")
-    _git(folder, "init", "--quiet")
-    commit(folder, ["ship.toml", "orders.md", ".gitignore"], "qd setup: declare crew")
+    try:
+        _git(folder, "init", "--quiet")
+        commit(folder, ["ship.toml", "orders.md", ".gitignore"], "qd setup: declare crew")
+    except ShipError as error:
+        raise ShipError(f"ship files saved in {folder}, but the first commit is unfinished: {error}; "
+                        "resolve the git reason yourself, initialize this ship's repository if needed, "
+                        "then add and commit only ship.toml, orders.md and .gitignore before rerunning qd setup") from None
     return load(folder)
 
 

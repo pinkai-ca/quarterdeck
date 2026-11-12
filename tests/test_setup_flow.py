@@ -368,3 +368,14 @@ def test_non_tty_cli_uses_same_setup_without_inherited_ship_handoff(answers, tmp
     assert cli.main(["setup", "--answers", str(file)]) == 0
     assert "Desk access" in capsys.readouterr().out
     assert operations.calls[-3:] == ["up", "status", "access"]
+
+
+def test_unfinished_first_commit_requires_person_to_resolve_git(answers, monkeypatch):
+    def refuse_commit(*_):
+        raise ship.ShipError("example git identity is unavailable")
+    monkeypatch.setattr(ship, "commit", refuse_commit)
+    with pytest.raises(ship.ShipError, match="first commit is unfinished.*resolve the git reason yourself"):
+        execute(answers)
+    assert (Path(answers["folder"]) / "ship.toml").exists()
+    with pytest.raises(ship.ShipError, match="has no first commit"):
+        execute(dict(folder=answers["folder"], existing="keep", check="yes", start="yes"))

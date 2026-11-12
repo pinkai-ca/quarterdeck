@@ -364,6 +364,12 @@ def run(args: argparse.Namespace, *, operations: Operations | None = None,
         conversation.say(f"Existing ship {existing.name} in {folder}; workspace {existing.workspace}")
         for seat in existing.seats.values():
             conversation.say(f"  {seat.name}: {seat.harness}, pools {', '.join(seat.pools)}")
+        if not existing.is_repository:
+            raise ShipError(f"{folder} is not its own git repository; initialize it and commit its declaration yourself, then rerun {rerun}")
+        try:
+            ships._git(folder, "rev-parse", "--verify", "HEAD")
+        except ShipError:
+            raise ShipError(f"{folder} has no first commit; resolve any git identity error yourself and commit only ship.toml, orders.md and .gitignore, then rerun {rerun}") from None
         mode = conversation.choice("existing", "Keep this declaration, or update it?", ("keep", "update"), "keep")
     else:
         mode = "new"
