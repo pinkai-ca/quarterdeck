@@ -8,6 +8,7 @@ installed version is marked proven by adding fixtures.
 
 | Contract | Implementation and evidence | Remaining limits |
 | --- | --- | --- |
+| Version context | Normal selected executable, never a PATH redirect. Existing eligible runtime supplies a fresh empty version-call home; both HOME variables are replaced. No-context lookup reads only the selected resolved basename and executes nothing. | No operator version cache is adopted. Missing runtime remains missing; installed version proof still belongs to the check. |
 | Home and launch | Private `GROK_HOME`, nested private `HOME`/XDG, native configuration, brief through `--rules`, updater off and normal credential linkage. Independent native isolation prerequisite passed for the measured launch contract. | Only project-source-absent workspaces are supported. Public marketplace fetching and some native bundled capabilities remain, as listed in the card. No blanket background-work absence claim. |
 | Records and unknowns | Native ACP envelopes through the shared JSON-lines snapshot/cache. Ordinary input chunks, completed/cancelled turns, tool invocation/update identity, malformed/foreign/empty/unknown evidence and incomplete physical-line diagnostics have synthetic cases. | An unknown row cannot establish tool-set clearance. Missing or malformed information stays unknown. |
 | Join | Adapter-owned UUIDv7 folder creation time, validated against every record row. Fractional launch boundaries and conflicting/non-v7 identities have synthetic cases. Normal first-record join and same-record resume were observed natively. | Shared join selection and ambiguity handling are unchanged. No whole-second row fallback, flooring or explicit `-s` launch option. |
@@ -44,6 +45,14 @@ not offer arbitrary exact-content proof for clipped or whitespace-only drafts.
   Grok build, launch/resume and billing use it; doctor checks global native pool
   readiness and every seat's actual resolved pool/harness choice. No native call
   or mutation belongs in preflight.
+- `Harness.version(home: Path | None = None)` adds optional empty runtime context.
+  Private dispatch at doctor, Seat launch and installed check preserves one old
+  no-context call for base/default, synthetic and legacy no-argument adapters,
+  with no fresh home. Only an explicit contextual override gets an empty
+  temporary directory in an existing owned real fenced runtime. Missing context
+  creates nothing; an executed callback is never retried. Grok sets both HOME
+  variables and keeps controlled native ENV; no-context basename lookup executes
+  nothing and uses Seat's same selected program, without PATH rewriting.
 - `Harness.record_time_resolution` defaults to zero. Grok declares one second;
   the canonical receipt matcher floors only local `since`, preserving exact
   payload, original attempt time, owned record and one transport attempt.
@@ -53,10 +62,14 @@ not offer arbitrary exact-content proof for clipped or whitespace-only drafts.
 
 The ordinary source targets are `test_grok.py`, `test_grok_home.py`,
 `test_grok_workspace.py`, `test_grok_screen.py`, `test_grok_receipt_time.py`,
-`test_grok_record.py`, `test_grok_credentials.py` and `test_grok_join_time.py`
+`test_grok_record.py`, `test_grok_credentials.py`, `test_grok_join_time.py` and
+`test_grok_version.py`
 under `tests/contract/`. These cover native-format decoders and synthetic
 configuration, receipt precision, join-time boundaries and ledger ingestion;
-they make no provider call.
+they make no provider call. Version cases use synthetic selected files and
+subprocess stubs, including normal doctor/check context propagation and missing
+runtime behavior. Independent validation owns normal Seat launch propagation and
+its lifecycle interactions.
 
 Shared receipt callers are `pending.Proof.confirmed`,
 `delivery_record.receipt`/`receipt_anywhere`, `Door.confirm`, drill receipt checks

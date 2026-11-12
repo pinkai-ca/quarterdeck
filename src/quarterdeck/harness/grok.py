@@ -6,6 +6,7 @@ import copy
 import json
 import os
 import re
+import shutil
 import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
@@ -213,8 +214,23 @@ class GrokHarness(Harness):
                 raise ShipError(f"{cwd}: Grok project discovery needs an explicit private home")
             grok_workspace.check(cwd, private_environment(home))
 
-    def version(self) -> str | None:
-        return program_version(("env", *(f"{key}={value}" for key, value in ENV.items()), self.program, "--version"))
+    def version(self, home: Path | None = None) -> str | None:
+        from ..seat import program_path  # the same selected program as ordinary Seat launch
+
+        selected = shutil.which(self.program, path=program_path())
+        if selected is None:
+            return None
+        try:
+            program = Path(selected).resolve(strict=True)
+            if home is None:
+                match = re.fullmatch(r"grok-(\d+\.\d+\.\d+(?:[-+][A-Za-z0-9][A-Za-z0-9.+_-]*)?)-linux-x86_64", program.name)
+                return match[1] if match else None
+            if home.is_symlink() or not home.is_dir() or any(home.iterdir()):
+                return None
+        except (OSError, RuntimeError):
+            return None
+        environment = {**ENV, "HOME": str(home), "GROK_HOME": str(home)}
+        return program_version(("env", *(f"{key}={value}" for key, value in environment.items()), str(program), "--version"))
 
     def freshness(self, path: Path) -> tuple[float, float] | None:
         grant = auth_metadata(path)

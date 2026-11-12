@@ -69,7 +69,7 @@ class FakeHarness(Harness):
                 env[f"QD_FAKE_{key.upper()}"] = "1" if value is True else "0" if value is False else str(value)
         return Launch(tuple(argv), env)
 
-    def version(self) -> str:
+    def version(self, home: Path | None = None) -> str:
         return "fake"
 
     # -- record ------------------------------------------------------------------------

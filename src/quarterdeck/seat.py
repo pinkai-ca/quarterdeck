@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import providers, durable, harness as harnesses, input_receipt, pending, post, record_owner, ship as shipmod, standing
-from .harness.base import Harness, Join
+from .harness.base import Harness, Join, _version_in_runtime
 from .provenance import remember_launch
 from .pricing import save_price, saved_price
 from .ship import Pool, SeatSpec, Ship, ShipError
@@ -437,7 +437,7 @@ class Seat:
             argv = sandbox.command(jail, argv)
         at = datetime.now(timezone.utc).isoformat()  # before the program can write a record (law: one-record)
         pane = self._open_window(argv, launch.env, path)
-        launched = Launched(pane.id, pane.pid, at, pool.name, resume_id, argv, self.harness.version(), self.spec.harness,
+        launched = Launched(pane.id, pane.pid, at, pool.name, resume_id, argv, _version_in_runtime(self.harness, self.ship.runtime), self.spec.harness,
                             sorted(map(str, prior)), launch.price, launch.recovery)
         launched.write(self.folder / "launch.json")
         if self.spec.pool_choices:

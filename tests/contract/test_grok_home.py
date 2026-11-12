@@ -220,10 +220,19 @@ def test_telemetry_trace_and_local_storage_are_carried_by_launch_environment(tmp
         assert grok.private_environment(home)[key] == value
     assert "--storage-mode" not in launch.argv
     captured = []
+    program = tmp_path / "grok-8.6.4-linux-x86_64"
+    program.write_text("Synthetic selected file; never executed.\n")
+    program.chmod(0o700)
+    (tmp_path / "grok").symlink_to(program.name)
+    from quarterdeck import seat as seat_module
+    monkeypatch.setattr(seat_module, "program_path", lambda: str(tmp_path))
     monkeypatch.setattr(grok, "program_version", lambda argv: captured.append(argv) or "synthetic")
-    assert adapter.version() == "synthetic"
+    version_home = tmp_path / "empty-version-home"
+    version_home.mkdir()
+    assert adapter.version(version_home) == "synthetic"
     assert {"GROK_STORAGE_MODE=local", "GROK_TELEMETRY_ENABLED=0", "GROK_TELEMETRY_TRACE_UPLOAD=0",
-            "DISABLE_TELEMETRY=1", "GROK_DISABLE_EXPERIMENTS=1"} <= set(captured[0])
+            "DISABLE_TELEMETRY=1", "GROK_DISABLE_EXPERIMENTS=1",
+            f"HOME={version_home}", f"GROK_HOME={version_home}"} <= set(captured[0])
 
 
 def test_experiments_are_disabled_in_controlled_invocation_output(tmp_path):

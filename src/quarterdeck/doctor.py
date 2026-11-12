@@ -19,7 +19,7 @@ from pathlib import Path
 
 from . import credential, endpoint, harness as harnesses, install, post, providers, sandbox, servicectl, watch
 from .drill import Check, wait_for
-from .harness.base import key_environment, program_version
+from .harness.base import _version_in_runtime, key_environment, program_version
 from .seat import program_path, temporary_seat
 from .ship import Pool, SeatSpec, Ship, ShipError
 from .tmux import Tmux
@@ -42,7 +42,7 @@ def checks(ship: Ship) -> list[Check]:
         if shutil.which(program, path=searched) is None:
             found.append(Check(f"program {name}", False, f"{program} is not on the PATH qd runs with; install it, or put it on that PATH"))
             continue
-        version = harness.version()
+        version = _version_in_runtime(harness, ship.runtime)
         proven = version is not None and (ship.runtime / "proven" / f"{name}-{version}").exists()
         note = "synthetic program" if harness.synthetic else ("proven by qd check" if proven else f"unproven: qd check {name} proves it")
         found.append(Check(f"program {name}", True, f"{program} {version or 'version unknown'} · {note}"))

@@ -16,6 +16,7 @@ import secrets
 from . import harness as harnesses, pending, post, providers, standing
 from .door import Delivery, Door
 from .drill import Check, wait_for
+from .harness.base import _version_in_runtime
 from .seat import Seat, temporary_seat
 from .ship import SeatSpec, Ship, ShipError
 from .tmux import Tmux
@@ -45,7 +46,7 @@ def check(ship: Ship, name: str, tmux: Tmux) -> list[Check]:
     pool = next((p for p in ship.pools.values() if harness.accepts(p) is None), None)
     if pool is None:
         raise ShipError(f"no pool in {ship.file} that {name} runs on; declare one to check it against")
-    version = harness.version()
+    version = _version_in_runtime(harness, ship.runtime)
     checks = [Check("installed", version is not None,
                     f"{name} {version or 'not found on the PATH'} · provider {providers.display(pool.provider)} · pool {pool.name}")]
     if version is None:

@@ -8,8 +8,12 @@ for the box and the dialogs.
 
 from __future__ import annotations
 
+import inspect
+import os
 import re
+import stat
 import subprocess
+import tempfile
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from datetime import datetime
@@ -66,6 +70,37 @@ def program_version(argv: tuple[str, ...]) -> str | None:
         if match:
             return match.group(0)
     return None
+
+
+def _version_in_runtime(harness, runtime: Path) -> str | None:
+    """Private dispatch: only an explicit contextual override gets a fresh home."""
+    version = harness.version
+    if getattr(version, "__func__", None) is Harness.version or getattr(harness, "synthetic", False):
+        return version()
+    try:
+        parameter = inspect.signature(version).parameters.get("home")
+    except (TypeError, ValueError):
+        parameter = None
+    if (parameter is None or parameter.default is not None
+            or parameter.kind not in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)):
+        return version()
+    eligible = True
+    try:
+        for path in (runtime, runtime / ".git"):
+            info = path.lstat()
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+                eligible = False
+                break
+    except OSError:
+        eligible = False
+    if not eligible:
+        return version()
+    try:
+        temporary = tempfile.TemporaryDirectory(prefix="version-", dir=runtime)
+    except OSError:
+        return version()  # Grok's no-context route executes nothing
+    with temporary as home:
+        return version(home=Path(home))  # never retry a version call that has executed
 
 
 class Harness(ABC):
@@ -160,7 +195,8 @@ class Harness(ABC):
         global requirements, never an inferred operator home or working directory.
         """
 
-    def version(self) -> str | None:
+    def version(self, home: Path | None = None) -> str | None:
+        """Optional empty runtime-owned context; default adapters keep their existing invocation."""
         return program_version((self.program, "--version"))
 
     paste_clear_rules: tuple[PasteClearRule, ...] = ()
