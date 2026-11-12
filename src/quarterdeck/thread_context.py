@@ -2,14 +2,25 @@
 
 from dataclasses import dataclass
 from collections.abc import Collection, Iterable
+from datetime import datetime
+import re
 
 from . import post
+from .harness.types import Input
 
 
 @dataclass(frozen=True)
 class Entry:
     message: post.Message
     context_only: bool = False
+
+
+def context(message: post.Message) -> str:
+    header = (f"qd context > own question to {message.to} · {message.short}"
+              " · context only; no delivery or reply requested")
+    if message.re:
+        header += f" · re {post.short_of(message.re)}"
+    return f"{header}\n{message.body.rstrip()}\nqd context > end context\n"
 
 
 @dataclass(frozen=True)
@@ -29,12 +40,80 @@ class Selection:
             if not entry.context_only:
                 parts.append(post.typed([message]))
                 continue
-            header = (f"qd context > own question to {message.to} · {message.short}"
-                      " · context only; no delivery or reply requested")
-            if message.re:
-                header += f" · re {post.short_of(message.re)}"
-            parts.append(f"{header}\n{message.body.rstrip()}\nqd context > end context\n")
+            parts.append(context(message))
         return ''.join(parts)
+
+
+def consumed_ids(store: post.Store, seat: str, role: str, inputs: Iterable[Input], *,
+                 excluded: Collection[str] = ()) -> frozenset[str]:
+    """Read complete canonical inputs, never search for envelopes inside prose.
+
+    The caller establishes the actual resumed record and its reader. Every token
+    must match in full, from the beginning through the end of one native input.
+    Header counts validate formatting only; context and stubs yield no ids.
+    """
+    from .refusal import stub
+
+    messages = store.all()
+    tokens = {}
+    for message in messages:
+        incoming = message.to == seat and message.kind != 'ack'
+        if message.id in excluded:
+            token = stub(message) if incoming else None
+            incoming = False
+        elif incoming:
+            token = post.typed([message]).strip()
+        elif message.sender == seat and message.kind == 'question':
+            token = context(message).strip()
+        else:
+            token = None
+        if token:
+            tokens.setdefault(token.partition('\n')[0], []).append((token, message, incoming))
+    orders = [m for m in messages if m.to == seat and m.kind == 'order']
+    questions = [m for m in messages if m.to == seat and m.kind == 'question']
+
+    def header(line):
+        prefix = f'qd > briefed as {seat}, {role} · '
+        if not line.startswith(prefix):
+            return False
+        what = line[len(prefix):]
+        if what == 'nothing open':
+            return line == post.briefed_header(seat, role, [])
+        match = re.fullmatch(r'(?:(\d+) orders? open)?(?:, )?(?:(\d+) questions? open)?', what)
+        if match is None:
+            return False
+        no, nq = (int(value or 0) for value in match.groups())
+        return (no <= len(orders) and nq <= len(questions)
+                and line == post.briefed_header(seat, role, orders[:no] + questions[:nq]))
+
+    consumed = set()
+    for item in inputs:
+        if (not isinstance(item.text, str) or not isinstance(item.at, datetime) or item.at.tzinfo is None
+                or item.kind not in ('accepted', 'consumed')
+                or item.kind == 'consumed' and (not isinstance(item.consumed_at, datetime)
+                    or item.consumed_at.tzinfo is None or item.consumed_at < item.at)):
+            continue
+        text = item.text.strip()
+        first, separator, rest = text.partition('\n')
+        if header(first):
+            text = rest if separator else ''
+        found = set()
+        while text:
+            matches = [(token, message, incoming) for token, message, incoming in tokens.get(text.partition('\n')[0], ())
+                       if text == token or text.startswith(token + '\n')]
+            if len(matches) != 1:
+                break
+            token, message, incoming = matches[0]
+            if message.at > item.at:
+                break
+            if incoming:
+                found.add(message.id)
+            text = text[len(token):]
+            if text.startswith('\n'):
+                text = text[1:]
+        else:
+            consumed.update(found)
+    return frozenset(consumed)
 
 
 def select(store: post.Store, seat: str, extra: Iterable[post.Message] = (), *,

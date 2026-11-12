@@ -424,7 +424,7 @@ class Seat:
         resume_id = self._resume_id() if resume else None
         if resume and resume_id is None and prior:
             self.harness.preflight_resume(spec, self.home, lambda: None)
-        first, carried = self.first_message()  # read while the last record is still pinned
+        first, carried = self.first_message(resume_id=resume_id)  # read while the last record is still pinned
         if not resume_id:
             (self.folder / "record").unlink(missing_ok=True)
         launch = self.harness.launch(spec, pool, self.home, brief, resume_id, first)
@@ -465,32 +465,52 @@ class Seat:
         except OSError:
             return None
 
-    def first_message(self) -> tuple[str | None, list[post.Message]]:
+    def first_message(self, *, resume_id: str | None = None) -> tuple[str | None, list[post.Message]]:
         """What the launch carries as its first message, under a header saying the seat was briefed.
 
-        Every open message, whatever reached the seat before, plus what never reached it and
-        what was queued in a turn that never read it (law: context-is-cache).
+        Every open root and its incoming thread amendments, plus unread work
+        (law: context-is-cache). Own outgoing questions explain answers as
+        context only. Only the actual resumed record may suppress amendments.
         """
+        from . import refusal, thread_context
+
         store, attempts = post.Store(self.ship.runtime), post.Attempts(self.ship.runtime)
         with post.admission(self.ship.runtime, self.name):
-            open_messages = store.open_for(self.name)
+            try:
+                refused = refusal.excluded(self.ship.runtime, self.name)
+            except refusal.JournalError as error:
+                raise ShipError(f"{self.name}: {error}; inspect it before a launch carries anything") from None
             unread = attempts.undelivered(store, self.name, for_launch=True)
-        carried = set(open_messages) | set(unread) | set(self._queued_unread(store, attempts))
-        from . import refusal
-        try:
-            refused = refusal.excluded(self.ship.runtime, self.name)
-        except refusal.JournalError as error:
-            raise ShipError(f"{self.name}: {error}; inspect it before a launch carries anything") from None
-        withheld = sorted((m for m in carried if m.id in refused), key=lambda m: (m.at, m.id))
-        carried -= set(withheld)  # law: one-door -- a message its provider refused is never typed again
-        if not carried and not withheld:
+            extra = unread + self._queued_unread(store, attempts)
+            consumed = self._consumed_messages(store, attempts, resume_id, refused)
+            all_context = thread_context.select(store, self.name, extra, consumed=consumed)
+            selection = thread_context.select(store, self.name, extra, consumed=consumed, excluded=refused)
+        withheld = [m for m in all_context.incoming if m.id in refused]
+        # law: one-door -- exclusions remove incoming and context bodies before rendering
+        if not selection.entries and not withheld:
             return None, []
-        ordered = sorted(carried, key=lambda m: (m.at, m.id))
-        parts = [post.briefed_header(self.name, self.spec.role, open_messages)]
+        parts = [post.briefed_header(self.name, self.spec.role, list(selection.roots))]
         parts += [refusal.stub(m) for m in withheld]  # law: context-is-cache -- named, never retyped
-        if ordered:
-            parts.append(post.typed(ordered))
-        return "\n".join(parts), ordered
+        if selection.entries:
+            parts.append(selection.render())
+        return "\n".join(parts), selection.incoming
+
+    def _consumed_messages(self, store: post.Store, attempts: post.Attempts, resume_id: str | None,
+                           excluded: frozenset[str]) -> frozenset[str]:
+        from . import thread_context
+
+        if not resume_id or (record := self.record()) is None:
+            return frozenset()
+        try:
+            if (record_owner.pinned_reader(self, record) != self.spec.harness
+                    or self.harness.session_id(record) != resume_id):
+                return frozenset()
+            consumed = thread_context.consumed_ids(store, self.name, self.spec.role, self.harness.inputs(record),
+                                                   excluded=excluded)
+        except (OSError, ValueError, TypeError, AttributeError):
+            return frozenset()  # unknown consumption can never suppress amended work
+        unacted = {message for message, result in attempts.last_results(self.name).items() if result == 'unacted'}
+        return consumed - unacted  # retain the existing next-start carriage of proved unacted input
 
     def _queued_unread(self, store: post.Store, attempts: post.Attempts) -> list[post.Message]:
         """Carry queued messages whose exact input has not been consumed since their latest attempt."""

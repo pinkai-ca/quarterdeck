@@ -16,6 +16,7 @@ from typing import Any, Iterator, Sequence, TYPE_CHECKING
 
 from . import durable, post
 from . import input_receipt
+from .harness import closed_record
 from .harness.json_record import RecordError
 from .harness.types import Screen
 
@@ -24,7 +25,7 @@ if TYPE_CHECKING:
     from .service import Service
 
 WAIT_SECONDS = 600  # intervention policy, not a claim about normal program latency
-TERMINAL = {"delivered", "cancelled", "carried", "abandoned", "withheld", "unacted", "uncertain"}
+TERMINAL = {"delivered", "cancelled", "carried", "abandoned", "withheld", "unacted", "uncertain", closed_record.PHASE}
 # unacted: the record ended its turn in an error with proved no model output; uncertain: output unknown.
 # Neither is ever typed again by a tick (law: one-door).
 UNSETTLED = {
@@ -314,12 +315,19 @@ def reconcile(service: Service) -> set[Path]:
             result = "delivered" if phase == "delivered" else None
             if phase not in TERMINAL:
                 result = proof.confirmed(seat)
+                if (not result and not any(a.result in ("delivered", "launch", "watch", *post.UNSETTLED) for a in carried)
+                        and closed_record.not_in_closed_record(seat, proof)):
+                    proof.save(phase=closed_record.PHASE, resolution=closed_record.DETAIL)
+                    phase = closed_record.PHASE
             if result:
                 proof.finish(result)
             for filename in proof.data["attempts"]:
                 attempt = attempts[filename]
                 paths.add(attempt.path)
-                if result and attempt.result != result:
+                if phase == closed_record.PHASE:
+                    if attempt.result != closed_record.PHASE:
+                        service.attempts.close(attempt, closed_record.PHASE, closed_record.DETAIL)
+                elif result and attempt.result != result:
                     service.attempts.close(attempt, result, "exact payload found in owned record after paste")
                 elif attempt.result is None:
                     recovered = {"submitted": "pending", "queued": "queued", "cancelled": "withheld", "withheld":"withheld", "abandoned": "abandoned",
