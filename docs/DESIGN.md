@@ -687,11 +687,13 @@ quarterdeck/                       the project folder: the framework repository
     harness/claude_limits.py  native Claude model allowances, family scope, reset-period inference and safe shape diagnostics
     harness/claude_watch.py  structured watch-output consumption for attribution, never delivery receipts
     harness/compactions.py   the complete native compaction count and work snapshot from the current owned record
+    harness/closed_record.py   read-only payload absence in an exact closed launch's owned record, using its saved reader and input diagnostics
     harness/thinking.py opencode_thinking.py pi_thinking.py   native recovery source evidence and proved off/restore controls;
                    program configuration, request/body and selection knowledge stays in adapters
     endpoint.py    endpoint pools: what a server serves, the model a seat takes from it, the key beside it
     sandbox.py     the bubblewrap jail around a sandboxed seat's program
     post.py        messages: store, inbox, the typed form, the watch
+    thread_context.py   open-thread incoming selection, context-only own questions and exact whole-input consumed-bundle matching
     watch.py       reading a seat: activity and door; the status line
     output.py      one shape for every reading: rendered for a person, or serialized as JSON for a caller
     ledger.py      turns, tokens, tool calls, machine load, by pool, seat and order; opened read-only by every reading
