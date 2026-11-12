@@ -8,24 +8,22 @@ Key pools export `XAI_API_KEY` as the other adapters do. All-adapter key isolati
 
 Version lookup uses the same selected executable as launch, without changing PATH. With an existing eligible ship runtime, doctor, Seat launch and installed check supply a fresh empty directory and set both version-call `HOME` and `GROK_HOME` to it; this is separate from the credential/config home. This contextual invocation uses `env -i` with only the caller PATH, controlled native environment and those two private HOME values; other caller variables are absent. Without that context, no Grok process runs: only the resolved selected filename `grok-<version>-linux-x86_64` can supply a version, otherwise it stays unknown. No operator `version.json` is read, and a missing runtime is not created or fenced for this lookup.
 
-Folder trust is never granted and trust prompts are never answered automatically. An unexpected nonempty `trusted_folders.toml` holds launch and stays intact for inspection. The ship template and seat settings cannot supply `paths.extra_rule_dirs`, whose imports are independent of folder trust. Every `requirements.toml` or `managed_config.toml` under `/etc/grok` or `GROK_HOME` is refused and retained. Quarterdeck does not write a requirements file or depend on its survival. Managed configuration fetching is configured off.
+Quarterdeck grants native folder trust with `--trust` for your declared workspace, including the framework root and folders holding `AGENTS.md` and `CLAUDE.md`. Workspace contents never prevent launch. Trust is recorded only in your `GROK_HOME/trusted_folders.toml`; its guard accepts exactly your workspace grant and refuses a parent or any other folder. Native trust-store format and path handling remain a measurement checkpoint for this candidate. The ship template and seat settings still cannot supply `paths.extra_rule_dirs`, whose imports are independent of folder trust.
 
-A Grok seat cannot work at the framework root or in a repository with `AGENTS.md` or `CLAUDE.md`. It works in a folder holding only its material. A clean subfolder inside such a Git repository still inherits root sources and is refused. Doctor and launch report every found source from the Git root through the working directory; an unreadable or ambiguous scope is unknown and refused. A positively identified non-repository uses only its working directory.
+Trust lets Grok load project instructions, rules, skills and other extensions. These are project material; the ship's brief and standing orders take precedence. Grok's own discovery can include the repository root and directories down to your working directory. Quarterdeck no longer discovers or refuses project sources. The guide-backed inventory is:
 
-The complete project-source inventory is checked at every directory in that scope:
-
-| Kind | Refused paths |
+| Kind | Trusted-folder sources and configuration |
 | --- | --- |
-| Named instructions | `Agents.md`, `Claude.md`, `CLAUDE.md`, `CLAUDE.local.md`, `AGENT.md`, `AGENTS.md`, `.claude/CLAUDE.md`, `.claude/CLAUDE.local.md` |
-| Rules | `.grok/rules`, `.claude/rules`, `.cursor/rules` |
-| MCP and plugins | `.mcp.json`, `.grok/plugins`; `.grok/config.toml` when it contains `[mcp_servers]` or `[plugins]` |
-| Hooks | `.grok/hooks`, `.claude/settings.json`, `.claude/settings.local.json`, `.cursor/hooks.json` |
-| Workflows | `.grok/workflows` |
-| Skills and commands | `.grok/skills`, `.grok/commands`, `.agents/skills`, `.agents/commands`, `.claude/skills`, `.claude/commands`, `.cursor/skills` |
-| Agents, personas and roles | `.grok/agents`, `.grok/personas`, `.grok/roles` |
-| Native project LSP | `.grok/lsp.json` |
+| Named instructions | `Agents.md`, `Claude.md`, `CLAUDE.md`, `CLAUDE.local.md`, `AGENT.md`, `AGENTS.md` load; generic names remain recognized with compatibility disabled. `.claude/CLAUDE.md` and `.claude/CLAUDE.local.md` are compatibility sources configured off. |
+| Rules | `.grok/rules` loads. `.claude/rules` and `.cursor/rules` are compatibility sources configured off. |
+| MCP and plugins | `.mcp.json`, `.grok/plugins`, and `[mcp_servers]` / `[plugins]` in `.grok/config.toml` are native project sources. Fixed managed MCP pins request no servers; effective enforcement is unproved until native validation. |
+| Hooks | `.grok/hooks` is native. `.claude/settings.json`, `.claude/settings.local.json` and `.cursor/hooks.json` are compatibility sources configured off. The managed hooks pin requests suppression of all hooks outside enforced policy; effective enforcement is unproved until native validation. |
+| Workflows | `.grok/workflows` is native project material. |
+| Skills and commands | `.grok/skills`, `.grok/commands`, `.agents/skills` and `.agents/commands` load. `.claude/skills`, `.claude/commands` and `.cursor/skills` are compatibility sources configured off. |
+| Agents, personas and roles | `.grok/agents`, `.grok/personas` and `.grok/roles` are native project sources; no complete disable switch is established. |
+| Native project LSP | `.grok/lsp.json` is covered by folder trust; effective suppression is not established. |
 
-An ordinary `.grok/config.toml` without MCP or plugin sections is not refused solely by filename. No import marker or native MCP-policy persistence is assumed.
+Quarterdeck writes exactly four native policy pins to your `GROK_HOME/managed_config.toml`: `allow_managed_hooks_only=true`, `allow_managed_mcp_servers_only=true`, `enable_all_project_mcp_servers=false` and `allowed_mcp_servers=[]`. Only that fixed ship-owned regular file is accepted; unexpected content is retained and refused. The installed guides document these keys in this layer. Whether the file survives an online start and inspect reports enforcement remains **unproved pending independent native validation**. An unavoidable project hook/MCP difference needs a decision before landing; no workspace refusal substitutes for that decision. Home `requirements.toml` and both admin files under `/etc/grok` are still refused and retained. Quarterdeck writes no requirements file. Managed configuration fetching remains configured off.
 
 Grok also consults `/etc/claude-code/managed-settings.json` as advisory policy: it can only tighten MCP restrictions. This file is not refused or edited by Quarterdeck.
 

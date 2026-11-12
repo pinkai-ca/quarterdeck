@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from quarterdeck import doctor
-from quarterdeck.harness import grok, grok_workspace
+from quarterdeck.harness import grok
 from quarterdeck.harness.grok import GrokHarness
 from quarterdeck.ship import Pool, SeatSpec, ShipError
 
@@ -18,7 +18,6 @@ from quarterdeck.ship import Pool, SeatSpec, ShipError
 def synthetic_native_paths(monkeypatch, tmp_path):
     """Ordinary home-output checks use fake admin paths, never actual /etc."""
     monkeypatch.setattr(grok, "SYSTEM_CONFIG", tmp_path / "synthetic-system")
-    monkeypatch.setattr(grok_workspace, "discover", lambda cwd, environment: [cwd])
     for name in grok.INHERITED_REDIRECTS:
         monkeypatch.delenv(name, raising=False)
 
@@ -35,25 +34,32 @@ def synthetic(tmp_path):
     return GrokHarness(), spec, pool, tmp_path / "native-home", brief
 
 
-def test_guide_home_never_grants_or_erases_folder_trust(tmp_path):
+def test_launch_grants_workspace_trust_in_its_private_native_home(tmp_path):
     adapter, spec, pool, home, brief = synthetic(tmp_path)
     adapter.build_home(home, spec, pool, None)
-    trust = home / "trusted_folders.toml"
-    assert not trust.exists()
     for resume in (None, "synthetic-resume"):
         launch = adapter.launch(spec, pool, home, brief, resume, None)
-        assert "--trust" not in launch.argv
-        assert not trust.exists()
-    trust.write_text("")
+        assert launch.argv.count("--trust") == 1
+        assert launch.argv[launch.argv.index("--cwd") + 1] == str(spec.cwd)
+        assert launch.env["GROK_HOME"] == str(home)
+
+
+def test_home_writes_the_fixed_guide_backed_managed_pins(tmp_path):
+    adapter, spec, pool, home, brief = synthetic(tmp_path)
     adapter.build_home(home, spec, pool, None)
-    assert trust.read_text() == ""
-    trust.write_text("synthetic unexpected trust state")
-    with pytest.raises(ShipError, match="nonempty folder-trust state"):
-        adapter.build_home(home, spec, pool, None)
-    for resume in (None, "synthetic-resume"):
-        with pytest.raises(ShipError, match="nonempty folder-trust state"):
-            adapter.launch(spec, pool, home, brief, resume, None)
-    assert trust.read_text() == "synthetic unexpected trust state"
+    path = home / "managed_config.toml"
+    expected = {"allow_managed_hooks_only": True,
+                "allow_managed_mcp_servers_only": True,
+                "enable_all_project_mcp_servers": False,
+                "allowed_mcp_servers": []}
+    assert tomllib.loads(path.read_text()) == expected
+    assert path.read_text() == grok.MANAGED_CONFIG
+    before = path.stat().st_mtime_ns
+    adapter.preflight(home, spec.cwd)
+    adapter.build_home(home, spec, pool, None)
+    adapter.launch(spec, pool, home, brief, None, None)
+    assert path.read_text() == grok.MANAGED_CONFIG
+    assert path.stat().st_mtime_ns == before
 
 
 def test_guide_home_explicitly_disables_memory_capture_and_dream(tmp_path):
@@ -110,24 +116,14 @@ def test_launch_declares_private_home_and_configuration_paths(tmp_path, monkeypa
     assert launch.env["GROK_CONFIG_PATH"] == str(home / "config.toml")
 
 
-def test_workspace_mcp_sources_are_refused_without_requirements_policy(tmp_path):
+def test_native_policy_is_separate_from_the_user_configuration(tmp_path):
     adapter, spec, pool, home, brief = synthetic(tmp_path)
-    project = tmp_path / "synthetic-project"
-    project.mkdir()
-    spec = replace(spec, cwd=project)
     adapter.build_home(home, spec, pool, None)
-    (project / ".grok").mkdir()
-    paths = (project / ".grok" / "config.toml", project / ".mcp.json")
-    paths[0].write_text('[mcp_servers.synthetic]\ncommand = "synthetic-noop"\n')
-    paths[1].write_text('{"mcpServers":{"synthetic":{"command":"synthetic-noop"}}}')
-    before = [p.read_bytes() for p in paths]
-    for operation in (lambda: adapter.build_home(home, spec, pool, None),
-                      lambda: adapter.launch(spec, pool, home, brief, None, None)):
-        with pytest.raises(ShipError) as error:
-            operation()
-        assert all(str(path) in str(error.value) for path in paths)
-    assert [p.read_bytes() for p in paths] == before
+    config = tomllib.loads((home / "config.toml").read_text())
+    assert config["features"]["managed_config"] is False
+    assert not set(grok.MCP_POLICY_KEYS).intersection(config)
     assert not (home / "requirements.toml").exists()
+    assert (home / "managed_config.toml").read_text() == grok.MANAGED_CONFIG
 
 
 def test_admin_layer_readiness_names_fake_paths_and_preserves_content(tmp_path):

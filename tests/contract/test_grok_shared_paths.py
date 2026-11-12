@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from quarterdeck import credential, pending, quota, seat as seat_module
-from quarterdeck.harness import grok, grok_workspace
+from quarterdeck.harness import grok
 from quarterdeck.harness.base import Usage
 from quarterdeck.harness.grok import GrokHarness
 from quarterdeck.seat import Launched, Seat
@@ -29,7 +29,6 @@ READER = "usage reader for synthetic-plan"
 @pytest.fixture(autouse=True)
 def synthetic_native_paths(monkeypatch, tmp_path):
     monkeypatch.setattr(grok, "SYSTEM_CONFIG", tmp_path / "synthetic-system")
-    monkeypatch.setattr(grok_workspace, "discover", lambda cwd, environment: [cwd])
     for name in grok.INHERITED_REDIRECTS:
         monkeypatch.delenv(name, raising=False)
 
