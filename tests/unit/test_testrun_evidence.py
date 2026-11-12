@@ -209,6 +209,18 @@ def test_versions_that_differ_or_are_missing_leave_the_collection_unverified(tmp
         assert report.COLLECTION_UNVERIFIED in text and report.PLUGIN_1 not in text
 
 
+def test_modern_versions_must_agree_and_a_malformed_version_is_unverified_not_an_error(tmp_path):
+    marked = {'kind': 'collected', 'nodeids': ['t::a'], 'complete': True}
+    for folder, other in (('two-and-three', 3), ('malformed', ['2']), ('text', '2')):
+        write(tmp_path / folder, 'main', START_2, {'kind': 'node_collected', 'node': 'gw0', 'nodeids': ['t::a']})
+        write(tmp_path / folder, 'gw0', {**START, 'plugin': other}, marked)
+        found = evidence.analyse(tmp_path / folder, None)
+        assert found['collection'] == 'unverified' and found['expected'] is None, folder
+        assert any(cause.startswith('evidence plugin versions differ or are missing') for cause in found['causes'])
+        assert found['missing'] == ['t::a']
+    assert evidence.analyse(tmp_path / 'two-and-three', None)['plugin'] == [2, 3]
+
+
 def test_a_collection_recorded_with_no_start_is_not_complete(tmp_path):
     write(tmp_path / 'e', 'main', {'kind': 'collected', 'nodeids': ['t::a'], 'complete': True},
           {'kind': 'finish', 'exitstatus': 1})

@@ -62,8 +62,9 @@ def analyse(folder: Path, pytest_exit: int | None) -> dict:
     expected, collection_agreed = [], True
     collected = [event for event in main if event['kind'] == 'collected']
     versions = [event.get('plugin') for event in starts]
-    legacy = bool(versions) and all(type(version) is int and version == 1 for version in versions)
-    marked = bool(versions) and all(type(version) is int and version >= 2 for version in versions)
+    integers = bool(versions) and all(type(version) is int for version in versions)  # before any set is made
+    legacy = integers and set(versions) == {1}
+    marked = integers and len(set(versions)) == 1 and versions[0] >= 2  # one modern version, agreed by all
     # Every recorded worker counts: those the controller knows (a collection or a node going down) and every
     # worker whose own recorder started. Each must have marked its own collection complete; none is inferred.
     workers = (set(node_sets) | {event['node'] for event in main if event['kind'] == 'node_down'}
@@ -149,7 +150,7 @@ def analyse(folder: Path, pytest_exit: int | None) -> dict:
         'complete': complete,
         'causes': causes,
         'xdist': xdist,
-        'plugin': sorted({event.get('plugin') for event in starts if event.get('plugin') is not None}),
+        'plugin': sorted({version for version in versions if type(version) is int}),
         'tools': sorted({(event.get('pytest'), event.get('xdist'), event.get('python')) for event in starts}),
         'plugins': sorted({name for event in starts for name in event.get('plugins', [])}),
         'collection': collection,
