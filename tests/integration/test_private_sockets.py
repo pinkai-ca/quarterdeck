@@ -37,9 +37,25 @@ def test_unset_outer_root_uses_the_real_checkout_anchor_and_restores_environment
     code = '''
 import json, os
 from pathlib import Path
+import pytest
 from tests import conftest
 assert 'TMUX_TMPDIR' not in os.environ
 old = conftest.ROOT/'work/qd-suite-12345678/qs-12345678/qd-pt-12345678/s-replacement'
+anchor = conftest.socket_parent()
+sample = anchor/(conftest.SESSION_PREFIX+'12345678')/'qs-12345678/qd-pt-12345678/s-replacement'
+if len(os.fsencode(sample)) + conftest.SOCKET_MARGIN > conftest.SOCKET_LIMIT:
+    # A checkout as long as a hosted runner's: the unset fallback must refuse, create nothing, change nothing.
+    before = sorted(anchor.iterdir())
+    scope = conftest.private_socket_root.__wrapped__()
+    try:
+        next(scope)
+    except pytest.UsageError as error:
+        assert str(anchor) in str(error) and 'too long' in str(error), error
+    else:
+        raise AssertionError('an overlong checkout anchor was accepted')
+    assert 'TMUX_TMPDIR' not in os.environ and sorted(anchor.iterdir()) == before
+    print(json.dumps(dict(checkout=str(conftest.ROOT), anchor=str(anchor), fits=False, residue=0)))
+    raise SystemExit(0)
 scope = conftest.private_socket_root.__wrapped__()
 try:
     root = next(scope)
@@ -62,7 +78,7 @@ try:
 finally:
     scope.close()
 assert 'TMUX_TMPDIR' not in os.environ and not root.exists()
-print(json.dumps(dict(checkout=str(conftest.ROOT), anchor=str(root.parent), old_nested_bytes=len(os.fsencode(old)), residue=0)))
+print(json.dumps(dict(checkout=str(conftest.ROOT), anchor=str(root.parent), fits=True, old_nested_bytes=len(os.fsencode(old)), residue=0)))
 '''
     env = {key: value for key, value in os.environ.items()
            if key not in ('TMUX_TMPDIR','TMUX','TMUX_PANE','QD_SHIP','QD_SEAT','QD_TMUX_SOCKET')}
@@ -70,8 +86,11 @@ print(json.dumps(dict(checkout=str(conftest.ROOT), anchor=str(root.parent), old_
                             capture_output=True,text=True,timeout=10)
     assert result.returncode == 0,result.stderr
     observed = json.loads(result.stdout)
+    anchor = conftest.socket_parent()
+    sample = anchor/(conftest.SESSION_PREFIX+'12345678')/'qs-12345678/qd-pt-12345678/s-replacement'
     assert observed['checkout'] == str(conftest.ROOT)
-    assert Path(observed['anchor']) == conftest.socket_parent() and observed['residue'] == 0
+    assert observed['fits'] is (len(os.fsencode(sample)) + conftest.SOCKET_MARGIN <= conftest.SOCKET_LIMIT)
+    assert Path(observed['anchor']) == anchor and observed['residue'] == 0
 
 
 def test_failed_real_namespace_setup_removes_only_its_owned_empty_container(monkeypatch):
@@ -99,10 +118,13 @@ def test_unset_fallback_refuses_a_symlink_outside_its_verified_project(tmp_path,
     assert not list(outside.iterdir())
 
 
-def test_the_anchor_is_the_projects_fixed_testruns_folder_with_a_margin(tmp_path,monkeypatch):
+def test_the_anchor_is_the_projects_fixed_testruns_folder_with_a_margin(tmp_path,monkeypatch,private_socket_root):
     real=conftest.socket_parent()  # the real project's anchor, measured before ROOT is replaced
-    deepest=real/(conftest.SESSION_PREFIX+'12345678')/'qs-12345678/qd-pt-12345678/s-replacement'
-    assert len(os.fsencode(deepest))+conftest.SOCKET_MARGIN<=conftest.SOCKET_LIMIT
+    effective=private_socket_root.parent  # the anchor this session's sockets actually use
+    deepest=lambda anchor:len(os.fsencode(anchor/(conftest.SESSION_PREFIX+'12345678')/'qs-12345678/qd-pt-12345678/s-replacement'))
+    assert deepest(effective)+conftest.SOCKET_MARGIN<=conftest.SOCKET_LIMIT  # wherever the suite runs, the margin holds
+    if deepest(real)+conftest.SOCKET_MARGIN>conftest.SOCKET_LIMIT:
+        assert effective!=real  # a checkout too long for its own anchor ran only on a shorter outer root
     project=tmp_path/'synthetic-project';project.mkdir()
     conftest.git(project,'init','--quiet')
     monkeypatch.setattr(conftest,'ROOT',project)
