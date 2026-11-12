@@ -168,7 +168,7 @@ def _publish(store: post.Store, message: post.Message) -> None:
 def run(service: Service) -> None:
     for seat in service.resolved_seats():
         if seat.session.human:
-            continue  # the Admiral's own seats stay with the desk
+            continue  # a human's own seats stay with the desk
         try:
             step(service, seat)
         except JournalError as error:

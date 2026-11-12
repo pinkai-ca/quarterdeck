@@ -271,7 +271,7 @@ class Service:
         if not systems:
             return desks
         from .turn_failure import KINDS
-        mine = seat.session.human and reason.startswith(KINDS)  # the desk keeps the Admiral's own seats
+        mine = seat.session.human and reason.startswith(KINDS)  # the desk keeps the human's own seats
         return (systems + [name for name in desks if name not in systems]) if person_only(reason) or mine else systems
 
     def _up(self, name: str) -> bool:
