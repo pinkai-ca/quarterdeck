@@ -21,7 +21,6 @@ from pathlib import Path
 from .limits import Usage, Wall, Window
 
 from ..ship import Pool, SeatSpec
-from ..carriage_plan import ReadableCapacity
 
 from .json_record import RecordError, entries, when
 from .home import credential, key_environment, merged, ship_template
@@ -142,7 +141,6 @@ class Harness(ABC):
     opening_prompt_turn: bool = False  # a fresh brief is itself a model turn
     waking_inapplicability: str | None = None  # explicit reason to omit only the added live waking step
     synthetic: bool = False
-    readable_capacity: ReadableCapacity | None = None  # no unmeasured native capacity is invented
     credential_file: str | None = None
     # Informational current-vendor-doc hints only: never an executable auth path or version proof.
     sign_in_command: tuple[str, ...] | None = None

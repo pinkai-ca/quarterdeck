@@ -172,6 +172,8 @@ def build_parser() -> argparse.ArgumentParser:
     speed = p.add_mutually_exclusive_group()
     speed.add_argument("--now", action="store_const", const="now", dest="speed", help="deliver mid-turn, read at the next step")
     speed.add_argument("--interrupt", action="store_const", const="interrupt", dest="speed", help="interrupt the turn, then deliver")
+    p = verb("thread", cmd_thread, "print a message's whole thread, its ancestry and every reply, in order")
+    p.add_argument("message", help="a full or short message id")
     p = verb("inbox", cmd_inbox, "print a seat's inbox, or wait for what arrives next")
     p.add_argument("seat", nargs="?", help="default: this seat")
     inbox_mode = p.add_mutually_exclusive_group()
@@ -763,6 +765,15 @@ def _inbox_target(ship: shipmod.Ship, name: str | None):
             raise ShipError(f'{chosen}: temporary check inbox ownership changed')
 
     return chosen, owner['human'], validate
+
+
+def cmd_thread(args: argparse.Namespace) -> Reading:
+    from . import post_threads
+
+    ship = load_ship(args)
+    reader = this_seat(ship, None, operator_too=True)
+    thread = post_threads.whole(post.Store(ship.runtime), args.message, reader)
+    return Reading(thread, post_threads.render)
 
 
 def cmd_inbox(args: argparse.Namespace) -> Reading | None:

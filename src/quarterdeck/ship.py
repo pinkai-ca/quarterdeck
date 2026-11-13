@@ -139,7 +139,7 @@ class Ship:
     cascade: Cascade | None = None
     tick: float = TICK  # seconds the service waits after each pass; [ship] tick
     code: str | None = None
-    carry_bytes: int = CARRY_BYTES  # required whole carriage, UTF-8 bytes; [ship] carry_bytes
+    carry_bytes: int = CARRY_BYTES  # first message and each index page, UTF-8 bytes; [ship] carry_bytes
 
     @property
     def file(self) -> Path:

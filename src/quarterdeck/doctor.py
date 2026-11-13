@@ -18,7 +18,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from . import carriage_plan, copy_state, credential, endpoint, harness as harnesses, install, post, providers, sandbox, servicectl, watch
+from . import copy_state, credential, endpoint, harness as harnesses, install, post, providers, sandbox, servicectl, watch
 from .drill import Check, wait_for
 from .harness.base import _version_in_runtime, key_environment, program_version, program_where
 from .harness.capabilities import validate_selection
@@ -33,7 +33,7 @@ PATIENCE = 600.0  # a fix is a turn of real work
 def checks(ship: Ship) -> list[Check]:
     """Every check, passed or failed, each with what it found or what would lift it."""
     found = [Check("ship file", True, f"{ship.file.name}: {len(ship.seats)} seats, {len(ship.pools)} pools, {len(ship.sessions)} sessions; "
-                   f"carry_bytes={getattr(ship, 'carry_bytes', CARRY_BYTES)} UTF-8 bytes (policy bound)")]
+                   f"carry_bytes={getattr(ship, 'carry_bytes', CARRY_BYTES)} UTF-8 bytes (first message and index-page policy bound)")]
     shell = shell_check()
     if shell is not None:
         found.append(shell)
@@ -46,7 +46,7 @@ def checks(ship: Ship) -> list[Check]:
         row, version = program_observation(name, ship.runtime)
         found.append(row)
         versions[name] = version
-        found.append(carriage_bound_check(ship, harnesses.get(name), version))
+
     for pool in ship.pools.values():
         checked = pool_check(pool)
         native = harnesses.native_name(pool.provider)
@@ -114,15 +114,6 @@ def program_observation(name: str, runtime: Path | None = None) -> tuple[Check, 
 def program_check(name: str, runtime: Path | None = None) -> Check:
     """The same program/version row for doctor and setup; no inferred runtime before creation."""
     return program_observation(name, runtime)[0]
-
-
-def carriage_bound_check(ship: Ship, harness, version: str | None) -> Check:
-    bound = carriage_plan.effective_bound(getattr(ship, 'carry_bytes', CARRY_BYTES), harness.readable_capacity, version)
-    detail = f'{bound.bytes} UTF-8 bytes effective; {bound.label}; ship.carry_bytes={getattr(ship, "carry_bytes", CARRY_BYTES)}'
-    profile = harness.readable_capacity
-    if profile is not None and profile.version == version:
-        detail += f'; {harness.name} {version}: {profile.bytes} measured bytes; source {profile.source}; reserves {profile.reserves}'
-    return Check(f'carriage {harness.name}', True, detail)
 
 
 def seat_readiness(ship: Ship, *, versions: dict[str, str | None] | None = None) -> list[Check]:

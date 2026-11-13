@@ -8,17 +8,20 @@ from pathlib import Path
 
 import pytest
 
-from quarterdeck import carriage, post, refusal
-from quarterdeck.ship import ShipError
+from quarterdeck import carriage, carriage_plan, post, post_threads, refusal
+from .test_carriage_capacity import index_rows
 
 
 def message(store: post.Store, index: int, kind: str = "order", subject: str | None = None, body: str = "synthetic body"):
     return store.new(kind, "desk", "captain", body, subject=subject if subject is not None else f"Synthetic {kind} {index}")
 
 
-def built(tmp_path: Path, roots, refused=frozenset(), others: int = 0, text: str = "synthetic carried text") -> carriage.Carriage:
-    return carriage.Carriage(text, list(roots), post.briefed_header("captain", "captain", list(roots)),
-                             tuple(roots), frozenset(refused), others)
+def built(tmp_path, roots, refused=frozenset(), text='', limit=24576, generation='generation', force_files=False):
+    store = post.Store(tmp_path / 'runtime')
+    rows = post_threads.index_rows(store, tuple(roots), tuple(store.for_seat('captain')), frozenset(refused))
+    return carriage_plan.build(rows, handoff=text, header=post.briefed_header('captain', 'captain', list(roots)),
+                               directory=tmp_path / 'seat' / 'carried' / generation,
+                               limit=limit, force_files=force_files)
 
 
 @pytest.fixture
@@ -81,72 +84,82 @@ def test_subjects_are_cut_on_whole_characters_with_controls_escaped_and_a_marker
 
 
 def test_one_line_per_open_order_and_question_with_its_full_id(store, tmp_path):
-    order, question = message(store, 0), message(store, 1, "question")
-    path = tmp_path / "carried.txt"
-    text = carriage.account(built(tmp_path, [order, question], others=3), path, 24_576)
-    lines = text.splitlines()
-    assert lines[0] == "qd > briefed as captain, captain · 1 order open, 1 question open"
-    assert str(path) in lines[1] and "read" in lines[2] and "whole" in lines[2] and "before you act" in lines[2]
-    assert f"qd > open order from desk · {order.id} · Synthetic order 0" in lines
-    assert f"qd > open question from desk · {question.id} · Synthetic question 1" in lines
-    assert any("3 amendments" in line for line in lines) and lines[-1] == "qd > end of account"
+    order, question = message(store, 0), message(store, 1, 'question')
+    amendments = [store.new('answer', 'desk', 'captain', f'Invented amendment {n}.', re=order.id) for n in range(3)]
+    result = built(tmp_path, [order, question])
+    rows = {row['id']: row for row in index_rows(result)}
+    assert result.opening.splitlines()[0] == 'qd > briefed as captain, captain · 1 order open, 1 question open'
+    assert rows[order.id]['sender'] == rows[question.id]['sender'] == 'desk'
+    assert rows[order.id]['subject'] == 'Synthetic order 0' and rows[question.id]['subject'] == 'Synthetic question 1'
+    assert rows[order.id]['amendments'] == [amendment.id for amendment in amendments]
+    assert rows[order.id]['thread'] == f'qd thread {order.id}'
+    assert 'read that thread whole' in result.opening
 
 
-def test_a_refused_root_is_named_without_its_subject_or_body(store, tmp_path):
-    secret = message(store, 0, subject="SYNTHETIC REFUSED SUBJECT", body="SYNTHETIC REFUSED BODY")
-    kept = built(tmp_path, [secret], refused={secret.id})
-    for text in (carriage.account(kept, tmp_path / "f", 24_576), carriage.contents(kept, "captain", "stamp")):
+def test_a_refused_root_is_named_without_its_subject_or_body(store, tmp_path, monkeypatch):
+    secret = message(store, 0, subject='SYNTHETIC REFUSED SUBJECT', body='SYNTHETIC REFUSED BODY')
+    monkeypatch.setattr(refusal, 'excluded', lambda runtime, seat: frozenset({secret.id}))
+    result = built(tmp_path, [secret], refused={secret.id})
+    printed = post_threads.render(post_threads.whole(store, secret.id, 'captain'))
+    for text in (result.opening, printed, *result.files.values()):
         assert secret.id in text and refusal.WITHHELD in text
-        assert "SYNTHETIC REFUSED SUBJECT" not in text and "SYNTHETIC REFUSED BODY" not in text
+        assert 'SYNTHETIC REFUSED SUBJECT' not in text and 'SYNTHETIC REFUSED BODY' not in text
 
 
-@pytest.mark.parametrize("budget", carriage.ACCOUNT_BUDGETS)
+@pytest.mark.parametrize("budget", [24576, 8192, 2048, 0])
 def test_an_account_past_its_budget_names_the_rest_never_dropping_one_silently(store, tmp_path, budget):
-    roots = [message(store, i, subject="S" * 400) for i in range(300)]
-    text = carriage.account(built(tmp_path, roots), tmp_path / "f", budget)
-    shown = [line for line in text.splitlines() if line.startswith("qd > open order")]
-    rest = [line for line in text.splitlines() if line.startswith("qd > and ")]
-    named = int(rest[0].split()[3]) if rest else 0
-    assert len(shown) + named == 300, "every open order is listed or counted"
-    assert sum(carriage.utf8(line) + 1 for line in shown) <= budget
-    full = carriage.contents(built(tmp_path, roots), "captain", "stamp")
-    assert all(root.id in full for root in roots), "the file begins with the complete list"
+    roots = [message(store, n, subject='S' * 400) for n in range(300)]
+    if budget == 0:
+        with pytest.raises(ValueError, match='positive integer'):
+            built(tmp_path, roots, limit=budget)
+        return
+    result = built(tmp_path, roots, limit=budget)
+    rows = index_rows(result)
+    assert len(rows) == len({row['id'] for row in rows}) == 300, 'every open thread is indexed once'
+    assert {row['id'] for row in rows} == {root.id for root in roots}
+    assert carriage.utf8(result.opening) <= budget
+    assert all(carriage.utf8(text) <= budget for text in result.files.values())
 
 
-def test_the_file_holds_the_complete_list_then_exactly_the_text_then_an_end_line(store, tmp_path):
-    roots = [message(store, 0), message(store, 1, "question")]
-    text = "qd > briefed as captain\nexact\ncarried text, ünïcödé"
-    found = carriage.contents(built(tmp_path, roots, text=text), "captain", "20400101T000000Z")
-    head, rest = found.split("qd > the carried messages follow", 1)
-    assert all(root.id in head for root in roots)
-    assert f": {len(text.encode())} bytes\n{text}\nqd > end of the carried messages for captain at launch 20400101T000000Z\n" in rest
+def test_the_file_holds_exactly_the_complete_self_handoff_and_index_is_separate(store, tmp_path):
+    roots = [message(store, 0), message(store, 1, 'question')]
+    text = 'qd > synthetic complete self handoff\nexact\ncarried text, ünïcödé'
+    result = built(tmp_path, roots, text=text, force_files=True)
+    assert result.files['handoff.txt'] == text
+    assert 'whole first, before acting; it is your handoff' in result.opening
+    assert {row['id'] for row in index_rows(result)} == {root.id for root in roots}
+    assert all(root.body not in payload for payload in result.files.values())
 
 
 # -- the file -----------------------------------------------------------------------------------
 
 
 def test_the_file_is_written_durably_and_privately_under_a_name_of_its_own(store, tmp_path):
-    seat = tmp_path / "seat"
+    seat = tmp_path / 'seat'
     seat.mkdir()
-    kept = built(tmp_path, [message(store, 0)])
-    first, second = carriage.write(seat, "captain", kept), carriage.write(seat, "captain", kept)
-    assert first != second and first.parent == second.parent == seat / carriage.FOLDER, "no launch rewrites another's"
-    assert stat.S_IMODE(first.stat().st_mode) == 0o600 and stat.S_IMODE(first.parent.stat().st_mode) == 0o700
-    assert first.read_text(encoding="utf-8") == carriage.contents(kept, "captain", first.name.split("-")[0])
-    assert not [p for p in first.parent.iterdir() if p.name.startswith(".")], "no temporary left beside it"
+    carriage.folder_of(seat)
+    roots = [message(store, 0)]
+    first = built(tmp_path, roots, text='Complete invented self handoff.', generation='first', force_files=True)
+    second = built(tmp_path, roots, text='Complete invented self handoff.', generation='second', force_files=True)
+    carriage_plan.publish(first)
+    carriage_plan.publish(second)
+    assert first.directory != second.directory and first.directory.parent == second.directory.parent == seat / carriage.FOLDER
+    assert stat.S_IMODE(first.directory.stat().st_mode) == 0o700
+    assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in first.directory.iterdir())
+    assert {path.name: path.read_text() for path in first.directory.iterdir()} == first.files
+    assert not [path for path in first.directory.parent.iterdir() if path.name.startswith('.')], 'no unpublished temporary remains'
 
 
 @pytest.mark.parametrize("damage", ["link", "file"])
 def test_a_carried_folder_that_is_not_a_plain_folder_refuses_the_launch(store, tmp_path, damage):
-    seat, elsewhere = tmp_path / "seat", tmp_path / "elsewhere"
+    seat, elsewhere = tmp_path / 'seat', tmp_path / 'elsewhere'
     seat.mkdir()
     elsewhere.mkdir()
-    if damage == "link":
+    if damage == 'link':
         (seat / carriage.FOLDER).symlink_to(elsewhere)
     else:
-        (seat / carriage.FOLDER).write_text("synthetic")
-    kept = built(tmp_path, [message(store, 0, body="SYNTHETIC BODY")], text="SYNTHETIC CARRIED TEXT")
-    with pytest.raises(ShipError, match="could not be written") as raised:
-        carriage.write(seat, "captain", kept)
-    assert "SYNTHETIC" not in str(raised.value) and "never put whole into one argument" in str(raised.value)
-    assert list(elsewhere.iterdir()) == [], "nothing is written through a link"
+        (seat / carriage.FOLDER).write_text('synthetic')
+    with pytest.raises(OSError) as raised:
+        carriage.folder_of(seat)
+    assert 'SYNTHETIC BODY' not in str(raised.value)
+    assert list(elsewhere.iterdir()) == [], 'nothing is written through a link'

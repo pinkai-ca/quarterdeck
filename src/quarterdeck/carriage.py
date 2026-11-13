@@ -1,48 +1,40 @@
 """Canonical carriage and final-command kernel byte checks.
 
-The ship-policy/readable-profile planner in carriage_plan.py selects bounded required
-work and optional indexed overflow. Kernel argument and environment limits remain a
-separate final check, after adapter and jail encoding. Legacy account/write helpers
-remain readable for compatibility; native launches use the bounded generation planner.
+The ship-policy planner in carriage_plan.py builds bounded thread indexes and
+a fresh seat's own full handoff. Kernel argument and environment limits remain a
+separate final check, after adapter and jail encoding. Native launches copy no general message bodies; the old monolithic account/write
+path is retired.
 """
 
 from __future__ import annotations
 
 import os
-import secrets
 import stat
 import unicodedata
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 
-from . import durable, post
-from .carriage_plan import Item
-from .ship import ShipError
+from . import post
+from .post_threads import IndexRow
 
 ARGUMENT_LIMIT = 131_072  # MAX_ARG_STRLEN with 4 KiB pages; argument_limit() measures this machine's
-INLINE_BYTES = ARGUMENT_LIMIT // 4  # 32,768: a carriage this long or shorter is typed whole, as before
+INLINE_BYTES = ARGUMENT_LIMIT // 4  # 32,768: soft inline budget for a first message, independent of the ship policy
 WORD_BYTES = ARGUMENT_LIMIT // 2  # 65,536: the soft bound on any one word of the final command, its NUL included
 TOTAL_BYTES = 1_048_576  # the soft bound on the whole command, or half ARG_MAX where that is smaller
 POINTER = 8  # the kernel also counts each argument's and variable's pointer against ARG_MAX
 SUBJECT_BYTES = 200
-ACCOUNT_BUDGETS = (24_576, 8_192, 2_048, 0)  # the account's own lines, tried largest first
 FOLDER = "carried"
 CUT = "…"
 
 
 @dataclass(frozen=True)
 class Carriage:
-    """What a launch carries: the whole text, the messages it holds, and what an account needs."""
+    """A fresh self-handoff, indexed incoming inventory and metadata-only thread rows."""
 
     text: str | None
     carried: list[post.Message]
     header: str = ""
-    roots: tuple[post.Message, ...] = ()
-    refused: frozenset[str] = frozenset()
-    others: int = 0  # carried messages that are not open roots: amendments, answers, context, notices
-    items: tuple[Item, ...] = ()  # safe admitted renderings, never re-read from source posts
-    notices: tuple[str, ...] = ()  # existing bodyless root notices for the opening account
+    rows: tuple[IndexRow, ...] = ()  # open incoming, undelivered and sent-awaiting threads
 
     @property
     def size(self) -> int:
@@ -120,58 +112,6 @@ def clean(text: str | None, limit: int) -> str:
     return "".join(kept) + CUT
 
 
-def line(message: post.Message, refused: bool) -> str:
-    """One open order or question: its kind, sender and full id, and its subject unless its provider refused it."""
-    from .refusal import WITHHELD  # the refusal module reads seats; imported here, not above
-
-    head = f"qd > open {message.kind} from {clean(message.sender, 64)} · {message.id}"
-    if refused:
-        return f"{head} · {WITHHELD}"  # law: context-is-cache -- named, never retyped, not even its subject
-    return f"{head} · {clean(message.subject, SUBJECT_BYTES) or 'no subject'}"
-
-
-def listing(carriage: Carriage) -> list[str]:
-    return [line(m, m.id in carriage.refused) for m in carriage.roots]
-
-
-def account(carriage: Carriage, path: Path, budget: int) -> str:
-    """The first message in place of a long carriage; its own list holds at most ``budget`` bytes."""
-    lines = listing(carriage)
-    shown, used = [], 0
-    for item in lines:
-        if used + utf8(item) + 1 > budget:
-            break
-        shown.append(item)
-        used += utf8(item) + 1
-    parts = [carriage.header,
-             f"qd > what you carry is too long to type here: {len(carriage.carried)} carried message"
-             f"{'s' if len(carriage.carried) != 1 else ''}, {carriage.size} bytes, are written in full in {path}",
-             f"qd > read {path} whole, to its last line, before you act on anything; if you cannot read it whole, "
-             "act on nothing it holds and say so with qd post question to each sender",
-             *shown]
-    if len(shown) < len(lines):
-        rest = len(lines) - len(shown)
-        parts.append(f"qd > and {rest} more open order{'s' if rest != 1 else ''} or question{'s' if rest != 1 else ''}, "
-                     "each listed at the top of that file")
-    if carriage.others:
-        parts.append(f"qd > also only in that file, in thread order: {carriage.others} amendment"
-                     f"{'s' if carriage.others != 1 else ''}, answer{'s' if carriage.others != 1 else ''} "
-                     "and other carried messages")
-    parts.append("qd > end of account")
-    return "\n".join(parts)
-
-
-def contents(carriage: Carriage, seat: str, stamp: str) -> str:
-    """The file: the complete list, then exactly the text the launch would have typed, then an end line."""
-    return "\n".join([
-        f"qd > carried for {seat} at launch {stamp}: read every line, through the end line",
-        *listing(carriage),
-        f"qd > the carried messages follow, exactly as they would have been typed: {carriage.size} bytes",
-        carriage.text or "",
-        f"qd > end of the carried messages for {seat} at launch {stamp}",
-    ]) + "\n"
-
-
 def folder_of(seat_folder: Path) -> Path:
     """The seat's own folder for carried files: a plain folder of this user's, private, never a link."""
     folder = seat_folder / FOLDER
@@ -185,23 +125,3 @@ def folder_of(seat_folder: Path) -> Path:
     if stat.S_IMODE(found.st_mode) != 0o700:
         os.chmod(folder, 0o700)
     return folder
-
-
-def write(seat_folder: Path, seat: str, carriage: Carriage) -> Path:
-    """Write the whole carriage durably under a name of this launch alone, or refuse the launch with the reason."""
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    path = seat_folder / FOLDER / f"{stamp}-{secrets.token_hex(4)}.txt"
-    try:
-        folder = folder_of(seat_folder)
-        path = folder / path.name
-        if os.path.lexists(path):
-            raise FileExistsError(f"{path} already exists")
-        durable.replace_file(path, contents(carriage, seat, stamp), encoding="utf-8")
-        os.chmod(path, 0o600)
-        found = path.lstat()
-        if not stat.S_ISREG(found.st_mode) or found.st_uid != os.getuid():
-            raise OSError(f"{path} is not a file of this user's")
-    except (OSError, UnicodeError) as error:
-        raise ShipError(f"{seat}: the carried messages could not be written to {path} ({error}); "
-                        "nothing was started, and they are never put whole into one argument") from None
-    return path

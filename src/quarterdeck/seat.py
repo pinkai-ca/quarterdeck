@@ -669,28 +669,28 @@ class Seat:
 
         from . import carriage_plan
 
-        bound = carriage_plan.effective_bound(getattr(self.ship, 'carry_bytes', shipmod.CARRY_BYTES),
-                                             self.harness.readable_capacity, version)
-        carried_file = None
-        planned = None
-        launch, argv = ((None, None) if carriage.size > min(carriagemod.INLINE_BYTES, bound.bytes)
-                        else command(carriage.text))
-        if carriage.text and (launch is None or misfit(launch, argv)):
-            # law: context-is-cache -- only included whole work is mandatory; overflow is indexed, never lost
-            generation = self.folder / carriagemod.FOLDER / secrets.token_hex(12)
+        generation = self.folder / carriagemod.FOLDER / secrets.token_hex(12)
+
+        def plan(force_files=False):
             try:
-                planned = carriage_plan.build(carriage.items, seat=self.name, header=carriage.header,
-                                               inline=carriage.text, directory=generation,
-                                               bound=bound, force_files=True, notices=carriage.notices)
+                # law: context-is-cache -- only admitted self-orders are full, and only on an actual fresh conversation
+                return carriage_plan.build(carriage.rows, handoff=carriage.text or '', header=carriage.header,
+                                           directory=generation, limit=getattr(self.ship, 'carry_bytes', shipmod.CARRY_BYTES),
+                                           inline_limit=carriagemod.INLINE_BYTES, force_files=force_files)
             except carriage_plan.ImpossibleBudget as error:
                 raise ShipError(f'{self.name}: {error}; nothing was started or published') from None
+
+        planned = plan()
+        launch, argv = command(planned.opening)
+        if misfit(launch, argv):
+            planned = plan(force_files=True)
             launch, argv = command(planned.opening)
-            carried_file = generation / 'whole.txt'
+        carried_file = planned.index_path
         known = {**launch.env, "QD_SHIP": str(self.ship.folder), "QD_SEAT": self.name}  # a lower bound: tmux adds its own
         if reason := carriagemod.refused(words(argv, launch.env), known):  # refused only where exec surely would
             raise ShipError(f"{self.name}: exec would refuse this launch for its size, whatever it carries: {reason}; "
                             "nothing was started")
-        if planned is not None:
+        if planned.files:
             try:
                 carriagemod.folder_of(self.folder)
                 carriage_plan.publish(planned)
@@ -711,10 +711,9 @@ class Seat:
         attempts = post.Attempts(self.ship.runtime)
         for message in carried:
             attempt = attempts.open(message, self.name, pane.id, pane.pid, launched.at)
-            attempts.close(attempt, "launch", f"carried whole or indexed in {carried_file.parent.name}; not confirmed read"
-                           if carried_file else "carried as the first message of the launch")
+            attempts.close(attempt, "launch", "indexed at launch; body not confirmed read")
         how = f"resumed {resume_id[:8]}" if resume_id else "fresh"
-        carried_note = f" · {len(carried)} open message{'s' if len(carried) != 1 else ''} carried" if carried else ""
+        carried_note = f" · {len(carriage.rows)} thread{'s' if len(carriage.rows) != 1 else ''} indexed"
         if carried_file:
             carried_note += f" in {carried_file.relative_to(self.ship.runtime)}"
         jail_note = " · jailed: the operator's home hidden, the workspace writable" if jailed else ""
@@ -730,18 +729,17 @@ class Seat:
             return None
 
     def first_message(self, *, resume_id: str | None = None) -> tuple[str | None, list[post.Message]]:
-        """What the launch carries, whole, under a header saying the seat was briefed."""
+        """Preview the policy-bounded first message without publishing its files."""
+        from . import carriage_plan
         carriage = self.carriage(resume_id=resume_id)
-        return carriage.text, carriage.carried
+        planned = carriage_plan.build(carriage.rows, handoff=carriage.text or '', header=carriage.header,
+                                      directory=self.folder / carriagemod.FOLDER / 'preview',
+                                      limit=getattr(self.ship, 'carry_bytes', shipmod.CARRY_BYTES))
+        return planned.opening, carriage.carried
 
     def carriage(self, *, resume_id: str | None = None) -> carriagemod.Carriage:
-        """What the launch carries, under a header saying the seat was briefed, with what an account of it needs.
-
-        Every open root and its incoming thread amendments, plus unread work
-        (law: context-is-cache). Own outgoing questions explain answers as
-        context only. Only the actual resumed record may suppress amendments.
-        """
-        from . import refusal, thread_context
+        """An index of incoming work and outgoing waits; fresh self-handoffs alone are full."""
+        from . import refusal, thread_context, post_threads
 
         store, attempts = post.Store(self.ship.runtime), post.Attempts(self.ship.runtime)
         with post.admission(self.ship.runtime, self.name):
@@ -752,35 +750,19 @@ class Seat:
             unread = attempts.undelivered(store, self.name, for_launch=True)
             extra = unread + self._queued_unread(store, attempts)
             consumed = self._consumed_messages(store, attempts, resume_id, refused)
-            all_context = thread_context.select(store, self.name, extra, consumed=consumed)
             selection = thread_context.select(store, self.name, extra, consumed=consumed, excluded=refused)
-        withheld = [m for m in all_context.incoming if m.id in refused]
-        # law: one-door -- exclusions remove incoming and context bodies before rendering
-        if not selection.entries and not withheld:
-            return carriagemod.Carriage(None, [])
+            messages = store.all()
+            sent = tuple(message for message in messages
+                         if message.sender == self.name and message.to != self.name and store.is_open(message))
+            pending_messages = tuple(message for message in extra if message.id not in consumed)
+            rows = post_threads.index_rows(store, selection.roots, pending_messages, refused, sent)
+        handoffs = [entry.message for entry in selection.entries
+                    if not resume_id and not entry.context_only and entry.message.kind == 'order'
+                    and entry.message.sender == self.name and entry.message.to == self.name]
+        carried = list({message.id: message for message in (*selection.roots, *pending_messages)
+                        if message.id not in refused}.values())
         header = post.briefed_header(self.name, self.spec.role, list(selection.roots))
-        parts = [header]
-        parts += [refusal.stub(m) for m in withheld]  # law: context-is-cache -- named, never retyped
-        if selection.entries:
-            parts.append(selection.render())
-        root_ids = {m.id for m in selection.roots}
-        others = (sum(e.message.id not in root_ids for e in selection.entries)
-                  + sum(m.id not in root_ids for m in withheld))
-        from .carriage_plan import Item, render_order
-
-        items = [Item(m.id, m.sender, m.to, m.kind, m.at.isoformat(), '', refusal.stub(m) + '\n')
-                 for m in withheld]
-        admitted_ids = {e.message.id for e in selection.entries} | {m.id for m in withheld}
-        items += [Item(e.message.id, e.message.sender, e.message.to, e.message.kind, e.message.at.astimezone(timezone.utc).isoformat(),
-                       e.message.subject or '', thread_context.context(e.message) if e.context_only else post.typed([e.message]),
-                       store.dir / f'{e.message.id}.json', e.context_only,
-                       (e.message.re,) if e.message.re in admitted_ids else ())
-                  for e in selection.entries]
-        ordered = render_order(tuple(items), self.name)
-        text = header + '\n' + ''.join(item.text for item in ordered) if ordered != tuple(items) else "\n".join(parts)
-        return carriagemod.Carriage(text, selection.incoming, header, selection.roots,
-                                    frozenset(m.id for m in selection.roots if m.id in refused), others, ordered,
-                                    tuple(carriagemod.line(m, True) for m in selection.roots if m.id in refused))
+        return carriagemod.Carriage(post.typed(handoffs) if handoffs else None, carried, header, rows)
 
     def _consumed_messages(self, store: post.Store, attempts: post.Attempts, resume_id: str | None,
                            excluded: frozenset[str]) -> frozenset[str]:

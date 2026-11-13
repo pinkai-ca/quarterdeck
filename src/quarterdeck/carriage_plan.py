@@ -1,20 +1,19 @@
-"""Pure byte-bounded launch planning; posts remain immutable at their original paths.
+"""Policy-bounded thread indexes and a fresh seat's complete self-handoff.
 
-The bound is a ship policy unless an adapter supplies a version-specific measurement.
-It is neither a token estimate nor a claim about a provider's context window. Optional
-read views and their navigation pages are bounded individually, not required reading.
+Only the handoff may be copied in full. An oversized handoff is one immutable file,
+explicitly past the ship policy; first-message and index-page bytes remain bounded.
 """
-
 from __future__ import annotations
 
 import json
 import os
 import shutil
 import tempfile
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from . import durable
+from .post_threads import IndexRow
 
 
 def size(text: str) -> int:
@@ -22,242 +21,122 @@ def size(text: str) -> int:
 
 
 class ImpossibleBudget(ValueError):
-    """Even the minimal account or a navigable index cannot fit; publish nothing."""
-
-
-@dataclass(frozen=True)
-class ReadableCapacity:
-    """An adapter's measured carriage bytes, after its brief and working-turn reserve.
-
-    No adapter has such a measurement by default. A declaration must name the exact
-    native version, evidence source and the reserves used in that measurement.
-    """
-
-    version: str
-    bytes: int
-    source: str
-    reserves: str
-
-    def __post_init__(self):
-        if type(self.bytes) is not int or self.bytes <= 0 or not all((self.version, self.source, self.reserves)):
-            raise ValueError('readable capacity requires positive bytes, version, source and reserves')
-
-
-@dataclass(frozen=True)
-class Bound:
-    bytes: int
-    label: str
-
-
-def effective_bound(policy: int, profile: ReadableCapacity | None, version: str | None) -> Bound:
-    if type(policy) is not int or policy <= 0:
-        raise ValueError('carry_bytes must be a positive integer')
-    if profile is None or profile.version != version:
-        return Bound(policy, 'policy bound')
-    return Bound(min(policy, profile.bytes), 'policy bound and measured adapter ceiling')
-
-
-@dataclass(frozen=True)
-class Item:
-    id: str
-    sender: str
-    recipient: str
-    kind: str
-    at: str
-    subject: str
-    text: str
-    source: Path | None = None
-    context_only: bool = False
-    requires: tuple[str, ...] = ()  # admitted parent/context must also fit whole
-
-
-def handoff(item: Item, seat: str) -> bool:
-    return item.kind == 'order' and item.sender == seat and item.recipient == seat and not item.context_only
-
-
-def render_order(items: tuple[Item, ...], seat: str) -> tuple[Item, ...]:
-    """Self-handoffs first; every other admitted item keeps its thread position."""
-    return tuple(item for item in items if handoff(item, seat)) + tuple(item for item in items if not handoff(item, seat))
+    """The minimum first-message account or index entry cannot fit; publish nothing."""
 
 
 @dataclass(frozen=True)
 class Plan:
     opening: str
     files: dict[str, str]
-    whole: tuple[str, ...]
-    overflow: tuple[str, ...]
-    bound: Bound
     directory: Path
+    limit: int
 
     @property
-    def required_bytes(self) -> int:
-        return size(self.opening) + size(self.files.get('whole.txt', ''))
+    def index_path(self) -> Path | None:
+        return self.directory / 'index.txt' if 'index.txt' in self.files else None
+
+    @property
+    def handoff_path(self) -> Path | None:
+        return self.directory / 'handoff.txt' if 'handoff.txt' in self.files else None
 
 
-def _display(text: str, limit: int = 200) -> str:
-    # JSON makes controls, newlines and formatting characters visible on one line.
-    shown = json.dumps(text, ensure_ascii=True)
-    if size(shown) <= limit:
-        return shown
-    prefix = text[:limit]
-    while size(json.dumps(prefix + '...', ensure_ascii=True)) > limit:
-        prefix = prefix[:-1]
-    return json.dumps(prefix + '...', ensure_ascii=True)
-
-
-def _chunks(text: str, limit: int):
-    """Exact UTF-8 reconstruction, including an oversized line or multibyte character."""
-    raw = text.encode('utf-8')
-    start = 0
-    while start < len(raw):
-        end = min(start + limit, len(raw))
-        while end < len(raw) and raw[end] & 0xc0 == 0x80:
-            end -= 1
-        if end == start:
-            raise ImpossibleBudget('carry_bytes cannot hold one UTF-8 character')
-        yield raw[start:end].decode('utf-8')
-        start = end
-
-
-def build(items: tuple[Item, ...], *, seat: str, header: str, inline: str,
-          directory: Path, bound: Bound, force_files: bool = False,
-          notices: tuple[str, ...] = ()) -> Plan:
-    """Plan every byte before publication; unknown capacity uses the supplied policy.
-
-    Whole-priority handoffs are explicitly self-addressed orders, never self questions
-    or answers. Admission, exclusions and thread membership belong to the caller.
-    """
-    unique = render_order(tuple({item.id: item for item in items}.values()), seat)
-    if not force_files and size(inline) <= bound.bytes:
-        return Plan(inline, {}, tuple(item.id for item in unique), (), bound, directory)
+def build(rows: tuple[IndexRow, ...], *, handoff: str, header: str, directory: Path,
+          limit: int, inline_limit: int = 32768, force_files: bool = False) -> Plan:
+    if type(limit) is not int or limit <= 0:
+        raise ValueError('carry_bytes must be a positive integer')
+    budget = min(limit, inline_limit)
     files: dict[str, str] = {}
+    serial = 0
 
     def put(name: str, text: str) -> str:
-        if size(text) > bound.bytes:
+        if size(text) > limit:
             raise ImpossibleBudget('carry_bytes cannot hold a minimal index entry')
         files[name] = text
         return str(directory / name)
 
-    serial = 0
-
-    def index(rows: list[tuple[str, str]], prefix: str) -> str:
-        """Bounded pages of complete lines, then bounded range-routing pages.
-
-        The routing keys are full ids (or part ordinals), so a reader can navigate to
-        one id without reading all pages. Every level must shrink or it is impossible.
-        """
+    def pages(rows: list[tuple[str, str]], prefix: str) -> str:
         nonlocal serial
+        if not rows:
+            return put(prefix + '-empty.txt', '')
         level = [(key, key, line) for key, line in rows]
         routing = False
         while True:
-            pages: list[list[tuple[str, str, str]]] = []
-            page: list[tuple[str, str, str]] = []
-            used = 0
+            packed, page, used = [], [], 0
             for first, last, line in level:
                 amount = size(line)
-                if amount > bound.bytes:
+                if amount > limit:
                     raise ImpossibleBudget('carry_bytes cannot hold a minimal index entry')
-                if page and used + amount > bound.bytes:
-                    pages.append(page)
+                if page and used + amount > limit:
+                    packed.append(page)
                     page, used = [], 0
                 page.append((first, last, line))
                 used += amount
             if page:
-                pages.append(page)
+                packed.append(page)
             routes = []
-            for page in pages:
+            for page in packed:
                 serial += 1
                 path = put(f'{prefix}-{serial}.txt', ''.join(line for _, _, line in page))
                 first, last = page[0][0], page[-1][1]
-                route = json.dumps({'first': first, 'last': last, 'path': path}, ensure_ascii=True) + '\n'
-                routes.append((first, last, route))
+                routes.append((first, last, json.dumps({'first': first, 'last': last, 'path': path}) + '\n'))
             if len(routes) == 1:
                 return path
             if routing and len(routes) >= len(level):
                 raise ImpossibleBudget('carry_bytes cannot hold a shrinking index')
-            level = routes
-            routing = True
+            level, routing = routes, True
 
-    shown_notices: list[str] = []
+    lines = []
+    for row in rows:
+        data = asdict(row)
+        data['thread'] = f'qd thread {row.id}'
+        if row.subject and size(json.dumps(row.subject)) > 200:
+            prefix = row.subject[:200]
+            while size(json.dumps(prefix + '...')) > 200:
+                prefix = prefix[:-1]
+            data['subject'] = prefix + '...'
+            data['subject_truncated'] = True
+        line = json.dumps(data, ensure_ascii=True) + '\n'
+        if size(line) > limit:
+            # The one thread line still names every long id list through bounded pages.
+            for key in ('amendments', 'active', 'awaiting', 'withheld'):
+                values = data[key]
+                if values:
+                    path = pages([(f'{n:020d}', json.dumps({'value': value}) + '\n')
+                                  for n, value in enumerate(values)], key)
+                    data[key] = {'count': len(values), 'index': path}
+            line = json.dumps(data, ensure_ascii=True) + '\n'
+        if size(line) > limit:
+            raise ImpossibleBudget('carry_bytes cannot hold a minimal thread-index entry')
+        lines.append((row.id, line))
 
-    def opening(whole_count: int, overflow_count: int, root: str) -> str:
-        notice_account = (f'qd > {len(notices)} withheld notices; every notice is in the whole view or overflow index.\n'
-                          if notices else '')
-        named = ''.join(line + '\n' for line in shown_notices)
-        return (f'{header}\nqd > carriage: {whole_count} whole; {overflow_count} overflow; '
-                f'{bound.bytes} UTF-8 bytes ({bound.label}).\n'
-                f'qd > read {directory / "whole.txt"} whole before acting on its included messages only.\n'
-                f'qd > overflow index: {root}; one line per message with id, sender, subject and path. '
-                'Read by id as needed, following bounded index pages and ordered read-view parts; '
-                'originals stay in place. Overflow need not be read before acting on included work. '
-                'An index is navigation, not delivery or proof of reading.\n'
-                f'{notice_account}{named}qd > end of account')
+    instructions = (f'qd > open threads: {len(rows)}; carry_bytes={limit} (policy bound)\n'
+                    'qd > before acting on any message, run qd thread ID and read that thread whole. '
+                    'Sent, awaiting threads hold no duty. Every message stays a file.\n')
+    inline_handoff = f'qd > your handoff, in full; read it first\n{handoff}\n' if handoff else ''
+    prefix = header + '\n'
+    inline = prefix + inline_handoff + instructions + ''.join(line for _, line in lines)
+    if not force_files and not files and size(inline) <= budget:
+        return Plan(inline, {}, directory, limit)
 
-    # A fixed root name keeps the account cost independent of index depth/part count.
-    root_reserve = str(directory / 'overflow.txt')
-    reserved = size(opening(len(unique), len(unique), root_reserve))
-    if reserved > bound.bytes:
-        raise ImpossibleBudget('carry_bytes cannot hold the minimal first-message account')
-    priority = sorted(unique, key=lambda item: (
-        0 if handoff(item, seat)
-        else 1 if item.kind == 'order' and not item.context_only
-        else 2 if item.kind == 'question' and not item.context_only else 3,
-        item.at, item.id))
-    chosen: set[str] = set()
-    used = reserved
-    by_id = {item.id: item for item in unique}
-    for item in priority:
-        needed, waiting = set(), [item.id]
-        while waiting:
-            identifier = waiting.pop()
-            if identifier in chosen or identifier in needed:
-                continue
-            needed.add(identifier)
-            parent = by_id[identifier]
-            if not handoff(parent, seat):
-                waiting.extend(ref for ref in parent.requires if ref in by_id)
-        amount = sum(size(by_id[identifier].text) for identifier in needed)
-        if used + amount <= bound.bytes:
-            chosen.update(needed)
-            used += amount
-    # Handoffs first, then admitted thread order, including explanatory context.
-    whole = tuple(item.id for item in unique if item.id in chosen)
-    overflow = tuple(item.id for item in unique if item.id not in chosen)
-    put('whole.txt', ''.join(item.text for item in unique if item.id in chosen))
-    rows = []
-    sequence = {item.id: position for position, item in enumerate(unique)}
-    for ordinal, item in enumerate(sorted((item for item in unique if item.id not in chosen), key=lambda item: item.id)):
-        parts = []
-        for number, text in enumerate(_chunks(item.text, bound.bytes)):
-            path = put(f'view-{ordinal}-{number}.txt', text)
-            key = f'{number:020d}'
-            parts.append((key, json.dumps({'part': number + 1, 'path': path}, ensure_ascii=True) + '\n'))
-        view = index(parts, 'parts') if parts else put(f'view-{ordinal}-empty.txt', '')
-        row = (f'id={json.dumps(item.id)} sender={json.dumps(item.sender)} kind={json.dumps(item.kind)} '
-               f'subject={_display(item.subject)} path={json.dumps(view)} '
-               f'original={json.dumps(str(item.source)) if item.source is not None else "null"} '
-               f'sequence={sequence[item.id]} context_only={str(item.context_only).lower()}\n')
-        rows.append((item.id, row))
-    root = index(rows, 'messages') if rows else put('messages-empty.txt', '')
-    files['overflow.txt'] = files.pop(Path(root).name)
-    # Preserve existing named bodyless notices where space remains, without displacing
-    # whole-priority work. The fixed count and complete views/index account for the rest.
-    whole_size = size(files['whole.txt'])
-    for line in notices:
-        shown_notices.append(line)
-        if size(opening(len(whole), len(overflow), root_reserve)) + whole_size > bound.bytes:
-            shown_notices.pop()
-    account = opening(len(whole), len(overflow), root_reserve)
-    plan = Plan(account, files, whole, overflow, bound, directory)
-    if plan.required_bytes > bound.bytes:
-        raise ImpossibleBudget('carry_bytes cannot hold the final account and whole messages')
-    return plan
+    root = pages(sorted(lines), 'threads')
+    files['index.txt'] = files.pop(Path(root).name)
+    index_account = instructions + f'qd > thread index: {directory / "index.txt"}; follow bounded pages by id as needed\n'
+    opening = prefix + inline_handoff + index_account
+    if handoff and (force_files or size(opening) > budget):
+        files['handoff.txt'] = handoff
+        warning = (f'qd > your handoff is {size(handoff)} bytes, over carry_bytes; write a shorter one next time\n'
+                   if size(handoff) > limit else '')
+        opening = (prefix + f'qd > read {directory / "handoff.txt"} whole first, before acting; it is your handoff\n'
+                   + warning + index_account)
+    if size(opening) > budget:
+        raise ImpossibleBudget('carry_bytes cannot hold the minimal thread-index account')
+    return Plan(opening, files, directory, limit)
 
 
 def publish(plan: Plan) -> None:
-    """Publish a complete generation by one rename; a failed plan publishes nothing."""
-    if plan.required_bytes > plan.bound.bytes or any(size(text) > plan.bound.bytes for text in plan.files.values()):
-        raise ImpossibleBudget('carriage plan exceeds its byte bound')
+    """Atomically publish one complete private generation; never rewrite an earlier one."""
+    if size(plan.opening) > plan.limit or any(size(text) > plan.limit for name, text in plan.files.items() if name != 'handoff.txt'):
+        raise ImpossibleBudget('thread index exceeds carry_bytes')
     if not plan.files:
         return
     for name in plan.files:
@@ -266,8 +145,7 @@ def publish(plan: Plan) -> None:
     stage = Path(tempfile.mkdtemp(prefix='.carriage-', dir=plan.directory.parent))
     try:
         for name, text in plan.files.items():
-            target = stage / name
-            descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            descriptor = os.open(stage / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(descriptor, 'wb') as stream:
                 stream.write(text.encode('utf-8'))
                 stream.flush()
