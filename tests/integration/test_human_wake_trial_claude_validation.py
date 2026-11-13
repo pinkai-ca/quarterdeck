@@ -24,7 +24,7 @@ from .waiting import wait_for
 ROOT = Path(__file__).resolve().parents[2]
 QD = Path(sys.executable).parent / 'qd'  # this checkout's own qd, never an installed copy on the PATH
 
-EXACT = 'qd > ship: messages are waiting. Run qd inbox --wait now to read them.'  # captain 400c, 70 characters
+EXACT = 'qd > ship: messages are waiting. Run qd inbox --wait now to read them.'  # the captain's ruled line, 70 characters
 
 
 def test_the_qd_these_gates_run_is_this_checkouts_own():

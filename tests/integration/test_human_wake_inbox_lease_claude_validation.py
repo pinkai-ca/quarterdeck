@@ -1,4 +1,4 @@
-"""Captain dfe6 (5, 6): `qd inbox`, with and without --wait, admits an undeclared temporary seat only while a live
+"""As the captain ruled for check seats: `qd inbox`, with and without --wait, admits an undeclared temporary seat only while a live
 check owns it, proved by the check's own lease in the runtime, never by its name.
 
 The lease is the framework's own: a transient lock and a check-inbox registration, held by a separate process in a

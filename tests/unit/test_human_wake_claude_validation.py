@@ -29,7 +29,7 @@ from quarterdeck.seat import Launched, Seat
 from quarterdeck.service import Service
 from quarterdeck.tmux import Pane
 
-EXACT = 'qd > ship: messages are waiting. Run qd inbox --wait now to read them.'  # captain 400c, 70 characters
+EXACT = 'qd > ship: messages are waiting. Run qd inbox --wait now to read them.'  # the captain's ruled line, 70 characters
 MARKER = 'synthetic-planted-payload-wqzv'
 RULE = '─' * 40
 DESK = Pane('%7', 'Office', 'desk', 4242, 400, 40, False, False, None)
@@ -935,7 +935,7 @@ def test_the_wake_steps_own_human_seat_retires_its_transport_and_cleans_up(tmp_p
     assert kept.read_text() == '{"synthetic": "wake reservation"}\n', 'the reservation is kept before teardown'
 
 
-# Captain 400c (2) and ans-0d86: the waking line must fit on one row of the program's box at the pane's present
+# The captain's rulings on the waking line: it must fit on one row of the program's box at the pane's present
 # width, by an adapter-declared margin, before the reservation and again at the last pre-paste capture.
 
 NEEDED = {'claude': 78, 'codex': 73, 'pi': 71, 'opencode': 77, 'grok': 80, 'fake': 72}  # len(LINE) + declared margin
@@ -998,7 +998,7 @@ def test_a_pane_narrowed_after_the_reservation_is_caught_at_the_last_capture_and
     assert data['phase'] == 'cancelled' and data['attempts'] == [] and data['shown'] is None, 'reserved, never pasted'
 
 
-# Ans-0d86 (3): Claude Code 2.1.317 wraps a pasted line at width - 4. Two retained captures: a wrapped paste that
+# The captain's ruling on Claude's width: Claude Code 2.1.317 wraps a pasted line at width - 4. Two retained captures: a wrapped paste that
 # matches at 76 and not at the inherited 78, and folded pastes that match exactly as before.
 
 def claude_door(text, width=80):
@@ -1040,7 +1040,7 @@ def test_claude_folded_pastes_match_unchanged_at_either_width(capture, text, col
         assert not door.matches(ClaudeHarness().box(text + '\nadded'), door.screen())
 
 
-# Captain ans-6b9f: Claude's 2-column right inset (columns width-4 to width-2 of a row, after the 2-column prompt)
+# The captain's ruling on Claude's inset: its 2-column right inset (columns width-4 to width-2 of a row, after the 2-column prompt)
 # is painted padding: spaces there are dropped, any other character fails. Text never reaches past width - 4.
 
 INSET_PAYLOADS = ['keep  both spaces\nlast line', 'first\n\nafter a blank row', 'keep  both spaces\n\n  preserve indentation\nlast line']
@@ -1078,7 +1078,7 @@ def test_a_space_only_inset_is_padding_but_never_supplies_a_text_difference():
         assert not door.matches(ClaudeHarness().box(edited + '\n'), door.screen()), edited
 
 
-# Captain 400c (3) and dfe6 (7): the check keeps, under runtime/check and before teardown, the Door's first delivery
+# The captain's rulings on waking evidence: the check keeps, under runtime/check and before teardown, the Door's first delivery
 # result and the box as shown beside the final observation, and the woken seat's own last tool calls, bounded.
 
 def test_the_first_door_result_and_the_box_as_shown_are_observed_once(desk):
