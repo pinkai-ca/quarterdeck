@@ -50,7 +50,7 @@ def world(tmp_path, monkeypatch, request):
         calls.append('resume' if resume else 'fresh')
         if not resume:
             source[0] = Native(seat.home/f'synthetic-record-{len(calls)}', program, f'synthetic-successor-{len(calls)}')
-        Launched('%1', 123, (AT + timedelta(microseconds=len(calls))).isoformat(), 'synthetic', 'synthetic-conversation' if resume else None,
+        Launched('%1', 123, (AT + timedelta(microseconds=len(calls))).isoformat(), 'synthetic', source[0].conversation if resume else None,
                  [program], 'synthetic', harness=program).write(seat.folder/'launch.json')
         pin()
         return 'synthetic launch'
