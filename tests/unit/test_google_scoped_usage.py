@@ -333,3 +333,24 @@ def test_bound_google_policy_does_not_filter_another_pool(book, at, facts):
 def test_missing_google_headline_keeps_its_group_label(tmp_path):
     lines = render_headlines(headline_readings(synthetic_ship(tmp_path)))
     assert any("Gemini 4 Argon / 7d usage unknown" in line for line in lines)
+
+
+@pytest.mark.parametrize("member,held", [("argon", True), ("flash", False)])
+def test_the_door_holds_a_seat_in_the_spent_group_with_its_reason_and_no_other(tmp_path, monkeypatch, member, held):
+    """The desk's case end to end: Argon's week spent, the Gemini week open, the seat's running model from its record."""
+    from quarterdeck.door import Door
+    from .test_quota_walls import synthetic_seat
+    seat, _, _, _ = synthetic_seat(tmp_path, monkeypatch)
+    running = "synthetic-model"  # what the seat's own record says it runs
+    monkeypatch.setattr(models, "MEMBERSHIP", {
+        ("Gemini 4 Argon", running): member == "argon", ("Gemini Models", running): member == "flash"})
+    at = datetime.now(timezone.utc)
+    doc = document(at, [{"name": "Gemini 4 Argon", "buckets": [bucket(at, "weekly", 0)]},
+                        {"name": "Gemini Models", "buckets": [bucket(at, "weekly", 0.99)]}])
+    with Ledger(seat.ship.runtime / "ledger.sqlite") as ledger:
+        ledger.record_usage(seat.pool.name, parse_usage(doc, at))
+    reason = Door(seat).wall(None)
+    if held:
+        assert reason and "Gemini 4 Argon" in reason, "the seat is held, and the reason names the group"
+    else:
+        assert reason is None, "a spent group holds no seat whose model is in another group"
