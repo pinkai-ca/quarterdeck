@@ -24,11 +24,21 @@ def observe(folder: Path) -> tuple[str | None, str | None]:
 
 def plan(project: Path) -> list[dict]:
     """Snapshot only this project's direct ships, putting its marked ship last."""
-    from . import selection
-
-    ships = selection.ships_dir(project)
-    marked = selection.marked(project)
-    last = marked.folder.name if marked is not None else None
+    project = Path(project).resolve()
+    ships = shipmod.ships_folder(project)
+    if ships.is_symlink() or not ships.is_dir():
+        raise ShipError(f'{ships} is not a plain project ships folder')
+    # Only the shared default reader interprets or validates the mark. Absence
+    # means there is no office-last designation, not a single-ship fallback.
+    try:
+        (ships / shipmod.MARK).lstat()
+    except FileNotFoundError:
+        last = None
+    except OSError as error:
+        raise ShipError(f'cannot inspect default mark ({type(error).__name__})') from None
+    else:
+        marked, source = shipmod.default_ship(project)
+        last = marked.name if source == 'mark' else None
     try:
         folders = sorted((path for path in ships.iterdir()
                           if path.is_dir()
@@ -40,7 +50,7 @@ def plan(project: Path) -> list[dict]:
     for folder in folders:
         row = dict(ship=folder.name, folder=folder, disposition='not tried',
                    before=None, commit=None, reason=None, proof=[], ship_object=None)
-        if folder.name in selection.TEMPLATES:
+        if folder.name in shipmod.TEMPLATES:
             row.update(disposition='passed over', reason='tracked template')
         else:
             # Share the project root, without applying default-name eligibility:

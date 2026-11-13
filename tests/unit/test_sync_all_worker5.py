@@ -67,6 +67,14 @@ def eligible_rows(result):
 
 def test_all_ships_succeed_in_folder_order_with_marked_office_last(tmp_path, monkeypatch):
     world = modeled_project(tmp_path, monkeypatch)
+    real_default = shipmod.default_ship
+    mark_reads = []
+
+    def shared_default(project):
+        mark_reads.append(project)
+        return real_default(project)
+
+    monkeypatch.setattr(shipmod, 'default_ship', shared_default)
     result = sync_all.run(world.project, 'synthetic-release-zzzz', force=True)
     expected = sorted(world.states.keys() - {world.office}) + [world.office]
     assert [name for name, _, _ in world.calls] == expected
@@ -74,6 +82,7 @@ def test_all_ships_succeed_in_folder_order_with_marked_office_last(tmp_path, mon
     assert result['ok'] and all(row['commit'] == TARGET for row in eligible_rows(result))
     assert all(row['disposition'] == 'synced' for row in eligible_rows(result))
     assert world.resolutions == [(world.project, 'synthetic-release-zzzz')]
+    assert mark_reads == [world.project]
 
 
 def test_second_failure_keeps_first_synced_and_rest_untried(tmp_path, monkeypatch):
@@ -119,6 +128,11 @@ def test_each_template_and_checkout_ship_is_passed_over_once(tmp_path, monkeypat
 
 def test_unmarked_multiple_ship_project_needs_no_implicit_default(tmp_path, monkeypatch):
     world = modeled_project(tmp_path, monkeypatch, marked=False)
+
+    def unexpected(*args, **kwargs):
+        pytest.fail('unmarked --all should not ask the single-ship fallback to choose a default')
+
+    monkeypatch.setattr(shipmod, 'default_ship', unexpected)
     result = sync_all.run(world.project)
     assert result['ok']
     assert [name for name, _, _ in world.calls] == sorted(world.states)
@@ -210,12 +224,21 @@ def test_all_back_refusal_precedes_project_or_install_work(monkeypatch, capsys, 
     assert 'cannot be combined with --back' in capsys.readouterr().err
 
 
+def test_explicit_ship_conflicts_with_project_all_before_any_sync(monkeypatch, capsys, tmp_path):
+    def unexpected(*args, **kwargs):
+        pytest.fail('explicit --ship plus --all reached a sync')
+
+    monkeypatch.setattr(sync_all, 'run', unexpected)
+    assert cli.main(['--ship', str(tmp_path / 'synthetic-named-zzzz'), 'sync', '--all']) == 2
+    assert '--all selects project ships; omit --ship' in capsys.readouterr().err
+
+
 @pytest.mark.parametrize('verb', ['sync', 'upgrade'])
 def test_cli_json_failure_keeps_structured_dispositions(tmp_path, monkeypatch, capsys, verb):
-    from quarterdeck import selection
+    from quarterdeck import standing
 
     world = modeled_project(tmp_path, monkeypatch, fail='alpha-crew-zzzz')
-    monkeypatch.setattr(selection, 'project', lambda: world.project)
+    monkeypatch.setattr(standing, 'PROJECT_DIR', world.project)
     monkeypatch.setenv('QD_SHIP', str(tmp_path / 'unrelated-ship-zzzz'))
     monkeypatch.delenv('QD_SEAT', raising=False)
     assert cli.main(['--json', verb, '--all']) == 2
@@ -226,10 +249,10 @@ def test_cli_json_failure_keeps_structured_dispositions(tmp_path, monkeypatch, c
 
 
 def test_upgrade_all_alias_note_is_once_and_json_data_is_unmodified(tmp_path, monkeypatch, capsys):
-    from quarterdeck import selection
+    from quarterdeck import standing
 
     world = modeled_project(tmp_path, monkeypatch)
-    monkeypatch.setattr(selection, 'project', lambda: world.project)
+    monkeypatch.setattr(standing, 'PROJECT_DIR', world.project)
     monkeypatch.delenv('QD_SHIP', raising=False)
     monkeypatch.delenv('QD_SEAT', raising=False)
     assert cli.main(['upgrade', '--all']) == 0

@@ -49,6 +49,8 @@ HANDED = "QD_DEFAULT_SHIP"  # the folder the typed qd chose as the default, pass
 
 def needs_ship(args: argparse.Namespace) -> bool:
     """Verbs that act on no ship, or on the practice ship when none is named, never take the default."""
+    if args.run is cmd_upgrade and getattr(args, 'all_ships', False):
+        return False
     return (args.run not in (cmd_laws, cmd_drill, cmd_default, cmd_setup)
             and not (args.run is cmd_controls and getattr(args, 'harness', None)))
 
@@ -828,9 +830,9 @@ def cmd_upgrade(args: argparse.Namespace) -> list[str] | Reading:
             raise ShipError('--all cannot be combined with --back; go back one ship at a time')
         if args.ship is not None:
             raise ShipError('--all selects project ships; omit --ship')
-        from . import selection, sync_all
+        from . import sync_all
 
-        data = sync_all.run(selection.project(), args.ref or 'HEAD', Tmux.default(), force=force)
+        data = sync_all.run(standing.PROJECT_DIR, args.ref or 'HEAD', Tmux.default(), force=force)
         args.exit_code = 0 if data['ok'] else 2
 
         def render(value):
