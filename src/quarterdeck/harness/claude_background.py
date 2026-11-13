@@ -63,6 +63,10 @@ class BackgroundBash:
         self.task_calls = {}
         self.unknown_calls = set()
         self.unbound = False
+        # Notifications met before their call's own rows, by root call id, in file order. When the inbox watch
+        # returns at once, Claude Code writes the notification's enqueue first. Each binds when its call's result
+        # creates the task; one still waiting at the record's end leaves the record's tools unknown.
+        self.early = {}
         self.version = None  # queue carriers inherit the nearest preceding explicit record version
 
     def call(self, call, name, arguments, at, version):
@@ -99,6 +103,8 @@ class BackgroundBash:
             self.tasks[call] = Task(call, task, at, at,
                                     inbox_watch_started=called_at if watch else None)
             self.task_calls[task] = call
+            for early in self.early.pop(call, ()):
+                self.notice(self.tasks[call], *early)
             return
         # A failed stop ends only the TaskStop invocation, never the Bash task.
         if block.get('is_error', False):
@@ -160,9 +166,13 @@ class BackgroundBash:
         call, identity, status, note = fields
         task = self.tasks.get(call)
         if task is None:
-            # A main-file notification cannot establish a start owned by a subagent file.
-            self.unbound = True
+            # Held until this root call's own result arrives later in the file. A subagent file's call never
+            # arrives here, so a main-file notification still cannot establish a start it owns.
+            self.early.setdefault(call, []).append((identity, status, note, at, version))
             return
+        self.notice(task, identity, status, note, at, version)
+
+    def notice(self, task, identity, status, note, at, version):
         if (task.task != identity or version != VERSION
                 or at is None or at < task.started):
             task.phase, task.invalid = 'unknown', True
@@ -188,7 +198,8 @@ class BackgroundBash:
 
     def state(self, state):
         active = [task for task in self.tasks.values() if task.phase != 'ended']
-        unknown = self.unbound or self.unknown_calls or any(task.phase == 'unknown' for task in active)
+        unknown = (self.unbound or self.early or self.unknown_calls
+                   or any(task.phase == 'unknown' for task in active))
         return replace(state,
                        pending_tools=None if state.pending_tools is None or unknown else
                        state.pending_tools + tuple('Bash' for task in active),
