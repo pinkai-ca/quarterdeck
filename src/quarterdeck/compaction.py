@@ -103,15 +103,15 @@ def release(data, reason):
     data.update(reserved=None, handoff_digest=None, ready=None, attestation=None, reason=reason)
 
 
-def disarm(seat, reason='ordinary lifecycle action; prepare a current handoff'):
+def disarm(seat, reason='ordinary lifecycle action; prepare a current handoff', *, adopt_successor=False):
     """Called inside the ordinary lifecycle claim, or by explicit cancellation/disable."""
     if not path(seat.ship.runtime, seat.name).exists():
         return 'no prepared compaction readiness'
     with post.admission(seat.ship.runtime, seat.name):
-        return disarm_locked(seat, reason)
+        return disarm_locked(seat, reason, adopt_successor=adopt_successor)
 
 
-def disarm_locked(seat, reason, *, disabled=None, clear_transition=True):
+def disarm_locked(seat, reason, *, disabled=None, clear_transition=True, adopt_successor=False):
     """The caller owns recipient admission (including a declaration edit)."""
     try:
         data = load(seat.ship.runtime, seat.name)
@@ -120,6 +120,17 @@ def disarm_locked(seat, reason, *, disabled=None, clear_transition=True):
         return 'compaction journal unknown and retained; automatic fresh held'
     if data is None:
         return 'no prepared compaction readiness'
+    if adopt_successor and data.get('transition'):
+        # Ordinary lifecycle may run before the next observation tick. Adopt while
+        # the fresh launch and its owned record still prove the successor's origin;
+        # resume will replace that launch evidence. This never authorizes startup.
+        try:
+            record, reading, launched = current(seat)
+            observe(seat, data, record, reading, launched)
+        except (OSError, ShipError) as error:
+            # Ambiguity holds automation, not the caller's explicit recovery.
+            data['reading_unknown'] = True
+            reason = f'{reason}; {error}'
     try:
         recover(seat.ship.runtime, data)
     except (OSError, ShipError):

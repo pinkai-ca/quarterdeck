@@ -462,7 +462,7 @@ class Seat:
                 raise ShipError(f'{self.name}: lifecycle coordination unavailable: {error}') from error
             if not automatic:
                 from . import compaction
-                compaction.disarm(self)
+                compaction.disarm(self, adopt_successor=True)
             yield
         finally:
             if descriptor is not None:
