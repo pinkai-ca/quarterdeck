@@ -945,6 +945,7 @@ class Service:
         Program/screen/provider calls never run under the record write lock.
         Checkpoints and machine/source caches describe only committed accounting.
         """
+        before = self.accounting_health.shown()
         try:
             observations, notices, human_readings = self.account_records()
         except Exception as error:
@@ -953,6 +954,7 @@ class Service:
                          cause=self.accounting_health.current, failures=self.accounting_health.failures,
                          causes=dict(self.accounting_health.causes))
             self.publish_accounting_health(force=True)
+            self.accounting_shown_changed(before)
             return  # no per-pass raw exception log; the bounded operational alarm owns this failure
         previous = self.accounting_health.since
         failures = self.accounting_health.failures
@@ -960,6 +962,7 @@ class Service:
         if self.accounting_health.committed():
             self.log('accounting-recovered', since=previous, failures=failures, causes=causes)
         self.publish_accounting_health(force=True)
+        self.accounting_shown_changed(before)
         # These duties happen after commit. Their failures retain tick's existing
         # error visibility and cannot be misreported as rolled-back accounting.
         for event, data in notices:
@@ -970,6 +973,11 @@ class Service:
         for seat, _, launched, live, _, _, _, _ in observations:
             quota.refresh(self, seat, live, launched)
         quota.refresh_declared(self)
+
+    def accounting_shown_changed(self, before) -> None:
+        """A status snapshot taken before the outcome would disagree with it: the next status check republishes."""
+        if self.accounting_health.shown() != before:
+            self.status_checked = None
 
     def account_records(self):
         """Prepare and commit the pass; callers handle only its accounting outcome."""

@@ -187,7 +187,9 @@ def test_a_linked_usage_home_is_not_a_participant(tmp_path):
 # -- one usage orchestration for every read of a native usage client -----------------------------------
 
 def usage_service(ship, logs):
-    return SimpleNamespace(ship=ship, resolved_seats=lambda: [], log=lambda kind, **fields: logs.append((kind, fields)))
+    # read_usage first completes any refused usage commit; this stand-in's ledger has none.
+    return SimpleNamespace(ship=ship, resolved_seats=lambda: [], log=lambda kind, **fields: logs.append((kind, fields)),
+                           ledger=SimpleNamespace(prepare_usage=lambda: None))
 
 
 @pytest.fixture

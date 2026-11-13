@@ -61,11 +61,23 @@ class Health:
         self.checked = True
         return self.failures == BOUND
 
+    def shown(self):
+        return shown(self.checked, self.failures, self.since, self.current)
+
     def committed(self):
         alarmed = self.failures >= BOUND
         self.failures, self.since, self.current, self.causes = 0, None, None, {}
         self.checked = True
         return alarmed
+
+
+def shown(checked, failures, since, current):
+    """What the status line says of accounting: nothing while it commits or below the bound."""
+    if not checked:
+        return UNKNOWN
+    if failures >= BOUND:
+        return f"accounting failing since {since}: {current}"
+    return None  # below the explicit transient-failure bound, not a measurement of turns
 
 
 def publish(runtime, health):
@@ -121,10 +133,6 @@ def reading(runtime):
         again = servicectl.read_heartbeat(runtime)
         if again is None or again[0] != beat[0] or not 0 <= again[1] <= servicectl.STALE_SECONDS:
             return UNKNOWN
-        if not data['checked']:
-            return UNKNOWN
-        if data['failures'] >= BOUND:
-            return f"accounting failing since {data['since']}: {data['cause']}"
-        return None  # below the explicit transient-failure bound, not a measurement of turns
+        return shown(data['checked'], data['failures'], data['since'], data['cause'])
     except (OSError, ValueError, TypeError, KeyError, OverflowError, RecursionError):
         return UNKNOWN

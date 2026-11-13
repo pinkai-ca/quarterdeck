@@ -441,6 +441,12 @@ class Facts:
 SCHEMA_BEHIND = "ledger written by an older service; qd up restarts it"
 
 
+def accounting_reading(runtime, state: str) -> str | None:
+    """The accounting alarm; unknown evidence is said only while the service runs, since its state says the rest."""
+    reading = accounting_health.reading(runtime)
+    return None if reading == accounting_health.UNKNOWN and state != "ok" else reading
+
+
 def headline_readings(ship: Ship) -> list[dict]:
     """Every supported subscription headline, from the cache only."""
     from . import harness as harnesses
@@ -638,7 +644,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
     oldest = int(max(((now - m.at).total_seconds() for m in waiting), default=0) // 60)
     queued = [a for a in records if a.result == "queued" and latest.get(a.message) == 'queued']
     return Facts(
-        service=service_state(ship.runtime),
+        service=(state := service_state(ship.runtime)),
         waiting=len(waiting),
         oldest=oldest,
         blind=sum(result == 'blind' for result in latest.values()),
@@ -664,7 +670,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         group_held=group_post.holds(ship.runtime),
         cascade_held=cascade_runtime.holds(ship.runtime),
         structure_waiting=structure_outcome.waits(ship, selected),
-        accounting=accounting_health.reading(ship.runtime),
+        accounting=accounting_reading(ship.runtime, state),
         unarmed=unarmed,
         walls=walls if walls is not None else ledger_walls(ship),
         usage=headline_readings(ship),
