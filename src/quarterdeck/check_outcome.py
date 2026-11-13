@@ -26,6 +26,7 @@ REASONS = {
     'program': ('installed', 'the seat did not run the program doctor shows'),
     'answer': ('account holder question', 'an answer for the account holder did not clear its question'),
     'wake': ('human-session waking line', 'the human-session waking line was not proven'),
+    'model': ('model', 'the requested model was not confirmed in the program or its record'),
     'account-login': ('account holder question', 'account-holder question: login'),
     'account-training': ('account holder question', 'account-holder question: training data'),
     'account-permission': ('account holder question', 'account-holder question: permission'),

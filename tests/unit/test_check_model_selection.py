@@ -93,3 +93,13 @@ def test_startup_screen_can_confirm_before_the_record_model(monkeypatch):
     result = check.model_confirmation(seat, "flash-synth")
     assert result.passed
     assert "screen-observed flash-synth" in result.detail
+
+
+def test_a_requested_model_not_confirmed_records_the_model_reason(monkeypatch):
+    from quarterdeck import check_outcome
+    seat = SimpleNamespace(record=lambda: None, harness=SimpleNamespace(
+        model_matches=lambda requested, observed: requested == observed), spec=SimpleNamespace(model="flash-synth"))
+    monkeypatch.setattr(check, "Door", lambda seat: SimpleNamespace(screen=lambda: Screen("", None, shows={"model": "other-synth"})))
+    result = check.model_confirmation(seat, "flash-synth")
+    assert result.passed is False and result.reason == "model", "a failed confirmation is classified, not unclassified"
+    assert check_outcome.event("failed", "1.0", result.reason)["step"] == "model"

@@ -65,7 +65,7 @@ def check(ship: Ship, name: str, tmux: Tmux, *, model: str | None = None) -> lis
     check_outcome.publish(ship.runtime, name, check_outcome.event('unknown', reason='incomplete'))
     version = None
     try:
-        checks, version = _check(ship, name, tmux, harness)
+        checks, version = _check(ship, name, tmux, harness, model)
     except BaseException as error:
         reason = 'interrupted' if isinstance(error, (KeyboardInterrupt, SystemExit)) else 'unclassified'
         check_outcome.publish(ship.runtime, name, check_outcome.event('unknown', version, reason))
@@ -82,7 +82,7 @@ def check(ship: Ship, name: str, tmux: Tmux, *, model: str | None = None) -> lis
     return checks
 
 
-def _check(ship: Ship, name: str, tmux: Tmux, harness) -> tuple[list[Check], str | None]:
+def _check(ship: Ship, name: str, tmux: Tmux, harness, model: str | None = None) -> tuple[list[Check], str | None]:
     pool = next((p for p in ship.pools.values() if harness.accepts(p) is None), None)
     if pool is None:
         return [ProbeCheck('pool', False, f'no compatible declared pool for {name}', 'pool')], None
@@ -145,7 +145,7 @@ def _check(ship: Ship, name: str, tmux: Tmux, harness) -> tuple[list[Check], str
     return checks, version
 
 
-def model_confirmation(seat: Seat, requested: str, *, require_record: bool = False) -> Check:
+def model_confirmation(seat: Seat, requested: str, *, require_record: bool = False) -> ProbeCheck:
     """The requested launch model, confirmed by owned record first, screen second."""
     record = seat.record()
     try:
@@ -162,7 +162,7 @@ def model_confirmation(seat: Seat, requested: str, *, require_record: bool = Fal
               and (not require_record or recorded is not None))
     detail = (f"requested {requested} · launched {launched or '?'} · record-observed {recorded or '?'}"
               + (f" · screen-observed {shown}" if shown else ""))
-    return Check("requested model in record" if require_record else "requested launch model", passed, detail)
+    return ProbeCheck("requested model in record" if require_record else "requested launch model", passed, detail, 'model')
 
 
 def probe(ship: Ship, seat: Seat, orders: list[post.Message] | None = None, *, requested_model: str | None = None) -> list[Check]:
