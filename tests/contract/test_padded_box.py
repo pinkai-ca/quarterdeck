@@ -14,12 +14,8 @@ NAMES = ("codex", "claude", "antigravity", "fake", "opencode", "pi")
 
 
 def capture(name, body, padding=0, width=80):
-    # Claude Code 2.1.317 wraps its text at width - 4 behind a 2-column prompt (captain ans-0d86), so "full"
-    # padding fills its declared text area; painting past it is named as unverified in the waking gates.
-    full = width - 2 if name == "claude" else width
-
     def pad(line):
-        return line.ljust(full) if padding == "full" else line + " " * padding
+        return line.ljust(width) if padding == "full" else line + " " * padding
     rows = body.split("\n")
     if name == "opencode":
         lines = ["  ┃", *["  ┃  " + r for r in rows], "  ┃", "  ┃  Build auto · TestModel pool", "  ╹" + "▀" * (width - 3), "  /work   ctrl+p commands"]

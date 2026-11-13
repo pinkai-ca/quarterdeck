@@ -1038,3 +1038,41 @@ def test_claude_folded_pastes_match_unchanged_at_either_width(capture, text, col
     assert door.matches(ClaudeHarness().box(text), door.screen())
     if capture == 'paste-4-lines-folded':  # a placeholder carries its line count, and only that
         assert not door.matches(ClaudeHarness().box(text + '\nadded'), door.screen())
+
+
+# Captain ans-6b9f: Claude's 2-column right inset (columns width-4 to width-2 of a row, after the 2-column prompt)
+# is painted padding: spaces there are dropped, any other character fails. Text never reaches past width - 4.
+
+INSET_PAYLOADS = ['keep  both spaces\nlast line', 'first\n\nafter a blank row', 'keep  both spaces\n\n  preserve indentation\nlast line']
+
+
+def claude_rows(payload, paint, width=80, inset=None):
+    rows = [('❯ ' if i == 0 else '  ') + row for i, row in enumerate(payload.split('\n'))]
+    if inset is not None:  # a character placed in the inset of the last box row
+        rows[-1] = rows[-1].ljust(width - 2) + inset
+    framed = ['─' * width, *[row.ljust(paint) for row in rows], '─' * width]
+    return '\n'.join(framed) + '\n  ○ low · /effort\n'
+
+
+@pytest.mark.parametrize('payload', INSET_PAYLOADS)
+@pytest.mark.parametrize('paint', [78, 79, 80])
+def test_claude_rows_painted_to_the_text_area_or_to_the_edge_verify_blank_rows_included(payload, paint):
+    from quarterdeck.harness.claude import ClaudeHarness
+    door = claude_door(claude_rows(payload, paint))
+    assert door.matches(ClaudeHarness().box(payload + '\n'), door.screen()), paint
+
+
+@pytest.mark.parametrize('payload', INSET_PAYLOADS)
+@pytest.mark.parametrize('inset', ['x', ' x', 'xx', '─ '])  # the screen reader already reads a no-break space as a space
+def test_a_non_space_in_claudes_right_inset_fails(payload, inset):
+    from quarterdeck.harness.claude import ClaudeHarness
+    door = claude_door(claude_rows(payload, 80, inset=inset))
+    assert not door.matches(ClaudeHarness().box(payload + '\n'), door.screen()), repr(inset)
+
+
+def test_a_space_only_inset_is_padding_but_never_supplies_a_text_difference():
+    from quarterdeck.harness.claude import ClaudeHarness
+    payload = 'keep  both spaces\nlast line'
+    door = claude_door(claude_rows(payload, 80))
+    for edited in ('keep both spaces\nlast line', 'keep  both spaces\nlast lin', 'keep  both spaces\nlast line  x'):
+        assert not door.matches(ClaudeHarness().box(edited + '\n'), door.screen()), edited
