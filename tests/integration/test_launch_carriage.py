@@ -389,7 +389,8 @@ def test_only_a_command_the_kernel_would_refuse_is_refused_naming_sizes_not_text
     with pytest.raises(ShipError, match="exec would refuse this launch for its size") as raised:
         captain.up(resume=False)
     from quarterdeck import harness
-    prefix = seatmod.launch_words("p", [], socket=tmux.socket, tmux_tmpdir=Path("t"), markers=harness.inherited_markers())
+    prefix = seatmod.launch_words("p", [], socket=tmux.socket, tmux_tmpdir=Path("t"), markers=harness.inherited_markers(),
+                                 qd_command=ship.runtime / 'bin/qd')
     oversized_word = len(prefix) + 3  # after the program, "-c" and "pass"
     assert f"word {oversized_word} " in str(raised.value) and "SYNTHETIC" not in str(raised.value)
     assert captain.pane() is None
