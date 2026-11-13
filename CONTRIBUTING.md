@@ -25,7 +25,7 @@ python3 -m venv --system-site-packages .venv
 
 ## Run the tests
 
-`tests/testrun.py` is the one way to run the suite. The tool tests the worktree's committed HEAD, one run at a time, with results under `.testruns/`.
+`tests/testrun.py` runs the suite for a change's signature. The tool tests the worktree's committed HEAD, one tool run at a time, with results under `.testruns/`. The tool caps every test process at 8 GiB of address space and stops a run at a timeout, 3600 seconds by default.
 
 ```sh
 python3 -I tests/testrun.py run                       # the whole suite, 8 workers
