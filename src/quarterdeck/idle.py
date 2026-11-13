@@ -1,6 +1,7 @@
 """One ordinary live idle proof, independent of routing and explicit question recovery."""
 
 from dataclasses import dataclass, replace
+from typing import NamedTuple
 
 from .harness.types import State
 
@@ -9,6 +10,34 @@ from .harness.types import State
 class Hold:
     dimension: str
     reason: str
+
+
+NO_RECORD = 'no record yet: nothing has run'
+
+
+class Reading(NamedTuple):
+    state: State | None
+    hold: Hold | None
+
+    @property
+    def reason(self):
+        return self.hold.reason if self.hold else NO_RECORD if self.state is None else 'known idle'
+
+
+def never_started(seat):
+    """An explicit no-record join plus the current owned live pane, never generic absence."""
+    try:
+        joined = seat.join()
+        if joined.record is not None or joined.reason != 'no record yet':
+            return False
+        launched, pane = seat.launched(), seat.pane()
+        latest = seat.join()
+        return bool(launched is not None and pane is not None and not pane.dead
+                    and (pane.id, pane.pid) == (launched.pane, launched.pid)
+                    and latest.record is None and latest.reason == 'no record yet'
+                    and seat.launched() == launched)
+    except (OSError, AttributeError, TypeError, ValueError):
+        return False
 
 
 REASONS = {
@@ -64,8 +93,10 @@ def execution(seat, state: State) -> State:
                    active_tools=state.active_tools[:index] + state.active_tools[index + 1:])
 
 
-def check(state: State, seat=None, *, explicit=False) -> Hold | None:
+def check(state: State | None, seat=None, *, explicit=False) -> Hold | None:
     """Unknown is never empty. Only native, timed active-input completion supplies proof."""
+    if state is None:
+        return None if seat is not None and never_started(seat) else Hold('record', 'it has no joined record')
     if seat is not None:
         state = execution(seat, state)
     if state.turn_open is not False:
@@ -101,9 +132,9 @@ def reading(seat, *, explicit=False):
     else:
         if state is not None:
             state = execution(seat, state)
-        hold = check(state, explicit=explicit) if state is not None else Hold('record', 'it has no joined record')
+        hold = check(state, seat=seat if state is None else None, explicit=explicit)
     if move_hold.generation(seat) != binding:
         state = None
         hold = Hold('identity', REASONS['identity'])
     move_hold.publish(seat, binding, hold)
-    return state, hold
+    return Reading(state, hold)

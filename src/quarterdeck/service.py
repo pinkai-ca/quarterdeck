@@ -555,8 +555,8 @@ class Service:
             return f"{name} written; {seat.name} is down, so qd up {seat.name} applies it{unchecked}"
         if seat.is_working():
             return None  # retain the control's existing working-turn admission
-        state, _ = idle.reading(seat)
-        if state is None or state.pending_tools != ():
+        state, hold = idle.reading(seat)
+        if (state is None and hold is not None) or (state is not None and state.pending_tools != ()):
             return None  # only the same registered own watch can be excluded from tool work
         door = Door(seat)
         command = control.command(value)

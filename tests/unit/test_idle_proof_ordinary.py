@@ -59,7 +59,7 @@ def service_case(tmp_path, monkeypatch, state):
         spec=SimpleNamespace(pools=('pool-willow', 'pool-oak'), pool_choices=True),
         pool=SimpleNamespace(name='pool-willow'), is_up=True,
         launched=lambda: launch, record=lambda: tmp_path / 'record-fern.jsonl',
-        pane=lambda: SimpleNamespace(dead=False),
+        pane=lambda: SimpleNamespace(dead=False, id=launch.pane, pid=launch.pid),
         harness=SimpleNamespace(state=lambda record: state, waiting_for_human=lambda reading: False),
         failover_to=lambda pool: moved.append(pool) or 'synthetic move proof',
         restart=lambda: moved.append('restart') or 'synthetic restart proof',
@@ -169,11 +169,23 @@ def test_call_detail_survives_turn_accounting_without_new_certainty(tmp_path):
     assert reader.state().pending_tools is None
 
 
-def test_fresh_fake_metadata_proves_no_tools_but_supplies_no_move_completion(tmp_path):
-    from quarterdeck.harness import claude
-    from quarterdeck.harness.synthetic_record import ClaudeShape
-    record = ClaudeShape(tmp_path / 'home-fern', tmp_path, 'conversation-fern', 'model-fern')
-    state = claude.state(record.path)
-    assert state.turn_open is False and state.pending_tools == () and state.queued == ()
-    assert state.completed_turns == ()
-    assert idle.check(state).dimension == 'completion'
+@pytest.mark.parametrize(('reason', 'owned', 'allowed'), [
+    ('no record yet', True, True),
+    ('synthetic join unknown', True, False),
+    ('no record yet', False, False),
+])
+def test_explicit_no_record_join_needs_owned_live_pane(tmp_path, monkeypatch, reason, owned, allowed):
+    service, seat, moved = service_case(tmp_path, monkeypatch, completed())
+    seat.record = lambda: None
+    seat.join = lambda: SimpleNamespace(record=None, reason=reason)
+    if not owned:
+        seat.pane = lambda: SimpleNamespace(dead=False, id='%pane-other', pid=101004)
+    proof = idle.reading(seat)
+    assert proof.state is None
+    assert (proof.hold is None) == allowed
+    if allowed:
+        assert proof.reason == 'no record yet: nothing has run'
+        assert service.relaunch(seat, True) == 'synthetic restart proof'
+    else:
+        assert service.relaunch(seat, True) is None
+    assert bool(moved) == allowed
