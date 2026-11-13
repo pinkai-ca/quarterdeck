@@ -89,7 +89,7 @@ def test_TMUX_and_TMUX_TMPDIR_never_choose_the_ships_server(tmp_path, monkeypatc
     seen = recorded(monkeypatch)
     server = Tmux.for_ship(a_ship(tmp_path))
     server.running()
-    assert seen == [["tmux", "-S", str(tmp_path / "runtime" / "tmux" / "server"), "list-sessions"]]
+    assert seen == [["tmux", "-u", "-S", str(tmp_path / "runtime" / "tmux" / "server"), "list-sessions"]]
 
 
 def test_every_ship_command_names_the_socket_and_keeps_the_persons_configuration(tmp_path, monkeypatch):
@@ -97,7 +97,7 @@ def test_every_ship_command_names_the_socket_and_keeps_the_persons_configuration
     server = Tmux(str(tmp_path / "server"), ship=True)
     server.running()
     server.has_session("Crew")
-    assert all(command[:3] == ["tmux", "-S", str(tmp_path / "server")] for command in seen)
+    assert all(command[:4] == ["tmux", "-u", "-S", str(tmp_path / "server")] for command in seen)
     assert not any("-f" in command or "-N" in command for command in seen)
 
 
@@ -112,7 +112,7 @@ def test_qd_never_stops_a_ship_server_nor_the_default_one(tmp_path, monkeypatch)
 def test_the_default_server_is_read_with_its_path_and_never_started(tmp_path, monkeypatch):
     seen = recorded(monkeypatch)
     Tmux(str(tmp_path / "default"), legacy=True).running()
-    assert seen == [["tmux", "-S", str(tmp_path / "default"), "-N", "list-sessions"]]
+    assert seen == [["tmux", "-u", "-S", str(tmp_path / "default"), "-N", "list-sessions"]]
 
 
 def test_the_default_server_is_looked_for_by_TMUX_and_the_default_socket_only(monkeypatch):
@@ -171,7 +171,7 @@ def test_the_socket_folder_is_made_private_when_the_server_starts(tmp_path, monk
     with pytest.raises(TmuxError):
         Tmux(str(path), ship=True).new_session("Crew")
     assert (path.parent.stat().st_mode & 0o777) == 0o700
-    assert seen[0][:3] == ["tmux", "-S", str(path)] and "new-session" in seen[0]
+    assert seen[0][:4] == ["tmux", "-u", "-S", str(path)] and "new-session" in seen[0]
 
 
 def test_a_symlinked_socket_folder_is_refused_and_left_alone(tmp_path, monkeypatch):

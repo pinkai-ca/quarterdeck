@@ -15,7 +15,7 @@ def test_default_and_named_transport_keep_their_native_arguments(monkeypatch,nam
         return SimpleNamespace(returncode=0,stdout='synthetic\n')
     monkeypatch.setattr(module.subprocess,'run',run)
     assert Tmux(name).run('list-sessions')=='synthetic\n'
-    assert seen==[['tmux',*address,'list-sessions']]
+    assert seen==[['tmux','-u',*address,'list-sessions']]
 
 
 def test_an_absolute_observer_never_creates_or_repairs_a_namespace(tmp_path):
