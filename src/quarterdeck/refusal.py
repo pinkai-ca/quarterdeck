@@ -173,15 +173,16 @@ def _publish(store: post.Store, message: post.Message) -> None:
 
 
 def run(service: Service) -> None:
-    """Each seat's step on its own: one seat's failure is logged once while it stands, and never stops the next seat."""
+    """Each seat's step on its own: a seat's refusal failure (its journal, a notice, its files) is logged once
+    while it stands, and never stops the next seat."""
     logged = service.__dict__.setdefault('refusal_errors', {})
     for seat in service.resolved_seats():
         if seat.session.human:
             continue  # a human's own seats stay with the desk
         try:
             step(service, seat)
-        except Exception as error:
-            text = str(error) if isinstance(error, (JournalError, ShipError, OSError)) else f'{type(error).__name__}: {error}'
+        except (JournalError, ShipError, OSError) as error:  # anything else is a fault for the tick, as before
+            text = str(error)
             if logged.get(seat.name) != text:
                 logged[seat.name] = text
                 service.log('error', step='refusals', seat=seat.name, error=text)

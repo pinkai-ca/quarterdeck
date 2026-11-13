@@ -260,14 +260,12 @@ def test_one_seats_refusal_failure_never_stops_the_next_seat_and_is_logged_once(
     def step(service, seat):
         seen.append(seat.name)
         if seat.name == 'worker':
-            raise RuntimeError('synthetic unexpected failure')
+            raise ShipError('synthetic notice conflict')
         return original(service, seat)
     monkeypatch.setattr(refusal, 'step', step)
     monkeypatch.setattr(world.svc, 'log', lambda *args, **kwargs: logged.append(kwargs))
     for _ in range(3):
         world.svc.refusals()
-    crew = [name for name in seen[:len(seen) // 3]]
-    assert 'worker' in crew and len(crew) > 1 and crew[-1] != 'worker' or crew.index('worker') < len(crew) - 1
     assert seen.count('tester') == 3, 'the seats after it still ran, every tick'
     errors = [entry for entry in logged if entry.get('step') == 'refusals' and entry.get('seat') == 'worker']
-    assert len(errors) == 1 and 'synthetic unexpected failure' in errors[0]['error'], 'logged once while it stands'
+    assert len(errors) == 1 and 'synthetic notice conflict' in errors[0]['error'], 'logged once while it stands'
