@@ -83,3 +83,11 @@ def test_signal_inside_delivery_waits_for_submitted_journal(tmp_path):
                 proof.save(phase="submitted")
         assert proof.data["phase"] == "submitted"
         assert shutdown.pointer_path(runtime).exists()
+
+
+def test_unreadable_process_start_is_unknown(monkeypatch):
+    from pathlib import Path
+    def unreadable(_):
+        raise OSError("synthetic identity temporarily unavailable zzzz")
+    monkeypatch.setattr(Path, "read_text", unreadable)
+    assert not shutdown.process_gone({"pid": 999999999, "start": "synthetic-start-zzzz"})

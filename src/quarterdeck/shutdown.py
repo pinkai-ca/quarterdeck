@@ -30,6 +30,17 @@ def process_start(pid: int) -> str | None:
         return None
 
 
+def process_gone(expected: dict) -> bool:
+    """An unreadable process identity is unknown, never evidence of an exit."""
+    try:
+        fields = Path(f"/proc/{expected['pid']}/stat").read_text().rsplit(")", 1)[1].split()
+        return fields[0] == "Z" or fields[19] != expected["start"]
+    except FileNotFoundError:
+        return True
+    except (OSError, IndexError):
+        return False
+
+
 def pointer_path(runtime: Path) -> Path:
     return runtime / "service.delivery"
 
@@ -111,7 +122,7 @@ def finish(runtime: Path, expected: dict | None, *, forced: bool | None) -> str:
     if not pointer_path(runtime).exists():
         return ""
     if (expected is None or owner(runtime) != expected
-            or process_start(expected["pid"]) == expected["start"]):
+            or not process_gone(expected)):
         return "delivery owner unknown or still alive; journal left unchanged"
     data = inflight(runtime, expected)
     if data is None:
@@ -163,7 +174,7 @@ def annotate(runtime: Path, expected: dict | None, *, forced: bool) -> str:
             except BlockingIOError:
                 return "delivery lock has another owner; journal left unchanged"
             detail = finish(runtime, expected, forced=forced)
-            if owner(runtime) == expected and process_start(expected["pid"]) != expected["start"]:
+            if owner(runtime) == expected and process_gone(expected):
                 from .servicectl import heartbeat_path, read_heartbeat
                 beat = read_heartbeat(runtime)
                 if beat is not None and beat[0] == expected["pid"]:

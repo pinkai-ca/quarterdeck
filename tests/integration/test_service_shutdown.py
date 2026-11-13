@@ -41,7 +41,7 @@ def pause(where, proof):
 save = pending.Proof.save
 def saved(self, **fields):
     save(self, **fields)
-    if fields.get('phase') in ('prepared', 'submitted'):
+    if fields.get('phase') in ('prepared', 'pasting', 'submitting', 'submitted'):
         pause(fields['phase'], self)
 pending.Proof.save = saved
 paste = Tmux.paste
@@ -63,6 +63,12 @@ def checked(self, *args, **kwargs):
         pause('checked', self.proof)
     return result
 door.Door.box_shows = checked
+confirm = door.Door.confirm
+def confirming(self, *args, **kwargs):
+    if shutdown.requested():
+        (runtime / 'confirmation-after-stop').touch()
+    return confirm(self, *args, **kwargs)
+door.Door.confirm = confirming
 service.Service(ship.load(folder), Tmux.default()).run()
 '''
 
@@ -169,7 +175,7 @@ def stopping(call):
     return thread, results, errors
 
 
-@pytest.mark.parametrize("phase", ["prepared", "pasted", "checked", "submitted"])
+@pytest.mark.parametrize("phase", ["prepared", "pasting", "pasted", "checked", "submitting", "submitted"])
 def test_sigterm_finishes_exact_phase_then_restart_delivers_once(world, phase):
     world.start(phase)
     original = world.post()
@@ -184,6 +190,7 @@ def test_sigterm_finishes_exact_phase_then_restart_delivers_once(world, phase):
     journal = world.journal()
     assert journal["phase"] == ("cancelled" if phase == "prepared" else "submitted")
     assert "delivery" in results[0] and "waited" in results[0]
+    assert not (runtime / "confirmation-after-stop").exists()
     assert world.submitted() == 0 if phase == "prepared" else world.submitted() <= 1
     world.start()
     world.progress(original)

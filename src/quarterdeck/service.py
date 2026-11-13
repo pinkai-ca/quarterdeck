@@ -22,6 +22,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import harness as harnesses
+from . import shutdown
 from . import pending as pending_delivery, delivery_record
 from . import credential, durable, idle, install, machine, move_hold, post, presentation, quota, record_owner, recovery, servicectl, ship as shipmod, standing
 from .door import CONFIRM_SECONDS, Door
@@ -61,9 +62,6 @@ def person_only(reason: str) -> bool:
     from .harness.types import AUTHENTICATION
     return reason.startswith((*PERSON_ONLY, AUTHENTICATION))
 BLIND_INTERVAL = 60.0  # how often the blind attempts are read against the records
-
-
-from . import shutdown
 
 
 class Service:
