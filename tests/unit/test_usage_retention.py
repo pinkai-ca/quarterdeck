@@ -222,8 +222,14 @@ def test_service_retention_partial_cadence_selection_presentation_and_observed_w
     svc.account()
     original = tuple_of(rows(svc.ledger)["7d"])
     # Selection and status cannot make provider calls, even for a reader without usage support.
+    # Membership is synthetic: the seat's model is placed in the Argon group, and in no other.
+    from quarterdeck.harness import antigravity_models as models
+    monkeypatch.setattr(models, "MEMBERSHIP", {("Gemini 4 Argon", "synthetic-argon-model"): True})
+    unplaced = SimpleNamespace(harness=SimpleNamespace(reads_usage=False),
+                               spec=SimpleNamespace(for_pool=lambda name: SimpleNamespace(harness="antigravity", model=None)))
+    assert not svc.known_open(unplaced, "google"), "a seat whose model no group is proved for proves no room"
     seat = SimpleNamespace(harness=SimpleNamespace(reads_usage=False),
-                           spec=SimpleNamespace(for_pool=lambda name: SimpleNamespace(harness="antigravity", model=None)))
+                           spec=SimpleNamespace(for_pool=lambda name: SimpleNamespace(harness="antigravity", model="synthetic-argon-model")))
     assert svc.known_open(seat, "google")
     doc["command"]["data"]["groups"][-1]["buckets"][0]["id"] = "synthetic-conflict"
     svc.ledger.quota.usage_read("google", datetime.now(timezone.utc) - timedelta(seconds=301), None)

@@ -12,9 +12,11 @@ MODEL_IDENTITIES: dict[str, str] = {}
 
 
 def applies(group: str | None, model: str | None) -> bool | None:
-    if group is not None and group in ALL_MODEL_GROUPS:
+    if group is None:
+        return True  # an ungrouped window applies to every model, as everywhere in the ship
+    if group in ALL_MODEL_GROUPS:
         return True
-    if group is None or not model:
+    if not model:
         return None
     return MEMBERSHIP.get((group, MODEL_IDENTITIES.get(model, model)))
 
