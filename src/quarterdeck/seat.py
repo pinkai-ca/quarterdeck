@@ -124,9 +124,15 @@ class UnresolvedSeat:
         return self.spec.name
 
 
+EXPLICIT = 'pool-explicit'  # beside ``pool``: a person chose that pool for the next launch, which takes it
+
+
 class Seat:
-    def __init__(self, ship: Ship, spec: SeatSpec, tmux: Tmux):
+    def __init__(self, ship: Ship, spec: SeatSpec, tmux: Tmux, *, launching: bool = False):
         self.ship, self.spec, self.tmux = ship, spec, tmux
+        # A launch of a seat with no launch on file reads a saved choice the ship file no longer declares as
+        # absent, so the declared order chooses (``launch_choice``); every other reader still refuses it.
+        self._launching = launching and not (ship.runtime / "seats" / spec.name / "launch.json").exists()
         self.folder = ship.runtime / "seats" / spec.name
         self.home = self.folder / "home"
         self._prepared_observation: tuple[str | None, str | None] | None = None
@@ -159,6 +165,8 @@ class Seat:
         except FileNotFoundError:
             name = None
         if self.spec.pool_choices:
+            if name is not None and name not in self.spec.pools and self._launching:
+                return self.ship.pool(self.spec.pools[0])  # the ship file dropped it: the declared order chooses
             if name is not None and name not in self.spec.pools:
                 raise ShipError(f"{self.name}: saved pool {name!r} has no declared choice; restore its declaration")
             if name is None:
@@ -172,11 +180,50 @@ class Seat:
                     raise ShipError(f"{self.name}: saved pool missing with retained record; restore the selected pool")
         return self.ship.pool(name if name in self.spec.pools else self.spec.pools[0])
 
-    def move_to(self, pool: str) -> None:
+    def move_to(self, pool: str, *, explicit: bool = False) -> None:
         self.spec.for_pool(pool)
         self.folder.mkdir(parents=True, exist_ok=True)
         path = self.folder / 'pool'
         durable.replace_file(path, pool + '\n')
+        if explicit:
+            durable.replace_file(self.folder / EXPLICIT, pool + '\n')
+        else:
+            (self.folder / EXPLICIT).unlink(missing_ok=True)
+
+    def _saved_name(self) -> str | None:
+        try:
+            return (self.folder / 'pool').read_text().strip() or None
+        except FileNotFoundError:
+            return None
+
+    def launch_choice(self) -> tuple[str, str]:
+        """The pool a launch of this down seat takes, and why: the ship file is the Admiral's order.
+
+        A person's explicit choice for this launch (``qd set pool=`` on a down seat) is taken as it is. Otherwise
+        the first declared choice with room, one the ledger does not show walled, wins over the saved choice:
+        a saved choice later in the list than a choice with room, or one the ship file no longer declares,
+        gives way. With no choice that has room, the saved choice stays, or the first declared one.
+        """
+        pools = self.spec.pools
+        current = self.pool.name
+        saved = self._saved_name() or current
+        try:
+            explicit = (self.folder / EXPLICIT).read_text().strip()
+        except FileNotFoundError:
+            explicit = None
+        if explicit is not None and explicit == current:
+            return current, 'chosen for this launch by qd set'
+        from . import ledger, quota
+        book = ledger.Ledger.reading(self.ship.runtime / 'ledger.sqlite')
+        try:
+            for name in pools:
+                if book is None or not book.walled(name, self.ship, scope=quota.model_scope(self, name)):
+                    return name, ('its saved choice' if name == saved else
+                                  f'the first declared choice with room, before its saved {saved}')
+        finally:
+            if book is not None:
+                book.close()
+        return current, 'every declared choice is walled; its saved choice stays'
 
     def failover_to(self, pool: str) -> str:
         """Preserve the source before selecting another program or paying pool."""
@@ -417,9 +464,38 @@ class Seat:
             if descriptor is not None:
                 os.close(descriptor)
 
-    def up(self, resume: bool = True) -> str:
+    def up(self, resume: bool = True, *, pool: str | None = None) -> str:
+        """Bring the seat up. A seat with declared choices, being down, launches on ``launch_choice``, or on
+        ``pool`` for this one launch; a move to another program starts it fresh, as failover does."""
         with self._lifecycle():
-            return self._up(resume)
+            if pool is not None and (not self.spec.pool_choices or pool not in self.spec.pools):
+                raise ShipError(f"{self.name}: --pool {pool!r} is not one of its declared choices"
+                                + (f" ({', '.join(self.spec.pools)})" if self.spec.pool_choices else ""))
+            if not self.spec.pool_choices or self.is_up:
+                return self._up(resume)
+            from .recovery import require_clear
+            require_clear(self)
+            target, why = (pool, 'chosen for this launch by qd up --pool') if pool is not None else self.launch_choice()
+            current = self.pool.name
+            saved = self._saved_name()
+            if target == current and pool is None and why == 'its saved choice':
+                (self.folder / EXPLICIT).unlink(missing_ok=True)
+                return self._up(resume)  # nothing chosen: the launch is as it always was
+            selected = replace(self.spec.for_pool(target), human_session=self.session.human)
+            observation = self._observe_selection(selected, self.ship.pool(target))
+            same_program = selected.harness == self.spec.harness
+            if same_program and resume:
+                self.harness.preflight_resume(selected, self.home, self._resume_id)
+            if self.launched() is not None:
+                self._down()  # retain the old record and reseed its source pool before changing selection
+            self.move_to(target)
+            self.spec = selected
+            if not same_program:
+                self.harness = harnesses.get(selected.harness)
+            proof = self._up(resume=resume and same_program, observation=observation)
+            moved = f"{self.name}: launched on {target} ({why})" + (
+                f"; its saved choice was {saved}" if saved is not None and target != saved else "")
+            return moved + '\n' + proof
 
     def _accept_pool(self, spec: SeatSpec | None = None, pool: Pool | None = None) -> None:
         selected = spec or self.spec
@@ -825,10 +901,11 @@ def read_seat(ship: Ship, spec: SeatSpec, tmux: Tmux) -> Seat | UnresolvedSeat:
         return UnresolvedSeat(ship, spec, tmux, error)
 
 
-def seats(ship: Ship, tmux: Tmux, strict: bool = True) -> list[Seat | UnresolvedSeat]:
+def seats(ship: Ship, tmux: Tmux, strict: bool = True, *, launching: bool = False) -> list[Seat | UnresolvedSeat]:
     """Lifecycle callers refuse unknown selection; readings retain its named failure."""
-    construct = Seat if strict else read_seat
-    return [construct(ship, spec, tmux) for spec in ship.seats.values()]
+    if strict:
+        return [Seat(ship, spec, tmux, launching=launching) for spec in ship.seats.values()]
+    return [read_seat(ship, spec, tmux) for spec in ship.seats.values()]
 
 
 def bring_up(ship: Ship, tmux: Tmux) -> list[str]:
@@ -836,7 +913,7 @@ def bring_up(ship: Ship, tmux: Tmux) -> list[str]:
     proofs = [shipmod.fence(ship)]
     if not ship.is_repository:
         proofs.append(f"{ship.folder.name} is not its own repository: its declaration travels with the folder above")
-    for seat in seats(ship, tmux):
+    for seat in seats(ship, tmux, launching=True):
         if seat.spec.up and not seat.is_up:
             proofs.append(seat.up(resume=True))
         elif seat.is_up:

@@ -65,6 +65,7 @@ def test_qd_set_selects_a_declared_choice_through_the_service_without_writing_th
     ship = running.seat.ship
     before = ship.file.read_text()
     asked = []
+    monkeypatch.setattr(cli.Tmux, "for_ship", lambda ship: running.seat.tmux)
     monkeypatch.setattr(servicemod, "request", lambda runtime, kind, **data: asked.append((kind, data)) or "synthetic answer")
     code, out, err = run(capsys, "--ship", str(ship.folder), "set", "worker", "pool=first")
     assert code == 0 and asked == [("select", {"seat": "worker", "pool": "first"})] and "synthetic answer" in out

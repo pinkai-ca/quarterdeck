@@ -111,6 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = verb("up", cmd_up, "bring up the ship (its service and every seat marked up, resuming) or one seat")
     p.add_argument("seat", nargs="?")
     p.add_argument("--fresh", action="store_true", help="without resume: a new conversation")
+    p.add_argument("--pool", help="for this one launch of a down seat: one of its declared pool choices")
     p = verb("down", cmd_down, "end one seat, or every seat of the ship and its service")
     p.add_argument("seat", nargs="?")
     p = verb("restart", cmd_restart, "relaunch a seat with resume: the conversation continues")
@@ -196,8 +197,8 @@ def load_ship(args: argparse.Namespace) -> shipmod.Ship:
     return shipmod.load(shipmod.find(args.ship))
 
 
-def seat_of(ship: shipmod.Ship, name: str) -> seatmod.Seat:
-    return seatmod.Seat(ship, ship.seat(name), Tmux.for_ship(ship))
+def seat_of(ship: shipmod.Ship, name: str, *, launching: bool = False) -> seatmod.Seat:
+    return seatmod.Seat(ship, ship.seat(name), Tmux.for_ship(ship), launching=launching)
 
 
 def this_seat(ship: shipmod.Ship, name: str | None, operator_too: bool = False) -> str:
@@ -244,12 +245,15 @@ def cmd_up(args: argparse.Namespace) -> list[str] | str:
     ship = load_ship(args)
     if args.seat:
         ship.seat(args.seat)
+    elif getattr(args, 'pool', None):
+        raise ShipError('--pool names one launch: give the seat, as in qd up <seat> --pool <choice>')
     proofs, reload_required = install.prepare_up(ship)
-    delegated = install.delegate_up(ship, seat=args.seat, fresh=args.fresh, reload_required=reload_required)
+    delegated = install.delegate_up(ship, seat=args.seat, fresh=args.fresh, reload_required=reload_required,
+                                    pool=getattr(args, 'pool', None))
     if delegated is not None:
         return proofs + delegated
     if args.seat:
-        proof = seat_of(ship, args.seat).up(resume=not args.fresh)
+        proof = seat_of(ship, args.seat, launching=True).up(resume=not args.fresh, pool=getattr(args, 'pool', None))
         return proofs + [proof, service.start(ship)]
     tmux = Tmux.for_ship(ship)
     return proofs + seatmod.bring_up(ship, tmux) + [service.start(ship)] + ([where(tmux)] if tmux.ship else [])
@@ -428,7 +432,23 @@ def select(ship: shipmod.Ship, seat: seatmod.Seat, changes: list[str]) -> str:
     pool = changes[0].partition("=")[2]
     if pool not in seat.spec.pools:
         raise ShipError(f"{seat.name}: {pool!r} is not one of its declared choices ({', '.join(seat.spec.pools)})")
+    if not seat.is_up:
+        return choose_for_launch(seat, pool)
     return service.request(ship.runtime, "select", seat=seat.name, pool=pool)
+
+
+def choose_for_launch(seat: seatmod.Seat, pool: str) -> str:
+    """A down seat has no turn to wait for: the choice is written, and its next qd up launches there."""
+    with seat._lifecycle():
+        if seat.is_up:
+            raise ShipError(f"{seat.name} came up meanwhile; ask again, and the service moves it when idle")
+        if seat.launched() is not None:
+            raise ShipError(f"{seat.name}: its last launch is still on file, its pane gone; qd down {seat.name} "
+                            "retires it, then qd set chooses the pool for the next launch")
+        selected = seat.spec.for_pool(pool)
+        seat._accept_pool(selected, seat.ship.pool(pool))
+        seat.move_to(pool, explicit=True)
+    return f"{seat.name}: pool {pool} chosen for its next launch (it is down); qd up {seat.name} launches it there"
 
 
 def adopt(ship: shipmod.Ship, seat: seatmod.Seat) -> list[str]:

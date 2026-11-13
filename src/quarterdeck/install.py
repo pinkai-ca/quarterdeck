@@ -783,7 +783,8 @@ def prepare_up(ship: Ship) -> tuple[list[str], bool]:
     return proofs, reload_required
 
 
-def delegate_up(ship: Ship, *, seat: str | None, fresh: bool, reload_required: bool = False) -> list[str] | None:
+def delegate_up(ship: Ship, *, seat: str | None, fresh: bool, reload_required: bool = False,
+                pool: str | None = None) -> list[str] | None:
     selected = copy_state.select(ship.folder, mode=ship.code, mode_known=True)
     if selected.checkout:
         return None
@@ -800,6 +801,8 @@ def delegate_up(ship: Ship, *, seat: str | None, fresh: bool, reload_required: b
         argv.append(seat)
     if fresh:
         argv.append('--fresh')
+    if pool:
+        argv += ['--pool', pool]  # a copy that predates --pool refuses it: never dropped silently
     try:
         done = subprocess.run(argv, capture_output=True, text=True)
     except OSError:
