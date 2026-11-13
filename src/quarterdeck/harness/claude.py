@@ -9,6 +9,8 @@ same message) and the stop reason that ends a turn. Queued messages appear as
 
 from __future__ import annotations
 
+from .capabilities import DefaultMetadata, EffortCapability, SuggestedValue
+
 import copy
 import email.utils
 import json
@@ -484,6 +486,10 @@ class ClaudeHarness(Harness):
     compactions = staticmethod(compactions)
     """Claude Code, proven on 2.1.317."""
 
+    efforts = EffortCapability()  # CLI vocabulary is not measured
+    defaults = DefaultMetadata(model_default=True, model=SuggestedValue("claude-opus-5-5", "named"),
+                               effort=SuggestedValue("max", "named"))
+
     name = "claude"
     native_provider = "anthropic"
     program = "claude"
@@ -534,6 +540,7 @@ class ClaudeHarness(Harness):
         return None
 
     def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None) -> Credential | None:
+        self.check_defaults(seat, ship_home)
         home.mkdir(parents=True, exist_ok=True)
         template = ship_template(ship_home, "settings.json")
         settings = copy.deepcopy(merged(merged(SETTINGS, template), seat.settings))  # policy cannot mutate shared defaults

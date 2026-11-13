@@ -25,6 +25,7 @@ from . import pending as pending_delivery, delivery_record
 from . import credential, durable, install, machine, post, presentation, quota, record_owner, recovery, ship as shipmod, standing
 from .door import CONFIRM_SECONDS, Door
 from .harness.base import record_fingerprint
+from .harness.capabilities import validate_effort, validate_mode
 from .ledger import Ledger
 from .provenance import UNKNOWN
 from .post import Attempts, Store
@@ -523,20 +524,33 @@ class Service:
         """Apply a control by its in-session form, through the door, when the seat is idle."""
         if reason := recovery.held(seat):
             return f'{name} held: {reason}'
-        if seat.spec.pool_choices and (name in {"harness", "model", "effort"} or name not in shipmod.SEAT_KEYS):
+        if seat.spec.pool_choices and (name in {"harness", "model", "effort", "model_mode", "effort_mode"} or name not in shipmod.SEAT_KEYS):
             return f"{name} not applied: inline pool choices require an explicit edit in ship.toml; queued program controls have no choice scope"
+        if name in {'model_mode', 'effort_mode'}:
+            key = name.removesuffix('_mode')
+            validate_mode(getattr(seat.spec, key), value, key, f'seat {seat.name}')
+            return f"{name} written; qd restart {seat.name} applies it"
+        if name == 'model':
+            validate_mode(value, 'named', 'model', f'seat {seat.name}')
+        note = None
+        if name == 'effort':
+            launched = seat.launched()
+            version = launched.version if launched and record_owner.launch_reader(launched) == seat.harness.name else None
+            note = validate_effort(seat.harness, value, version=version,
+                                   installed=True, context=f'seat {seat.name}')
+        unchecked = f" · {note}" if note else ''
         control = seat.harness.control(name)
         if control is None or control.session is None:
-            return f"{name} written; qd restart {seat.name} applies it"
+            return f"{name} written; qd restart {seat.name} applies it{unchecked}"
         if not seat.is_up:
-            return f"{name} written; {seat.name} is down, so qd up {seat.name} applies it"
+            return f"{name} written; {seat.name} is down, so qd up {seat.name} applies it{unchecked}"
         if seat.is_working():
             return None  # at the turn's end
         door = Door(seat)
         command = control.command(value)
         delivery = door.deliver(command, confirm=False)
         if delivery.result != "typed":
-            return f"{name}: {delivery}"
+            return f"{name}: {delivery}{unchecked}"
         time.sleep(0.5)
         door.clear_known()  # a program that asks "switch?" after the command is answered yes
         deadline = time.monotonic() + 3
@@ -548,9 +562,9 @@ class Service:
                 state = None
             confirmed = seat.harness.confirms(control, value, door.screen(), state)
             if confirmed:
-                return f"{name} = {value} · applied by {command} in {seat.pane().id} · confirmed by {control.confirmed_by}"
+                return f"{name} = {value} · applied by {command} in {seat.pane().id} · confirmed by {control.confirmed_by}{unchecked}"
             time.sleep(0.2)
-        return f"{name} = {value} · typed {command} in {seat.pane().id} · not confirmed by the {control.confirmed_by} yet"
+        return f"{name} = {value} · typed {command} in {seat.pane().id} · not confirmed by the {control.confirmed_by} yet{unchecked}"
 
 
     def follow(self) -> None:

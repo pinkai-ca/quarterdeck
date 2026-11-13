@@ -16,6 +16,7 @@ from . import (__version__, check, doctor, drill, harness as harnesses, install,
 from .output import Reading
 from . import output, ledger_reading
 from .ship import ShipError
+from .harness.capabilities import selection_label
 from .tmux import Tmux, TmuxError
 
 RESTART_CONTROLS = {"pool": "restart", "harness": "fresh", "cwd": "restart", "persona": "restart"}
@@ -27,7 +28,7 @@ def main(argv: list[str] | None = None) -> int:
     if not hasattr(args, "run"):
         parser.print_help()
         return 0
-    if args.run is not cmd_upgrade:
+    if args.run is not cmd_upgrade and not (args.run is cmd_controls and getattr(args, 'harness', None)):
         handoff(args, argv if argv is not None else sys.argv[1:])
     try:
         result = args.run(args)
@@ -88,6 +89,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--adopt", action="store_true", help="write what the seat is running into the ship file")
     p = verb("controls", cmd_controls, "list a seat's controls with the form each has")
     p.add_argument("seat", nargs="?", help="default: this seat (QD_SEAT)")
+    p.add_argument("--harness", choices=harnesses.NAMES, help="read a program's capabilities without a ship")
+    p.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="print the result as JSON")
     p = verb("cascade", cmd_cascade, "start the declared ring once for a question to its orchestrator")
     p.add_argument("--re", required=True, help="the question's id or short id")
     p.add_argument("--efforts", help="fewer declared effort laps, comma separated, in the order named")
@@ -250,7 +253,7 @@ def cmd_set(args: argparse.Namespace) -> list[str]:
     if seat.spec.pool_choices:
         for change in changes:
             key = change.partition("=")[0].removeprefix("settings.")
-            if change.startswith("settings.") or key in {"harness", "model", "effort"} or key not in shipmod.SEAT_KEYS:
+            if change.startswith("settings.") or key in {"harness", "model", "effort", "model_mode", "effort_mode"} or key not in shipmod.SEAT_KEYS:
                 raise ShipError("inline pool choices: edit harness, model, effort and program settings in ship.toml; qd set cannot select their scope")
         if any(change.partition("=")[0] == "pool" for change in changes):
             return [select(ship, seat, changes)]
@@ -265,6 +268,11 @@ def cmd_set(args: argparse.Namespace) -> list[str]:
     # One edit: a seat's program and its pool are only valid together, so all are validated and written at once.
     from . import compaction
     edits = [(table, key, parse_value(raw)) for table, key, raw in parsed]
+    if any(key in {'model_mode', 'effort_mode'} for _, key, _ in edits):
+        candidate = ship.file.read_text()
+        for table, key, value in edits:
+            candidate = shipmod.edit(candidate, table, key, value)
+        shipmod._validate(shipmod._from_text(candidate, ship.folder))  # before even a runtime fence/write
     threshold = next((value for _, key, value in edits if key == 'fresh_after_compactions'), None)
     if threshold is not None or seat.spec.fresh_after_compactions or compaction.path(ship.runtime, seat.name).exists():
         shipmod.fence(ship)
@@ -307,11 +315,18 @@ def adopt(ship: shipmod.Ship, seat: seatmod.Seat) -> list[str]:
     running = watch.running_settings(seat)
     if not running:
         raise ShipError(f"{seat.name}: nothing to adopt; its record and screen show no model or effort yet")
-    return [shipmod.set_value(ship, f"seats.{seat.name}", key, value) for key, value in running.items()]
+    edits = []
+    for key, value in running.items():
+        edits.append((f"seats.{seat.name}", key, value))
+        if getattr(seat.spec, f'{key}_mode') is not None:
+            edits.append((f"seats.{seat.name}", f'{key}_mode', 'named'))
+    return shipmod.set_values(ship, edits)
 
 
 def apply_control(ship: shipmod.Ship, seat: seatmod.Seat, key: str, value: str) -> str:
     """Hand a written change to the service, or say which relaunch applies it."""
+    if key in {'model_mode', 'effort_mode'}:
+        return f"  {key} written; qd restart {seat.name} applies it"
     if key == 'fresh_after_compactions':
         return '  compaction threshold applies on the service tick; 0 disables it and leaves all posts open'
     control = seat.harness.control(key)
@@ -329,9 +344,31 @@ def apply_control(ship: shipmod.Ship, seat: seatmod.Seat, key: str, value: str) 
 
 
 def cmd_controls(args: argparse.Namespace) -> Reading:
+    if getattr(args, 'harness', None):
+        if args.seat:
+            raise ShipError('controls: choose a seat or --harness, not both')
+        reader = harnesses.get(args.harness)
+        return Reading({'harness': reader.name, 'controls': reader.controls(),
+                        'effort': reader.effort_capability(), 'defaults': reader.default_metadata()},
+                       render_harness_controls)
     ship = load_ship(args)
     seat = seat_of(ship, this_seat(ship, args.seat))
     return Reading({"seat": seat.name, "controls": seat.harness.controls(), "relaunch": RESTART_CONTROLS}, render_controls)
+
+
+def render_harness_controls(data: dict) -> list[str]:
+    facts, defaults = data['effort'], data['defaults']
+    levels = ', '.join(facts.levels) if facts.kind == 'levels' else facts.kind
+    rows = [f"{data['harness']}: effort {levels}",
+            'installed version/support unknown; no program was called',
+            f"measured versions: {', '.join(facts.measured_versions) or 'none'}"]
+    for key in ('model', 'effort'):
+        choice = getattr(defaults, key)
+        if choice is not None:
+            rows.append(f"suggested {key}: {selection_label(choice.value, choice.mode)} (account not checked)")
+    rows.append(f"program model default: {'supported' if defaults.model_default else 'not supported'}")
+    rows.extend(render_controls({'controls': data['controls'], 'relaunch': {}}))
+    return rows
 
 
 def render_controls(data: dict) -> list[str]:

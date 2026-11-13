@@ -10,6 +10,8 @@ listed in docs/ANTIGRAVITY.md.
 
 from __future__ import annotations
 
+from .capabilities import DefaultMetadata, EffortCapability, SuggestedValue
+
 from dataclasses import replace
 import json
 import re
@@ -35,6 +37,10 @@ QUEUED_LINE = re.compile(r"^▸ (.*?)\s*\(alt\+m to send immediately\)\s*$")
 
 class AntigravityHarness(Harness):
     human_tool_policy = "Antigravity: no supported native question-tool exclusion proved; interactive asks still need a human."
+    efforts = EffortCapability()  # CLI vocabulary is not measured
+    defaults = DefaultMetadata(model_default=True, model=SuggestedValue(None, "program-default"),
+                               effort=SuggestedValue(None, "program-default"))
+
     name = "antigravity"
     native_provider = "google"
     opening_prompt_turn = True
@@ -64,6 +70,7 @@ class AntigravityHarness(Harness):
 
     def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None) -> Credential | None:
         """Our settings for the session, passed on the command line; nothing of the program's own is written."""
+        self.check_defaults(seat, ship_home)
         home.mkdir(parents=True, exist_ok=True)
         settings = {"trustedWorkspaces": [str(seat.cwd)] if seat.cwd else []}
         settings = {**ship_template(ship_home, "settings.json"), **settings}

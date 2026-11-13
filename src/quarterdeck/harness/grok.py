@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .capabilities import DefaultMetadata, EffortCapability, SuggestedValue
+
 import copy
 import json
 import os
@@ -166,6 +168,11 @@ class GrokBox(Box):
 
 
 class GrokHarness(Harness):
+    efforts = EffortCapability()  # CLI vocabulary is not measured
+    defaults = DefaultMetadata(model_default=True, model=SuggestedValue(None, "program-default"),
+                               effort=SuggestedValue(None, "program-default"))
+    selection_templates = ("config.toml",)
+
     name = "grok"
     program = "grok"
     native_provider = "xai"
@@ -231,6 +238,7 @@ class GrokHarness(Harness):
         return when(grant.get("expires_at")) if grant else None
 
     def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None) -> Credential | None:
+        self.check_defaults(seat, ship_home)
         self.preflight(home, seat.cwd)
         template = ship_template(ship_home, "config.toml")
         no_extra_rules(template, "ship Grok template")

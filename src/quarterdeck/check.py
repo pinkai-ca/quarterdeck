@@ -56,9 +56,10 @@ def check(ship: Ship, name: str, tmux: Tmux) -> list[Check]:
     run = secrets.token_hex(2)
     seat_name, session_name = f"check-{name}-{run}", f"qd-check-{name}-{run}"
     spec = SeatSpec(seat_name, session_name, "worker", name, (pool.name,), model=like.model if like else None,
-                    effort=like.effort if like else None, cwd=ship.workspace, sandbox=like.sandbox if like else None)
+                    effort=like.effort if like else None, cwd=ship.workspace, sandbox=like.sandbox if like else None,
+                    model_mode=like.model_mode if like else None, effort_mode=like.effort_mode if like else None)
     orders: list[post.Message] = []
-    with temporary_seat(ship, tmux, spec, orders, "qd check") as seat:
+    with temporary_seat(ship, tmux, spec, orders, "qd check", installed_version=version) as seat:
         checks += probe(seat.ship, seat, orders)
     if all(c.passed for c in checks):
         proven = ship.runtime / "proven"

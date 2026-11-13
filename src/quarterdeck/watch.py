@@ -19,6 +19,7 @@ from pathlib import Path
 from . import credential, ledger, pending as pending_delivery, post, providers, quota, record_owner, recovery, servicectl as service
 from .door import Door, Reading
 from .harness.base import same_name
+from .harness.capabilities import selection_label
 from .seat import Seat, UnresolvedSeat, seats
 from .ship import Ship
 from .servicectl import STALE_SECONDS
@@ -100,14 +101,32 @@ class SeatReading:
     provider_id: str | None = None
     provider_name: str | None = None
     program: str | None = None
+    effort: str | None = None
+    declared_effort: str | None = None
+    model_mode: str | None = None
+    effort_mode: str | None = None
 
     @property
     def model_text(self) -> str:
+        if self.model_mode == 'program-default':
+            declared = selection_label(self.declared_model, self.model_mode)
+            return f"{self.model} (ship file: {declared})" if self.model else declared
         if self.model is None:
             return f"- (ship file: {self.declared_model})" if self.declared_model else "-"
         if self.declared_model is None or same_name(self.model, self.declared_model):
             return self.model
         return f"{self.model} (ship file: {self.declared_model})"
+
+    @property
+    def effort_text(self) -> str:
+        declared = selection_label(self.declared_effort, self.effort_mode)
+        if self.effort is None:
+            if self.effort_mode == 'program-default':
+                return declared
+            return f"- (ship file: {declared})" if declared else '-'
+        if declared is None or self.effort == declared:
+            return self.effort
+        return f"{self.effort} (ship file: {declared})"
 
     @property
     def harness_text(self) -> str:
@@ -146,7 +165,9 @@ def reading(seat: Seat | UnresolvedSeat, store: post.Store | None = None) -> Sea
     from .compaction import status as compaction_status
     return SeatReading(seat.name, act, door, order, tokens_today(seat), pool, running,
                        seat.harness.name, seat.spec.model, version, compaction_status(seat),
-                       seat.ship.pool(pool).provider, providers.display(seat.ship.pool(pool).provider), seat.harness.program)
+                       seat.ship.pool(pool).provider, providers.display(seat.ship.pool(pool).provider), seat.harness.program,
+                       effort=observed.get('effort'), declared_effort=seat.spec.effort,
+                       model_mode=seat.spec.model_mode, effort_mode=seat.spec.effort_mode)
 
 
 def tokens_today(seat: Seat | UnresolvedSeat) -> ledger.Count:
@@ -220,9 +241,9 @@ def status_reading(ship: Ship, tmux: Tmux) -> dict:
 def render_table(data: dict) -> list[str]:
     state = data["service"]
     head = f"service {state}" + ("; qd up restarts it" if state == "down" else "")
-    rows = [head, f"{'seat':<10} {'activity':<24} {'door':<40} {'order':<10} {'today':>8}  harness · provider · pool · model"]
+    rows = [head, f"{'seat':<10} {'activity':<24} {'door':<40} {'order':<10} {'today':>8}  harness · provider · pool · model · effort"]
     for r in data["seats"]:
-        rows.append(f"{r.name:<10} {str(r.activity):<24} {str(r.door):<40} {r.order_text:<10} {str(r.today):>8}  {r.harness_text} · {r.provider_name or 'unknown'} · {r.pool} · {r.model_text}")
+        rows.append(f"{r.name:<10} {str(r.activity):<24} {str(r.door):<40} {r.order_text:<10} {str(r.today):>8}  {r.harness_text} · {r.provider_name or 'unknown'} · {r.pool} · {r.model_text} · {r.effort_text}")
         if r.compaction:
             rows.append(f"  {r.compaction}")
     rows.append(f"open orders: {len(data['open_orders'])}")
@@ -267,7 +288,7 @@ def render_full(data: dict) -> list[str]:
     r = data["seat"]
     today = f"{r.today} tokens today" + (" (+: some turns were not measured)" if r.today.unmeasured else "")
     lines = [f"{r.name}: {r.activity} · door {r.door} · order {r.order_text} · {today}",
-             f"  {r.harness_text} · provider {r.provider_name or 'unknown'} · pool {r.pool} · model {r.model_text}"]
+             f"  {r.harness_text} · provider {r.provider_name or 'unknown'} · pool {r.pool} · model {r.model_text} · effort {r.effort_text}"]
     if r.compaction:
         lines.append(f"  {r.compaction}")
     record, state = data["record"], data["state"]

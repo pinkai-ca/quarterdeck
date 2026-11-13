@@ -9,6 +9,8 @@ follows each model response with the usage of that response and the running tota
 
 from __future__ import annotations
 
+from .capabilities import DefaultMetadata, EffortCapability, SuggestedValue
+
 import copy
 import json
 import re
@@ -502,6 +504,10 @@ def _starting(lines: list[str]) -> bool:
             re.fullmatch(r"  \S+ default · " + re.escape(cwd), tail[1]) is not None)
 
 
+DEFAULT_MODEL = "gpt-6-astra"
+DEFAULT_EFFORT = "medium"
+
+
 CONFIG = """\
 model = {model}
 model_reasoning_effort = {effort}
@@ -569,6 +575,12 @@ class CodexHarness(Harness):
     def headline_windows(self):
         return ((None, "5h"), (None, "7d"))
 
+    efforts = EffortCapability()  # CLI vocabulary is not measured
+    defaults = DefaultMetadata(model_default=True, model=SuggestedValue(DEFAULT_MODEL, "named"),
+                               effort=SuggestedValue(DEFAULT_EFFORT, "named"))
+    effort_selectors = ("model_reasoning_effort",)
+    selection_templates = ("config.toml",)
+
     name = "codex"
     native_provider = "openai"
     program = "codex"
@@ -586,11 +598,16 @@ class CodexHarness(Harness):
         return None
 
     def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None) -> Credential | None:
+        self.check_defaults(seat, ship_home)
         home.mkdir(parents=True, exist_ok=True)
         runtime = home.parents[2]  # runtime/seats/<seat>/home
         cwd = seat.cwd or runtime.parent
-        defaults = tomllib.loads(CONFIG.format(model=literal(seat.model or "gpt-6-astra"),
-                                               effort=literal(seat.effort or "medium"), cwd=literal(str(cwd))))
+        defaults = tomllib.loads(CONFIG.format(model=literal(seat.model or DEFAULT_MODEL),
+                                               effort=literal(seat.effort or DEFAULT_EFFORT), cwd=literal(str(cwd))))
+        if seat.model_mode == "program-default":
+            defaults.pop("model")
+        if seat.effort_mode == "program-default":
+            defaults.pop("model_reasoning_effort")
         config = ship_template(ship_home, "config.toml")
         for key, value in defaults.items():
             if isinstance(value, dict):

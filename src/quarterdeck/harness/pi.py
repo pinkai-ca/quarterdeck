@@ -10,6 +10,9 @@ against a local vLLM endpoint.
 
 from __future__ import annotations
 
+from .capabilities import (DefaultMetadata, EffortCapability, SuggestedValue, reject_default_overrides,
+                           reject_unclassified_overrides)
+
 import json
 import hashlib
 import re
@@ -295,20 +298,69 @@ class PiHarness(EndpointHarness):
 
     human_tool_policy = "The enumerated core tools have no question tool; launch disables extensions. Custom tools are not classified."
 
+    efforts = EffortCapability("levels", THINKING_LEVELS, ("0.74.2",), complete=True)
+    defaults = DefaultMetadata(model_default=False, effort=SuggestedValue(None, "program-default"))
+
     name = "pi"
     program = "pi"
     home_variable = "PI_CODING_AGENT_DIR"
     keys = Keys(submit="Enter", send_now=None, interrupt="Escape")
 
+    def check_defaults(self, seat: SeatSpec, ship_home: Path | None = None) -> None:
+        super().check_defaults(seat, ship_home)
+        if seat.effort_mode != 'program-default':
+            return
+        template = ship_template(ship_home, 'models.json')
+        scope = 'template models.json'
+        for key in template:
+            if key not in ('$schema', 'providers'):
+                reject_unclassified_overrides(seat, {key: None}, scope=scope)
+        providers = template.get('providers', {})
+        if not isinstance(providers, dict):
+            raise ShipError(f'seat {seat.name}: {scope}.providers is unclassified for program-default; '
+                            'remove that override or choose an explicit named value')
+        for name, provider in providers.items():
+            if name not in seat.pools:
+                continue  # --provider binds selection; unrelated model definitions stay intact
+            where = f'{scope}.providers.{name}'
+            if not isinstance(provider, dict):
+                raise ShipError(f'seat {seat.name}: {where} is unclassified for program-default; '
+                                'remove that override or choose an explicit named value')
+            for key in provider:
+                if key not in ('baseUrl', 'api', 'apiKey', 'models'):
+                    reject_unclassified_overrides(seat, {key: None}, scope=where)
+            models = provider.get('models', [])
+            if not isinstance(models, list):
+                raise ShipError(f'seat {seat.name}: {where}.models is unclassified for program-default; '
+                                'remove that override or choose an explicit named value')
+            for index, model in enumerate(models):
+                selected = f'{where}.models[{index}]'
+                if not isinstance(model, dict) or seat.model is None:
+                    raise ShipError(f'seat {seat.name}: {selected} has no explicit selected model for program-default; '
+                                    'remove that override or choose an explicit named value')
+                if model.get('id') != seat.model:
+                    continue
+                reject_default_overrides(seat, model, scope=selected, model_keys=(), effort_keys=('reasoning',))
+                for key in model:
+                    if key not in ('id', 'name', 'input', 'contextWindow', 'maxTokens', 'cost'):
+                        reject_unclassified_overrides(seat, {key: None}, scope=selected)
+                cost = model.get('cost', {})
+                if not isinstance(cost, dict):
+                    reject_unclassified_overrides(seat, {'cost': None}, scope=selected)
+                for key in cost:
+                    if key not in ('input', 'output', 'cacheRead', 'cacheWrite'):
+                        reject_unclassified_overrides(seat, {key: None}, scope=f'{selected}.cost')
+
     def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None) -> Credential | None:
+        self.check_defaults(seat, ship_home)
         agent, sessions = home / "agent", home / "sessions"
         agent.mkdir(parents=True, exist_ok=True)
         sessions.mkdir(parents=True, exist_ok=True)
-        if seat.effort and seat.effort not in THINKING_LEVELS:
-            raise ShipError(f"{seat.name}: effort {seat.effort!r} is not a pi thinking level; the levels are {', '.join(THINKING_LEVELS)}")
         choice, secret = self.endpoint_home(home, seat, pool)
-        model = {"id": choice.model, "name": choice.model, "reasoning": seat.effort is not None, "input": ["text"],
+        model = {"id": choice.model, "name": choice.model, "input": ["text"],
                  "contextWindow": choice.context, "maxTokens": choice.output}
+        if seat.effort_mode != "program-default":
+            model["reasoning"] = seat.effort is not None
         if not seat.human_session and choice.model == 'qwen3.8-27b' and seat.effort in THINKING_LEVELS:
             model['compat'] = {'thinkingFormat': 'qwen-chat-template'}
         provider = {"baseUrl": pool.endpoint, "api": "openai-completions",
@@ -330,6 +382,8 @@ class PiHarness(EndpointHarness):
         selected = [m for m in models["providers"][pool.name]["models"] if m["id"] == choice.model]
         if len(selected) != 1:
             raise ShipError(f"pool {pool.name}: generated model does not identify one price target")
+        reject_default_overrides(seat, selected[0], scope=f"selected model in template models.json.providers.{pool.name}",
+                                 model_keys=(), effort_keys=("reasoning",))
         if pool.output is not None:
             selected[0]['maxTokens'] = pool.output
         selected[0].pop("cost", None)  # omission is supported; null rates are not

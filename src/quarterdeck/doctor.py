@@ -20,6 +20,7 @@ from pathlib import Path
 from . import credential, endpoint, harness as harnesses, install, post, providers, sandbox, servicectl, watch
 from .drill import Check, wait_for
 from .harness.base import _version_in_runtime, key_environment, program_version
+from .harness.capabilities import validate_selection
 from .seat import program_path, temporary_seat
 from .ship import Pool, SeatSpec, Ship, ShipError
 from .tmux import Tmux
@@ -36,6 +37,7 @@ def checks(ship: Ship) -> list[Check]:
         found.append(Check(program, version is not None, f"{program} {version}" if version else f"{program} is not on the PATH; install it"))
     found.append(framework_check(ship))
     searched = program_path()
+    versions = {}
     for name in sorted({seat.for_pool(pool).harness for seat in ship.seats.values() for pool in seat.pools}):
         harness = harnesses.get(name)
         program = harness.program
@@ -43,6 +45,7 @@ def checks(ship: Ship) -> list[Check]:
             found.append(Check(f"program {name}", False, f"{program} is not on the PATH qd runs with; install it, or put it on that PATH"))
             continue
         version = _version_in_runtime(harness, ship.runtime)
+        versions[name] = version
         proven = version is not None and (ship.runtime / "proven" / f"{name}-{version}").exists()
         note = "synthetic program" if harness.synthetic else ("proven by qd check" if proven else f"unproven: qd check {name} proves it")
         found.append(Check(f"program {name}", True, f"{program} {version or 'version unknown'} · {note}"))
@@ -60,7 +63,7 @@ def checks(ship: Ship) -> list[Check]:
         version = program_version((sandbox.PROGRAM, "--version"))
         found.append(Check("sandbox", version is not None, f"bubblewrap {version}: jailed seats run in it" if version
                            else f"{sandbox.PROGRAM} is not on the PATH, and a seat is jailed; install bubblewrap, or set sandbox = false on it"))
-    found.extend(seat_readiness(ship))
+    found.extend(seat_readiness(ship, versions=versions))
     for seat in ship.seats.values():
         cwd = ship.cwd_of(seat)
         found.append(Check(f"seat {seat.name}", cwd.is_dir(), f"works in {cwd}" if cwd.is_dir()
@@ -76,7 +79,7 @@ def checks(ship: Ship) -> list[Check]:
     return found
 
 
-def seat_readiness(ship: Ship) -> list[Check]:
+def seat_readiness(ship: Ship, *, versions: dict[str, str | None] | None = None) -> list[Check]:
     """Readiness failures and passing information notices; no seat is launched."""
     found = []
     for seat in ship.seats.values():
@@ -86,6 +89,11 @@ def seat_readiness(ship: Ship) -> list[Check]:
             home = ship.runtime / "seats" / seat.name / "home"
             cwd = ship.cwd_of(selected)
             try:
+                note = validate_selection(selected, reader,
+                                          version=(versions or {}).get(reader.name), installed=True)
+                reader.check_defaults(selected, ship.folder / 'homes' / reader.name)
+                found.append(Check(f"seat {seat.name} pool {choice} effort", True,
+                                   note or 'declared selection compatible; no model/account check'))
                 reader.preflight(home, cwd)
             except ShipError as error:
                 found.append(Check(f"seat {seat.name} pool {choice} readiness", False, str(error)))

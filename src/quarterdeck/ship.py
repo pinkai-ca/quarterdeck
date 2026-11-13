@@ -89,6 +89,8 @@ class SeatSpec:
     pool_choices: dict[str, dict] = field(default_factory=dict)
     human_session: bool = False  # resolved from Session by Seat, never a ship-file setting
     fresh_after_compactions: int | None = None
+    model_mode: str | None = None
+    effort_mode: str | None = None
 
     def for_pool(self, name: str) -> SeatSpec:
         if name not in self.pools:
@@ -267,22 +269,25 @@ def _seat(name: str, table: dict, folder: Path) -> SeatSpec:
     entries = pool if isinstance(pool, list) else [pool]
     pools, choices = [], {}
     defaults = dict(harness=table['harness'], model=table.get('model'), effort=table.get('effort'),
-                    settings=dict(table.get('settings', {})))
+                    settings=dict(table.get('settings', {})), model_mode=table.get('model_mode'),
+                    effort_mode=table.get('effort_mode'))
     for entry in entries:
         if isinstance(entry, str):
             selected, choice = entry, defaults
         elif isinstance(entry, dict):
-            if set(entry) - {'pool', 'harness', 'model', 'effort', 'settings'}:
+            if set(entry) - {'pool', 'harness', 'model', 'effort', 'settings', 'model_mode', 'effort_mode'}:
                 raise ShipError(f"seat {name}: unknown pool choice fields")
             selected = entry.get('pool')
-            if any(not isinstance(entry.get(key), str) or not entry[key].strip()
-                   for key in ('harness', 'model')):
+            if (not isinstance(entry.get('harness'), str) or not entry['harness'].strip()
+                    or entry.get('model_mode') != 'program-default' and
+                    (not isinstance(entry.get('model'), str) or not entry['model'].strip())):
                 raise ShipError(f"seat {name}: each inline pool choice needs an explicit harness and model")
             if (entry.get('effort') is not None and not isinstance(entry['effort'], str)
                     or not isinstance(entry.get('settings', {}), dict)):
                 raise ShipError(f"seat {name}: pool choice effort must be text and settings must be a table")
-            choice = dict(harness=entry['harness'], model=entry['model'], effort=entry.get('effort'),
-                          settings=dict(entry.get('settings', {})))
+            choice = dict(harness=entry['harness'], model=entry.get('model'), effort=entry.get('effort'),
+                          settings=dict(entry.get('settings', {})), model_mode=entry.get('model_mode'),
+                          effort_mode=entry.get('effort_mode'))
         else:
             raise ShipError(f"seat {name}: pool choices must be names or inline tables")
         if not isinstance(selected, str) or not selected.strip() or selected in pools:
@@ -302,6 +307,8 @@ def _seat(name: str, table: dict, folder: Path) -> SeatSpec:
         up=bool(table.get("up", True)),
         fresh=table.get("fresh"),
         fresh_after_compactions=table.get("fresh_after_compactions"),
+        model_mode=table.get("model_mode"),
+        effort_mode=table.get("effort_mode"),
         remote_control=bool(table.get("remote_control", False)),
         sandbox=table.get("sandbox"),
         settings=dict(table.get("settings", {})),
@@ -309,7 +316,7 @@ def _seat(name: str, table: dict, folder: Path) -> SeatSpec:
     )
 
 
-SEAT_KEYS = frozenset({"session", "role", "harness", "pool", "model", "effort", "persona", "cwd", "up", "fresh", "remote_control", "sandbox", "fresh_after_compactions"})
+SEAT_KEYS = frozenset({"session", "role", "harness", "pool", "model", "effort", "persona", "cwd", "up", "fresh", "remote_control", "sandbox", "fresh_after_compactions", "model_mode", "effort_mode"})
 """The keys of ``[seats.<name>]`` the framework reads; any other key belongs to the program, under ``.settings``."""
 
 
@@ -320,6 +327,7 @@ def _path(value: str, folder: Path) -> Path:
 
 def _validate(ship: Ship) -> None:
     from . import harness as harnesses  # the adapters import this module, so it is imported here, not above
+    from .harness.capabilities import validate_mode, validate_selection
 
     for group in ship.groups.values():
         if group.name in ship.seats or group.name.lower() in (ship.operator.lower(), 'ship'):
@@ -359,9 +367,16 @@ def _validate(ship: Ship) -> None:
         if not seat.pools:
             raise ShipError(f"seat {seat.name}: declare a pool")
         harnesses.get(seat.harness)  # the legacy/default program remains a valid declaration
+        validate_mode(seat.model, seat.model_mode, 'model', f'seat {seat.name}')
+        validate_mode(seat.effort, seat.effort_mode, 'effort', f'seat {seat.name}')
         for pool in seat.pools:
             selected = seat.for_pool(pool)
             harness = harnesses.get(selected.harness)
+            try:
+                validate_selection(selected, harness)
+                harness.check_defaults(selected, ship.folder / 'homes' / harness.name)
+            except ShipError as error:
+                raise ShipError(f"pool {pool}: {error}") from None
             if reason := harness.accepts(ship.pools[pool]):
                 raise ShipError(f"seat {seat.name}: {reason}")
             if seat.pool_choices and selected.remote_control and not harness.remote_control:
@@ -392,9 +407,15 @@ def literal(value: object) -> str:
         return str(value)
     if isinstance(value, (list, tuple)):
         return "[" + ", ".join(literal(v) for v in value) + "]"
+    if isinstance(value, dict):
+        if any(not isinstance(key, str) for key in value):
+            raise ShipError("inline table keys must be strings")
+        return "{ " + ", ".join(f"{json.dumps(key)} = {literal(item)}" for key, item in value.items()) + " }"
     if isinstance(value, Path):
         return json.dumps(str(value))
-    return json.dumps(str(value))
+    if isinstance(value, str):
+        return json.dumps(value)
+    raise ShipError(f"unsupported declaration value type: {type(value).__name__}")
 
 
 def edit(text: str, table: str, key: str, value: object) -> str:

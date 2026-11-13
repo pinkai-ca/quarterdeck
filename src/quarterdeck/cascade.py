@@ -65,6 +65,7 @@ def laps(value: object, allowed: tuple[str, ...]) -> list[str]:
 
 def validate(ship: Ship) -> None:
     from . import harness
+    from .harness.capabilities import validate_effort
 
     ring = ship.cascade
     for name in (*ring.seats, ring.orchestrator):
@@ -73,6 +74,12 @@ def validate(ship: Ship) -> None:
             raise ShipError(f"cascade: {name} must run in a crew session")
         if spec.fresh == "after-order":
             raise ShipError(f"cascade: {name} must keep its conversation between laps; remove fresh=after-order")
+        if name in ring.seats:
+            for pool in spec.pools:
+                selected = spec.for_pool(pool)
+                for level in ring.efforts:
+                    validate_effort(harness.get(selected.harness), level,
+                                    context=f'cascade seat {name} pool {pool}')
     providers = {ship.pool(ship.seat(name).pools[0]).provider for name in ring.seats}
     synthetic = all(harness.get(ship.seat(name).harness).synthetic for name in ring.seats)
     if len(providers) != 3 and not synthetic:

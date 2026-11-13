@@ -12,6 +12,8 @@ opened in place (law: one-folder). Proven on 1.19.5 against a local vLLM endpoin
 
 from __future__ import annotations
 
+from .capabilities import DefaultMetadata, EffortCapability, SuggestedValue
+
 import copy
 import json
 import re
@@ -150,6 +152,12 @@ def guard_question_configuration(home: Path) -> None:
 class OpenCodeHarness(EndpointHarness):
     """OpenCode, proven on 1.19.5. Runs on an endpoint pool; the model changes only at launch."""
 
+    efforts = EffortCapability("none", measured_versions=("1.19.5",), complete=True)
+    defaults = DefaultMetadata(model_default=False, effort=SuggestedValue(None, "program-default"))
+    effort_selectors = ()  # native variants are not the seat effort interface
+    unclassified_default_overrides = False
+    selection_templates = ()  # model-default is refused; there is no native seat effort selector
+
     name = "opencode"
     program = "opencode"
     home_variable = "XDG_DATA_HOME"
@@ -158,6 +166,7 @@ class OpenCodeHarness(EndpointHarness):
     human_tool_policy = "The native question tool is denied for every configured agent."
 
     def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None) -> Credential | None:
+        self.check_defaults(seat, ship_home)
         if not seat.human_session:
             guard_question_configuration(home)
         home.mkdir(parents=True, exist_ok=True)

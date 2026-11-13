@@ -24,6 +24,7 @@ from pathlib import Path
 from . import providers, durable, harness as harnesses, input_receipt, pending, post, record_owner, ship as shipmod, standing
 from . import carriage as carriagemod
 from .harness.base import Harness, Join, Launch, _version_in_runtime
+from .harness.capabilities import validate_selection
 from .provenance import remember_launch
 from .pricing import save_price, saved_price
 from .ship import Pool, SeatSpec, Ship, ShipError
@@ -109,6 +110,7 @@ class Seat:
         self.ship, self.spec, self.tmux = ship, spec, tmux
         self.folder = ship.runtime / "seats" / spec.name
         self.home = self.folder / "home"
+        self._prepared_observation: tuple[str | None, str | None] | None = None
         try:
             self.spec = replace(spec.for_pool(self.pool.name), human_session=self.session.human)
             self.harness: Harness = harnesses.get(self.spec.harness)
@@ -168,7 +170,7 @@ class Seat:
         from . import credential
 
         selected = self.spec.for_pool(pool)
-        self._accept_pool(selected, self.ship.pool(pool))
+        observation = self._observe_selection(selected, self.ship.pool(pool))
         same_program = selected.harness == self.spec.harness
         if same_program:
             self.harness.preflight_resume(selected, self.home, self._resume_id)
@@ -179,7 +181,7 @@ class Seat:
         self.spec = selected
         if not same_program:
             self.harness = harnesses.get(selected.harness)
-        return stopped + '\n' + self._up(resume=same_program)
+        return stopped + '\n' + self._up(resume=same_program, observation=observation)
 
     def launched(self) -> Launched | None:
         path = self.folder / "launch.json"
@@ -393,8 +395,22 @@ class Seat:
         reader = harnesses.get(selected.harness)
         if reason := reader.accepts(paid):
             raise ShipError(f"{self.name}: {reason}")
+        validate_selection(selected, reader)
+        reader.check_defaults(selected, self.ship.folder / 'homes' / reader.name)
 
-    def _up(self, resume: bool = True) -> str:
+    def _observe_selection(self, spec: SeatSpec | None = None, pool: Pool | None = None):
+        """Reuse the normal version observation before any retirement or startup."""
+        selected = spec or self.spec
+        self._accept_pool(selected, pool)
+        reader = harnesses.get(selected.harness)
+        if self._prepared_observation is not None and spec is None:
+            observation, self._prepared_observation = self._prepared_observation, None
+            return observation
+        version = _version_in_runtime(reader, self.ship.runtime)
+        note = validate_selection(selected, reader, version=version, installed=True)
+        return version, note
+
+    def _up(self, resume: bool = True, *, observation=None) -> str:
         self._accept_pool()
         from .recovery import require_clear
         require_clear(self)
@@ -405,6 +421,7 @@ class Seat:
         if self.spec.remote_control and not self.harness.remote_control:
             raise ShipError(f"{self.name}: remote_control = true, and {self.harness.name} has no Remote Control; "
                             "select a harness that offers it or drop the key")
+        version, effort_note = observation if observation is not None else self._observe_selection()
         shipmod.fence(self.ship)
         self.folder.mkdir(parents=True, exist_ok=True)
         if left is not None and left.dead:
@@ -462,7 +479,7 @@ class Seat:
                             "nothing was started")
         at = datetime.now(timezone.utc).isoformat()  # before the program can write a record (law: one-record)
         pane = self._open_window(argv, launch.env, path)
-        launched = Launched(pane.id, pane.pid, at, pool.name, resume_id, argv, _version_in_runtime(self.harness, self.ship.runtime), self.spec.harness,
+        launched = Launched(pane.id, pane.pid, at, pool.name, resume_id, argv, version, self.spec.harness,
                             sorted(map(str, prior)), launch.price, launch.recovery, notice=launch.notice)
         launched.write(self.folder / "launch.json")
         if self.spec.pool_choices:
@@ -481,7 +498,8 @@ class Seat:
             carried_note += f" in {carried_file.relative_to(self.ship.runtime)}"
         jail_note = " · jailed: the operator's home hidden, the workspace writable" if jailed else ""
         notice_note = f" · {launched.notice}" if launched.notice else ""
-        return f"{self.name} up in {pane.id} · {self.harness.name} {launched.version or ''} · provider {providers.display(pool.provider)} · pool {pool.name} · {how}{carried_note}{jail_note}{notice_note}"
+        unchecked_note = f" · {effort_note}" if effort_note else ""
+        return f"{self.name} up in {pane.id} · {self.harness.name} {launched.version or ''} · provider {providers.display(pool.provider)} · pool {pool.name} · {how}{carried_note}{jail_note}{notice_note}{unchecked_note}"
 
     def _resume_id(self) -> str | None:
         record = self.record()
@@ -637,7 +655,8 @@ class Seat:
             from .recovery import require_clear
             require_clear(self)
             self.harness.preflight_resume(self.spec, self.home, self._resume_id)
-            return self._down() + "\n" + self._up(resume=True)
+            observation = self._observe_selection()
+            return self._down() + "\n" + self._up(resume=True, observation=observation)
 
     def fresh(self) -> str:
         """Relaunch without resume: a new conversation that begins with the brief and the open messages."""
@@ -645,11 +664,13 @@ class Seat:
             self._accept_pool()
             from .recovery import require_clear
             require_clear(self)
-            return self._down() + "\n" + self._up(resume=False)
+            observation = self._observe_selection()
+            return self._down() + "\n" + self._up(resume=False, observation=observation)
 
 
 @contextmanager
-def temporary_seat(ship: Ship, tmux: Tmux, spec: SeatSpec, orders: list[post.Message], purpose: str) -> Iterator[Seat]:
+def temporary_seat(ship: Ship, tmux: Tmux, spec: SeatSpec, orders: list[post.Message], purpose: str,
+                   *, installed_version: str | None = None) -> Iterator[Seat]:
     """Own a fresh temporary seat through transport retirement and every teardown stage.
 
     Callers register only orders this operation opened. Posts and receipts remain;
@@ -658,6 +679,9 @@ def temporary_seat(ship: Ship, tmux: Tmux, spec: SeatSpec, orders: list[post.Mes
     session = shipmod.Session(spec.session, spec.session)
     treated = replace(ship, sessions={**ship.sessions, spec.session: session}, seats={**ship.seats, spec.name: spec})
     seat = Seat(treated, spec, tmux)
+    if installed_version is not None:
+        note = validate_selection(seat.spec, seat.harness, version=installed_version, installed=True)
+        seat._prepared_observation = installed_version, note
     store = post.Store(ship.runtime)
     with pending.transient_lock(ship.runtime, seat.name) as owned:
         if not owned:

@@ -7,6 +7,8 @@ passed verbatim as ``QD_FAKE_<KEY>`` at launch.
 
 from __future__ import annotations
 
+from .capabilities import DefaultMetadata, EffortCapability, SuggestedValue
+
 import json
 import re
 import sys
@@ -24,6 +26,13 @@ DIALOG = re.compile(r"^┌ ([^─]+?) ─")
 
 
 class FakeHarness(Harness):
+    efforts = EffortCapability("unrestricted", measured_versions=("fake",), complete=True)
+    defaults = DefaultMetadata(model_default=True, model=SuggestedValue(None, "program-default"),
+                               effort=SuggestedValue(None, "program-default"))
+    unclassified_default_overrides = False  # simulator selection reads argv only
+    model_selectors = effort_selectors = ()
+    selection_templates = ()  # the simulator never reads a ship template
+
     name = "fake"
     native_provider = "synthetic"
     program = sys.executable
@@ -48,6 +57,7 @@ class FakeHarness(Harness):
     # -- launch ------------------------------------------------------------------------
 
     def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None) -> Credential | None:
+        self.check_defaults(seat, ship_home)
         home.mkdir(parents=True, exist_ok=True)
         (home / "settings.json").write_text(json.dumps(seat.settings, indent=2) + "\n")
         return None

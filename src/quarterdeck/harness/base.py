@@ -16,6 +16,7 @@ import tempfile
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from datetime import datetime
+from dataclasses import replace
 from pathlib import Path
 from .limits import Usage, Wall, Window
 
@@ -24,6 +25,8 @@ from ..ship import Pool, SeatSpec
 from .json_record import RecordError, entries, when
 from .home import credential, key_environment, merged, ship_template
 from .types import Box, Control, Credential, Input, Interruption, Join, Keys, Launch, PasteClearRule, Screen, State, Tokens, ToolCall, Turn
+from .capabilities import (DefaultMetadata, EffortCapability, reject_default_overrides,
+                           reject_unclassified_overrides, validate_selection)
 
 
 def record_fingerprint(record: Path) -> tuple:
@@ -122,6 +125,33 @@ class Harness(ABC):
     private_usage_home: bool = False  # native usage client needs framework-owned settings and state
     private_version_home: bool = False  # version lookup needs a fresh empty runtime-owned home
     record_time_resolution: float = 0.0  # seconds; zero retains exact receipt-time comparisons
+    efforts = EffortCapability()
+    defaults = DefaultMetadata()
+    model_selectors: tuple[str, ...] = ("model",)
+    effort_selectors: tuple[str, ...] = ("effort",)
+    selection_templates: tuple[str, ...] = ("settings.json",)
+    unclassified_default_overrides = True
+
+    def effort_capability(self, version: str | None = None) -> EffortCapability:
+        """Historical facts and a distinct exact-version reading; no program call."""
+        return replace(self.efforts, version=version,
+                       measured=(self.efforts.kind != 'unknown' and version is not None
+                                 and version in self.efforts.measured_versions))
+
+    def default_metadata(self) -> DefaultMetadata:
+        return self.defaults
+
+    def check_defaults(self, seat: SeatSpec, ship_home: Path | None = None) -> None:
+        """Read selector conflicts before changing a running seat or its home."""
+        validate_selection(seat, self)
+        if seat.model_mode != "program-default" and seat.effort_mode != "program-default":
+            return
+        for filename in self.selection_templates:
+            config = ship_template(ship_home, filename)
+            reject_default_overrides(seat, config, scope=f"template {filename}",
+                                     model_keys=self.model_selectors, effort_keys=self.effort_selectors)
+            if self.unclassified_default_overrides:
+                reject_unclassified_overrides(seat, config, scope=f"template {filename}")
 
     def thinking_recovery(self, home: Path, evidence: dict | None, version: str | None, seat: SeatSpec, pool: Pool):
         """A proved native off/restore client, or no supported automatic recovery."""
