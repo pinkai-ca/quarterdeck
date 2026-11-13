@@ -216,6 +216,9 @@ def stop(runtime: Path) -> str:
         if not locked(runtime):
             extended = extended or shutdown.inflight(runtime, owner) is not None
             detail = shutdown.annotate(runtime, owner, forced=how == "killed")
+            stopped_beat = read_heartbeat(runtime)
+            if stopped_beat is not None and stopped_beat[0] == pid:
+                heartbeat_path(runtime).unlink(missing_ok=True)
             bound = shutdown.DELIVERY_GRACE if extended else shutdown.ORDINARY_GRACE
             return (f"service {how} · pid {pid}"
                     + (f" · it did not answer SIGTERM within {bound:g}s" if how == "killed" else "")

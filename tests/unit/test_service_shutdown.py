@@ -91,3 +91,17 @@ def test_unreadable_process_start_is_unknown(monkeypatch):
         raise OSError("synthetic identity temporarily unavailable zzzz")
     monkeypatch.setattr(Path, "read_text", unreadable)
     assert not shutdown.process_gone({"pid": 999999999, "start": "synthetic-start-zzzz"})
+
+
+def test_stop_keeps_a_heartbeat_that_now_names_another_pid(tmp_path, monkeypatch):
+    from quarterdeck import servicectl
+
+    stopped_pid, next_pid = 999999998, 999999999
+    heartbeat = servicectl.heartbeat_path(tmp_path)
+    stamp = datetime.now(timezone.utc).isoformat()
+    heartbeat.write_text(f"{stopped_pid} {stamp}\n")
+    monkeypatch.setattr(servicectl, "alive", lambda _: True)
+    monkeypatch.setattr(servicectl, "locked", lambda _: False)
+    monkeypatch.setattr(servicectl.os, "kill", lambda *_: heartbeat.write_text(f"{next_pid} {stamp}\n"))
+    assert "service stopped" in servicectl.stop(tmp_path)
+    assert servicectl.read_heartbeat(tmp_path)[0] == next_pid

@@ -227,3 +227,30 @@ def test_upgrade_stop_waits_midpaste_and_new_service_does_not_repeat(world):
     assert not thread.is_alive() and not errors
     assert any("waited" in line and "delivery boundary" in line for line in results[0])
     world.progress(original)
+
+
+def test_stopping_a_legacy_service_removes_its_heartbeat_without_an_owner_stamp(tmp_path):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    child = subprocess.Popen([sys.executable, "-c", """
+import signal, sys
+from pathlib import Path
+from quarterdeck import servicectl
+runtime = Path(sys.argv[1])
+lock = servicectl.acquire_lock(runtime)
+servicectl.write_heartbeat(runtime)
+signal.pause()
+""", str(runtime)])
+    try:
+        wait_for(lambda: servicectl.started(runtime))
+        assert shutdown.owner(runtime) is None
+        assert servicectl.read_heartbeat(runtime)[0] == child.pid
+        proof = servicectl.stop(runtime)
+        child.wait(timeout=3)
+        assert "service stopped" in proof
+        assert not servicectl.locked(runtime)
+        assert not servicectl.heartbeat_path(runtime).exists()
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.wait(timeout=3)
