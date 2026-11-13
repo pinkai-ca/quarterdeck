@@ -30,7 +30,7 @@ TARGET = 'c' * 40
 PRIOR = 'd' * 40
 UNRESOLVED = 'e' * 40
 SENTINEL = 'PRIVATE-SENTINEL-test'
-DECLARED_ROOTS = ('standing-orders', 'ships/drydock', 'ships/default', 'ships/forum', 'ships/cascade')
+DECLARED_ROOTS = ('standing-orders', 'ships/drydock', 'ships/default', 'ships/forum', 'ships/cascade', 'ships/shuttle')
 HISTORICAL_ROOTS = ('standing-orders', 'ships/drydock', 'ships/forum', 'ships/cascade')
 DEFAULT_TEMPLATES = ['ships/default/orders.md', 'ships/default/ship.toml']
 
