@@ -37,6 +37,8 @@ def read(runtime: Path) -> dict:
         data = json.loads(state_path(runtime).read_text())
     except FileNotFoundError:
         return dict(format=FORMAT, attempts=[], stopped=None, unknown=None)
+    except (OSError, ValueError, UnicodeError):
+        raise ShipError('ship server recovery state unreadable; inspect runtime/recovery/ship-server.json') from None
     if (not isinstance(data, dict) or data.get('format') != FORMAT or not isinstance(data.get('attempts'), list)
             or any(not isinstance(item, dict) or not isinstance(item.get('at'), str) for item in data['attempts'])):
         raise ShipError('ship server recovery state unreadable; inspect runtime/recovery/ship-server.json')
