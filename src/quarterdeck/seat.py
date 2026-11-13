@@ -42,9 +42,8 @@ def process_start(pid: int) -> str | None:
 
 
 def process_alive(pid: int, start: str | None) -> bool:
-    """The process down saw is still running: the same pid with the same start time."""
-    now = process_start(pid)
-    return now is not None and (start is None or now == start)
+    """The process recorded at launch is still running: the same pid with the same start time."""
+    return start is not None and process_start(pid) == start
 
 
 def wait_for_end(pid: int, start: str | None, seconds: float) -> bool:
@@ -74,6 +73,7 @@ class Launched:
     recovery: dict | None = None
     notice: str | None = None
     answered: list[dict] | None = None  # the account holder's questions the framework answered in this launch
+    start: str | None = None  # the program process's start time, read from /proc at launch: its identity with pid
 
     def write(self, path: Path) -> None:
         data = asdict(self)
@@ -84,6 +84,8 @@ class Launched:
             data.pop('notice')
         if data['answered'] is None:
             data.pop('answered')  # unchanged launch shape until a question is answered
+        if data['start'] is None:
+            data.pop('start')  # unchanged launch shape where the start was not read
         durable.replace_file(path, json.dumps(data, indent=2) + "\n")
         save_price(path, price)
 
@@ -631,7 +633,8 @@ class Seat:
         at = datetime.now(timezone.utc).isoformat()  # before the program can write a record (law: one-record)
         pane = self._open_window(argv, launch.env, path)
         launched = Launched(pane.id, pane.pid, at, pool.name, resume_id, argv, version, self.spec.harness,
-                            sorted(map(str, prior)), launch.price, launch.recovery, notice=launch.notice)
+                            sorted(map(str, prior)), launch.price, launch.recovery, notice=launch.notice,
+                            start=process_start(pane.pid))
         launched.write(self.folder / "launch.json")
         if self.spec.pool_choices:
             self.move_to(pool.name)
@@ -831,7 +834,10 @@ class Seat:
             self.record()  # preserve the last proven join before removing its launch
             if self.spec.pool_choices:
                 self.move_to(self.pool.name)  # retain the corroborated selection before its launch disappears
-        program = (launched.pid, process_start(launched.pid)) if pane is not None and launched is not None else None
+        # The program recorded at launch, by pid and start time; a launch without its start (written before
+        # the start was recorded, or a stand-in's) is not waited for: no other process is taken for it.
+        program = ((launched.pid, launched.start) if pane is not None and launched is not None and launched.start
+                   and process_alive(launched.pid, launched.start) else None)
         self._retire_window(launched)
         if self.launched() != launched:
             raise ShipError(f"{self.name}: launch identity changed during retirement; launch retained")
