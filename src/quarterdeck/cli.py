@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
 from typing import Any
 
 from . import (__version__, check, copy_state, doctor, drill, harness as harnesses, install, ledger, post, sandbox, seat as seatmod, service,
@@ -28,16 +29,49 @@ def main(argv: list[str] | None = None) -> int:
     if not hasattr(args, "run"):
         parser.print_help()
         return 0
+    argv = list(argv if argv is not None else sys.argv[1:])
+    argv = choose_default(args, argv)
     if (args.run not in (cmd_upgrade, cmd_service)
             and not (args.run is cmd_controls and getattr(args, 'harness', None))):
-        handoff(args, argv if argv is not None else sys.argv[1:])
+        handoff(args, argv)
     try:
         result = args.run(args)
     except (ShipError, TmuxError) as error:
-        print(f"qd: {error}", file=sys.stderr)
+        note = f" (default ship: {args.default_ship})" if args.default_ship else ""
+        print(f"qd: {error}{note}", file=sys.stderr)
         return 2
     emit(args, result)
     return getattr(args, "exit_code", 0)
+
+
+HANDED = "QD_DEFAULT_SHIP"  # the folder the typed qd chose as the default, passed to the ship's own copy
+
+
+def needs_ship(args: argparse.Namespace) -> bool:
+    """Verbs that act on no ship, or on the practice ship when none is named, never take the default."""
+    return (args.run not in (cmd_laws, cmd_drill, cmd_default)
+            and not (args.run is cmd_controls and getattr(args, 'harness', None)))
+
+
+def choose_default(args: argparse.Namespace, argv: list[str]) -> list[str]:
+    """With no --ship and no QD_SHIP, a person's shell acts on the default ship, named from then on.
+
+    The choice is made once, here, and passed on as --ship, so the ship's own copy acts on the same folder; the
+    copy learns it was the default from HANDED, which nothing launched afterwards inherits."""
+    handed = os.environ.pop(HANDED, None)
+    args.default_ship = None
+    if handed and args.ship:
+        if Path(args.ship).expanduser().resolve() == Path(handed).resolve():
+            args.default_ship = Path(handed).name
+        return argv
+    if args.ship or os.environ.get("QD_SHIP") or os.environ.get("QD_SEAT") or not needs_ship(args):
+        return argv
+    try:
+        folder, name = shipmod.choose(None)
+    except ShipError:
+        return argv  # the verb refuses, saying why
+    args.ship, args.default_ship = str(folder), name
+    return ["--ship", str(folder), *argv]
 
 
 def handoff(args: argparse.Namespace, argv: list[str]) -> None:
@@ -48,16 +82,23 @@ def handoff(args: argparse.Namespace, argv: list[str]) -> None:
         folder = shipmod.find(args.ship)
     except ShipError:
         return  # the verb says what is wrong with the ship folder
-    install.handoff(folder, argv)
+    if args.default_ship:
+        os.environ[HANDED] = str(folder)
+    try:
+        install.handoff(folder, argv)
+    finally:
+        os.environ.pop(HANDED, None)  # reached only when this qd runs the verb itself
 
 
 def emit(args: argparse.Namespace, result: Any) -> None:
+    if getattr(args, "default_ship", None) and result is not None:
+        result = output.with_default_ship(result, args.default_ship)
     output.emit(result, json_output=args.json)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="qd", description=__doc__.split("\n\n")[0])
-    parser.add_argument("--ship", help="the ship folder (default: $QD_SHIP)")
+    parser.add_argument("--ship", help="the ship folder (default: $QD_SHIP, else the default ship: qd default)")
     parser.add_argument("--json", action="store_true", help="print the result as JSON")
     parser.add_argument("--version", action="version", version=f"qd {__version__}")
     verbs = parser.add_subparsers(title="verbs", metavar="<verb>")
@@ -98,6 +139,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--re", required=True, help="the question's id or short id")
     p.add_argument("--efforts", help="fewer declared effort laps, comma separated, in the order named")
     verb("laws", cmd_laws, "the laws, each with the lines of code and test that carry it")
+    p = verb("default", cmd_default, "the default ship a plain qd acts on: print it and how it was chosen, or mark another")
+    p.add_argument("name", nargs="?", help="the ship's folder name under ships/")
     p = verb("brief", cmd_brief, "print exactly what a seat reads at boot")
     p.add_argument("seat", nargs="?", help="default: this seat (QD_SEAT)")
     p.add_argument("--sources", action="store_true", help="say which file each part came from")
@@ -421,6 +464,40 @@ def render_controls(data: dict) -> list[str]:
 
 def cmd_laws(args: argparse.Namespace) -> Reading:
     return Reading(standing.law_reading(), standing.render_laws)
+
+
+def cmd_default(args: argparse.Namespace) -> Reading:
+    ships = shipmod.ships_folder()
+    if args.name:
+        name = args.name
+        given = Path(name).expanduser()
+        if len(given.parts) > 1 and given.resolve().parent == ships.resolve():
+            name = given.name  # ships/<name> or its full path names the same folder
+        folder = shipmod.mark_default(name)
+        data = dict(ship=folder.name, folder=folder, how="mark", marked=True, reason=None)
+    else:
+        try:
+            folder, how = shipmod.default_ship()
+            data = dict(ship=folder.name, folder=folder, how=how, marked=False, reason=None)
+        except ShipError as error:
+            args.exit_code = 1
+            data = dict(ship=None, folder=None, how=None, marked=False, reason=str(error))
+    data["overridden_by"] = ("QD_SEAT" if os.environ.get("QD_SEAT") else
+                             "QD_SHIP" if os.environ.get("QD_SHIP") else None)
+    return Reading(data, render_default)
+
+
+def render_default(data: dict) -> list[str]:
+    if data["ship"] is None:
+        lines = [f"no default ship · {data['reason']}"]
+    else:
+        how = {"mark": "marked in ships/.default", "only ship": "the only ship under ships/, with no mark"}[data["how"]]
+        lines = [f"default ship: {data['ship']} · {'now ' if data['marked'] else ''}{how} · {data['folder']}"]
+    if data["overridden_by"] == "QD_SEAT":
+        lines.append("this shell is a seat: it acts on its own QD_SHIP and never on the default ship")
+    elif data["overridden_by"] == "QD_SHIP":
+        lines.append("QD_SHIP is set in this shell and wins over the default ship; unset it to use the default")
+    return lines
 
 
 def cmd_brief(args: argparse.Namespace) -> Reading:

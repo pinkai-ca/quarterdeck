@@ -31,6 +31,26 @@ def value(item: Any) -> Any:
     return item
 
 
+def with_default_ship(result: Any, name: str) -> Any:
+    """A result acted on the default ship says so: its first line carries "(default ship: <name>)", and its JSON
+    the field default_ship."""
+    note = f"(default ship: {name})"
+
+    def first(rendered):
+        if isinstance(rendered, str):
+            head, newline, rest = rendered.partition("\n")
+            return f"{head} {note}" + newline + rest if head else note + newline + rest
+        lines = list(rendered)
+        return [f"{lines[0]} {note}" if lines[0] else note, *lines[1:]] if lines else [note]
+
+    if isinstance(result, Reading):
+        data = value(result.data)
+        data = {**data, "default_ship": name} if isinstance(data, dict) else {"reading": data, "default_ship": name}
+        return Reading(data, lambda _: first(result.render(result.data)))
+    shape = {"proof": result} if isinstance(result, str) else {"proofs": value(result)}
+    return Reading({**shape, "default_ship": name}, lambda _: first(result))
+
+
 def emit(result: Any, *, json_output: bool = False) -> None:
     """Serialize/render completely, print and flush. Callers may receipt only after return."""
     if result is None:

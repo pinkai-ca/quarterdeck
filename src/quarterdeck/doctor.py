@@ -12,6 +12,7 @@ when asked.
 
 from __future__ import annotations
 
+import os
 import secrets
 import shutil
 import tempfile
@@ -32,6 +33,9 @@ PATIENCE = 600.0  # a fix is a turn of real work
 def checks(ship: Ship) -> list[Check]:
     """Every check, passed or failed, each with what it found or what would lift it."""
     found = [Check("ship file", True, f"{ship.file.name}: {len(ship.seats)} seats, {len(ship.pools)} pools, {len(ship.sessions)} sessions")]
+    shell = shell_check()
+    if shell is not None:
+        found.append(shell)
     for program, flag in (("tmux", "-V"), ("git", "--version")):
         version = program_version((program, flag))
         found.append(Check(program, version is not None, f"{program} {version}" if version else f"{program} is not on the PATH; install it"))
@@ -88,6 +92,17 @@ def selected_program(ship: Ship, name: str | None, versions: dict[str, str | Non
     if name not in versions:
         versions[name] = _version_in_runtime(harness, ship.runtime)
     return f" · runs {where} · {harness.program} {versions[name] or 'version unknown'}"
+
+
+def shell_check() -> Check | None:
+    """A warning, never a failure: QD_SHIP set in a shell that is no seat."""
+    if not os.environ.get("QD_SHIP") or os.environ.get("QD_SEAT"):
+        return None
+    return Check("QD_SHIP in this shell", True,
+                 "warning: QD_SHIP is set in a shell that is no seat. The default ship replaces it: with no --ship, "
+                 "qd acts on the ship qd default marks and says so. Exported from a start-up file, it would point every "
+                 "shell, and anything started from one, at that ship unawares, and would still win over the mark after "
+                 "the ship is moved or another is chosen; unset it there")
 
 
 def seat_readiness(ship: Ship, *, versions: dict[str, str | None] | None = None) -> list[Check]:

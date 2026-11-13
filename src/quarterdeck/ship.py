@@ -182,14 +182,98 @@ class Ship:
 
 
 def find(argument: str | None = None) -> Path:
-    """The ship folder: ``--ship``, else ``QD_SHIP`` in the environment."""
+    """The ship folder: ``--ship``, else ``QD_SHIP`` in the environment, else the default ship (see ``choose``)."""
+    return choose(argument)[0]
+
+
+# The folders under ships/ that travel with the framework: templates, and the practice ship (drydock).
+TEMPLATES = frozenset({"default", "drydock", "forum", "cascade"})
+MARK = ".default"  # ships/.default: the default ship's folder name, relative to ships/
+
+
+def choose(argument: str | None = None, *, project: Path | None = None) -> tuple[Path, str | None]:
+    """The ship folder, and the default ship's name when it was chosen as the default.
+
+    ``--ship`` wins, then ``QD_SHIP``. With neither, a person's shell uses the default ship: the one ships/.default
+    marks, else the only ship under ships/ that is not a template or the practice ship. A seat, which always runs
+    with its own QD_SHIP, never reads the mark.
+    """
     chosen = argument or os.environ.get("QD_SHIP")
-    if not chosen:
-        raise ShipError("no ship named: pass --ship <folder> or set QD_SHIP")
-    folder = Path(chosen).expanduser().resolve()
+    if chosen:
+        folder = Path(chosen).expanduser().resolve()
+        if not (folder / "ship.toml").is_file():
+            raise ShipError(f"{folder} holds no ship.toml")
+        return folder, None
+    if os.environ.get("QD_SEAT"):
+        raise ShipError("no ship named: a seat runs with its own QD_SHIP and never uses the default ship")
+    folder, _ = default_ship(project)
+    return folder, folder.name
+
+
+def ships_folder(project: Path | None = None) -> Path:
+    if project is None:
+        from .standing import PROJECT_DIR
+        project = PROJECT_DIR
+    return Path(project) / "ships"
+
+
+def default_ship(project: Path | None = None) -> tuple[Path, str]:
+    """The default ship's folder and how it was chosen: ``mark`` or ``only ship``. Never a silent fallback."""
+    ships = ships_folder(project)
+    mark = ships / MARK
+    try:
+        text = mark.read_text()
+    except FileNotFoundError:
+        text = None
+    except (OSError, UnicodeError) as error:
+        raise ShipError(f"the default mark {mark} is unreadable ({type(error).__name__}); "
+                        "qd default <ship> rewrites it") from None
+    if text is not None:
+        name = text.strip()
+        if not valid_name(name) or text not in (name, name + "\n"):
+            raise ShipError(f"the default mark {mark} does not hold one ship folder name; qd default <ship> rewrites it")
+        folder = ships / name
+        if not (folder / "ship.toml").is_file():
+            raise ShipError(f"the default ship {name} marked in {mark} is missing or holds no ship.toml; "
+                            "pass --ship <folder>, or qd default <ship> marks another")
+        return folder.resolve(), "mark"
+    found = candidates(project)
+    if not found:
+        raise ShipError("no ship named: pass --ship <folder>, or make a ship and mark it with qd default <ship>")
+    if len(found) > 1:
+        raise ShipError(f"no default ship among several: {', '.join(found)}; qd default <ship> sets one, "
+                        "or pass --ship <folder>")
+    return (ships / found[0]).resolve(), "only ship"
+
+
+def candidates(project: Path | None = None) -> list[str]:
+    """The ships under ships/ that are not templates or the practice ship, by folder name."""
+    ships = ships_folder(project)
+    try:
+        entries = sorted(ships.iterdir())
+    except FileNotFoundError:
+        return []
+    return [entry.name for entry in entries if valid_name(entry.name) and entry.name not in TEMPLATES
+            and (entry / "ship.toml").is_file()]
+
+
+def valid_name(name: str) -> bool:
+    """One folder directly under ships/: no path, no hidden name."""
+    return bool(name) and name.isprintable() and name == name.strip() and not name.startswith(".") \
+        and "/" not in name and "\\" not in name
+
+
+def mark_default(name: str, project: Path | None = None) -> Path:
+    """Write ships/.default for a ship under ships/; the only file this writes. Returns the ship's folder."""
+    from . import durable
+    ships = ships_folder(project)
+    if not valid_name(name):
+        raise ShipError(f"{name!r} is not a ship folder name under {ships}; name the folder, such as qd default enterprise")
+    folder = ships / name
     if not (folder / "ship.toml").is_file():
-        raise ShipError(f"{folder} holds no ship.toml")
-    return folder
+        raise ShipError(f"{folder} is missing or holds no ship.toml; qd default marks only a ship that exists")
+    durable.replace_file(ships / MARK, name + "\n")
+    return folder.resolve()
 
 
 def load(folder: Path) -> Ship:
