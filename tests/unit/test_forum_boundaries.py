@@ -26,6 +26,7 @@ from quarterdeck import group_post, ledger, post, quota, refusal, sandbox, ship 
 from quarterdeck.seat import Launched, Seat, SelectionError
 from quarterdeck.service import Service
 from quarterdeck.tmux import Pane
+from tests.unit.thread_reading import index_rows, thread_text
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -497,16 +498,21 @@ def test_a_reviewer_is_shown_and_carried_only_its_own_copy_after_peers_file(worl
     # The common request id is the copy's own `re`, so it may be shown; nothing of a peer may be.
     foreign = [*copies[:3], *reports, *world.notices()]
     assert all(m.to != 'reviewer-4' for m in foreign) and root.to == 'lead'
-    carriage = world.seat('reviewer-4').carriage()
-    assert [m.id for m in carriage.carried] == [mine.id]
+    first, carried = world.seat('reviewer-4').first_message()
+    assert [m.id for m in carried] == [mine.id]
     reading = post.inbox_reading(world.store, 'reviewer-4')
     assert [m.id for m in reading['open'] + reading['received']] == [mine.id]
     inbox = post.render_inbox(world.ship.runtime, world.store, 'reviewer-4').read_text()
-    for text in (carriage.text, inbox):
+    for text in (first, inbox):
         assert mine.id in text or mine.short in text
         for message in foreign:
             assert message.id not in text and message.short not in text
         assert 'PEER-FINDING' not in text
+    # qd thread as this reviewer: its own copy whole; a peer's message at most named as existing, never its words.
+    whole = thread_text(world.store, mine.id, 'reviewer-4')
+    assert whole.count(mine.body) == 1 and 'PEER-FINDING' not in whole, 'its own copy once; no peer copy or report'
+    for message in foreign:
+        assert message.body == mine.body or message.body not in whole  # a peer's copy shares the request's words
 
 
 def test_a_fresh_lead_is_carried_its_notice_but_never_a_reviewers_copy(world):
@@ -540,9 +546,13 @@ def test_a_refused_copy_is_carried_as_a_notice_without_its_body(world):
     _, copies = world.submit()
     mine = copy_for(copies, 'reviewer-2')
     world.refuse('reviewer-2', mine.id)
-    carriage = world.seat('reviewer-2').carriage()
-    assert carriage.carried == [] and BODY.strip() not in (carriage.text or '')
-    assert refusal.WITHHELD in carriage.text
+    first, carried = world.seat('reviewer-2').first_message()
+    assert carried == [] and BODY.strip() not in first
+    [row] = [row for row in index_rows(first) if mine.id in row['withheld']]
+    assert row['notice'] == refusal.WITHHELD
+    whole = thread_text(world.store, mine.id, 'reviewer-2')
+    assert BODY.strip() not in whole, 'neither its own refused copy nor a peer copy prints the refused words'
+    assert refusal.WITHHELD in whole
 
 
 def test_a_jailed_reviewer_still_reaches_the_shared_post_folder_but_no_peer_seat_folder(world):

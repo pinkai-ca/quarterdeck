@@ -16,6 +16,8 @@ from quarterdeck.harness.opencode_thinking import Client as OpenCodeThinking
 from quarterdeck.harness.pi_thinking import Client as PiThinking
 from quarterdeck.ship import Cascade, Group
 from .test_pending_delivery import setup  # noqa: F401
+from .thread_reading import row_for, thread_text
+from quarterdeck import post_threads
 
 CONTINUATIONS = pytest.mark.parametrize(
     'continuation', [PiThinking.continuation, OpenCodeThinking.continuation], ids=['pi', 'opencode'])
@@ -148,9 +150,15 @@ def test_fresh_start_carries_terminal_once_and_delivered_recovery_continuation_n
     deliver_all(runtime, svc.store, seat.name)
     before = post.Attempts(runtime).latest()
     text, incoming = seat.first_message()
-    assert incoming == [root, terminal]
-    assert text.count(terminal.body.rstrip()) == 1 and text.count(root.body) == 1
+    assert incoming == [root]
+    assert row_for(text, root.id)['amendments'].count(terminal.id) == 1
+    assert terminal.body.rstrip() not in text and root.body not in text, 'the index carries ids, not bodies'
     assert continuation not in text, 'a fresh context never receives a continuation of a conversation it lacks'
+    whole = thread_text(svc.store, root.id, seat.name)
+    assert whole.count(terminal.body.rstrip()) == 1 and root.body in whole  # a lead also sent its members' copies
+    assert whole.count(continuation.rstrip()) == 1, 'every message stays readable'
+    assert whole.index(post_threads.CONTINUATION_LABEL) < whole.index(continuation.rstrip()), \
+        'a delivered continuation is labelled as not addressed to this conversation'
     assert svc.store.is_open(root) and svc.store.get(continued.id) == continued
     assert post.Attempts(runtime).latest() == before, 'selection never relabels delivery'
 
@@ -175,8 +183,12 @@ def test_unread_recovery_continuation_still_arrives_once_at_fresh_start(setup, s
     root, continued, terminal = structure_with_recovery(runtime, svc.store, seat.name, structure, continuation)
     deliver_all(runtime, svc.store, seat.name, unread={continued.id})  # the continuation never reached the seat
     text, incoming = seat.first_message()
-    assert incoming == [root, terminal, continued]
-    assert text.count(continuation.rstrip()) == 1 and text.count(terminal.body.rstrip()) == 1
+    assert incoming == [root, continued]
+    row = row_for(text, root.id)
+    assert row['amendments'].count(terminal.id) == 1 and row['amendments'].count(continued.id) == 1
+    whole = thread_text(svc.store, root.id, seat.name)
+    assert whole.count(continuation.rstrip()) == 1 and whole.count(terminal.body.rstrip()) == 1
+    assert post_threads.CONTINUATION_LABEL not in whole, 'an unread continuation is no earlier conversation\'s'
 
 
 @STRUCTURES

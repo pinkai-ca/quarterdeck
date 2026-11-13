@@ -764,7 +764,8 @@ class Seat:
                                 if message.kind != 'ack' and message.id not in consumed and message.id not in delivered
                                 and not ((attempt := latest.get(message.id)) is not None
                                          and attempt.result == 'queued' and message.id not in queued_ids))
-            rows = post_threads.index_rows(store, selection.roots, (*pending_messages, *unconfirmed), refused, sent)
+            rows = post_threads.index_rows(store, selection.roots, (*pending_messages, *unconfirmed), refused, sent,
+                                           seat=self.name)
         handoffs = [entry.message for entry in selection.entries
                     if not resume_id and not entry.context_only and entry.message.kind == 'order'
                     and entry.message.sender == self.name and entry.message.to == self.name]

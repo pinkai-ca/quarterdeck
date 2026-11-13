@@ -82,3 +82,66 @@ def test_index_has_metadata_and_amendment_ids_without_ordinary_bodies(tmp_path):
     assert rows[0].due == 'tomorrow 12:00'
     assert rows[0].sender == root.sender and rows[0].subject == root.subject
     assert root.body not in repr(rows) and answer.body not in repr(rows)
+
+
+# -- as far as the reader sent or received it ---------------------------------------------
+
+
+def scoped_thread():
+    return [message('order-root', sender='lead', to='builder'),
+            message('copy-for-peer', parent='order-root', moment=1, sender='lead', to='peer'),
+            message('report-from-peer', parent='copy-for-peer', moment=2, sender='peer', to='lead', kind='report'),
+            message('report-from-builder', parent='order-root', moment=3, sender='builder', to='lead', kind='report')]
+
+
+def test_qd_thread_keeps_only_what_the_reader_sent_or_received_and_names_the_rest_by_id(tmp_path):
+    # law: context-is-cache -- one command prints the thread whole, as far as the seat sent or received it
+    messages = scoped_thread()
+    store = store_posts(tmp_path, messages)
+    reading = post_threads.whole(store, 'report-from-builder', 'builder')
+    assert [m.id for m in reading.messages] == ['order-root', 'report-from-builder']
+    assert reading.others == ('order copy-for-peer', 'report report-from-peer')
+    rendered = post_threads.render(reading)
+    for other in messages[1:3]:
+        assert other.body not in rendered and other.subject not in rendered, 'no body, no subject'
+        assert rendered.count(other.id) == 1, 'one line naming that it exists'
+        line, = [line for line in rendered.splitlines() if other.id in line]
+        assert line == f'qd > {other.kind} {other.id} {post_threads.NOT_YOURS}' and f'from {other.sender}' not in line
+    assert rendered.count(messages[0].body) == 1 and rendered.count(messages[3].body) == 1
+    assert rendered.splitlines()[0].endswith('; 2 more in it, named below by id only')
+    lead = post_threads.render(post_threads.whole(store, 'order-root', 'lead'))
+    assert all(lead.count(m.body) == 1 for m in messages), 'the lead sent or received every one of them'
+    assert post_threads.NOT_YOURS not in lead
+
+
+def test_the_index_lists_only_the_seats_own_messages_and_no_foreign_subject(tmp_path):
+    messages = scoped_thread()
+    store = store_posts(tmp_path, messages)
+    [row] = post_threads.index_rows(store, (messages[0],), (), frozenset(), seat='builder')
+    assert row.amendments == ('report-from-builder',) and row.subject == 'Synthetic subject for order-root'
+    [peer] = post_threads.index_rows(store, (), (messages[1],), frozenset(), seat='peer')
+    assert peer.id == 'order-root' and peer.amendments == ('copy-for-peer', 'report-from-peer')
+    assert peer.subject is None, 'a root the seat neither sent nor received gives no subject'
+    [unscoped] = post_threads.index_rows(store, (messages[0],), (), frozenset())
+    assert len(unscoped.amendments) == 3, 'without a seat the old reading is unchanged'
+
+
+def test_a_delivered_recovery_continuation_is_labelled_and_an_unread_one_is_not(tmp_path):
+    from quarterdeck.harness.pi_thinking import Client as PiThinking
+    root = message('order-root', sender='lead', to='builder')
+    continuation = post.Message('report-continued', 'report', post.SHIP, 'builder',
+                                datetime(2020, 1, 1, 0, 0, 5, tzinfo=timezone.utc), PiThinking.continuation,
+                                re='order-root')
+    store = store_posts(tmp_path, [root, continuation])
+    unread = post_threads.render(post_threads.whole(store, 'order-root', 'builder'))
+    assert PiThinking.continuation in unread and post_threads.CONTINUATION_LABEL not in unread
+    attempts = post.Attempts(store.dir.parent.parent)
+    attempts.close(attempts.open(continuation, 'builder', '%synthetic', 1234, 'synthetic-launch'), 'delivered')
+    reading = post_threads.whole(store, 'order-root', 'builder')
+    assert reading.continuations == ('report-continued',)
+    rendered = post_threads.render(reading)
+    assert rendered.count(PiThinking.continuation) == 1, 'labelled, never withheld'
+    lines = rendered.splitlines()
+    assert lines[lines.index(post_threads.CONTINUATION_LABEL) + 1].startswith('qd > report from ship')
+    other = post_threads.render(post_threads.whole(store, 'order-root', 'lead'))
+    assert post_threads.CONTINUATION_LABEL not in other, 'only for the seat it was delivered to'

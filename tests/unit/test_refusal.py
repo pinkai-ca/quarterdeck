@@ -11,6 +11,7 @@ from quarterdeck import post, refusal, turn_failure
 from quarterdeck.seat import Seat
 from quarterdeck.ship import ShipError
 from tests.unit.refusal_ship import OTHER, REFUSED, World
+from tests.unit.thread_reading import index_rows, thread_text
 
 
 @pytest.fixture
@@ -41,8 +42,12 @@ def test_a_refused_seat_starts_fresh_once_without_the_refused_message_and_its_se
     assert len(world.fresh) == 1
     name, first, carried = world.fresh[0]
     assert carried == [other.id], 'every other open message is carried'
-    assert other.body in first, 'in full'
-    assert refused.body not in first and refused.short in first and 'withheld' in first, 'named, never retyped'
+    assert other.id in first and f'qd thread {other.id}' in first, 'indexed, its body one command away'
+    assert other.body in thread_text(world.svc.store, other.id, 'worker'), 'in full'
+    assert refused.body not in first
+    [row] = [row for row in index_rows(first) if refused.id in row['withheld']]
+    assert row['notice'] == refusal.WITHHELD and row['subject'] is None, 'named, never retyped'
+    assert refused.body not in thread_text(world.svc.store, refused.id, 'worker')
     told = notices(world, 'tester')
     assert len(told) == 1 and told[0].re == refused.id and told[0].kind == 'report'
     assert refused.body not in told[0].body and 'refused' in told[0].body
@@ -226,8 +231,12 @@ def test_an_unknown_tool_set_holds_only_the_fresh_start_and_still_quarantines_an
     reason = turn_failure.obstruction(world.seat('worker'))
     assert 'withheld; inspect, then qd fresh worker' in reason
     first, carried = world.seat('worker').first_message()  # a person's qd fresh
-    assert [m.id for m in carried] == [other.id] and other.body in first
-    assert refused.body not in first and refused.short in first and refusal.WITHHELD in first
+    assert [m.id for m in carried] == [other.id] and other.id in first and f'qd thread {other.id}' in first
+    assert other.body in thread_text(world.svc.store, other.id, 'worker')
+    assert refused.body not in first
+    [row] = [row for row in index_rows(first) if refused.id in row['withheld']]
+    assert row['notice'] == refusal.WITHHELD and row['subject'] is None, 'named, never retyped'
+    assert refused.body not in thread_text(world.svc.store, refused.id, 'worker')
     assert world.svc.store.is_open(refused) and world.svc.store.get(refused.id).body == refused.body
 
 

@@ -18,6 +18,7 @@ from quarterdeck.seat import Seat
 from quarterdeck.ship import Cascade, Pool, SeatSpec, Session, Ship, ShipError
 from tests.unit import refusal_ship
 from tests.unit.refusal_ship import OTHER, REFUSED, World
+from tests.unit.thread_reading import row_for, thread_text
 
 RING = ("worker", "tester", "spock")
 HOLDS = (ShipError, ValueError, KeyError, TypeError)
@@ -116,7 +117,10 @@ def test_refused_current_step_ends_by_category_withholds_input_then_quarantines_
     assert len(world.fresh) == 1
     name, first, carried = world.fresh[0]
     assert name == "worker" and order.id not in carried
-    assert order.body not in first and order.short in first and refusal.WITHHELD in first
+    assert order.body not in first and order.id in first and refusal.WITHHELD in first
+    assert order.body not in thread_text(world.svc.store, order.id, "worker"), "qd thread keeps the refusal"
+    assert order.body not in thread_text(world.svc.store, world.question.id, "conductor"), \
+        "the conductor neither sent nor received the step order: its words never reach it"
     assert world.svc.store.is_open(order) and world.svc.store.is_open(world.question)
     assert not [m for m in world.svc.store.all() if m.re == order.id], "no sender notice invented for the ship"
     before = world.svc.store.all()
@@ -497,8 +501,11 @@ def test_an_undelivered_final_notice_is_carried_once_by_a_fresh_orchestrator(tmp
     ring, final = finished(tmp_path)
     seat = Seat(ring.ship, ring.ship.seat("conductor"), None)
     first, incoming = seat.first_message(resume_id=None)
-    assert [m.id for m in incoming] == [ring.question.id, final.id]
-    assert first.count(final.body) == 1 and first.index(ring.question.body) < first.index(final.body)
+    assert [m.id for m in incoming] == [ring.question.id, final.id], "the undelivered final notice is carried"
+    assert row_for(first, ring.question.id)["amendments"].count(final.id) == 1
+    assert final.body not in first and ring.question.body not in first, "the index carries ids, not bodies"
+    whole = thread_text(ring.store, ring.question.id, "conductor")
+    assert whole.count(final.body) == 1 and whole.index(ring.question.body) < whole.index(final.body)
     assert ring.store.is_open(ring.question), "carriage answers nothing"
 
 
@@ -513,7 +520,11 @@ def test_a_refused_final_notice_is_named_by_stub_and_its_body_never_carried(tmp_
     first, incoming = seat.first_message(resume_id=None)
     assert [m.id for m in incoming] == [ring.question.id]
     assert final.body not in first and "Last full answer" not in first
-    assert refusal.stub(final) in first and ring.question.body in first
+    row = row_for(first, ring.question.id)
+    assert row["notice"] == refusal.WITHHELD and final.id in row["withheld"]
+    whole = thread_text(ring.store, ring.question.id, "conductor")
+    assert final.body not in whole and "Last full answer" not in whole and refusal.WITHHELD in whole
+    assert ring.question.body in whole
     assert ring.store.is_open(ring.question)
 
 
