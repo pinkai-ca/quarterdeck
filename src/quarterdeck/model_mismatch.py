@@ -8,6 +8,7 @@ from __future__ import annotations
 from contextlib import ExitStack
 from dataclasses import dataclass
 import json
+from pathlib import Path
 
 from . import durable, post, record_owner
 from .door import Door
@@ -65,6 +66,19 @@ def path(runtime, name):
     return runtime / 'seats' / name / 'model-mismatch.json'
 
 
+def report_intent(intent):
+    try:
+        message = post.Message.from_json(intent)
+        if (not isinstance(message.id, str) or not message.id or Path(message.id).name != message.id
+                or message.kind != 'report' or message.sender != post.SHIP
+                or not isinstance(message.to, str) or not message.to
+                or message.re is not None or message.speed is not None or message.at.tzinfo is None):
+            raise ValueError('report intent')
+        return message
+    except (ValueError, TypeError, AttributeError, KeyError):
+        raise ShipError('model mismatch report intent unsupported; retained') from None
+
+
 def load(runtime, name):
     try:
         data = json.loads(path(runtime, name).read_text())
@@ -74,12 +88,19 @@ def load(runtime, name):
         raise ShipError('model mismatch notification state unreadable; reports held') from error
     if (not isinstance(data, dict) or type(data.get('version')) is not int or data['version'] != 1
             or type(data.get('active')) is not bool or not isinstance(data.get('reports'), list)
+            or 'key' not in data
             or data.get('key') is not None and (not isinstance(data['key'], list) or len(data['key']) != 3
                                                or any(not isinstance(value, str) for value in data['key']))):
         raise ShipError('model mismatch notification state unsupported; reports held')
+    key = data['key']
+    if (data['active'] and key is None or key is not None and any(
+            not value or len(value) > 200 or not all(char.isprintable() for char in value) for value in key)):
+        raise ShipError('model mismatch identity unsupported; reports held')
+    bodies = ({f'{name}: model mismatch; ship declares {key[1]}, program reports {key[2]} in its {source}'
+               for source in ('record', 'screen')} if key else set())
     for intent in data['reports']:
-        message = post.Message.from_json(intent)
-        if message.kind != 'report' or message.sender != post.SHIP or message.to == name:
+        message = report_intent(intent)
+        if message.to == name or message.body not in bodies:
             raise ShipError('model mismatch notification recipient unsupported; reports held')
     return data
 
@@ -95,7 +116,7 @@ def save(runtime, name, data):
 
 def publish(store, intent):
     """Recover the same immutable report under recipient admission, without generating another ID."""
-    message = post.Message.from_json(intent)
+    message = report_intent(intent)
     target = store.dir / (message.id + '.json')
     if target.exists():
         if target.read_text() != intent:
