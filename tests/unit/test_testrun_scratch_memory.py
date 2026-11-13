@@ -174,29 +174,63 @@ def test_recovery_retires_records_after_reboot_removes_memory_scratch(project, m
     assert (project.path / RESULTS / run / 'result.json').is_file()
 
 
-def test_plain_pytest_default_tmpdir_and_basetemp_use_owned_storage(tmp_path):
-    import subprocess
-    import sys
-    root = Path(__file__).resolve().parents[2]
-    example = tmp_path / 'test_direct.py'
-    example.write_text("""import os
+PLAIN_EXAMPLE = """import os
 from pathlib import Path
+
+from tests.conftest import socket_parent
+from tests.testrunner import layout, scratch
+
 
 def test_ordinary_temp(tmp_path):
     temporary = Path(os.environ['TMPDIR'])
     assert temporary == tmp_path
     assert temporary.is_dir()
-    assert any(parent.name == 't' for parent in tmp_path.parents)
-""")
+    assert any(parent.name == layout.PLAIN_TEMP for parent in tmp_path.parents)
+    if os.environ['EXPECT_STORAGE'] == 'memory':
+        assert scratch.in_memory(tmp_path)
+    else:
+        assert tmp_path.is_relative_to(socket_parent().parent / layout.PLAIN_TEMP)
+"""
+
+FORCE_DISK = """import tests.testrunner.scratch as scratch
+
+scratch.choose = lambda *args, **kwargs: None
+"""
+
+
+def plain_pytest(tmp_path, expect, plugins=()):
+    """Direct pytest of one example under the project's conftest, as a contributor runs it. The inner run
+    keeps the socket anchor this session validated: a checkout path too long for its own .testruns/s anchor,
+    GitHub's among them, is given a short TMUX_TMPDIR, and storage has nothing to do with sockets."""
+    import subprocess
+    import sys
+    root = Path(__file__).resolve().parents[2]
+    (tmp_path / 'test_direct.py').write_text(PLAIN_EXAMPLE)
+    (tmp_path / 'force_disk.py').write_text(FORCE_DISK)
     env = {key: value for key, value in os.environ.items()
            if key not in ('TESTRUNS_RUN', 'TESTRUN_EVIDENCE', 'TESTRUN_SESSION_RECORDS',
-                          'TMUX', 'TMUX_PANE', 'TMUX_TMPDIR', 'QD_TMUX_SOCKET')}
-    env.update(PYTHONPATH=str(root), PYTEST_DISABLE_PLUGIN_AUTOLOAD='1', PYTEST_ADDOPTS='',
-               TMPDIR=str(tmp_path), OPENBLAS_NUM_THREADS='1')
-    done = subprocess.run([sys.executable, '-m', 'pytest', '-q', '-p', 'tests.conftest',
-                           '-c', str(root / 'pyproject.toml'), str(example)],
+                          'TMUX', 'TMUX_PANE', 'QD_TMUX_SOCKET')}
+    path = [str(root), str(tmp_path), *filter(None, os.environ.get('PYTHONPATH', '').split(os.pathsep))]
+    env.update(PYTHONPATH=os.pathsep.join(path), PYTEST_DISABLE_PLUGIN_AUTOLOAD='1',
+               PYTEST_ADDOPTS='', TMPDIR=str(tmp_path), OPENBLAS_NUM_THREADS='1', EXPECT_STORAGE=expect,
+               TMUX_TMPDIR=str(Path(os.environ['TMUX_TMPDIR']).parent))  # the session's container's anchor
+    options = [item for plugin in plugins for item in ('-p', plugin)]
+    done = subprocess.run([sys.executable, '-m', 'pytest', '-q', *options, '-p', 'tests.conftest',
+                           '-c', str(root / 'pyproject.toml'), str(tmp_path / 'test_direct.py')],
                           env=env, cwd=tmp_path, capture_output=True, text=True, timeout=60)
     assert done.returncode == 0, done.stdout + done.stderr
+    return done.stdout
+
+
+def test_plain_pytest_default_tmpdir_and_basetemp_use_owned_memory(tmp_path):
+    if scratch.choose() is None:
+        pytest.skip('no writable executable tmpfs/ramfs has 4 GiB free: the fallback test covers this machine')
+    assert 'working files on disk' not in plain_pytest(tmp_path, 'memory')
+
+
+def test_plain_pytest_falls_back_to_the_project_disk_without_memory(tmp_path):
+    output = plain_pytest(tmp_path, 'disk', plugins=('force_disk',))
+    assert 'pytest: working files on disk: no writable executable tmpfs/ramfs has 4 GiB free' in output
 
 
 def test_outstanding_memory_scratch_keeps_the_next_run_on_disk(project, capsys):
