@@ -366,6 +366,11 @@ class Harness(ABC):
         """Recorded message consumption for attribution; never broadens delivery receipts."""
         return self.inputs(record)
 
+    def person_inputs(self, record: Path, excluded: tuple[str, ...]) -> list[datetime] | None:
+        """When the person typed into a human seat, from its record; None where this adapter declares
+        no way to tell the program's own notices from the person's input, so quiet time stays unknown."""
+        return None
+
     def join(self, home: Path, launched_at: datetime, excluded: tuple[Path, ...] = ()) -> Join:
         """The first record written after the launch; ambiguity reported, never guessed."""
         after = []

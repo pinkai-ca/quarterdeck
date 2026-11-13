@@ -227,6 +227,104 @@ def inputs(record: Path) -> list[Input]:
     return found
 
 
+# The program's own notices, as measured in Claude Code 2.1.317 records. A background task's end is
+# written as a user row whose origin kind is "task-notification", as a queued command in that mode,
+# or as queue content beginning with the notification tag. Nothing else is declared a notice.
+NOTICE_ORIGINS = frozenset({'task-notification'})
+NOTICE_TAG = '<task-notification>'
+
+
+def _notice_text(text: str) -> bool:
+    return text.lstrip().startswith(NOTICE_TAG)
+
+
+def _row_text(content) -> str | None:
+    """A user row's whole text, or None where it holds something other than text blocks."""
+    if isinstance(content, str):
+        return unwrap(content)
+    if isinstance(content, list) and content and all(isinstance(block, dict) and block.get('type') == 'text'
+                                                     and isinstance(block.get('text'), str) for block in content):
+        return unwrap('\n'.join(block['text'] for block in content))
+    return None
+
+
+def person_inputs(record: Path, excluded: tuple[str, ...]) -> list[datetime]:
+    """When the person typed, from the record alone, oldest first.
+
+    Every input row counts as the person's but the program's declared notices, a compaction summary
+    and a line in ``excluded`` (compared whole, so only exactly that text is left out). An input row
+    the reader cannot classify or date raises ValueError: the caller reads the quiet time as unknown.
+    A queued input counts both when it was typed and when it was taken in, so the later time wins:
+    an unrecognized row can only make the person seem more recent, never quieter.
+    """
+    class Evidence:
+        def __init__(self):
+            self.problems = []
+
+        def skip(self, line, kind, reason):
+            self.problems.append(reason)
+
+    evidence = Evidence()
+    rows = input_rows(record, _Reader.kinds, _Reader.label, evidence)
+    if evidence.problems:
+        raise ValueError('record has unreadable rows')
+    found = []
+
+    def person(row, text):
+        if text is not None and text.strip() in excluded:
+            return
+        stamp = when(row.get('timestamp'))
+        if stamp is None:
+            raise ValueError('an input row has no time')
+        found.append(stamp)
+
+    for _, row in rows:
+        if 'isSidechain' in row and type(row['isSidechain']) is not bool:
+            raise ValueError('an input row has an unknown history identity')
+        if row.get('isSidechain'):
+            continue
+        kind = row.get('type')
+        if kind == 'user':
+            message = row.get('message')
+            if not isinstance(message, dict):
+                raise ValueError('an input row is malformed')
+            content = message.get('content')
+            if isinstance(content, list) and any(isinstance(block, dict) and block.get('type') == 'tool_result'
+                                                 for block in content):
+                continue  # a tool's result, not an input
+            if row.get('isCompactSummary') is True:
+                continue
+            origin = row.get('origin')
+            if isinstance(origin, dict) and origin.get('kind') in NOTICE_ORIGINS:
+                continue
+            person(row, _row_text(content))
+        elif kind == 'queue-operation' and row.get('operation') == 'enqueue':
+            content = row.get('content')
+            if not isinstance(content, str):
+                raise ValueError('a queued input is malformed')
+            if not _notice_text(content):
+                person(row, unwrap(content))
+        elif kind == 'attachment':
+            attachment = row.get('attachment')
+            if not isinstance(attachment, dict) or attachment.get('type') != 'queued_command':
+                continue  # context the program attaches, not an input
+            origin = attachment.get('origin')
+            if (attachment.get('commandMode') == 'task-notification'
+                    or isinstance(origin, dict) and origin.get('kind') in NOTICE_ORIGINS):
+                continue
+            prompt = attachment.get('prompt')
+            text = unwrap(prompt) if isinstance(prompt, str) else None
+            if text is not None and _notice_text(text):
+                continue
+            stamp = when(attachment.get('timestamp')) or when(row.get('timestamp'))
+            if text is not None and text.strip() in excluded:
+                continue
+            if stamp is None:
+                raise ValueError('an input row has no time')
+            found.append(stamp)
+    return sorted(found)
+
+
 def usage_tokens(usage: dict) -> Tokens:
     return Tokens.from_usage(usage, ("cache_read_input_tokens", "input_tokens", "cache_creation_input_tokens", "output_tokens"))
 
@@ -614,6 +712,9 @@ class ClaudeHarness(Harness):
     remote_control = True
     human_tools = ('AskUserQuestion',)
     human_tool_policy = "AskUserQuestion is denied by the native permissions policy."
+
+    def person_inputs(self, record: Path, excluded: tuple[str, ...]) -> list[datetime]:
+        return person_inputs(record, excluded)
 
     def usage_scope(self, group: str | None, model: str | None) -> bool | None:
         from .claude_limits import FAMILIES, family

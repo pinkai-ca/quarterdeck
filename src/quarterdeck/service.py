@@ -140,7 +140,7 @@ class Service:
             self.log("error", step="load", error=str(error))
         self.rebind()
         self.structure_passes.begin()
-        for step in (self.reconcile, self.account, self.groups, self.cascades, self.inboxes, self.recoveries, self.refusals, self.answers, self.deliveries, self.follow, self.requests, self.compactions, self.fresh_after_order,
+        for step in (self.reconcile, self.account, self.groups, self.cascades, self.inboxes, self.recoveries, self.refusals, self.answers, self.deliveries, self.follow, self.requests, self.compactions, self.person_quiet, self.fresh_after_order,
                      self.rebrief, self.credentials, self.authentications, self.failover):  # accounting before anything relaunches a seat
             self.heartbeat()  # before every step: a slow delivery or usage read reads as busy, never as dead
             try:
@@ -833,6 +833,17 @@ class Service:
                 compaction_alert.step(self, seat)
             except (OSError, ShipError) as error:
                 self.log('error', step='compactions', seat=seat.name, error=repr(error))
+
+    def person_quiet(self) -> None:
+        """For each seat in a human session: keep the person's quiet time, and post its one wake when due."""
+        from . import person_quiet
+        for seat in self.resolved_seats():
+            if not seat.session.human:
+                continue
+            try:
+                person_quiet.tick(seat, self.store)
+            except (OSError, ShipError) as error:
+                self.log('error', step='person_quiet', seat=seat.name, error=repr(error))
 
     def fresh_after_order(self) -> None:
         """A worker whose last open order closed, and whose closing turn ended, starts fresh."""

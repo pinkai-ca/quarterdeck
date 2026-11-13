@@ -110,6 +110,7 @@ class SeatReading:
     model_mode: str | None = None
     effort_mode: str | None = None
     wake: str | None = None  # all wake states in detailed readings; the line filters actionable ones
+    person_quiet: dict | None = None  # human sessions only, from the kept fact alone
 
     @property
     def model_text(self) -> str:
@@ -170,12 +171,14 @@ def reading(seat: Seat | UnresolvedSeat, store: post.Store | None = None) -> Sea
     pool = launched.pool if launched and launched.pool in seat.ship.pools else seat.pool.name
     from .compaction import status as compaction_status
     from . import human_wake
+    from .person_quiet import summary as person_quiet
     wake = human_wake.status(seat) if seat.session.human else None
     return SeatReading(seat.name, act, door, order, tokens_today(seat), pool, running,
                        seat.harness.name, seat.spec.model, version, compaction_status(seat),
                        seat.ship.pool(pool).provider, providers.display(seat.ship.pool(pool).provider), seat.harness.program,
                        effort=observed.get('effort'), declared_effort=seat.spec.effort,
-                       model_mode=seat.spec.model_mode, effort_mode=seat.spec.effort_mode, wake=wake)
+                       model_mode=seat.spec.model_mode, effort_mode=seat.spec.effort_mode, wake=wake,
+                       person_quiet=person_quiet(seat) if seat.session.human else None)
 
 
 def tokens_today(seat: Seat | UnresolvedSeat) -> ledger.Count:
@@ -311,6 +314,8 @@ def render_full(data: dict) -> list[str]:
     lines += ['  ' + request_queue.describe(row) for row in data.get('requests', ())]
     if r.wake:
         lines.append(f"  {r.wake}")
+    if r.person_quiet:
+        lines.append(f"  {r.person_quiet['text']}")
     record, state = data["record"], data["state"]
     if record:
         if data["record_error"] is not None:
