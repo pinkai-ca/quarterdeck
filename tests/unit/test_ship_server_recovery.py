@@ -276,9 +276,11 @@ def test_a_deliberate_down_between_the_proof_and_the_effect_wins(ship, monkeypat
 
 def test_stopped_and_unknown_show_in_qd_status_with_no_server_and_none_is_started(ship, capsys, monkeypatch):
     from quarterdeck import cli
-    absent = Path(ship.server.socket)
+    from quarterdeck.tmux import ship_socket
+    absent = ship_socket(ship.ship)  # the ship's own server, which qd now names; nothing has started it
+    assert not absent.exists()
     monkeypatch.setenv('QD_SHIP', str(ship.ship.folder))
-    monkeypatch.setenv('QD_TMUX_SOCKET', str(absent))
+    monkeypatch.delenv('QD_TMUX_SOCKET', raising=False)
     recovery.save(ship.runtime, dict(format=1, stopped='2 attempts in the last hour', unknown=None, attempts=[]))
     assert cli.main(['status', '--line']) == 0
     line = capsys.readouterr().out
