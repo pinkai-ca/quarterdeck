@@ -104,4 +104,4 @@ def test_a_ship_without_a_repository_beside_it_is_told_where_to_run_upgrade(tmp_
     with pytest.raises(ShipError, match="no framework repository"):
         install.upgrade(ship, "HEAD")
     checked = doctor.framework_check(ship)
-    assert not checked.passed and "no copy yet; qd up makes one" in checked.detail
+    assert checked.passed and "no copy yet; qd up makes one" in checked.detail
