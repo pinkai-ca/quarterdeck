@@ -211,7 +211,7 @@ def test_sigterm_finishes_exact_phase_then_restart_delivers_once(world, phase):
     world.progress(original)
 
 
-def test_forced_cut_is_named_and_remains_unsubmitted(world, monkeypatch):
+def test_forced_cut_is_named_and_the_one_look_submits_it_once(world, monkeypatch):
     monkeypatch.setattr(shutdown, "ORDINARY_GRACE", .1)
     monkeypatch.setattr(shutdown, "DELIVERY_GRACE", .3)
     world.start("forced")
@@ -226,7 +226,8 @@ def test_forced_cut_is_named_and_remains_unsubmitted(world, monkeypatch):
     world.start()
     wait_for(lambda: servicectl.started(runtime))
     assert pending.active(world.seat)
-    assert world.submitted() == 0
+    look = wait_for(lambda: (world.journal() or {}).get("look"))  # the one look, journalled before its press
+    assert look["outcome"] == "submitted" and wait_for(lambda: world.submitted() == 1) and world.submitted() == 1
 
 
 @pytest.mark.parametrize('world', [None], indirect=True)
