@@ -28,7 +28,8 @@ HOSTED = "/home/runner/work/quarterdeck/quarterdeck"  # GitHub's default workspa
 STEP = "- name: Unit, contract and integration tests"
 SYNTHETIC_TEST = "def test_synthetic_session_reaches_a_test():\n    pass\n"
 DROPPED = ("TMUX_TMPDIR", "TMUX", "TMUX_PANE", "QD_SHIP", "QD_SEAT", "QD_TMUX_SOCKET", "TESTRUNS_RUN", "RUNNER_TEMP",
-           "BASH_ENV")  # bash -e reads BASH_ENV when it is set; the runner sets none
+           "BASH_ENV",  # bash -e reads BASH_ENV when it is set; the runner sets none
+           "TESTRUNS_JAILED", "TESTRUNS_SOCKETS")  # a hosted runner is no jail, even when this suite runs in one
 
 
 def deepest(anchor: Path) -> int:
