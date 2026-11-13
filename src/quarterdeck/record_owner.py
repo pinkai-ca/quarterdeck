@@ -169,6 +169,7 @@ class Owned:
     name: str | None
     reader: Harness | None
     reason: str | None = None
+    transient: bool = False  # the ownership evidence itself could not be read; never settled, read again
 
     def read(self) -> tuple[State, list[Turn]]:
         if self.reader is None:
@@ -181,7 +182,8 @@ def records(seat: Seat) -> list[Owned]:
     try:
         found = bindings(seat)
     except OSError as error:
-        return [Owned(registry(seat.home.parent), None, None, f"{error}; inspect ownership for {seat.name} with qd watch {seat.name}")]
+        return [Owned(registry(seat.home.parent), None, None, f"{error}; inspect ownership for {seat.name} with qd watch {seat.name}",
+                      transient=True)]
     known = {name for names in found.values() for name in names if name in harnesses.NAMES}
     if name := launch_reader(seat.launched()):
         known.add(name)

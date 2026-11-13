@@ -275,21 +275,22 @@ def test_an_unknown_reader_stays_visibly_unresolved_until_its_evidence_changes(t
     original = record_owner.Owned.read
     monkeypatch.setattr(record_owner.Owned, 'read', lambda self: attempts.append(self.path) or original(self))
     svc.account()
-    assert attempts == [record] and svc.ledger.ingested(record) == 0
+    assert attempts == [] and svc.ledger.ingested(record) == 0, 'a record no reader can read is settled, not parsed'
     assert [(r, e) for r, _, _, e in svc.ledger.incomplete_records()] == [(str(record), reason)]
     trace = []
     svc.ledger.db.set_trace_callback(trace.append)
     for _ in range(3):
         w.clock.now += 3600
         svc.account()
-    assert attempts == [record] and writes(trace) == [], 'no retry clock applies without new evidence'
+    assert attempts == [] and writes(trace) == [], 'no retry clock applies without new evidence'
     assert [(r, e) for r, _, _, e in svc.ledger.incomplete_records()] == [(str(record), reason)], \
         'an unknown turn count is never shown as zero'
     assert [event for event, _ in w.logs].count('error') == 1
     record.write_text('synthetic record bytes moved')
     trace.clear()
     svc.account()
-    assert attempts == [record, record] and writes(trace) == []
+    assert attempts == [] and [event for event, _ in w.logs].count('error') == 2, 'changed bytes are settled again, once'
+    assert trace.count('COMMIT') == 1
     # Once its reader becomes known the record is read and accounted in one commit.
     w.owned[record] = record_owner.Owned(record, 'fake', w.seat.harness)
     trace.clear()

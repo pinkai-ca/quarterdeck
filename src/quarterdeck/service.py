@@ -42,6 +42,21 @@ TYPING_QUIET = 30  # seconds since a client's last key or mouse input before its
 STATUS_INTERVAL = 0.7  # presentation only; rendering age and owner are checked independently
 ACCOUNT_RETRY = 60.0  # unchanged transient source failures, never provider pacing
 
+
+def empty_record(fingerprint: tuple) -> bool:
+    """A record present and empty, with no write-ahead log: it holds no turn, whatever program wrote it."""
+    record, wal = fingerprint
+    return record[0] and record[2] == 0 and not wal[0]
+
+
+def settlement_of(stamp: tuple, reason: str | None) -> str:
+    """What settles a record of unknown reader: its bytes on disk and why its reader is unknown.
+
+    A changed record, or a reader named for it (its stamp's reader name), is a new attempt; the
+    rest of the seat's registry and its launch prices cannot change what an unreadable record gives.
+    """
+    return "v1:" + hashlib.sha256(json.dumps([stamp, reason], default=str).encode()).hexdigest()
+
 # Door alarms only a person can clear: a sign-in (every adapter names that dialog "login"),
 # or a delivery whose paste or submit outcome is uncertain (the pending journal's own reasons).
 # This reason category does not determine routing: crew alarms go to systems
@@ -928,6 +943,23 @@ class Service:
                 record = owned.path
                 pool = launched.pool if (record == current and launched) else UNKNOWN
                 stamp, evidence = None, None
+                if owned.reader is None and not owned.transient:
+                    # law: every-turn-accounted -- a record whose reader is unknown is settled once
+                    try:
+                        stamp = (owned.name, record_fingerprint(record))
+                    except OSError:
+                        stamp = None  # unreadable metadata: the ordinary transient path below
+                    if stamp is not None:
+                        errors.pop(record, None)
+                        if empty_record(stamp[1]):
+                            reads.append((record, pool, stamp, None, (), None, None, None))  # no turns, whatever reads it
+                            continue
+                        settlement = settlement_of(stamp, owned.reason)
+                        if self.ledger.settled(record) != (owned.reason, settlement):
+                            notices.append(("error", dict(step="account", seat=seat.name, record=record.name,
+                                                          error=owned.reason, settled=True)))
+                            reads.append((record, pool, stamp, None, (), owned.reason, None, settlement))
+                        continue
                 try:
                     stamp = (owned.name, record_fingerprint(record))
                     evidence = (stamp, owned.reason, record_fingerprint(record_owner.registry(seat.home.parent)), prepared[1])
@@ -935,8 +967,7 @@ class Service:
                     if marks.get(record) == stamp and prepared[2] is None:
                         continue
                     prior = errors.get(record)
-                    if (prior is not None and prior[0] == evidence and
-                            (owned.reader is None or time.monotonic() < prior[2])):
+                    if prior is not None and prior[0] == evidence and time.monotonic() < prior[2]:
                         continue
                     state, turns = owned.read()
                 except OSError as error:
@@ -945,10 +976,10 @@ class Service:
                     if prior is None or prior[:2] != (evidence, message):
                         notices.append(("error", dict(step="account", seat=seat.name, record=record.name, error=message)))
                     errors[record] = evidence, message, time.monotonic() + ACCOUNT_RETRY
-                    reads.append((record, pool, stamp, None, (), message, owned.reader))
+                    reads.append((record, pool, stamp, None, (), message, owned.reader, None))
                     continue
                 errors.pop(record, None)
-                reads.append((record, pool, stamp, state, turns, None, owned.reader))
+                reads.append((record, pool, stamp, state, turns, None, owned.reader, None))
             screen = Door(seat).screen() if live and seat.harness.screen_walls else None
             observations.append((seat, pane, launched, live, current, prepared, reads, screen))
 
@@ -957,10 +988,13 @@ class Service:
                 for changed in book.provenance.sync(seat, current, launched, commit=False, prepared=prepared):
                     marks.pop(changed, None)
                 meter = meters.get(seat.name)
-                for record, pool, stamp, state, turns, error, reader in reads:
+                for record, pool, stamp, state, turns, error, reader, settlement in reads:
                     if error is not None:
-                        book.mark_record(record, seat.name, pool, error, commit=False)
+                        book.mark_record(record, seat.name, pool, error, commit=False, evidence=settlement)
                         marks.pop(record, None)
+                        continue
+                    if state is None:  # an empty record of unknown reader: settled, with nothing to account
+                        book.mark_record(record, seat.name, pool, None, commit=False)
                         continue
                     book.quota.record(record, seat.name, state.walls, book.provenance, post.now(), commit=False)
                     incomplete = "incomplete turn state in record" if (state.turns is None or state.turn_open is None) else None

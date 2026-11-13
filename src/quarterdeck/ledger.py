@@ -83,13 +83,14 @@ CREATE TABLE IF NOT EXISTS pools (
     PRIMARY KEY (pool, window)
 );
 CREATE TABLE IF NOT EXISTS records (
-    record TEXT PRIMARY KEY, seat TEXT NOT NULL, pool TEXT NOT NULL, error TEXT NOT NULL
+    record TEXT PRIMARY KEY, seat TEXT NOT NULL, pool TEXT NOT NULL, error TEXT NOT NULL, evidence TEXT
 );
 """
 # Columns added since a table was first written; an older file gains them when the service opens it.
 ADDED_COLUMNS = {
     "turns": (("unmeasured", "INTEGER NOT NULL DEFAULT 0"),),
     "pools": (("blocks", "INTEGER NOT NULL DEFAULT 1"), ("group_name", "TEXT"), ("bucket", "TEXT"), ("bucket_name", "TEXT"), ("exhausted", "TEXT NOT NULL DEFAULT ''")),
+    "records": (("evidence", "TEXT"),),
 }
 # A turn whose tokens are not wholly known: a step without usage, or a class an older row left null.
 PARTLY_UNMEASURED = "unmeasured > 0 OR read_cached IS NULL OR read_uncached IS NULL OR cache_written IS NULL OR written IS NULL"
@@ -224,17 +225,29 @@ class Ledger:
         """How many turns of this record are already in the Ledger."""
         return self.db.execute("SELECT COUNT(*) FROM turns WHERE record = ?", (str(record),)).fetchone()[0]
 
-    def mark_record(self, record: Path, seat: str, pool: str, error: str | None, *, commit: bool = True) -> None:
-        """Note a record that could not be read, or clear the note: its seat's figures carry a ``+`` while it stands."""
-        old = self.db.execute("SELECT seat,pool,error FROM records WHERE record=?", (str(record),)).fetchone()
-        if (error is None and old is None) or old == (seat, pool, error):
+    def mark_record(self, record: Path, seat: str, pool: str, error: str | None, *, commit: bool = True,
+                    evidence: str | None = None) -> None:
+        """Note a record that could not be read, or clear the note: its seat's figures carry a ``+`` while it stands.
+
+        ``evidence`` settles a note that no later pass can change while the record stands as it is,
+        a record whose reader is unknown: the service reads ``settled`` and neither reads nor logs it again.
+        """
+        old = self.db.execute("SELECT seat,pool,error,evidence FROM records WHERE record=?", (str(record),)).fetchone()
+        if (error is None and old is None) or old == (seat, pool, error, evidence):
             return
         if error is None:
             self.db.execute("DELETE FROM records WHERE record = ?", (str(record),))
         else:
-            self.db.execute("INSERT OR REPLACE INTO records VALUES (?,?,?,?)", (str(record), seat, pool, error))
+            self.db.execute("INSERT OR REPLACE INTO records (record,seat,pool,error,evidence) VALUES (?,?,?,?,?)",
+                            (str(record), seat, pool, error, evidence))
         if commit and self.db.in_transaction:
             self.db.commit()
+
+    def settled(self, record: Path) -> tuple[str, str] | None:
+        """The error and evidence a record was settled with, or None when it is not settled."""
+        row = self.db.execute("SELECT error, evidence FROM records WHERE record=? AND evidence IS NOT NULL",
+                              (str(record),)).fetchone()
+        return tuple(row) if row else None
 
     def incomplete_records(self) -> list[tuple[str, str, str, str]]:
         errors = self.db.execute("SELECT record, seat, pool, error FROM records ORDER BY record").fetchall()
