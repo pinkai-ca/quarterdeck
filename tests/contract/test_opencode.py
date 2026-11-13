@@ -382,10 +382,10 @@ def test_scoped_hand_relaunch_refuses_unproved_directory_before_retirement(tmp_p
     assert seat.is_up
     retired = []
     monkeypatch.setattr(seat, "_down", lambda: retired.append(True) or "down")
-    monkeypatch.setattr(seat, "_up", lambda resume: pytest.fail("a refused resume launched"))
+    monkeypatch.setattr(seat, "_up", lambda resume, *, observation=None: pytest.fail("a refused resume launched"))
     with pytest.raises(ShipError, match="qd fresh w starts a scoped session"):
         seat.restart()
     assert not retired
 
-    monkeypatch.setattr(seat, "_up", lambda resume: "resumed" if resume else "fresh")
+    monkeypatch.setattr(seat, "_up", lambda resume, *, observation=None: "resumed" if resume else "fresh")
     assert seat.fresh() == "down\nfresh" and retired == [True]

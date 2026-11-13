@@ -44,7 +44,7 @@ def world(tmp_path, monkeypatch, request):
     def down():
         calls.append('down')
         return 'synthetic down'
-    def up(resume=True):
+    def up(resume=True, *, observation=None):
         first, messages = seat.first_message()
         carried.append(messages)
         calls.append('resume' if resume else 'fresh')
@@ -670,7 +670,7 @@ def test_measured_fake_program_uses_real_lifecycle_and_carries_open_handoff(worl
     monkeypatch.setattr(w.seat, 'record', lambda: Seat.record(w.seat))
     monkeypatch.setattr(w.seat, 'join', lambda: Seat.join(w.seat))
     monkeypatch.setattr(w.seat, '_down', lambda: Seat._down(w.seat))
-    def up(resume=True):
+    def up(resume=True, *, observation=None):
         proof = Seat._up(w.seat, resume)
         if lost_reply:
             raise OSError('synthetic crash after durable successor launch')

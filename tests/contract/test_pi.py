@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from quarterdeck import endpoint, input_receipt
+from quarterdeck import endpoint, input_receipt, ship as shipmod
 from quarterdeck.harness import pi
 from quarterdeck.harness.pi import PiHarness
 from quarterdeck.ship import Pool, SeatSpec, ShipError
@@ -161,6 +161,28 @@ def served(monkeypatch):
     monkeypatch.setattr(endpoint, "models", lambda url, timeout=0, **kwargs: [endpoint.Served("qwen3.8-27b", 98304)])
 
 
+def test_unsupported_effort_is_refused_when_the_ship_loads(tmp_path: Path):
+    (tmp_path / "ship.toml").write_text('''\
+[ship]
+name = "effort-example"
+workspace = "."
+[pools.endpoint]
+provider = "local"
+endpoint = "http://127.0.0.1:8000/v1"
+[sessions.crew]
+[seats.sample]
+session = "crew"
+role = "worker"
+harness = "pi"
+pool = "endpoint"
+model = "synthetic-model"
+effort = "max"
+''')
+    with pytest.raises(ShipError, match="effort 'max' is not supported by pi; the levels are off, minimal, low, medium, high, xhigh"):
+        shipmod.load(tmp_path)
+    assert not (tmp_path / "runtime").exists(), "an unsupported effort never reaches launch"
+
+
 def test_the_home_is_built_from_the_endpoint_and_the_launch_carries_the_brief_and_nothing_of_the_projects(tmp_path: Path, served, monkeypatch):
     harness = PiHarness()
     pool = Pool("local-a", "local", endpoint="http://127.0.0.1:8000/v1")
@@ -190,8 +212,6 @@ def test_the_home_is_built_from_the_endpoint_and_the_launch_carries_the_brief_an
     harness.build_home(home, plain, pool, None)
     assert json.loads((home / "agent" / "models.json").read_text())["providers"]["local-a"]["models"][0]["reasoning"] is False, "no effort: no thinking"
     assert "--thinking" not in harness.launch(plain, pool, home, brief, None, None).argv
-    with pytest.raises(ShipError, match="not a pi thinking level; the levels are off, minimal"):
-        harness.build_home(home, SeatSpec("w", "crew", "worker", "pi", ("local-a",), effort="max"), pool, None)
     monkeypatch.setenv("LOCAL_KEY", "secret-value")
     keyed = Pool("remote", "openrouter", endpoint="https://example.invalid/v1", api_key="env:LOCAL_KEY")
     assert harness.build_home(home, plain, keyed, None).variable == "QD_ENDPOINT_KEY"

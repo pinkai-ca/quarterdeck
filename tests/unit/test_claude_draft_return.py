@@ -90,7 +90,7 @@ def test_popped_nonopen_post_is_unread_and_carried_until_actual_submission(setup
         # Exercise the real restart/fresh lifecycle entry points and real first_message;
         # replace only retirement/program launch, so no native process or provider runs.
         monkeypatch.setattr(seat, "_down", lambda: "synthetic down")
-        def launch(*, resume=False):
+        def launch(*, resume=False, observation=None):
             first, messages = seat.first_message()
             carried.append((resume, first, messages))
             return "synthetic launch"

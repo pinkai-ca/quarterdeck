@@ -18,6 +18,36 @@ from quarterdeck.harness.capabilities import EffortCapability, validate_effort, 
 from quarterdeck.watch import SeatReading, render_full, render_table
 
 
+@pytest.mark.parametrize('failure', [PermissionError('template unreadable'), FileNotFoundError('template disappeared')])
+def test_doctor_template_read_error_is_a_failed_row(tmp_path, monkeypatch, failure):
+    from types import SimpleNamespace
+
+    selected = shipmod.SeatSpec('sample', 'crew', 'worker', 'fake', ('synthetic-pool',))
+    proxy = SimpleNamespace(folder=tmp_path, runtime=tmp_path / 'runtime',
+                            seats={selected.name: selected}, cwd_of=lambda spec: tmp_path)
+
+    def unreadable(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(harness.get('fake'), 'check_defaults', unreadable)
+    failed, = (row for row in doctor.seat_readiness(proxy) if not row.passed)
+    assert failed.name == 'seat sample pool synthetic-pool readiness'
+    assert failed.detail == str(failure)
+
+
+@pytest.mark.parametrize('mode', ['model_mode', 'effort_mode'])
+def test_doctor_program_default_needs_template_home_provenance(tmp_path, mode):
+    from types import SimpleNamespace
+
+    selected = shipmod.SeatSpec('sample', 'crew', 'worker', 'fake', ('synthetic-pool',),
+                                **{mode: 'program-default'})
+    proxy = SimpleNamespace(runtime=tmp_path / 'runtime', seats={selected.name: selected},
+                            cwd_of=lambda spec: tmp_path)
+    failed, = (row for row in doctor.seat_readiness(proxy) if not row.passed)
+    assert failed.name == 'seat sample pool synthetic-pool readiness'
+    assert 'ship folder unavailable' in failed.detail
+
+
 PI_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh")
 UNMEASURED = ("claude", "codex", "grok", "antigravity")
 DEFAULT_LABEL = "program's default (not checked)"

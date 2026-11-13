@@ -199,7 +199,7 @@ def stub_doctor_dependencies(monkeypatch):
     monkeypatch.setattr(doctor, "program_version", lambda argv: "synthetic-system-version")
     monkeypatch.setattr(doctor, "framework_check", lambda ship: Check("framework", True, "synthetic framework"))
     monkeypatch.setattr(doctor, "pool_check", lambda pool: Check("pool", True, "synthetic pool"))
-    monkeypatch.setattr(doctor, "seat_readiness", lambda ship: [])
+    monkeypatch.setattr(doctor, "seat_readiness", lambda ship, *, versions=None: [])
     monkeypatch.setattr(doctor.watch, "disks", lambda paths: [])
     monkeypatch.setattr(doctor.servicectl, "alive", lambda runtime: False)
 

@@ -91,11 +91,14 @@ def seat_readiness(ship: Ship, *, versions: dict[str, str | None] | None = None)
             try:
                 note = validate_selection(selected, reader,
                                           version=(versions or {}).get(reader.name), installed=True)
-                reader.check_defaults(selected, ship.folder / 'homes' / reader.name)
+                folder = getattr(ship, 'folder', None)
+                if folder is None and 'program-default' in (selected.model_mode, selected.effort_mode):
+                    raise ShipError('ship folder unavailable; cannot check program-default template provenance')
+                reader.check_defaults(selected, folder / 'homes' / reader.name if folder is not None else None)
                 found.append(Check(f"seat {seat.name} pool {choice} effort", True,
                                    note or 'declared selection compatible; no model/account check'))
                 reader.preflight(home, cwd)
-            except ShipError as error:
+            except (ShipError, OSError) as error:
                 found.append(Check(f"seat {seat.name} pool {choice} readiness", False, str(error)))
             notice = reader.workspace_notice(home, cwd)
             if notice:
