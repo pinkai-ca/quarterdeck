@@ -886,7 +886,7 @@ class Service:
             state = updated
 
         record = seat.record()
-        if record is not None and verify():
+        if record is not None and state.origin['record']['path'] is None and verify():
             bound = seat.harness.model_control_join(seat, record, state.origin['record'])
             if bound is not None and bound != state.origin['record'] and verify():
                 persist(replace(state, origin={**state.origin, 'record': bound}))
