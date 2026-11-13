@@ -29,8 +29,7 @@ from quarterdeck.seat import Launched, Seat
 from quarterdeck.service import Service
 from quarterdeck.tmux import Pane
 
-EXACT = ('qd > ship: messages are waiting for you. Run `qd inbox --wait` now and follow what it prints; '
-         'if your program can keep a command running in the background, keep it running there.')
+EXACT = 'qd > ship: messages are waiting. Run qd inbox --wait now to read them.'  # captain 400c, 70 characters
 MARKER = 'synthetic-planted-payload-wqzv'
 RULE = '─' * 40
 DESK = Pane('%7', 'Office', 'desk', 4242, 400, 40, False, False, None)
@@ -157,7 +156,7 @@ def confirmed_wake(d):
 
 
 def test_the_line_is_the_captains_exact_fixed_text_with_no_control_characters():
-    assert human_wake.LINE == EXACT
+    assert human_wake.LINE == EXACT and len(EXACT) == 70
     assert '\n' not in EXACT and not any(ord(c) < 32 or ord(c) == 127 for c in EXACT)
 
 
@@ -793,7 +792,8 @@ def checking(desk, monkeypatch):
     from contextlib import contextmanager
 
     @contextmanager
-    def temporary(ship, tmux, spec, orders, purpose, *, human=False):
+    def temporary(ship, tmux, spec, orders, purpose, *, human=False, check_inbox=False):
+        assert check_inbox is True, 'every check seat is admitted to its own inbox by the check alone'
         launched.append((spec.name, human))
         seat = SimpleNamespace(name=spec.name, ship=ship, folder=ship.runtime / 'seats' / spec.name)
         seat.folder.mkdir(parents=True, exist_ok=True)

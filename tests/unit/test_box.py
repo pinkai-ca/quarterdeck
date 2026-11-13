@@ -22,7 +22,7 @@ def test_every_adapter_accepts_exact_width_wraps_and_rejects_edits(name, body) -
     else:
         text = "\n".join(["─" * 42, "> " + rows[0], *["  " + r for r in rows[1:]], "─" * 42,
                           "fake claude · model test · effort low · idle"])
-    seat = SimpleNamespace(harness=harness, tmux=None, pane=lambda: SimpleNamespace(width=columns + (3 if name == "codex" else 2)))
+    seat = SimpleNamespace(harness=harness, tmux=None, pane=lambda: SimpleNamespace(width=columns + {"codex": 3, "claude": 4}.get(name, 2)))
     screen = harness.screen(text)
     # law: one-door
     assert Door(seat).matches(harness.box(body.rstrip()), screen)
