@@ -15,7 +15,7 @@ What the framework itself guarantees, enforced in code and tests. A rule nothing
 ## Seat
 
 - `identity` A seat's identity is its pane id, process id and record. Names and titles are display.
-- `one-door` Everything typed into a seat goes through one path, in one process: it clears what it knows how to clear, refuses what it does not, types once into an empty box, checks the box as the program shows it, submits, and confirms by the record. Into a session the human owns it types only when a message waits there, no watch is armed and the box is empty. Never resend what you cannot confirm.
+- `one-door` Everything typed into a seat goes through one path, in one process: it clears what it knows how to clear, refuses what it does not, types once into an empty box, checks the box as the program shows it, submits, and confirms by the record. Where it cannot confirm, it looks once more, record first: text still in the box it submits, a message the record shows it counts as delivered, and a message that neither shows it types once more into the empty box of an idle seat. What it still cannot settle it holds, and never types again by itself. Through qd, a screen it does not know is answered only by a choice that a systems seat makes through this same path, in a seat no human owns, recorded before it is pressed. Into a session the human owns it types only when a message waits there, no watch is armed and the box is empty.
 - `context-is-cache` After any restart or fresh start a seat receives its brief and every open message in full, except a message its provider refused, which it receives as a notice without the text while the sender is told; so a seat may be relaunched at any time and the ship loses nothing it sent. Where the open messages are too long for a seat's first message, that message gives a short account of each and names a file that holds them in full, which the seat is told to read whole before it acts.
 
 ## Watch
@@ -25,7 +25,7 @@ What the framework itself guarantees, enforced in code and tests. A rule nothing
 
 ## Post
 
-- `post-is-files` Messages are immutable files addressed to seats by name, whatever program a seat runs. The service renders inboxes and delivers each message once, in full, through the seat's door or its watch.
+- `post-is-files` Messages are immutable files addressed to seats by name, whatever program a seat runs. The service renders inboxes and delivers each message once, in full, through the seat's door or its watch. A message the door types a second time keeps its id, and the seat reads the two as one message.
 - `open-until-closed` An order stays open until its addressee reports on it. Acknowledgments claim; they never close and never wake.
 - `events-not-clocks` No seat is asked to poll. The service wakes seats on arrivals and retries withheld deliveries on one tick.
 - `can-post` Every seat can run `qd post` from its launch: the adapter grants it through the program's own permissions and sandbox, and `qd check` proves it by posting once.

@@ -27,7 +27,7 @@ The lines of code and test that carry a law are marked `# law: <id>`. Following 
 
 **1. The full statement.** "It" is the one path; the box is the input box of the agent's program. In a session the human owns, such as `Office`, the agent keeps a watch for messages.
 
-> Everything typed into a seat goes through one path, in one process: it clears what it knows how to clear, refuses what it does not, types once into an empty box, checks the box as the program shows it, submits, and confirms by the record. Into a session the human owns it types only when a message waits there, no watch is armed and the box is empty. Never resend what you cannot confirm.
+> Everything typed into a seat goes through one path, in one process: it clears what it knows how to clear, refuses what it does not, types once into an empty box, checks the box as the program shows it, submits, and confirms by the record. Where it cannot confirm, it looks once more, record first: text still in the box it submits, a message the record shows it counts as delivered, and a message that neither shows it types once more into the empty box of an idle seat. What it still cannot settle it holds, and never types again by itself. Through qd, a screen it does not know is answered only by a choice that a systems seat makes through this same path, in a seat no human owns, recorded before it is pressed. Into a session the human owns it types only when a message waits there, no watch is armed and the box is empty.
 
 **2. The code.** `Door.deliver`, in [src/quarterdeck/door.py](../src/quarterdeck/door.py), types a message into an agent's pane:
 
