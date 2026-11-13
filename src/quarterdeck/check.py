@@ -158,7 +158,7 @@ def model_confirmation(seat: Seat, requested: str, *, require_record: bool = Fal
     observed = recorded or shown
     launched = seat.spec.model
     passed = (launched == requested and seat.harness.model_matches(requested, observed) is True
-              and (not shown or seat.harness.model_matches(requested, shown) is True)
+              and (not shown or seat.harness.screen_model_consistent(requested, shown, screen.shows.get("effort")) is True)
               and (not require_record or recorded is not None))
     detail = (f"requested {requested} · launched {launched or '?'} · record-observed {recorded or '?'}"
               + (f" · screen-observed {shown}" if shown else ""))

@@ -103,3 +103,64 @@ def test_a_requested_model_not_confirmed_records_the_model_reason(monkeypatch):
     result = check.model_confirmation(seat, "flash-synth")
     assert result.passed is False and result.reason == "model", "a failed confirmation is classified, not unclassified"
     assert check_outcome.event("failed", "1.0", result.reason)["step"] == "model"
+
+
+# Antigravity 1.5.5: the record names "Gemini 3.8 Flash (Low)"; the footer shows "Gemini 3.8 Flash · low".
+FIXTURES_155 = Path(__file__).parents[1] / "fixtures/antigravity/1.5.5"
+
+
+def antigravity_seat(monkeypatch, recorded, screen):
+    harness = AntigravityHarness()
+    harness.state = lambda record: SimpleNamespace(model=recorded)
+    seat = SimpleNamespace(harness=harness, spec=SimpleNamespace(model="gemini-3.8-flash-low"),
+                           record=lambda: Path("record-synth") if recorded else None)
+    monkeypatch.setattr(check, "Door", lambda seat: SimpleNamespace(screen=lambda: screen))
+    return seat
+
+
+def test_the_record_confirms_the_tier_the_measured_footer_leaves_out(monkeypatch):
+    screen = AntigravityHarness().screen((FIXTURES_155 / "idle-notice-80.txt").read_text())
+    assert screen.shows == {"model": "Gemini 3.8 Flash", "effort": "low"}
+    result = check.model_confirmation(antigravity_seat(monkeypatch, "Gemini 3.8 Flash (Low)", screen), "gemini-3.8-flash-low")
+    assert result.passed, result.detail
+    assert "record-observed Gemini 3.8 Flash (Low)" in result.detail and "screen-observed Gemini 3.8 Flash" in result.detail
+
+
+def test_a_footer_family_without_effort_is_consistent_with_the_record(monkeypatch):
+    screen = Screen("", "", shows={"model": "Gemini 3.8 Flash"})
+    assert check.model_confirmation(antigravity_seat(monkeypatch, "Gemini 3.8 Flash (Low)", screen), "gemini-3.8-flash-low").passed
+
+
+def test_the_footer_family_alone_never_confirms_the_tier(monkeypatch):
+    screen = Screen("", "", shows={"model": "Gemini 3.8 Flash", "effort": "low"})
+    result = check.model_confirmation(antigravity_seat(monkeypatch, None, screen), "gemini-3.8-flash-low")
+    assert result.passed is False and result.reason == "model"
+    assert check.model_confirmation(antigravity_seat(monkeypatch, None, screen), "gemini-3.8-flash-low",
+                                    require_record=True).passed is False
+
+
+def test_a_footer_naming_another_model_or_tier_contradicts_the_record(monkeypatch):
+    argon = AntigravityHarness().screen((FIXTURES_155 / "idle-argon-medium-200.txt").read_text())
+    assert argon.shows == {"model": "Gemini 4 Argon", "effort": "medium"}
+    high = Screen("", "", shows={"model": "Gemini 3.8 Flash", "effort": "high"})
+    for screen in (argon, high, Screen("", "", shows={"model": "Gemini 3.8 Flash (High)"})):
+        result = check.model_confirmation(antigravity_seat(monkeypatch, "Gemini 3.8 Flash (Low)", screen), "gemini-3.8-flash-low")
+        assert result.passed is False, screen.shows
+
+
+def test_screen_consistency_rule_for_antigravity_and_the_exact_default():
+    from quarterdeck.harness import antigravity_models as models
+    agy = AntigravityHarness()
+    assert agy.screen_model_consistent("gemini-3.8-flash-low", "Gemini 3.8 Flash (Low)") is True
+    assert agy.screen_model_consistent("gemini-3.8-flash-low", "Gemini 3.8 Flash", "low") is True
+    assert agy.screen_model_consistent("gemini-3.8-flash-low", "Gemini 3.8 Flash", "LOW") is True
+    assert agy.screen_model_consistent("gemini-3.8-flash-low", "Gemini 3.8 Flash") is True
+    assert agy.screen_model_consistent("gemini-3.8-flash-low", "Gemini 3.8 Flash", "medium") is False
+    assert agy.screen_model_consistent("gemini-3.8-flash-low", "Gemini 4 Argon", "low") is False
+    assert agy.screen_model_consistent("gemini-4-argon-low", "Gemini 4 Argon", "low") is True
+    assert agy.screen_model_consistent("model-synth", "other-synth") is False, "no measured family: another name contradicts"
+    assert agy.screen_model_consistent("model-synth", None) is None
+    assert models.same_model("gemini-3.8-flash-low", "Gemini 3.8 Flash") is not True, "a family is not the model"
+    codex = CodexHarness()
+    assert codex.screen_model_consistent("model-synth", "model-synth") is True
+    assert codex.screen_model_consistent("model-synth", "model") is False

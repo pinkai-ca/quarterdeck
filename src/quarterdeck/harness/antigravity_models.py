@@ -59,3 +59,21 @@ def same_model(left: str | None, right: str | None) -> bool | None:
         return True
     left, right = MODEL_IDENTITIES.get(left), MODEL_IDENTITIES.get(right)
     return left == right if left is not None and right is not None else None
+
+
+def screen_consistent(requested: str | None, shown: str | None, effort: str | None = None) -> bool | None:
+    """Antigravity 1.5.5's footer shows a model's family and its tier apart ("Gemini 3.8 Flash · low"), where the
+    record names "Gemini 3.8 Flash (Low)". A shown family is consistent with the requested model when it does not
+    contradict it: the same family, and a shown tier, if any, the same. It never confirms a tier: the record does.
+    Another family, or another tier, contradicts."""
+    if not requested or not shown:
+        return None
+    if same_model(requested, shown) is True:
+        return True
+    canonical = MODEL_IDENTITIES.get(requested, requested)
+    family, opened, tier = canonical.partition(" (")
+    if not opened or not tier.endswith(")"):
+        return False  # no measured family and tier for the requested model: a different name contradicts
+    if shown != family:
+        return False
+    return effort is None or effort.lower() == tier[:-1].lower()

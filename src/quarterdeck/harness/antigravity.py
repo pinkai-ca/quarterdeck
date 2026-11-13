@@ -74,6 +74,10 @@ class AntigravityHarness(Harness):
         from .antigravity_models import same_model
         return same_model(requested, observed)
 
+    def screen_model_consistent(self, requested: str, shown: str | None, effort: str | None = None) -> bool | None:
+        from .antigravity_models import screen_consistent
+        return screen_consistent(requested, shown, effort)
+
     def quota_scope(self, event, model: str | None) -> bool | None:
         from .antigravity_models import event_applies
         return event_applies(event, model)

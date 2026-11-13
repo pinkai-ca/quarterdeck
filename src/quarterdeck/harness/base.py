@@ -345,6 +345,14 @@ class Harness(ABC):
         """Exact identities by default; aliases require adapter-owned native evidence."""
         return requested == observed if observed else None
 
+    def screen_model_consistent(self, requested: str, shown: str | None, effort: str | None = None) -> bool | None:
+        """Whether a model the screen shows agrees with the requested one; by default only an exact match does.
+
+        It never confirms a model: the record does. An adapter whose screen shows less than its record
+        may call a shown family consistent; a screen naming another model is never consistent.
+        """
+        return self.model_matches(requested, shown)
+
     def quota_scope(self, event: Wall, model: str | None) -> bool | None:
         """A refusal at a model group's limit applies as that group's window does; one with no group, to every model."""
         return True if event.group is None else self.usage_scope(event.group, model)
