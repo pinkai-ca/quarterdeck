@@ -822,6 +822,8 @@ quarterdeck/                       the project folder: the framework repository
                    grok_record.py grok_screen.py grok_usage.py grok_workspace.py grok_notice.py   native ACP updates, fullscreen composer, program-owned billing, exact native workspace trust and information-only project inventory
                    opencode_record.py antigravity_record.py antigravity_wire.py antigravity_quota.py; simulator.py synthetic_record.py synthetic_control.py,
                    the fake program the drill runs, its records in Claude Code's or Codex's shape, and the rendezvous a test holds it at
+                   each fake launch acknowledges its own startup token after its first prompt; only a live synthetic
+                   launch with that acknowledgment can finish the survival observation early; real programs retain it
     harness/codex_usage.py   Codex usage windows from the newest eligible snapshot in current launch records
     harness/claude_limits.py  native Claude model allowances, family scope, reset-period inference and safe shape diagnostics
     harness/claude_watch.py  structured watch-output consumption for attribution, never delivery receipts

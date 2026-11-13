@@ -219,6 +219,10 @@ class Harness(ABC):
         """Any program-specific startup decision required before its composer can take input."""
         return True
 
+    def synthetic_ready(self, home: Path) -> bool:
+        """A synthetic program may acknowledge this launch instead of a timed observation."""
+        return False
+
     def grant_expiry(self, path: Path) -> datetime | None:
         return None
 

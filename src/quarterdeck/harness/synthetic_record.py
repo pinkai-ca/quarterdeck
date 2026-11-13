@@ -11,8 +11,6 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import claude, codex, pi
-
 
 def now() -> datetime:
     return datetime.now(timezone.utc)
@@ -46,7 +44,11 @@ class ClaudeShape(_Writer):
         super().__init__(home / "projects" / slug / f"{session}.jsonl")
         self.session, self.cwd, self.model = session, str(cwd), model
         self.parent: str | None = None
-        self.turn = len(claude.turns(self.path)) if self.path.exists() else 0
+        self.turn = 0
+        if self.path.exists():
+            from . import claude
+
+            self.turn = len(claude.turns(self.path))
         self.text = self.effort = None
 
     def entry(self, kind: str, message: dict, **extra) -> None:
@@ -115,6 +117,8 @@ class CodexShape(_Writer):
     """``sessions/Y/M/D/rollout-<time>-<id>.jsonl``: events and response items with a payload."""
 
     def __init__(self, home: Path, cwd: Path, session: str, model: str):
+        from . import codex
+
         stamp = now()
         existing = [p for p in codex.records(home) if p.name.endswith(f"{session}.jsonl")]
         path = existing[0] if existing else (home / "sessions" / stamp.strftime("%Y/%m/%d")
@@ -140,6 +144,8 @@ class CodexShape(_Writer):
         self.line("response_item", {"type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]})
 
     def count(self, reply: str = "") -> None:
+        from . import codex
+
         t = tokens_for(self.text, reply, len(codex.turns(self.path)))
         last = {"input_tokens": t["read_uncached"] + t["read_cached"], "cached_input_tokens": t["read_cached"],
                 "cache_write_input_tokens": t["cache_written"], "output_tokens": t["written"],
@@ -184,6 +190,8 @@ class CodexShape(_Writer):
         pass
 
     def turns_before(self) -> int:
+        from . import codex
+
         return len(codex.turns(self.path))
 
 
@@ -194,6 +202,8 @@ class PiShape(_Writer):
         super().__init__(home / "pi-sessions" / f"{session}.jsonl")
         self.model, self.end_reason, self.parent, self.turn = model, 'stop', None, 0
         if self.path.exists():
+            from . import pi
+
             rows = pi.entries(self.path)
             self.parent = rows[-1].get('id')
             self.turn = len(pi.turns(self.path))

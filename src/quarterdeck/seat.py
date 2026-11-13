@@ -598,12 +598,14 @@ class Seat:
         """A program that exits as soon as it starts is a refusal, not an "up"; its pane stays for a look."""
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
-            time.sleep(0.05)
+            time.sleep(0.01 if self.harness.synthetic else 0.05)
             pane = self.tmux.pane(pane_id)
             if pane is not None and pane.dead:
                 shown = " ".join(self.tmux.capture(pane_id, history=20).split())[-240:]  # its last words scroll above the death notice
                 raise ShipError(f"{self.name}: {program} exited {pane.exit_status} at once; its pane stays for a look, and "
                                 f"qd up {self.name} tries again. It printed: {shown}")
+            if pane is not None and self.harness.synthetic and self.harness.synthetic_ready(self.home):
+                return
 
     def down(self) -> str:
         with self._lifecycle():

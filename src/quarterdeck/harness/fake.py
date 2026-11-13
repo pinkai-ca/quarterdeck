@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -67,7 +68,18 @@ class FakeHarness(Harness):
         for key, value in seat.settings.items():
             if key != "as":
                 env[f"QD_FAKE_{key.upper()}"] = "1" if value is True else "0" if value is False else str(value)
+        self._startup_token = uuid.uuid4().hex
+        env["QD_FAKE_STARTUP_TOKEN"] = self._startup_token
         return Launch(tuple(argv), env)
+
+    def synthetic_ready(self, home: Path) -> bool:
+        token = getattr(self, "_startup_token", None)
+        if token is None:
+            return False
+        try:
+            return (home / "synthetic-ready").read_text() == token
+        except FileNotFoundError:
+            return False
 
     def version(self, home: Path | None = None) -> str:
         return "fake"

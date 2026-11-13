@@ -339,6 +339,8 @@ class Program:
         if self.args.first:
             self.queue.append(self.args.first)
         self.draw()
+        if token := os.environ.get("QD_FAKE_STARTUP_TOKEN"):
+            (self.home / "synthetic-ready").write_text(token)
         while True:
             if self.queue and not self.dialog:
                 self.turn(self.queue.pop(0))
