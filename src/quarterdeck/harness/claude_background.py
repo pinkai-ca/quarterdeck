@@ -27,7 +27,8 @@ NOTICE_VERSIONS = {  # a task notification, by its carrier
 TERMINAL = frozenset({'completed', 'failed', 'killed'})
 # Claude Code's own note on a killed task when it stopped the command itself, under memory pressure while the
 # session was idle: measured byte for byte the same on every instance, it says the command ended, so the kill ends
-# the task. Only on the version and carriers it was measured on; any other note, version or carrier stays unknown.
+# the task. Measured on Claude Code 2.1.317 only, on two carriers: the queue enqueue and the user task-notification
+# row. Any other wording, version or carrier stays unknown.
 REAPED = (
     'This is not a failure of the command. Claude Code stopped it because the system was critically low on memory'
     ' while the session was idle, which says nothing about the command or its own memory use, so there is nothing'
