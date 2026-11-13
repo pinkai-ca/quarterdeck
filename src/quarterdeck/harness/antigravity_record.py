@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import struct
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -122,7 +122,7 @@ def _decode(record: Path) -> _Decoded:
 
     # Generator metadata: which model made which steps, and the usage of a generation whose one planner step is known.
     gen_model_by_step: dict[int, str | None] = {}
-    gen_model_by_exec: dict[str, str] = {}
+    gen_model_by_exec: dict[str, str | None] = {}
     gen_usage_by_step: dict[int, bytes | None] = {}
     last_model = None
     planner_indices = {idx for idx, kind, *_ in steps if kind == STEP_PLANNER_RESPONSE}
@@ -132,11 +132,14 @@ def _decode(record: Path) -> _Decoded:
         chat = _proto(_bytes(generation, 1))
         model_name = _str(chat, 21) or _str(chat, 19) or _str(_proto(_bytes(generation, 3)), 28)
         if model_name and exec_id:
-            gen_model_by_exec[exec_id] = model_name
+            gen_model_by_exec[exec_id] = (model_name if exec_id not in gen_model_by_exec or
+                                          gen_model_by_exec[exec_id] == model_name else None)
         last_model = model_name or last_model
         indices = _uints(generation, 2)
         for step_index in indices:
-            gen_model_by_step[step_index] = model_name or gen_model_by_step.get(step_index)
+            if model_name:
+                gen_model_by_step[step_index] = (model_name if step_index not in gen_model_by_step or
+                                                 gen_model_by_step[step_index] == model_name else None)
         planners = set(indices) & planner_indices  # one generation also lists its tools: never charge each step the same usage
         if len(planners) == 1:
             gen_usage_by_step[next(iter(planners))] = _bytes(chat, 4)
@@ -163,8 +166,6 @@ def _decode(record: Path) -> _Decoded:
         meta = meta or (_proto(_bytes(payload, 5)) if 5 in payload else {})
         created, viewable, finished = _ts(_bytes(meta, 1)), _ts(_bytes(meta, 6)), _ts(_bytes(meta, 7))
         completed, started = _ts(_bytes(meta, 8)), _ts(_bytes(meta, 32))
-        if step_type == STEP_ERROR_MESSAGE and (event := record_wall(idx, payload, created)):
-            walls.append(event)
         step_start, step_end, exec_id = started or created, completed, _str(meta, 12) or ""
         step_touch = step_end or finished or viewable or step_start
         first_step_at = first_step_at or created or step_start
@@ -172,6 +173,13 @@ def _decode(record: Path) -> _Decoded:
             last_step_at = step_touch
         step_model = gen_model_by_step.get(idx) or gen_model_by_exec.get(exec_id) or ended_execs.get(exec_id, (None, None, None))[1]
         last_model = step_model or last_model
+        if step_type == STEP_ERROR_MESSAGE and (event := record_wall(idx, payload, created)):
+            # Only this step/execution/turn can place its refusal, never the record's last model.
+            trailer = (not exec_id and status == 3 and current is not None
+                       and ended_execs.get(current["exec_id"], (None, None, None))[2] == EXECUTOR_ERROR)
+            same_turn = current is not None and (trailer or (exec_id and current["exec_id"] == exec_id))
+            event_model = step_model or (current["model"] if same_turn else None)
+            walls.append(replace(event, model=event_model))
 
         if step_type == STEP_USER_INPUT and (text := _str(user_input := _proto(_bytes(payload, 19)), 2) or _str(user_input, 1)) is not None:
             step_model = _model_config(_bytes(user_input, 12)) or step_model

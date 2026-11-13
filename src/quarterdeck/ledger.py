@@ -27,7 +27,7 @@ from .pricing import amount
 from .cost_evidence import CostEvidence
 from .attribution_cache import Attribution
 from .provenance import Provenance, UNKNOWN
-from .quota import Quotas, reset_text
+from .quota import Quotas, reset_text, window_applies
 from .ship import Ship, ShipError
 from .usage_cache import UsageCache, aware, parse
 
@@ -424,7 +424,7 @@ class Ledger:
         query = "SELECT pool, window, used, resets_at, read_at FROM pools" + (" WHERE pool = ?" if pool else "") + " ORDER BY pool, window"
         return self.db.execute(query, (pool,) if pool else ()).fetchall()
 
-    def walls(self, ship: Ship | None = None, now: datetime | None = None, *, scope=None) -> list[str]:
+    def walls(self, ship: Ship | None = None, now: datetime | None = None, *, scope=None, pool: str | None = None) -> list[str]:
         """Pools with a window spent and not yet reset, ``subscription 7d``, key pools past their budget,
         and pools whose provider refused work at a limit.
 
@@ -433,29 +433,31 @@ class Ledger:
         """
         now = now or datetime.now().astimezone()
         found = []
-        for reading in self.usage.rows():
+        for reading in self.usage.rows(pool):
             # A spent window is a wall until its own reset. A failed or stale read keeps the
             # last complete measurement, marked last known; only a newer good reading replaces it.
-            if ((scope is None or scope(reading.group) is True) and reading.blocks and reading.complete
+            if (window_applies(scope, reading.pool, reading.group) is True and reading.blocks and reading.complete
                     and reading.used >= 1.0 and parse(reading.resets_at) > now):
-                found.append(f"{reading.pool} {reading.window}" +
+                found.append(reading.label +
                              (f" · {reset_text(reading.resets_at)}" if reading.group is not None else "") +
                              ("" if reading.current(now) else " · last known"))
-        for pool in (ship.pools.values() if ship else ()):
-            budget = Budget.parse(pool.budget)
+        for choice in (ship.pools.values() if ship else ()):
+            if pool is not None and choice.name != pool:
+                continue
+            budget = Budget.parse(choice.budget)
             if budget is not None:
-                spent, _ = self.spend(pool.name, budget.period_start(now))
+                spent, _ = self.spend(choice.name, budget.period_start(now))
                 if spent is not None and spent >= budget.amount:
-                    found.append(f"{pool.name} budget")
-        return found + self.quota.walls(now, scope=scope)
+                    found.append(f"{choice.name} budget")
+        return found + self.quota.walls(now, scope=scope, pool=pool, ship=ship)
 
     def walled(self, pool: str, ship: Ship | None = None, *, scope=None) -> bool:
-        return any(w.split(" ")[0] == pool for w in self.walls(ship, scope=scope))
+        return bool(self.walls(ship, scope=scope, pool=pool))
 
     def usage_known(self, pool: str, *, scope=None) -> bool:
-        rows = [r for r in self.usage.rows(pool) if r.blocks and (scope is None or scope(r.group) is not False)]
+        rows = [r for r in self.usage.rows(pool) if r.blocks and (window_applies(scope, pool, r.group) is not False)]
         now = datetime.now().astimezone()
-        return bool(rows) and all((scope is None or scope(r.group) is True) and r.current(now) for r in rows)
+        return bool(rows) and all((window_applies(scope, pool, r.group) is True) and r.current(now) for r in rows)
 
 
 def attribution(store: Store, seat: str, turn: Turn) -> str:

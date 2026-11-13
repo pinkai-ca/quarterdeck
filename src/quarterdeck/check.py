@@ -46,7 +46,9 @@ def ready_for_probe(seat: Seat, door: Door) -> bool:
     return state.turns is not None and state.turns >= 1 and state.turn_open is False and not state.queued
 
 
-def check(ship: Ship, name: str, tmux: Tmux) -> list[Check]:
+def check(ship: Ship, name: str, tmux: Tmux, *, model: str | None = None) -> list[Check]:
+    if model is not None and not model.strip():
+        raise ShipError("check --model requires a nonempty model identifier")
     harness = harnesses.get(name)
     pool = next((p for p in ship.pools.values() if harness.accepts(p) is None), None)
     if pool is None:
@@ -63,12 +65,12 @@ def check(ship: Ship, name: str, tmux: Tmux) -> list[Check]:
                  if pool.name in s.pools and s.for_pool(pool.name).harness == name), None)
     run = secrets.token_hex(2)
     seat_name, session_name = f"check-{name}-{run}", f"qd-check-{name}-{run}"
-    spec = SeatSpec(seat_name, session_name, "worker", name, (pool.name,), model=like.model if like else None,
+    spec = SeatSpec(seat_name, session_name, "worker", name, (pool.name,), model=model if model is not None else like.model if like else None,
                     effort=like.effort if like else None, cwd=ship.workspace, sandbox=like.sandbox if like else None,
                     model_mode=like.model_mode if like else None, effort_mode=like.effort_mode if like else None)
     orders: list[post.Message] = []
     with temporary_seat(ship, tmux, spec, orders, "qd check", installed_version=version, check_inbox=True) as seat:
-        checks += probe(seat.ship, seat, orders)
+        checks += probe(seat.ship, seat, orders, requested_model=model) if model is not None else probe(seat.ship, seat, orders)
         if selected is not None:
             launched = seat.launched()
             ran = launched is not None and str(selected) in launched.argv
@@ -81,7 +83,7 @@ def check(ship: Ship, name: str, tmux: Tmux) -> list[Check]:
         checks.append(Check('human-session waking line', None, f'not applicable: {inapplicable}'))
     else:
         human_spec = SeatSpec(f"check-wake-{name}-{run}", f"qd-check-wake-{name}-{run}", "worker", name,
-                              (pool.name,), model=like.model if like else None,
+                              (pool.name,), model=model if model is not None else like.model if like else None,
                               effort=like.effort if like else None, cwd=ship.workspace,
                               sandbox=like.sandbox if like else None)
         human_orders: list[post.Message] = []
@@ -110,7 +112,26 @@ def check(ship: Ship, name: str, tmux: Tmux) -> list[Check]:
     return checks
 
 
-def probe(ship: Ship, seat: Seat, orders: list[post.Message] | None = None) -> list[Check]:
+def model_confirmation(seat: Seat, requested: str, *, require_record: bool = False) -> Check:
+    """The requested launch model, confirmed by owned record first, screen second."""
+    record = seat.record()
+    try:
+        state = seat.harness.state(record) if record else None
+    except OSError:
+        state = None
+    recorded = state.model if state else None
+    screen = Door(seat).screen() if not recorded and not require_record else None
+    shown = screen.shows.get("model") if screen else None
+    observed = recorded or shown
+    launched = seat.spec.model
+    passed = (launched == requested and seat.harness.model_matches(requested, observed) is True
+              and (not require_record or recorded is not None))
+    detail = (f"requested {requested} · launched {launched or '?'} · record-observed {recorded or '?'}"
+              + (f" · screen-observed {shown}" if shown else ""))
+    return Check("requested model in record" if require_record else "requested launch model", passed, detail)
+
+
+def probe(ship: Ship, seat: Seat, orders: list[post.Message] | None = None, *, requested_model: str | None = None) -> list[Check]:
     checks: list[Check] = []
     proof_line = f"qd-check-{secrets.token_hex(4)}"
     proof_file = ship.runtime / "check" / f"{seat.name}.txt"
@@ -124,6 +145,11 @@ def probe(ship: Ship, seat: Seat, orders: list[post.Message] | None = None) -> l
                             f"{done.get('choice')} pressed at {done.get('at')} · {done.get('outcome')}"))
     checks.append(Check("door open at start", bool(opened), str(door.reading()) +
                         (" · opening brief turn ended in the record" if opened and seat.harness.opening_prompt_turn else "")))
+    if requested_model is not None:
+        confirmed = model_confirmation(seat, requested_model)
+        checks.append(confirmed)
+        if not confirmed.passed:
+            return checks
     if not opened:
         return checks
     try:
@@ -189,7 +215,11 @@ def probe(ship: Ship, seat: Seat, orders: list[post.Message] | None = None) -> l
         state = None
     turns_shown = state.turns if state and state.turns is not None else "?"
     checks.append(Check("record joined, the turn ended and read", bool(ended),
-                        f"{record.name if record else 'no record'} · {turns_shown} turns · model {state.model if state and state.model else '?'}"))
+                        f"{record.name if record else 'no record'} · {turns_shown} turns · "
+                        f"requested {requested_model or 'native default'} · launched {seat.spec.model or 'native default'} · "
+                        f"record-observed {state.model if state and state.model else '?'}"))
+    if requested_model is not None:
+        checks.append(model_confirmation(seat, requested_model, require_record=True))
     return checks
 
 

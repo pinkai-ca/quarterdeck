@@ -52,7 +52,7 @@ def wall(text: str, key: str, at: datetime | None) -> Wall | None:
         reset = None
     error_id = ERROR_ID.search(text)
     return Wall(key, at, reset, error_id=error_id.group(1) if error_id else None,
-                signature=hashlib.sha256(text.encode()).hexdigest())
+                signature=hashlib.sha256(text.encode()).hexdigest(), harness="antigravity")
 
 
 def record_wall(index: int, payload: dict, at: datetime | None) -> Wall | None:
@@ -71,7 +71,7 @@ def _timestamp(value) -> datetime | None:
 
 
 def unknown(reason: str, at: datetime) -> Usage:
-    return Usage((Window("7d", None, None, group="Gemini 4 Argon", bucket=None, error=reason),), at, reason)
+    return Usage((), at, reason)
 
 
 def parse_usage(doc, at: datetime) -> Usage:
@@ -99,8 +99,8 @@ def parse_usage(doc, at: datetime) -> Usage:
                 errors.append("malformed usage bucket")
                 continue
             scope, period = group["name"], bucket["window"]
-            headline = scope == "Gemini 4 Argon" and period == "weekly"
-            name = "7d" if headline else f"{scope} / {period}"
+            # Retain the historical Argon weekly identity; every returned bucket is scoped.
+            name = "7d" if scope == "Gemini 4 Argon" and period == "weekly" else f"{scope} / {period}"
             fraction = bucket.get("remaining_fraction")
             valid = type(fraction) in (int, float) and 0 <= fraction <= 1 and math.isfinite(fraction)
             reset = _timestamp(bucket.get("reset_time"))
@@ -111,13 +111,12 @@ def parse_usage(doc, at: datetime) -> Usage:
                 windows = [replace(w, used=None, resets_at=None, error="ambiguous duplicate bucket") if w.name == name else w for w in windows]
                 continue
             identities.add(name)
-            windows.append(Window(name, 1 - fraction if valid else None, reset, headline, scope,
+            windows.append(Window(name, 1 - fraction if valid else None, reset, True, scope,
                                   bucket.get("id") if isinstance(bucket.get("id"), str) else None,
                                   bucket.get("name") if isinstance(bucket.get("name"), str) else None,
                                   None if valid and reset is not None else "fraction or reset unavailable"))
-    if "7d" not in identities:
-        windows.insert(0, Window("7d", None, None, group="Gemini 4 Argon", bucket=None, error="Gemini 4 Argon weekly unavailable"))
-        errors.append("Gemini 4 Argon weekly unavailable")
+    if not windows:
+        errors.append("usage buckets unavailable")
     return Usage(tuple(windows), at, "; ".join(errors) or None)
 
 

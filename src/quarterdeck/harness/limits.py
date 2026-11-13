@@ -37,4 +37,7 @@ class Wall:
     reason: str = "individual quota reached"
     error_id: str | None = None
     signature: str = ""
+    harness: str | None = None
+    model: str | None = None
     group: str | None = None  # The model group the refused limit applies to; None applies to every model.
+    all_models: bool = False  # Only an explicit provider statement can establish this.

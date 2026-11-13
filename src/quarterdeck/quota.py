@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+import hashlib
+import json
 import math
 import time
 
@@ -19,26 +21,71 @@ def candidate_pools(seat) -> tuple[str, ...]:
     return pools[current + 1:] + pools[:current]
 
 
-def model_scope(seat, pool_name: str, *, running: bool = False):
+@dataclass(frozen=True)
+class ModelScope:
+    pool: str
+    reader: object
+    model: str | None
+    seat: str | None = None
+    sources: tuple[str, ...] = ()
+
+    def __call__(self, group):
+        return self.reader.usage_scope(group, self.model)
+
+    def event(self, event, *, source=None, owner=None):
+        verdict = self.reader.quota_scope(event, self.model)
+        if verdict is True:
+            return True
+        # An unplaced actual refusal remains local to its own observed execution.
+        if (self.reader.name == "antigravity" and self.model is None and event.model is None
+                and source in self.sources and owner == self.seat):
+            return True
+        return verdict
+
+
+def model_scope(seat, pool_name: str, *, running: bool = False, screen=None):
     """Adapter-owned group applicability; source evidence differs from a resolved destination."""
     from . import harness as harnesses
 
     spec = None if running else seat.spec.for_pool(pool_name)
     reader = seat.harness if running else harnesses.get(spec.harness)
+    pool = seat.ship.pools[pool_name]
+    if pool.kind == "subscription" and pool.provider == "google":
+        reader = harnesses.native_for(pool.provider)  # Membership belongs to the paying provider's adapter.
     if not reader.model_scoped_usage:
         return None
+    sources = ()
     if running:
         from .watch import running_settings
-        model = running_settings(seat).get("model")
+        model = running_settings(seat, screen=screen).get("model")
+        if reader.name == "antigravity":
+            record, launched = seat.record(), seat.launched()
+            sources = tuple(filter(None, (str(record) if record else None,
+                            f"screen:{seat.name}:{launched.at}" if launched else None)))
     else:
         model = spec.model
-    return lambda group: reader.usage_scope(group, model)
+    return ModelScope(pool_name, reader, model, seat.name if running else None, sources)
+
+
+def window_applies(scope, pool: str, group: str | None):
+    # A destination's model policy is never applied to another pool's measurements.
+    return scope(group) if scope is not None and getattr(scope, "pool", pool) == pool else True
+
+
+def current_walls(seat, book) -> list[str]:
+    pool = seat.pool.name
+    if not book.walled(pool, seat.ship) and not book.quota.blocked(seat.name, pool):
+        return []  # No model reading is needed unless this pool has a wall to scope.
+    scope = model_scope(seat, pool, running=True)
+    found = book.walls(seat.ship, scope=scope, pool=pool)
+    unknown = book.quota.blocked(seat.name, pool, scope=scope)
+    if unknown and unknown not in found:
+        found.append(unknown)
+    return found
 
 
 def current_walled(seat, book) -> bool:
-    if not book.walled(seat.pool.name, seat.ship):
-        return False  # No model reading is needed unless this pool has a wall to scope.
-    return book.walled(seat.pool.name, seat.ship, scope=model_scope(seat, seat.pool.name, running=True))
+    return bool(current_walls(seat, book))
 
 
 def cached_open(ship, book, pool_name: str, seat=None) -> bool:
@@ -48,10 +95,12 @@ def cached_open(ship, book, pool_name: str, seat=None) -> bool:
     pool = ship.pools[pool_name]
     if pool.kind in ("key", "endpoint"):
         return not book.walled(pool_name, ship)
-    scope = model_scope(seat, pool_name) if seat is not None else None
     reader = harnesses.native_for(pool.provider)
+    scope = (model_scope(seat, pool_name) if seat is not None else
+             ModelScope(pool_name, reader, None) if reader.name == "antigravity" else None)
     if reader.background_usage or reader.reads_usage:
-        return book.usage_known(pool_name, scope=scope) and not book.walled(pool_name, ship, scope=scope)
+        return (book.usage_known(pool_name, scope=scope) and book.quota.room_known(pool_name, scope=scope)
+                and not book.walled(pool_name, ship, scope=scope))
     return not book.walled(pool_name, ship, scope=scope)
 
 
@@ -77,6 +126,10 @@ class Quotas:
                     at TEXT, resets_at TEXT, observed_at TEXT NOT NULL, reason TEXT NOT NULL,
                     error_id TEXT, signature TEXT NOT NULL, superseded INTEGER NOT NULL DEFAULT 0,
                     group_name TEXT, PRIMARY KEY (source, event));
+                CREATE TABLE IF NOT EXISTS wall_scopes (
+                    source TEXT NOT NULL, event TEXT NOT NULL, harness TEXT, model TEXT, group_name TEXT,
+                    all_models INTEGER NOT NULL DEFAULT 0, evidence TEXT NOT NULL, error TEXT,
+                    PRIMARY KEY (source, event));
                 CREATE TABLE IF NOT EXISTS usage_reads (pool TEXT PRIMARY KEY, at TEXT NOT NULL, error TEXT);
             """)
             if "group_name" not in self.columns():  # an older book gains the refused limit's model group
@@ -102,6 +155,8 @@ class Quotas:
             if old != filled:
                 self.db.execute("UPDATE wall_events SET pool=?,at=?,resets_at=? WHERE source=? AND event=?",
                                 (*filled, source, event.key))
+        if event.harness is not None:
+            self.observe_scope(source, event)
         if not source.startswith("screen:"):
             matches = self.db.execute("SELECT source,event FROM wall_events WHERE superseded=0 "
                                       "AND source LIKE 'screen:%' AND seat=? "
@@ -120,19 +175,82 @@ class Quotas:
         if commit and self.db.in_transaction:
             self.db.commit()
 
-    def active(self, now: datetime | None = None, *, scope=None) -> list[tuple]:
-        """Refusals not yet reset. A refusal at a model group's limit applies where ``scope`` proves that group;
-        one with no group applies to every model, as a general window does."""
-        now = now or datetime.now(timezone.utc)
-        group = "group_name" if "group_name" in self.columns() else "NULL"
-        rows = self.db.execute(f"SELECT seat,pool,reason,resets_at,observed_at,source,{group} FROM wall_events "
-                               "WHERE superseded=0").fetchall()
-        return [r[:6] for r in rows if (r[3] is None or datetime.fromisoformat(r[3]) > now)
-                and (r[6] is None or scope is None or scope(r[6]) is True)]
+    def observe_scope(self, source: str, event: Wall) -> None:
+        row = self.db.execute("SELECT pool,at,resets_at,reason,error_id,signature FROM wall_events "
+                              "WHERE source=? AND event=?", (source, event.key)).fetchone()
+        evidence = self.scope_evidence(row)
+        old = self.db.execute("SELECT harness,model,group_name,all_models,evidence,error FROM wall_scopes "
+                              "WHERE source=? AND event=?", (source, event.key)).fetchone()
+        values = (event.harness, event.model, event.group, event.all_models)
+        error = None if (event.reason, event.error_id, event.signature) == row[3:] else "event identity differs from retained refusal"
+        if old is not None and old[4] == evidence:
+            error = error or old[5]
+            if any(a is not None and b is not None and a != b for a, b in zip(old[:3], values[:3])):
+                error = "conflicting event scope evidence"
+            values = tuple(a if a is not None else b for a, b in zip(old[:3], values[:3])) + (old[3] or values[3],)
+        if old != (*values, evidence, error):
+            self.db.execute("INSERT OR REPLACE INTO wall_scopes VALUES (?,?,?,?,?,?,?,?)",
+                            (source, event.key, *values, evidence, error))
 
-    def walls(self, now: datetime | None = None, *, scope=None) -> list[str]:
-        return sorted({f"{pool if pool != UNKNOWN else seat + ' (pool unknown)'} {reason} · {reset_text(reset, source.startswith('screen:'))}"
-                       for seat, pool, reason, reset, _, source in self.active(now, scope=scope)})
+    @staticmethod
+    def scope_evidence(row) -> str:
+        return hashlib.sha256(json.dumps(row, separators=(",", ":")).encode()).hexdigest()
+
+    def events(self, now: datetime | None = None, *, ship=None) -> list[dict]:
+        now = now or datetime.now(timezone.utc)
+        has_scope = self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='wall_scopes'").fetchone()
+        group_column = "group_name" if "group_name" in self.columns() else "NULL"
+        found = []
+        for source, key, seat, pool, at, reset, observed, reason, error_id, signature, refused_group in self.db.execute(
+                "SELECT source,event,seat,pool,at,resets_at,observed_at,reason,error_id,signature,"
+                f"{group_column} FROM wall_events WHERE superseded=0"):
+            if reset is not None and datetime.fromisoformat(reset) <= now:
+                continue
+            scope = (self.db.execute("SELECT harness,model,group_name,all_models,evidence,error FROM wall_scopes "
+                                     "WHERE source=? AND event=?", (source, key)).fetchone() if has_scope else None)
+            valid = (scope is not None and not scope[5] and
+                     scope[4] == self.scope_evidence((pool, at, reset, reason, error_id, signature)))
+            wall = Wall(key, datetime.fromisoformat(at) if at else None,
+                        datetime.fromisoformat(reset) if reset else None, reason, error_id, signature,
+                        *scope[:3], all_models=bool(scope[3])) if valid else Wall(key, None, None, reason, error_id, signature)
+            if wall.group is None and refused_group is not None:
+                wall = replace(wall, group=refused_group)  # the refused limit's model group, as its record named it
+            if wall.harness is None and ship is not None and pool in ship.pools and ship.pools[pool].provider == "google":
+                wall = replace(wall, harness="antigravity")  # Provider identity supplies no model/group scope.
+            found.append(dict(seat=seat, pool=pool, reason=reason, resets_at=reset, observed_at=observed,
+                              source=source, wall=wall, scope_known=bool(valid and (wall.model or wall.group or wall.all_models)),
+                              scope_error=scope[5] if scope else None))
+        return found
+
+    def active(self, now: datetime | None = None, *, scope=None) -> list[tuple]:
+        """Refusals not yet reset, in the public six-column layout, that ``scope`` proves apply."""
+        return [tuple(item[key] for key in ("seat", "pool", "reason", "resets_at", "observed_at", "source"))
+                for item in self.events(now) if self.applicability(item, scope) is True]
+
+    @staticmethod
+    def describe(item) -> str:
+        event = item["wall"]
+        scope = (event.group or (f"model {event.model}" if event.model else
+                 "all models" if event.all_models else "scope unknown")) if event.harness == "antigravity" else None
+        label = item["pool"] if item["pool"] != UNKNOWN else item["seat"] + " (pool unknown)"
+        return (f"{label} {event.reason}" + (f" ({scope})" if scope else "") +
+                f" · {reset_text(item['resets_at'], item['source'].startswith('screen:'))}")
+
+    @staticmethod
+    def applicability(item, scope) -> bool | None:
+        if scope is None or getattr(scope, "pool", item["pool"]) != item["pool"]:
+            return True  # Overview, or an unrelated pool that has its own policy.
+        if hasattr(scope, "event"):
+            return scope.event(item["wall"], source=item["source"], owner=item["seat"])
+        group = item["wall"].group  # a window-only predicate: a grouped refusal applies where it proves the group
+        return True if group is None else scope(group) is True
+
+    def room_known(self, pool: str, *, scope=None) -> bool:
+        return all(self.applicability(item, scope) is False for item in self.events() if item["pool"] == pool)
+
+    def walls(self, now: datetime | None = None, *, scope=None, pool=None, ship=None) -> list[str]:
+        return sorted({self.describe(item) for item in self.events(now, ship=ship)
+                       if (pool is None or item["pool"] == pool) and self.applicability(item, scope) is True})
 
     def recognized(self, seat: str, event: Wall) -> bool:
         """Persisted evidence also recognizes an old banner when its record is unreadable."""
@@ -141,9 +259,14 @@ class Quotas:
                                (seat, event.signature, event.error_id)).fetchone() is not None
 
     def blocked(self, seat: str, pool: str, *, scope=None) -> str | None:
-        for owner, charged, reason, reset, _, source in self.active(scope=scope):
-            if charged == pool or (charged == UNKNOWN and owner == seat):
-                return f"{charged if charged != UNKNOWN else 'pool unknown'} {reason} · {reset_text(reset, source.startswith('screen:'))}"
+        for item in self.events():
+            charged = item["pool"]
+            if charged == pool or (charged == UNKNOWN and item["seat"] == seat):
+                scoped = {**item, "pool": pool} if charged == UNKNOWN else item
+                if self.applicability(scoped, scope) is True:
+                    if scope is not None and hasattr(scope, "reader") and item["wall"].harness is None:
+                        item = {**item, "wall": replace(item["wall"], harness=scope.reader.name)}
+                    return self.describe(item)
         return None
 
     def due(self, pool: str, now: datetime, interval: int) -> bool:
@@ -184,6 +307,9 @@ def observe_screen(book, seat, screen, launched, now: datetime | None = None, *,
     event = seat.harness.quota_wall(screen.quota, now)
     if event is None or book.quota.recognized(seat.name, event):
         return
+    if seat.harness.model_scoped_usage:
+        from .watch import running_settings
+        event = replace(event, model=running_settings(seat, screen=screen).get("model"))
     source = f"screen:{seat.name}:{launched.at if launched else 'unknown-launch'}"
     book.quota.observe(source, seat.name, launched.pool if launched else UNKNOWN,
                        replace(event, key=event.error_id or event.key), now, commit=commit)

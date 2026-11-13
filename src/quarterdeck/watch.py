@@ -215,7 +215,7 @@ def tokens_today(seat: Seat | UnresolvedSeat) -> ledger.Count:
     return found
 
 
-def running_settings(seat: Seat) -> dict[str, str]:
+def running_settings(seat: Seat, *, screen=None) -> dict[str, str]:
     """The model and effort the program reports, from its record first and its screen second (law: record-first)."""
     found: dict[str, str] = {}
     record = seat.record()
@@ -223,7 +223,7 @@ def running_settings(seat: Seat) -> dict[str, str]:
         state = seat.harness.state(record) if record else None
     except OSError:
         state = None
-    screen = Door(seat).screen()
+    screen = screen if screen is not None else Door(seat).screen()
     for key in ("model", "effort"):
         value = (getattr(state, key, None) if state else None) or (screen.shows.get(key) if screen else None)  # law: record-first
         if value:
@@ -500,8 +500,16 @@ def reported_without(rows, key: tuple, fallback: tuple | None):
 
 
 def render_headlines(rows: list[dict]) -> list[str]:
-    return [row["reading"].describe(row["observed_at"]) + (f" · {row['note']}" if row.get("note") else "") if row["reading"] else
-            (f"{row['pool']} {row.get('window', '')} {row['reason']}" if row["pool"] else row["reason"]) for row in rows]
+    lines = []
+    for row in rows:
+        if row["reading"]:
+            lines.append(row["reading"].describe(row["observed_at"]) + (f" · {row['note']}" if row.get("note") else ""))
+        elif row["pool"]:
+            group = f"{row['group']} / " if row.get("group") else ""
+            lines.append(f"{row['pool']} {group}{row.get('window', '')} {row['reason']}")
+        else:
+            lines.append(row["reason"])
+    return lines
 
 
 def ledger_usage(ship: Ship) -> list[str]:
@@ -559,9 +567,17 @@ def limit_state(ship: Ship, selected: list[Seat | UnresolvedSeat]):
         if book is None:
             return [], [], []
         with book:
-            walled = [seat for seat in up if quota.current_walled(seat, book)]
-            held = [seat.name for seat in walled
-                    if not any(quota.cached_open(ship, book, pool, seat) for pool in quota.candidate_pools(seat))]
+            held, walled = [], []
+            for seat in up:
+                reasons = quota.current_walls(seat, book)
+                if not reasons:
+                    continue
+                walled.append(seat)
+                if not any(quota.cached_open(ship, book, pool, seat) for pool in quota.candidate_pools(seat)):
+                    label = seat.name
+                    if seat.harness.name == "antigravity":
+                        label += " (" + "; ".join(reason.split(" · ")[0] for reason in reasons) + ")"
+                    held.append(label)
             reasons = [f'{seat.name}: move held: {reason}' for seat in walled
                        if len(seat.spec.pools) > 1 and (reason := move_hold.reading(seat))]
         return held, [], reasons  # law: nothing-waits-silently -- tool holds with a usable destination

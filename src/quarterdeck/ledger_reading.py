@@ -68,16 +68,18 @@ def collect(book: Ledger, ship: Ship | None = None, *, by: str | None = None, to
     windows = []
     for row in book.usage.rows():
         item = window_reading(row, now)
-        item["wall"] = any(w == f"{row.pool} {row.window}" or w.startswith(f"{row.pool} {row.window} ·") for w in walls)
+        item["wall"] = any(w == row.label or w.startswith(row.label + " ·") for w in walls)
         windows.append(item)
     return {**data, "observed_at": now, "windows": windows, "pools": pools,
             "usage_absent_reason": "no usage read yet: the service reads active subscription pools in the background"
             if not windows and not any(p["kind"] in ("key", "endpoint") for p in pools) else None,
             "usage_attempts": [dict(zip(("pool", "at", "error"), row)) for row in
                                book.db.execute("SELECT pool,at,error FROM usage_reads ORDER BY pool")],
-            "wall_events": [dict(zip(("seat", "pool", "reason", "resets_at", "observed_at", "source"), row))
-                            for row in book.quota.active(now)],
-            "walls": walls, "observed_walls": book.quota.walls(now)}
+            "wall_events": [{**{k: v for k, v in item.items() if k != "wall"},
+                             "harness": item["wall"].harness, "model": item["wall"].model,
+                             "group": item["wall"].group, "all_models": item["wall"].all_models}
+                            for item in book.quota.events(now, ship=ship)],
+            "walls": walls, "observed_walls": book.quota.walls(now, ship=ship)}
 
 
 def missing(*, by: str | None = None, tools: bool = False, ship: Ship | None = None) -> dict:

@@ -90,9 +90,14 @@ class Reading:
     def current(self, now: datetime) -> bool:
         return self.reason(now) is None
 
+    @property
+    def label(self) -> str:
+        scope = f"{self.group} / " if self.group and self.group not in self.window else ""
+        return f"{self.pool} {scope}{self.window}"
+
     def describe(self, now: datetime | None = None, *, inspect_command: str | None = "qd ledger") -> str:
         now = now or datetime.now(timezone.utc)
-        label = f"{self.pool} {self.window}"
+        label = self.label
         reason = self.reason(now)
         next_step = f"; inspect with {inspect_command}" if reason and inspect_command else ""
         if not self.complete:

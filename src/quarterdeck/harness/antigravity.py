@@ -58,11 +58,27 @@ class AntigravityHarness(Harness):
     reads_usage = True
     usage_interval = 300
     background_usage = True
+    model_scoped_usage = True
     headline_window = ("Gemini 4 Argon", "7d")
     screen_walls = True
     record_limits = ("cost is unknown unless the record states it; effort and child-turn counts are not exposed; "
                      "a step without a completion time leaves its duration unknown")
     keys = Keys(submit="Enter", send_now=("M-m",), interrupt="Escape")
+
+    def usage_scope(self, group: str | None, model: str | None) -> bool | None:
+        from .antigravity_models import applies
+        return applies(group, model)
+
+    def model_matches(self, requested: str, observed: str | None) -> bool | None:
+        from .antigravity_models import same_model
+        return same_model(requested, observed)
+
+    def quota_scope(self, event, model: str | None) -> bool | None:
+        from .antigravity_models import event_applies
+        return event_applies(event, model)
+
+    def is_headline(self, group: str | None, window: str) -> bool:
+        return True  # Every reported group/bucket, including a retained unknown measurement.
 
     def usage(self, pool: Pool) -> Usage:
         if pool.config_dir is not None:

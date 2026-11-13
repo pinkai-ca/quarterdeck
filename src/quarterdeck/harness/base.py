@@ -337,6 +337,14 @@ class Harness(ABC):
         """True when a window applies; None when its model scope cannot be established."""
         return True  # Existing grouped adapters keep their pool-wide semantics.
 
+    def model_matches(self, requested: str, observed: str | None) -> bool | None:
+        """Exact identities by default; aliases require adapter-owned native evidence."""
+        return requested == observed if observed else None
+
+    def quota_scope(self, event: Wall, model: str | None) -> bool | None:
+        """A refusal at a model group's limit applies as that group's window does; one with no group, to every model."""
+        return True if event.group is None else self.usage_scope(event.group, model)
+
     def shared_usage_key(self, pool: Pool) -> tuple | None:
         return None
 

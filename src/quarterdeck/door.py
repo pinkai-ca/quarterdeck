@@ -109,9 +109,9 @@ class Door:
         if book is not None:
             with book:
                 try:
-                    scope = quota.model_scope(self.seat, pool, running=True)
+                    scope = quota.model_scope(self.seat, pool, running=True, screen=screen)
                     known = book.quota.blocked(self.seat.name, pool, scope=scope) or next(
-                        (w for w in book.walls(self.seat.ship, scope=scope) if w.split(" ")[0] == pool), None)
+                        iter(book.walls(self.seat.ship, scope=scope, pool=pool)), None)
                     if known:
                         return known
                     if shown is not None and book.quota.recognized(self.seat.name, shown):
@@ -119,7 +119,12 @@ class Door:
                 except sqlite3.OperationalError:
                     pass  # a book written by an older service: the screen still speaks
         if shown is not None:
-            return f"{pool} {shown.reason} · {reset_text(stamp(shown.resets_at), from_screen=True)}"
+            # This is the provider's actual refusal on this screen, not another model's cached cap.
+            model = quota.model_scope(self.seat, pool, running=True, screen=screen) if self.harness.model_scoped_usage else None
+            label = f" (model {model.model})" if model is not None and model.model else ""
+            if self.harness.name == "antigravity" and not label:
+                label = " (own refusal; model unknown)"
+            return f"{pool} {shown.reason}{label} · {reset_text(stamp(shown.resets_at), from_screen=True)}"
         return None
 
     def reading(self, screen: Screen | None = None) -> Reading:
