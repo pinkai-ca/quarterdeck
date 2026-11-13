@@ -123,3 +123,60 @@ def test_compaction_alerts_from_reading_state(ship_view, case, expected):
         assert not facts.compactions and 'compaction' not in line
         assert '  compaction automation disabled' in watch.table(ship, tmux)
         assert '  compaction automation disabled' in watch.render_full(watch.seat_reading(seat))
+
+
+@pytest.mark.parametrize('join_reason', ['no record yet', 'ambiguous: two new records'])
+def test_fresh_launch_does_not_render_the_previous_conversations_count(ship_view, monkeypatch, join_reason):
+    from quarterdeck.harness.base import Join
+
+    ship, tmux, add = ship_view
+    seat, native = add('worker')
+    ship.sessions['crew'] = replace(seat.session, human=True)
+    native.compact()
+    native.compact()
+    compaction.tick(seat)
+    assert 'compactions 2/2: ready for manual fresh' in compaction.status(seat)
+    compaction.disarm(seat)
+    previous = seat.launched()
+    fresh = replace(previous, pid=previous.pid + 100, at=(AT + timedelta(seconds=10)).isoformat(),
+                    resume=None, records_before=[str(native.path)])
+    seat.pane().pid = fresh.pid
+    fresh.write(seat.folder / 'launch.json')
+    (seat.folder / 'record').unlink()
+    monkeypatch.setattr(seat, 'join', lambda: Join(None, join_reason))
+    before = compaction.path(ship.runtime, seat.name).read_bytes()
+
+    if join_reason == 'no record yet':
+        expected = 'compaction count pending: new conversation not yet joined'
+        assert compaction.status(seat, alerts_only=True) is None
+    else:
+        expected = f'compaction count unknown: {join_reason}'
+        assert compaction.status(seat, alerts_only=True) == expected
+    assert compaction.status(seat) == expected
+    assert f'  {expected}' in watch.render_full(watch.seat_reading(seat))
+    assert compaction.path(ship.runtime, seat.name).read_bytes() == before
+    assert compaction.load(ship.runtime, seat.name)['count'] == 2
+    if join_reason == 'no record yet':
+        joined = native.path.with_name('new-conversation.jsonl')
+        joined.touch()
+        monkeypatch.setattr(seat, 'join', lambda: Join(joined))
+        assert compaction.status(seat) == ('compaction count unknown: '
+                                           'awaiting compaction observation for the new conversation')
+        assert compaction.path(ship.runtime, seat.name).read_bytes() == before
+
+
+def test_a_resumed_launch_keeps_the_same_conversations_observed_count(ship_view):
+    ship, tmux, add = ship_view
+    seat, native = add('worker')
+    native.compact()
+    compaction.tick(seat)
+    expected = compaction.status(seat)
+    data = compaction.load(ship.runtime, seat.name)
+    previous = seat.launched()
+    resumed = replace(previous, pid=previous.pid + 100, at=(AT + timedelta(seconds=10)).isoformat(),
+                      resume=data['source']['conversation'])
+    seat.pane().pid = resumed.pid
+    resumed.write(seat.folder / 'launch.json')
+    before = compaction.path(ship.runtime, seat.name).read_bytes()
+    assert compaction.status(seat) == expected == 'compactions 1/2: below compaction threshold'
+    assert compaction.path(ship.runtime, seat.name).read_bytes() == before

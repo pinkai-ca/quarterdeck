@@ -536,6 +536,30 @@ def tick(seat):
             save(runtime, seat.name, data)
 
 
+def fresh_record_status(seat, data):
+    """A fresh launch cannot use its predecessor's cached count; no journal is changed."""
+    try:
+        launched = seat.launched()
+        if (launched is None or launched.resume is not None
+                or key_for(launched) == (data or {}).get('source_launch')):
+            return None
+        if record_owner.launch_reader(launched) != seat.spec.harness or not live_identity(seat):
+            return 'current fresh launch identity not proved', False
+        joined = seat.join()
+        if seat.launched() != launched:
+            return 'launch changed during compaction read', False
+        if joined.record is None:
+            if joined.reason == 'no record yet':
+                return 'new conversation not yet joined', True
+            return joined.reason or 'current record join unknown', False
+        prior = (data or {}).get('source') or {}
+        if str(joined.record) in launched.records_before or str(joined.record) == prior.get('record'):
+            return 'fresh launch has not proved a new native origin', False
+        return 'awaiting compaction observation for the new conversation', False
+    except (OSError, ValueError, TypeError, KeyError, ShipError):
+        return 'current launch/record identity unreadable', False
+
+
 def status(seat, *, alerts_only=False):
     """Read the journal for detailed status or for actionable status-line entries."""
     threshold = seat.spec.fresh_after_compactions
@@ -550,6 +574,13 @@ def status(seat, *, alerts_only=False):
         if alerts_only or (threshold is None and data is None):
             return None
         return 'compaction automation disabled'
+    fresh = fresh_record_status(seat, data)
+    if fresh is not None:
+        reason, pending = fresh
+        if pending and alerts_only and not claimed:
+            return None
+        label = f"compaction count {'pending' if pending else 'unknown'}: {reason}"
+        return f'fresh transition claimed; {label}' if claimed else label
     if data is None or data.get('error') or data.get('reading_unknown') or data.get('count') is None:
         reason = data['reason'] if data else 'awaiting current record'
         if claimed:
