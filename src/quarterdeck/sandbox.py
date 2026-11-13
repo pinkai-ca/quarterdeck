@@ -31,7 +31,7 @@ FRAMEWORK_TOOLS = ("qd", "node")  # what a seat's program needs beside itself: q
 def seats_hidden(argv: object) -> bool | None:
     """Whether a saved managed launch hides sibling seats; malformed evidence is unknown.
 
-    The jail is the outer command, including on launches made before an upgrade.
+    The jail is the outer command, including on launches made before a sync.
     Reading one's own launch needs no access to another seat or to the host's pids.
     """
     if (not isinstance(argv, (list, tuple)) or not argv or not argv[0]

@@ -1051,7 +1051,7 @@ class Service:
                 target = self.store.dir / f'{notice.id}.json'
                 if target.exists():
                     if post.Message.from_json(target.read_text()) != notice:
-                        raise ShipError('upgrade brief notice identity conflicts with an immutable post')
+                        raise ShipError('sync brief notice identity conflicts with an immutable post')
                 else:
                     self.store.write(notice)
                 affected.append(seat.name)
@@ -1077,7 +1077,7 @@ class Service:
                 expected = post.Message(pending['id'], 'report', post.SHIP, name,
                                         datetime.fromisoformat(pending['at']), body)
                 if post.Message.from_json(target.read_text()) != expected:
-                    raise ShipError('upgrade brief notice identity conflicts with an immutable post')
+                    raise ShipError('sync brief notice identity conflicts with an immutable post')
                 before, previous = pending['hash'], pending['id']
             else:
                 previous = pending['previous']

@@ -21,7 +21,7 @@ from .ship import SeatSpec, Ship
 
 def project_dir() -> Path:
     """Where the framework's own files are: the repository, when this code runs from a checkout; else the copy
-    an installed qd keeps under its own prefix, which ``qd upgrade`` puts there beside the package."""
+    an installed qd keeps under its own prefix, which ``qd sync`` puts there beside the package."""
     source = Path(__file__).resolve().parents[2]
     if (source / "standing-orders").is_dir():
         return source

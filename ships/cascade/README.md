@@ -10,6 +10,10 @@ replace `REPLACE_WITH_AVAILABLE_SUBSCRIPTION_MODEL` with a model available on th
 This template claims no API model or live model availability. No compiler or `qd raise` is
 needed. All seats run in the crew session.
 
+To install a local framework commit in the copied ship, run
+`qd --ship /path/to/my-cascade sync COMMIT` before `qd up`. Sync fetches nothing;
+it can select a commit forward or back.
+
 ```
 qd --ship /path/to/my-cascade up
 qd --ship /path/to/my-cascade post question --to orchestrator "How should we plan a garden?"

@@ -71,7 +71,7 @@ def brief_snapshot(ship: Ship) -> dict:
 
 
 def queue_rebrief(ship: Ship, commit: str, previous: dict | None, snapshot: dict) -> tuple[Path, dict]:
-    """Reuse incomplete work on the current commit; another upgrade is a new event."""
+    """Reuse incomplete work on the current commit; another sync is a new event."""
     folder = ship.runtime / 'requests'
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f'upgrade-rebrief-{commit}.json'

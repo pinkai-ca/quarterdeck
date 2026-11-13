@@ -132,10 +132,15 @@ def build_parser() -> argparse.ArgumentParser:
     p = verb("doctor", cmd_doctor, "is this machine ready to run the ship: tmux, git, programs, sign-ins, folders, the service, disk")
     p.add_argument("--fix", action="store_true",
                    help="hand the failures to a throwaway seat on the first pool whose program runs, then check again (spends tokens)")
-    p = verb("upgrade", cmd_upgrade, "sync the ship's own framework copy to a commit")
-    p.add_argument("ref", nargs="?", help="the commit to install (default: the checkout's HEAD)")
-    p.add_argument('--back', action='store_true', help='return to the recorded previous copy, without rebuilding')
-    p.add_argument('--force', action='store_true', help='install and prove even when the commit is unchanged')
+    for name in ("sync", "upgrade"):
+        help = "install the framework at a local commit as the ship's own copy and run the service on it; fetches nothing"
+        if name == "upgrade":
+            help = "alias for qd sync: " + help
+        p = verb(name, cmd_upgrade, help)
+        p.set_defaults(upgrade_alias=name == "upgrade")
+        p.add_argument("ref", nargs="?", help="the local commit to install, forward or back (default: the checkout's HEAD)")
+        p.add_argument('--back', action='store_true', help='return to the recorded previous copy, without rebuilding')
+        p.add_argument('--force', action='store_true', help='install and prove even when the commit is unchanged')
     return parser
 
 
@@ -636,7 +641,10 @@ def cmd_upgrade(args: argparse.Namespace) -> list[str]:
     back, force = getattr(args, 'back', False), getattr(args, 'force', False)
     if back and (args.ref is not None or force):
         raise ShipError('--back cannot be combined with a target or --force')
-    return install.upgrade(load_ship(args), args.ref or 'HEAD', Tmux.default(), back=back, force=force)
+    proofs = install.upgrade(load_ship(args), args.ref or 'HEAD', Tmux.default(), back=back, force=force)
+    if getattr(args, "upgrade_alias", False):
+        proofs[-1] += " · `upgrade` is now `qd sync`"
+    return proofs
 
 
 def cmd_drill(args: argparse.Namespace) -> list[str]:

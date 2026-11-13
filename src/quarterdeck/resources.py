@@ -1,4 +1,4 @@
-"""Target-owned framework resources, shared by packaging and explicit upgrades only."""
+"""Target-owned framework resources, shared by packaging and explicit sync operations only."""
 
 from __future__ import annotations
 
@@ -79,7 +79,7 @@ def legacy(source: Path) -> tuple[Path, ...]:
         raise UnsupportedLegacy('legacy syntax exceeds bound')
     functions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'upgrade']
     if len(functions) != 1:
-        raise UnsupportedLegacy('no unique upgrade function')
+        raise UnsupportedLegacy('no unique legacy installer function')
     function = functions[0]
     copies = [node for node in ast.walk(function) if isinstance(node, ast.Call)
               and shape(node.func) == shape(ast.parse('shutil.copytree', mode='eval').body)]

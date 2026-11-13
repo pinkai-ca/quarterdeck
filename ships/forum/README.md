@@ -11,14 +11,14 @@ From a checkout:
 ```sh
 cp -R ships/forum /path/to/camera-forum
 # Edit /path/to/camera-forum/ship.toml for this machine.
-qd --ship /path/to/camera-forum upgrade COMMIT
+qd --ship /path/to/camera-forum sync COMMIT
 qd --ship /path/to/camera-forum up
 qd --ship /path/to/camera-forum post order --to reviewers --body-file /path/to/brief.txt
 qd --ship /path/to/camera-forum status
 qd --ship /path/to/camera-forum inbox operator
 ```
 
-`upgrade` installs this revision and its resources into the camera ship. Its
+`qd sync` installs this revision and its resources into the camera ship. Its
 template is then at `runtime/venv/share/quarterdeck/ships/forum`, beside the drydock;
 it can be copied for another ship. `standing.project_dir()` locates this resource
 root from either the checkout or the installed Python interpreter.
