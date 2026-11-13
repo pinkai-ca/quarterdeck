@@ -118,6 +118,14 @@ def pytest_report_header(config):
     return [working, f'test memory limit: RLIMIT_AS soft=hard={config._qd_memory_limit} bytes (children inherit)', startup]
 
 
+@pytest.fixture(autouse=True)
+def per_test_tmpdir(tmp_path, monkeypatch):
+    """A synthetic tool launched by direct pytest keeps all its scratch inside this test's lifetime."""
+    if not os.environ.get('TESTRUNS_RUN'):
+        monkeypatch.setenv('TMPDIR', str(tmp_path))
+        monkeypatch.setattr(tempfile, 'tempdir', None)
+
+
 @pytest.hookimpl(hookwrapper=True, tryfirst=True)
 def pytest_runtest_makereport(item, call):
     if call.excinfo is not None and call.excinfo.errisinstance(MemoryError):

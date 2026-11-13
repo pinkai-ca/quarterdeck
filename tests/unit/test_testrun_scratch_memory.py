@@ -84,6 +84,7 @@ def test_memory_scratch_is_separate_from_durable_results_and_retires(project):
     assert folder == Path(selected['path'])
     assert not folder.is_relative_to(project.path)
     assert (project.path / RESULTS / run / scratch.RECORD).is_file()
+    assert scratch.record(project, run)['root'] == folder.parent.parent.name
     (folder / 'working-file').write_text('synthetic working files')
     parent = scratch.parent(project, run)
     try:
@@ -156,7 +157,8 @@ def test_plain_observer_finishes_without_leaving_a_process(tmp_path):
     assert observer.process.poll() == 0
 
 
-def test_recovery_retires_records_after_memory_scratch_disappears(project):
+def test_recovery_retires_records_after_reboot_removes_memory_scratch(project, monkeypatch):
+    monkeypatch.setattr(clean.procs, 'boot_id', lambda: 'synthetic-before-reboot')
     run, selected, state = make_run(project)
     parent = scratch.parent(project, run)
     try:
@@ -165,6 +167,7 @@ def test_recovery_retires_records_after_memory_scratch_disappears(project):
         os.close(parent)
     Path(selected['path']).parent.rmdir()
     Path(selected['path']).parent.parent.rmdir()
+    monkeypatch.setattr(clean.procs, 'boot_id', lambda: 'synthetic-after-reboot')
     lines = clean.recover(project, 'synthetic-change')
     assert any('absent memory scratch retired' in line for line in lines)
     assert scratch.pending(project) == []
@@ -181,8 +184,9 @@ from pathlib import Path
 
 def test_ordinary_temp(tmp_path):
     temporary = Path(os.environ['TMPDIR'])
-    assert temporary.name == 't'
-    assert tmp_path.is_relative_to(temporary)
+    assert temporary == tmp_path
+    assert temporary.is_dir()
+    assert any(parent.name == 't' for parent in tmp_path.parents)
 """)
     env = {key: value for key, value in os.environ.items()
            if key not in ('TESTRUNS_RUN', 'TESTRUN_EVIDENCE', 'TESTRUN_SESSION_RECORDS',

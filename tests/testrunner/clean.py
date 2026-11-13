@@ -261,14 +261,7 @@ def retire_within(root: Root, run: str) -> int:
             lock = try_lock(scratch)
             if lock is None:
                 raise Refused(f'{where}: run lock is held; nothing removed')
-        if state.get('boot') == procs.boot_id():
-            pid, start = state.get('pid'), state.get('pid_start')
-            actual_start = procs.start_time(pid) if pid else None
-            if pid and (actual_start is not None and actual_start == start or actual_start is None
-                        and Path(f'/proc/{pid}').exists()):
-                raise Refused(f'{where}: recorded runner is live or uninspectable; nothing removed')
-            if any(procs.group_members(pgid) for pgid, _ in state.get('groups', [])):
-                raise Refused(f'{where}: recorded group still has live processes; held, never signalled')
+        require_gone(state, where)
         record(root, run, state)
         if scratch is not None:
             finish_abandoned(root, run, state, scratch_fd=scratch)
@@ -303,12 +296,30 @@ def try_lock(fd: int) -> int | None:
         return None
 
 
+def require_gone(state: dict, where: Path) -> None:
+    """A reboot, or positive absence of every recorded process, precedes retirement."""
+    if state.get('boot') and state['boot'] != procs.boot_id():
+        return
+    pid, start = state.get('pid'), state.get('pid_start')
+    actual_start = procs.start_time(pid) if pid else None
+    if pid and (actual_start is not None and actual_start == start or actual_start is None
+                and Path(f'/proc/{pid}').exists()):
+        raise Refused(f'{where}: recorded runner is live or uninspectable; nothing removed')
+    if any(procs.group_members(pgid) for pgid, _ in state.get('groups', [])):
+        raise Refused(f'{where}: recorded group still has live processes; held, never signalled')
+
+
 def recover(root: Root, change: str | None) -> list[str]:
     """Finish and remove this change's abandoned runs; report every other leftover and touch none of it."""
     lines = []
     runs_fd = root.child(RUNS)
     try:
-        for name in sorted(set(os.listdir(runs_fd)) | set(storage.pending(root))):
+        errors = {}
+        pending = storage.pending(root, errors=errors)
+        lines.extend(errors.values())
+        for name in sorted(set(os.listdir(runs_fd)) | set(pending)):
+            if name in errors:
+                continue
             try:
                 run_name(name)
                 fd = storage.child(root, name, create=False)
@@ -322,9 +333,19 @@ def recover(root: Root, change: str | None) -> list[str]:
                     lines.append(f"run {name}: memory scratch absent; only its own change recovers its records")
                     continue
                 if state:
+                    if kept(root, name):
+                        lines.append(f"run {name}: kept by note; left alone")
+                        continue
+                    try:
+                        require_gone(state, storage.path(root, name))
+                    except Refused as refused:
+                        lines.append(f'run {name}: left alone ({refused})')
+                        continue
                     finish_abandoned(root, name, state)
                     cleanup = retire_run(root, runs_fd, name, state)
-                    discard_records(root, name, state, cleanup)
+                    retirement_result(root, name, cleanup)
+                    cleanup = discard_records(root, name, state, cleanup)
+                    retirement_result(root, name, cleanup)
                     lines.append(f"run {name}: absent memory scratch retired; cleanup {cleanup['outcome']}")
                 else:
                     storage.discard(root, name)
@@ -347,10 +368,10 @@ def recover(root: Root, change: str | None) -> list[str]:
                     lines.append(f'run {name}: live (its lock is held by a run process); left alone')
                     continue
                 try:
-                    live = [pid for pgid, _ in state.get('groups', []) for pid in procs.group_members(pgid)] \
-                        if state.get('boot') == procs.boot_id() else []
-                    if live:
-                        lines.append(f'run {name}: processes {live} remain in its own groups; held, not killed')
+                    try:
+                        require_gone(state, storage.path(root, name))
+                    except Refused as refused:
+                        lines.append(f'run {name}: left alone ({refused})')
                         continue
                     lines.append(f'recovering abandoned run {name} of change {change}: removing '
                                  f'{storage.path(root, name)} {state["scratch"]} and Git admin {state.get("admin")}')

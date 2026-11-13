@@ -59,7 +59,7 @@ def choose(bound=BOUND):
     return None
 
 
-def memory_root(project, base, *, create=True):
+def memory_root(project, base, *, create=True, name=None):
     base = Path(base)
     if not base.is_absolute() or base.resolve() != base:
         raise Refused(f'{base}: memory storage base is not an absolute plain path')
@@ -67,7 +67,10 @@ def memory_root(project, base, *, create=True):
     try:
         if not filesystem(fd):
             raise Refused(f'{base}: recorded working storage is no longer tmpfs or ramfs')
-        path = base / project_name(project)
+        name = project_name(project) if name is None else name
+        if not isinstance(name, str) or not name or '/' in name or '\0' in name or name in ('.', '..'):
+            raise Refused(f'{base}: recorded memory root name is invalid; nothing touched')
+        path = base / name
         child = open_child(fd, path.name, path, create=create, device=os.fstat(fd).st_dev)
     finally:
         os.close(fd)
@@ -83,11 +86,14 @@ def record(root, run):
         data = read_json(fd, RECORD, root.path / RESULTS / run / RECORD)
         if data is not None:
             valid = (data.get('run') == run and isinstance(data.get('base'), str)
-                     and Path(data['base']).is_absolute() and data.get('kind') in MEMORY_TYPES.values()
+                     and '\0' not in data['base'] and Path(data['base']).is_absolute()
+                     and data.get('kind') in MEMORY_TYPES.values()
+                     and isinstance(data.get('root'), str) and bool(data['root'])
+                     and '/' not in data['root'] and '\0' not in data['root'] and data['root'] not in ('.', '..')
                      and isinstance(data.get('identity'), list) and len(data['identity']) == 3
                      and all(type(value) is int for value in data['identity']))
             if not valid:
-                raise Refused(f'run {run}: working storage record is incomplete or differs; nothing touched')
+                raise Refused(f'{root.path / RESULTS / run / RECORD}: working storage record is incomplete or differs; nothing touched')
         return data
     finally:
         os.close(fd)
@@ -95,16 +101,22 @@ def record(root, run):
 
 def path(root, run):
     data = record(root, run)
-    return (Path(data['base']) / project_name(root.project) if data else root.path) / RUNS / run
+    return (Path(data['base']) / data['root'] if data else root.path) / RUNS / run
 
 
 def parent(root, run, *, create=True):
     data = record(root, run)
     if data is None:
         return root.child(RUNS, create=create)
-    where, fd = memory_root(root.project, data['base'], create=False)
+    from . import procs
+    where = Path(data['base']) / data['root']
     try:
-        from . import procs
+        where, fd = memory_root(root.project, data['base'], create=False, name=data['root'])
+    except FileNotFoundError:
+        if not data.get('boot') or data['boot'] == procs.boot_id():
+            raise Refused(f'{where}: recorded memory project root is missing in the same or unknown boot; held') from None
+        raise
+    try:
         if identity(os.fstat(fd)) != data['identity']:
             if not data.get('boot') or data['boot'] == procs.boot_id():
                 raise Refused(f'{where}: recorded memory root identity changed; nothing touched')
@@ -132,7 +144,7 @@ def child(root, run, *, create=True):
         os.close(fd)
 
 
-def pending(root):
+def pending(root, *, errors=None):
     """Recorded memory runs only: no scanning or guessing ownership in a shared temporary folder."""
     fd = root.child(RESULTS)
     try:
@@ -146,8 +158,18 @@ def pending(root):
             run_name(name)
         except Refused:
             continue
-        if record(root, name) is not None:
+        try:
+            data = record(root, name)
+        except (Refused, OSError) as error:
+            message = f'{root.path / RESULTS / name / RECORD}: invalid or unreadable storage record ({error}); retained'
+            if errors is not None:
+                errors[name] = message
+            else:
+                print(f'testrun: {message}', flush=True)
             found.append(name)
+        else:
+            if data is not None:
+                found.append(name)
     return sorted(found)
 
 
@@ -160,18 +182,28 @@ def prepare(root, run):
     selected = choose()
     if selected is None:
         return disk_fallback(root, run, 'no writable executable tmpfs/ramfs has 4 GiB free')
-    old = pending(root)
+    errors = {}
+    old = pending(root, errors=errors)
     if old:
-        return disk_fallback(root, run, f'memory scratch of runs {old} remains; retire those exact runs '
-                             'before reusing memory (one memory run per project)')
+        detail = '; '.join(errors.values())
+        return disk_fallback(root, run, (detail + '; ' if detail else '')
+                             + f'memory reservations of runs {old} remain (one memory run per project); '
+                             'continue on disk; retire can clear only unkept runs with verifiable storage; '
+                             'kept reservations have no release command, and changed filesystems need the original memory mount restored')
     base, kind = selected
-    where, fd = memory_root(root.project, base)
     try:
-        space = os.fstatvfs(fd)
+        where, fd = memory_root(root.project, base)
+    except (Refused, OSError) as error:
+        return disk_fallback(root, run, f'memory storage unavailable ({error}); continue on disk')
+    try:
+        try:
+            space = os.fstatvfs(fd)
+        except OSError as error:
+            return disk_fallback(root, run, f'memory storage free space unreadable ({error}); continue on disk')
         if space.f_bavail * space.f_frsize < BOUND:
             return disk_fallback(root, run, 'memory free space fell below 4 GiB before setup')
         from . import procs
-        data = {'run': run, 'base': str(base), 'identity': identity(os.fstat(fd)), 'kind': kind,
+        data = {'run': run, 'base': str(base), 'root': where.name, 'identity': identity(os.fstat(fd)), 'kind': kind,
                 'boot': procs.boot_id(), 'bound_bytes': BOUND}
         result = root.child(RESULTS, run)
         try:
@@ -198,7 +230,7 @@ def usage(path):
     """Conservative working bytes, no followed links, hard-linked inodes counted once; tolerate removals."""
     total = {'bytes': 0, 'file_bytes': 0, 'allocated_bytes': 0, 'metadata_allowance_bytes': 0, 'files': 0, 'dirs': 0}
     seen = set()
-    def walk(folder):
+    def walk(folder, *, root=False):
         try:
             with os.scandir(folder) as entries:
                 for entry in entries:
@@ -216,8 +248,12 @@ def usage(path):
                     except FileNotFoundError:
                         pass
         except FileNotFoundError:
-            pass
-    walk(path)
+            if root:
+                raise  # a missing measurement root is unknown, rather than measured zero
+    try:
+        walk(path, root=True)
+    except (OSError, RecursionError) as error:
+        raise Refused(f'cannot measure working files at {path}: {type(error).__name__}: {error}; run stopped') from None
     total['bytes'] = total['file_bytes'] + total['metadata_allowance_bytes']
     return total
 
@@ -283,6 +319,14 @@ def writes_since(project, before, io_before):
 
 
 def plain(project):
+    try:
+        return _plain(project)
+    except (Refused, OSError) as error:
+        print(f'pytest: working files on disk: memory storage unavailable ({error}); continue on disk', flush=True)
+        return None
+
+
+def _plain(project):
     current = Path(os.environ.get('TMPDIR', '/'))
     if current.name == 't' and current.parent.name == project_name(project):
         where, fd = memory_root(project, current.parent.parent, create=False)
