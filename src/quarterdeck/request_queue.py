@@ -20,6 +20,14 @@ from .ship import ShipError
 SEAT_KINDS = frozenset({'relaunch', 'control', 'select', 'stop'})
 
 
+class RequestHold(ShipError):
+    """Unproved request ordering is a visible wait, never a failed-request retirement."""
+
+    def __init__(self, dimension, reason):
+        super().__init__(reason)
+        self.dimension = dimension
+
+
 def launch_binding(seat):
     launched = seat.launched()
     if launched is None:
@@ -284,24 +292,27 @@ def supersede(runtime, path, data):
             continue  # unrelated unreadable requests retain their own named outcome
         if item.get('kind') != 'relaunch' or item.get('seat') != data['seat']:
             continue
-        meta = metadata(other)
-        if 'terminal' in meta:
-            continue
-        at = datetime.fromisoformat(created(other, meta))
+        try:
+            meta = metadata(other)
+            if 'terminal' in meta:
+                continue
+            at = datetime.fromisoformat(created(other, meta))
+        except (OSError, ValueError, TypeError, ShipError):
+            raise RequestHold('order-unknown', 'relaunch order unknown; creation time unreadable; retained') from None
         candidates.append((at, other.stem, other, item, meta))
     if not candidates:
         return True
     latest = max(row[0] for row in candidates)
     newest = [row for row in candidates if row[0] == latest]
     if len(newest) != 1:
-        raise ShipError('relaunch request order unknown; creation times are equal; retained')
+        raise RequestHold('order-unknown', 'relaunch order unknown; creation times are equal; retained')
     _, _, winner, _, meta = newest[0]
     older = [row for row in candidates if row[2] != winner]
     if not older:
         return True
     for _, _, old, _, _ in older:
         if claimed(old) is not False:
-            raise ShipError(f'request {old.stem} already claimed; outcome unknown; retained')
+            raise RequestHold('outcome-unknown', f'request {old.stem} already claimed; outcome unknown; retained')
     meta['retired'] = sorted(set(meta.get('retired', [])) | {old.stem for _, _, old, _, _ in older})
     save_metadata(winner, meta)
     for _, _, old, item, _ in older:

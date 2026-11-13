@@ -452,6 +452,12 @@ class Service:
                     self.log("request", **data, answer=answer)
                     request_queue.retire(path)
                     self.clear_request_claim(claim)
+                except request_queue.RequestHold as hold:
+                    try:
+                        request_queue.hold(path, meta, hold.dimension, str(hold))
+                    except Exception as error:
+                        self.log('error', step='request-hold', request=path.name, error=repr(error))
+                    continue  # an unproved order never archives one candidate and admits its sibling
                 except Exception as error:
                     if isinstance(data, dict) and data.get("kind") == "rebrief":
                         retry.append(error)

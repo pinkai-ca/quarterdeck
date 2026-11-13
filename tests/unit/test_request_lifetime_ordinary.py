@@ -28,7 +28,8 @@ def runtime(tmp_path, monkeypatch):
 
 
 def enqueue(runtime, kind='relaunch', **extra):
-    data = dict(seat=SEAT, resume=True, **extra)
+    data = dict(seat=SEAT, resume=True)
+    data.update(extra)
     if kind == 'relaunch':
         data['caller'] = SEAT
     return request_queue.enqueue(runtime, kind, data,
@@ -185,6 +186,51 @@ def test_superseding_request_settles_previous_one_with_same_owner(runtime, monke
     assert 'superseded' in first.with_suffix('.done').read_text()
     assert request_queue.metadata(second)['retired'] == [first.stem]
     assert [row['id'] for row in request_queue.pending(runtime)] == [second.stem]
+
+
+@pytest.mark.parametrize('resolution', ['cancel', 'newer'])
+def test_equal_time_relaunches_stay_held_until_order_is_resolved(runtime, monkeypatch, resolution):
+    first = enqueue(runtime)
+    second = enqueue(runtime, resume=False)
+    seen = []
+    runner = service(runtime, lambda data: seen.append(data) or 'synthetic answer')
+    runner.requests()
+    runner.requests()
+    assert not seen
+    assert {row['id'] for row in request_queue.pending(runtime)} == {first.stem, second.stem}
+    for path in (first, second):
+        assert path.exists() and not path.with_suffix('.claimed').exists()
+        assert not path.with_suffix('.done').exists()
+        assert request_queue.metadata(path)['waiting']['dimension'] == 'order-unknown'
+        assert 'relaunch order unknown' in request_queue.view(path)['reason']
+    assert not (runtime / 'requests' / 'failed').exists()
+    if resolution == 'cancel':
+        request_queue.cancel(runtime, SEAT, first.stem)
+        runner.requests()
+        assert seen == [dict(kind='relaunch', seat=SEAT, resume=False)]
+    else:
+        monkeypatch.setattr(post, 'now', lambda: AT.replace(second=1))
+        newest = enqueue(runtime)
+        runner.requests()
+        assert seen == [dict(kind='relaunch', seat=SEAT, resume=True)]
+        assert not newest.exists()
+        assert all('superseded' in path.with_suffix('.done').read_text() for path in (first, second))
+
+
+def test_unreadable_creation_time_holds_other_relaunches_without_archiving(runtime):
+    first = enqueue(runtime)
+    second = enqueue(runtime)
+    meta = request_queue.metadata(first)
+    meta['created_at'] = 'synthetic unknown creation time'
+    request_queue.save_metadata(first, meta)
+    runner = service(runtime, lambda data: pytest.fail('unproved request order dispatched'))
+    runner.requests()
+    runner.requests()
+    assert first.exists() and second.exists()
+    assert 'relaunch order unknown' in request_queue.view(second)['reason']
+    assert not (runtime / 'requests' / 'failed').exists()
+    assert 'cancelled' in request_queue.cancel(runtime, SEAT, first.stem)
+    assert 'cancelled' in request_queue.cancel(runtime, SEAT, second.stem)
 
 
 def test_client_publication_never_takes_dispatch_coordination(runtime, monkeypatch):
