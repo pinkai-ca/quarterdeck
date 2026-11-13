@@ -25,6 +25,7 @@ SOCKETS = 's'      # the fixed short anchor for native test sockets, shared with
 PLAIN_TEMP = 't'   # TMPDIR of a plain pytest run (tests/conftest.py)
 RUNS = 'runs'      # scratch, always removed
 RESULTS = 'results'  # retained evidence: result.json, report.md, failures/
+RETIREMENTS = 'retirements'  # explicit retirement command results; the original test evidence stays byte-identical
 CHANGES = 'changes'  # durable control state: registrations and clean journals
 KEEPS = 'keeps'      # durable control state: explicit keep notes
 SLOT = 'slot.lock'

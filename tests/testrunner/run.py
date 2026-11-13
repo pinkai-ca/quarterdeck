@@ -300,6 +300,10 @@ class Runner:
         if cleanup['outcome'] == 'held' and status == 'passed':
             result['outcome']['wrapper_exit'] = CLEANUP_HELD
         report.write(results_fd, result, console, found['failures'])
+        cleanup = clean.discard_records(root, run, self.state, cleanup)
+        if cleanup['outcome'] == 'held' and status == 'passed':
+            result['outcome']['wrapper_exit'] = CLEANUP_HELD
+        report.write(results_fd, result, console, found['failures'])
         for fd in (self.lock, results_fd, runs_fd, self.scratch_fd):
             os.close(fd)
         where = root.path / RESULTS / run

@@ -27,8 +27,15 @@ def register(parent: Path, folder: Path, descriptor: int) -> str | None:
         fd = root.child(RESULTS, run, 'sessions', create=False)
         try:
             token = owned.mark(descriptor)
-            write_json(fd, folder.name + '.json', {'name': folder.name, 'identity': identity(os.fstat(descriptor)),
-                                                 'owner': token})
+            try:
+                write_json(fd, folder.name + '.json', {'name': folder.name, 'identity': identity(os.fstat(descriptor)),
+                                                     'owner': token})
+            except BaseException as error:
+                try:
+                    unmark_empty(descriptor, token)
+                except OSError as cleanup_error:
+                    error.add_note(f'unrecorded session container retained: {folder}: {cleanup_error}')
+                raise
             return token
         finally:
             os.close(fd)
@@ -92,11 +99,21 @@ def retire(root: Root, run: str, *, budget=None) -> dict:
                     entries.append({'path': str(where), 'outcome': 'complete'})
                     continue
                 descriptor = owned._open_exact(anchor, name, record['identity'], where, record['owner'])
+                if os.fstat(descriptor).st_dev != root.device:
+                    raise Refused(f'{where}: session filesystem differs; retained')
                 # The native tmux subdirectory is removable only when empty, never by a recursive walk.
                 native = f'tmux-{os.getuid()}'
-                if native in os.listdir(descriptor):
+                try:
+                    os.stat(native, dir_fd=descriptor, follow_symlinks=False)
+                except FileNotFoundError:
+                    has_native = False
+                else:
+                    has_native = True
+                if has_native:
                     child = owned._open_exact(descriptor, native, None, where / native)
                     try:
+                        if os.fstat(child).st_dev != root.device:
+                            raise Refused(f'{where / native}: native filesystem differs; retained')
                         with os.scandir(child) as children:
                             if next(children, None) is not None:
                                 raise Refused(f'{where / native}: nonempty native namespace retained')
@@ -133,3 +150,47 @@ def retire(root: Root, run: str, *, budget=None) -> dict:
             os.close(anchor)
     return {'outcome': 'held' if any(item['outcome'] == 'held' for item in entries) else 'complete',
             'scope': 'recorded session folders only', 'entries': entries}
+
+
+def discard_records(root: Root, run: str, budget) -> None:
+    """Remove completed session metadata, after independently checking each recorded path is absent."""
+    results = root.child(RESULTS, run, create=False)
+    records = anchor = None
+    try:
+        try:
+            records = root.child(RESULTS, run, 'sessions', create=False)
+        except FileNotFoundError:
+            return
+        original = identity(os.fstat(records))
+        with os.scandir(records) as iterator:
+            names = []
+            for item in iterator:
+                budget.check(root.path / RESULTS / run / 'sessions' / item.name)
+                names.append(item.name)
+        try:
+            anchor = root.child(SOCKETS, create=False)
+        except FileNotFoundError:
+            pass
+        for filename in names:
+            budget.check(root.path / RESULTS / run / 'sessions' / filename)
+            record = read_json(records, filename, root.path / RESULTS / run / 'sessions' / filename)
+            name = record.get('name') if record else None
+            if not isinstance(name, str) or name in ('', '.', '..') or '/' in name or filename != name + '.json':
+                raise Refused(f'invalid session record {filename}; metadata retained')
+            if not record.get('identity') or not record.get('owner'):
+                raise Refused(f'{filename}: session identity/owner unrecorded; metadata retained')
+            if anchor is not None:
+                try:
+                    os.stat(name, dir_fd=anchor, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise Refused(f'{root.path / SOCKETS / name}: session still exists; metadata retained')
+            owned.unlink_file(records, filename, root.path / RESULTS / run / 'sessions' / filename)
+        if identity(os.stat('sessions', dir_fd=results, follow_symlinks=False)) != original:
+            raise Refused('session metadata directory replaced; replacement retained')
+        os.rmdir('sessions', dir_fd=results)
+    finally:
+        for fd in (anchor, records, results):
+            if fd is not None:
+                os.close(fd)

@@ -10,7 +10,7 @@ import sys
 import time
 
 from . import evidence, gitops, owned, procs, report, sessions
-from .layout import (CHANGES, DIRECTORY, KEEPS, RESULTS, RUNS, Refused, Root, Slot, change_file,
+from .layout import (CHANGES, DIRECTORY, KEEPS, RESULTS, RETIREMENTS, RUNS, SOCKETS, Refused, Root, Slot, change_file,
                      identity, read_json, run_name, write_json)
 
 
@@ -101,6 +101,44 @@ def record(root: Root, run: str, state: dict) -> None:
         os.close(fd)
 
 
+def discard_records(root: Root, run: str, state: dict, cleanup: dict) -> dict:
+    """Recovery records survive only a crash, keep or incomplete retirement, never a clean ending."""
+    if cleanup['outcome'] != 'complete':
+        return cleanup
+    fd = None
+    try:
+        budget = owned.Budget()
+        sessions.discard_records(root, run, budget)
+        fd = root.child(RESULTS, run, create=False)
+        for name in ('retirement.json', 'retirement-timeout.json', 'ownership.json'):
+            budget.check(root.path / RESULTS / run / name)
+            data = read_json(fd, name, root.path / RESULTS / run / name)
+            if data is None:
+                continue
+            if data.get('run') != run:
+                raise Refused(f'{name}: not this run\'s recovery record; retained')
+            if name == 'ownership.json' and (data.get('scratch') != state.get('scratch')
+                                            or data.get('owner') != state.get('owner')):
+                raise Refused('ownership record changed; retained')
+            owned.unlink_file(fd, name, root.path / RESULTS / run / name)
+    except Exception as error:
+        cleanup.update(outcome='held', reason=f'recovery records retained: {error}')
+    finally:
+        if fd is not None:
+            os.close(fd)
+    return cleanup
+
+
+def retirement_result(root: Root, run: str, cleanup: dict) -> None:
+    """The explicit command's result is beside, never inside or over, the original test evidence."""
+    fd = root.child(RETIREMENTS)
+    try:
+        write_json(fd, run + '.json', {'run': run, 'at': now(), 'cleanup': cleanup,
+                                      'first_result_preserved': True})
+    finally:
+        os.close(fd)
+
+
 def retire(args) -> int:
     """Retry exactly one recorded crashed run, retaining its first result and every other run."""
     # Reuse the landed finalization policy; the local import avoids the runner/cleanup import cycle.
@@ -154,11 +192,56 @@ def retire_within(root: Root, run: str) -> int:
             pass
         if state is None and scratch is not None:
             state = read_json(scratch, 'state.json', where / 'state.json')
+        if state is None and scratch is None:
+            previous = anchor = None
+            try:
+                try:
+                    previous = root.child(RETIREMENTS, create=False)
+                    done = read_json(previous, run + '.json', root.path / RETIREMENTS / (run + '.json'))
+                except FileNotFoundError:
+                    done = None
+                completed = done.get('cleanup', {}) if done and done.get('run') == run else {}
+                if completed.get('outcome') == 'complete':
+                    try:
+                        anchor = root.child(SOCKETS, create=False)
+                    except FileNotFoundError:
+                        pass
+                    for entry in completed.get('sessions', {}).get('entries', []):
+                        path = Path(entry['path'])
+                        if path.parent != root.path / SOCKETS:
+                            raise Refused(f'{path}: not a recorded session path in this project; held')
+                        if anchor is not None:
+                            try:
+                                os.stat(path.name, dir_fd=anchor, follow_symlinks=False)
+                            except FileNotFoundError:
+                                pass
+                            else:
+                                raise Refused(f'{path}: recorded retirement is no longer absent; held')
+                    for name in ('sessions', 'retirement.json', 'retirement-timeout.json'):
+                        try:
+                            os.stat(name, dir_fd=results, follow_symlinks=False)
+                        except FileNotFoundError:
+                            pass
+                        else:
+                            raise Refused(f'{name}: recovery metadata remains without ownership; held')
+                    print(f'run {run}: already retired; first result/report/failures retained')
+                    return 0
+            finally:
+                for fd in (anchor, previous):
+                    if fd is not None:
+                        os.close(fd)
         if not state or state.get('run') != run or not state.get('scratch') or not state.get('owner'):
             raise Refused(f'{where}: no exact recorded run identity and owner; nothing inferred or removed')
+        if kept(root, run):
+            raise Refused(f'{where}: kept by note; nothing removed')
+        first = read_json(results, 'result.json', root.path / RESULTS / run / 'result.json')
+        if first is None and scratch is None:
+            raise Refused(f'{where}: no first result or scratch evidence; recovery records retained')
         if scratch is not None:
             if identity(os.fstat(scratch)) != state['scratch']:
                 raise Refused(f'{where}: run directory identity changed; nothing removed')
+            verified = owned._open_exact(runs, run, state['scratch'], where, state['owner'])
+            os.close(verified)
             lock = try_lock(scratch)
             if lock is None:
                 raise Refused(f'{where}: run lock is held; nothing removed')
@@ -174,10 +257,11 @@ def retire_within(root: Root, run: str) -> int:
         if scratch is not None:
             finish_abandoned(root, run, state, scratch_fd=scratch)
         cleanup = retire_run(root, runs, run, state)
-        write_json(results, 'retirement.json', {'run': run, 'at': now(), 'cleanup': cleanup,
-                                              'first_result_preserved': True})
+        retirement_result(root, run, cleanup)  # durable completion before the last recovery record goes
+        cleanup = discard_records(root, run, state, cleanup)
+        retirement_result(root, run, cleanup)
         print(f'run {run}: retirement {cleanup["outcome"]} · {where} · '
-              f'{root.path / RESULTS / run / "retirement.json"}')
+              f'{root.path / RETIREMENTS / (run + ".json")}')
         if cleanup.get('reason'):
             print(cleanup['reason'])
         return 0 if cleanup['outcome'] == 'complete' else 2
@@ -239,6 +323,7 @@ def recover(root: Root, change: str | None) -> list[str]:
                     finish_abandoned(root, name, state)
                     record(root, name, state)
                     cleanup = retire_run(root, runs_fd, name, state)
+                    cleanup = discard_records(root, name, state, cleanup)
                     lines.append(f'run {name}: abandoned · cleanup {cleanup["outcome"]} '
                                  f'{cleanup.get("removed", {})} {cleanup.get("reason", "")}'.rstrip())
                 finally:
