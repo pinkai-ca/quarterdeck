@@ -176,11 +176,13 @@ def inputs(record: Path) -> list[Input]:
                     continue
                 if isinstance(content, list) and any(block.get('type') == 'text' and not isinstance(block.get('text'), str) for block in content):
                     raise TypeError
-            text = prompt_text(row)
+            notice = user_notice(row)
+            text = row['message']['content'] if notice else prompt_text(row)
             if text is not None:
                 matching = next((i for i, (item, _) in enumerate(queued) if item.text.strip() == text.strip()), None)
                 if matching is None:
-                    found.append(Input(text, stamp))
+                    if not notice:
+                        found.append(Input(text, stamp))
                 else:
                     entry, phase = queued[matching]
                     if stamp is not None and (entry.at is None or stamp >= entry.at):
@@ -456,6 +458,13 @@ class _Reader(JsonLinesReader):
                 return False
         return True
 
+    def consume_queued(self, text: str) -> None:
+        matching = next((i for i, (item, _) in enumerate(self.queue_slots) if item.strip() == text.strip()), None)
+        if matching is not None:
+            item, phase = self.queue_slots.pop(matching)
+            if phase not in ('echo', 'draft') and item in self.queued:
+                self.queued.remove(item)
+
     def user(self, entry: dict) -> None:
         message = entry.get('message', {})
         if message.get('role', 'user') != 'user' or not self.content_known(message.get('content'), 'user'):
@@ -463,6 +472,7 @@ class _Reader(JsonLinesReader):
         text = prompt_text(entry)
         content = entry.get("message", {}).get("content")
         if user_notice(entry):
+            self.consume_queued(content)
             if self.open is None:
                 self.notice_input = content
             return
@@ -480,11 +490,7 @@ class _Reader(JsonLinesReader):
             self.notice_input = None
             self.orphan_auth = None
             self.last_input, self.last_input_at = text, when(entry.get("timestamp"))
-            matching = next((i for i, (item, _) in enumerate(self.queue_slots) if item.strip() == text.strip()), None)
-            if matching is not None:
-                item, phase = self.queue_slots.pop(matching)
-                if phase not in ('echo', 'draft') and item in self.queued:
-                    self.queued.remove(item)
+            self.consume_queued(text)
             if self.open is not None:
                 self.end(self.last_input_at, completed=False)  # a later prompt bounds accounting, not terminal evidence
             self.start_turn({"started": self.last_input_at, "input": text, "usage": {}, "tools": [],

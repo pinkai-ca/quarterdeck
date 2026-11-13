@@ -78,9 +78,9 @@ def test_notice_during_an_open_turn_does_not_close_or_replace_it(tmp_path):
     assert idle.check(state).dimension == 'turn-open'
 
 
-def test_queue_notification_still_needs_native_dequeue(tmp_path):
+def test_queue_notification_waits_until_the_native_user_carrier_consumes_it(tmp_path):
     payload = notice()['message']['content']
-    rows = completed_background_turn() + [row('queue-operation', 4, operation='enqueue', content=payload), notice()]
+    rows = completed_background_turn() + [row('queue-operation', 4, operation='enqueue', content=payload)]
     path = record(tmp_path, rows)
     state = claude.state(path)
     assert state.pending_tools == ()
@@ -88,8 +88,14 @@ def test_queue_notification_still_needs_native_dequeue(tmp_path):
     assert state.last_input_at == AT and state.turn_open is False
     assert idle.check(state).dimension == 'queue-pending'
     with path.open('a') as stream:
-        stream.write(json.dumps(row('queue-operation', 6, operation='remove', content=payload)) + '\n')
-    assert idle.check(claude.state(path)) is None
+        stream.write(json.dumps(notice()) + '\n')
+    after = claude.state(path)
+    assert after.queued == () and after.last_input_at == AT and after.turn_open is False
+    assert idle.check(after) is None
+    queued_input = [item for item in claude.inputs(path) if item.text == payload]
+    assert len(queued_input) == 1 and queued_input[0].kind == 'consumed'
+    assert queued_input[0].at == AT + timedelta(seconds=4)
+    assert queued_input[0].consumed_at == AT + timedelta(seconds=5)
 
 
 @pytest.mark.parametrize('difference', ['version', 'missing-version', 'origin', 'status', 'malformed', 'blocks'])
