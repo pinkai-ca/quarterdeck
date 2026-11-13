@@ -14,7 +14,7 @@ from quarterdeck.ship import Pool, SeatSpec
 
 
 @pytest.fixture(autouse=True)
-def synthetic_native_paths(monkeypatch, tmp_path):
+def synthetic_native_paths(monkeypatch, tmp_path, synthetic_grok_program):
     monkeypatch.setattr(grok, "SYSTEM_CONFIG", tmp_path / "synthetic-system")
     monkeypatch.setattr(grok_notice, "trust_scope", lambda cwd, environment: (cwd, False))
     for name in grok.INHERITED_REDIRECTS:
@@ -42,6 +42,7 @@ def test_instruction_bearing_project_has_an_ordinary_trusted_launch(tmp_path):
     assert "--trust" in launch.argv
     assert launch.argv[launch.argv.index("--cwd") + 1] == str(spec.cwd)
     assert launch.argv[launch.argv.index("--rules") + 1] == brief.read_text()
+    assert launch.argv[0] == str(tmp_path / "synthetic-grok-bin" / "grok"), "the launch names the program it selected"
     assert launch.env["GROK_HOME"] == str(home)
     for name in ("AGENTS.md", "CLAUDE.md"):
         assert (spec.cwd / name).read_text() == "Synthetic project conventions.\n"

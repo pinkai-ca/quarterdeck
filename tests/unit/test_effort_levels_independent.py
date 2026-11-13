@@ -306,6 +306,8 @@ def launch_arguments(tmp_path, monkeypatch, name, selected):
     brief = tmp_path / "brief-example.txt"
     brief.write_text("Synthetic ordinary launch argument fixture.\n")
     if name == "grok":
+        from tests.conftest import synthetic_grok
+        synthetic_grok(tmp_path, monkeypatch)
         monkeypatch.setattr(reader, "preflight", lambda *args: None)
         monkeypatch.setattr(reader, "workspace_notice", lambda *args: None)
         monkeypatch.setattr(grok, "launch_home", lambda *args: None)

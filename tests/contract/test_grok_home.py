@@ -15,7 +15,7 @@ from quarterdeck.ship import Pool, SeatSpec, ShipError
 
 
 @pytest.fixture(autouse=True)
-def synthetic_native_paths(monkeypatch, tmp_path):
+def synthetic_native_paths(monkeypatch, tmp_path, synthetic_grok_program):
     """Ordinary home-output checks use fake admin paths, never actual /etc."""
     monkeypatch.setattr(grok, "SYSTEM_CONFIG", tmp_path / "synthetic-system")
     monkeypatch.setattr(grok_notice, "trust_scope", lambda cwd, environment: (cwd, False))

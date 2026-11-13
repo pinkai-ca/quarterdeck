@@ -169,6 +169,25 @@ def synthetic_disk_room(monkeypatch):
     monkeypatch.setattr(watch, 'disks', lambda paths: [])
 
 
+def synthetic_grok(folder: Path, monkeypatch) -> Path:
+    """A synthetic ``grok`` file, never executed, alone on the PATH a seat's program is looked for on: a grok
+    launch names the one program it selects, so a test of its arguments must not depend on the machine's grok."""
+    from quarterdeck import seat as seat_module
+
+    bin_dir = folder / 'synthetic-grok-bin'
+    bin_dir.mkdir(exist_ok=True)
+    program = bin_dir / 'grok'
+    program.write_text('Synthetic grok program; never executed.\n')
+    program.chmod(0o700)
+    monkeypatch.setattr(seat_module, 'program_path', lambda: str(bin_dir))
+    return program
+
+
+@pytest.fixture
+def synthetic_grok_program(tmp_path, monkeypatch) -> Path:
+    return synthetic_grok(tmp_path, monkeypatch)
+
+
 @pytest.fixture
 def drydock(tmp_path: Path) -> Path:
     """A copy of ships/drydock in a temporary folder, not a repository."""
