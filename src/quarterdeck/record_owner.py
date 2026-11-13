@@ -6,11 +6,13 @@ An untyped pin is preserved as unknown; record contents never select an adapter.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 import fcntl
 import json
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import Any, Iterator, TYPE_CHECKING
 
 from . import harness as harnesses
 from .harness.base import Harness, RecordError
@@ -52,12 +54,75 @@ def events(path: Path) -> list[dict[str, Any]]:
         raise RecordError(f"unreadable record ownership: {path.name}") from error
 
 
+class _RegistryRows:
+    def __init__(self, rows: list[dict[str, Any]], stamp: tuple[int, ...] | None = None):
+        self.rows, self.stamp = rows, stamp
+        self.by_record: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            self.by_record.setdefault(row["record"], []).append(row)
+
+    def contains(self, row: dict[str, Any]) -> bool:
+        # Compare whole rows: extra fields and untyped evidence keep their meaning.
+        return row in self.by_record.get(row["record"], ())
+
+
+_pass_rows: ContextVar[dict[Path, _RegistryRows] | None] = ContextVar("reader_pass_rows", default=None)
+
+
+@contextmanager
+def reader_pass() -> Iterator[None]:
+    """Share registry membership only within one account invocation, even on failure."""
+    token = _pass_rows.set({})
+    try:
+        yield
+    finally:
+        _pass_rows.reset(token)
+
+
+def _registry_stamp(path: Path) -> tuple[int, ...] | None:
+    try:
+        info = path.stat()
+    except FileNotFoundError:
+        return None
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+
+def _registry_rows(path: Path) -> _RegistryRows:
+    cache = _pass_rows.get()
+    if cache is None:
+        return _RegistryRows(events(path))
+    previous = cache.pop(path, None)
+    try:
+        before = _registry_stamp(path)
+    except OSError:
+        # A failed metadata check grants no reuse; keep the ordinary reader path.
+        return _RegistryRows(events(path))
+    if previous is not None and previous.stamp == before:
+        cache[path] = previous
+        return previous
+    rows = _RegistryRows(events(path), before)
+    try:
+        after = _registry_stamp(path)
+    except OSError:
+        return rows
+    # An unstable read keeps its ordinary result/error but cannot seed the cache.
+    if before == after:
+        cache[path] = rows
+    return rows
+
+
 def register(folder: Path, record: Path, name: str | None) -> None:
-    folder.mkdir(parents=True, exist_ok=True)
     row = {"record": str(record), "harness": name}
     path = registry(folder)
+    if _registry_rows(path).contains(row):
+        return
+    cache = _pass_rows.get()
+    if cache is not None:
+        cache.pop(path, None)
+    folder.mkdir(parents=True, exist_ok=True)
     with path.open("a+") as stream:
         fcntl.flock(stream, fcntl.LOCK_EX)
+        # Another process may have appended since the read-only membership check.
         if row not in events(path):
             stream.write(json.dumps(row) + "\n")
 
@@ -65,7 +130,7 @@ def register(folder: Path, record: Path, name: str | None) -> None:
 def bindings(seat: Seat) -> dict[Path, set[str]]:
     folder = seat.home.parent
     found: dict[Path, set[str]] = {}
-    saved = events(registry(folder))
+    saved = _registry_rows(registry(folder)).rows
     registered = {Path(row["record"]) for row in saved}
     for row in [*saved, *events(folder / "record-launches.jsonl")]:
         names = found.setdefault(Path(row["record"]), set())

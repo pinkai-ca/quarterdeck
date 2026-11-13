@@ -672,6 +672,7 @@ class Service:
             self.log("credential", proof=line)
 
 
+    @record_owner.reader_pass()
     def account(self) -> None:
         """Read sources first, commit record accounting once, then make due usage attempts.
 
