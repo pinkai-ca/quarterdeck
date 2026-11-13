@@ -333,6 +333,10 @@ def test_a_missing_generation_at_watch_exit_removes_nothing_and_keeps_the_watch_
     monkeypatch.setattr(post.time, 'sleep', vanish)
     assert post.wait(desk.runtime, 'desk', interval=0.01, stop_after=0.05) is None
     assert post.watch_file(desk.runtime, 'desk').exists(), 'an unproved owner removes nothing'
+    reading = post.watch_reading(desk.runtime, 'desk')
+    assert reading.armed is None and 'retirement unconfirmed' in reading.reason, 'unknown, and visible'
+    desk.order()
+    assert human_wake.run(desk.seat) and desk.tmux.typed() == []
 
 
 # -- the episode ------------------------------------------------------------------------------
@@ -392,6 +396,9 @@ def test_a_relaunch_after_a_confirmed_wake_releases_it_for_exactly_one_new_wake(
         human_wake.run(desk.seat)
     assert desk.pastes() == [EXACT, EXACT] and desk.keys() == [('Enter',), ('Enter',)]
     assert 'person must intervene' not in (human_wake.status(desk.seat) or '')
+    history = list((desk.seat.folder / 'human-wake-history').iterdir())
+    assert len(history) == 1 and json.loads(history[0].read_text())['phase'] == 'delivered', \
+        'the old launch\'s wake is retained, not erased'
 
 
 # -- crashes and uncertainty ---------------------------------------------------------------------
@@ -551,6 +558,17 @@ def test_a_work_wait_posts_no_alarm_and_the_desk_is_never_told_about_itself(alar
     assert alarms.told() == [], 'a wait for the seat\'s own work raises no report'
     assert d.tmux.typed() == []
     assert human_wake.status(d.seat), 'the status line still shows it'
+
+
+def test_a_draft_in_the_box_shows_in_status_and_posts_no_alarm(alarms):
+    d = alarms.desk
+    d.tmux.box = 'operator draft'
+    d.order()
+    for _ in range(3):
+        human_wake.run(d.seat)
+        alarms.svc.needs_human(d.seat)
+    assert alarms.told() == [] and d.tmux.typed() == []
+    assert human_wake.status(d.seat) == 'human wake box not empty; untouched'
 
 
 def test_a_person_end_state_tells_spock_once_and_never_the_obstructed_desk(alarms):

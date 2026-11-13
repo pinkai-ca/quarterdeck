@@ -33,7 +33,7 @@ title = "Ship's Bridge"
 
 [sessions.office]
 title = "Admiral's Office"
-human = true                         # the human types here; the ship never does
+human = true                         # Into a session the human owns it types only when a message waits there, no watch is armed and the box is empty.
 
 [sessions.crew]
 title = "Crew"
