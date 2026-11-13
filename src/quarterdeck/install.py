@@ -683,6 +683,10 @@ def upgrade(ship: Ship, ref: str = 'HEAD', tmux: Tmux | None = None, *,
         except Exception:
             phase = pending.get('phase', 'unknown')
             if pending.get('activated'):
+                # A post-activation reporting write can fail after cleanup cleared
+                # the journal. Reattach its cleanup-only intent before saying it is kept.
+                if data.get('pending') is None:
+                    data['pending'] = pending
                 _failure(data, phase)
                 _save(ship.runtime, data)
                 raise ShipError(f'copy active but {phase} incomplete; journal kept; qd up or qd sync retries cleanup') from None
