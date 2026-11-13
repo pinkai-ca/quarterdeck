@@ -39,7 +39,7 @@ cd ../..  # back to the folder you cloned
 
 - `[ship]`: set `workspace` to your project's folder, absolute, or relative to the ship's folder. The copied `workspace = "../.."` points the crew at the Quarterdeck folder, not at your project. `name` and `operator` are the ship's name, and what the ship calls you.
 - `[pools.<name>]`: a pool is what a harness runs on: a subscription you are signed in to, an API key or a local model. Change `config_dir` under `[pools.claude]` and `home` under `[pools.codex]` if your sign-in folders are not `~/.claude` and `~/.codex`. Remove a pool you do not use, and add one for what you have: [`ships/forum/ship.toml`](../ships/forum/ship.toml) shows a pool for a subscription.
-- `[seats.<name>]`: a seat is one agent. Set `harness` to a harness you have, and `pool` to a pool that the harness can run on: [Harnesses](HARNESSES.md) gives each harness's name. Choose a `model` and an `effort` that your subscription offers: nothing checks either against your account.
+- `[seats.<name>]`: a seat is one agent. Set `harness` to a harness you have, and `pool` to a pool that the harness can run on: [Harnesses](HARNESSES.md) gives each harness's name. Choose a `model` and an `effort` that your subscription offers: nothing checks either against your account. `qd controls --harness <name>` prints the efforts that a harness takes, or says that they are not measured. For the harness's own default, leave `model` or `effort` out and set `model_mode = "program-default"` or `effort_mode = "program-default"`; pi and OpenCode need `model`.
 
 A local model is a pool of two lines:
 
@@ -65,7 +65,9 @@ git -C ships/mine commit -am "My crew"
 
 - `unproven: qd check <name> proves it`: no live check has proved that version of the harness. The crew runs either way, and `qd check claude`, for one, spends a few turns.
 - `no credential at <folder>; sign in to the program there`: sign in to that harness.
-- An `effort` that the agent's harness does not take: doctor refuses the effort, and names the levels the harness takes.
+- `effort '<effort>' is not supported by <harness>; the levels are …`: the harness does not take that effort. Set one of the levels the line names.
+- `<harness> takes no effort; effort '<effort>' is not supported`: the harness takes no effort. Remove `effort` from the seat.
+- `levels of <harness> <version> not measured; '<effort>' unchecked`, on a line marked PASS: Quarterdeck has no measurement of the efforts that version takes, and passes yours unchecked.
 
 **5. Bring the crew up, and look at it.**
 

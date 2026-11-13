@@ -30,6 +30,7 @@ What each reading holds:
 | `laws` | each law's id, part and text, and the paths and line numbers that carry it |
 | `brief`, also with `--sources` | the brief's text, its source files and its word count |
 | `controls` | what each adapter can control, and the ship's controls for relaunching |
+| `controls --harness <name>` | without a ship: what that harness's adapter can control, the efforts the harness takes and the versions they were measured on, and the model and effort to suggest |
 | `inbox` | the open and the received messages, with the reports that closed them |
 | `inbox --wait` | one object, with `seat` and a `messages` array; then it exits |
 

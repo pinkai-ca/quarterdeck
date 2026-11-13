@@ -32,7 +32,7 @@ Ask in this order, a question or two at a time. Offer a suggestion with each, so
 5. **The crew.** Three to begin with: a desk, the agent they talk to; a captain, who turns their word into orders and reviews the work; an engineer, who builds it. For each:
    - a name: the default ship's are Maeve, Picard and Geordi;
    - a harness, from those installed;
-   - a model and an effort, from those that harness offers.
+   - a model and an effort. `qd --json controls --harness <name>` gives the efforts that harness takes, where they are measured, and a model and an effort to suggest. No suggestion is checked against their account: say so when you offer one.
 6. **What each harness runs on**: a subscription they are signed in to, an API key, or a local model. For a key, ask for the name of the variable that holds it, never its value. For a local model, ask for its address. Where a seat may fall back on a second of these, in which order.
 
 Then show them the whole ship on one screen, and let them change anything before you write it:

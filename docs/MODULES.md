@@ -40,6 +40,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `antigravity_quota.py` | the Antigravity record's quota facts |
 | `antigravity_record.py` | the Antigravity record decoded from its snapshot |
 | `antigravity_wire.py` | the Antigravity record's wire format |
+| `capabilities.py` | what each adapter declares of its harness's efforts and defaults, the checks of a seat's `model` and `effort` against that, and the words for a program's own default |
 | `costs.py` | an endpoint program's step costs: what its record states, what stated rates prove, and what stays unpriced |
 | `failures.py` | a recorded error's bounded first words |
 | `home.py` | building a seat's home: a pool's credential brought into it, a key pool's environment, and the ship's settings layered over a program's own |
