@@ -362,6 +362,11 @@ def main(argv: list[str] | None = None) -> int:
     if "QD_FAKE_HOME" not in os.environ:
         print("qd-fakeharness: QD_FAKE_HOME is not set; it never runs in a real home", file=sys.stderr)
         return 2
+    if linger := float(os.environ.get("QD_FAKE_LINGER_SECONDS", "0")):
+        # A program that outlives its closed pane for a while, as a real one may while it writes its state.
+        import signal
+        import time
+        signal.signal(signal.SIGHUP, lambda *_: (time.sleep(linger), os._exit(0)))
     fd = sys.stdin.fileno()
     saved = termios.tcgetattr(fd)
     tty.setraw(fd)

@@ -929,8 +929,22 @@ class Service:
                       if seat.name in texts else None) for seat in selected)
 
     def credentials(self) -> None:
-        """A seat whose credential link became a file has refreshed the token: reseed the pool and relink."""
-        for line in credential.reseed(self.ship, self.resolved_seats()):
+        """A seat whose credential link became a file has refreshed the token: reseed the pool and relink.
+
+        A seat whose program outlived its closed pane at down is not reseeded while that program lives;
+        once it has ended, its retirement is finished here: reseeded, and its launch removed.
+        """
+        ready = []
+        for seat in self.resolved_seats():
+            if seat.retiring() is None:
+                ready.append(seat)
+                continue
+            try:
+                if proof := seat.finish_retirement():
+                    self.log("retired", seat=seat.name, proof=proof)
+            except ShipError as error:
+                self.log("error", step="retire", seat=seat.name, error=str(error))
+        for line in credential.reseed(self.ship, ready):
             self.log("credential", proof=line)
 
     def authentications(self) -> None:

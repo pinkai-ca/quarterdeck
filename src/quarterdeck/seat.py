@@ -32,6 +32,31 @@ from .ship import Pool, SeatSpec, Ship, ShipError
 from .tmux import Pane, Tmux, check_private_folder
 
 
+PROCESS_END_SECONDS = 10.0  # how long down watches a closed pane's program end before it leaves the rest to the tick
+RETIRING = "retiring.json"
+
+
+def process_start(pid: int) -> str | None:
+    from .servicectl import process_start as start
+    return start(pid)
+
+
+def process_alive(pid: int, start: str | None) -> bool:
+    """The process down saw is still running: the same pid with the same start time."""
+    now = process_start(pid)
+    return now is not None and (start is None or now == start)
+
+
+def wait_for_end(pid: int, start: str | None, seconds: float) -> bool:
+    """Observe, never signal: True once that process has ended within ``seconds``."""
+    deadline = time.monotonic() + seconds
+    while process_alive(pid, start):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.1)
+    return True
+
+
 @dataclass(frozen=True)
 class Launched:
     """What ``qd up`` wrote the moment a seat's program started."""
@@ -530,6 +555,11 @@ class Seat:
             launchable()  # a socket too long or not this user's refuses before anything of the launch is made
         from .recovery import require_clear
         require_clear(self)
+        if (held := self.retiring()) is not None:
+            if not isinstance(held.get("pid"), int) or process_alive(held["pid"], held.get("start")):
+                raise ShipError(f"{self.name}: the program its last launch ran is still ending (pid {held.get('pid')}); "
+                                "up waits for it, so nothing it writes meets the new launch")
+            self._finish_retirement(self.launched())
         previous = self.launched()
         left = self._lifecycle_pane(previous)
         if left is not None and not left.dead:
@@ -801,17 +831,49 @@ class Seat:
             self.record()  # preserve the last proven join before removing its launch
             if self.spec.pool_choices:
                 self.move_to(self.pool.name)  # retain the corroborated selection before its launch disappears
+        program = (launched.pid, process_start(launched.pid)) if pane is not None and launched is not None else None
         self._retire_window(launched)
         if self.launched() != launched:
             raise ShipError(f"{self.name}: launch identity changed during retirement; launch retained")
+        if program is not None and not wait_for_end(*program, PROCESS_END_SECONDS):
+            # The pane is closed but the program still runs: it may still write its credential or record.
+            # Nothing is reseeded and the launch stays, for the service's tick to finish once it has ended.
+            durable.replace_file(self.folder / RETIRING, json.dumps(dict(pid=program[0], start=program[1])) + "\n")
+            return (f"{self.name} down · pane {pane.id} closed · process still ending after {PROCESS_END_SECONDS:g}s; "
+                    "credential and launch left for the next tick")
+        self._finish_retirement(launched)
+        if pane is None:
+            return f"{self.name} was not up" + (f" · pane {launched.pane} is gone" if launched else "")
+        return f"{self.name} down · pane {pane.id} closed · process ended"
+
+    def _finish_retirement(self, launched: Launched | None) -> None:
         if launched is not None:
             from . import credential  # the credential module reads seats, so it is imported here, not above
 
-            credential.reseed(self.ship, [self])  # the program is gone: a refresh it left reseeds the pool its launch names, while it is named
+            credential.reseed(self.ship, [self])  # the program has ended: a refresh it left reseeds the pool its launch names, while it is named
         (self.folder / "launch.json").unlink(missing_ok=True)
-        if pane is None:
-            return f"{self.name} was not up" + (f" · pane {launched.pane} is gone" if launched else "")
-        return f"{self.name} down · pane {pane.id} closed"
+        (self.folder / RETIRING).unlink(missing_ok=True)
+
+    def retiring(self) -> dict | None:
+        """The program a closed pane left still running at down: its pid and start, until it has ended."""
+        try:
+            data = json.loads((self.folder / RETIRING).read_text())
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError):
+            return {"pid": None, "start": None}  # unreadable: held as still ending, never finished on a guess
+        return data if isinstance(data, dict) else {"pid": None, "start": None}
+
+    def finish_retirement(self) -> str | None:
+        """The service's tick: reseed and remove the launch once the program down left running has ended."""
+        with self._lifecycle():
+            held = self.retiring()
+            if held is None:
+                return None
+            if not isinstance(held.get("pid"), int) or process_alive(held["pid"], held.get("start")):
+                return None
+            self._finish_retirement(self.launched())
+            return f"{self.name} retired · process {held['pid']} ended · credential reseeded, launch removed"
 
     def restart(self) -> str:
         """Relaunch with resume: the conversation continues in a new process."""
