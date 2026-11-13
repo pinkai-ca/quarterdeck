@@ -62,6 +62,37 @@ def model_window(canonical, period, used, reset, **metadata):
     return Window(f"{label} / {period}", used, reset, group=canonical, replaces=replaces, **metadata)
 
 
+CONFLICT = "conflicting model allowance representations"
+
+
+def merge(old: Window, new: Window) -> tuple[Window, bool]:
+    """Two representations of one native allowance (a named window and its limits entry) as one reading.
+
+    They are one reading when their fraction, error and uncertainty agree and their resets lie within
+    RESET_TOLERANCE, the same bound by which a list row's reset is matched to a general period: one cap,
+    serialized twice, differs by rounding, never by a second period. That reading keeps the later reset, so a
+    wall never ends early, and carries a warning when either does. Otherwise they conflict. A conflict keeps the
+    more severe whole: an error-free representation spent in full (used >= 1.0), the one wall a reading makes,
+    with its own fraction, reset and warning; the later one when both are. A severity mark counts for nothing
+    there. A conflict with no spent representation reads as unknown room, as before. Nothing is invented from
+    fields of two readings that disagree. Returns the reading and whether the two conflicted, which the
+    snapshot names in its diagnostics.
+    """
+    if (old.used, old.resets_at, old.error, old.uncertainty) == (new.used, new.resets_at, new.error, new.uncertainty):
+        return replace(new, warning=old.warning or new.warning), False  # equal: as it always was
+    if (old.error is None and new.error is None and old.uncertainty == new.uncertainty and old.used == new.used
+            and old.resets_at is not None and new.resets_at is not None
+            and abs((old.resets_at - new.resets_at).total_seconds()) <= RESET_TOLERANCE):
+        later = new if new.resets_at >= old.resets_at else old
+        return replace(later, warning=old.warning or new.warning), False
+    spent = [window for window in (old, new) if window.error is None and window.used is not None and window.used >= 1.0]
+    if spent:
+        dated = [window for window in spent if window.resets_at is not None]
+        kept = max(dated, key=lambda window: window.resets_at) if dated else spent[-1]
+        return kept, True
+    return Window(new.name, None, None, group=new.group, error=CONFLICT), True
+
+
 def snapshot(data: dict, now) -> Usage:
     windows, resets = [], {}
     for key, name in PERIODS.items():
@@ -75,18 +106,14 @@ def snapshot(data: dict, now) -> Usage:
         except (TypeError, ValueError):
             return Usage((), now, "bad JSON: utilization not a number")
         windows.append(Window(name, used, when(row.get("resets_at"))))
-    scoped = {}
+    scoped, conflicts = {}, []
 
     def keep(candidate):
         old = scoped.get(candidate.name)
         if old is not None:
-            # The same native cap may have both a named window and a limits entry.
-            if (old.used, old.resets_at, old.error, old.uncertainty) == (
-                    candidate.used, candidate.resets_at, candidate.error, candidate.uncertainty):
-                candidate = replace(candidate, warning=old.warning or candidate.warning)
-            else:
-                candidate = Window(candidate.name, None, None, group=candidate.group,
-                                   error="conflicting model allowance representations")
+            candidate, conflicted = merge(old, candidate)
+            if conflicted:
+                conflicts.append(candidate.name)
         scoped[candidate.name] = candidate
 
     for period, name in PERIODS.items():
@@ -131,6 +158,10 @@ def snapshot(data: dict, now) -> Usage:
                     uncertainty=uncertainty))
     windows.extend(scoped.values())
     diagnostics = list(container_notes)
+    for name in dict.fromkeys(conflicts):
+        kept = scoped[name]
+        diagnostics.append(f"conflicting model allowance representations for {name}: "
+                           + ("kept the spent one as the wall" if kept.error is None else "room unknown"))
     if unmapped:
         diagnostics.append(f"unmapped limits: {len(unmapped)}; key/type shapes: " + json.dumps(unmapped, sort_keys=True))
     if observations:

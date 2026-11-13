@@ -158,16 +158,19 @@ def test_reported_unreadable_scope_is_unknown_without_manufacturing_a_wall(tmp_p
 
 
 @pytest.mark.parametrize("duplicate", [100, 20])
-def test_repeated_same_family_list_rows_agree_or_remain_unknown(tmp_path, duplicate):
+def test_repeated_same_family_list_rows_agree_or_keep_the_spent_one_as_the_wall(tmp_path, duplicate):
+    """Two list rows of one allowance at 100 and 20 conflict; the one spent in full is kept whole as the wall,
+    since a merge never drops a wall, as ruled under spent-only walls."""
     from quarterdeck.harness.claude_limits import snapshot
     at = post.now()
     measured = snapshot({**body(), "limits": [native_row(100), native_row(duplicate)]}, at)
     scoped_rows = [w for w in measured.windows if w.group == "fable"]
-    assert len(scoped_rows) == 1
+    assert len(scoped_rows) == 1 and scoped_rows[0].used == 1.0 and scoped_rows[0].error is None
+    assert any("kept the spent one as the wall" in note for note in measured.diagnostics) == (duplicate == 20)
     with Ledger(tmp_path / "ledger.sqlite") as book:
         book.record_usage("synthetic", measured)
-        assert book.walled("synthetic") == (duplicate == 100)
-        assert book.usage_known("synthetic") == (duplicate == 100)
+        assert book.walled("synthetic")
+        assert book.usage_known("synthetic")
 
 
 def test_last_known_scoped_spend_survives_missing_or_failed_measurement_until_reset(tmp_path):
