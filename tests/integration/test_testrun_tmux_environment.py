@@ -51,7 +51,8 @@ def test_pytest_cannot_query_inherited_parent_server(tmp_path, runner_prepared, 
                 child, _ = environment.build(tmp_path / "runner", "synthetic-run")
         else:
             child = dict(clean)
-        child.update(TMUX_TMPDIR=str(child_anchor), QD_TMUX_SOCKET=str(child_anchor / "qd.sock"))
+        child.update(TMUX_TMPDIR=str(child_anchor), QD_TMUX_SOCKET=str(child_anchor / "qd.sock"),
+                     OPENBLAS_NUM_THREADS="1")
         output = tmp_path / "probe.json"
         probe = tmp_path / "test_probe.py"
         probe.write_text("""import json, os, subprocess
@@ -63,13 +64,19 @@ def test_default_query_is_isolated():
     result = subprocess.run(['tmux', 'display-message', '-p', '#{socket_path}'],
                             capture_output=True, text=True, timeout=10)
     actual = result.stdout.strip()
-    assert result.returncode != 0 or actual != os.environ['SYNTHETIC_PARENT_SOCKET']
+    if result.returncode == 0:
+        assert actual != os.environ['SYNTHETIC_PARENT_SOCKET']
+        assert Path(actual).is_relative_to(Path(os.environ['SYNTHETIC_CHILD_ANCHOR']))
+    else:
+        assert result.returncode == 1
+        assert not actual
     Path(os.environ['SYNTHETIC_PROBE_OUTPUT']).write_text(json.dumps(
         {'exit': result.returncode, 'socket': actual, 'TMUX': os.environ.get('TMUX'),
          'TMUX_PANE': os.environ.get('TMUX_PANE')}))
 """)
         child.pop("PYTEST_ADDOPTS", None)
-        child.update(SYNTHETIC_PARENT_SOCKET=parent, SYNTHETIC_PROBE_OUTPUT=str(output))
+        child.update(SYNTHETIC_PARENT_SOCKET=parent, SYNTHETIC_PROBE_OUTPUT=str(output),
+                     SYNTHETIC_CHILD_ANCHOR=str(child_anchor))
         # Clear all live values first, then deliberately supply ONLY our synthetic parent.
         # Recontamination also covers conftest's TESTRUNS_RUN early-return branch.
         command = ["env", "-u", "TMUX", "-u", "TMUX_PANE", "env",
