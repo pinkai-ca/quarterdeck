@@ -23,6 +23,7 @@ from .ship import Ship, ShipError
 
 STALE_SECONDS = 10.0  # a tick longer than this reads as busy
 ANSWER_SECONDS = 8.0
+START_SECONDS = 30.0
 LIFECYCLE_REQUESTS = frozenset({'relaunch', 'stop', 'select', 'control'})
 
 
@@ -92,25 +93,83 @@ def started(runtime: Path) -> bool:
     return alive(runtime) and read_heartbeat(runtime) is not None
 
 
-def start(ship: Ship, qd: Path | None = None) -> str:
+def process_start(pid: int) -> str | None:
+    try:
+        return Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[19]
+    except (OSError, IndexError, UnicodeError):
+        return None
+
+
+def service_identity(runtime: Path) -> dict | None:
+    """Only an acknowledgement from the current lock holder is an observed identity."""
+    try:
+        data = json.loads((runtime / 'service.identity.json').read_text())
+        beat = read_heartbeat(runtime)
+        if (not isinstance(data, dict) or type(data.get('pid')) is not int
+                or not alive(runtime) or beat is None or data['pid'] != beat[0]
+                or data.get('process_start') is None
+                or data['process_start'] != process_start(data['pid'])):
+            return None
+        return data
+    except (OSError, ValueError, TypeError, UnicodeError):
+        return None
+
+
+def acknowledge(runtime: Path, identity: dict | None, token: str | None) -> None:
+    """Called after the service lock, using identity captured when its code loaded."""
+    durable.replace_file(runtime / 'service.identity.json', json.dumps(dict(
+        pid=os.getpid(), process_start=process_start(os.getpid()), copy=identity, startup_token=token)) + '\n')
+
+
+def start(ship: Ship, qd: Path | None = None, *, expected: dict | None = None,
+          startup_token: str | None = None) -> str:
     """Start the service detached, logging under the runtime; a proof line. It runs the ``qd`` given, else this one."""
     from .seat import qd_bin
 
     if alive(ship.runtime):
+        if expected is not None:
+            identity = service_identity(ship.runtime)
+            wanted = {key: expected.get(key) for key in ('commit', 'instance', 'package_digest')}
+            if identity is None or identity.get('copy') != wanted:
+                raise ShipError('service already owns the ship but its loaded copy identity is unknown or different')
         beat, late = read_heartbeat(ship.runtime), stale(ship.runtime)
         return f"service alive · pid {beat[0] if beat else '?'}" + (f" · busy, last tick {int(late)}s ago" if late else "")
     log_dir = ship.runtime / "log"
     log_dir.mkdir(parents=True, exist_ok=True)
-    out = (log_dir / "service.out").open("ab")
-    process = subprocess.Popen(
-        [str(qd or qd_bin() / "qd"), "--ship", str(ship.folder), "service"],
-        stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True, cwd=str(ship.folder),
-    )
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline and not started(ship.runtime):
+    environment = dict(os.environ)
+    environment.pop('QD_COPY_START', None)
+    if startup_token:
+        environment['QD_COPY_START'] = startup_token
+    with (log_dir / 'service.out').open('ab') as out:
+        process = subprocess.Popen(
+            [str(qd or qd_bin() / 'qd'), '--ship', str(ship.folder), 'service'],
+            stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True,
+            cwd=str(ship.folder), env=environment,
+        )
+    def confirmed():
+        if not started(ship.runtime):
+            return False
+        if expected is None:
+            beat = read_heartbeat(ship.runtime)
+            return beat is not None and beat[0] == process.pid
+        identity = service_identity(ship.runtime)
+        return (identity is not None and identity.get('pid') == process.pid
+                and identity.get('copy') == {key: expected.get(key) for key in ('commit', 'instance', 'package_digest')}
+                and identity.get('startup_token') == startup_token)
+    deadline = time.monotonic() + START_SECONDS
+    while time.monotonic() < deadline and process.poll() is None and not confirmed():
         time.sleep(0.1)
-    if not started(ship.runtime):
-        raise ShipError(f"service did not take its lock and write a heartbeat within 5s; see {log_dir / 'service.out'}")
+    if not confirmed():
+        # A bootstrap delayed before its lock must not wake after rollback and start stale code.
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2)
+        raise ShipError(f'service startup identity/heartbeat not confirmed within {START_SECONDS:.0f}s; '
+                        f'see {log_dir / "service.out"}')
     return f"service started · pid {process.pid} · heartbeat {heartbeat_path(ship.runtime).relative_to(ship.folder)}"
 
 

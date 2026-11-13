@@ -224,6 +224,8 @@ def temporary_drydock() -> tuple[shipmod.Ship, Tmux, Path]:
     """A copy of the drydock with quick simulators, on a private tmux server."""
     folder = Path(tempfile.mkdtemp(prefix="qd-drill-")) / "drydock"
     shutil.copytree(DRYDOCK, folder)
+    declaration = folder / 'ship.toml'
+    declaration.write_text(shipmod.edit(declaration.read_text(), 'ship', 'code', 'checkout'))
     ship = shipmod.load(folder)
     slow = next(name for name, spec in ship.seats.items() if not ship.session_of(spec).human)
     text = shipmod.edit(ship.file.read_text(), "ship", "tick", DRILL_TICK)  # this generated copy only
@@ -240,6 +242,7 @@ def temporary_copy(ship: shipmod.Ship) -> tuple[shipmod.Ship, Path]:
     folder = Path(tempfile.mkdtemp(prefix="qd-drill-")) / ship.folder.name
     shutil.copytree(ship.folder, folder, ignore=shutil.ignore_patterns("runtime", ".git"))
     text = (folder / "ship.toml").read_text()
+    text = shipmod.edit(text, 'ship', 'code', 'checkout')
     for name, session in ship.sessions.items():
         text = shipmod.edit(text, f"sessions.{name}", "title", f"qd-drill {session.title}")
     (folder / "ship.toml").write_text(text)

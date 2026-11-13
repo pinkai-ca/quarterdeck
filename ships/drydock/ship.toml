@@ -2,6 +2,7 @@
 # It runs anywhere, needs no credential and spends nothing. For a crew on real programs, see ships/default.
 
 [ship]
+code = "checkout"
 name = "drydock"
 operator = "operator"            # what this ship calls its human
 

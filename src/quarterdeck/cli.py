@@ -11,7 +11,7 @@ import os
 import sys
 from typing import Any
 
-from . import (__version__, check, doctor, drill, harness as harnesses, install, ledger, post, sandbox, seat as seatmod, service,
+from . import (__version__, check, copy_state, doctor, drill, harness as harnesses, install, ledger, post, sandbox, seat as seatmod, service,
                ship as shipmod, standing, watch)
 from .output import Reading
 from . import output, ledger_reading
@@ -28,7 +28,8 @@ def main(argv: list[str] | None = None) -> int:
     if not hasattr(args, "run"):
         parser.print_help()
         return 0
-    if args.run is not cmd_upgrade and not (args.run is cmd_controls and getattr(args, 'harness', None)):
+    if (args.run not in (cmd_upgrade, cmd_service)
+            and not (args.run is cmd_controls and getattr(args, 'harness', None))):
         handoff(args, argv if argv is not None else sys.argv[1:])
     try:
         result = args.run(args)
@@ -131,8 +132,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = verb("doctor", cmd_doctor, "is this machine ready to run the ship: tmux, git, programs, sign-ins, folders, the service, disk")
     p.add_argument("--fix", action="store_true",
                    help="hand the failures to a throwaway seat on the first pool whose program runs, then check again (spends tokens)")
-    p = verb("upgrade", cmd_upgrade, "install the framework at a commit as the ship's own copy and run the service on it")
-    p.add_argument("ref", nargs="?", default="HEAD", help="the commit to install (default: the checkout's HEAD); the previous one rolls back")
+    p = verb("upgrade", cmd_upgrade, "sync the ship's own framework copy to a commit")
+    p.add_argument("ref", nargs="?", help="the commit to install (default: the checkout's HEAD)")
+    p.add_argument('--back', action='store_true', help='return to the recorded previous copy, without rebuilding')
+    p.add_argument('--force', action='store_true', help='install and prove even when the commit is unchanged')
     return parser
 
 
@@ -190,9 +193,15 @@ def cmd_cascade(args: argparse.Namespace) -> str:
 def cmd_up(args: argparse.Namespace) -> list[str] | str:
     ship = load_ship(args)
     if args.seat:
+        ship.seat(args.seat)
+    proofs, reload_required = install.prepare_up(ship)
+    delegated = install.delegate_up(ship, seat=args.seat, fresh=args.fresh, reload_required=reload_required)
+    if delegated is not None:
+        return proofs + delegated
+    if args.seat:
         proof = seat_of(ship, args.seat).up(resume=not args.fresh)
-        return [proof, service.start(ship)]
-    return seatmod.bring_up(ship, Tmux.default()) + [service.start(ship)]
+        return proofs + [proof, service.start(ship)]
+    return proofs + seatmod.bring_up(ship, Tmux.default()) + [service.start(ship)]
 
 
 def cmd_down(args: argparse.Namespace) -> list[str] | str:
@@ -427,13 +436,19 @@ def render_sources(data: dict) -> list[str]:
 def cmd_status(args: argparse.Namespace) -> Reading:
     ship = load_ship(args)
     if args.line:
+        warning = copy_state.select(ship.folder, mode=ship.code, mode_known=True).warning
         try:
-            return Reading(watch.facts(ship, Tmux.default()), watch.Facts.line)
+            facts = watch.facts(ship, Tmux.default())
+            if warning:
+                return Reading({**output.value(facts), 'copy_warning': warning},
+                               lambda _: facts.line() + ' · ' + warning)
+            return Reading(facts, watch.Facts.line)
         except (OSError, ValueError, TypeError, KeyError):
             state = watch.service_state(ship.runtime)
             lead = 'SERVICE DOWN' if state == 'down' else f'service {state}'
-            return Reading(dict(service=state, facts=None, error='status evidence unavailable'),
-                           lambda _: lead + ' · status unknown: evidence unavailable; inspect qd status')
+            return Reading(dict(service=state, facts=None, error='status evidence unavailable', copy_warning=warning),
+                           lambda _: lead + ' · status unknown: evidence unavailable; inspect qd status'
+                           + (' · ' + warning if warning else ''))
     return Reading(watch.status_reading(ship, Tmux.default()), watch.render_table)
 
 
@@ -575,6 +590,8 @@ def cmd_inbox(args: argparse.Namespace) -> Reading | None:
 
 def cmd_service(args: argparse.Namespace) -> None:
     ship = load_ship(args)
+    # Recovery/exec precedes construction (and therefore the ledger and service lock).
+    install.bootstrap_service(ship, ['--ship', str(ship.folder), 'service'])
     service.Service(ship, Tmux.default()).run()
 
 
@@ -616,7 +633,10 @@ def cmd_doctor(args: argparse.Namespace) -> Reading | list[str]:
 
 
 def cmd_upgrade(args: argparse.Namespace) -> list[str]:
-    return install.upgrade(load_ship(args), args.ref, Tmux.default())
+    back, force = getattr(args, 'back', False), getattr(args, 'force', False)
+    if back and (args.ref is not None or force):
+        raise ShipError('--back cannot be combined with a target or --force')
+    return install.upgrade(load_ship(args), args.ref or 'HEAD', Tmux.default(), back=back, force=force)
 
 
 def cmd_drill(args: argparse.Namespace) -> list[str]:

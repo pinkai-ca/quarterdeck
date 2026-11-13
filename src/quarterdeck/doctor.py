@@ -17,7 +17,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from . import credential, endpoint, harness as harnesses, install, post, providers, sandbox, servicectl, watch
+from . import copy_state, credential, endpoint, harness as harnesses, install, post, providers, sandbox, servicectl, watch
 from .drill import Check, wait_for
 from .harness.base import _version_in_runtime, key_environment, program_version, program_where
 from .harness.capabilities import validate_selection
@@ -118,18 +118,71 @@ def seat_readiness(ship: Ship, *, versions: dict[str, str | None] | None = None)
 
 
 def framework_check(ship: Ship) -> Check:
-    """Which framework the ship runs: its own installed copy, or the checkout it sits in."""
-    copy = install.installed(ship.runtime)
-    if copy:
-        if copy.get('proof') == 'failed':
-            return Check("framework", False, f"installed target {copy['commit'][:7]} code retained; "
-                         f"{copy.get('proof_command', 'installed')} proof failed; upgrade did not restart service")
-        return Check("framework", True, f"the ship runs its installed copy, commit {copy['commit'][:7]} since {copy['at'][:16]}; qd upgrade adopts another")
-    try:
-        head = install.git(install.source_repo(ship), "rev-parse", "--short", "HEAD").decode().strip()
-    except ShipError as error:
-        return Check("framework", True, f"the ship runs this qd; {error}")
-    return Check("framework", True, f"the ship runs the checkout at {head}; qd upgrade makes it an installed copy")
+    """Selected copy and observed service identity are distinct read-only evidence."""
+    if ship.code == 'checkout':
+        try:
+            head = install.git(install.source_repo(ship), 'rev-parse', '--short', 'HEAD').decode().strip()
+        except ShipError:
+            return Check('framework', False, 'follows the checkout; checkout commit unknown')
+        return Check('framework', True, f'follows the checkout at {head}')
+    selected = copy_state.select(ship.folder, mode=ship.code, mode_known=True)
+    data, fact = selected.state, selected.fact
+    lines = []
+    if fact:
+        lines.append(f"selected copy {fact['commit'][:7]} since {fact['at'][:16]}")
+        if fact.get('safety') != install.COPY_SAFETY:
+            lines.append('historical copy evidence; its own handler has old in-place management')
+    else:
+        lines.append('current installed commit unknown')
+    if selected.warning:
+        lines.append(selected.warning)
+    previous = copy_state.previous(data)
+    if previous:
+        try:
+            reason = copy_state.usable(ship.runtime / 'venv.prev', previous)
+        except (OSError, ValueError, TypeError):
+            reason = 'previous directory identity unknown'
+        lines.append(f"previous {previous['commit'][:7]} · "
+                     + (f'unavailable: {reason}' if reason else 'qd sync --back returns to it'))
+    else:
+        lines.append('no proven previous copy; a successful sync creates one')
+    if data and data.get('last_failure'):
+        failure = data['last_failure']
+        if isinstance(failure, dict):
+            # Only bounded installer vocabulary is displayed, never raw corrupt file content.
+            phase = failure.get('phase')
+            known = {'preparing', 'stopping', 'snapshotting', 'backing_up', 'backup_ready', 'installing',
+                     'resources', 'swapping', 'proving', 'target_ready', 'activated', 'cleanup',
+                     'recovering', 'removing_failed_live', 'removing_failed_first_install', 'restored',
+                     'discarding_failed_previous', 'status lines', 'rebrief'}
+            lines.append('last copy failure: ' + (phase if isinstance(phase, str) and phase in known else 'phase unknown'))
+            reason = failure.get('reason')
+            reasons = {'copy operation did not complete', 'status-line update pending', 'rebrief confirmation pending',
+                       'origin proof did not complete', '--version proof did not complete',
+                       'laws proof did not complete', '--help proof did not complete'}
+            if isinstance(reason, str) and reason in reasons:
+                lines.append(reason)
+        else:
+            lines.append('last copy failure unknown')
+    identity = servicectl.service_identity(ship.runtime)
+    observed = identity.get('copy') if identity else None
+    identity_ok = True
+    if isinstance(observed, dict) and copy_state.COMMIT.fullmatch(str(observed.get('commit', ''))):
+        lines.append(f"observed service commit {observed['commit'][:7]}")
+        if fact and observed.get('commit') != fact['commit']:
+            lines.append('observed service differs from the selected copy')
+            identity_ok = False
+    elif servicectl.alive(ship.runtime):
+        lines.append('service owns its lock; loaded commit unknown')
+        identity_ok = False
+    else:
+        lines.append('service down; no running commit observed')
+    if fact and 'instance' in fact and observed is not None:
+        identity_ok = observed == {key: fact.get(key) for key in ('commit', 'instance', 'package_digest')}
+        if not identity_ok:
+            lines.append('observed service copy instance is unknown or mismatched')
+    return Check('framework', selected.qd is not None and identity_ok,
+                 ' · '.join(lines))
 
 
 def pool_check(pool: Pool) -> Check:

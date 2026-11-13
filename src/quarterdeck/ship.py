@@ -137,6 +137,7 @@ class Ship:
     groups: dict[str, Group] = field(default_factory=dict)
     cascade: Cascade | None = None
     tick: float = TICK  # seconds the service waits after each pass; [ship] tick
+    code: str | None = None
 
     @property
     def file(self) -> Path:
@@ -208,6 +209,11 @@ def _from_text(text: str, folder: Path) -> Ship:
     except tomllib.TOMLDecodeError as error:
         raise ShipError(f"{folder / 'ship.toml'}: {error}") from None
     head = data.get("ship", {})
+    from .copy_state import code_mode
+    try:
+        code = code_mode(head)
+    except (ValueError, TypeError):
+        raise ShipError('ship.code must be absent, or "checkout"') from None
     pools = {name: _pool(name, table) for name, table in data.get("pools", {}).items()}
     sessions = {
         name: Session(name, table.get("title", name), bool(table.get("human", False)))
@@ -227,6 +233,7 @@ def _from_text(text: str, folder: Path) -> Ship:
         groups=groups,
         cascade=declaration(data.get("cascade")),
         tick=_tick(head.get("tick", TICK)),
+        code=code,
     )
 
 

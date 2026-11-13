@@ -23,7 +23,7 @@ from pathlib import Path
 
 from . import harness as harnesses
 from . import pending as pending_delivery, delivery_record
-from . import credential, durable, idle, install, machine, move_hold, post, presentation, quota, record_owner, recovery, ship as shipmod, standing
+from . import credential, durable, idle, install, machine, move_hold, post, presentation, quota, record_owner, recovery, servicectl, ship as shipmod, standing
 from .door import CONFIRM_SECONDS, Door
 from .harness.base import record_fingerprint
 from .harness.capabilities import validate_effort, validate_mode
@@ -74,7 +74,11 @@ class Service:
         self.status_framework = presentation.framework_stamp()
         self.brief_stamp = self._brief_stamp()
         copy = install.installed(self.runtime) if install.running_from(self.runtime / 'venv' / 'bin') else None
-        self.framework_commit = copy['commit'] if copy else None
+        expected = {key: copy.get(key) for key in ('commit', 'instance', 'package_digest')} if copy else None
+        self.copy_identity = install.LOADED_COPY if install.LOADED_COPY == expected else None
+        self.framework_commit = (self.copy_identity['commit'] if self.copy_identity is not None
+                                 else copy['commit'] if copy else None)
+        self.copy_start_token = os.environ.pop('QD_COPY_START', None)
         self.ledger = Ledger(self.runtime / "ledger.sqlite")
         self.meters: dict[str, machine.Meter] = {}
         self.usage_read: dict[str, float] = {}
@@ -92,6 +96,7 @@ class Service:
 
     def run(self) -> None:
         self.lock = acquire_lock(self.runtime)  # one service per ship, for its whole life
+        servicectl.acknowledge(self.runtime, self.copy_identity, self.copy_start_token)
         self.log("start", pid=os.getpid())
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
         while True:

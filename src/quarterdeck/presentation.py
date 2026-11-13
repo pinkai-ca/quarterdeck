@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 import time
 
-from . import servicectl
+from . import copy_state, servicectl
 
 NAME = 'status-line.json'
 MAX_AGE_NS = 3_000_000_000  # covers long actor duties; independent owner checks still run on every job
@@ -46,8 +46,9 @@ def cached_line(folder):
     """A fast presentation may never hide death, a busy owner or unverified freshness."""
     folder = Path(folder).expanduser().resolve()
     runtime = folder / 'runtime'
-    installed = runtime / 'venv/bin/qd'
-    if installed.exists() and Path(sys.executable).parent.resolve() != installed.parent.resolve():
+    selected = copy_state.select(folder)
+    if selected.warning or (selected.qd is not None
+                            and Path(sys.executable).parent.resolve() != selected.qd.parent.resolve()):
         return None  # the ordinary CLI performs the existing installed-copy handoff
     try:
         path = runtime / NAME
@@ -136,8 +137,9 @@ def command_line(argv):
         ship = shipmod.load(shipmod.find(folder))
     except shipmod.ShipError:
         return None  # keep the CLI's declaration errors and numeric exit
-    installed = ship.runtime / 'venv/bin/qd'
-    if installed.exists() and Path(sys.executable).parent.resolve() != installed.parent.resolve():
+    selected = copy_state.select(ship.folder, mode=ship.code, mode_known=True)
+    if selected.warning or (selected.qd is not None
+                            and Path(sys.executable).parent.resolve() != selected.qd.parent.resolve()):
         return None
     try:
         return watch.facts(ship, Tmux.default()).line()
