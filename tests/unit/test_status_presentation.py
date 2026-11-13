@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import presentation, servicectl, ship as shipmod, watch
+from quarterdeck import copy_state, presentation, servicectl, ship as shipmod, watch
 from quarterdeck.service import Service
 
 
@@ -53,7 +53,21 @@ def test_invalid_or_unowned_snapshot_requires_the_ordinary_independent_reader(li
         servicectl.heartbeat_path(ship.runtime).write_text(f'{os.getpid()} {stamp}\n')
     elif change=='death':lock.close()
     elif change=='handoff':
-        installed=ship.runtime/'venv/bin/qd';installed.parent.mkdir(parents=True);installed.write_text('synthetic')
+        ship.file.write_text('[ship]\nname="synthetic"\n')
+        root=ship.runtime/'venv';(root/'bin').mkdir(parents=True)
+        for name in ('qd','python'):
+            executable=root/'bin'/name
+            executable.write_text('synthetic inert file; never execute\n');executable.chmod(0o700)
+        laws=root/'share/quarterdeck/standing-orders/laws.md'
+        laws.parent.mkdir(parents=True);laws.write_text('synthetic resource\n')
+        fact=dict(commit='1'*40,ref='synthetic-ref',at='2001-02-03T04:05:06+00:00',
+                  proof='good',instance='2'*32,package_digest='3'*64,have_laws=True)
+        (root/copy_state.MARKER).write_text(json.dumps({key:fact[key] for key in ('commit','instance')}))
+        (ship.runtime/copy_state.RECORD).write_text(json.dumps(dict(format=1,current=fact,pending=None)))
+        selected=copy_state.select(ship.folder)
+        assert selected.warning is None and selected.qd==root/'bin/qd'
+        # Refresh the declaration stamp so the final refusal tests the selected owner.
+        assert presentation.publish(ship,svc.tmux,svc.status_framework,svc.store,svc.attempts)
     else:
         data[{'version':'format','pid':'pid','start':'process_start'}[change]]={'version':True,'pid':-1,'start':'different'}[change]
         path.write_text(json.dumps(data))
@@ -61,6 +75,15 @@ def test_invalid_or_unowned_snapshot_requires_the_ordinary_independent_reader(li
     if change=='death':assert watch.facts(ship,SimpleNamespace()).line().startswith('SERVICE DOWN')  # law: nothing-waits-silently
     if change=='heartbeat':assert 'heartbeat unknown' in watch.service_state(ship.runtime)
     if change=='busy':assert watch.service_state(ship.runtime).startswith('busy 20')
+
+
+def test_bare_installed_file_without_record_keeps_checkout_snapshot(live):
+    ship,svc,lock=live
+    before=presentation.cached_line(ship.folder)
+    assert before is not None
+    installed=ship.runtime/'venv/bin/qd'
+    installed.parent.mkdir(parents=True);installed.write_text('synthetic inert file; never execute\n')
+    assert presentation.cached_line(ship.folder)==before
 
 
 @pytest.mark.parametrize('wall_delta,mono_delta,usable',[(0,0,True),(1_000_000_000,1_000_000_000,True),
