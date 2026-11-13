@@ -109,11 +109,21 @@ def test_separate_periods_retain_independent_fractions(at):
     assert {w.name: w.used for w in gemini} == pytest.approx({f"{GEMINI} / weekly": 0.2, f"{GEMINI} / five_hour": 0})
 
 
-def test_empty_real_fact_tables_leave_every_relation_unknown():
-    assert models.MEMBERSHIP == {}
-    assert models.MODEL_IDENTITIES == {}
+def test_the_real_tables_hold_only_the_measured_rows_and_leave_the_rest_unknown():
+    """The rows the live proof of 2026-11-13 measured, and nothing inferred from a name."""
+    flash, argon, sonnet = "Gemini 3.8 Flash (Low)", "Gemini 4 Argon (Low)", "Claude Sonnet 5.5 (Low)"
+    groups = ("Gemini Models", "Gemini 4 Argon", "Claude and GPT models")
+    assert models.MEMBERSHIP == {(group, model): group == home for model, home in
+                                 ((flash, "Gemini Models"), (argon, "Gemini 4 Argon"), (sonnet, "Claude and GPT models"))
+                                 for group in groups}
     assert models.ALL_MODEL_GROUPS == frozenset()
-    assert AntigravityHarness().usage_scope("Gemini 4 Argon", "Gemini 4 Argon") is None
+    reader = AntigravityHarness()
+    assert reader.usage_scope("Gemini Models", "gemini-3.8-flash-low") is True, "the launch id is the recorded name"
+    assert reader.usage_scope("Gemini 4 Argon", "gemini-3.8-flash-low") is False
+    assert reader.usage_scope("Gemini 4 Argon", "Gemini 4 Argon (Low)") is True
+    for unmeasured in ("Gemini 3.8 Flash (High)", "Gemini 3.8 Flash", "Gemini 4 Argon", None):
+        assert reader.usage_scope("Gemini Models", unmeasured) is None, unmeasured
+    assert reader.usage_scope("Some other group", flash) is None
 
 
 def test_synthetic_membership_and_exclusion_are_explicit(facts):
