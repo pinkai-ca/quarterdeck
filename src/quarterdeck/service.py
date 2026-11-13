@@ -273,7 +273,8 @@ class Service:
         The obstructed seat is never its own recipient: its door is the one that cannot take the report.
         """
         desks = [spec.name for spec in self.ship.seats.values() if spec.role == "desk"]
-        systems = self.systems_recipients(seat)
+        systems = [spec.name for spec in self.ship.seats.values()
+                   if spec.role == "systems" and spec.name != seat.name and self._up(spec.name)]
         if not systems:
             return desks
         from .turn_failure import KINDS
