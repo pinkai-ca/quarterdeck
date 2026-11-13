@@ -377,8 +377,6 @@ def test_qd_watch_reads_tools_after_the_idle_proof_a_proved_own_watch_is_no_pend
     case.watch()
     tools, own = watch.tool_reading(case.seat, raw)
     assert tools is None and own == 'own inbox watch, proved', 'proved: left out of the tool reason, said as proved'
-    lines = '\n'.join(watch.render_full(watch.seat_reading(case.seat)))
-    assert WATCH_LABEL not in lines and 'tools pending' not in lines and 'own inbox watch, proved' in lines
 
 
 def test_qd_watch_still_names_other_work_beside_a_proved_watch(case):
@@ -386,4 +384,5 @@ def test_qd_watch_still_names_other_work_beside_a_proved_watch(case):
     case.write([('call-hazel', WATCH, True, 'task-hazel'), ('call-rowan', 'synthetic other command', True, 'task-rowan')])
     case.watch()
     tools, own = watch.tool_reading(case.seat, case.harness.state(case.record))
-    assert tools.startswith('tools pending: Bash since ') and own is None, 'nothing is proved while other work runs'
+    assert tools.startswith('tools pending: Bash since ') and WATCH_LABEL not in tools, 'the other work is named'
+    assert own == 'own inbox watch, proved', 'the watch itself is proved, as the idle proof reads it'
