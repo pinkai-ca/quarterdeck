@@ -24,6 +24,9 @@ from . import clean, environment, evidence, gitops, owned, procs, report, resour
 from .layout import RESULTS, RUNS, SOCKETS, Refused, Root, Slot, git_environment, identity, new_run_id, write_json
 
 GRACE = 15.0
+FINALIZATION_SECONDS = 60.0
+EMERGENCY_SECONDS = 5.0
+FINALIZATION_EXIT = 7
 EXIT = {'passed': 0, 'failed': 1, 'refused': 2, 'timeout': 3, 'interrupted': 4, 'incomplete': 5, 'abandoned': 5,
         'no-tests': 5}
 CLEANUP_HELD = 6
@@ -47,6 +50,10 @@ class Stop(Exception):
     """A signal or the time limit ended the run."""
 
 
+class FinalizationTimeout(BaseException):
+    """Escape cleanup error handlers; the remaining scratch and first result must stay."""
+
+
 class Runner:
     def __init__(self, args, runner_files: list[Path]):
         self.args = args
@@ -67,19 +74,14 @@ class Runner:
         raise Stop(f'time limit of {self.args.timeout} s')
 
     @contextmanager
-    def time_limit(self):
-        """One wall deadline for setup AND pytest, including synchronous setup helpers.
-
-        The alarm ends before evidence/cleanup, which keep their existing termination grace.
-        subprocess.run kills/waits for its child on this exception; execute stops its own group.
-        """
+    def alarm(self, seconds, handler):
+        """Main-thread budget; restore the caller's signal policy on every exit."""
         old_handler = signal.getsignal(signal.SIGALRM)
         old_timer = signal.getitimer(signal.ITIMER_REAL)
         started = time.monotonic()
-        self.deadline = started + self.args.timeout
-        signal.signal(signal.SIGALRM, self.on_timeout)
+        signal.signal(signal.SIGALRM, handler)
         try:
-            signal.setitimer(signal.ITIMER_REAL, self.args.timeout)
+            signal.setitimer(signal.ITIMER_REAL, seconds)
             yield
         finally:
             signal.setitimer(signal.ITIMER_REAL, 0)
@@ -87,6 +89,20 @@ class Runner:
             if old_timer[0]:
                 signal.setitimer(signal.ITIMER_REAL, max(0.000001, old_timer[0] - (time.monotonic() - started)),
                                  old_timer[1])
+
+    @contextmanager
+    def time_limit(self):
+        """Setup and pytest deadline; interrupted steps retain their bounded stop grace."""
+        if self.deadline is None:
+            self.deadline = time.monotonic() + self.args.timeout
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            self.on_timeout(signal.SIGALRM, None)
+        with self.alarm(remaining, self.on_timeout):
+            yield
+
+    def on_finalization_timeout(self, number, frame):
+        raise FinalizationTimeout
 
     def check(self):
         if self.signal is not None:
@@ -153,29 +169,41 @@ class Runner:
     # -- the run --------------------------------------------------------------------------------------------
     def main(self) -> int:
         args = self.args
-        target = gitops.resolve(Path(args.target) if args.target else Path.cwd())
-        problems = gitops.dirty(target.top)
-        if problems:
-            shown = '\n  '.join(problems[:20]) + ('\n  ...' if len(problems) > 20 else '')
-            raise Refused(f'target {target.top} has uncommitted changes; commit them (a WIP commit is fine) so the '
-                          f'result names exactly what ran:\n  {shown}')
-        targets = [check_target(target.top, item) for item in args.targets]
-        change = None if (target.main_checkout or target.branch is None) else target.branch
-        root = Root(target.project)
-        slot = Slot(root)
-        self.run = new_run_id()
-        slot.acquire({'verb': 'run', 'run': self.run, 'change': change, 'seat': os.environ.get('QD_SEAT')}, args.wait)
-        for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-            signal.signal(number, self.on_signal)
+        root = slot = None
+        acquired = False
         try:
-            for line in clean.recover(root, change):
-                print(line)
-            if change:
-                clean.register(root, target, self.run)  # a refusal here leaves nothing made
+            with self.time_limit():
+                target = gitops.resolve(Path(args.target) if args.target else Path.cwd())
+                problems = gitops.dirty(target.top)
+                if problems:
+                    shown = '\n  '.join(problems[:20]) + ('\n  ...' if len(problems) > 20 else '')
+                    raise Refused(f'target {target.top} has uncommitted changes; commit them (a WIP commit is fine) so the '
+                                  f'result names exactly what ran:\n  {shown}')
+                targets = [check_target(target.top, item) for item in args.targets]
+                change = None if (target.main_checkout or target.branch is None) else target.branch
+                root = Root(target.project)
+                slot = Slot(root)
+                self.run = new_run_id()
+                slot.acquire({'verb': 'run', 'run': self.run, 'change': change, 'seat': os.environ.get('QD_SEAT')}, args.wait)
+                acquired = True
+                for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+                    signal.signal(number, self.on_signal)
+                for line in clean.recover(root, change):
+                    print(line)
+                if change:
+                    clean.register(root, target, self.run)  # a refusal here leaves nothing made
             return self.within(root, target, targets, change)
+        except Stop as stopped:
+            print(f'testrun: timeout before test setup: {stopped}; no test result claimed', file=sys.stderr)
+            return EXIT['timeout']
         finally:
-            slot.release()
-            root.close()
+            if slot is not None:
+                if acquired:
+                    slot.release()
+                else:
+                    os.close(slot.fd)  # never truncate another holder's note
+            if root is not None:
+                root.close()
 
     def within(self, root: Root, target, targets, change) -> int:
         args, run = self.args, self.run
@@ -194,16 +222,17 @@ class Runner:
         result = {'run': run, 'change': change, 'started': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
                   'target': {'top': str(target.top), 'project': str(target.project), 'head': target.head,
                              'tree': target.tree, 'branch': target.branch},
-                  'runner': {**gitops.runner_identity(self.runner_files), 'argv': sys.argv,
-                             'executable': sys.executable},
+                  'runner': {'argv': sys.argv, 'executable': sys.executable},
                   'outcome': {'status': 'running', 'wrapper_exit': None}}
         write_json(results_fd, 'result.json', result)
         self.console = open(scratch / 'console.txt', 'a', encoding='utf-8', errors='replace')
-        sockets_before, target_before = socket_entries(root), None
+        sockets_before, target_before = [], None
         pytest_exit, note = None, None
         checkout = scratch / 'checkout'
         try:  # from here every failure, the runner's own included, reaches the same fixed ending
             with self.time_limit():
+                result['runner'].update(gitops.runner_identity(self.runner_files))
+                sockets_before = socket_entries(root)
                 self.python = shutil.which('python3')
                 if self.python is None:
                     raise Refused('no python3 on the ordinary PATH')
@@ -224,6 +253,16 @@ class Runner:
             note = f'setup refused: {refused}'
         except Exception as error:  # the runner's own failure: recorded, then the same fixed ending
             note = f'runner error: {type(error).__name__}: {error}'
+        try:
+            with self.alarm(FINALIZATION_SECONDS, self.on_finalization_timeout):
+                return self.finalize(root, target, target_before, checkout, scratch, sockets_before,
+                                     result, results_fd, runs_fd, pytest_exit, note)
+        except FinalizationTimeout:
+            return self.emergency(root, scratch, result, results_fd, runs_fd)
+
+    def finalize(self, root, target, target_before, checkout, scratch, sockets_before,
+                 result, results_fd, runs_fd, pytest_exit, note):
+        run = self.run
         self.console.close()
         console = (scratch / 'console.txt').read_text(encoding='utf-8', errors='replace')
         found = evidence.analyse(scratch / 'evidence', pytest_exit)
@@ -268,6 +307,34 @@ class Runner:
               f'removed) · target {target.head[:12]} tree {target.tree[:12]} · {where / "result.json"} · '
               f'{where / "report.md"}' + (f' · {len(result["failures"])} failure file(s)' if result['failures'] else ''))
         return result['outcome']['wrapper_exit']
+
+    def emergency(self, root, scratch, result, results_fd, runs_fd):
+        """Do not overwrite a first result, or attempt another cleanup after its budget expired."""
+        where = root.path / RESULTS / self.run
+        notice = dict(outcome='finalization-timeout', wrapper_exit=FINALIZATION_EXIT,
+                      finalization_seconds=FINALIZATION_SECONDS, emergency_seconds=EMERGENCY_SECONDS,
+                      scratch=str(scratch), scratch_retained=True, first_result=str(where / 'result.json'),
+                      first_outcome=result.get('outcome'),
+                      note='Finalization timed out; first result/report/failures and remaining scratch retained. '
+                           'No cleanup retry was attempted; inspect emergency.json before treating the run as passed.')
+        recorded = False
+        try:
+            with self.alarm(EMERGENCY_SECONDS, self.on_finalization_timeout):
+                write_json(results_fd, 'emergency.json', notice)
+                recorded = True
+        except (FinalizationTimeout, OSError):
+            pass
+        finally:
+            for fd in (self.lock, results_fd, runs_fd, self.scratch_fd):
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+        print(f'run {self.run}: finalization-timeout · exit {FINALIZATION_EXIT} · '
+              f'first result and remaining scratch retained · '
+              f'{where / "emergency.json" if recorded else "emergency report could not be written"} · {scratch}',
+              file=sys.stderr)
+        return FINALIZATION_EXIT
 
     def setup_and_test(self, target, targets, scratch, checkout, env, result):
         if self.execute(['git', '-C', target.project, 'worktree', 'add', '--detach', checkout, target.head],

@@ -12,23 +12,23 @@ from tests.testrunner import cli, resources
 
 
 def test_default_and_lower_requested_memory_are_bounded():
-    assert resources.requested_memory({}) == 2048
+    assert resources.requested_memory({}) == 8192
     assert resources.requested_memory({resources.MEMORY_ENV: '256'}) == 256
 
 
-@pytest.mark.parametrize('value', ['0', '-1', '2049', 'inf', 'nan', '1.5', '', 'true'])
+@pytest.mark.parametrize('value', ['0', '-1', '8193', 'inf', 'nan', '1.5', '', 'true'])
 def test_invalid_or_larger_memory_request_is_refused(value):
     with pytest.raises(ValueError, match='test memory limit must be an integer'):
         resources.memory_mib(value)
 
 
-@pytest.mark.parametrize('limits,expected', [((-1, -1), 2048), ((512, 1024), 512), ((1024, -1), 1024)])
+@pytest.mark.parametrize('limits,expected', [((-1, -1), 8192), ((512, 1024), 512), ((1024, -1), 1024)])
 def test_soft_and_hard_limits_are_lowered_without_weakening_a_tighter_caller(monkeypatch, limits, expected):
     previous = tuple(value * resources.MIB if value != -1 else resource.RLIM_INFINITY for value in limits)
     calls = []
     monkeypatch.setattr(resource, 'getrlimit', lambda kind: previous)
     monkeypatch.setattr(resource, 'setrlimit', lambda kind, pair: calls.append((kind, pair)))
-    assert resources.apply_memory(2048) == expected * resources.MIB
+    assert resources.apply_memory(8192) == expected * resources.MIB
     assert calls == [(resource.RLIMIT_AS, (expected * resources.MIB, expected * resources.MIB))]
 
 

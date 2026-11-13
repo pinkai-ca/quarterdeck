@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import resource
 
-DEFAULT_MEMORY_MIB = 2048
+DEFAULT_MEMORY_MIB = 8192
 MEMORY_ENV = 'TESTRUNS_MEMORY_MIB'
 MIB = 1024 * 1024
 

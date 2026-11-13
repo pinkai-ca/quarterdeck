@@ -58,17 +58,17 @@ def test_tool_caps_an_older_target_and_retains_the_first_memory_failure(syntheti
 import resource
 def test_synthetic_allocation():
     soft, hard = resource.getrlimit(resource.RLIMIT_AS)
-    assert soft == hard == 256 * 1024 * 1024
-    bytearray(512 * 1024 * 1024)
+    assert soft == hard == 6144 * 1024 * 1024
+    bytearray(12288 * 1024 * 1024)
 ''')
     commit()
     done = command(['timeout', '--kill-after=10s', '80s', 'prlimit', '--as=8589934592', sys.executable,
                     '-I', str(ROOT / 'tests/testrun.py'), 'run', '--target', str(project), '-n', '0',
-                    '--memory-mib', '256', '--timeout', '60', 'tests/test_memory.py'], cwd=ROOT)
+                    '--memory-mib', '6144', '--timeout', '60', 'tests/test_memory.py'], cwd=ROOT)
     result, report, folder = run_result(project, done)
     assert done.returncode == 1 and result['outcome']['status'] == 'failed'
     assert result['evidence']['counts']['failed'] == 1
-    assert result['environment']['memory_mib'] == 256
+    assert result['environment']['memory_mib'] == 6144
     failures = list((folder / 'failures').glob('*.txt'))
     assert len(failures) == 1
     assert 'MemoryError' in failures[0].read_text() and 'MemoryError' in report
@@ -95,6 +95,38 @@ raise SystemExit(cli.main(["run", "--target", sys.argv[2], "-n", "0", "--timeout
     assert result['outcome']['pytest_exit'] is None
 
 
+def test_finalization_timeout_keeps_first_result_and_remaining_scratch(synthetic_project):
+    project, commit = synthetic_project
+    (project / 'tests/test_pass.py').write_text('def test_synthetic(): assert True\n')
+    commit()
+    driver = '''
+import sys, time
+from pathlib import Path
+sys.dont_write_bytecode = True
+sys.path.insert(0, sys.argv[1])
+from testrunner import cli, run
+run.FINALIZATION_SECONDS = 0.3
+def stall(*args):
+    Path(sys.argv[2], "cleanup-entered").touch()
+    time.sleep(60)
+run.clean.retire_run = stall
+raise SystemExit(cli.main(["run", "--target", sys.argv[2], "-n", "0", "--timeout", "60"], []))
+'''
+    done = command(['timeout', '--kill-after=10s', '80s', 'prlimit', '--as=8589934592', sys.executable,
+                    '-c', driver, str(ROOT / 'tests'), str(project)], cwd=ROOT)
+    assert done.returncode == 7, done.stdout + done.stderr
+    records = list((project / '.testruns/results').glob('*/result.json'))
+    assert len(records) == 1
+    first = json.loads(records[0].read_text())
+    emergency = json.loads(records[0].with_name('emergency.json').read_text())
+    assert first['outcome']['status'] == 'passed' and first['cleanup']['outcome'] == 'pending'
+    assert '1 passed' in records[0].with_name('report.md').read_text()
+    assert emergency['outcome'] == 'finalization-timeout' and emergency['scratch_retained']
+    assert Path(emergency['scratch']).is_dir()
+    assert (project / 'cleanup-entered').exists()
+    assert 'first result and remaining scratch retained' in done.stderr
+
+
 @pytest.mark.parametrize('workers', ['0', '2'])
 def test_direct_pytest_and_xdist_apply_the_shared_cap_before_collection(tmp_path, workers):
     folder = tmp_path / 'synthetic-pytest-zzzz'
@@ -105,14 +137,14 @@ import json, resource, subprocess, sys
 import pytest
 @pytest.mark.parametrize("case", ["synthetic-one-zzzz", "synthetic-two-zzzz"])
 def test_actual_limits(case, pytestconfig):
-    assert pytestconfig._qd_memory_limit == 256 * 1024 * 1024
-    assert resource.getrlimit(resource.RLIMIT_AS) == (256 * 1024 * 1024,) * 2
+    assert pytestconfig._qd_memory_limit == 6144 * 1024 * 1024
+    assert resource.getrlimit(resource.RLIMIT_AS) == (6144 * 1024 * 1024,) * 2
     done = subprocess.run([sys.executable, "-c", "import json,resource; print(json.dumps(resource.getrlimit(resource.RLIMIT_AS)))"],
         env={}, check=True, capture_output=True, text=True, timeout=10)
-    assert json.loads(done.stdout) == [256 * 1024 * 1024] * 2
+    assert json.loads(done.stdout) == [6144 * 1024 * 1024] * 2
 ''')
     env = {key: value for key, value in os.environ.items() if not key.startswith('PYTEST_') and key != 'TMUX'}
-    env[resources.MEMORY_ENV] = '256'
+    env[resources.MEMORY_ENV] = '6144'
     anchor = Path(tempfile.mkdtemp(prefix='qdb-', dir='/tmp'))
     original = anchor.stat()
     env.update(TMUX_TMPDIR=str(anchor), QD_TMUX_SOCKET=str(anchor / 'socket'))
