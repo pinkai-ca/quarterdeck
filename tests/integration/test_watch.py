@@ -70,7 +70,8 @@ def test_the_table_and_the_line(ship: shipmod.Ship, tmux: Tmux, capsys):
     rows = qd(capsys, "status").splitlines()
     assert rows[0].startswith("service down")
     listed = rows.index("open orders: 1")
-    seated = [row for row in rows[2:listed] if not row.startswith(" ")]  # seat rows by name; indented rows are a seat's detail
+    # seat rows by name; indented rows are a seat's detail, and "program ..." rows each program's last use
+    seated = [row for row in rows[2:listed] if not row.startswith((" ", "program "))]
     table = {row.split()[0]: row for row in seated}
     assert len(seated) == 3 and sorted(table) == ["captain", "desk", "worker-1"]
     assert "idle" in table["captain"] and "open" in table["captain"]
