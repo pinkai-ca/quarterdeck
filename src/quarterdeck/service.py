@@ -188,7 +188,8 @@ class Service:
             self.log('held', seat=error.seat, error=reason)
         spec = self.ship.seat(error.seat)
         alarms.notify(self, error.seat, self.ship.session_of(spec).human, reason,
-                      f'{reason}; seat held, restore its declared selection', channel='selection')
+                      f'{reason}; seat held, restore its declared selection', channel='selection',
+                      up=self.systems_recipients(spec))
 
     def resolved_seats(self) -> list[Seat]:
         found = []
@@ -357,12 +358,15 @@ class Service:
             self.told[seat.name] = reason
         door_reason = reason if reason and not reason.startswith(unconfirmed_alert.PREFIX) else None
         alarms.notify(self, seat.name, seat.session.human, door_reason,
-                      f'{seat.name} obstructed, {door_reason}' if door_reason else None)
+                      f'{seat.name} obstructed, {door_reason}' if door_reason else None,
+                      desk_now=person_only(door_reason) if door_reason else False,
+                      up=self.systems_recipients(seat))
 
     def alarm_recipients(self, seat: Seat, reason: str) -> list[str]:
         """Immediate recipients; a standing untaken alarm may reach the desk later."""
         from . import alarms
-        return alarms.recipients(self, seat.name, seat.session.human)
+        return alarms.recipients(self, seat.name, seat.session.human, desk_now=person_only(reason),
+                                 up=self.systems_recipients(seat))
 
     def systems_recipients(self, seat: Seat) -> list[str]:
         """Every up systems seat, excluding the subject of its own alarm."""

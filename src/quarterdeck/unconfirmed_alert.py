@@ -18,4 +18,5 @@ def step(service, seat, detached):
     known = all(reason.startswith(PREFIX) for reason in detached)
     key = (sorted(set(detached)) or None) if known else alarms.UNKNOWN
     alarms.notify(service, seat.name, seat.session.human, key,
-                  f'{seat.name} obstructed, ' + '; '.join(sorted(set(detached))), channel='detached')
+                  f'{seat.name} obstructed, ' + '; '.join(sorted(set(detached))), channel='detached', desk_now=True,
+                  up=service.systems_recipients(seat))

@@ -110,7 +110,11 @@ def publish(runtime, intent):
         # The caller owns sorted subject/recipient admission. A newly published
         # alarm is ordinary incoming work for its recipient; recovery is not.
         compaction.admitting(runtime, message)
-    compaction.publish(runtime, intent)
+        sink = post.report_sink(message, post.Store(runtime))
+        with post.fixed_report(sink, message):
+            sink.new(message.kind, message.sender, message.to, message.body)
+    else:
+        compaction.publish(runtime, intent)
 
 
 def step(service, seat):
@@ -126,7 +130,8 @@ def step(service, seat):
                 'Notification only; execution may remain unknown. The outside controller '
                 "must choose the idle break under the ship's orders.")
     active = key is not None and key is not alarms.UNKNOWN
-    human = seat.ship.session_of(seat.spec).human if active else None
+    session = getattr(seat, 'session', None)
+    human = session.human if active and session is not None else None
     up = service.systems_recipients(seat) if active else None
     alarms.notify(service, seat.name, human, key, body, channel='manual-fresh', ship=seat.ship, up=up)
 

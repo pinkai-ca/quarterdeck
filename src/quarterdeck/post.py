@@ -12,6 +12,7 @@ import json
 import fcntl
 import hashlib
 from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
 import os
 import secrets
 import stat
@@ -28,6 +29,26 @@ SPEEDS = ("now", "interrupt")
 SHIP = "ship"  # the sender of the ship's own notices, and an inbox a seat may answer to
 REPLY_VERB = {"order": "report", "question": "answer"}
 POST_TIMESTAMP_TICK_NS = 2_000_000_000  # conservative filesystem tick; see docs/DESIGN.md
+_FIXED_REPORT = ContextVar('quarterdeck_fixed_report', default=None)
+
+
+@contextmanager
+def fixed_report(store, message):
+    """Retain the four-field notification sink while publishing a saved identity.
+
+    The caller owns admission and the durable intent. Small injected sinks keep
+    their ordinary ``new`` interface; the real Store writes these exact bytes.
+    """
+    token = _FIXED_REPORT.set((store, message))
+    try:
+        yield
+    finally:
+        _FIXED_REPORT.reset(token)
+
+
+def report_sink(message, default):
+    fixed = _FIXED_REPORT.get()
+    return fixed[0] if fixed is not None and fixed[1] == message else default
 
 
 def now() -> datetime:
@@ -101,6 +122,13 @@ class Store:
         self._cache_at: int | None = None
 
     def new(self, kind: str, sender: str, to: str, body: str, **fields) -> Message:
+        fixed = _FIXED_REPORT.get()
+        if fixed is not None and fixed[0] is self:
+            message = fixed[1]
+            if (kind, sender, to, body) != (message.kind, message.sender, message.to, message.body) or fields:
+                raise ShipError('fixed notification differs from its saved intent')
+            self._write(message)  # its publisher already owns admission
+            return message
         message = self.prepare(kind, sender, to, body, **fields)
         self.write(message)
         return message
