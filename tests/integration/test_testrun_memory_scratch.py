@@ -141,7 +141,7 @@ def test_a_tampered_storage_record_removes_nothing(tmp_path, cleanup_memory, fie
     case = abandoned(tmp_path)
     cleanup_memory(case.root)
     path = case.project / '.testruns' / 'results' / case.run / 'storage.json'
-    elsewhere = Path(case.record['base']) / 'synthetic-elsewhere'  # another folder of the same memory filesystem
+    elsewhere = tmp_path / 'synthetic-elsewhere'  # this case's own folder, never one shared across cases
     elsewhere.mkdir(mode=0o700)
     tampered = dict(case.record)
     tampered[field] = {'identity': [1, 2, 3], 'root': 'qd-elsewhere', 'base': str(elsewhere),

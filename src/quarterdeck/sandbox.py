@@ -25,6 +25,11 @@ from .ship import Ship, ShipError
 PROGRAM = "bwrap"
 TMP_BYTES = 256 * 1024 * 1024  # a private /tmp lives in memory; this caps what a runaway write can take
 HOPS = 20  # a chain of links longer than this is nobody's install
+# What the jail hides besides the operator's home: its own empty /tmp and its fresh /dev, whose /dev/shm is empty.
+# A folder the launch needs below one of them is bound back read-only, as one below the home is; the mount
+# root itself and /dev/shm itself never are.
+HIDDEN = (Path('/tmp'), Path('/dev'))
+NEVER = (Path('/tmp'), Path('/dev'), Path('/dev/shm'))
 FRAMEWORK_TOOLS = ("qd", "node")  # what a seat's program needs beside itself: qd to post, node where the program is JavaScript
 
 
@@ -87,7 +92,8 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
         raise ShipError(f"{seat_name}: sandboxed with its working directory at {workspace}, which contains the operator home and jails nothing; give the seat a cwd below the home or outside its ancestors")
     if workspace == ship.folder.resolve():
         raise ShipError(f"{seat_name}: sandboxed with the ship folder as its working directory; a jailed seat reads the ship folder and cannot write it")
-    folders = [f for f in program_folders((program, *FRAMEWORK_TOOLS), path, home)
+    programs = (program, *FRAMEWORK_TOOLS)
+    folders = [f for f in (*program_folders(programs, path, home), *hidden_folders(programs, path, home))
                if f != workspace and workspace not in f.parents and ship.folder not in f.parents and f != ship.folder]
     (ship.runtime / "post").mkdir(parents=True, exist_ok=True)  # bound writable, so it must exist before the launch, first post or not
     (ship.runtime / "tmux").mkdir(mode=0o700, exist_ok=True)  # hidden inside: the mount needs its place in the read-only ship
@@ -103,6 +109,11 @@ def program_folders(programs: tuple[str, ...], path: str, home: Path) -> list[Pa
     ``node_modules``. Then every PATH entry, so the shell finds the operator's tools, and the framework's own
     interpreter, code and files, so ``qd`` runs inside.
     """
+    return sorted((f for f in _resolved(programs, path, home) if home in f.parents), key=lambda f: (len(f.parts), str(f)))
+
+
+def _resolved(programs: tuple[str, ...], path: str, home: Path) -> set[Path]:
+    """Every folder the programs resolve through, the PATH entries, and the framework's own interpreter and code."""
     found: set[Path] = set()
     for name in programs:
         file = shutil.which(name, path=path)
@@ -125,7 +136,16 @@ def program_folders(programs: tuple[str, ...], path: str, home: Path) -> list[Pa
     found.add(Path(sys.prefix))
     found.add(Path(__file__).resolve().parent.parent)
     found.add(standing.PROJECT_DIR)
-    return sorted((f for f in found if home in f.parents), key=lambda f: (len(f.parts), str(f)))
+    return found
+
+
+def hidden_folders(programs: tuple[str, ...], path: str, home: Path) -> list[Path]:
+    """The same folders where they lie below the jail's own /tmp or fresh /dev, which hide them as the home is
+    hidden: a test run's working storage in memory, or a program installed there. Each is bound back read-only;
+    /tmp, /dev and /dev/shm themselves never are, so the jail is no wider than on disk."""
+    return sorted((f for f in _resolved(programs, path, home)
+                   if f not in NEVER and any(root in f.parents for root in HIDDEN)),
+                  key=lambda f: (len(f.parts), str(f)))
 
 
 def command(jail: Jail, argv: list[str]) -> list[str]:
