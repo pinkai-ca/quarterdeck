@@ -240,14 +240,15 @@ def relaunch(ship: shipmod.Ship, name: str | None, resume: bool, cancel=None) ->
     kind = 'restart' if resume else 'fresh'
     with request_queue.direct(ship.runtime, seat.name, kind) as retired:
         suffix = f'; retired pending relaunch request(s): {", ".join(retired)}' if retired else ''
-        if not seat.is_working():
-            try:
-                proof = seat.restart() if resume else seat.fresh()
-            except ShipError as error:
-                if retired:
-                    raise ShipError(str(error) + suffix) from error
-                raise
-            return proof + suffix
+        working = seat.is_working()
+    if not working:
+        try:
+            proof = seat.restart() if resume else seat.fresh()
+        except ShipError as error:
+            if retired:
+                raise ShipError(str(error) + suffix) from error
+            raise
+        return proof + suffix
     # The existing working guard is rechecked after writer coordination, so
     # waiting for that lock never turns a direct act into an unexamined restart.
     return service.request(ship.runtime, 'relaunch', seat=seat.name, resume=resume,

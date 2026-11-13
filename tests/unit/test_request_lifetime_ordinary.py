@@ -2,6 +2,10 @@
 
 from datetime import datetime, timezone
 import json
+import fcntl
+import subprocess
+import sys
+import time
 from itertools import count
 from types import SimpleNamespace
 
@@ -37,6 +41,77 @@ def service(runtime, answer):
     result.answer = answer
     result.log = lambda *args, **kwargs: None
     return result
+
+
+@pytest.fixture
+def busy_owner(runtime):
+    runtime.mkdir(parents=True)
+    process = subprocess.Popen([sys.executable, '-c', '''
+import fcntl, select, sys
+with open(sys.argv[1], 'a') as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    print('locked', flush=True)
+    select.select([sys.stdin], [], [], 5)
+''', str(runtime / 'request.lock')], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    try:
+        assert process.stdout.readline().strip() == 'locked'
+        yield process
+    finally:
+        process.communicate('\n', timeout=6)
+        assert process.returncode == 0
+
+
+def assert_owner_available(runtime):
+    with (runtime / 'request.lock').open('r') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def test_busy_owner_does_not_stall_tick_or_dispatch(runtime, busy_owner, monkeypatch):
+    path = enqueue(runtime)
+    runner = service(runtime, lambda data: pytest.fail('busy request dispatched'))
+    runner.ship = SimpleNamespace(folder=runtime)
+    monkeypatch.setattr('quarterdeck.service.shipmod.load', lambda folder: runner.ship)
+    runner.structure_passes = SimpleNamespace(begin=lambda: None, finish=lambda: None)
+    steps = []
+    for name in ('reconcile', 'account', 'groups', 'cascades', 'inboxes', 'recoveries', 'refusals',
+                 'deliveries', 'follow', 'compactions', 'fresh_after_order', 'rebrief', 'credentials',
+                 'failover', 'heartbeat', 'status_due'):
+        setattr(runner, name, lambda name=name: steps.append(name))
+    started = time.monotonic()
+    runner.tick()
+    assert time.monotonic() - started < 1
+    assert 'deliveries' in steps and 'failover' in steps and 'compactions' in steps
+    assert path.exists() and not path.with_suffix('.claimed').exists()
+    assert busy_owner.poll() is None
+
+
+@pytest.mark.parametrize('act', ['cancel', 'restart', 'fresh'])
+def test_cli_owner_wait_is_bounded(runtime, busy_owner, monkeypatch, act):
+    path = enqueue(runtime)
+    monkeypatch.setattr(servicectl, 'ANSWER_SECONDS', 0.05)
+    seat = SimpleNamespace(name=SEAT, is_working=lambda: False,
+                           restart=lambda: pytest.fail('busy restart'),
+                           fresh=lambda: pytest.fail('busy fresh'))
+    monkeypatch.setattr(cli, 'seat_of', lambda *args: seat)
+    ship = SimpleNamespace(runtime=runtime, seat=lambda name: SimpleNamespace(name=name))
+    started = time.monotonic()
+    with pytest.raises(ShipError, match='request owner is busy'):
+        cli.relaunch(ship, SEAT, act != 'fresh', cancel=path.stem if act == 'cancel' else None)
+    assert 0.04 <= time.monotonic() - started < 1
+    assert path.exists() and not path.with_suffix('.done').exists()
+    assert busy_owner.poll() is None
+
+
+def test_service_releases_coordination_after_claim_before_dispatch(runtime):
+    path = enqueue(runtime)
+
+    def answer(data):
+        assert path.with_suffix('.claimed').read_text() == path.read_text()
+        assert_owner_available(runtime)
+        return 'synthetic answer'
+
+    service(runtime, answer).requests()
+    assert not path.exists() and path.with_suffix('.done').read_text() == 'synthetic answer\n'
 
 
 def test_listing_absent_queue_is_read_only(runtime):
@@ -185,9 +260,11 @@ def test_status_overflow_keeps_request_and_reason(runtime):
     row.update(reason='tool state unknown')
     facts = watch.Facts(service='ok', waiting=0, oldest=0, blind=0,
                         pending=['synthetic detail ' * 40],
-                        request_waits=[request_queue.describe(row)])
+                        request_waits=[request_queue.headline(row)])
     text = facts.line()
-    assert SEAT in text and path.stem in text and 'tool state unknown' in text and '--cancel' in text
+    assert f'{SEAT} restart request waits: tool state unknown' in text
+    assert path.stem not in text and '--cancel' not in text
+    assert path.stem in request_queue.describe(row) and '--cancel' in request_queue.describe(row)
 
 
 @pytest.mark.parametrize('verb', ['restart', 'fresh'])
@@ -209,18 +286,20 @@ def test_bare_cancel_retires_relaunches_not_other_requests(runtime):
     assert control.exists()
 
 
-def test_direct_act_retires_queued_relaunch_before_existing_manual_action(runtime, monkeypatch):
+@pytest.mark.parametrize('resume', [True, False])
+def test_direct_act_retires_queued_relaunch_before_existing_manual_action(runtime, monkeypatch, resume):
     path = enqueue(runtime)
 
     def restart():
+        assert_owner_available(runtime)
         assert not path.exists()
         assert 'superseded' in path.with_suffix('.done').read_text()
         return 'synthetic direct restart'
 
     ship = SimpleNamespace(runtime=runtime, seat=lambda name: SimpleNamespace(name=name))
-    seat = SimpleNamespace(name=SEAT, is_working=lambda: False, restart=restart)
+    seat = SimpleNamespace(name=SEAT, is_working=lambda: False, restart=restart, fresh=restart)
     monkeypatch.setattr(cli, 'seat_of', lambda *args: seat)
-    proof = cli.relaunch(ship, SEAT, True)
+    proof = cli.relaunch(ship, SEAT, resume)
     assert proof.startswith('synthetic direct restart') and path.stem in proof
 
 

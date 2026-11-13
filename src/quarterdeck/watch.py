@@ -621,7 +621,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         manual_fresh=compaction_alert.unrouted(ship, [seat for seat in selected if not isinstance(seat, UnresolvedSeat)]),
         held=held,
         move_holds=move_reasons,
-        request_waits=[request_queue.describe(row) for row in
+        request_waits=[request_queue.headline(row) for row in
                        (request_queue.pending(ship.runtime) if request_rows is None else request_rows)],
         turn_errors=turn_errors,
         sign_in_failures=sign_in_failures,

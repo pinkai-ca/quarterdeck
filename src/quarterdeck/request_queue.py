@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import time
 
 from . import durable, post
 from .ship import ShipError
@@ -27,7 +28,8 @@ def launch_binding(seat):
 
 
 @contextmanager
-def coordination(runtime):
+def coordination(runtime, *, wait=True):
+    """Bound CLI admission; service passes defer immediately when another owner is busy."""
     folder = runtime / 'requests'
     folder.mkdir(parents=True, exist_ok=True)
     path = runtime / 'request.lock'
@@ -36,11 +38,24 @@ def coordination(runtime):
         opened = os.fstat(descriptor)
         if not stat.S_ISREG(opened.st_mode):
             raise ShipError('request coordination is not a regular file; retained')
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        from .servicectl import ANSWER_SECONDS
+        deadline = time.monotonic() + ANSWER_SECONDS
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if not wait:
+                    yield False
+                    return
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ShipError('request owner is busy; coordination wait expired; nothing applied') from None
+                time.sleep(min(0.05, remaining))
         current = path.lstat()
         if (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
             raise ShipError('request coordination changed; retained')
-        yield
+        yield True
     finally:
         os.close(descriptor)
 
@@ -166,6 +181,10 @@ def describe(row):
             f'waiting: {row["reason"]}{claim}{cancel}')
 
 
+def headline(row):
+    return f'{row["seat"] or "unknown seat"} {row["kind"]} request waits: {row["reason"]}'
+
+
 def hold(path, data, dimension, reason):
     if 'created_at' not in data:
         data['created_at'] = created(path, {})
@@ -242,7 +261,7 @@ def cancel(runtime, name, identifier=None):
 
 @contextmanager
 def direct(runtime, name, kind):
-    """Retirement and the existing direct act share the same writer coordination."""
+    """Retire and recheck working state here; transition only after leaving this scope."""
     with coordination(runtime):
         yield _retire(runtime, name, f'superseded by direct {kind}')
 

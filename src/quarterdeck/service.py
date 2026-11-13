@@ -17,6 +17,7 @@ import sys
 import time
 import traceback
 from copy import deepcopy
+from contextlib import ExitStack
 from datetime import datetime
 from pathlib import Path
 
@@ -397,7 +398,9 @@ class Service:
         retry = []
         for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
             from . import request_queue
-            with request_queue.coordination(self.runtime):
+            with ExitStack() as ownership:
+                if not ownership.enter_context(request_queue.coordination(self.runtime, wait=False)):
+                    continue  # owner busy: defer without delaying the remaining service duties
                 if not path.exists():
                     continue
                 data = None
@@ -419,6 +422,9 @@ class Service:
                     meta = request_queue.metadata(path)  # supersession may add retired identities
                     if not isinstance(data, dict) or data.get("kind") != "rebrief":
                         durable.replace_file(claim, raw)  # before dispatch: failed archival cannot requeue an executed action
+                    # The durable claim excludes cancellation/supersession while dispatch runs.
+                    # A seat transition must never hold the global request coordination lock.
+                    ownership.close()
                     try:
                         self.request_wait = None
                         self.request_metadata = meta
