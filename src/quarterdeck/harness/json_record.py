@@ -244,6 +244,7 @@ class JsonLinesReader(RecordReader):
         self.completed_turns = []
         self.pending = {}
         self.live_tools = {}
+        self.live_tool_starts = {}
         self.tools_known = True
         self.queued = []
         self.queue_error = None
@@ -275,6 +276,7 @@ class JsonLinesReader(RecordReader):
         if call in self.live_tools and self.live_tools[call] != name:
             self.tools_known = False
         self.live_tools[call] = name
+        self.live_tool_starts[call] = at
         self.pending[call] = (name, at)
 
     def start_turn(self, turn: dict) -> None:
@@ -295,6 +297,7 @@ class JsonLinesReader(RecordReader):
         from .base import ToolCall
 
         self.live_tools.pop(call, None)
+        self.live_tool_starts.pop(call, None)
         name, started = self.pending.pop(call, (default, None))
         seconds = (at - started).total_seconds() if at and started else None
         if self.open is not None:
@@ -302,6 +305,7 @@ class JsonLinesReader(RecordReader):
 
     def state(self) -> "State":
         from .base import State
+        from .types import ActiveTool
 
         try:
             last_write = datetime.fromtimestamp(self.record.stat().st_mtime, timezone.utc)
@@ -314,5 +318,7 @@ class JsonLinesReader(RecordReader):
                      effort=self.effort, queued=tuple(self.queued), consumed=tuple(self.consumed), turns=len(self.turns),
                      completed_turns=tuple(self.completed_turns),
                      pending_tools=tuple(self.live_tools.values()) if self.tools_known else None,
+                     active_tools=tuple(ActiveTool(name, self.live_tool_starts.get(call))
+                                        for call, name in self.live_tools.items()),
                      queue_error=self.queue_error,
                      failure=self.turns[-1].failure if self.open is None and self.turns else None)

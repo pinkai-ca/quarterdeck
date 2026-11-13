@@ -22,7 +22,7 @@ from pathlib import Path
 
 from . import harness as harnesses
 from . import pending as pending_delivery, delivery_record
-from . import credential, durable, install, machine, post, presentation, quota, record_owner, recovery, ship as shipmod, standing
+from . import credential, durable, idle, install, machine, move_hold, post, presentation, quota, record_owner, recovery, ship as shipmod, standing
 from .door import CONFIRM_SECONDS, Door
 from .harness.base import record_fingerprint
 from .harness.capabilities import validate_effort, validate_mode
@@ -523,20 +523,10 @@ class Service:
             return None
         pane = seat.pane()
         if pane is not None and not pane.dead:
-            joined = seat.join()
-            if joined.record is None:
-                return None  # an idle screen cannot certify absent/unknown execution
-            try:
-                state = seat.harness.state(joined.record)
-            except OSError:
-                return None
-            if not seat.harness.waiting_for_human(state):
-                if state.turn_open is not False or state.pending_tools != ():
-                    return None
-                if not any(turn.timed and turn.started is not None and turn.ended is not None
-                           and state.last_input_at is not None
-                           and turn.started <= state.last_input_at <= turn.ended for turn in state.completed_turns):
-                    return None  # empty/header-only and inferred idle are not recorded completion
+            state, hold = self.idle_reading(seat)
+            if state is None or not seat.harness.waiting_for_human(state):
+                if hold is not None:
+                    return None  # deferred-request answers/lifetime are separate; the reason is shared
         return seat.restart() if resume else seat.fresh()
 
     def control(self, seat: Seat, name: str, value: str) -> str | None:
@@ -817,25 +807,26 @@ class Service:
             self.log("failover", seat=seat.name, pool=target, came_from=came_from, proof=proof)
 
     def not_idle(self, seat: Seat) -> str | None:
-        """Why a seat may not move now: a move needs no open turn, no queued input and a recorded completion."""
+        """The ordinary live proof shared by failover, select and relaunch."""
+        _, hold = self.idle_reading(seat)
+        return hold.reason if hold is not None else None
+
+    def idle_reading(self, seat: Seat):
+        """Read once and publish only an operational category, bound to launch/watch generation."""
+        binding = move_hold.generation(seat)
+        state = None
         try:
             record = seat.record()
             state = seat.harness.state(record) if record is not None else None
         except OSError:
-            return "its record is unreadable"
-        if state is None:
-            return "it has no joined record"
-        if state.turn_open is not False:
-            return "a turn is open"
-        if state.queue_error:
-            return f"queue unknown: {state.queue_error}"
-        if state.queued:
-            return "input is queued"
-        if not any(turn.timed and turn.started is not None and turn.ended is not None
-                   and state.last_input_at is not None
-                   and turn.started <= state.last_input_at <= turn.ended for turn in state.completed_turns):
-            return "its last input has no recorded completion"
-        return None
+            hold = idle.Hold('record', 'its record is unreadable')
+        else:
+            hold = idle.check(state) if state is not None else idle.Hold('record', 'it has no joined record')
+        if move_hold.generation(seat) != binding:
+            state = None
+            hold = idle.Hold('identity', idle.REASONS['identity'])
+        move_hold.publish(seat, binding, hold)
+        return state, hold
 
     def select(self, seat: Seat, pool: str) -> str:
         """An explicit move to one of a seat's declared choices, by failover's path and refusals.

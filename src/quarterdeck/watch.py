@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from . import credential, ledger, pending as pending_delivery, post, providers, quota, record_owner, recovery, servicectl as service
+from . import credential, idle, ledger, move_hold, pending as pending_delivery, post, providers, quota, record_owner, recovery, servicectl as service
 from .door import Door, Reading
 from .harness.base import same_name
 from .harness.capabilities import selection_label
@@ -66,6 +66,7 @@ def activity(seat: Seat | UnresolvedSeat, now: datetime | None = None) -> Activi
     except OSError as error:
         return Activity("unknown", f"record unreadable: {error}")
     queue_detail = f"queue unknown: {state.queue_error}" if state.queue_error else ""
+    tools = idle.tool_reason(state)
     if state.failure is not None and state.turn_open is False:  # law: record-first -- an error is never plain idle
         from .turn_failure import REFUSAL, describe
         queued = f"{len(state.queued)} queued" if state.queued else ""
@@ -77,12 +78,13 @@ def activity(seat: Seat | UnresolvedSeat, now: datetime | None = None) -> Activi
         return Activity('needs a human', 'native question tool; ask through qd post question' +
                         (f" · {queue_detail}" if queue_detail else ""))
     if not state.turn_open:
-        return Activity("idle", queue_detail or (f"{len(state.queued)} queued" if state.queued else ""))
+        return Activity("idle", " · ".join(filter(None, (
+            queue_detail or (f"{len(state.queued)} queued" if state.queued else ""), tools))))
     where = f"in {state.open_tool} {_ago(state.open_tool_since, now)}".rstrip() if state.open_tool else ""
     quiet = (now - state.last_write).total_seconds() if state.last_write else 0
     if quiet >= STALL_SECONDS:
-        return Activity("stalled", " · ".join(filter(None, (where or f"{int(quiet // 60)}m without a step", queue_detail))))
-    return Activity("working", " · ".join(filter(None, (where, queue_detail))))
+        return Activity("stalled", " · ".join(filter(None, (where or f"{int(quiet // 60)}m without a step", queue_detail, tools))))
+    return Activity("working", " · ".join(filter(None, (where, queue_detail, tools))))
 
 
 @dataclass(frozen=True)
@@ -302,6 +304,8 @@ def render_full(data: dict) -> list[str]:
             lines.append(f"  record {record} · {turns_shown} turns · last input: {(state.last_input or '')[:60]!r}")
             if state.queue_error:
                 lines.append(f"  queue unknown: {state.queue_error}; queued is candidate history")
+            if detail := idle.tool_reason(state):
+                lines.append(f"  {detail}")
     elif data["record_absent"]:
         lines.append(f"  record absent: {data['record_absent']}")
     if data["record_limits"]:
@@ -367,6 +371,7 @@ class Facts:
     cascade_held: list[str] = field(default_factory=list)
     structure_waiting: list[str] = field(default_factory=list)
     manual_fresh: list[str] = field(default_factory=list)  # no systems recipient: retain names on overflow
+    move_holds: list[str] = field(default_factory=list)
 
     def line(self) -> str:  # law: nothing-waits-silently
         parts = ["SERVICE DOWN" if self.service == "down" else f"service {self.service}"]
@@ -389,6 +394,7 @@ class Facts:
         parts += [f"{name} needs a human" for name in self.needs_human]
         parts += [f"{name}: no watch armed" for name in self.unarmed]
         parts += [f"{name} held at limit" for name in self.held]
+        parts += self.move_holds
         parts += self.routes
         parts += self.pending
         parts += [f"disk: {name} {pct}%" for name, pct in self.disks]
@@ -506,9 +512,12 @@ def limit_holds(ship: Ship, selected: list[Seat | UnresolvedSeat]) -> tuple[list
         if book is None:
             return [], []
         with book:
-            held = [seat.name for seat in up if quota.current_walled(seat, book)
-                    and not any(quota.cached_open(ship, book, pool, seat) for pool in quota.candidate_pools(seat))]
-        return held, []  # law: nothing-waits-silently
+            walled = [seat for seat in up if quota.current_walled(seat, book)]
+            held = [seat.name for seat in walled
+                    if not any(quota.cached_open(ship, book, pool, seat) for pool in quota.candidate_pools(seat))]
+            reasons = [f'{seat.name}: move held: {reason}' for seat in walled
+                       if len(seat.spec.pools) > 1 and (reason := move_hold.reading(seat))]
+        return held, reasons  # law: nothing-waits-silently -- including tools held with a usable destination
     except (OSError, sqlite3.Error):
         return [], ["held seats unknown; ledger unreadable"]
 
@@ -523,7 +532,6 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
     waiting, needs_human, unarmed, pending_lines, routes, unknown, queue_unknown, compactions, turn_errors = [], [], [], [], [], [], [], [], []
     selected = seats(ship, tmux, False)
     held, limit_unknown = limit_holds(ship, selected)
-    pending_lines += limit_unknown
     for seat in selected:
         pending = attempts.undelivered(store, seat.name, results=latest)
         waiting += pending
@@ -588,6 +596,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         compactions=compactions,
         manual_fresh=compaction_alert.unrouted(ship, [seat for seat in selected if not isinstance(seat, UnresolvedSeat)]),
         held=held,
+        move_holds=limit_unknown,
         turn_errors=turn_errors,
         group_held=group_post.holds(ship.runtime),
         cascade_held=cascade_runtime.holds(ship.runtime),

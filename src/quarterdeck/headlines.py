@@ -23,5 +23,7 @@ def status_line(facts, alerts: list[str]) -> str:
     # A manual-fresh reading with nobody to wake must keep its seat/readiness,
     # even when that operational detail takes the line beyond the normal budget.
     parts += getattr(facts, 'manual_fresh', ())
+    # A held move must keep its seat and missing dimension visible even on overflow.
+    parts += getattr(facts, 'move_holds', ())
     parts.append("details: qd status")
     return SEPARATOR.join(parts)

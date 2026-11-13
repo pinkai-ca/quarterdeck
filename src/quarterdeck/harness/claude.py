@@ -22,6 +22,7 @@ from pathlib import Path
 
 from .json_record import JsonLinesReader, input_reader, input_rows, records_matching
 from .types import Inputs
+from .claude_background import BackgroundBash
 
 from ..ship import Pool, SeatSpec
 from .base import (Box, ship_template, trimmed, Input, Control, Credential, Harness, Interruption, Keys, Launch, Screen, Tokens,
@@ -231,17 +232,23 @@ def usage_tokens(usage: dict) -> Tokens:
 
 
 class _Reader(JsonLinesReader):
-    kinds = ('assistant', 'queue-operation', 'system', 'user')
+    kinds = ('assistant', 'queue-operation', 'system', 'user', 'attachment')
     label = "Claude Code"
 
     def __init__(self, record: Path, snapshot=None):
         self.sidechain_ends = set()
         self.subagent_turns = 0
         self.queue_slots = []  # text/phase FIFO, including returned drafts and consumed echo identities
+        self.background = BackgroundBash()
         super().__init__(record, snapshot)
+
+    def state(self):
+        return self.background.state(super().state())
 
     def take(self, entry: dict) -> None:
         kind = entry.get("type")
+        if not entry.get('isSidechain'):
+            self.background.observe(entry, when(entry.get('timestamp')))
         if kind == "queue-operation":
             self.queue(entry)
         elif entry.get("isSidechain"):
@@ -365,6 +372,7 @@ class _Reader(JsonLinesReader):
             return
         for block in entry.get("message", {}).get("content") or []:
             if isinstance(block, dict) and block.get("type") == "tool_result":
+                self.background.result(block.get('tool_use_id'), entry, block, when(entry.get('timestamp')))
                 self.close_tool(block.get("tool_use_id"), when(entry.get("timestamp")), bool(block.get("is_error")))
 
     def assistant(self, entry: dict) -> None:
@@ -392,9 +400,11 @@ class _Reader(JsonLinesReader):
             if block.get("type") == "tool_use":
                 name = block.get('name', '?')
                 arguments = block.get('input')
-                if (block.get('id') in self.live_tools or name in ('Task', 'Agent') or arguments is not None and not isinstance(arguments, dict)
-                        or isinstance(arguments, dict) and arguments.get('run_in_background')):
-                    self.tools_known = False  # a returned delegation/background handle is not execution completion
+                if (block.get('id') in self.live_tools or name in ('Task', 'Agent')
+                        or arguments is not None and not isinstance(arguments, dict)
+                        or name != 'Bash' and isinstance(arguments, dict) and arguments.get('run_in_background')):
+                    self.tools_known = False  # delegation remains opaque; measured Bash has its own lifetime
+                self.background.call(block.get('id'), name, arguments, when(entry.get('timestamp')), entry.get('version'))
                 self.open_call(block.get('id'), name, when(entry.get('timestamp')))
             elif block.get("type") == "text" and block.get("text"):
                 self.open["reply"] = (self.open["reply"] + "\n\n" + block["text"]).strip()

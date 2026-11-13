@@ -180,6 +180,14 @@ class CappedGeneration:
 
 
 @dataclass(frozen=True)
+class ActiveTool:
+    """Observed call detail; completeness is established only by State.pending_tools."""
+
+    name: str
+    started: datetime | None = None
+
+
+@dataclass(frozen=True)
 class State:
     """The live reading of a record."""
 
@@ -203,6 +211,7 @@ class State:
     capped: CappedGeneration | None = None
     queue_error: str | None = None  # queued is candidate history, not proved membership, when unresolved
     failure: TurnFailure | None = None  # latest ended turn only; cleared by a new native turn
+    active_tools: tuple[ActiveTool, ...] = ()  # observed active subset, including across accounting boundaries
 
 
 @dataclass(frozen=True)
