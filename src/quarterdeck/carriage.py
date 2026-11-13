@@ -1,25 +1,9 @@
-"""A launch's first message, bounded: typed whole when short, else a short account and a file read whole.
+"""Canonical carriage and final-command kernel byte checks.
 
-Linux refuses an exec one of whose arguments, with its NUL, passes 32 pages
-(``MAX_ARG_STRLEN``: 131,072 bytes with 4 KiB pages), or whose arguments and environment,
-with their NULs and pointers, pass ``ARG_MAX`` (2,097,152 bytes on this machine). A launch
-carries its open messages as one argument, so a long carriage would end the start with
-``Argument list too long``, exit 126.
-
-Byte counts are UTF-8. Two kinds of bound:
-
-- soft bounds only choose the form. The carriage is typed whole, as before, when it is at
-  most ``INLINE_BYTES`` (a quarter of the per-argument limit) and the final command, after
-  the adapter and any jail wrapper, keeps every word with its NUL at most half the
-  per-argument limit and the whole at most ``TOTAL_BYTES`` or half ``ARG_MAX``. Otherwise
-  the carriage goes whole into a file in the seat's own runtime folder, written durably
-  under a name of its own launch, and the first message is an account: one line per open
-  order and question, the file's path, and the order to read it whole before acting
-  (law: context-is-cache). The account shrinks to fit, never silently: lines it cannot
-  hold are counted on a line of their own, and the file begins with the complete list.
-- hard bounds are the kernel's own, measured on this machine. A command past them would
-  fail at exec whatever is carried, so the launch is refused before any window opens and
-  the reason names the sizes. A soft bound never refuses a launch.
+The ship-policy/readable-profile planner in carriage_plan.py selects bounded required
+work and optional indexed overflow. Kernel argument and environment limits remain a
+separate final check, after adapter and jail encoding. Legacy account/write helpers
+remain readable for compatibility; native launches use the bounded generation planner.
 """
 
 from __future__ import annotations
@@ -33,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import durable, post
+from .carriage_plan import Item
 from .ship import ShipError
 
 ARGUMENT_LIMIT = 131_072  # MAX_ARG_STRLEN with 4 KiB pages; argument_limit() measures this machine's
@@ -56,6 +41,7 @@ class Carriage:
     roots: tuple[post.Message, ...] = ()
     refused: frozenset[str] = frozenset()
     others: int = 0  # carried messages that are not open roots: amendments, answers, context, notices
+    items: tuple[Item, ...] = ()  # safe admitted renderings, never re-read from source posts
 
     @property
     def size(self) -> int:

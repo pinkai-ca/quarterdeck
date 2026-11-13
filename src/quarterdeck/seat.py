@@ -667,19 +667,35 @@ class Seat:
         def misfit(launch: Launch, argv: list[str]) -> str | None:
             return carriagemod.misfit(words(argv, launch.env), launch.env)  # the words launch.sh hands to exec
 
+        from . import carriage_plan
+
+        bound = carriage_plan.effective_bound(getattr(self.ship, 'carry_bytes', shipmod.CARRY_BYTES),
+                                             self.harness.readable_capacity, version)
         carried_file = None
-        launch, argv = (None, None) if carriage.size > carriagemod.INLINE_BYTES else command(carriage.text)
+        planned = None
+        launch, argv = ((None, None) if carriage.size > min(carriagemod.INLINE_BYTES, bound.bytes)
+                        else command(carriage.text))
         if carriage.text and (launch is None or misfit(launch, argv)):
-            # law: context-is-cache -- too long for one argument: an account, and the whole carriage in a file read first
-            carried_file = carriagemod.write(self.folder, self.name, carriage)
-            for budget in carriagemod.ACCOUNT_BUDGETS:
-                launch, argv = command(carriagemod.account(carriage, carried_file, budget))
-                if not misfit(launch, argv):
-                    break
+            # law: context-is-cache -- only included whole work is mandatory; overflow is indexed, never lost
+            generation = self.folder / carriagemod.FOLDER / secrets.token_hex(12)
+            try:
+                planned = carriage_plan.build(carriage.items, seat=self.name, header=carriage.header,
+                                               inline=carriage.text, directory=generation,
+                                               bound=bound, force_files=True)
+            except carriage_plan.ImpossibleBudget as error:
+                raise ShipError(f'{self.name}: {error}; nothing was started or published') from None
+            launch, argv = command(planned.opening)
+            carried_file = generation / 'whole.txt'
         known = {**launch.env, "QD_SHIP": str(self.ship.folder), "QD_SEAT": self.name}  # a lower bound: tmux adds its own
         if reason := carriagemod.refused(words(argv, launch.env), known):  # refused only where exec surely would
             raise ShipError(f"{self.name}: exec would refuse this launch for its size, whatever it carries: {reason}; "
                             "nothing was started")
+        if planned is not None:
+            try:
+                carriagemod.folder_of(self.folder)
+                carriage_plan.publish(planned)
+            except (OSError, UnicodeError, carriage_plan.ImpossibleBudget) as error:
+                raise ShipError(f'{self.name}: bounded carriage could not be published ({error}); nothing was started') from None
         at = datetime.now(timezone.utc).isoformat()  # before the program can write a record (law: one-record)
         pane = self._open_window(argv, launch.env, path)
         launched = Launched(pane.id, pane.pid, at, pool.name, resume_id, argv, version, self.spec.harness,
@@ -695,7 +711,7 @@ class Seat:
         attempts = post.Attempts(self.ship.runtime)
         for message in carried:
             attempt = attempts.open(message, self.name, pane.id, pane.pid, launched.at)
-            attempts.close(attempt, "launch", f"carried in the launch's file {carried_file.name}; not confirmed read"
+            attempts.close(attempt, "launch", f"carried whole or indexed in {carried_file.parent.name}; not confirmed read"
                            if carried_file else "carried as the first message of the launch")
         how = f"resumed {resume_id[:8]}" if resume_id else "fresh"
         carried_note = f" · {len(carried)} open message{'s' if len(carried) != 1 else ''} carried" if carried else ""
@@ -750,8 +766,16 @@ class Seat:
         root_ids = {m.id for m in selection.roots}
         others = (sum(e.message.id not in root_ids for e in selection.entries)
                   + sum(m.id not in root_ids for m in withheld))
+        from .carriage_plan import Item
+
+        items = [Item(m.id, m.sender, m.to, m.kind, m.at.isoformat(), '', refusal.stub(m) + '\n')
+                 for m in withheld]
+        items += [Item(e.message.id, e.message.sender, e.message.to, e.message.kind, e.message.at.isoformat(),
+                       e.message.subject or '', thread_context.context(e.message) if e.context_only else post.typed([e.message]),
+                       store.dir / f'{e.message.id}.json', e.context_only)
+                  for e in selection.entries]
         return carriagemod.Carriage("\n".join(parts), selection.incoming, header, selection.roots,
-                                    frozenset(m.id for m in selection.roots if m.id in refused), others)
+                                    frozenset(m.id for m in selection.roots if m.id in refused), others, tuple(items))
 
     def _consumed_messages(self, store: post.Store, attempts: post.Attempts, resume_id: str | None,
                            excluded: frozenset[str]) -> frozenset[str]:

@@ -21,6 +21,7 @@ from pathlib import Path
 RUNTIME = "runtime"
 TICK = 1.0  # the service's default wait after each pass, in seconds
 TICK_BOUNDS = (0.05, 5.0)  # inclusive; the heartbeat stays well inside servicectl's stale age
+CARRY_BYTES = 100_000  # ship policy, not a provider capacity measurement
 
 
 class ShipError(Exception):
@@ -138,6 +139,7 @@ class Ship:
     cascade: Cascade | None = None
     tick: float = TICK  # seconds the service waits after each pass; [ship] tick
     code: str | None = None
+    carry_bytes: int = CARRY_BYTES  # required whole carriage, UTF-8 bytes; [ship] carry_bytes
 
     @property
     def file(self) -> Path:
@@ -334,7 +336,14 @@ def _from_text(text: str, folder: Path) -> Ship:
         cascade=declaration(data.get("cascade")),
         tick=_tick(head.get("tick", TICK)),
         code=code,
+        carry_bytes=_carry_bytes(head.get("carry_bytes", CARRY_BYTES)),
     )
+
+
+def _carry_bytes(value: object) -> int:
+    if type(value) is not int or value <= 0:
+        raise ShipError(f"ship.carry_bytes must be a positive integer count of bytes; got {value!r}")
+    return value
 
 
 def _tick(value: object) -> float:
