@@ -146,7 +146,7 @@ def test_an_abandoned_run_is_recovered_by_its_own_change_only(tmp_path):
     run = marker.parent.parent.name
     process.kill()  # the runner dies without its ending; its pytest session still holds the run lock
     process.wait()
-    state = json.loads((project / '.testruns' / 'runs' / run / 'state.json').read_text())
+    state = json.loads((marker.parent.parent / 'state.json').read_text())  # the run's own working storage
     live = tool('run', '--target', str(worktree), '-n', '0', '--timeout', '5', cwd=project)
     assert f'run {run}: live' in live.stdout
     for pgid, _ in state['groups']:
@@ -185,7 +185,7 @@ def test_recovery_refuses_a_state_that_names_another_checkout_and_loses_nothing(
     run = marker.parent.parent.name
     process.kill()
     process.wait()
-    state_file = project / '.testruns' / 'runs' / run / 'state.json'
+    state_file = marker.parent.parent / 'state.json'  # the run's own working storage, in memory or on disk
     state = json.loads(state_file.read_text())
     for pgid, _ in state['groups']:
         try:
@@ -203,7 +203,7 @@ def test_recovery_refuses_a_state_that_names_another_checkout_and_loses_nothing(
         assert f'run {run}: abandoned · cleanup held' in again.stdout and 'nothing removed' in again.stdout
         assert (decoy / 'uncommitted.txt').read_text() == 'synthetic work in progress'
         assert str(decoy) in git_worktrees(project)
-        assert run in scratch(project) and (project / '.testruns' / 'runs' / run / 'checkout').is_dir()
+        assert run in scratch(project) and (marker.parent.parent / 'checkout').is_dir()
         assert os.path.isdir(own_admin) and json.loads(state_file.read_text()) == bad
     state_file.write_text(json.dumps(state))
     restored = tool('run', '--target', str(worktree), '-n', '0', cwd=project)

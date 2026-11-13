@@ -146,7 +146,7 @@ def timed_out_with_the_fixed_ending(project, done, leapt):
 
 def test_a_time_limit_after_collection_names_what_never_finished_and_leaves_the_fixed_ending(tmp_path):
     project, worktree = make(tmp_path, {'test_wait.py': WAIT_TEST})
-    done, leapt = tool_at_phase('.testruns/runs/*/tmp/started', 'run', '--target', str(worktree), '-n', '0',
+    done, leapt = tool_at_phase('tmp/started', 'run', '--target', str(worktree), '-n', '0',
                                 '--timeout', LIMIT, cwd=project)
     found, report = timed_out_with_the_fixed_ending(project, done, leapt)
     evidence = found['evidence']
@@ -161,7 +161,7 @@ def test_a_time_limit_during_setup_is_a_timeout_that_names_no_test(tmp_path):
     """The shape GitHub's slower runners showed: the limit ends the run before pytest starts, so nothing was
     collected and no test can be named as missing."""
     project, worktree = make(tmp_path, {'test_wait.py': WAIT_TEST})
-    done, leapt = tool_at_phase('.testruns/runs/*/venv', 'run', '--target', str(worktree), '-n', '0',
+    done, leapt = tool_at_phase('venv', 'run', '--target', str(worktree), '-n', '0',
                                 '--timeout', LIMIT, cwd=project)
     found, report = timed_out_with_the_fixed_ending(project, done, leapt)
     evidence = found['evidence']
@@ -178,7 +178,7 @@ def test_a_time_limit_during_collection_is_a_timeout_that_names_no_test(tmp_path
     """pytest has started but not finished collecting: what it would have run is unknown, not empty. pytest still
     reports the part it collected (its collection-finish hook runs in a ``finally``), and that part is kept."""
     project, worktree = make(tmp_path, {'test_wait.py': WAIT_TEST, 'test_slow_collection.py': COLLECTION_WAIT})
-    done, leapt = tool_at_phase('.testruns/runs/*/tmp/collecting', 'run', '--target', str(worktree), '-n', '0',
+    done, leapt = tool_at_phase('tmp/collecting', 'run', '--target', str(worktree), '-n', '0',
                                 '--timeout', LIMIT, cwd=project)
     found, report = timed_out_with_the_fixed_ending(project, done, leapt)
     evidence = found['evidence']

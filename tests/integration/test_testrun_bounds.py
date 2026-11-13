@@ -48,6 +48,8 @@ def run_result(project, done):
     report = records[0].with_name('report.md').read_text()
     assert result['cleanup']['outcome'] == 'complete', result['cleanup']
     assert not list((project / '.testruns/runs').iterdir())
+    working = Path(result['working_storage']['path'])
+    assert not working.exists() and not working.is_symlink(), 'its working storage is gone, in memory as on disk'
     return result, report, records[0].parent
 
 

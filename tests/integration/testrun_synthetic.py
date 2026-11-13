@@ -69,14 +69,23 @@ def tool(*args: str, cwd: Path, env: dict | None = None, timeout: float = 300) -
 
 LEAP_SECONDS = 86400.0
 LEAP = r'''
-import pathlib, sys, time, types
+import json, pathlib, sys, time, types
 sys.dont_write_bytecode = True
 tool, gate, leap = pathlib.Path(sys.argv[1]), sys.argv[2], float(sys.argv[3])
 sys.path.insert(0, str(tool.parent))
 from testrunner import cli, run
 project, real, leapt = pathlib.Path.cwd(), time.monotonic, []
+def opened():
+    """The gate inside any run's recorded working storage, in memory or on disk."""
+    runs = list((project / ".testruns" / "runs").glob("*"))
+    for found in (project / ".testruns" / "results").glob("*/result.json"):
+        try:
+            runs.append(pathlib.Path(json.loads(found.read_text())["working_storage"]["path"]))
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    return any(next(folder.glob(gate), None) is not None for folder in runs)
 def monotonic():
-    if not leapt and next(project.glob(gate), None) is not None:
+    if not leapt and opened():
         leapt.append(real())
         print(f"leapt at {leapt[0]!r}", file=sys.stderr, flush=True)
     return real() + (leap if leapt else 0.0)
@@ -86,9 +95,10 @@ sys.exit(cli.main(sys.argv[4:], [tool, *sorted((tool.parent / "testrunner").glob
 
 
 def tool_at_phase(gate: str, *args: str, cwd: Path, timeout: float = 300) -> tuple[subprocess.CompletedProcess, float]:
-    """The tool, its time-limit clock alone leaping a day ahead when ``gate`` (a glob under the project) first
-    exists, so the limit ends the run in the phase the gate marks, however fast setup is. The real time of the
-    leap is returned, on the system-wide monotonic clock."""
+    """The tool, its time-limit clock alone leaping a day ahead when ``gate`` (a glob inside the run's working
+    storage, such as ``tmp/started``, wherever the run recorded it) first exists, so the limit ends the run in the
+    phase the gate marks, however fast setup is. The real time of the leap is returned, on the system-wide
+    monotonic clock."""
     done = subprocess.run([sys.executable, '-I', '-c', LEAP, str(TOOL), gate, str(LEAP_SECONDS), *args], cwd=cwd,
                           env=dict(os.environ), capture_output=True, text=True, timeout=timeout)
     leapt = re.search(r'^leapt at (\S+)$', done.stderr, re.M)
@@ -111,9 +121,23 @@ def result(project: Path, run: Path | None = None) -> dict:
     return json.loads((run / 'result.json').read_text())
 
 
+def working_paths(project: Path) -> list[Path]:
+    """Every run's recorded working storage: memory or disk, from its own result, which stays on disk."""
+    found = []
+    for run in results(project):
+        try:
+            found.append(Path(json.loads((run / 'result.json').read_text())['working_storage']['path']))
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    return found
+
+
 def scratch(project: Path) -> list[str]:
+    """What is left of every run's working storage, wherever it lives."""
     folder = project / '.testruns' / 'runs'
-    return sorted(os.listdir(folder)) if folder.is_dir() else []
+    left = set(os.listdir(folder)) if folder.is_dir() else set()
+    left.update(path.name for path in working_paths(project) if path.exists() or path.is_symlink())
+    return sorted(left)
 
 
 def admin_entries(project: Path) -> list[str]:
@@ -135,6 +159,9 @@ def started_marker(project: Path) -> Path | None:
     """The marker a synthetic test writes into its run's own TMPDIR."""
     for path in (project / '.testruns' / 'runs').glob('*/tmp/started'):
         return path
+    for folder in working_paths(project):
+        if (folder / 'tmp' / 'started').exists():
+            return folder / 'tmp' / 'started'
     return None
 
 

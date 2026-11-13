@@ -185,3 +185,85 @@ def test_owned_removal_refuses_a_link_in_place_of_the_tree(tmp_path):
     finally:
         os.close(parent)
     assert (outside / 'canary').exists()
+
+
+# -- the memory root: refused unless a plain private folder of this user on tmpfs or ramfs ------------------------
+
+
+@pytest.fixture
+def memory(tmp_path):
+    from tests.testrunner import scratch
+    chosen = scratch.choose()
+    if chosen is None:
+        pytest.skip('no tmpfs or ramfs with 4 GiB free')
+    base, _ = chosen
+    name = f'qd-gate-{os.getpid()}-{tmp_path.name}'
+    yield scratch, base, name
+    leftover = base / name
+    if leftover.is_dir() and not leftover.is_symlink():
+        os.chmod(leftover, 0o700)
+        leftover.rmdir()
+
+
+def test_the_memory_root_is_made_private_under_a_plain_memory_base(memory, tmp_path):
+    scratch, base, name = memory
+    where, fd = scratch.memory_root(tmp_path, base, name=name)
+    try:
+        info = os.fstat(fd)
+        assert where == base / name and info.st_uid == os.getuid() and info.st_mode & 0o777 == 0o700
+    finally:
+        os.close(fd)
+
+
+def test_a_symlinked_memory_base_is_refused(memory, tmp_path):
+    scratch, base, name = memory
+    link = tmp_path / 'linked-base'
+    link.symlink_to(base, target_is_directory=True)
+    with pytest.raises(layout.Refused, match='not an absolute plain path'):
+        scratch.memory_root(tmp_path, link, name=name)
+    with pytest.raises(layout.Refused, match='not an absolute plain path'):
+        scratch.memory_root(tmp_path, Path('relative-base'), name=name)
+    assert not (base / name).exists()
+
+
+def test_a_base_that_is_not_tmpfs_or_ramfs_is_refused(memory, tmp_path):
+    scratch, _, name = memory
+    disk = Path(__file__).resolve().parent  # refused before anything is made, so the repository itself serves
+    fd = os.open(disk, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        in_memory = scratch.filesystem(fd) is not None
+    finally:
+        os.close(fd)
+    if in_memory:
+        pytest.skip('the repository itself is in memory')
+    with pytest.raises(layout.Refused, match='no longer tmpfs or ramfs'):
+        scratch.memory_root(tmp_path, disk, name=name)
+    assert not (disk / name).exists()
+
+
+def test_a_group_writable_memory_root_is_refused(memory, tmp_path):
+    scratch, base, name = memory
+    (base / name).mkdir(mode=0o700)
+    os.chmod(base / name, 0o770)
+    with pytest.raises(layout.Refused, match='writable by others'):
+        scratch.memory_root(tmp_path, base, name=name)
+
+
+def test_a_memory_root_of_another_user_is_refused(memory, tmp_path, monkeypatch):
+    scratch, base, name = memory
+    (base / name).mkdir(mode=0o700)
+    monkeypatch.setattr(layout.os, 'getuid', lambda: os.geteuid() + 4242)  # as if another user made it
+    with pytest.raises(layout.Refused, match='not this user'):
+        scratch.memory_root(tmp_path, base, name=name)
+
+
+def test_a_link_in_place_of_the_memory_root_is_refused(memory, tmp_path):
+    scratch, base, name = memory
+    real = tmp_path / 'elsewhere'
+    real.mkdir(mode=0o700)
+    (base / name).symlink_to(real, target_is_directory=True)
+    try:
+        with pytest.raises(layout.Refused, match='link or not a directory'):
+            scratch.memory_root(tmp_path, base, name=name)
+    finally:
+        (base / name).unlink()
