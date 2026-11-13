@@ -25,10 +25,26 @@ NOTICE_VERSIONS = {  # a task notification, by its carrier
     ('attachment', 'queued_command'): frozenset({VERSION}),  # no 2.1.322 attachment carrier measured
 }
 TERMINAL = frozenset({'completed', 'failed', 'killed'})
+# Claude Code's own note on a killed task when it stopped the command itself, under memory pressure while the
+# session was idle: measured byte for byte the same on every instance, it says the command ended, so the kill ends
+# the task. Only on the version and carriers it was measured on; any other note, version or carrier stays unknown.
+REAPED = (
+    'This is not a failure of the command. Claude Code stopped it because the system was critically low on memory'
+    ' while the session was idle, which says nothing about the command or its own memory use, so there is nothing'
+    ' in it to debug. Do not start it again on your own, even if the work seems to need it: memory may still be'
+    ' short. Report what was stopped and why, and start it again only when asked. The user can turn this behavior'
+    ' off by starting Claude Code with CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP=1 in its environment; setting it'
+    ' from a shell command has no effect.'
+)
+REAPED_VERSIONS = {  # the killed notice with REAPED, by its carrier
+    ('queue-operation', 'enqueue'): frozenset({VERSION}),
+    ('user', 'task-notification'): frozenset({VERSION}),
+}
 
 
 def notification(text):
-    """Read only the tag envelope and header, excluding the free-text summary."""
+    """Read only the tag envelope and header, excluding the free-text summary. The note comes back as its text
+    when it follows the summary, as measured, as '' when it comes before it, and None when there is none."""
     if not isinstance(text, str):
         return None
     match = re.fullmatch(r'\s*<task-notification>(.*)</task-notification>\s*', text, re.S)
@@ -46,14 +62,16 @@ def notification(text):
             return None
         fields[field[1]] = field[2]
         header = header[field.end():]
+    if 'note' in fields:
+        fields['note'] = ''  # a note before the summary is present, and its text is never read
     if tail.strip():
-        note = re.fullmatch(r'\s*<note>.*</note>\s*', tail, re.S)
+        note = re.fullmatch(r'\s*<note>(.*)</note>\s*', tail, re.S)
         if note is None or 'note' in fields:
             return None
-        fields['note'] = True
+        fields['note'] = note[1]
     if not all(isinstance(fields.get(key), str) and fields[key] for key in ('task-id', 'tool-use-id', 'status')):
         return None
-    return fields['tool-use-id'], fields['task-id'], fields['status'], 'note' in fields
+    return fields['tool-use-id'], fields['task-id'], fields['status'], fields.get('note')
 
 
 @dataclass
@@ -192,10 +210,12 @@ class BackgroundBash:
         if (task.task != identity or version not in NOTICE_VERSIONS.get(carrier, ())
                 or at is None or at < task.started):
             task.phase, task.invalid = 'unknown', True
-        elif status in TERMINAL and not note:
+        elif status in TERMINAL and (note is None or (
+                status == 'killed' and note == REAPED and version in REAPED_VERSIONS.get(carrier, ()))):
             self.end(task, status, at)
         else:
-            # In particular, resume's stopped+note never says the old command ended.
+            # In particular, resume's stopped+note never says the old command ended: it found no completion record
+            # and says the command may have been running when the previous process exited.
             task.phase = 'unknown'
             task.latest = max(at, task.latest)
 
