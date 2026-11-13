@@ -70,7 +70,7 @@ def check(ship: Ship, name: str, tmux: Tmux, *, model: str | None = None) -> lis
         reason = 'interrupted' if isinstance(error, (KeyboardInterrupt, SystemExit)) else 'unclassified'
         check_outcome.publish(ship.runtime, name, check_outcome.event('unknown', version, reason))
         raise
-    failures = [c for c in checks if not c.passed]
+    failures = [c for c in checks if c.passed is False]  # a step not applicable is no failure
     question = next((c.reason for c in failures if isinstance(c, ProbeCheck)
                      and c.reason in check_outcome.QUESTIONS.values()), None)
     reason = question or (getattr(failures[0], 'reason', None) if failures else 'passed')
@@ -107,10 +107,10 @@ def _check(ship: Ship, name: str, tmux: Tmux, harness) -> tuple[list[Check], str
         if selected is not None:
             launched = seat.launched()
             ran = launched is not None and str(selected) in launched.argv
-            checks.append(Check("the seat ran the program doctor shows", ran,
-                                f"{selected} in launch.json" if ran else f"{selected} not in the seat's launch"))
+            checks.append(ProbeCheck("the seat ran the program doctor shows", ran,
+                                     f"{selected} in launch.json" if ran else f"{selected} not in the seat's launch", 'program'))
     if not all(c.passed is True for c in checks):
-        return checks
+        return checks, version
     inapplicable = harness.waking_inapplicability
     if inapplicable is not None:
         checks.append(Check('human-session waking line', None, f'not applicable: {inapplicable}'))
@@ -123,7 +123,7 @@ def _check(ship: Ship, name: str, tmux: Tmux, harness) -> tuple[list[Check], str
         try:
             with temporary_seat(ship, tmux, human_spec, human_orders, "qd check human wake", human=True, check_inbox=True) as human_seat:
                 try:
-                    checks += probe_wake(human_seat, human_orders)
+                    checks += [ProbeCheck(c.name, c.passed, c.detail, 'wake') for c in probe_wake(human_seat, human_orders)]
                 finally:
                     wake = human_seat.folder / 'human-wake.json'
                     if wake.exists():
@@ -131,7 +131,7 @@ def _check(ship: Ship, name: str, tmux: Tmux, harness) -> tuple[list[Check], str
                         evidence.parent.mkdir(parents=True, exist_ok=True)
                         durable.replace_file(evidence, wake.read_text())
         except (OSError, ShipError, TmuxError, ValueError) as error:
-            checks.append(Check('human-session waking line', False, f'wake proof obstructed: {error}'))
+            checks.append(ProbeCheck('human-session waking line', False, f'wake proof obstructed: {error}', 'wake'))
     if all(c.passed is not False for c in checks):
         proven = ship.runtime / "proven"
         proven.mkdir(parents=True, exist_ok=True)
@@ -175,8 +175,8 @@ def probe(ship: Ship, seat: Seat, orders: list[post.Message] | None = None, *, r
     door = Door(seat)
     opened = wait_for(lambda: ready_for_probe(seat, door), PATIENCE if seat.harness.opening_prompt_turn else PATIENCE / 3)
     for done in getattr(seat.launched(), "answered", None) or []:
-        checks.append(Check(f"answered for the account holder: {done.get('question')}", done.get("outcome") == "cleared",
-                            f"{done.get('choice')} pressed at {done.get('at')} · {done.get('outcome')}"))
+        checks.append(ProbeCheck(f"answered for the account holder: {done.get('question')}", done.get("outcome") == "cleared",
+                                 f"{done.get('choice')} pressed at {done.get('at')} · {done.get('outcome')}", 'answer'))
     checks.append(ProbeCheck("door open at start", bool(opened), str(door.reading()) +
                              (" · opening brief turn ended in the record" if opened and seat.harness.opening_prompt_turn else ""), 'door'))
     if requested_model is not None:
