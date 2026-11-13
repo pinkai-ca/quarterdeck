@@ -607,6 +607,8 @@ After credential reseeding, the service may request one resume through its exist
 
 If a subsequent recorded authentication failure is later than the consumed attempt, status and the systems alarm say `sign-in failed in the program; relaunch did not cure it`. The initial failure still visible while a resume is starting is not a second failed turn. Existing systems/desk recipient routing and once-per-reason alarms carry this fixed operational detail; no native error body is posted.
 
+Status facts add `sign_in_failures`, retaining each affected seat's fixed operational reading even when the status line compresses its other categories. This prevents a generic overflow count from hiding which program needs its sign-in repaired.
+
 Two readings, taken together, because they answer two different questions.
 
 **Activity**, from the record, answers "what is it doing":

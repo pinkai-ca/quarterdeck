@@ -25,5 +25,7 @@ def status_line(facts, alerts: list[str]) -> str:
     parts += getattr(facts, 'manual_fresh', ())
     # A held move must keep its seat and missing dimension visible even on overflow.
     parts += getattr(facts, 'move_holds', ())
+    # A sign-in failure must still name its seat and failed cure when categories overflow.
+    parts += getattr(facts, 'sign_in_failures', ())
     parts.append("details: qd status")
     return SEPARATOR.join(parts)

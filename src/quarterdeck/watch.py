@@ -374,6 +374,7 @@ class Facts:
     structure_waiting: list[str] = field(default_factory=list)
     manual_fresh: list[str] = field(default_factory=list)  # no systems recipient: retain names on overflow
     move_holds: list[str] = field(default_factory=list)
+    sign_in_failures: list[str] = field(default_factory=list)  # retain seat and fixed failure on overflow
 
     def line(self) -> str:  # law: nothing-waits-silently
         parts = ["SERVICE DOWN" if self.service == "down" else f"service {self.service}"]
@@ -390,6 +391,7 @@ class Facts:
                   if not any(fallback.startswith(detail + ';') for fallback in self.manual_fresh)]
         parts += self.manual_fresh
         parts += self.turn_errors
+        parts += self.sign_in_failures
         parts += self.group_held
         parts += self.cascade_held
         parts += self.structure_waiting
@@ -538,6 +540,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
     records = attempts.all()
     latest = attempts.latest(attempts=records)
     waiting, needs_human, unarmed, pending_lines, routes, unknown, queue_unknown, compactions, turn_errors = [], [], [], [], [], [], [], [], []
+    sign_in_failures = []
     selected = seats(ship, tmux, False)
     held, limit_unknown, move_reasons = limit_state(ship, selected)
     pending_lines += limit_unknown
@@ -551,7 +554,10 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         launched = seat.launched()
         from .turn_failure import obstruction as failure_obstruction
         from .auth_failure import status as authentication_status
-        if reason := authentication_status(seat) or failure_obstruction(seat, store):
+        if reason := authentication_status(seat):
+            sign_in_failures.append(f"{seat.name}: {reason}")  # law: nothing-waits-silently
+            needs_human.append(seat.name)
+        elif reason := failure_obstruction(seat, store):
             turn_errors.append(f"{seat.name}: {reason}")  # law: nothing-waits-silently
             needs_human.append(seat.name)
         from .compaction import status as compaction_status
@@ -608,6 +614,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         held=held,
         move_holds=move_reasons,
         turn_errors=turn_errors,
+        sign_in_failures=sign_in_failures,
         group_held=group_post.holds(ship.runtime),
         cascade_held=cascade_runtime.holds(ship.runtime),
         structure_waiting=structure_outcome.waits(ship, selected),
