@@ -1170,3 +1170,11 @@ def test_the_probe_keeps_its_evidence_when_it_raises_and_an_evidence_failure_fai
     checks = checkmod.probe_wake(desk.seat, [])
     assert [(c.name, c.passed) for c in checks] == [('synthetic step', True),
                                                    ('human-session waking line: runtime evidence retained', False)]
+
+
+@pytest.mark.parametrize('payload', INSET_PAYLOADS)
+def test_spaces_reaching_past_claudes_two_column_inset_are_not_padding(payload):
+    """A row painted one column wider than the pane cannot be this layout: only the 2-column inset is padding."""
+    from quarterdeck.harness.claude import ClaudeHarness
+    door = claude_door(claude_rows(payload, 81), width=80)
+    assert not door.matches(ClaudeHarness().box(payload + '\n'), door.screen())
