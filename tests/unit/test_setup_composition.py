@@ -249,3 +249,34 @@ Runs on
     # Rendering leaves the machine-readable paths intact.
     assert data["project_path"] == str(tmp_path / "code/my-app")
     assert str(tmp_path / ".claude") in data["runs_on"]["Claude Code"]
+
+
+def test_check_and_desk_access_use_the_target_ships_server(tmp_path, monkeypatch):
+    import shlex
+    from quarterdeck import check, cli
+    from quarterdeck.tmux import Tmux
+
+    current = proposal(tmp_path, "codex").ship
+    server, observations = object(), []
+    rows = [Check("proof", True, "synthetic check")]
+
+    def for_ship(cls, target):
+        observations.append(target)
+        return server
+
+    def prove(target, program, tmux):
+        observations.append((target, program, tmux))
+        return rows
+
+    monkeypatch.setattr(Tmux, "for_ship", classmethod(for_ship))
+    monkeypatch.setattr(check, "check", prove)
+    operations = setup.Operations()
+    assert operations.check(current, "codex") is rows
+    assert observations == [current, (current, "codex", server)]
+    # An explicit target also reaches the desk when another ship is the default.
+    words = shlex.split(operations.access(current))
+    assert words[0] == "qd"
+    args = cli.build_parser().parse_args(words[1:])
+    assert args.run is cli.cmd_attach
+    assert args.ship == str(current.folder)
+    assert args.session == current.seat("desk").session

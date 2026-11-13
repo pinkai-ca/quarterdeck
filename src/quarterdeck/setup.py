@@ -134,7 +134,7 @@ class Operations:
     def check(self, ship: Ship, name: str) -> list[Check]:
         from . import check
         from .tmux import Tmux
-        return check.check(ship, name, Tmux.default())
+        return check.check(ship, name, Tmux.for_ship(ship))
 
     def change_seat(self, ship: Ship, name: str, changes: list[str]) -> list[str]:
         from .cli import set_seat
@@ -149,8 +149,7 @@ class Operations:
         return cmd_status(argparse.Namespace(ship=str(ship.folder), line=False))
 
     def access(self, ship: Ship) -> str:
-        from .tmux import Tmux
-        return Tmux.default().attach_command(ship.session_of(ship.seat("desk")).title)
+        return shlex.join(["qd", "--ship", str(ship.folder), "attach", ship.seat("desk").session])
 
 
 def template() -> tuple[str, str, dict]:

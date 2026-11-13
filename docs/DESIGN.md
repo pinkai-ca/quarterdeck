@@ -1178,7 +1178,9 @@ with the explicit declaration-edit remedy. Failed first commits require the
 person to resolve Git identity and commit before rerunning. After start consent, the existing `cmd_up` path prepares the installed copy and
 delegates launch to its proven executable before starting any seat. Successful starts
 show status, desk access and a first-order example; only actual readiness/proofs
-can establish a running crew.
+can establish a running crew. Checks select the ship's own server with
+`Tmux.for_ship(ship)`; desk access uses `qd --ship <folder> attach <session>`,
+so an existing ship's desk remains reachable even when another ship is default.
 
 Absent titles derive as Office for the person's session and `<ship> <Session>`
 for others; explicit titles remain authoritative. **Compatibility:** syncing a
