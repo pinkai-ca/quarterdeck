@@ -49,3 +49,11 @@ def test_a_line_not_in_the_pane_format_is_a_named_error_that_shows_it(line):
     with pytest.raises(tmuxmod.TmuxFormatError) as raised:
         tmuxmod._parse(line)
     assert repr(line) in str(raised.value) and isinstance(raised.value, tmuxmod.TmuxError)
+
+
+def test_a_gone_pane_still_reads_as_gone_and_a_mangled_line_never_does():
+    assert tmuxmod._identity("\t" * 8, "%1") is None, "tmux prints every field empty for a pane gone"
+    assert tmuxmod._identity("", "%1") is None
+    with pytest.raises(tmuxmod.TmuxFormatError):
+        tmuxmod._identity("%1_Wrap_display_2676778_80_24_0_0_", "%1")
+    assert tmuxmod._identity("%2\ts\tw\t9\t80\t24\t0\t0\t", "%1") is None, "another pane's line is not this pane"

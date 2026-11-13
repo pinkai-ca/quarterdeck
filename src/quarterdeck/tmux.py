@@ -108,6 +108,18 @@ def _parse(line: str) -> Pane:
         raise TmuxFormatError(f"tmux printed a pane line not in qd's pane format: {line!r}") from None
 
 
+def _identity(line: str, pane_id: str) -> Pane | None:
+    """One pane's identity line: tmux prints every field empty for a pane gone, which reads as gone.
+
+    A non-empty line with no tab, or one whose fields do not parse, is not qd's format: it raises with the
+    line, and never reads as a pane gone, which would bring a live seat down in qd's eyes.
+    """
+    if line.partition("\t")[0] == "" and set(line) <= {"\t"}:
+        return None
+    pane = _parse(line)
+    return pane if pane.id == pane_id else None
+
+
 def _transport(args):
     """Only known endpoint-neutral transport queues share a namespace stability lock."""
     commands = {'list-sessions', 'list-panes', 'list-windows', 'list-clients',
@@ -599,8 +611,7 @@ class Tmux:
             raise
         except TmuxError:
             return next((p for p in self.panes() if p.id == pane_id), None)
-        pane = _parse(identity) if identity else None  # a line not in the format raises, never reads as gone
-        return pane if pane is not None and pane.id == pane_id else None
+        return _identity(identity, pane_id)
 
     def started(self) -> int | None:
         """When the running server began, in whole seconds since the epoch, as tmux reports it; None if unreadable.
@@ -630,8 +641,8 @@ class Tmux:
                 return None
             raise
         identity, separator, text = output.partition('\n')
-        pane = _parse(identity) if separator and identity else None  # a line not in the format raises
-        return (pane, text) if pane is not None and pane.id == pane_id else None
+        pane = _identity(identity, pane_id) if separator else None
+        return (pane, text) if pane is not None else None
 
     def clients_attached(self, sessions: list[str]) -> bool | None:
         """Only a successful complete client listing can establish no presentation demand."""
