@@ -151,7 +151,7 @@ def prepare_program_path(ship: Ship, *, bin_dir: Path | None = None, synthetic: 
 
 
 def launch_words(path: str, argv: list[str], *, socket: str | None, tmux_tmpdir: Path,
-                 markers: tuple[str, ...] | list[str] = ()) -> list[str]:
+                 markers: tuple[str, ...] | list[str] = (), qd_command: Path | None = None) -> list[str]:
     """The words launch.sh hands to exec: the seat's program, cut off from the tmux server it runs in.
 
     tmux gives every pane TMUX and TMUX_PANE, and a bare tmux command takes its server from TMUX: a
@@ -162,7 +162,12 @@ def launch_words(path: str, argv: list[str], *, socket: str | None, tmux_tmpdir:
     """
     reach = ["QD_TMUX_SOCKET=" + socket] if socket else ["-u", "QD_TMUX_SOCKET"]
     unset = [word for name in markers for word in ("-u", name)]
-    return ["env", "-u", "TMUX", "-u", "TMUX_PANE", *unset, *reach, f"TMUX_TMPDIR={tmux_tmpdir}", f"PATH={path}", *argv]
+    # Add this after launch.sh's sh: a shell may discard imported function variables. Child Bash
+    # shells import it before reading their rc files, so a later PATH prepend cannot shadow qd.
+    function = ([f'BASH_FUNC_qd%%=() {{ {shlex.quote(str(qd_command))} "$@"; }}']
+                if qd_command is not None else [])
+    return ["env", "-u", "TMUX", "-u", "TMUX_PANE", *unset, *reach, f"TMUX_TMPDIR={tmux_tmpdir}", f"PATH={path}",
+            *function, *argv]
 
 
 def launch_script(seat: str, words: list[str]) -> str:
@@ -850,7 +855,8 @@ class Seat:
         markers = [name for name in harnesses.inherited_markers() if name not in env]
         if getattr(self, "_launch_tmpdir", None) is None:
             self._launch_tmpdir = self._fresh_tmux_tmpdir()  # set afresh by every up; made here only for another path
-        return launch_words(path, argv, socket=self._socket_for_seat(), tmux_tmpdir=self._launch_tmpdir, markers=markers)
+        return launch_words(path, argv, socket=self._socket_for_seat(), tmux_tmpdir=self._launch_tmpdir, markers=markers,
+                            qd_command=self.ship.runtime / 'bin/qd')
 
     def _socket_for_seat(self) -> str | None:
         """What QD_TMUX_SOCKET tells qd inside the seat: the server it runs on, by its path. A seat launched on
