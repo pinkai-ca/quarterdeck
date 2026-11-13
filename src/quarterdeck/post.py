@@ -279,8 +279,6 @@ def typed(messages: list[Message], *, second: Collection[str] = ()) -> str:
     """
     parts = []
     for message in messages:
-        if message.id in second:
-            parts.append(SECOND.format(id=message.id) + "\n")
         header = f"qd > {message.kind} from {message.sender} · {message.short}"
         if message.re:
             header += f" · re {short_of(message.re)}"
@@ -291,7 +289,8 @@ def typed(messages: list[Message], *, second: Collection[str] = ()) -> str:
         footer = f"qd > inbox: post/inbox/{message.to}.md"
         if message.obligation:
             footer = f"qd > reply: qd post {REPLY_VERB[message.kind]} --re {message.short} · {footer[5:]}"
-        parts.append(f"{header}\n{message.body.rstrip()}\n{footer}")
+        again = SECOND.format(id=message.id) + "\n" if message.id in second else ""
+        parts.append(f"{again}{header}\n{message.body.rstrip()}\n{footer}")
     return "\n".join(parts) + "\n"
 
 
