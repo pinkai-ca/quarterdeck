@@ -212,3 +212,21 @@ def test_qd_thread_parser_prints_full_graph_and_json_without_receipting(tmp_path
     data = output.value(reading.data)
     assert data['root'] == order.id and data['messages'][1]['body'] == reply.body
     assert post.Attempts(seat.ship.runtime).all() == []
+
+
+def test_synthetic_first_message_demo_for_review(tmp_path, monkeypatch):
+    """The actual launch renderer, with invented posts, for the desk's display."""
+    seat, opened = prepared(tmp_path, monkeypatch, policy=100000)
+    task = publish(seat, 'order-sample', 'The sample task stays a file.', due='tomorrow')
+    handoff = publish(seat, 'order-handoff', 'Synthetic handoff: the sample is ready. Continue its review.', sender='builder')
+    waiting = publish(seat, 'question-review', 'The outgoing question stays a file.',
+                      sender='builder', to='reviewer', kind='question')
+    seat._up(resume=False)
+    opening = first(opened)
+    assert handoff.body in opening and opening.index(handoff.body) < opening.index('open threads:')
+    assert task.body not in opening and waiting.body not in opening
+    rows = {row['id']: row for row in entries(opening)}
+    assert rows[task.id]['due'] == 'tomorrow'
+    assert rows[waiting.id]['awaiting'] == [f'{waiting.id}: sent, awaiting reviewer']
+    assert 'carry_bytes=100000 (policy bound)' in opening
+    (tmp_path / 'first-message-demo.txt').write_text(opening)
