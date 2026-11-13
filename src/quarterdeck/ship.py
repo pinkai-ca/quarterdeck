@@ -268,7 +268,7 @@ def mark_default(name: str, project: Path | None = None) -> Path:
     from . import durable
     ships = ships_folder(project)
     if not valid_name(name):
-        raise ShipError(f"{name!r} is not a ship folder name under {ships}; name the folder, such as qd default enterprise")
+        raise ShipError(f"{name!r} is not a ship folder name under {ships}; name the folder, such as qd default mine")
     folder = ships / name
     if not (folder / "ship.toml").is_file():
         raise ShipError(f"{folder} is missing or holds no ship.toml; qd default marks only a ship that exists")
