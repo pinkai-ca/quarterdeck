@@ -1,11 +1,12 @@
 """Ordinary synthetic box geometry and reason metadata; no native renderer measurement."""
 from copy import deepcopy
+import json
 from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import pending, post, watch
+from quarterdeck import pending, post, watch, pane_obstruction as pane_meta
 from quarterdeck.door import Door, Reading
 from quarterdeck.harness.types import Box
 from quarterdeck.harness.codex import CodexHarness
@@ -88,19 +89,21 @@ def test_known_fold_contract_still_fits_one_row_at_either_height(adapter, marker
 
 
 @pytest.fixture
-def diagnostic(tmp_path, monkeypatch):
+def diagnostic(tmp_path):
     seat, pane = seat_for(CodexHarness())
+    seat.name = 'invented-seat'
     seat.ship = SimpleNamespace(runtime=tmp_path)
     seat.launched = lambda: SimpleNamespace(pane=pane.id, pid=pane.pid, at='invented-launch')
     data = dict(phase='pasting', payload=TEXT, paste_geometry=[100, 16], attempts=['synthetic-attempt'],
-                identity=dict(pane=pane.id, pid=pane.pid, launch='invented-launch', harness='codex'))
-    proof = SimpleNamespace(data=data, same_launch=lambda seat: True)
-    attempt = SimpleNamespace(message='synthetic-message', path=tmp_path / 'synthetic-attempt')
-    monkeypatch.setattr(pending, 'journals', lambda seat: ([proof], []))
-    monkeypatch.setattr(post.Attempts, 'all', lambda self: [attempt])
+                identity=dict(pane=pane.id, pid=pane.pid, launch='invented-launch', harness='codex'),
+                since='2001-01-01T00:00:01+00:00')
+    path = tmp_path / 'post' / 'pending' / seat.name / 'synthetic-journal.json'
+    proof = pending.Proof(path, {})
+    proof.save(**data)
+    pane_meta.publish(proof)
     door = Door(seat)
     door.captured_pane = pane
-    return door, pane, proof, attempt
+    return door, pane, proof, path
 
 
 def test_displayed_geometry_is_read_only_and_does_not_change_the_outcome(diagnostic):
@@ -116,27 +119,29 @@ def test_displayed_geometry_is_read_only_and_does_not_change_the_outcome(diagnos
 @pytest.mark.parametrize('phase', ['prepared', 'submitting', 'submitted', 'queued', 'delivered', 'cancelled', 'uncertain'])
 def test_other_outcomes_acquire_no_failed_unfolded_paste_label(diagnostic, phase):
     door, _, proof, _ = diagnostic
-    proof.data['phase'] = phase
+    proof.save(phase=phase)
     assert door.pane_obstruction() is None
     assert proof.data['phase'] == phase
 
 
-def test_diagnostic_stays_with_its_launch_width_and_latest_attempt(diagnostic):
-    door, pane, proof, attempt = diagnostic
+def test_diagnostic_stays_with_its_launch_width_and_later_confirmation(diagnostic):
+    door, pane, proof, path = diagnostic
     pane.width = 101
     assert door.pane_obstruction() is None
     pane.width = 100
-    proof.data['identity']['launch'] = 'earlier-launch'
+    original = dict(proof.data['identity'])
+    proof.save(identity={**original, 'launch': 'earlier-launch'})
     assert door.pane_obstruction() is None
-    proof.data['identity']['launch'] = 'invented-launch'
-    attempt.path = attempt.path.with_name('later-attempt')
+    proof.save(identity=original)
+    later = pending.Proof(path.with_name('later-journal.json'), {})
+    later.save(**{**proof.data, 'phase': 'delivered', 'since': '2001-01-01T00:00:02+00:00'})
     assert door.pane_obstruction() is None
 
 
 @pytest.mark.parametrize('geometry', [None, [], [True, 16], [100, -1], '100x16'])
 def test_unknown_geometry_keeps_the_existing_generic_reading(diagnostic, geometry):
     door, _, proof, _ = diagnostic
-    proof.data['paste_geometry'] = geometry
+    proof.save(paste_geometry=geometry)
     assert door.pane_obstruction() is None
 
 
@@ -197,8 +202,8 @@ def test_delivery_path_adds_only_reason_metadata_to_the_synthetic_failed_paste(p
     seat.read_pane = lambda: (pane, frame(program, TEXT if terminal.pasted else '', height))
 
     class Journal:
-        path = tmp_path / 'synthetic-journal'
-        data = dict(phase='prepared', payload=TEXT,
+        path = tmp_path / 'synthetic-journal.json'
+        data = dict(phase='prepared', payload=TEXT, since='2001-01-01T00:00:01+00:00',
                     identity=dict(pane=pane.id, pid=pane.pid, launch='invented-launch', harness=adapter.name))
 
         def same_launch(self, seat):
@@ -206,6 +211,7 @@ def test_delivery_path_adds_only_reason_metadata_to_the_synthetic_failed_paste(p
 
         def save(self, **fields):
             self.data.update(fields)
+            self.path.write_text(json.dumps(self.data))
 
     proof = Journal()
     door = Door(seat)
@@ -216,6 +222,7 @@ def test_delivery_path_adds_only_reason_metadata_to_the_synthetic_failed_paste(p
         assert result.result == 'blind' and result.detail.startswith(REASON)
         assert proof.data['phase'] == 'pasting'
         assert proof.data['paste_geometry'] == [100, 16]
+        assert pane_meta.marker_path(proof.path).is_file()
         assert terminal.submits == []
     else:
         assert result.result == 'typed' and proof.data['phase'] == 'submitted'
@@ -224,8 +231,8 @@ def test_delivery_path_adds_only_reason_metadata_to_the_synthetic_failed_paste(p
 
 
 def test_no_short_pane_journal_needs_no_liveness_or_attempt_query(diagnostic, monkeypatch):
-    door, _, _, _ = diagnostic
-    monkeypatch.setattr(pending, 'journals', lambda seat: ([], []))
+    door, _, proof, _ = diagnostic
+    pane_meta.marker_path(proof.path).unlink()
     def unnecessary(*args):
         raise AssertionError('the diagnostic must not query a pane, launch, or attempts without its journal')
     door.seat.pane = unnecessary

@@ -1067,17 +1067,20 @@ bound makes no assumption about UI chrome or a program's folding threshold. All
 whole/folded comparators and clear, submit, receipt, retry and human-session rules
 are unchanged. Accepted folded placeholders never acquire the diagnostic.
 
-The existing failed-paste journal can retain the width/height where the mismatch
-was observed. The read-only diagnostic uses its original payload and launch, only
-while that attempt remains latest and in pasting/withheld phase. With no such
-journal the diagnostic returns before any pane or launch lookup. With one, saved
-launch metadata and the reading's existing owned frame bind the diagnostic without
-another pane liveness query. A changed frame geometry removes the label. Without
-an already captured frame, the journal's own geometry is explicitly labelled as
-`last failed paste`, never as a new observation. None of this settles uncertain
-evidence or authorizes resending. Status retains the seat and reason even when
-other alerts overflow. An open door can display a previous failed delivery's
-geometry without changing its admission decision. Human seats acquire no such
+The existing failed-paste journal retains its observed geometry. Its owner then
+atomically publishes one at-most-4096-byte `.pane-obstruction` marker beside that
+journal, naming only that journal, its identity, geometry and paste time. A reading
+opens that marker and, only if valid, the one journal it names: it enumerates no
+journal or attempt history. Journal phase, identity, payload and geometry remain
+the evidence; the marker grants no admission or receipt. Saved launch metadata and
+the reading's already owned frame bind the display without a pane query. Without
+such a frame, saved geometry is explicitly labelled `last failed paste`. A changed
+frame removes the current-geometry label without settling uncertainty or allowing
+a resend. The writer removes the marker when its journal leaves pasting/withheld,
+or a later paste is confirmed in the record (delivered or accepted queued input,
+not a screen-only queue hint). Invalid markers read as no diagnostic and reads
+never repair them. Status retains the seat and reason on overflow. An open door
+can display a previous failed delivery's geometry without changing its admission decision. Human seats acquire no such
 annotation. **Native renderer behavior at short heights is unmeasured**; acceptance
 here uses invented 100x16 and 100x50 frames and existing measured fold contracts,
 not a live native renderer or provider. No independently established clipped-boundary
@@ -1104,6 +1107,7 @@ quarterdeck/                       the project folder: the framework repository
     seat.py        seat identity, lifecycle and controls: up, down, restart, fresh, stop, set
     door.py        the one typing path: clear, type, check, submit, confirm; three speeds; the wall it reads
     pending.py delivery_record.py   durable paste evidence and historical receipts
+    pane_obstruction.py   one bounded short-pane reason marker and its named journal, with writer-owned expiry
     receipt_refresh.py   service-owned framework-revision receipt-refresh progress
     human_wake.py  one fixed human-seat wake per watch episode, using Door and the existing Proof/receipt
     recovery.py    one reserved native continuation and unresolved-mode lifecycle hold, using the existing Door/Proof

@@ -19,7 +19,7 @@ import stat
 from pathlib import Path
 from typing import Any, Iterator, Sequence, TYPE_CHECKING
 
-from . import durable, post
+from . import durable, post, pane_obstruction
 from . import input_receipt
 from .harness import closed_record
 from .harness.json_record import RecordError
@@ -61,6 +61,7 @@ class Proof:
         self.path, self.data = path, data
 
     def save(self, **fields: Any) -> None:
+        previous_phase = self.data.get("phase")
         merged = {**self.data, **fields}
         text = json.dumps(merged, indent=2) + "\n"
         encoding = locale.getpreferredencoding(False)
@@ -77,6 +78,12 @@ class Proof:
             error.add_note(f'pending journal: {self.path}')
             raise  # preserve the original error; the service pass records it once
         self.data = merged
+        if (previous_phase != merged.get('phase')
+                or merged.get('phase') == 'queued' and fields.get('screen_queue') is False):
+            try:
+                pane_obstruction.transitioned(self.path, merged)
+            except OSError:
+                pass  # optional reason cleanup can neither block nor settle this journal
 
     @classmethod
     def begin(cls, seat: Seat, attempt: post.Attempt, text: str, *, before_paste: bool = False) -> Proof:

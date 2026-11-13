@@ -14,7 +14,7 @@ import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 
-from . import ledger as ledgermod, pending, input_receipt, quota
+from . import ledger as ledgermod, pending, input_receipt, quota, pane_obstruction
 from .harness.base import Screen
 from .harness.types import _cells
 from .quota import reset_text, stamp
@@ -233,33 +233,20 @@ class Door:
         if self.seat.session.human:
             return None
         try:
-            proofs, errors = pending.journals(self.seat)
-            if errors:
+            saved = pane_obstruction.reading(self.seat)
+            if saved is None:
                 return None
-            candidates = []
-            for proof in proofs:
-                geometry = proof.data.get('paste_geometry')
-                if (proof.data['phase'] in ('pasting', 'withheld')
-                        and isinstance(geometry, list) and len(geometry) == 2
-                        and all(type(value) is int and value > 0 for value in geometry)):
-                    candidates.append((proof, geometry))
-            if not candidates:
-                return None  # the ordinary path needs no launch, attempt, or pane lookup
+            value, journal = saved
             identity = self._diagnostic_identity()
-            if identity is None:
+            if identity is None or value['identity'] != identity:
                 return None
-            pane = self.captured_pane  # the fresh owned frame the reading already holds
-            if pane is not None and (pane.dead or pane.id != identity['pane'] or pane.pid != identity['pid']):
+            pane = self.captured_pane
+            geometry = value['geometry']
+            if pane is not None and (pane.dead or pane.id != identity['pane'] or pane.pid != identity['pid']
+                                     or geometry != [pane.width, pane.height]):
                 return None
-            from . import post
-            attempts = post.Attempts(self.seat.ship.runtime).all()
-            current = set({attempt.message: attempt.path.name for attempt in attempts}.values())
-            for proof, geometry in candidates:
-                if (proof.data['identity'] != identity or not current.intersection(proof.data['attempts'])
-                        or pane is not None and geometry != [pane.width, pane.height]):
-                    continue
-                if reason := self._short_pane_geometry(proof.data['payload'], *geometry):
-                    return reason if pane is not None else f"last failed paste: {reason}"
+            if reason := self._short_pane_geometry(journal['payload'], *geometry):
+                return reason if pane is not None else f"last failed paste: {reason}"
         except (OSError, ValueError, KeyError, TypeError, AttributeError, TmuxError):
             pass  # optional diagnostic unknown; the ordinary admission reading is unchanged
         return None
@@ -473,7 +460,8 @@ class Door:
                     and proof.data.get('identity') == self._diagnostic_identity()):
                 try:
                     proof.save(paste_geometry=[current.width, current.height])
-                except OSError:
+                    pane_obstruction.publish(proof)
+                except (OSError, ValueError, KeyError, TypeError):
                     pass  # optional reason metadata; never alter paste/clear/submit decisions
             if verify is None or verify():
                 if reason:=paste_refusal.clear(self,text,owned,shown,BOX_SECONDS):
