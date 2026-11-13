@@ -130,3 +130,9 @@ def test_line_and_json_status_include_same_copy_warning(vessel, monkeypatch, cap
     output.emit(result, json_output=True)
     assert json.loads(capsys.readouterr().out)['copy_warning'] == warning
     assert snapshot(vessel.folder) == before
+
+
+def test_new_ship_explains_that_up_makes_its_first_copy(vessel):
+    assert copy_state.select(vessel.folder).warning == 'no copy yet; qd up makes one'
+    state(vessel)
+    assert 'no copy yet' not in copy_state.select(vessel.folder).warning

@@ -183,3 +183,28 @@ def test_legacy_same_commit_noop_warns_without_migration_or_reproof(transaction)
     assert any('historical target' in line and 'old in-place management' in line for line in proofs)
     assert snapshot(tx.ship.folder) == before
     assert tx.named('proof') == tx.named('copy') == tx.named('lock') == []
+
+
+@pytest.mark.parametrize('failure, cause', [
+    ('environment', 'environment could not be made'),
+    ('install', 'package build failed'),
+    ('resources', 'resource synchronization failed'),
+    ('proof', 'proof command failed'),
+])
+def test_failed_first_copy_names_the_fixed_cause_in_message_and_record(transaction, failure, cause):
+    tx = transaction
+    tx.failure = failure
+    with pytest.raises(ShipError, match=cause):
+        install.upgrade(tx.ship)
+    assert tx.read()['last_failure']['reason'] == cause
+    assert not (tx.ship.runtime / 'venv').exists()
+
+
+def test_bad_resource_declaration_names_its_fixed_cause(transaction, monkeypatch):
+    tx = transaction
+    def unavailable(source):
+        raise ValueError('synthetic declaration failure')
+    monkeypatch.setattr(install.resources, 'plan', unavailable)
+    with pytest.raises(ShipError, match='resource declaration invalid'):
+        install.upgrade(tx.ship)
+    assert tx.read()['last_failure']['reason'] == 'resource declaration invalid'

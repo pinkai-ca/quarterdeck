@@ -31,6 +31,22 @@ from .tmux import Tmux
 RECORD = copy_state.RECORD
 # Targets declare their own support. Never insert this into a historical target.
 COPY_SAFETY = "real-directory-v1"
+# Public failure categories are fixed; exception/provider text is never a cause.
+FAILURE_CAUSES = frozenset({
+    'source archive unavailable', 'resource declaration invalid',
+    'service could not be stopped', 'brief snapshot failed',
+    'previous copy could not be saved', 'copy swap failed',
+    'environment could not be made', 'package build failed',
+    'resource synchronization failed', 'proof command failed',
+    'copy activation failed', 'copy cleanup failed',
+})
+PHASE_CAUSES = {
+    'stopping': 'service could not be stopped', 'snapshotting': 'brief snapshot failed',
+    'backing_up': 'previous copy could not be saved', 'backup_ready': 'previous copy could not be saved',
+    'swapping': 'copy swap failed', 'resources': 'resource synchronization failed',
+    'proving': 'proof command failed', 'target_ready': 'copy activation failed',
+    'activated': 'copy cleanup failed',
+}
 LOADED_COPY = copy_state.loaded_identity(__file__, sys.prefix)
 
 
@@ -314,7 +330,7 @@ def _rename(ship: Ship, data: dict, source: str, destination: str, *, undo: bool
     _settle_rename(ship, data)
 
 
-def _failure(data: dict, phase: str) -> None:
+def _failure(data: dict, phase: str, *, cause: str | None = None) -> None:
     # Fixed vocabulary only: no native output, environment, raw exception or state-file text.
     pending = data.get('pending')
     if pending and pending.get('failure'):
@@ -323,6 +339,8 @@ def _failure(data: dict, phase: str) -> None:
     command = pending.get('target', {}).get('proof_command') if pending else None
     reason = (f'{command} proof did not complete' if phase == 'proving'
               and command in ('origin', '--version', 'laws', '--help') else 'copy operation did not complete')
+    if cause in FAILURE_CAUSES:
+        reason = cause
     data['last_failure'] = dict(phase=phase, reason=reason,
                                 at=datetime.now(timezone.utc).isoformat(timespec='seconds'))
     if pending:
@@ -635,12 +653,14 @@ def upgrade(ship: Ship, ref: str = 'HEAD', tmux: Tmux | None = None, *,
                         instance=uuid4().hex, proof='unproven')
         pending = _snapshot_operation(ship, data, 'back' if back else 'sync', fact)
         proofs = [*recovered, *([] if back else dirty_notice(ship, fact))]
+        cause = 'source archive unavailable'
         try:
             if not back:
                 staging = ship.runtime / 'upgrade' / pending['token']
                 staging.mkdir(parents=True)
                 with tarfile.open(fileobj=io.BytesIO(git(repo, 'archive', '--format=tar', commit))) as archive:
                     archive.extractall(staging, filter='data')
+                cause = 'resource declaration invalid'
                 resource_files = resources.plan(staging)
             proofs += _stop_and_snapshot(ship, data)
             if back:
@@ -662,9 +682,11 @@ def upgrade(ship: Ship, ref: str = 'HEAD', tmux: Tmux | None = None, *,
                     _flush_tree(ship.runtime / 'venv.prev')
                     _phase(ship, data, 'backup_ready', backup_ready=True,
                            backup_identity=copy_state.root_id(ship.runtime / 'venv.prev'))
+                cause = 'environment could not be made'
                 _phase(ship, data, 'installing', mutable=True)
                 if not (live / 'bin/python').exists():
                     _run([sys.executable, '-m', 'venv', '--system-site-packages', str(live)], 'making ship environment')
+                cause = 'package build failed'
                 _run([str(live / 'bin/python'), '-m', 'pip', 'install', '--quiet', '--no-index', '--no-deps',
                       '--no-build-isolation', str(staging)], 'installing archived commit')
                 _phase(ship, data, 'resources')
@@ -682,22 +704,23 @@ def upgrade(ship: Ship, ref: str = 'HEAD', tmux: Tmux | None = None, *,
             after = _activate(ship, data, fact, tmux)
         except Exception:
             phase = pending.get('phase', 'unknown')
+            cause = PHASE_CAUSES.get(phase, cause)
             if pending.get('activated'):
                 # A post-activation reporting write can fail after cleanup cleared
                 # the journal. Reattach its cleanup-only intent before saying it is kept.
                 if data.get('pending') is None:
                     data['pending'] = pending
-                _failure(data, phase)
+                _failure(data, phase, cause=cause)
                 _save(ship.runtime, data)
-                raise ShipError(f'copy active but {phase} incomplete; journal kept; qd up or qd sync retries cleanup') from None
-            _failure(data, phase)
+                raise ShipError(f'copy active but {phase} incomplete: {cause}; journal kept; qd up or qd sync retries cleanup') from None
+            _failure(data, phase, cause=cause)
             try:
                 _save(ship.runtime, data)
                 restoration = _recover(ship, data)
             except Exception:
-                raise ShipError(f'copy operation failed during {phase}; restoration/restart incomplete; '
+                raise ShipError(f'copy operation failed during {phase}: {cause}; restoration/restart incomplete; '
                                 'journal kept; inspect qd doctor, then qd up or qd sync') from None
-            raise ShipError(f'copy operation failed during {phase}; recovery completed; '
+            raise ShipError(f'copy operation failed during {phase}: {cause}; recovery completed; '
                             + '; '.join(restoration)) from None
         before = old['commit'][:7] if old else 'unknown'
         action = 'returned' if back else 'installed'

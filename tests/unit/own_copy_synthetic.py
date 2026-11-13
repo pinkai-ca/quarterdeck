@@ -150,6 +150,8 @@ class Transaction:
             self.calls.append(('environment',))
             assert Path(argv[-1]) == live
             inert_copy(live, 'incomplete')
+            if self.failure == 'environment':
+                raise ShipError('synthetic environment failed')
         elif argv[1:3] == ['-m', 'pip']:
             self.calls.append(('install',))
             assert '--no-index' in argv

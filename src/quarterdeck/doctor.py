@@ -160,7 +160,7 @@ def framework_check(ship: Ship) -> Check:
             reasons = {'copy operation did not complete', 'status-line update pending', 'rebrief confirmation pending',
                        'origin proof did not complete', '--version proof did not complete',
                        'laws proof did not complete', '--help proof did not complete'}
-            if isinstance(reason, str) and reason in reasons:
+            if isinstance(reason, str) and reason in reasons | install.FAILURE_CAUSES:
                 lines.append(reason)
         else:
             lines.append('last copy failure unknown')

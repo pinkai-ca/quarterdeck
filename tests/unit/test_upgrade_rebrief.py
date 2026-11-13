@@ -22,6 +22,8 @@ NEW='b'*40
 
 @pytest.fixture
 def upgraded(drydock, tmp_path, monkeypatch):
+    declaration=drydock/"ship.toml"
+    declaration.write_text(declaration.read_text().replace('code = "checkout"\n',""))
     ship=load(drydock)
     framework=tmp_path/'framework';shutil.copytree(standing.FRAMEWORK_DIR,framework)
     monkeypatch.setattr(standing,'FRAMEWORK_DIR',framework)
@@ -35,7 +37,7 @@ def upgraded(drydock, tmp_path, monkeypatch):
         panes[f'%{i}']=Pane(f'%{i}',ship.session_of(ship.seat(name)).title,name,100+i,80,24,False,False,None)
     tmux=SimpleNamespace(pane=panes.get,has_session=lambda title:False)
     venv=ship.runtime/'venv';(venv/'bin').mkdir(parents=True)
-    (venv/'bin/python').touch()
+    (venv/'bin/python').touch();(venv/'bin/python').chmod(0o755)
     qd=venv/'bin/qd';qd.write_text('#!/bin/sh\nprintf "qd synthetic\\n"\n');qd.chmod(0o755)
     (ship.runtime/'installed.json').write_text(json.dumps(dict(commit=OLD,ref='old',at='2025-01-01T00:01:00+00:00',previous=None)))
     archive=BytesIO()
@@ -53,16 +55,23 @@ def upgraded(drydock, tmp_path, monkeypatch):
         info=tarfile.TarInfo('pyproject.toml');info.size=len(metadata)
         bundle.addfile(info,BytesIO(metadata))
     def git(repo,*args):
+        if args[0]=='status':return b''
         return (NEW+'\n').encode() if args[0]=='rev-parse' else archive.getvalue()
     monkeypatch.setattr(install,'source_repo',lambda ship:tmp_path)
     monkeypatch.setattr(install,'git',git)
-    monkeypatch.setattr(install,'_run',lambda *a,**k:None)
+    def run(argv,doing,**kwargs):
+        if argv[0]=='cp':
+            shutil.copytree(venv,ship.runtime/'venv.prev')
+        if doing=='checking live package, prefix and resources':
+            return SimpleNamespace(stdout=json.dumps(dict(package=str(venv/'synthetic-package'),package_digest='1'*64)),returncode=0)
+        return SimpleNamespace(stdout='qd synthetic\n',returncode=0)
+    monkeypatch.setattr(install,'_run',run)
     monkeypatch.setattr(install,'running_from',lambda path:True)
     monkeypatch.setattr(service.machine,'processes',lambda:{})
     active=[True];started=[];stops=[]
     monkeypatch.setattr(install.servicectl,'alive',lambda runtime:active[0])
     def stop(runtime):active[0]=False;stops.append(True);return 'service stopped · synthetic'
-    def start(ship,qd=None):
+    def start(ship,qd=None,**kwargs):
         active[0]=True
         monkeypatch.setattr(standing,'FRAMEWORK_DIR',venv/'share/quarterdeck/standing-orders')
         svc=Service(ship,tmux);started.append(svc)
@@ -139,7 +148,7 @@ def test_partial_notice_failure_keeps_original_baseline_and_deduplicates_after_s
             failed.append(True);raise OSError('synthetic interrupted post')
         return original(self,message)
     monkeypatch.setattr(post.Store,'write',write)
-    with pytest.raises(OSError,match='interrupted'):
+    with pytest.raises(ShipError,match='copy activation failed'):
         install.upgrade(s.ship,'changed',s.tmux)
     pending=s.ship.runtime/'requests'/f'upgrade-rebrief-{NEW}.json'
     payload=json.loads(pending.read_text())
@@ -163,13 +172,15 @@ def test_interruption_after_service_stop_and_install_before_queue_recovers(upgra
         return original(*args)
     monkeypatch.setattr(install,'queue_rebrief',queue)
     if stage=='install':
+        fixture_run=install._run
         def run(argv,doing,**kwargs):
             if doing.startswith('installing') and not failed:
                 failed.append(True);raise OSError('synthetic before request')
+            return fixture_run(argv,doing,**kwargs)
         monkeypatch.setattr(install,'_run',run)
-    with pytest.raises(OSError,match='before request'):
+    with pytest.raises(ShipError,match='package build failed' if stage=='install' else 'copy activation failed'):
         install.upgrade(s.ship,'changed',s.tmux)
-    assert s.stops and install.installed(s.ship.runtime)['commit']==(OLD if stage=='install' else NEW)
+    assert s.stops and install.installed(s.ship.runtime)['commit']==OLD
     assert notices(s)==[]
     # Recovery preserves ordinary upgrade behavior: it does not start a previously down service.
     proofs=install.upgrade(s.ship,'changed',s.tmux)
@@ -196,7 +207,7 @@ def test_superseded_request_never_renders_and_wrong_running_revision_holds(upgra
 def test_replaced_launch_gets_no_old_notice_and_down_seat_brief_is_current(upgraded,monkeypatch):
     s=upgraded;change_archive(s)
     start=s.start
-    def replaced(ship,qd=None):
+    def replaced(ship,qd=None,**kwargs):
         path=ship.runtime/'seats/desk/launch.json'
         data=json.loads(path.read_text());data['resume']='different-conversation'
         path.write_text(json.dumps(data))
@@ -243,7 +254,7 @@ def test_posted_notices_do_not_duplicate_when_request_answer_write_is_interrupte
             failed.append(True);raise OSError('synthetic answer interruption')
         return original(path,*args,**kwargs)
     monkeypatch.setattr(durable,'replace_file',write)
-    with pytest.raises(OSError,match='answer interruption'):
+    with pytest.raises(ShipError,match='copy activation failed'):
         install.upgrade(s.ship,'changed',s.tmux)
     ids={m.id for m in notices(s)};assert len(ids)==2
     install.upgrade(s.ship,'changed',s.tmux)
@@ -260,7 +271,7 @@ def test_immutable_notice_conflict_retains_the_exact_rebrief_intent_and_answers_
             raise ShipError('synthetic publication conflict')
         return original(store,message)
     monkeypatch.setattr(post.Store,'write',write)
-    with pytest.raises(ShipError,match='publication conflict'):
+    with pytest.raises(ShipError,match='copy activation failed'):
         install.upgrade(s.ship,'changed',s.tmux)
     request=s.ship.runtime/'requests'/f'upgrade-rebrief-{NEW}.json'
     before=request.read_bytes();notice_before=conflicts[0].read_bytes()
@@ -311,9 +322,11 @@ def test_brief_updated_by_old_service_during_install_is_the_upgrade_baseline(upg
 
 def test_old_service_is_stopped_before_replacing_live_code_or_cards(upgraded,monkeypatch):
     s=upgraded
+    fixture_run=install._run
     def run(argv,doing,**kwargs):
         if doing.startswith('installing'):
             assert not s.active[0], 'the old mtime watcher must not observe replacement cards'
+        return fixture_run(argv,doing,**kwargs)
     monkeypatch.setattr(install,'_run',run)
     assert any('no brief changed' in line for line in install.upgrade(s.ship,'same-content',s.tmux))
     assert notices(s)==[]
@@ -330,7 +343,7 @@ def test_card_edit_during_partial_upgrade_gets_one_new_notice(upgraded,monkeypat
             failed.append(True);raise OSError('synthetic desk post interruption')
         return original(self,message)
     monkeypatch.setattr(post.Store,'write',write)
-    with pytest.raises(OSError,match='desk post interruption'):
+    with pytest.raises(ShipError,match='copy activation failed'):
         install.upgrade(s.ship,'changed',s.tmux)
     svc=s.started[-1]
     first=notices(s)[0]
@@ -368,7 +381,7 @@ def test_repeated_content_changes_during_one_pending_request_each_get_one_notice
             raise OSError('synthetic desk held')
         return original(self,message)
     monkeypatch.setattr(post.Store,'write',write)
-    with pytest.raises(OSError):install.upgrade(s.ship,'changed',s.tmux)
+    with pytest.raises(ShipError):install.upgrade(s.ship,'changed',s.tmux)
     svc=s.started[-1]
     card=standing.FRAMEWORK_DIR/'roles/captain.md';base=card.read_text()
     for index,text in enumerate((base+'\nLater edit.\n',base,base+'\nLater edit.\n'),2):
@@ -395,7 +408,7 @@ def test_unposted_intermediate_content_is_not_a_new_offered_baseline(upgraded,mo
             desk_failed.append(True);raise OSError('synthetic first failure')
         return original(self,message)
     monkeypatch.setattr(post.Store,'write',write)
-    with pytest.raises(OSError):install.upgrade(s.ship,'changed',s.tmux)
+    with pytest.raises(ShipError):install.upgrade(s.ship,'changed',s.tmux)
     svc=s.started[-1]
     card=standing.FRAMEWORK_DIR/'roles/captain.md';base=card.read_text()
     card.write_text(base+'\nUnposted version.\n')
@@ -416,7 +429,7 @@ def test_intent_write_failure_does_not_duplicate_a_later_edit_via_ordinary_rebri
             failed.append(True);raise OSError('synthetic partial')
         return original(self,message)
     monkeypatch.setattr(post.Store,'write',write)
-    with pytest.raises(OSError):install.upgrade(s.ship,'changed',s.tmux)
+    with pytest.raises(ShipError):install.upgrade(s.ship,'changed',s.tmux)
     svc=s.started[-1]
     card=standing.FRAMEWORK_DIR/'roles/captain.md';card.write_text(card.read_text()+'\nLater edit.\n')
     persist=install.write_rebrief;interrupted=[]

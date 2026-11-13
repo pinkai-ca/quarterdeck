@@ -178,6 +178,8 @@ def revisions(tmp_path):
     # Only upgrade-owned paths are involved; the synthetic ship has fake programs.
     ship = repo / 'ships/resource-test'
     shutil.copytree(repo / 'ships/drydock', ship)
+    declaration=ship/'ship.toml'
+    declaration.write_text(declaration.read_text().replace('code = "checkout"\n', ''))
     (ship / 'runtime').mkdir()
     return Revisions(legacy, original, repo, target, ship, old, unsupported, no_orders, failed_proof)
 
@@ -268,24 +270,24 @@ def test_no_standing_orders_reports_help_only(revisions):
     assert json.loads((ship / 'runtime/installed.json').read_text())['commit'] == revisions.no_orders
 
 
-def test_failed_rollback_proof_retains_target_and_truthful_record(revisions):
+def test_failed_rollback_proof_restores_previous_copy_and_truthful_record(revisions):
     ship = revisions.ship
     python = environment(ship / 'runtime/venv')
     incumbent(python, revisions)
     assert git(revisions.repo, 'merge-base', revisions.failed_proof, revisions.target) == revisions.failed_proof
     result = upgrade(python, ship, revisions.failed_proof, failure=True)
-    assert result.returncode != 0 and 'synthetic installed proof failed' in result.stderr
-    assert 'retained' in result.stderr and 'service not restarted' in result.stderr
+    assert result.returncode != 0 and 'proof command failed' in result.stderr
+    assert 'recovery completed' in result.stderr and 'earlier copy restored' in result.stderr
     assert python.exists()
     assert (python.parent / 'qd').is_file()
     record = json.loads((ship / 'runtime/installed.json').read_text())
-    assert record['commit'] == revisions.failed_proof and record['previous'] == revisions.target
-    assert record['proof'] == 'failed' and record['proof_command'] == 'laws'
+    assert record['commit'] == revisions.target and record['previous'] is None
+    assert record['last_failure']['phase'] == 'proving' and record['last_failure']['reason'] == 'proof command failed'
     assert not (ship / 'runtime/requests').exists()
 
 
 @pytest.mark.parametrize('prior_record', ('missing-test', 'corrupt-test'))
-def test_failed_unknown_direction_proof_retains_code(revisions, prior_record):
+def test_failed_unknown_direction_keeps_original_code_without_inventing_proof(revisions, prior_record):
     ship = revisions.ship
     python = environment(ship / 'runtime/venv')
     incumbent(python, revisions)
@@ -295,11 +297,16 @@ def test_failed_unknown_direction_proof_retains_code(revisions, prior_record):
     else:
         record_path.write_text('{not valid JSON')
     result = upgrade(python, ship, revisions.failed_proof, failure=True)
-    assert result.returncode != 0 and 'synthetic installed proof failed' in result.stderr
-    assert 'retained (unknown)' in result.stderr and python.exists()
-    record = json.loads(record_path.read_text())
-    assert record['commit'] == revisions.failed_proof and record['previous'] is None
-    assert record['proof'] == 'failed' and record['proof_command'] == 'laws'
+    assert result.returncode != 0 and python.exists()
+    assert (python.parent / 'qd').is_file()
+    if prior_record == 'corrupt-test':
+        assert 'installed state is unreadable' in result.stderr
+        assert record_path.read_text() == '{not valid JSON'
+    else:
+        assert 'proof command failed' in result.stderr and 'recovery completed' in result.stderr
+        record = json.loads(record_path.read_text())
+        assert record['current'] is None and record['previous'] is None
+        assert record['last_failure']['reason'] == 'proof command failed'
     assert not (ship / 'runtime/requests').exists()
 
 
@@ -311,11 +318,11 @@ def test_failed_forward_proof_retains_code(revisions):
     forward = commit(revisions.repo, 'New fake command that fails installed proof')
     assert git(revisions.repo, 'merge-base', revisions.target, forward) == revisions.target
     result = upgrade(python, ship, forward, failure=True)
-    assert result.returncode != 0 and 'synthetic installed proof failed' in result.stderr
-    assert 'retained (forward)' in result.stderr and python.exists()
+    assert result.returncode != 0 and 'proof command failed' in result.stderr
+    assert 'recovery completed' in result.stderr and python.exists()
     record = json.loads((ship / 'runtime/installed.json').read_text())
-    assert record['commit'] == forward and record['previous'] == revisions.target
-    assert record['proof'] == 'failed' and record['proof_command'] == 'laws'
+    assert record['commit'] == revisions.target and record['previous'] is None
+    assert record['last_failure']['phase'] == 'proving' and record['last_failure']['reason'] == 'proof command failed'
     assert not (ship / 'runtime/requests').exists()
 
 
@@ -325,19 +332,22 @@ def test_genuine_first_install_proof_failure_removes_half_made_venv(revisions, m
 
     original_run = current._run
 
-    def with_owned_build_tools(argv, doing, timeout=None):
+    def with_owned_build_tools(argv, doing, timeout=None, **kwargs):
         if argv[1:3] == ['-m', 'venv']:
             environment(Path(argv[-1]))
+            return subprocess.CompletedProcess(argv,0,stdout='',stderr='')
         else:
-            original_run(argv, doing, timeout=timeout)
+            return original_run(argv, doing, timeout=timeout, **kwargs)
 
     # Supply the same read-only build tools as other synthetic venvs; pip and proof are real.
     monkeypatch.setattr(current, '_run', with_owned_build_tools)
     assert not (revisions.ship / 'runtime/venv').exists()
-    with pytest.raises(ShipError, match='synthetic installed proof failed'):
+    with pytest.raises(ShipError, match='proof command failed'):
         current.upgrade(load(revisions.ship), revisions.failed_proof)
     assert not (revisions.ship / 'runtime/venv').exists()
-    assert not (revisions.ship / 'runtime/installed.json').exists()
+    failed=json.loads((revisions.ship/'runtime/installed.json').read_text())
+    assert failed['current'] is None and failed['pending'] is None
+    assert failed['last_failure']['reason']=='proof command failed'
     assert not (revisions.ship / 'runtime/requests').exists()
 
 

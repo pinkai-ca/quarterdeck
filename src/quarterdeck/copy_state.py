@@ -173,6 +173,8 @@ def select(folder: Path, *, mode: str | None = None, mode_known: bool = False) -
         runtime = folder / 'runtime'
         data = read(runtime)
         fact = current(data)
+        if data is None and not os.path.lexists(runtime / 'venv'):
+            return Selection(warning='no copy yet; qd up makes one')
         if data and data.get('pending') is not None:
             return Selection(fact=fact, state=data, warning='copy operation interrupted or in progress; '
                              'qd up or qd sync recovers it before any seat starts')

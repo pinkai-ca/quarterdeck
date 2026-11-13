@@ -18,15 +18,17 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_upgrade_installs_the_checkout_as_the_ships_own_copy_and_qd_hands_off_to_it(drydock: Path, tmux: Tmux, monkeypatch):
+    declaration = drydock / "ship.toml"
+    declaration.write_text(declaration.read_text().replace('code = "checkout"\n', ""))
     ship = load(drydock)
     head = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
-    assert "runs the checkout at" in doctor.framework_check(ship).detail
+    assert "no copy yet; qd up makes one" in doctor.framework_check(ship).detail
     proofs = install.upgrade(ship, "HEAD", tmux)
     installed_qd = drydock / "runtime" / "venv" / "bin" / "qd"
-    assert installed_qd.exists() and proofs[0].startswith(f"installed {head[:7]} (HEAD) into runtime/venv · qd ")
-    assert "the ship ran the checkout before" in proofs[0] and "removing runtime/venv returns it to the checkout" in proofs[0]
+    assert installed_qd.exists() and proofs[0].startswith(f"installed {head[:7]} at runtime/venv · qd ")
+    assert "was unknown" in proofs[0] and "no proven previous copy" in proofs[0]
     assert proofs[1] == "service not running; qd up starts it on the installed copy"
-    assert proofs[-1] == "every qd typed against this ship now runs the installed copy"
+    assert proofs[-1] == "rebrief pending · qd up renders current briefs and posts changed-brief notices"
     record = json.loads((drydock / "runtime" / "installed.json").read_text())
     assert record["commit"] == head and record["previous"] is None
     assert not (drydock / "runtime" / "upgrade").exists(), "the staged source is gone once installed"
@@ -35,7 +37,7 @@ def test_upgrade_installs_the_checkout_as_the_ships_own_copy_and_qd_hands_off_to
     assert (template / "roles" / "ring.md").is_file()
     assert "tail -f" in (template / "README.md").read_text()
     assert subprocess.run([str(installed_qd), "--version"], capture_output=True, text=True).stdout.startswith("qd ")
-    assert f"runs its installed copy, commit {head[:7]}" in doctor.framework_check(ship).detail
+    assert f"selected copy {head[:7]} since" in doctor.framework_check(ship).detail
 
     # the installed copy answers for the ship itself, and a qd typed from this checkout reaches it and answers too
     env = {**os.environ, "QD_TMUX_SOCKET": tmux.socket}
@@ -68,7 +70,7 @@ def test_upgrade_installs_the_checkout_as_the_ships_own_copy_and_qd_hands_off_to
     laws = subprocess.run([str(installed_qd), "laws"], env=env, capture_output=True, text=True, timeout=60).stdout
     assert "one-door" in laws and "quarterdeck/door.py" in laws and "carried nowhere" not in laws
     typed = subprocess.run([str(Path(sys.executable).parent / "qd"), "--ship", str(drydock), "doctor"], env=env, capture_output=True, text=True, timeout=120)
-    assert f"runs its installed copy, commit {head[:7]}" in typed.stdout, typed.stderr
+    assert f"selected copy {head[:7]} since" in typed.stdout, typed.stderr
 
     # qd typed from this checkout hands off to the installed copy before doing anything
     calls = []
@@ -83,10 +85,13 @@ def test_upgrade_installs_the_checkout_as_the_ships_own_copy_and_qd_hands_off_to
     assert calls == [(str(installed_qd), [str(installed_qd), "--ship", str(drydock), "status"])]
     assert not install.running_from(installed_qd.parent), "the test process is not the installed copy"
 
-    # upgrade itself never hands off, and a second upgrade names the commit it replaced
+    # Repetition is a no-op; force still proves the replaced commit and rollback remedy.
     calls.clear()
     proofs = install.upgrade(ship, "HEAD", tmux)
-    assert calls == [] and f"was {head[:7]}" in proofs[0] and f"qd upgrade {head[:7]} rolls back" in proofs[0]
+    assert calls == [] and proofs[-1] == f"already runs {head[:7]}; nothing to do"
+    assert not (ship.runtime / 'venv.prev').exists()
+    proofs = install.upgrade(ship, "HEAD", tmux, force=True)
+    assert calls == [] and f"was {head[:7]}" in proofs[0] and f"qd sync --back returns to {head[:7]}" in proofs[0]
     assert json.loads((drydock / "runtime" / "installed.json").read_text())["previous"] == head
 
 
