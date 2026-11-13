@@ -30,7 +30,8 @@ from .base import (Box, ship_template, trimmed, Input, Control, Credential, Harn
 ENDS_TURN = {"end_turn", "max_tokens", "stop_sequence"}
 LOCAL_TAGS = ("<command-name>", "<local-command", "<bash-input>", "<bash-stdout>", "<bash-stderr>")
 INTERRUPTED = "[Request interrupted"
-PASTE_TAB_VERSIONS = frozenset({"2.1.317"})  # versions measured to record a pasted TAB as four spaces
+PASTE_FORM_VERSIONS = frozenset({"2.1.317"})  # versions measured to record a paste in the form recorded_paste gives
+PASTE_TAG, PASTE_TAG_ESCAPED = "<pasted_content", "<\\pasted_content"  # a literal opening tag, as the record escapes it
 INPUT_IGNORED = ('api-request', 'api-request-blob', 'attachment', 'bridge-session', 'custom-title',
                  'agent-name', 'mode', 'permission-mode', 'session-owner', 'atis-latch', 'last-prompt',
                  'file-history-delta', 'file-history-snapshot', 'tools-used', 'api-request-shape', 'cost-state')
@@ -498,17 +499,25 @@ class ClaudeHarness(Harness):
     keys = Keys(submit="Enter", send_now=("C-x", "C-s"), interrupt="Escape")
 
     def recorded_paste(self, text: str, record: Path, since: datetime) -> str:
-        """Measured on 2.1.317 alone (13 November): a TAB in a pasted payload is recorded as four spaces wherever
-        it stands, in the queued entry, its removal and its attachment alike; nothing else of the text changes.
+        """Measured on 2.1.317 alone (13 November), two changes the program makes to a pasted payload as it records it:
 
-        Queue rows carry no version, so the version is the program's own ``version`` field on the record's rows
-        from ``since``: every one must name a measured version. None, or any other, leaves the payload as typed.
+        - a TAB is recorded as four spaces wherever it stands, in the queued entry, its removal and its
+          attachment alike;
+        - inside its own ``<pasted_content id=…>`` wrapper, a literal opening tag of the text, ``<pasted_content``,
+          is escaped as ``<\\pasted_content``. Only the opening form is measured: a closing tag in the text has
+          no form, so its message stays unconfirmed.
+
+        Nothing else of the text changes. Queue rows carry no version, so the version is the program's own
+        ``version`` field on the record's rows from ``since``: every one must name a measured version. None,
+        or any other, leaves the payload as typed.
         """
-        if "\t" not in text:
+        if "\t" not in text and PASTE_TAG not in text:
             return text
         versions = {entry.get("version") for entry in entries(record)
                     if "version" in entry and (moment := when(entry.get("timestamp"))) is not None and moment >= since}
-        return text.replace("\t", "    ") if versions and versions <= PASTE_TAB_VERSIONS else text
+        if not versions or not versions <= PASTE_FORM_VERSIONS:
+            return text
+        return text.replace("\t", "    ").replace(PASTE_TAG, PASTE_TAG_ESCAPED)
     reads_usage = True
     model_scoped_usage = True
 

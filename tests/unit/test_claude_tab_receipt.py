@@ -1,4 +1,7 @@
-"""Claude Code 2.1.317 records a TAB of a pasted payload as four spaces; its receipt reads that one form.
+"""Claude Code 2.1.317 records a paste in one changed form; its receipt reads that one form.
+
+Two changes are measured. A TAB is recorded as four spaces, and a literal opening wrapper tag in the text,
+``<pasted_content``, is escaped as ``<\\pasted_content`` inside the program's own wrapper.
 
 Measured on 2.1.317: a payload pasted into a running turn was queued, removed as absorbed mid-turn and
 attached as a queued command, each carrying the text with every TAB as four spaces, wherever the TAB
@@ -141,3 +144,53 @@ def test_closed_record_still_finds_absence_of_a_tab_payload(world):  # noqa: F81
     w.proof.data["payload"] = PAYLOAD
     append(w.record, versioned_input(w.name, "Synthetic other input", stamp(11)))
     assert closed_record.not_in_closed_record(w.seat, w.proof)
+
+
+TAGGED = "qd > synthetic question\nthe <pasted_content> wrapper is unwrapped first\nend of question\n"
+TAGGED_RECORDED = TAGGED.replace("<pasted_content", "<\\pasted_content")
+
+
+def test_claude_escapes_a_quoted_opening_tag_on_the_measured_version_only(tmp_path):
+    claude = harness.get("claude")
+    path = record(tmp_path, request(2))
+    assert claude.recorded_paste("a <pasted_content> b\tc", path, SINCE) == "a <\\pasted_content> b    c"
+    (tmp_path / "other").mkdir()
+    other = record(tmp_path / "other", request(2, "2.1.318"))
+    assert claude.recorded_paste("a <pasted_content> b", other, SINCE) == "a <pasted_content> b"
+
+
+@pytest.mark.parametrize("chain", ["prompt", "absorbed"])
+def test_a_payload_quoting_the_wrapper_tag_is_delivered(tmp_path, chain):
+    rows = ([dict(user(pasted(TAGGED_RECORDED), 2), version=MEASURED)] if chain == "prompt"
+            else [*working(), *absorbed(TAGGED_RECORDED), *finish()])
+    path = record(tmp_path, *rows)
+    assert input_receipt.confirmed("claude", path, TAGGED, SINCE) == "delivered"
+
+
+def test_both_forms_together_are_delivered(tmp_path):
+    payload = TAGGED + "a\tb\n"
+    path = record(tmp_path, *working(), *absorbed(payload.replace("\t", "    ").replace("<pasted_content", "<\\pasted_content")),
+                  *finish())
+    assert input_receipt.confirmed("claude", path, payload, SINCE) == "delivered"
+
+
+@pytest.mark.parametrize("form", [
+    TAGGED.replace("<pasted_content", "<\\\\pasted_content"),  # escaped twice
+    TAGGED.replace("<pasted_content", "&lt;pasted_content"),  # another escaping
+    TAGGED.replace("<pasted_content", "pasted_content"),  # the bracket dropped
+])
+def test_any_other_rendering_of_the_tag_stays_unconfirmed(tmp_path, form):
+    path = record(tmp_path, *working(), *absorbed(form), *finish())
+    assert input_receipt.confirmed("claude", path, TAGGED, SINCE) is None
+
+
+def test_a_quoted_closing_tag_has_no_measured_form(tmp_path):
+    payload = "a quoted </pasted_content> closing tag\n"
+    path = record(tmp_path, *working(), *absorbed(payload.replace("</pasted_content", "<\\/pasted_content")), *finish())
+    assert input_receipt.confirmed("claude", path, payload, SINCE) is None
+
+
+def test_an_unmeasured_version_leaves_the_tag_unescaped(tmp_path):
+    path = record(tmp_path, *working(), *absorbed(TAGGED_RECORDED, version="2.1.318"), *finish())
+    assert input_receipt.confirmed("claude", path, TAGGED, SINCE) is None
+
