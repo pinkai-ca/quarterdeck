@@ -23,6 +23,8 @@ def test_pytest_cannot_query_inherited_parent_server(tmp_path, runner_prepared, 
     # Only these socket anchors live outside the project; test data/output stay in tmp_path.
     anchor = Path(tempfile.mkdtemp(prefix="qdi-", dir="/tmp"))
     identity = anchor.stat()
+    (tmp_path / "anchor.json").write_text(json.dumps({
+        "anchor": str(anchor), "device": identity.st_dev, "inode": identity.st_ino}))
     socket = anchor / "parent.sock"
     child_anchor = anchor / "child"
     child_anchor.mkdir()
@@ -30,10 +32,12 @@ def test_pytest_cannot_query_inherited_parent_server(tmp_path, runner_prepared, 
     clean["TMUX_TMPDIR"] = str(anchor)
     clean["QD_TMUX_SOCKET"] = str(anchor / "unused-qd.sock")
     started = False
+    socket_identity = None
     try:
         tmux(["-S", str(socket), "-f", "/dev/null", "new-session", "-d", "-s", "synthetic-parent",
               "sleep 120"], clean)
         started = True
+        socket_identity = socket.lstat()
         parent = tmux(["-S", str(socket), "display-message", "-p", "#{socket_path}"], clean).stdout.strip()
         pid = tmux(["-S", str(socket), "display-message", "-p", "#{pid}"], clean).stdout.strip()
         pane = tmux(["-S", str(socket), "display-message", "-p", "#{pane_id}"], clean).stdout.strip()
@@ -64,6 +68,7 @@ def test_default_query_is_isolated():
         {'exit': result.returncode, 'socket': actual, 'TMUX': os.environ.get('TMUX'),
          'TMUX_PANE': os.environ.get('TMUX_PANE')}))
 """)
+        child.pop("PYTEST_ADDOPTS", None)
         child.update(SYNTHETIC_PARENT_SOCKET=parent, SYNTHETIC_PROBE_OUTPUT=str(output))
         # Clear all live values first, then deliberately supply ONLY our synthetic parent.
         # Recontamination also covers conftest's TESTRUNS_RUN early-return branch.
@@ -71,7 +76,7 @@ def test_default_query_is_isolated():
                    f"TMUX={inherited['TMUX']}", f"TMUX_PANE={pane}",
                    "timeout", "--kill-after=5s", "60s", "prlimit", "--as=8589934592", "--",
                    sys.executable, "-m", "pytest", "-p", "tests.conftest", "-c", str(ROOT / "pyproject.toml"),
-                   "-n", "0", "--basetemp=" + str(tmp_path / "child-tmp"), "-q", str(probe)]
+                   "--basetemp=" + str(tmp_path / "child-tmp"), "-q", str(probe)]
         result = subprocess.run(command, cwd=ROOT, env=child, capture_output=True, text=True, timeout=75)
         (tmp_path / "child-output.txt").write_text(result.stdout + result.stderr)
         assert result.returncode == 0, result.stdout + result.stderr
@@ -86,6 +91,13 @@ def test_default_query_is_isolated():
     finally:
         if started:
             tmux(["-S", str(socket), "kill-server"], clean)
+            # tmux leaves its socket pathname: remove only this exact, proven-closed endpoint.
+            assert tmux(["-S", str(socket), "display-message", "-p", "#{pid}"], clean,
+                        check=False).returncode != 0
+            if socket.exists():
+                actual = socket.lstat()
+                assert (actual.st_dev, actual.st_ino) == (socket_identity.st_dev, socket_identity.st_ino)
+                socket.unlink()
         native = child_anchor / f"tmux-{os.getuid()}"
         if native.exists():
             native.rmdir()
