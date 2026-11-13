@@ -140,6 +140,8 @@ def test_check_retires_all_unresolved_attempts_and_journals_before_deleting_seat
         return "synthetic down"
     monkeypatch.setattr(check, "probe", probe)
     monkeypatch.setattr(Seat, "down", down)
+    if outcome == "success":  # the wake step's own seat lifetime is proved by its own gates
+        monkeypatch.setattr(check, "probe_wake", lambda seat, orders: [Check("human-session waking line", True, "stubbed")])
     if "exception" in outcome:
         with pytest.raises(RuntimeError, match="synthetic .* exception"):
             check.check(ship, "fake", tmux)

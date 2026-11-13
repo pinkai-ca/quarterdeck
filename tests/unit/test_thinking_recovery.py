@@ -331,6 +331,45 @@ def forbid_human_content_and_input(world, monkeypatch):
         monkeypatch.setattr(obj, name, forbidden)
 
 
+def from_status(seat):
+    from quarterdeck import human_wake
+    return human_wake.status(seat)
+
+
+def wake_pass_reads_only(world, guard):
+    """Under the waking law, only the wake pass of an up, unarmed, unheld human seat with a waiting message
+    reads its record state and screen. Nothing reads its inputs or types into it, and status, alarms and
+    refusals stay metadata-only. Returns the names the wake pass read."""
+    from quarterdeck import human_wake
+    inside, reads = [False], []
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('nothing reads a human seat\'s inputs or types into it here')
+
+    def allowed(name, real):
+        def read(*args, **kwargs):
+            if not inside[0]:
+                pytest.fail(f'{name}: human mode alarms/refusals use only owned journal metadata, never conversation')
+            reads.append(name)
+            return real(*args, **kwargs)
+        return read
+    for obj, name in ((world.seat, 'record'), (world.seat.harness, 'state'), (world.seat.harness, 'screen'),
+                      (world.native, 'capture')):
+        guard.setattr(obj, name, allowed(name, getattr(obj, name)))
+    for obj, name in ((world.seat.harness, 'inputs'), (world.native, 'paste'), (world.native, 'keys')):
+        guard.setattr(obj, name, forbidden)
+    real_run = human_wake.run
+
+    def run(seat):
+        inside[0] = True
+        try:
+            return real_run(seat)
+        finally:
+            inside[0] = False
+    guard.setattr(human_wake, 'run', run)
+    return reads
+
+
 def human_ownership_transition(world, monkeypatch, *, unknown):
     seat, svc = world.seat, world.service
     svc.told, svc.alarmed = {}, {}
@@ -341,13 +380,17 @@ def human_ownership_transition(world, monkeypatch, *, unknown):
     monkeypatch.setattr(watch, 'seats', lambda *_: [seat])
     original = svc.ship.sessions['crew']
     svc.ship.sessions['crew'] = replace(original, human=True)
+    world.native.box = "a person's half-written draft"  # the wake pass reads, finds the box taken, and holds
     with monkeypatch.context() as guard:
-        forbid_human_content_and_input(world, guard)
+        reads = wake_pass_reads_only(world, guard)
         facts = watch.facts(svc.ship, seat.tmux, walls=[], login=[])
         assert not facts.needs_human and facts.unarmed == [seat.name]
         assert Door(seat).reading().reason == "a human's session"
         Service.deliveries(svc)
         assert not svc.store.for_seat('desk'), 'ordinary human/unarmed behavior is unchanged'
+        assert 'state' in reads and 'capture' in reads, 'only the wake pass read the state and the screen'
+        assert from_status(seat) == 'human wake box not empty; untouched' and not world.native.calls
+    world.native.box = ''
     svc.ship.sessions['crew'] = original
     world.native.auto_complete = False
     recovery.run(svc)

@@ -489,6 +489,91 @@ def test_a_malformed_reservation_holds_without_input(desk, content):
     assert human_wake.status(desk.seat)
 
 
+@pytest.mark.parametrize('hold', ['recovery', 'detached', 'watch-unreadable', 'reservation-unreadable'])
+def test_every_input_hold_is_checked_before_any_record_or_screen_read(desk, monkeypatch, hold):
+    """The captain's ruling: a held human seat is never read at all, only its owned metadata."""
+    desk.order()
+    if hold == 'recovery':
+        monkeypatch.setattr(human_wake.recovery, 'held', lambda seat: 'synthetic mode unresolved')
+    elif hold == 'detached':
+        monkeypatch.setattr(human_wake.pending, 'detached', lambda seat: ['synthetic prior unconfirmed delivery'])
+    elif hold == 'watch-unreadable':
+        path = post.watch_file(desk.runtime, 'desk')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('garbage')
+    else:
+        (desk.seat.folder / 'human-wake.json').write_text('garbage')
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('a held human seat is never read: no record, state, inputs or screen')
+    for obj, name in ((desk.seat, 'join'), (desk.seat, 'record'), (desk.seat.harness, 'state'),
+                      (desk.seat.harness, 'inputs'), (desk.seat.harness, 'screen'),
+                      (desk.tmux, 'read_pane'), (desk.tmux, 'capture'), (desk.tmux, 'paste'), (desk.tmux, 'keys')):
+        monkeypatch.setattr(obj, name, forbidden)
+    for _ in range(2):
+        assert human_wake.run(desk.seat), 'the hold is named'
+    assert human_wake.status(desk.seat), 'and visible'
+    assert desk.tmux.sent == []
+
+
+@pytest.mark.parametrize('held', [False, True])
+def test_an_uncertain_reservation_reads_only_its_own_receipt_and_a_hold_stops_even_that(desk, monkeypatch, held):
+    """The captain's ruling: metadata holds stop everything; else only the reservation's own receipt is looked for,
+    and while it stands there is no new wake, no screen read and no new candidate."""
+    desk.order()
+    desk.tmux.record = None  # the program never takes it, so no receipt will be found
+    human_wake.run(desk.seat)
+    assert reservation(desk)['phase'] == 'submitted'
+    desk.order('A later synthetic order')
+    sent = list(desk.tmux.sent)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('an uncertain reservation reads nothing but its own receipt')
+    for obj, name in ((desk.tmux, 'read_pane'), (desk.tmux, 'capture'), (desk.tmux, 'paste'), (desk.tmux, 'keys'),
+                      (desk.seat.harness, 'state'), (desk.seat.harness, 'screen')):
+        monkeypatch.setattr(obj, name, forbidden)
+    if held:
+        monkeypatch.setattr(human_wake.recovery, 'held', lambda seat: 'synthetic mode unresolved')
+        monkeypatch.setattr(human_wake.pending.Proof, 'confirmed', forbidden)
+    for _ in range(2):
+        assert human_wake.run(desk.seat)
+    assert desk.tmux.sent == sent and reservation(desk)['phase'] == 'submitted'
+    assert human_wake.status(desk.seat)
+
+
+def test_one_human_seats_wake_failure_is_isolated_and_logged_once(alarms, monkeypatch):
+    """The captain's ruling: an exception from one human seat's wake pass holds that seat, never the whole pass."""
+    ship, svc = alarms.desk.ship, alarms.svc
+    ship.seats['counsel'] = replace(ship.seat('desk'), name='counsel', role='counsel', persona=None)
+    counsel_pane = Pane('%9', 'Office', 'counsel', 4747, 400, 40, False, False, None)
+    alarms.desk.tmux.panes[counsel_pane.id] = counsel_pane
+    counsel = Seat(ship, ship.seat('counsel'), alarms.desk.tmux)
+    counsel.folder.mkdir(parents=True, exist_ok=True)
+    launch(counsel, counsel_pane)  # both human seats are up, so each gets its own wake pass
+    ran, alarmed, logged = [], [], []
+    real_needs_human = svc.needs_human
+
+    def wake(seat):
+        ran.append(seat.name)
+        if seat.name == 'desk':
+            raise OSError('synthetic unreadable desk pointer')
+        return None
+
+    def needs_human(seat):
+        alarmed.append(seat.name)
+        return real_needs_human(seat)
+    monkeypatch.setattr(human_wake, 'run', wake)
+    monkeypatch.setattr(svc, 'needs_human', needs_human)
+    monkeypatch.setattr(svc, 'log', lambda event, **fields: logged.append((event, fields)))
+    for _ in range(2):
+        svc.deliveries()
+    assert ran.count('desk') == 2 and ran.count('counsel') == 2, 'the pass continued past the failing seat'
+    assert alarmed.count('desk') == 2 and alarmed.count('counsel') == 2, 'every seat still reaches its alarm check'
+    about = [entry for entry in logged if 'desk' in json.dumps(entry, default=str)
+             and 'synthetic unreadable desk pointer' in json.dumps(entry, default=str)]
+    assert len(about) == 1, 'logged once by reason'
+
+
 # -- the door: nothing else ever enters a human session ----------------------------------------
 
 
@@ -619,10 +704,12 @@ def test_check_exit_is_a_failure_only_for_a_failed_step(monkeypatch, results, co
 @pytest.fixture
 def checking(desk, monkeypatch):
     """check.check with its normal probe and its seats stood in, counting every launch it asks for."""
-    launched = []
-    harness = SimpleNamespace(accepts=lambda pool: None)
-    monkeypatch.setattr(checkmod.harnesses, 'get', lambda name: harness)
-    monkeypatch.setattr(checkmod, '_version_in_runtime', lambda harness, runtime: 'synthetic')
+    from quarterdeck.harness.antigravity import AntigravityHarness
+
+    launched, version = [], {'value': 'synthetic'}
+    # The real adapters, so any reason a program's waking step is not applicable comes from the adapter itself.
+    monkeypatch.setattr(AntigravityHarness, 'accepts', lambda self, pool: None)
+    monkeypatch.setattr(checkmod, '_version_in_runtime', lambda harness, runtime: version['value'])
     normal = {'passed': True}
     monkeypatch.setattr(checkmod, 'probe', lambda ship, seat, orders: [drill.Check('normal contract', normal['passed'])])
 
@@ -635,7 +722,7 @@ def checking(desk, monkeypatch):
         seat.folder.mkdir(parents=True, exist_ok=True)
         yield seat
     monkeypatch.setattr(checkmod, 'temporary_seat', temporary)
-    return SimpleNamespace(ship=desk.ship, launched=launched, normal=normal)
+    return SimpleNamespace(ship=desk.ship, launched=launched, normal=normal, version=version)
 
 
 def test_antigravity_reports_exactly_not_applicable_and_starts_no_human_session(checking):
@@ -645,12 +732,23 @@ def test_antigravity_reports_exactly_not_applicable_and_starts_no_human_session(
     assert [human for _, human in checking.launched] == [False]
 
 
-def test_a_failed_normal_contract_fails_the_wake_step_without_a_human_session(checking):
+@pytest.mark.parametrize('name', ['fake', 'antigravity'])
+def test_a_failed_normal_contract_adds_no_waking_row_and_no_human_session(checking, name):
+    """Ruling: the waking step runs only after the normal checks pass; the check has already failed."""
     checking.normal['passed'] = False
-    checks = checkmod.check(checking.ship, 'fake', None)
-    assert any(c.name == 'human-session waking line' and c.passed is False for c in checks)
+    checks = checkmod.check(checking.ship, name, None)
+    assert [c for c in checks if c.name.startswith('human-session waking line')] == []
+    assert any(c.passed is False for c in checks)
     assert [human for _, human in checking.launched] == [False]
     assert not any(c.name.startswith('proven') for c in checks)
+
+
+@pytest.mark.parametrize('name', ['fake', 'antigravity'])
+def test_a_missing_program_adds_no_waking_row_and_launches_nothing(checking, name):
+    checking.version['value'] = None
+    checks = checkmod.check(checking.ship, name, None)
+    assert [(c.name, c.passed) for c in checks] == [('installed', False)]
+    assert checking.launched == []
 
 
 def test_the_wake_reservation_is_retained_before_teardown_and_a_failed_proof_fails(checking, monkeypatch):
