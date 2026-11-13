@@ -39,7 +39,7 @@ def test_send_now_chord_consumes_once_at_the_next_tool_boundary(tmux, tmp_path, 
 
     def ended():
         ends_as_one_turn(seat.harness, record, seat.home, payload)
-        screen = wait_for(lambda: (shown := seat.screen()).box is not None and not shown.working and shown)
+        screen = wait_for(lambda: (shown := seat.screen()).box is not None and shown.working is False and shown)
         assert screen.queued == 0, "nothing is left queued to run as a second turn"
 
     with Rendezvous(seat.home, "step", "running turn") as boundary, \

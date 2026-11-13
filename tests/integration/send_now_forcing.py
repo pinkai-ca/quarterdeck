@@ -14,7 +14,7 @@ def record_behind_a_blind_screen(tmux, seat, record, consumed, monkeypatch) -> N
     assert consumed.reached() and consumed.request.exists(), "the fake is held at its consumed rendezvous"
     tmux.keys(seat.pane.id, "-R")
     shown = seat.screen()
-    assert shown.box is None and not shown.working, "the screen reading cannot see the status line"
+    assert shown.box is None and shown.working is None, "the screen reading cannot see the status line: unknown, never idle"
     assert seat.harness.state(record).turn_open, "the turn is still open in the record"
     assert seat.harness.turns(record) == [], "the record has no ended turn"
     assert consumed.request.exists(), "the fake is still held"

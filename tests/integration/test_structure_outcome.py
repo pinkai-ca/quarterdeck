@@ -77,7 +77,7 @@ end_reason = "{reason}"
             pane = seat.pane()
             screen = seat.harness.screen(tmux.capture(pane.id)) if pane else None
             return (state.completed_turns and state.turn_open is False and screen is not None
-                    and not screen.working and screen.box == '' and not screen.queued)
+                    and screen.working is False and screen.box == '' and not screen.queued)
         assert wait_for(idle, seconds=15)
         assert any(a.result == 'delivered' for a in svc.attempts.for_message(order.id))
         return ship, svc, seat, root, order
