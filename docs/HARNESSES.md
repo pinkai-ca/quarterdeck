@@ -6,7 +6,7 @@ A harness is the terminal coding program an agent runs in. Quarterdeck runs each
 | --- | --- | --- | --- |
 | Claude Code (Anthropic), `claude` | an Anthropic subscription or API key | yes, on a subscription | yes |
 | Codex (OpenAI), `codex` | an OpenAI subscription or API key | yes, on a subscription | yes |
-| Grok Build (xAI), `grok` | an xAI subscription; an API key, not yet proven live | yes, twice: [details](GROK.md) | not run |
+| Grok Build (xAI), `grok` | an xAI subscription; an API key, not yet proven live | yes, on a subscription: [details](GROK.md) | not run |
 | Antigravity (Google), `antigravity` | Antigravity's own sign-in | yes, on Gemini 3.8 Flash | not run |
 | OpenCode, `opencode`, and pi, `pi` | a local model, OpenRouter with an API key, or any other endpoint | yes, on a local vLLM server and on OpenRouter | yes, on local models |
 
