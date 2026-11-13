@@ -46,7 +46,7 @@ class Desk:
         monkeypatch.setattr(post, 'now', lambda: self.now)
         monkeypatch.setattr(recovery, 'held', lambda seat: None)
 
-        def reading(seat, *, explicit=False):
+        def reading(seat, *, explicit=False, relaunch=False):  # the real gate's signature; the state is synthetic either way
             self.reads += 1
             return idle.Reading(self.state, self.hold) if hasattr(idle, 'Reading') else (self.state, self.hold)
         monkeypatch.setattr(servicemod.idle, 'reading', reading)
