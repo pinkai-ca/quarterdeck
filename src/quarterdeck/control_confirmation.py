@@ -70,6 +70,8 @@ class Continuation:
     phase: str = 'reserved'
     asked: bool = False
     answered: bool = False
+    question: str | None = None
+    question_changed: bool = False
 
     def metadata(self) -> dict:
         return dict(version=1, **asdict(self))
@@ -90,10 +92,16 @@ class Continuation:
             if (not isinstance(data['control'], str) or not data['control']
                     or not isinstance(data['value'], str) or not data['value']
                     or not isinstance(data['origin'], dict) or data['phase'] not in PHASES
-                    or type(data['asked']) is not bool or type(data['answered']) is not bool):
+                    or type(data['asked']) is not bool or type(data['answered']) is not bool
+                    or type(data['question_changed']) is not bool):
                 raise ValueError('shape')
+            question = data['question']
+            if (question is not None and (not isinstance(question, str) or len(question) != 64
+                                         or any(char not in '0123456789abcdef' for char in question))
+                    or data['question_changed'] and question is None):
+                raise ValueError('question provenance')
             if (data['phase'], data['asked'], data['answered']) not in {
-                    ('reserved', False, False), ('submitted', False, False),
+                    ('reserved', False, False), ('submitted', False, False), ('submitted', True, False),
                     ('answering', True, False), ('answered', True, True)}:
                 raise ValueError('phase evidence')
             started, deadline = datetime.fromisoformat(data['started']), datetime.fromisoformat(data['deadline'])
@@ -112,15 +120,14 @@ class Decision:
     reason: str
 
 
-def record_confirmation(harness, control, value, state, *, version=None) -> bool | None:
+def record_confirmation(harness, control, value, state, *, version=None, model_id=None) -> bool | None:
     """Model completion is record-only and uses adapter identity, never generic fuzzy aliases."""
+    if control.name == 'model':
+        wanted = harness.model_identity(value, version=version)
+        return None if wanted is None or model_id is None else wanted == model_id
     reported = getattr(state, control.name, None) if state is not None else None
     if reported is None:
         return None
-    if control.name == 'model':
-        wanted = harness.model_identity(value, version=version)
-        actual = harness.model_identity(reported, version=version)
-        return None if wanted is None or actual is None else wanted == actual
     return reported == value
 
 
@@ -132,6 +139,8 @@ def advance(state: Continuation, now: datetime, *, confirmed: bool | None,
         return Decision(state, 'unconfirmed', 'confirmation deadline expired or clock unknown; not retyped')
     if confirmed is True:
         return Decision(state, 'confirmed', 'record confirmed the requested value')
+    if state.question_changed:
+        return Decision(state, 'wait', 'control question changed; answer authority unknown; no answer sent')
     if (answer is not None and answer.control == state.control and answer.value == state.value
             and answer.keys and state.phase == 'submitted'):
         return Decision(replace(state, phase='answering', asked=True), 'answer',
@@ -157,36 +166,67 @@ def proof(state: Continuation) -> str:
     return 'record confirmed'
 
 
-def observe_control(seat, control, state: Continuation, now: datetime, *, persist, verify) -> Decision:
+def observe_control(seat, control, state: Continuation, now: datetime, *, persist, verify,
+                    answer_current=None) -> Decision:
     """Advance a consumed request through its existing owner's persistence/identity callbacks.
 
     There is deliberately no command-delivery operation here. A resumed reservation can only observe
-    the record or expire; only a positively submitted control can own its subsequent question.
+    the record or expire; only a positively submitted control can own its subsequent question. verify
+    checks the immutable request/launch/declaration; answer_current additionally checks the input scope,
+    not the continuation's mutable phase. Neither callback is supplied by a second queue.
     """
     from .door import Door
 
-    if not verify():
+    if verify() is not True:
         return Decision(state, 'unconfirmed', 'control source changed; command is not retyped')
     record = seat.record()
     try:
-        reported = seat.harness.state(record) if record is not None else None
+        reported = seat.harness.state(record) if record is not None and control.name != 'model' else None
+        model_id = seat.harness.record_model(record) if record is not None and control.name == 'model' else None
     except (OSError, ValueError, TypeError):
-        reported = None
+        reported, model_id = None, None
     launched = seat.launched()
     version = launched.version if launched else None
-    confirmed = record_confirmation(seat.harness, control, state.value, reported, version=version)
+    confirmed = record_confirmation(seat.harness, control, state.value, reported, version=version, model_id=model_id)
+    decision = advance(state, now, confirmed=confirmed)
+    if decision.action != 'wait' or state.phase != 'submitted' or state.question_changed:
+        return decision
+    # Record-only completion may observe the next real prompt/assistant. New input never grants a
+    # confirmation key: that stricter, independent callback must still prove the submitted source.
+    current = answer_current() if answer_current is not None else None
+    if current is False:
+        return Decision(state, 'unconfirmed', 'control input source changed; no answer or retyping')
+    if current is not True:
+        return Decision(state, 'wait', 'control answer currentness unknown; no answer sent')
     door = Door(seat)
-    screen = door.screen() if confirmed is not True and state.phase == 'submitted' else None
-    answer = (seat.harness.control_answer(control, state.value, screen, version=version)
+    screen = door.screen()
+    if screen is not None and getattr(screen.interruption, 'control', None) == control.name:
+        digest = hashlib.sha256(screen.text.encode()).hexdigest()
+        if state.question is None:
+            updated = replace(state, question=digest, asked=True)
+            persist(updated)
+            return Decision(updated, 'wait', 'program asked; waiting for an unchanged complete owned frame')
+        if digest != state.question:
+            updated = replace(state, question_changed=True)
+            persist(updated)
+            return Decision(updated, 'wait', 'control question changed; answer authority unknown; no answer sent')
+    elif state.question is not None:
+        updated = replace(state, question_changed=True)
+        persist(updated)
+        return Decision(updated, 'wait', 'control question disappeared or changed; no answer sent')
+    context = (seat.harness.control_context(seat, control, state.value, screen, version=version,
+                                          question=state.question)
+               if screen is not None else None)
+    answer = (seat.harness.control_answer(control, state.value, screen, version=version, context=context)
               if screen is not None else None)
     decision = advance(state, now, confirmed=confirmed, answer=answer)
     if decision.action == 'answer':
         persist(decision.state)  # same request metadata; reserve the single gesture before any key
-        delivery = door.answer_control(control, state.value, answer, verify)
+        delivery = door.answer_control(control, state.value, answer, answer_current, question=state.question)
         updated = answered(decision.state, typed=delivery.result == 'typed')
         persist(updated)
         return Decision(updated, 'wait', f'{delivery}; waiting for record confirmation')
     if (decision.action == 'wait' and screen is not None
             and getattr(screen.interruption, 'control', None) == control.name and answer is None):
-        return Decision(state, 'wait', 'program asked; option/value or selection gesture unknown; no answer sent')
+        return Decision(state, 'wait', 'program asked; focus/context or option/value/gesture unknown; no answer sent')
     return decision

@@ -8,6 +8,7 @@ and the box is empty. Only the service calls ``deliver``.
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 import time
 from dataclasses import dataclass, replace
@@ -433,12 +434,12 @@ class Door:
         self.tmux.keys(pane.id, *keys)
         return Delivery('typed', 'one native mode-control queue sent')
 
-    def answer_control(self, control, value, answer, verify) -> Delivery:
+    def answer_control(self, control, value, answer, verify, *, question=None) -> Delivery:
         """Answer only this request's adapter-proved option in a fresh, owned control question."""
         from .harness.types import ControlInterruption
 
         self.proof = None
-        if answer is None or self.seat.session.human or not verify():
+        if answer is None or self.seat.session.human or verify() is not True:
             return Delivery('withheld', 'control confirmation ownership is not current')
         launched, pane = self.seat.launched(), self.seat.pane()
         if launched is None or pane is None or pane.dead:
@@ -447,16 +448,35 @@ class Door:
         if (screen is None or not isinstance(screen.interruption, ControlInterruption)
                 or screen.interruption.control != control.name):
             return Delivery('withheld', 'the owned control question is not shown')
-        expected = self.harness.control_answer(control, value, screen, version=launched.version)
+        if question is None or hashlib.sha256(screen.text.encode()).hexdigest() != question:
+            return Delivery('withheld', 'control question provenance unknown or changed; no answer sent')
+        context = self.harness.control_context(self.seat, control, value, screen, version=launched.version,
+                                               question=question)
+        expected = self.harness.control_answer(control, value, screen, version=launched.version, context=context)
         if expected != answer or not answer.keys or answer.control != control.name or answer.value != value:
             return Delivery('withheld', 'control confirmation option/value is not proved')
         reading = self.reading(screen)
         if (reading.reason != screen.interruption.name or reading.open or screen.working or screen.queued
                 or (screen.box or '').strip()):
             return Delivery('withheld', str(reading))
+        final = self.screen()
+        if (final is None or not isinstance(final.interruption, ControlInterruption)
+                or final.interruption.control != control.name):
+            return Delivery('withheld', 'control question changed; no answer sent')
+        if hashlib.sha256(final.text.encode()).hexdigest() != question:
+            return Delivery('withheld', 'control question changed; no answer sent')
+        final_context = self.harness.control_context(self.seat, control, value, final, version=launched.version,
+                                                     question=question)
+        if (final_context != context or self.harness.control_answer(
+                control, value, final, version=launched.version, context=final_context) != answer):
+            return Delivery('withheld', 'control option/context changed; no answer sent')
+        final_reading = self.reading(final)
+        if (final_reading.reason != final.interruption.name or final_reading.open
+                or final.working or final.queued or (final.box or '').strip()):
+            return Delivery('withheld', str(final_reading))
         current = self.seat.pane()
         if (self.seat.launched() != launched or current is None or current.dead
-                or (current.id, current.pid) != (pane.id, pane.pid) or not verify()):
+                or (current.id, current.pid) != (pane.id, pane.pid) or verify() is not True):
             return Delivery('withheld', 'control confirmation source changed; no answer sent')
         self.tmux.keys(pane.id, *answer.keys)
         return Delivery('typed', 'program asked; ship answered yes')

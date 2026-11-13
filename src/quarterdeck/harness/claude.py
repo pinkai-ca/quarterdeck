@@ -25,11 +25,11 @@ from dataclasses import replace
 from pathlib import Path
 
 from .json_record import JsonLinesReader, input_reader, input_rows, records_matching
-from .types import AUTHENTICATION, Inputs, TurnFailure, ControlAnswer, ControlInterruption
+from .types import AUTHENTICATION, Inputs, TurnFailure, ControlAnswer, ControlContext, ControlInterruption
 from .claude_background import BackgroundBash, user_notice
 
 from ..ship import Pool, SeatSpec
-from .base import (Box, ship_template, trimmed, Input, Control, Credential, Harness, Interruption, Keys, Launch, Screen, Tokens,
+from .base import (Box, ship_template, trimmed, record_fingerprint, Input, Control, Credential, Harness, Interruption, Keys, Launch, Screen, Tokens,
                    Turn, Usage, Window, credential, entries, key_environment, merged, when)
 
 ENDS_TURN = {"end_turn", "max_tokens", "stop_sequence"}
@@ -604,10 +604,51 @@ WORKING = re.compile(r"esc to interrupt|^[*✻✶✳✢·⠂⠄⠆] \S+… \(\d+
 SET_MODEL = re.compile(r"Set model to `?([^`]+?)`? and saved")
 SET_EFFORT = re.compile(r"Set effort level to `?(\w+)`?")
 QUEUED_PLACEHOLDER = "Press up to edit queued messages"
-# 2.1.317: the model-set record establishes Haiku; the control contract establishes Sonnet.
-# No prefix/suffix normalization, date suffix removal, or unproved Opus display alias.
-MODEL_DISPLAY_IDENTITIES = {'Haiku 5.5': 'claude-haiku-5-5', 'Sonnet 5.5': 'claude-sonnet-5-5'}
+# Exact native IDs established for 2.1.317. ModelPicker/account catalogs may override display names:
+# a display-only command-output line never establishes identity or record confirmation.
 MODEL_IDENTITIES = frozenset({'claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5'})
+
+
+def screen_reader_boolean(value: str | None) -> bool | None:
+    """2.1.317's tri-state env parser; an unrecognized token falls through to settings."""
+    if not isinstance(value, str):
+        return None
+    token = value.strip().lower()
+    if token in {'1', 'true', 'yes', 'on'}:
+        return True
+    if token in {'0', 'false', 'no', 'off'}:
+        return False
+    return None
+
+
+def catalog_display(data: dict, target: str, *, launched: datetime, now: datetime) -> tuple[str, int, int] | None:
+    """A fresh persisted catalog candidate, not proof of the process's in-memory name or native ID."""
+    try:
+        if not isinstance(target, str) or not target:
+            return None
+        if type(data['version']) is not int or data['version'] != 2:
+            return None
+        fetched, stale = data['fetchedAt'], data['staleAt']
+        if (type(fetched) is not int or type(stale) is not int
+                or launched.tzinfo is None or now.tzinfo is None):
+            return None
+        start_ms, now_ms = int(launched.timestamp() * 1000), int(now.timestamp() * 1000)
+        if not (0 <= fetched <= now_ms < stale and start_ms <= now_ms and start_ms < stale):
+            return None
+        rows = data['catalog']['config']['models']
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            return None
+        matching = [row for row in rows if row.get('id') == target]
+        if len(matching) != 1:
+            return None
+        name = matching[0]['name']
+        if not isinstance(name, str) or not name or len(name) > 200 or not all(c.isprintable() for c in name):
+            return None
+        return name, fetched, stale
+    except (KeyError, TypeError, ValueError, AttributeError, OverflowError):
+        return None
+
+
 SETTINGS = {
     "env": {"DISABLE_AUTOUPDATER": "1"},
     "promptSuggestionEnabled": False,
@@ -704,30 +745,55 @@ class ClaudeHarness(Harness):
             return None
         if value in MODEL_IDENTITIES:
             return value
-        return MODEL_DISPLAY_IDENTITIES.get(value) if version == '2.1.317' else None
+        return None
+
+    def record_model(self, record: Path) -> str | None:
+        # A local-command result replaces State.model with a DISPLAY name. Even a display spelling
+        # like a native ID is not identity evidence. Only the next main assistant's model field is.
+        before = record_fingerprint(record)
+        self.state(record)  # validate this adapter's current native record envelope before walking it
+        model = None
+        for row in entries(record):
+            if row.get('isSidechain') or row.get('isCompactSummary') is True:
+                continue
+            message = row.get('message')
+            if not isinstance(message, dict):
+                continue
+            if row.get('type') == 'assistant' and message.get('model') is not None:
+                model = self.model_identity(message['model'])
+            elif row.get('type') == 'user':
+                content = message.get('content')
+                if isinstance(content, str) and content.startswith('<local-command-stdout>') and SET_MODEL.search(content):
+                    model = None
+        return model if record_fingerprint(record) == before else None
 
     def control_answer(self, control: Control, value: str, screen: Screen,
-                       *, version: str | None = None) -> ControlAnswer | None:
+                       *, version: str | None = None, context: ControlContext | None = None) -> ControlAnswer | None:
         if (control.name != 'model' or version != '2.1.317'
                 or not isinstance(screen.interruption, ControlInterruption)
                 or screen.interruption.control != 'model'):
             return None
         target = self.model_identity(value, version=version)
-        display = next((name for name, identity in MODEL_DISPLAY_IDENTITIES.items() if identity == target), None)
-        if display is None or not any(line.strip(' \u00a0') == 'Switch model?' for line in screen.text.splitlines()):
+        if (not isinstance(context, ControlContext) or context.version != version or context.target != target
+                or target is None or context.screen_reader_off is not True or context.focused is not True
+                or not context.scope or not context.display or len(context.display) > 200
+                or not all(char.isprintable() for char in context.display)):
+            return None
+        if sum(line.strip(' \u00a0') == 'Switch model?' for line in screen.text.splitlines()) != 1:
             return None
         pattern = re.compile(r'^[ \u00a0]*(?P<cursor>❯[ \u00a0]*)?(?P<number>[0-9]+)\. (?P<text>.*?)[ \u00a0]*$')
         options = [match for line in screen.text.splitlines() if (match := pattern.fullmatch(line))]
-        label = f'Yes, switch to {display}'
+        label = f'Yes, switch to {context.display}'
         yes = [option for option in options if option['text'] == label and option['number'] == '1']
         no = [option for option in options if option['text'] == 'No, go back' and option['number'] == '2']
         if len(options) != 2 or len(yes) != 1 or len(no) != 1:
             return None
-        # Text/value chooses the option. Enter is proved ONLY with this exact Yes already selected;
-        # the displayed number, movement and every off-Yes gesture remain unsupported.
-        if not yes[0]['cursor'] or no[0]['cursor']:
+        if sum(bool(option['cursor']) for option in options) > 1:
             return None
-        return ControlAnswer('model', value, label, ('Enter',))
+        # 2.1.317 source commits an indexed model option by digit independently of the cursor.
+        # Mode, focus and the expected display's current context must all be positively proved.
+        # This is source evidence, not a claim that a native digit press was measured.
+        return ControlAnswer('model', value, label, ('1',))
 
     reads_queue_error = True
     compactions = staticmethod(compactions)

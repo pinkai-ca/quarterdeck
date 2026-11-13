@@ -44,10 +44,9 @@ def observe(seat) -> Reading:
             return Reading('unknown', reason='current model launch is not proved')
         record = seat.record()
         try:
-            state = seat.harness.state(record) if record is not None else None
+            model = seat.harness.record_model(record) if record is not None else None
         except (OSError, ValueError, TypeError, RecordError):
-            state = None
-        model = state.model if state is not None else None
+            model = None
         source = 'record'
         if model is None:
             screen = Door(seat).screen()
@@ -138,10 +137,17 @@ def step(service, seat, pending_model):
             held.enter_context(post.admission(runtime, name))
         for intent in prior['reports']:
             publish(service.store, intent)
+        launched = seat.launched()
+        expected = seat.harness.model_identity(seat.spec.model, version=launched.version if launched else None)
+        if expected is not None and pending_model(seat, expected) is True:
+            if prior['active']:
+                prior['active'] = False
+                save(runtime, seat.name, prior)
+            return  # a proved matching pending control suppresses even an unreadable current model
         reading = observe(seat)
         if reading.status == 'unknown':
             return  # unknown cannot clear a previously observed difference
-        active = reading.status == 'mismatch' and pending_model(seat, reading.declared) is not True
+        active = reading.status == 'mismatch'
         if active:
             key = [seat.harness.name, reading.declared, reading.running]
             if key != prior['key']:
@@ -170,7 +176,7 @@ def step(service, seat, pending_model):
             publish(service.store, intent)
 
 
-def unrouted(ship, selected):
+def unrouted(ship, selected, pending_model=None):
     """Status uses the operational journal, including named differences when no systems seat is up."""
     systems = {seat.name for seat in selected if seat.spec.role == 'systems' and seat.is_up}
     lines = []
@@ -182,6 +188,9 @@ def unrouted(ship, selected):
             key = data['key']
             launched = seat.launched()
             expected = seat.harness.model_identity(seat.spec.model, version=launched.version if launched else None)
+            if (expected is not None and pending_model is not None
+                    and pending_model(seat, expected) is True):
+                continue
             if (data['active'] and key and seat.spec.model_mode != 'program-default'
                     and key[0] == seat.harness.name and key[1] == expected):
                 lines.append(f'{seat.name}: model mismatch {key[2]} / declared {key[1]}; no systems seat up')

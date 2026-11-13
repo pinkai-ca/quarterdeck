@@ -24,7 +24,7 @@ from ..ship import Pool, SeatSpec
 
 from .json_record import RecordError, entries, when
 from .home import credential, key_environment, merged, ship_template
-from .types import Box, Control, ControlAnswer, Credential, Input, Interruption, Join, Keys, Launch, PasteClearRule, Screen, State, Tokens, ToolCall, Turn
+from .types import Box, Control, ControlAnswer, ControlContext, Credential, Input, Interruption, Join, Keys, Launch, PasteClearRule, Screen, State, Tokens, ToolCall, Turn
 from .capabilities import (DefaultMetadata, EffortCapability, reject_default_overrides,
                            reject_unclassified_overrides, validate_selection)
 
@@ -468,8 +468,18 @@ class Harness(ABC):
             return None
         return value
 
+    def control_context(self, seat, control: Control, value: str, screen: Screen,
+                        *, version: str | None = None, question: str | None = None) -> ControlContext | None:
+        """Current mode/focus/display provenance; unsupported or unknown returns no authority."""
+        return None
+
+    def record_model(self, record: Path) -> str | None:
+        """The adapter's native model identity from this record, not a display-name guess."""
+        state = self.state(record)
+        return self.model_identity(state.model)
+
     def control_answer(self, control: Control, value: str, screen: Screen,
-                       *, version: str | None = None) -> ControlAnswer | None:
+                       *, version: str | None = None, context: ControlContext | None = None) -> ControlAnswer | None:
         """A value-matched option and proved keys, or no authority to answer this frame."""
         return None
 

@@ -296,6 +296,18 @@ class ControlAnswer:
 
 
 @dataclass(frozen=True)
+class ControlContext:
+    """Adapter-proved current selection context, never inferred from a display name alone."""
+
+    version: str
+    target: str
+    display: str
+    screen_reader_off: bool | None = None
+    focused: bool | None = None
+    scope: tuple = ()
+
+
+@dataclass(frozen=True)
 class Control:
     """A setting of the program: its launch form, its in-session form, and what confirms it."""
 

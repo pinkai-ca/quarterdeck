@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from quarterdeck import control_confirmation as confirmation
+from quarterdeck.harness.types import Control
 from quarterdeck.model_mismatch import compare
 
 
@@ -50,3 +51,15 @@ def test_canonical_model_difference_uses_only_declared_identity_mapping():
     mismatch = compare(adapter, 'next-model', 'prior-model', source='record')
     assert (mismatch.status, mismatch.declared, mismatch.running) == ('mismatch', 'next-model', 'prior-model')
     assert compare(adapter, 'next-model', 'unattested-display', source='screen').status == 'unknown'
+
+
+def test_display_observation_alone_does_not_complete_a_model_continuation():
+    aliases = {'display-next': 'next-model', 'next-model': 'next-model'}
+    adapter = SimpleNamespace(model_identity=lambda value, version=None: aliases.get(value))
+    control = Control('model', '--model <value>', '/model {value}', 'record')
+    displayed = SimpleNamespace(model='display-next')
+    assert confirmation.record_confirmation(adapter, control, 'next-model', displayed) is None
+    assert confirmation.record_confirmation(adapter, control, 'next-model', displayed,
+                                            model_id='prior-model') is False
+    assert confirmation.record_confirmation(adapter, control, 'next-model', displayed,
+                                            model_id='next-model') is True
