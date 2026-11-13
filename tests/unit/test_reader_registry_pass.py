@@ -18,7 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import record_owner, service, turn_failure
+from quarterdeck import attribution_cache, record_owner, service, turn_failure
 from quarterdeck.harness.base import RecordError, State, Tokens, Turn
 from quarterdeck.harness.fake import FakeHarness
 from quarterdeck.service import Service
@@ -62,6 +62,10 @@ class Spy:
     def ownership(self, path: Path) -> int:
         """Parses of one registry made by the ownership path itself (bindings/register)."""
         return sum(1 for module, parsed in self.parses if module == 'quarterdeck.record_owner' and parsed == path)
+
+    def total(self, path: Path) -> int:
+        """Every parse of one registry, whichever framework path asked for it."""
+        return sum(1 for _, parsed in self.parses if parsed == path)
 
 
 def caller() -> str | None:
@@ -467,5 +471,174 @@ def test_an_account_pass_that_fails_leaves_no_membership_behind(tmp_path, monkey
         assert parsed == 1
         record_owner.bindings(seat)
         assert spy.ownership(registry) == parsed + 1
+    finally:
+        w.svc.ledger.close()
+
+
+# -- the whole account pass: ownership and attribution replay share one reading ------------------------
+
+def replays(monkeypatch, before=None):
+    """Counts attribution replays; ``before`` runs between the ownership reads and the replay."""
+    calls, real = [], attribution_cache.Attribution.replay
+
+    def counted(self, store, runtime, bindings=None, **kwargs):
+        calls.append(bindings)
+        if before is not None:
+            before()
+        return real(self, store, runtime, bindings, **kwargs)
+
+    monkeypatch.setattr(attribution_cache.Attribution, 'replay', counted)
+    return calls
+
+
+def replay_readers(w) -> dict[str, str | None]:
+    return {record: source[0][0] for record, source in w.svc.ledger.attributions.sources.items()}
+
+
+def untyped(seat) -> Path:
+    return seat.home / f'record-{LETTERS[5]}'
+
+
+def totals(spy, w) -> dict[str, int]:
+    return {seat.name: spy.total(record_owner.registry(seat.folder)) for seat in w.seats}
+
+
+def test_a_whole_unchanged_account_pass_parses_each_registry_once_for_ownership_and_replay(tmp_path, monkeypatch):
+    w = accounting(tmp_path, monkeypatch)
+    spy = Spy(monkeypatch)
+    calls = replays(monkeypatch)
+    try:
+        w.svc.account()
+        assert calls == [None], 'the replay ran once and enumerated the seat folders itself'
+        assert totals(spy, w) == {seat.name: 1 for seat in w.seats}, 'ownership and replay share one parse; two fail'
+        assert spy.writes == [] and spy.locks == []
+        readers = replay_readers(w)
+        for seat in w.seats:
+            # Only the registry names record-h.. record-m; the launch journal names record-g alone.
+            assert all(readers[str(path)] == 'fake' for path in w.typed[seat.name]), 'the replay used the registry reading'
+            assert readers.get(str(untyped(seat))) is None, 'an untyped row gives the replay no reader'
+        w.svc.account()
+        assert len(calls) == 2
+        assert totals(spy, w) == {seat.name: 2 for seat in w.seats}, 'a later pass parses anew, once'
+        assert spy.writes == [] and spy.locks == []
+        assert replay_readers(w) == readers, 'the second replay read the registry too'
+    finally:
+        w.svc.ledger.close()
+
+
+def test_a_retired_seats_registry_is_still_read_by_the_replay_once_and_its_evidence_kept(tmp_path, monkeypatch):
+    w = accounting(tmp_path, monkeypatch)
+    kept, retired = w.seats
+    spy = Spy(monkeypatch)
+    replays(monkeypatch)
+    try:
+        w.svc.account()
+        assert totals(spy, w) == {kept.name: 1, retired.name: 1}
+        monkeypatch.setattr(w.svc, 'resolved_seats', lambda: [kept])
+        w.svc.account()
+        assert totals(spy, w) == {kept.name: 2, retired.name: 2}, 'the retired registry: one replay read, no more'
+        assert spy.ownership(record_owner.registry(retired.folder)) == 2, 'parsed through the shared observation'
+        assert spy.writes == [] and spy.locks == []
+        readers = replay_readers(w)
+        assert all(readers[str(path)] == 'fake' for path in w.typed[retired.name]), 'retired evidence is not skipped'
+    finally:
+        w.svc.ledger.close()
+
+
+def test_a_registry_changed_between_ownership_and_replay_is_reread_by_the_replay(tmp_path, monkeypatch):
+    w = accounting(tmp_path, monkeypatch)
+    changed, other = w.seats
+    registry = record_owner.registry(changed.folder)
+    conflicted = w.typed[changed.name][1]
+    spy = Spy(monkeypatch)
+    calls = replays(monkeypatch, before=lambda: append_as_another_writer(
+        registry, {'record': str(conflicted), 'harness': 'codex'}, spy.real_flock))
+    try:
+        w.svc.account()
+        assert len(calls) == 1
+        assert totals(spy, w) == {changed.name: 2, other.name: 1}, 'an honest reread of the changed registry only'
+        assert spy.writes == [] and spy.locks == []
+        readers = replay_readers(w)
+        assert readers[str(conflicted)] is None, 'the replay saw the conflicting row; nothing stale, nothing guessed'
+        assert all(readers[str(path)] == 'fake' for path in w.typed[changed.name] if path != conflicted)
+        assert all(readers[str(path)] == 'fake' for path in w.typed[other.name])
+    finally:
+        w.svc.ledger.close()
+
+
+def test_a_row_appended_during_the_pass_is_seen_by_the_replay_without_another_parse(tmp_path, monkeypatch):
+    w = accounting(tmp_path, monkeypatch, names=('synthetic-seat-q',))
+    seat = w.seats[0]
+    registry = record_owner.registry(seat.folder)
+    fresh = touch(seat, 'z')
+    (seat.folder / 'record').write_text(f'{fresh}\n')  # a pin no registry or launch-journal row names yet
+    real = record_owner.launch_reader
+    monkeypatch.setattr(record_owner, 'launch_reader', lambda launched: 'fake' if launched is None else real(launched))
+    spy = Spy(monkeypatch)
+    calls = replays(monkeypatch)
+    try:
+        w.svc.account()
+        assert len(calls) == 1
+        assert rows_of(registry).count({'record': str(fresh), 'harness': 'fake'}) == 1
+        assert len(spy.writes) == 1 and [op for _, op in spy.locks] == [fcntl.LOCK_EX]
+        # The ownership read, the recheck under the lock, one read after the append; the replay shares the last.
+        assert spy.total(registry) == 3
+        assert w.svc.ledger.ingested(fresh) == 1
+        assert replay_readers(w)[str(fresh)] == 'fake', 'only the appended registry row names this reader'
+        w.svc.account()
+        assert spy.total(registry) == 4, 'the next pass is back to one parse'
+        assert len(spy.writes) == 1 and len(spy.locks) == 1
+        assert replay_readers(w)[str(fresh)] == 'fake'
+    finally:
+        w.svc.ledger.close()
+
+
+def test_an_unreadable_registry_is_skipped_by_the_replay_and_never_answered_from_an_earlier_reading(tmp_path, monkeypatch):
+    w = accounting(tmp_path, monkeypatch)
+    broken, healthy = w.seats
+    registry = record_owner.registry(broken.folder)
+    good = registry.read_text()
+    spy = Spy(monkeypatch)
+    replays(monkeypatch)
+    try:
+        w.svc.account()
+        assert all(replay_readers(w)[str(path)] == 'fake' for path in w.typed[broken.name])
+        registry.write_text('{\n')
+        before = totals(spy, w)
+        w.svc.account()
+        assert totals(spy, w)[healthy.name] == before[healthy.name] + 1, 'a healthy registry still reads once'
+        assert any(event == 'error' and data.get('seat') == broken.name and data.get('record') == record_owner.REGISTRY
+                   and 'unreadable record ownership' in data.get('error', '') for event, data in w.logs)
+        readers = replay_readers(w)
+        first, *rest = w.typed[broken.name]
+        assert readers[str(first)] == 'fake', 'the launch journal is still read for that folder'
+        assert all(readers[str(path)] is None for path in rest), 'skipped as before, not answered from pass one'
+        assert all(readers[str(path)] == 'fake' for path in w.typed[healthy.name])
+        assert spy.writes == [] and spy.locks == []
+        registry.write_text(good + json.dumps({'record': str(rest[1]), 'harness': 'codex'}) + '\n')
+        w.svc.account()
+        readers = replay_readers(w)
+        assert readers[str(rest[0])] == 'fake' and readers[str(rest[1])] is None, 'the repaired registry reads fresh'
+    finally:
+        w.svc.ledger.close()
+
+
+def test_the_replays_readers_inside_a_pass_equal_a_fresh_replay_outside_any_pass(tmp_path, monkeypatch):
+    w = accounting(tmp_path, monkeypatch)
+    first = w.seats[0]
+    registry = record_owner.registry(first.folder)
+    spy = Spy(monkeypatch)
+    try:
+        w.svc.account()  # every typed record is ingested first, so the replay has a turn row for each
+        registry.write_text(registry.read_text() + json.dumps({'record': str(w.typed[first.name][2]), 'harness': 'codex'}) + '\n')
+        w.svc.account()
+        inside = {record: (source[0][0], source[2]) for record, source in w.svc.ledger.attributions.sources.items()}
+        assert inside[str(w.typed[first.name][2])][0] is None and inside[str(w.typed[first.name][1])][0] == 'fake'
+        before = totals(spy, w)
+        outside = attribution_cache.Attribution(w.svc.ledger.db, create=False)
+        outside.replay(w.svc.store, w.svc.runtime, commit=False)
+        w.svc.ledger.db.rollback()
+        assert totals(spy, w) == {name: count + 1 for name, count in before.items()}, 'outside a pass: a fresh read'
+        assert {record: (source[0][0], source[2]) for record, source in outside.sources.items()} == inside
     finally:
         w.svc.ledger.close()
