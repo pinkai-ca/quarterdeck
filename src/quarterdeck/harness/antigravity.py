@@ -59,6 +59,7 @@ class AntigravityHarness(Harness):
     usage_interval = 300
     background_usage = True
     model_scoped_usage = True
+    model_scoped_quota = True
     headline_window = ("Gemini 4 Argon", "7d")
     screen_walls = True
     record_limits = ("cost is unknown unless the record states it; effort and child-turn counts are not exposed; "
@@ -76,6 +77,10 @@ class AntigravityHarness(Harness):
     def quota_scope(self, event, model: str | None) -> bool | None:
         from .antigravity_models import event_applies
         return event_applies(event, model)
+
+    def quota_scope_label(self, event) -> str:
+        return event.group or (f"model {event.model}" if event.model else
+                               "all models" if event.all_models else "scope unknown")
 
     def is_headline(self, group: str | None, window: str) -> bool:
         return True  # Every reported group/bucket, including a retained unknown measurement.

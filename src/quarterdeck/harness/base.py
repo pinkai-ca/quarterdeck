@@ -332,6 +332,7 @@ class Harness(ABC):
         return None
 
     model_scoped_usage = False
+    model_scoped_quota = False
 
     def usage_scope(self, group: str | None, model: str | None) -> bool | None:
         """True when a window applies; None when its model scope cannot be established."""
@@ -344,6 +345,10 @@ class Harness(ABC):
     def quota_scope(self, event: Wall, model: str | None) -> bool | None:
         """A refusal at a model group's limit applies as that group's window does; one with no group, to every model."""
         return True if event.group is None else self.usage_scope(event.group, model)
+
+    def quota_scope_label(self, event: Wall) -> str | None:
+        """An event's scope label, where the adapter distinguishes native quota models."""
+        return None
 
     def shared_usage_key(self, pool: Pool) -> tuple | None:
         return None

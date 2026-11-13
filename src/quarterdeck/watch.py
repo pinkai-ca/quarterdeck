@@ -575,7 +575,7 @@ def limit_state(ship: Ship, selected: list[Seat | UnresolvedSeat]):
                 walled.append(seat)
                 if not any(quota.cached_open(ship, book, pool, seat) for pool in quota.candidate_pools(seat)):
                     label = seat.name
-                    if seat.harness.name == "antigravity":
+                    if seat.harness.model_scoped_quota:
                         label += " (" + "; ".join(reason.split(" · ")[0] for reason in reasons) + ")"
                     held.append(label)
             reasons = [f'{seat.name}: move held: {reason}' for seat in walled

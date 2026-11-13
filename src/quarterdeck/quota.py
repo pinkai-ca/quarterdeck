@@ -37,7 +37,7 @@ class ModelScope:
         if verdict is True:
             return True
         # An unplaced actual refusal remains local to its own observed execution.
-        if (self.reader.name == "antigravity" and self.model is None and event.model is None
+        if (self.reader.model_scoped_quota and self.model is None and event.model is None
                 and source in self.sources and owner == self.seat):
             return True
         return verdict
@@ -50,15 +50,17 @@ def model_scope(seat, pool_name: str, *, running: bool = False, screen=None):
     spec = None if running else seat.spec.for_pool(pool_name)
     reader = seat.harness if running else harnesses.get(spec.harness)
     pool = seat.ship.pools[pool_name]
-    if pool.kind == "subscription" and pool.provider == "google":
-        reader = harnesses.native_for(pool.provider)  # Membership belongs to the paying provider's adapter.
-    if not reader.model_scoped_usage:
+    if pool.kind == "subscription":
+        native = harnesses.native_for(pool.provider)
+        if native.model_scoped_quota:
+            reader = native  # Membership belongs to the paying provider's adapter.
+    if not (reader.model_scoped_usage or reader.model_scoped_quota):
         return None
     sources = ()
     if running:
         from .watch import running_settings
         model = running_settings(seat, screen=screen).get("model")
-        if reader.name == "antigravity":
+        if reader.model_scoped_quota:
             record, launched = seat.record(), seat.launched()
             sources = tuple(filter(None, (str(record) if record else None,
                             f"screen:{seat.name}:{launched.at}" if launched else None)))
@@ -97,7 +99,7 @@ def cached_open(ship, book, pool_name: str, seat=None) -> bool:
         return not book.walled(pool_name, ship)
     reader = harnesses.native_for(pool.provider)
     scope = (model_scope(seat, pool_name) if seat is not None else
-             ModelScope(pool_name, reader, None) if reader.name == "antigravity" else None)
+             ModelScope(pool_name, reader, None) if reader.model_scoped_quota else None)
     if reader.background_usage or reader.reads_usage:
         return (book.usage_known(pool_name, scope=scope) and book.quota.room_known(pool_name, scope=scope)
                 and not book.walled(pool_name, ship, scope=scope))
@@ -197,6 +199,8 @@ class Quotas:
         return hashlib.sha256(json.dumps(row, separators=(",", ":")).encode()).hexdigest()
 
     def events(self, now: datetime | None = None, *, ship=None) -> list[dict]:
+        from . import harness as harnesses
+
         now = now or datetime.now(timezone.utc)
         has_scope = self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='wall_scopes'").fetchone()
         group_column = "group_name" if "group_name" in self.columns() else "NULL"
@@ -215,8 +219,10 @@ class Quotas:
                         *scope[:3], all_models=bool(scope[3])) if valid else Wall(key, None, None, reason, error_id, signature)
             if wall.group is None and refused_group is not None:
                 wall = replace(wall, group=refused_group)  # the refused limit's model group, as its record named it
-            if wall.harness is None and ship is not None and pool in ship.pools and ship.pools[pool].provider == "google":
-                wall = replace(wall, harness="antigravity")  # Provider identity supplies no model/group scope.
+            if wall.harness is None and ship is not None and pool in ship.pools and ship.pools[pool].kind == "subscription":
+                native = harnesses.native_for(ship.pools[pool].provider)
+                if native.model_scoped_quota:
+                    wall = replace(wall, harness=native.name)  # Provider identity supplies no model/group scope.
             found.append(dict(seat=seat, pool=pool, reason=reason, resets_at=reset, observed_at=observed,
                               source=source, wall=wall, scope_known=bool(valid and (wall.model or wall.group or wall.all_models)),
                               scope_error=scope[5] if scope else None))
@@ -229,9 +235,11 @@ class Quotas:
 
     @staticmethod
     def describe(item) -> str:
+        from . import harness as harnesses
+
         event = item["wall"]
-        scope = (event.group or (f"model {event.model}" if event.model else
-                 "all models" if event.all_models else "scope unknown")) if event.harness == "antigravity" else None
+        reader = harnesses.get(event.harness) if event.harness in harnesses.NAMES else None
+        scope = reader.quota_scope_label(event) if reader is not None else None
         label = item["pool"] if item["pool"] != UNKNOWN else item["seat"] + " (pool unknown)"
         return (f"{label} {event.reason}" + (f" ({scope})" if scope else "") +
                 f" · {reset_text(item['resets_at'], item['source'].startswith('screen:'))}")
@@ -307,7 +315,7 @@ def observe_screen(book, seat, screen, launched, now: datetime | None = None, *,
     event = seat.harness.quota_wall(screen.quota, now)
     if event is None or book.quota.recognized(seat.name, event):
         return
-    if seat.harness.model_scoped_usage:
+    if seat.harness.model_scoped_quota:
         from .watch import running_settings
         event = replace(event, model=running_settings(seat, screen=screen).get("model"))
     source = f"screen:{seat.name}:{launched.at if launched else 'unknown-launch'}"

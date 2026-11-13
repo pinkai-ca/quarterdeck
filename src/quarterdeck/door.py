@@ -120,9 +120,9 @@ class Door:
                     pass  # a book written by an older service: the screen still speaks
         if shown is not None:
             # This is the provider's actual refusal on this screen, not another model's cached cap.
-            model = quota.model_scope(self.seat, pool, running=True, screen=screen) if self.harness.model_scoped_usage else None
+            model = quota.model_scope(self.seat, pool, running=True, screen=screen) if self.harness.model_scoped_quota else None
             label = f" (model {model.model})" if model is not None and model.model else ""
-            if self.harness.name == "antigravity" and not label:
+            if self.harness.model_scoped_quota and not label:
                 label = " (own refusal; model unknown)"
             return f"{pool} {shown.reason}{label} · {reset_text(stamp(shown.resets_at), from_screen=True)}"
         return None
