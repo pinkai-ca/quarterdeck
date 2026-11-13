@@ -435,11 +435,13 @@ def render_summary(data: dict) -> list[str]:
     widths = [max(len(row[index]) for row in table) for index in range(len(fields))]
     lines.append("")
     for row in table:
-        line = "  ".join(value.ljust(width) for value, width in zip(row, widths)).rstrip()
+        line = "   ".join(value.ljust(width) for value, width in zip(row, widths)).rstrip()
         lines.append(line)
     lines += ["", "Runs on"]
     width = max((len(name) for name in data["runs_on"]), default=0)
-    lines += [f"  {name:<{width}}  {value}" for name, value in data["runs_on"].items()]
+    for name, value in data["runs_on"].items():
+        shown = value.replace(f"({home}/", "(~/").replace(f"({home})", "(~)")
+        lines.append(f"  {name:<{width}}   {shown}")
     if "note" in data:
         lines += ["", data["note"]]
     for row in data["seats"]:

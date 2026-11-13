@@ -1,5 +1,6 @@
 """Ordinary setup composition checks with synthetic operations and temporary ships."""
 import os
+from pathlib import Path
 import tomllib
 
 import pytest
@@ -210,3 +211,40 @@ def test_project_display_abbreviates_home_without_changing_json(tmp_path, monkey
     data = setup_proposal.summary(current, setup_proposal.display_control)
     assert data["project_path"] == str(tmp_path)
     assert "Project path:   ~/" + tmp_path.name in setup_proposal.render_summary(data)
+
+
+def test_summary_matches_approved_example_line_for_line(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    data = {
+        "operator_name": "Admiral", "office_name": "Office", "ship_name": "Endeavour",
+        "project_path": str(tmp_path / "code/my-app"),
+        "seats": [
+            dict(seat="Desk", name="Maeve", harness="Claude Code", model="claude-opus-5-5", effort="max"),
+            dict(seat="Captain", name="Picard", harness="Codex", model="gpt-6-astra", effort="xhigh"),
+            dict(seat="Engineer", name="Geordi", harness="pi", model="qwen3.8-27b", effort="medium"),
+        ],
+        "runs_on": {
+            "Claude Code": f"a subscription you are signed in to ({tmp_path / '.claude'})",
+            "Codex": f"a subscription you are signed in to ({tmp_path / '.codex'})",
+            "pi": "a local model at http://127.0.0.1:8000/v1",
+        },
+    }
+    expected = """Operator name:  Admiral
+Office name:    Office
+
+Ship name:      Endeavour
+Project path:   ~/code/my-app
+
+Seat       Name     Harness       Model             Effort
+Desk       Maeve    Claude Code   claude-opus-5-5   max
+Captain    Picard   Codex         gpt-6-astra       xhigh
+Engineer   Geordi   pi            qwen3.8-27b       medium
+
+Runs on
+  Claude Code   a subscription you are signed in to (~/.claude)
+  Codex         a subscription you are signed in to (~/.codex)
+  pi            a local model at http://127.0.0.1:8000/v1""".splitlines()
+    assert setup_proposal.render_summary(data) == expected
+    # Rendering leaves the machine-readable paths intact.
+    assert data["project_path"] == str(tmp_path / "code/my-app")
+    assert str(tmp_path / ".claude") in data["runs_on"]["Claude Code"]
