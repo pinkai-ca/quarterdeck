@@ -30,7 +30,7 @@ def fake_check(monkeypatch, tmp_path, *, model=None, like=None):
     probes = []
 
     @contextmanager
-    def temporary(ship, tmux, spec, orders, purpose):
+    def temporary(ship, tmux, spec, orders, purpose, **_):
         specs.append(spec)
         yield SimpleNamespace(ship=ship, spec=spec)
 
@@ -76,7 +76,7 @@ def test_requested_model_is_confirmed_record_first(monkeypatch):
     harness.state = lambda record: SimpleNamespace(model="model-synth")
     seat = SimpleNamespace(harness=harness, spec=SimpleNamespace(model="model-synth"),
                            record=lambda: Path("record-synth"))
-    monkeypatch.setattr(check, "Door", lambda seat: SimpleNamespace(screen=lambda: Screen("", shows={})))
+    monkeypatch.setattr(check, "Door", lambda seat: SimpleNamespace(screen=lambda: Screen("", None, shows={})))
     result = check.model_confirmation(seat, "model-synth", require_record=True)
     assert result.passed
     assert "requested model-synth" in result.detail
@@ -86,7 +86,7 @@ def test_requested_model_is_confirmed_record_first(monkeypatch):
 
 def test_startup_screen_can_confirm_before_the_record_model(monkeypatch):
     seat = SimpleNamespace(harness=AntigravityHarness(), spec=SimpleNamespace(model="flash-synth"), record=lambda: None)
-    monkeypatch.setattr(check, "Door", lambda seat: SimpleNamespace(screen=lambda: Screen("", shows={"model": "flash-synth"})))
+    monkeypatch.setattr(check, "Door", lambda seat: SimpleNamespace(screen=lambda: Screen("", None, shows={"model": "flash-synth"})))
     result = check.model_confirmation(seat, "flash-synth")
     assert result.passed
     assert "screen-observed flash-synth" in result.detail

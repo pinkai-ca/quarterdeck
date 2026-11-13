@@ -49,8 +49,9 @@ def model_scope(seat, pool_name: str, *, running: bool = False, screen=None):
 
     spec = None if running else seat.spec.for_pool(pool_name)
     reader = seat.harness if running else harnesses.get(spec.harness)
-    pool = seat.ship.pools[pool_name]
-    if pool.kind == "subscription":
+    ship = getattr(seat, "ship", None)
+    pool = ship.pools.get(pool_name) if ship is not None else None
+    if pool is not None and pool.kind == "subscription":
         native = harnesses.native_for(pool.provider)
         if native.model_scoped_quota:
             reader = native  # Membership belongs to the paying provider's adapter.

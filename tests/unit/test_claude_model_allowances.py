@@ -434,7 +434,7 @@ def test_unknown_or_ambiguous_model_cannot_prove_scoped_wall_or_destination_room
     r = scoped
     windows(r, "second", fable=1)
     windows(r, "third")
-    monkeypatch.setattr(watch, "running_settings", lambda seat: {"model": unknown} if unknown else {})
+    monkeypatch.setattr(watch, "running_settings", lambda seat, **_: {"model": unknown} if unknown else {})
     assert not quota.current_walled(r.seat, r.svc.ledger)
     choices = {name: dict(values) for name, values in r.seat.spec.pool_choices.items()}
     choices["third"]["model"] = unknown

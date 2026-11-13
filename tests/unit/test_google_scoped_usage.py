@@ -237,14 +237,14 @@ def seat_for_model(tmp_path, record_model, declared_model):
 
 def test_source_model_and_destination_model_are_resolved_separately(tmp_path, facts):
     seat = seat_for_model(tmp_path, ARGON_MODEL, FLASH_MODEL)
-    screen = Screen("", shows={"model": FLASH_MODEL})
+    screen = Screen("", None, shows={"model": FLASH_MODEL})
     assert model_scope(seat, POOL, running=True, screen=screen)(ARGON) is True
     assert model_scope(seat, POOL)(ARGON) is False
 
 
 def test_no_like_seat_uses_actual_screen_model_when_record_has_none(tmp_path, facts):
     seat = seat_for_model(tmp_path, None, None)
-    assert model_scope(seat, POOL, running=True, screen=Screen("", shows={"model": FLASH_MODEL}))(GEMINI) is True
+    assert model_scope(seat, POOL, running=True, screen=Screen("", None, shows={"model": FLASH_MODEL}))(GEMINI) is True
 
 
 def test_claude_and_codex_window_semantics_are_retained(book, at):

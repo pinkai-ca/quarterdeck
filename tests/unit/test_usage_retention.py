@@ -40,9 +40,8 @@ def test_first_failure_then_good_failure_restart_and_recovery(tmp_path: Path) ->
     path = tmp_path / "ledger.sqlite"
     book = Ledger(path)
     book.record_usage("google", unknown("synthetic first failure", AT - timedelta(seconds=1)))
-    first = rows(book)["7d"]
-    assert tuple_of(first)[:3] == (None, None, None)
-    assert "usage unknown" in first.describe(AT) and "LAST KNOWN" not in first.describe(AT)
+    assert rows(book) == {}, "an unread first reading invents no window"
+    assert any("synthetic first failure" in note for note in book.quota.usage_notes())
     book.record_usage("google", Usage((reading(),), AT))
     original = tuple_of(rows(book)["7d"])
     tables = book.db.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()

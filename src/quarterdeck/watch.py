@@ -447,6 +447,13 @@ def accounting_reading(runtime, state: str) -> str | None:
     return None if reading == accounting_health.UNKNOWN and state != "ok" else reading
 
 
+def held_scope(reason: str, pool: str) -> str:
+    """The scope of a held seat's limit, short enough for the line: the group, or what is known of it."""
+    head = reason.split(" · ")[0]
+    head = head[len(pool) + 1:] if head.startswith(pool + " ") else head
+    return head[head.rindex("(") + 1:-1] if head.endswith(")") and "(" in head else head
+
+
 def headline_readings(ship: Ship) -> list[dict]:
     """Every supported subscription headline, from the cache only."""
     from . import harness as harnesses
@@ -576,7 +583,7 @@ def limit_state(ship: Ship, selected: list[Seat | UnresolvedSeat]):
                 if not any(quota.cached_open(ship, book, pool, seat) for pool in quota.candidate_pools(seat)):
                     label = seat.name
                     if seat.harness.model_scoped_quota:
-                        label += " (" + "; ".join(reason.split(" · ")[0] for reason in reasons) + ")"
+                        label += " (" + "; ".join(dict.fromkeys(held_scope(r, seat.pool.name) for r in reasons)) + ")"
                     held.append(label)
             reasons = [f'{seat.name}: move held: {reason}' for seat in walled
                        if len(seat.spec.pools) > 1 and (reason := move_hold.reading(seat))]

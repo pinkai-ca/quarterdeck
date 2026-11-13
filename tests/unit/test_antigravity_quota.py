@@ -20,23 +20,25 @@ def document():
     return json.loads(FIXTURE.read_text())
 
 
-def test_all_groups_visible_only_argon_weekly_blocks_and_missing_is_unknown(tmp_path):
+def test_every_group_is_its_own_limit_and_a_missing_one_is_unknown(tmp_path):
     doc = document()
     usage = agq.parse_usage(doc, AT)
-    assert len(usage.windows) == 5 and usage.error is None
-    assert [(w.name,w.used,w.bucket) for w in usage.windows if w.blocks] == [('7d',0.75,'synthetic-argon-week')]
+    assert len(usage.windows) == 5 and usage.error is None and all(w.blocks for w in usage.windows)
+    argon = next(w for w in usage.windows if w.name == '7d')
+    assert (argon.used, argon.group, argon.bucket) == (0.75, 'Gemini 4 Argon', 'synthetic-argon-week')
     book = Ledger(tmp_path/'ledger.sqlite')
     book.record_usage('google',usage)
     assert book.db.execute("SELECT group_name,bucket,bucket_name FROM pools WHERE window='7d'").fetchone() == (
         'Gemini 4 Argon','synthetic-argon-week','Synthetic weekly allowance')
-    assert book.walls(now=AT) == [], 'exhausted Claude/GPT buckets cannot block Argon'
+    walls = book.walls(now=AT)
+    assert walls and all('Claude and GPT models' in w for w in walls), \
+        'the spent group is named as its own limit, never as the whole pool or as Argon'
     shown = '\n'.join(pools_table(book))
     assert 'Claude and GPT models / weekly' in shown and '100%' in shown and '75%' in shown and 'Synthetic weekly allowance' in shown
     assert book.usage_known('google')
     del doc['command']['data']['groups'][-1]
     book.record_usage('google', agq.parse_usage(doc, AT))
-    assert not book.usage_known('google') and book.walls(now=AT) == []
-    assert 'Gemini 4 Argon weekly unavailable' in '\n'.join(pools_table(book))
+    assert not book.usage_known('google'), 'a group that stops reporting is unknown, not room'
     assert book.db.execute("SELECT used FROM pools WHERE window='7d'").fetchone() == (0.75,)
     book.close()
 
@@ -51,21 +53,22 @@ def test_invalid_or_amount_only_fraction_never_becomes_zero(fraction):
     else:
         bucket['remaining_fraction'] = fraction
     usage = agq.parse_usage(doc, AT)
-    headline = next(w for w in usage.windows if w.blocks)
-    assert headline.used is None and headline.resets_at is not None and usage.error
+    argon = next(w for w in usage.windows if w.name == '7d')  # the Argon week, one group among the others
+    assert argon.used is None and argon.resets_at is not None and usage.error
 
 
 def test_malformed_missing_and_duplicate_usage_data():
     for doc in (None, {}, {'status':'ERROR'}, {'status':'SUCCESS','command':{'name':'usage'}}):
-        assert agq.parse_usage(doc, AT).windows[0].used is None
+        unread = agq.parse_usage(doc, AT)
+        assert unread.windows == () and unread.error, 'no invented window stands for an unread reading
     doc = document()
     doc['command']['data']['groups'][-1]['buckets'].append(copy.deepcopy(doc['command']['data']['groups'][-1]['buckets'][0]))
     usage = agq.parse_usage(doc, AT)
-    assert next(w for w in usage.windows if w.blocks).used is None and 'duplicate' in usage.error
+    assert next(w for w in usage.windows if w.name == '7d').used is None and 'duplicate' in usage.error
     for reset in (None, 'not-time', '2030-01-01T00:00:00'):
         doc = document()
         doc['command']['data']['groups'][-1]['buckets'][0]['reset_time'] = reset
-        assert next(w for w in agq.parse_usage(doc,AT).windows if w.blocks).resets_at is None
+        assert next(w for w in agq.parse_usage(doc,AT).windows if w.name == '7d').resets_at is None
 
 
 def test_the_usage_command_runs_the_program_the_path_gives_with_exact_arguments(monkeypatch):
@@ -100,7 +103,7 @@ def test_command_failure_and_unexpected_work_produce_visible_unknown(tmp_path, m
                                stdout=b'broken' if case=='bad-json' else json.dumps(doc).encode())
     monkeypatch.setattr(agq.subprocess,'run',run)
     result=agq.fetch_usage()
-    assert result.error and result.windows[0].used is None
+    assert result.error and result.windows == ()
 
 
 def test_banner_original_time_missing_reset_and_overflow():
