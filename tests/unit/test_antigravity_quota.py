@@ -60,7 +60,7 @@ def test_invalid_or_amount_only_fraction_never_becomes_zero(fraction):
 def test_malformed_missing_and_duplicate_usage_data():
     for doc in (None, {}, {'status':'ERROR'}, {'status':'SUCCESS','command':{'name':'usage'}}):
         unread = agq.parse_usage(doc, AT)
-        assert unread.windows == () and unread.error, 'no invented window stands for an unread reading
+        assert unread.windows == () and unread.error, 'no invented window stands for an unread reading'
     doc = document()
     doc['command']['data']['groups'][-1]['buckets'].append(copy.deepcopy(doc['command']['data']['groups'][-1]['buckets'][0]))
     usage = agq.parse_usage(doc, AT)

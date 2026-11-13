@@ -43,6 +43,9 @@ def fake_check(monkeypatch, tmp_path, *, model=None, like=None):
         return [Check("synthetic probe", True)]
 
     monkeypatch.setattr(check, "probe", probe)
+    # The installed-program and waking-line steps main runs after the probe are not what these tests read.
+    monkeypatch.setattr(check, "program_where", lambda harness: None)
+    monkeypatch.setattr(check, "probe_wake", lambda seat, orders: [Check("synthetic wake", True)])
     result = check.check(ship, "antigravity", object(), model=model)
     assert all(item.passed for item in result)
     return ship, specs[0], probes[0]
