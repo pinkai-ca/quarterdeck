@@ -120,7 +120,8 @@ def _chunks(text: str, limit: int):
 
 
 def build(items: tuple[Item, ...], *, seat: str, header: str, inline: str,
-          directory: Path, bound: Bound, force_files: bool = False) -> Plan:
+          directory: Path, bound: Bound, force_files: bool = False,
+          notices: tuple[str, ...] = ()) -> Plan:
     """Plan every byte before publication; unknown capacity uses the supplied policy.
 
     Whole-priority handoffs are explicitly self-addressed orders, never self questions
@@ -177,14 +178,20 @@ def build(items: tuple[Item, ...], *, seat: str, header: str, inline: str,
             level = routes
             routing = True
 
+    shown_notices: list[str] = []
+
     def opening(whole_count: int, overflow_count: int, root: str) -> str:
+        notice_account = (f'qd > {len(notices)} withheld notices; every notice is in the whole view or overflow index.\n'
+                          if notices else '')
+        named = ''.join(line + '\n' for line in shown_notices)
         return (f'{header}\nqd > carriage: {whole_count} whole; {overflow_count} overflow; '
                 f'{bound.bytes} UTF-8 bytes ({bound.label}).\n'
                 f'qd > read {directory / "whole.txt"} whole before acting on its included messages only.\n'
                 f'qd > overflow index: {root}; one line per message with id, sender, subject and path. '
                 'Read by id as needed, following bounded index pages and ordered read-view parts; '
                 'originals stay in place. Overflow need not be read before acting on included work. '
-                'An index is navigation, not delivery or proof of reading.\nqd > end of account')
+                'An index is navigation, not delivery or proof of reading.\n'
+                f'{notice_account}{named}qd > end of account')
 
     # A fixed root name keeps the account cost independent of index depth/part count.
     root_reserve = str(directory / 'overflow.txt')
@@ -233,6 +240,13 @@ def build(items: tuple[Item, ...], *, seat: str, header: str, inline: str,
         rows.append((item.id, row))
     root = index(rows, 'messages') if rows else put('messages-empty.txt', '')
     files['overflow.txt'] = files.pop(Path(root).name)
+    # Preserve existing named bodyless notices where space remains, without displacing
+    # whole-priority work. The fixed count and complete views/index account for the rest.
+    whole_size = size(files['whole.txt'])
+    for line in notices:
+        shown_notices.append(line)
+        if size(opening(len(whole), len(overflow), root_reserve)) + whole_size > bound.bytes:
+            shown_notices.pop()
     account = opening(len(whole), len(overflow), root_reserve)
     plan = Plan(account, files, whole, overflow, bound, directory)
     if plan.required_bytes > bound.bytes:

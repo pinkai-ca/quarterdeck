@@ -82,6 +82,17 @@ def test_context_and_parent_fit_together_with_the_answer():
     assert result.files['whole.txt'] == 'PARENT\nCONTEXT\nANSWER\n'
 
 
+def test_named_notices_use_remaining_room_without_displacing_whole_handoff():
+    notices = tuple('qd > synthetic notice ' + str(n) + ' ' + 'n' * 200 for n in range(12))
+    result = plan([item('handoff', 'HANDOFF' * 130, sender='builder'), item('large', 'large' * 2000)],
+                  notices=notices)
+    assert result.whole == ('handoff',)
+    assert notices[0] in result.opening
+    assert notices[-1] not in result.opening
+    assert '12 withheld notices' in result.opening
+    assert result.required_bytes <= 2400
+
+
 def test_handoff_requires_recipient_as_well_as_sender():
     result = plan([item('outgoing', 'x' * 1200, sender='builder', recipient='other', at='z'),
                    item('self-handoff', 'h' * 1200, sender='builder', at='a')])

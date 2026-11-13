@@ -681,7 +681,7 @@ class Seat:
             try:
                 planned = carriage_plan.build(carriage.items, seat=self.name, header=carriage.header,
                                                inline=carriage.text, directory=generation,
-                                               bound=bound, force_files=True)
+                                               bound=bound, force_files=True, notices=carriage.notices)
             except carriage_plan.ImpossibleBudget as error:
                 raise ShipError(f'{self.name}: {error}; nothing was started or published') from None
             launch, argv = command(planned.opening)
@@ -779,7 +779,8 @@ class Seat:
         ordered = render_order(tuple(items), self.name)
         text = header + '\n' + ''.join(item.text for item in ordered) if ordered != tuple(items) else "\n".join(parts)
         return carriagemod.Carriage(text, selection.incoming, header, selection.roots,
-                                    frozenset(m.id for m in selection.roots if m.id in refused), others, ordered)
+                                    frozenset(m.id for m in selection.roots if m.id in refused), others, ordered,
+                                    tuple(carriagemod.line(m, True) for m in selection.roots if m.id in refused))
 
     def _consumed_messages(self, store: post.Store, attempts: post.Attempts, resume_id: str | None,
                            excluded: frozenset[str]) -> frozenset[str]:

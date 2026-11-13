@@ -261,6 +261,7 @@ def test_a_refused_message_is_only_its_notice_in_the_account_and_the_file(ship, 
     launch = (captain.folder / "launch.sh").read_text(encoding="utf-8")
     for shown in (opening, text, launch, *(path.read_text(encoding="utf-8") for path in carried_file(opening).parent.iterdir())):
         assert "SYNTHETIC REFUSED" not in shown, "neither its subject nor its body, anywhere"  # law: context-is-cache
+    assert f"qd > open order from desk · {refused.id} · {refusal.WITHHELD}" in opening
     assert refusal.WITHHELD in text, "the required whole view names the withheld notices"
     assert refusal.stub(refused) in text and refusal.stub(amended) in text
 

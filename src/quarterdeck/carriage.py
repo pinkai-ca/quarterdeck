@@ -42,6 +42,7 @@ class Carriage:
     refused: frozenset[str] = frozenset()
     others: int = 0  # carried messages that are not open roots: amendments, answers, context, notices
     items: tuple[Item, ...] = ()  # safe admitted renderings, never re-read from source posts
+    notices: tuple[str, ...] = ()  # existing bodyless root notices for the opening account
 
     @property
     def size(self) -> int:
