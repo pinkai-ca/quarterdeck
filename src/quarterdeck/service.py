@@ -346,14 +346,20 @@ class Service:
         authentication = authentication_status(seat)
         # A pending renewal stays visible in status; call a person only after its bounded retries.
         reason = None if authentication_waiting(authentication) else authentication or reason
-        reason = reason or next(iter(pending_delivery.detached(seat)), None)
+        from . import unconfirmed_alert
+        if not reason:
+            detached = pending_delivery.detached(seat)
+            unconfirmed_alert.step(self, seat, detached)
+            reason = next(iter(detached), None)
+        # A door obstruction masks the detached observation; it does not clear
+        # that standing reading or change the door alarm's ownership.
         if seat.session.human:
             from . import human_wake
             wake = human_wake.status(seat)
             reason = reason or (wake if human_wake.action_required(seat, wake) else None)
         if reason != self.told.get(seat.name):
             self.told[seat.name] = reason
-        if not reason:
+        if not reason or reason.startswith(unconfirmed_alert.PREFIX):
             self.alarmed.pop(seat.name, None)
             return
         told = self.alarmed.get(seat.name)
