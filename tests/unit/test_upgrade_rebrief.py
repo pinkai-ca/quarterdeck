@@ -62,7 +62,7 @@ def upgraded(drydock, tmp_path, monkeypatch):
     monkeypatch.setattr(install,'git',git)
     def run(argv,doing,**kwargs):
         if argv[0]=='cp':
-            shutil.copytree(venv,ship.runtime/'venv.prev')
+            shutil.copytree(argv[-2],argv[-1])
         if doing=='checking live package, prefix and resources':
             return SimpleNamespace(stdout=json.dumps(dict(package=str(venv/'synthetic-package'),package_digest='1'*64)),returncode=0)
         return SimpleNamespace(stdout='qd synthetic\n',returncode=0)

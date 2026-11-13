@@ -95,7 +95,19 @@ class Transaction:
         @contextmanager
         def archive(**kwargs):
             self.calls.append(('archive',))
+            if self.failure == 'archive':
+                raise ShipError('synthetic archive failed')
             yield SimpleNamespace(extractall=self.extract)
+
+        def plan(source):
+            if self.failure == 'declaration':
+                raise ShipError('synthetic declaration invalid')
+            return ['synthetic-resource']
+
+        def snapshot_briefs(selected):
+            if self.failure == 'snapshot':
+                raise ShipError('synthetic brief snapshot failed')
+            return dict(before={}, launches={})
 
         monkeypatch.setattr(install, 'install_lock', locked)
         monkeypatch.setattr(install, 'source_repo', lambda selected: ship.folder / 'synthetic-source')
@@ -104,14 +116,14 @@ class Transaction:
         monkeypatch.setattr(install, '_run', self.run)
         monkeypatch.setattr(install, '_proof', self.proof)
         monkeypatch.setattr(install, '_flush_tree', lambda path: self.calls.append(('flush', path.name)))
-        monkeypatch.setattr(install.resources, 'plan', lambda source: ['synthetic-resource'])
+        monkeypatch.setattr(install.resources, 'plan', plan)
         monkeypatch.setattr(install.resources, 'synchronize', self.resources)
         monkeypatch.setattr(install.resources, 'fallback', unexpected)
         monkeypatch.setattr(install.servicectl, 'alive', lambda runtime: self.running)
         monkeypatch.setattr(install.servicectl, 'stop', self.stop)
         monkeypatch.setattr(install.servicectl, 'start', self.start)
         monkeypatch.setattr(install.servicectl, 'process_start', lambda pid: 'synthetic-start')
-        monkeypatch.setattr(install, 'brief_snapshot', lambda selected: dict(before={}, launches={}))
+        monkeypatch.setattr(install, 'brief_snapshot', snapshot_briefs)
         monkeypatch.setattr(install, 'queue_rebrief', self.queue)
         monkeypatch.setattr(install, 'rebrief_result', lambda *args: 'synthetic rebrief confirmed')
 
@@ -139,13 +151,14 @@ class Transaction:
         live = self.ship.runtime / 'venv'
         if argv[0] == 'cp':
             self.calls.append(('copy',))
-            assert argv == ['cp', '-a', '--', str(live), str(self.ship.runtime / 'venv.prev')]
-            assert not (self.ship.runtime / 'venv.prev').exists()
+            backup = self.ship.runtime / 'venv.backup'
+            assert argv == ['cp', '-a', '--', str(live), str(backup)]
+            assert not backup.exists()
             if self.failure == 'copy':
-                inert_copy(self.ship.runtime / 'venv.prev', 'partial backup')
+                inert_copy(backup, 'partial backup')
                 raise ShipError('synthetic copy failed')
             # Fake cp semantics over inert text only, never a real venv or cp command.
-            shutil.copytree(live, self.ship.runtime / 'venv.prev')
+            shutil.copytree(live, backup)
         elif argv[1:3] == ['-m', 'venv']:
             self.calls.append(('environment',))
             assert Path(argv[-1]) == live
@@ -180,17 +193,23 @@ class Transaction:
     def stop(self, runtime):
         assert runtime == self.ship.runtime
         self.calls.append(('stop',))
+        if self.failure == 'stop':
+            raise ShipError('synthetic stop failed')
         self.running = False
         return 'synthetic service stopped'
 
     def start(self, ship, *, qd, **kwargs):
         assert qd == ship.runtime / 'venv/bin/qd'
         self.calls.append(('start', (ship.runtime / 'venv/content.txt').read_text()))
+        if self.failure == 'start' and self.calls[-1][1] == 'new candidate':
+            raise ShipError('synthetic startup of the new copy failed')
         self.running = True
         return 'synthetic service started'
 
     def queue(self, ship, commit, previous, before):
         self.calls.append(('rebrief',))
+        if self.failure == 'rebrief':
+            raise ShipError('synthetic rebrief request failed')
         return ship.runtime / 'synthetic-rebrief.json', {}
 
     def read(self):

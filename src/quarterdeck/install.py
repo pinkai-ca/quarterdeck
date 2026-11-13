@@ -49,6 +49,10 @@ PHASE_CAUSES = {
 }
 FAILURE_STEPS = frozenset(PHASE_CAUSES) | {'preparing', 'installing', 'origin', '--version', 'laws', '--help'}
 LOADED_COPY = copy_state.loaded_identity(__file__, sys.prefix)
+# The directory roles under runtime/: the live copy, the copy before it, back's swap, and sync's backup of
+# the live copy, which becomes the copy before it only once the new copy is active.
+ROLES = ('venv', 'venv.prev', 'venv.swap', 'venv.backup')
+BACKUP = 'venv.backup'
 
 
 def launch_stamp(path: Path) -> str | None:
@@ -304,8 +308,8 @@ def _settle_rename(ship: Ship, data: dict) -> None:
     intent = pending.get('rename')
     if not intent:
         return
-    if (intent.get('source') not in ('venv', 'venv.prev', 'venv.swap')
-            or intent.get('destination') not in ('venv', 'venv.prev', 'venv.swap')
+    if (intent.get('source') not in ROLES
+            or intent.get('destination') not in ROLES
             or intent['source'] == intent['destination']):
         raise ShipError('copy journal rename is unknown; no rename attempted')
     source, destination = (ship.runtime / intent[k] for k in ('source', 'destination'))
@@ -352,6 +356,13 @@ def _failure(data: dict, phase: str, *, cause: str | None = None) -> None:
 def _cleanup(ship: Ship, data: dict) -> None:
     pending = data['pending']
     _phase(ship, data, 'cleanup')
+    _settle_rename(ship, data)
+    if pending.get('activated') and pending.get('backup') == BACKUP and os.path.lexists(ship.runtime / BACKUP):
+        # Only now does the copy before the old one give way: until activation it stays for --back.
+        if copy_state.root_id(ship.runtime / BACKUP) != pending['backup_identity']:
+            raise ShipError('copy backup is missing or changed; cleanup remains pending')
+        _remove(ship.runtime / 'venv.prev')
+        _rename(ship, data, BACKUP, 'venv.prev')
     staging = ship.runtime / 'upgrade' / pending['token']
     _remove(staging)
     if (ship.runtime / 'upgrade').is_dir() and not any((ship.runtime / 'upgrade').iterdir()):
@@ -359,6 +370,8 @@ def _cleanup(ship: Ship, data: dict) -> None:
         durable.sync_folder(ship.runtime)
     if os.path.lexists(ship.runtime / 'venv.swap'):
         raise ShipError('copy swap still exists; cleanup remains pending')
+    if os.path.lexists(ship.runtime / BACKUP):
+        raise ShipError('copy backup still exists; cleanup remains pending')
     data['pending'] = None
     try:
         _save(ship.runtime, data)
@@ -393,6 +406,7 @@ def _recover(ship: Ship, data: dict, *, bootstrap: bool = False) -> list[str]:
             or not isinstance(pending.get('token'), str)
             or not re.fullmatch(r'[0-9a-f]{32}', pending['token'])
             or not isinstance(pending.get('moves'), list)
+            or pending.get('backup') not in (None, BACKUP)
             or any(type(pending.get(key)) is not bool for key in
                    ('was_running', 'mutable', 'backup_started', 'backup_ready', 'activated', 'restored'))):
         raise ShipError('unknown copy journal; recovery cannot infer directory roles; inspect qd doctor')
@@ -423,31 +437,34 @@ def _recover(ship: Ship, data: dict, *, bootstrap: bool = False) -> list[str]:
             raise ShipError('previous directory is not in its recorded role; recovery remains pending')
         data['current'], data['previous_copy'] = pending['old_current'], None
     elif mutable:
-        # Retrying after prev->live is safe even if the crash preceded its state write.
-        restored = any(m['source'] == 'venv.prev' and m['destination'] == 'venv'
+        # A journal written before the backup had a role of its own kept it at venv.prev.
+        backup = pending.get('backup') or 'venv.prev'
+        # Retrying after backup->live is safe even if the crash preceded its state write.
+        restored = any(m['source'] == backup and m['destination'] == 'venv'
                        for m in pending['moves'])
         if not restored:
             if pending.get('backup_ready'):
-                if copy_state.root_id(ship.runtime / 'venv.prev') != pending['backup_identity']:
+                if copy_state.root_id(ship.runtime / backup) != pending['backup_identity']:
                     raise ShipError('complete backup is missing or changed; recovery remains pending')
                 _phase(ship, data, 'removing_failed_live')
                 _remove(ship.runtime / 'venv')
-                _rename(ship, data, 'venv.prev', 'venv')
+                _rename(ship, data, backup, 'venv')
             elif pending.get('old_live_identity') is None:
                 _phase(ship, data, 'removing_failed_first_install')
                 _remove(ship.runtime / 'venv')
             else:
                 raise ShipError('live mutation has no complete backup; recovery remains pending')
-        data['current'], data['previous_copy'] = pending['old_current'], None
+        data['current'], data['previous_copy'] = pending['old_current'], _kept_previous(ship, pending)
     else:
         # Before live mutation, the current directory must still be the recorded one.
         if copy_state.root_id(ship.runtime / 'venv') != pending['old_live_identity']:
             raise ShipError('current directory changed before live mutation; recovery remains pending')
+        backup = pending.get('backup') or 'venv.prev'
         if pending.get('backup_started'):
-            _remove(ship.runtime / 'venv.prev')
-            data['previous_copy'] = None  # the older rollback may have been consumed
-        else:
-            data['previous_copy'] = pending['old_previous']
+            _remove(ship.runtime / backup)  # a partial backup; the copy before only in a journal that put it there
+        # A journal from before the backup's own role had consumed the older rollback once its backup began.
+        consumed = pending.get('backup_started') and backup == 'venv.prev'
+        data['previous_copy'] = None if consumed else pending['old_previous']
         data['current'] = pending['old_current']
     _phase(ship, data, 'restored', restored=True,
            restored_identity=copy_state.root_id(ship.runtime / 'venv'))
@@ -463,6 +480,18 @@ def _recover(ship: Ship, data: dict, *, bootstrap: bool = False) -> list[str]:
                 if pending['old_live_identity'] is not None else
                 'incomplete first install removed; no installed copy selected')
     return [restored, *proofs]
+
+
+def _kept_previous(ship: Ship, pending: dict) -> dict | None:
+    """After live mutation, the copy before survives where its directory is still the one recorded at the start.
+
+    A journal from before the backup's own role had consumed venv.prev: it keeps none.
+    """
+    if pending.get('backup') != BACKUP:
+        return None
+    if copy_state.root_id(ship.runtime / 'venv.prev') != pending['old_previous_identity']:
+        return None
+    return pending['old_previous']
 
 
 def recover(ship: Ship) -> list[str]:
@@ -548,15 +577,16 @@ def _proof(ship: Ship, fact: dict) -> tuple[str, list[str]]:
 
 
 def _snapshot_operation(ship: Ship, data: dict, kind: str, target: dict) -> dict:
-    if os.path.lexists(ship.runtime / 'venv.swap'):
-        raise ShipError('venv.swap exists without a pending operation; directory roles unknown; inspect qd doctor')
+    for role in ('venv.swap', BACKUP):
+        if os.path.lexists(ship.runtime / role):
+            raise ShipError(f'{role} exists without a pending operation; directory roles unknown; inspect qd doctor')
     pending = dict(kind=kind, token=uuid4().hex, phase='preparing', target=target,
                    old_current=data.get('current'), old_previous=data.get('previous_copy'),
                    old_live_identity=copy_state.root_id(ship.runtime / 'venv'),
                    old_previous_identity=copy_state.root_id(ship.runtime / 'venv.prev'),
                    was_running=servicectl.alive(ship.runtime), mutable=False,
                    backup_started=False, backup_ready=False, moves=[], rename=None,
-                   activated=False, restored=False)
+                   activated=False, restored=False, backup=None if kind == 'back' else BACKUP)
     pending.update(owner_pid=os.getpid(), owner_start=servicectl.process_start(os.getpid()))
     data['pending'] = pending
     _save(ship.runtime, data)
@@ -672,18 +702,17 @@ def upgrade(ship: Ship, ref: str = 'HEAD', tmux: Tmux | None = None, *,
                 _rename(ship, data, 'venv.swap', 'venv.prev')
                 fact.setdefault('have_laws', (ship.runtime / 'venv/share/quarterdeck/standing-orders/laws.md').is_file())
             else:
+                # The live copy is backed up beside the copy before it, which stays untouched until the new
+                # copy is active: a failure at any phase leaves both copies and their record as they were.
                 _phase(ship, data, 'backing_up', backup_started=True)
-                data['previous_copy'] = None
-                _save(ship.runtime, data)
-                _remove(ship.runtime / 'venv.prev')
-                live = ship.runtime / 'venv'
+                live, backup = ship.runtime / 'venv', ship.runtime / BACKUP
                 if copy_state.root_id(live) != pending['old_live_identity']:
                     raise ShipError('current directory changed before backup; no live install attempted')
                 if _plain(live):
-                    _run(['cp', '-a', '--', str(live), str(ship.runtime / 'venv.prev')], 'copying current environment')
-                    _flush_tree(ship.runtime / 'venv.prev')
+                    _run(['cp', '-a', '--', str(live), str(backup)], 'copying current environment')
+                    _flush_tree(backup)
                     _phase(ship, data, 'backup_ready', backup_ready=True,
-                           backup_identity=copy_state.root_id(ship.runtime / 'venv.prev'))
+                           backup_identity=copy_state.root_id(backup))
                 cause = 'environment could not be made'
                 _phase(ship, data, 'installing', mutable=True)
                 if not (live / 'bin/python').exists():

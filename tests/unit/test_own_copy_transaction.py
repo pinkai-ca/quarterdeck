@@ -1,10 +1,11 @@
 """Synthetic functional transactions; proof and process internals are separate gates."""
 
 import json
+import shutil
 
 import pytest
 
-from quarterdeck import install
+from quarterdeck import copy_state, install
 from quarterdeck.ship import ShipError
 from tests.unit.own_copy_synthetic import (
     NEW, OLD, OLDER, fact, snapshot, transaction, unexpected, vessel,
@@ -23,6 +24,44 @@ def test_first_install_returns_nonempty_proof_at_canonical_path(transaction):
     assert tx.read()['current']['commit'] == NEW
     assert tx.read()['pending'] is None
     assert not (tx.ship.runtime / 'venv.prev').exists()
+    assert not (tx.ship.runtime / 'venv.backup').exists()
+
+
+# Every phase a sync can fail in, with the failure that stops it there; 'start' and 'rebrief' need a running ship.
+PHASES = [('archive', 'preparing'), ('declaration', 'preparing'), ('stop', 'stopping'),
+          ('snapshot', 'snapshotting'), ('copy', 'backing_up'), ('install', 'installing'),
+          ('resources', 'resources'), ('proof', 'proving'), ('start', 'target_ready'),
+          ('rebrief', 'target_ready')]
+
+
+@pytest.mark.parametrize('failure, phase, running', [
+    (failure, phase, running) for failure, phase in PHASES for running in (False, True)
+    if running or failure not in ('stop', 'start')])  # a stopped ship is neither stopped nor started
+def test_failed_sync_keeps_both_copies_and_their_record_and_back_still_returns(transaction, failure, phase, running):
+    tx = transaction
+    tx.seed(previous=True)
+    live, previous = snapshot(tx.ship.runtime / 'venv'), snapshot(tx.ship.runtime / 'venv.prev')
+    record = tx.read()
+    tx.running, tx.failure = running, failure
+    with pytest.raises(ShipError, match='recovery completed'):
+        install.upgrade(tx.ship)
+    assert snapshot(tx.ship.runtime / 'venv') == live
+    assert snapshot(tx.ship.runtime / 'venv.prev') == previous
+    assert not (tx.ship.runtime / 'venv.backup').exists() and not (tx.ship.runtime / 'venv.swap').exists()
+    assert not (tx.ship.runtime / 'upgrade').exists()
+    data = tx.read()
+    assert (data['current'], data['previous_copy'], data['pending']) == (
+        record['current'], record['previous_copy'], record['pending'])
+    assert data['last_failure']['phase'] == phase  # the one field a failure adds: why it failed
+    assert tx.running is running
+    if running and failure != 'stop':
+        assert tx.named('start')[-1] == ('start', 'original')
+    tx.failure = None
+    proofs = install.upgrade(tx.ship, back=True)
+    assert any(f'returned {OLDER[:7]} at runtime/venv' in line for line in proofs)
+    assert (tx.ship.runtime / 'venv/content.txt').read_text() == 'previous'
+    assert (tx.ship.runtime / 'venv.prev/content.txt').read_text() == 'original'
+    assert (tx.read()['current']['commit'], tx.read()['previous_copy']['commit']) == (OLDER, OLD)
 
 
 @pytest.mark.parametrize('failure', ['install', 'resources', 'proof'])
@@ -35,11 +74,11 @@ def test_failed_sync_restores_original_at_same_path_and_prior_service(transactio
     with pytest.raises(ShipError, match='recovery completed'):
         install.upgrade(tx.ship)
     assert snapshot(tx.ship.runtime / 'venv') == before
-    assert not (tx.ship.runtime / 'venv.prev').exists()
+    assert (tx.ship.runtime / 'venv.prev/content.txt').read_text() == 'previous'
     assert not (tx.ship.runtime / 'venv.swap').exists()
     data = tx.read()
     assert data['current'] == fact(OLD)
-    assert data['previous_copy'] is None and data['pending'] is None
+    assert data['previous_copy'] == fact(OLDER) and data['pending'] is None
     assert data['last_failure']['phase'] == ('proving' if failure == 'proof' else
                                              'resources' if failure == 'resources' else 'installing')
     assert tx.running is running
@@ -55,6 +94,7 @@ def test_failed_first_install_leaves_no_half_copy_or_service(transaction, failur
         install.upgrade(tx.ship)
     assert not (tx.ship.runtime / 'venv').exists()
     assert not (tx.ship.runtime / 'venv.prev').exists()
+    assert not (tx.ship.runtime / 'venv.backup').exists()
     assert not (tx.ship.runtime / 'upgrade').exists()
     assert tx.named('start') == tx.named('stop') == []
     assert tx.read()['current'] is None and tx.read()['pending'] is None
@@ -71,9 +111,10 @@ def test_failed_backup_keeps_current_and_restarts_it(transaction):
     assert snapshot(tx.ship.runtime / 'venv') == before
     assert tx.named('install') == tx.named('proof') == []
     assert tx.named('start') == [('start', 'original')]
-    assert not (tx.ship.runtime / 'venv.prev').exists()
+    assert (tx.ship.runtime / 'venv.prev/content.txt').read_text() == 'previous'
+    assert not (tx.ship.runtime / 'venv.backup').exists()
     assert tx.read()['current'] == fact(OLD)
-    assert tx.read()['previous_copy'] is None
+    assert tx.read()['previous_copy'] == fact(OLDER)
     assert tx.read()['last_failure']['phase'] == 'backing_up'
 
 
@@ -102,7 +143,7 @@ def test_force_same_commit_reinstalls_and_replaces_only_backup(transaction):
     assert (tx.ship.runtime / 'venv/content.txt').read_text() == 'new candidate'
     assert (tx.ship.runtime / 'venv.prev/content.txt').read_text() == 'original'
     assert not (tx.ship.runtime / 'venv.prev/venv').exists()
-    assert not (tx.ship.runtime / 'venv.swap').exists()
+    assert not (tx.ship.runtime / 'venv.swap').exists() and not (tx.ship.runtime / 'venv.backup').exists()
     assert tx.read()['previous_copy']['commit'] == OLD
     assert tx.named('start') == [('start', 'new candidate')]
     assert tx.running is True
@@ -232,3 +273,61 @@ def test_proof_failure_keeps_both_fixed_category_and_proved_command(transaction,
     assert failure['reason'] == 'proof command failed'
     assert failure.get('step') == command
     assert 'cause' not in failure and 'proof_command' not in failure
+
+
+def test_backup_becomes_the_previous_copy_only_after_activation_and_a_cut_cleanup_finishes_it(transaction, monkeypatch):
+    tx = transaction
+    tx.seed(previous=True)
+    rename, cut = install._rename, []
+
+    def cut_once(ship, data, source, destination, **kwargs):
+        if (source, destination) == ('venv.backup', 'venv.prev') and not cut:
+            cut.append(True)
+            assert data['pending']['activated'] and data['current']['commit'] == NEW
+            assert (ship.runtime / 'venv.backup/content.txt').read_text() == 'original'
+            raise ShipError('synthetic cut before the backup takes the previous role')
+        return rename(ship, data, source, destination, **kwargs)
+
+    monkeypatch.setattr(install, '_rename', cut_once)
+    with pytest.raises(ShipError, match='copy active but cleanup incomplete'):
+        install.upgrade(tx.ship)
+    assert tx.read()['pending']['activated'] is True
+    assert install.recover(tx.ship) == ['completed the activated copy cleanup']
+    assert (tx.ship.runtime / 'venv/content.txt').read_text() == 'new candidate'
+    assert (tx.ship.runtime / 'venv.prev/content.txt').read_text() == 'original'
+    assert not (tx.ship.runtime / 'venv.backup').exists()
+    data = tx.read()
+    assert (data['current']['commit'], data['previous_copy']['commit'], data['pending']) == (NEW, OLD, None)
+
+
+def test_a_journal_from_before_the_backup_role_still_recovers_from_its_backup_at_prev(transaction):
+    """An interrupted sync by the earlier code kept its backup at venv.prev and had consumed the older copy."""
+    tx = transaction
+    tx.seed()
+    runtime = tx.ship.runtime
+    shutil.copytree(runtime / 'venv', runtime / 'venv.prev')  # the earlier code's complete backup
+    (runtime / 'venv/content.txt').write_text('new candidate')  # its interrupted install
+    data = tx.read()
+    data['pending'] = dict(kind='sync', token='a' * 32, phase='installing', target=fact(NEW),
+                           old_current=fact(), old_previous=fact(OLDER),
+                           old_live_identity=copy_state.root_id(runtime / 'venv'),
+                           old_previous_identity=None, was_running=False, mutable=True,
+                           backup_started=True, backup_ready=True,
+                           backup_identity=copy_state.root_id(runtime / 'venv.prev'),
+                           moves=[], rename=None, activated=False, restored=False)
+    (runtime / 'installed.json').write_text(json.dumps(data) + '\n')
+    assert install.recover(tx.ship)[0] == 'interrupted copy operation undone; earlier copy restored'
+    assert (runtime / 'venv/content.txt').read_text() == 'original'
+    assert not (runtime / 'venv.prev').exists()
+    data = tx.read()
+    assert (data['current'], data['previous_copy'], data['pending']) == (fact(), None, None)
+
+
+def test_a_stray_backup_without_a_journal_refuses_before_any_change(transaction):
+    tx = transaction
+    tx.seed(previous=True)
+    (tx.ship.runtime / 'venv.backup').mkdir()
+    record = tx.read()
+    with pytest.raises(ShipError, match='venv.backup exists without a pending operation'):
+        install.upgrade(tx.ship)
+    assert tx.read() == record
