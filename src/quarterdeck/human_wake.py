@@ -14,6 +14,7 @@ from . import durable, input_receipt, pending, post, recovery
 from .harness.base import record_fingerprint
 from .turn_failure import metadata
 from .ship import ShipError
+from .tmux import TmuxError
 
 LINE = ('qd > ship: messages are waiting for you. Run `qd inbox --wait` now and follow what it prints; '
         'if your program can keep a command running in the background, keep it running there.')
@@ -99,6 +100,19 @@ def record_stamp(seat) -> dict:
 
 
 def status(seat) -> str | None:
+    try:
+        launch = seat.launched()
+        pane = seat.pane()
+        if seat.launched() != launch:
+            return 'human wake up state unknown; launch changed during reading'
+        if launch is None:
+            return None  # no saved launch is a proved down seat
+        if pane is None or pane.id != launch.pane or pane.pid != launch.pid:
+            return 'human wake up state unknown; owned pane unavailable'
+        if pane.dead:
+            return None  # positively owned dead pane, never a missing/foreign one
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, ShipError, TmuxError):
+        return 'human wake up state unknown; ownership reading failed'
     watch = post.watch_reading(seat.ship.runtime, seat.name)
     if watch.armed is None:
         return watch.reason
