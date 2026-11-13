@@ -886,6 +886,9 @@ quarterdeck/                       the project folder: the framework repository
   work/            worktrees for work on the framework itself, ignored; the checkout above is what a running ship uses
   .testruns/       ignored: the test tool's registrations, run scratch, results and reports, and the native test sockets
   tests/           unit/ contract/ fixtures/ integration/; testrun.py and testrunner/, the test tool (standard library only)
+    integration/waiting.py   an attached terminal client retires its verified owned command group and wrapper,
+                   bounded by explicit patience, without waiting for other clients; attach failures keep the whole output
+    unit/test_attached_client_retirement.py   real-process cases for prompt retirement, independent clients and owned descendants
     unit/test_structure_outcome.py integration/test_structure_outcome.py   ordinary synthetic ended-turn/grace/recovery association and private fake pi service passes
   docs/DESIGN.md  docs/ANTIGRAVITY.md
 ```
