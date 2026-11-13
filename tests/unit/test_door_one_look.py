@@ -76,3 +76,10 @@ def test_qd_submit_presses_only_the_exact_pending_text(setup, monkeypatch):
     live["box"] = proof.data["payload"].rstrip("\n")
     line = pending.submit(svc, seat)
     assert line.startswith(f"{message.short} to worker: submitted from the box") and live["submitted"] == 2
+
+
+def test_the_service_answers_a_submit_request_through_the_same_path(setup, monkeypatch):
+    svc, seat, live, record = setup
+    unconfirmed(svc, seat, monkeypatch)
+    live["box"] = ""
+    assert svc.answer({"kind": "submit", "seat": "worker"}) == "refused: worker's box is empty"
