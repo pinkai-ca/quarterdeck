@@ -554,6 +554,11 @@ class Service:
             asked = datetime.fromisoformat(data['created_at'])
         except (KeyError, TypeError, ValueError):
             return f'refused: {seat.name} asking turn unknown; no request will apply later'
+        if state is None and hold is None:
+            from .servicectl import ANSWER_SECONDS
+            if asked.tzinfo is None or not 0 <= (post.now() - asked).total_seconds() <= ANSWER_SECONDS:
+                return f'refused: {seat.name} no-record request expired; no deferred restart'
+            return self.relaunch(seat, bool(data['resume']), reading=(state, hold))
         if (state is None or state.last_input_at is None or asked.tzinfo is None
                 or state.last_input_at.tzinfo is None or state.last_input_at > asked or asked > post.now()):
             return f'refused: {seat.name} asking turn unknown or superseded by later input; no deferred restart'
