@@ -153,6 +153,14 @@ class Harness(ABC):
             if self.unclassified_default_overrides:
                 reject_unclassified_overrides(seat, config, scope=f"template {filename}")
 
+    def recorded_paste(self, text: str, record: Path, since: datetime) -> str:
+        """The form a payload pasted at ``since`` takes in this record, where the adapter has measured a change.
+
+        The default is the payload unchanged. Receipts accept the payload itself or this one form, never
+        a near match; a version the adapter has not measured has no form but the payload.
+        """
+        return text
+
     def thinking_recovery(self, home: Path, evidence: dict | None, version: str | None, seat: SeatSpec, pool: Pool):
         """A proved native off/restore client, or no supported automatic recovery."""
         return None
