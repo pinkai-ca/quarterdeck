@@ -7,6 +7,7 @@ record. Nothing here touches a ship of the crew, a native program or a provider.
 
 from __future__ import annotations
 
+import json
 import re
 import shlex
 from pathlib import Path
@@ -19,7 +20,8 @@ from quarterdeck.tmux import Tmux
 from .waiting import wait_for
 
 LIMIT = 131_072  # the kernel's per-argument limit with its NUL, on 4 KiB pages
-ACCOUNT_FILE = re.compile(r"are written in full in (\S+)$", re.MULTILINE)
+ACCOUNT_FILE = re.compile(r"^qd > read (\S+) whole before acting", re.MULTILINE)
+OVERFLOW_FILE = re.compile(r"^qd > overflow index: (\S+);", re.MULTILINE)
 
 
 @pytest.fixture
@@ -58,10 +60,44 @@ def first_input(seat: seatmod.Seat, after: int = 0) -> str:
     return seat.harness.turns(record)[after].input
 
 
+def index_rows(opening: str) -> list[dict]:
+    """Follow only the published bounded navigation, never recover a body from the store."""
+    found = OVERFLOW_FILE.search(opening)
+    if found is None:
+        return []
+    rows = []
+    def visit(path):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.startswith('id='):
+                row, rest = {}, line
+                while rest:
+                    key, separator, value = rest.partition('=')
+                    assert separator
+                    decoded, end = json.JSONDecoder().raw_decode(value)
+                    row[key] = decoded
+                    rest = value[end:].lstrip()
+                rows.append(row)
+            else:
+                visit(Path(json.loads(line)['path']))
+    visit(Path(found.group(1)))
+    return sorted(rows, key=lambda row: row['sequence'])
+
+
+def read_view(path: Path) -> str:
+    if path.name.startswith('view-'):
+        return path.read_text(encoding="utf-8")
+    parts = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    return ''.join(read_view(Path(row['path'])) for row in parts)
+
+
 def received(seat: seatmod.Seat, opening: str) -> str:
-    """Everything the seat was given: the first input, and the whole file it names when it names one."""
+    """All reachable text: required whole view plus every indexed bounded read-view part."""
     found = ACCOUNT_FILE.search(opening)
-    return opening if found is None else opening + "\n" + Path(found.group(1)).read_text(encoding="utf-8")
+    if found is None:
+        return opening
+    whole = Path(found.group(1)).read_text(encoding="utf-8")
+    overflow = ''.join(read_view(Path(row['path'])) for row in index_rows(opening))
+    return opening + "\n" + whole + overflow
 
 
 def words(seat: seatmod.Seat) -> list[str]:
@@ -163,28 +199,37 @@ def test_a_long_carriage_is_an_account_and_a_whole_file_read_first(ship, tmux):
     threads = long_threads(store)
     question = store.new("question", "desk", "captain", "A synthetic question?", subject="Which way?")
     captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
-    expected, incoming = captain.first_message()
+    _, incoming = captain.first_message()
     proof = captain.up(resume=False)
     assert "9 open messages carried in seats/captain/carried/" in proof
     opening = first_input(captain)
     assert carriage.utf8(opening) <= carriage.INLINE_BYTES
     lines = opening.splitlines()
     assert lines[0] == "qd > briefed as captain, captain · 4 orders open, 1 question open"
+    counts = re.search(r'carriage: (\d+) whole; (\d+) overflow;', opening)
+    assert counts and sum(map(int, counts.groups())) == len(incoming)
+    rows = {row['id']: row for row in index_rows(opening)}
     for order, _ in threads:
-        assert f"qd > open order from desk · {order.id} · {order.subject}" in lines and order.body not in opening
-    assert f"qd > open question from desk · {question.id} · Which way?" in lines
-    assert "qd > also only in that file, in thread order: 4 amendments, answers and other carried messages" in lines
-    assert "before you act on anything" in lines[2] and lines[-1] == "qd > end of account"
+        assert rows[order.id]['kind'] == 'order' and rows[order.id]['sender'] == 'desk'
+        assert rows[order.id]['subject'] == order.subject and order.body not in opening
     path = carried_file(opening)
-    assert path.parent == captain.folder / "carried" and path.stat().st_mode & 0o777 == 0o600
     text = path.read_text(encoding="utf-8")
-    assert text.endswith(f"\n{expected}\nqd > end of the carried messages for captain at launch {path.name.split('-')[0]}\n")
-    assert all(f"· {order.id} ·" in text.split("qd > the carried messages follow")[0] for order, _ in threads)
+    assert post.typed([question]) in text
+    assert "included messages only" in lines[2] and lines[-1] == "qd > end of account"
+    assert 'Overflow need not be read before acting on included work' in opening
+    assert path.parent.parent == captain.folder / "carried" and path.stat().st_mode & 0o777 == 0o600
+    assert path.parent.stat().st_mode & 0o777 == 0o700
+    assert carriage.utf8(opening) + path.stat().st_size <= ship.carry_bytes
+    assert all(file.stat().st_size <= ship.carry_bytes and file.stat().st_mode & 0o777 == 0o600
+               for file in path.parent.iterdir())
+    given = received(captain, opening)
+    assert all(given.count(message.body) == 1 for message in incoming), 'every body reachable whole, exactly once'
+    assert all(given.index(order.body) < given.index(amendment.body) for order, amendment in threads)
     latest = post.Attempts(ship.runtime).latest()
-    assert {m.id for m in incoming} == {m for m, r in latest.items() if r == "launch"}, "exactly the incoming inventory"
+    assert {m.id for m in incoming} == {m for m, result in latest.items() if result == "launch"}, "exactly the incoming inventory"
     details = [a.detail for a in post.Attempts(ship.runtime).all() if a.result == "launch"]
-    assert details and all(path.name in d and "not confirmed read" in d for d in details), "a file is no receipt"
-    assert max(len(w.encode()) + 1 for w in words(captain)) <= carriage.WORD_BYTES
+    assert details and all(path.parent.name in detail and "not confirmed read" in detail for detail in details), "a file is no receipt"
+    assert max(len(word.encode()) + 1 for word in words(captain)) <= carriage.WORD_BYTES
 
 
 @pytest.mark.parametrize("letter,form", [("e", "whole"), ("é", "file")])
@@ -243,16 +288,17 @@ def test_a_resumed_seat_is_never_credited_with_what_only_its_file_held(ship, tmu
     captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
     captain.up(resume=False)
     first_path = carried_file(first_input(captain))
-    first_bytes = first_path.read_bytes()
+    first_bytes = {path: path.read_bytes() for path in first_path.parent.iterdir()}
     record = wait_for(captain.record)
     wait_for(lambda: captain.harness.state(record).turns >= 1)
     consumed = thread_context.consumed_ids(store, "captain", "captain", captain.harness.inputs(record))
     assert consumed == frozenset(), "the record holds only the account; no body is credited as read"
     proof = captain.restart()
-    assert " · resumed " in proof and "8 open messages carried in " in proof, "every amendment again, by file"
-    second_path = carried_file(first_input(captain, 1))
-    assert second_path != first_path and first_path.read_bytes() == first_bytes, "an earlier file is never rewritten"
-    again = second_path.read_text(encoding="utf-8")
+    assert " · resumed " in proof and "8 open messages carried in " in proof, "every amendment again, by bounded views"
+    second_opening = first_input(captain, 1)
+    second_path = carried_file(second_opening)
+    assert second_path != first_path and all(path.read_bytes() == data for path, data in first_bytes.items()), "an earlier generation is never rewritten"
+    again = received(captain, second_opening)
     assert all(amendment.body in again for _, amendment in threads)
 
 
@@ -361,13 +407,20 @@ def test_only_a_command_the_kernel_would_refuse_is_refused_naming_sizes_not_text
 
 def test_an_account_too_long_for_its_budget_names_the_rest_and_the_file_lists_all(ship, tmux):
     store = post.Store(ship.runtime)
-    orders = [store.new("order", "desk", "captain", f"synthetic body {i}", subject=f"Synthetic subject {i} " + "s" * 300)
+    orders = [store.new("order", "desk", "captain", f"synthetic body {i}.", subject=f"Synthetic subject {i} " + "s" * 300)
               for i in range(250)]
     captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
     captain.up(resume=False)
     opening = first_input(captain)
-    shown = [line for line in opening.splitlines() if line.startswith("qd > open order")]
-    rest = [line for line in opening.splitlines() if line.startswith("qd > and ")]
-    assert rest and len(shown) + int(rest[0].split()[3]) == 250, "none dropped silently"
-    head = carried_file(opening).read_text(encoding="utf-8").split("qd > the carried messages follow")[0]
-    assert all(order.id in head for order in orders)
+    counts = re.search(r'carriage: (\d+) whole; (\d+) overflow;', opening)
+    assert counts and sum(map(int, counts.groups())) == 250, "none dropped silently"
+    path = carried_file(opening)
+    whole = path.read_text(encoding="utf-8")
+    rows = index_rows(opening)
+    indexed = {row['id'] for row in rows}
+    assert len(indexed) == len(rows) == int(counts.group(2))
+    assert all(order.id in indexed or post.typed([order]) in whole for order in orders)
+    given = received(captain, opening)
+    assert all(given.count(order.body) == 1 for order in orders)
+    assert len(opening.encode()) + path.stat().st_size <= ship.carry_bytes
+    assert all(file.stat().st_size <= ship.carry_bytes for file in path.parent.iterdir())

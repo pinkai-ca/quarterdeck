@@ -68,6 +68,16 @@ class Item:
     text: str
     source: Path | None = None
     context_only: bool = False
+    requires: tuple[str, ...] = ()  # admitted parent/context must also fit whole
+
+
+def handoff(item: Item, seat: str) -> bool:
+    return item.kind == 'order' and item.sender == seat and item.recipient == seat and not item.context_only
+
+
+def render_order(items: tuple[Item, ...], seat: str) -> tuple[Item, ...]:
+    """Self-handoffs first; every other admitted item keeps its thread position."""
+    return tuple(item for item in items if handoff(item, seat)) + tuple(item for item in items if not handoff(item, seat))
 
 
 @dataclass(frozen=True)
@@ -89,7 +99,10 @@ def _display(text: str, limit: int = 200) -> str:
     shown = json.dumps(text, ensure_ascii=True)
     if size(shown) <= limit:
         return shown
-    return shown[:limit - 4] + '..."'
+    prefix = text[:limit]
+    while size(json.dumps(prefix + '...', ensure_ascii=True)) > limit:
+        prefix = prefix[:-1]
+    return json.dumps(prefix + '...', ensure_ascii=True)
 
 
 def _chunks(text: str, limit: int):
@@ -113,7 +126,7 @@ def build(items: tuple[Item, ...], *, seat: str, header: str, inline: str,
     Whole-priority handoffs are explicitly self-addressed orders, never self questions
     or answers. Admission, exclusions and thread membership belong to the caller.
     """
-    unique = tuple({item.id: item for item in items}.values())
+    unique = render_order(tuple({item.id: item for item in items}.values()), seat)
     if not force_files and size(inline) <= bound.bytes:
         return Plan(inline, {}, tuple(item.id for item in unique), (), bound, directory)
     files: dict[str, str] = {}
@@ -179,22 +192,33 @@ def build(items: tuple[Item, ...], *, seat: str, header: str, inline: str,
     if reserved > bound.bytes:
         raise ImpossibleBudget('carry_bytes cannot hold the minimal first-message account')
     priority = sorted(unique, key=lambda item: (
-        0 if item.kind == 'order' and item.sender == seat and item.recipient == seat and not item.context_only
+        0 if handoff(item, seat)
         else 1 if item.kind == 'order' and not item.context_only
         else 2 if item.kind == 'question' and not item.context_only else 3,
         item.at, item.id))
     chosen: set[str] = set()
     used = reserved
+    by_id = {item.id: item for item in unique}
     for item in priority:
-        amount = size(item.text)
+        needed, waiting = set(), [item.id]
+        while waiting:
+            identifier = waiting.pop()
+            if identifier in chosen or identifier in needed:
+                continue
+            needed.add(identifier)
+            parent = by_id[identifier]
+            if not handoff(parent, seat):
+                waiting.extend(ref for ref in parent.requires if ref in by_id)
+        amount = sum(size(by_id[identifier].text) for identifier in needed)
         if used + amount <= bound.bytes:
-            chosen.add(item.id)
+            chosen.update(needed)
             used += amount
-    # Preserve admitted thread order within the selected whole view.
+    # Handoffs first, then admitted thread order, including explanatory context.
     whole = tuple(item.id for item in unique if item.id in chosen)
     overflow = tuple(item.id for item in unique if item.id not in chosen)
     put('whole.txt', ''.join(item.text for item in unique if item.id in chosen))
     rows = []
+    sequence = {item.id: position for position, item in enumerate(unique)}
     for ordinal, item in enumerate(sorted((item for item in unique if item.id not in chosen), key=lambda item: item.id)):
         parts = []
         for number, text in enumerate(_chunks(item.text, bound.bytes)):
@@ -202,9 +226,10 @@ def build(items: tuple[Item, ...], *, seat: str, header: str, inline: str,
             key = f'{number:020d}'
             parts.append((key, json.dumps({'part': number + 1, 'path': path}, ensure_ascii=True) + '\n'))
         view = index(parts, 'parts') if parts else put(f'view-{ordinal}-empty.txt', '')
-        row = (f'id={json.dumps(item.id)} sender={json.dumps(item.sender)} '
+        row = (f'id={json.dumps(item.id)} sender={json.dumps(item.sender)} kind={json.dumps(item.kind)} '
                f'subject={_display(item.subject)} path={json.dumps(view)} '
-               f'original={json.dumps(str(item.source)) if item.source is not None else "null"}\n')
+               f'original={json.dumps(str(item.source)) if item.source is not None else "null"} '
+               f'sequence={sequence[item.id]} context_only={str(item.context_only).lower()}\n')
         rows.append((item.id, row))
     root = index(rows, 'messages') if rows else put('messages-empty.txt', '')
     files['overflow.txt'] = files.pop(Path(root).name)

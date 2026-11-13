@@ -59,6 +59,29 @@ def test_context_only_order_is_not_a_handoff():
     assert result.whole == ('ordinary-order',)
 
 
+def test_handoff_renders_first_then_other_admitted_thread_order():
+    result = plan([item('old-order', 'OLD\n', at='a'),
+                   item('amendment', 'AMENDMENT\n', kind='answer', at='b'),
+                   item('handoff', 'HANDOFF\n', sender='builder', at='z')])
+    assert result.whole == ('handoff', 'old-order', 'amendment')
+    assert result.files['whole.txt'] == 'HANDOFF\nOLD\nAMENDMENT\n'
+
+
+def test_amendment_cannot_be_whole_without_its_oversized_parent():
+    amendment = replace(item('amendment', 'small amendment\n', kind='answer'), requires=('parent',))
+    result = plan([item('parent', 'large order' * 1000), amendment])
+    assert result.whole == ()
+    assert result.overflow == ('parent', 'amendment')
+
+
+def test_context_and_parent_fit_together_with_the_answer():
+    context = replace(item('own-question', 'CONTEXT\n', kind='question', sender='builder'),
+                      context_only=True, requires=('parent',))
+    answer = replace(item('answer', 'ANSWER\n', kind='answer'), requires=('own-question',))
+    result = plan([item('parent', 'PARENT\n'), context, answer])
+    assert result.files['whole.txt'] == 'PARENT\nCONTEXT\nANSWER\n'
+
+
 def test_handoff_requires_recipient_as_well_as_sender():
     result = plan([item('outgoing', 'x' * 1200, sender='builder', recipient='other', at='z'),
                    item('self-handoff', 'h' * 1200, sender='builder', at='a')])

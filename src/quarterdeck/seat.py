@@ -766,16 +766,20 @@ class Seat:
         root_ids = {m.id for m in selection.roots}
         others = (sum(e.message.id not in root_ids for e in selection.entries)
                   + sum(m.id not in root_ids for m in withheld))
-        from .carriage_plan import Item
+        from .carriage_plan import Item, render_order
 
         items = [Item(m.id, m.sender, m.to, m.kind, m.at.isoformat(), '', refusal.stub(m) + '\n')
                  for m in withheld]
-        items += [Item(e.message.id, e.message.sender, e.message.to, e.message.kind, e.message.at.isoformat(),
+        admitted_ids = {e.message.id for e in selection.entries} | {m.id for m in withheld}
+        items += [Item(e.message.id, e.message.sender, e.message.to, e.message.kind, e.message.at.astimezone(timezone.utc).isoformat(),
                        e.message.subject or '', thread_context.context(e.message) if e.context_only else post.typed([e.message]),
-                       store.dir / f'{e.message.id}.json', e.context_only)
+                       store.dir / f'{e.message.id}.json', e.context_only,
+                       (e.message.re,) if e.message.re in admitted_ids else ())
                   for e in selection.entries]
-        return carriagemod.Carriage("\n".join(parts), selection.incoming, header, selection.roots,
-                                    frozenset(m.id for m in selection.roots if m.id in refused), others, tuple(items))
+        ordered = render_order(tuple(items), self.name)
+        text = header + '\n' + ''.join(item.text for item in ordered) if ordered != tuple(items) else "\n".join(parts)
+        return carriagemod.Carriage(text, selection.incoming, header, selection.roots,
+                                    frozenset(m.id for m in selection.roots if m.id in refused), others, ordered)
 
     def _consumed_messages(self, store: post.Store, attempts: post.Attempts, resume_id: str | None,
                            excluded: frozenset[str]) -> frozenset[str]:

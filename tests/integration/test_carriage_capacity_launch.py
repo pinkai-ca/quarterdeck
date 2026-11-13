@@ -54,6 +54,20 @@ def test_short_all_fit_launch_keeps_canonical_input(tmp_path, monkeypatch):
     assert not (seat.folder / 'carried').exists()
 
 
+def test_inline_handoff_is_first_and_rest_keeps_thread_order(tmp_path, monkeypatch):
+    seat, opened = prepared(tmp_path, monkeypatch)
+    older = publish_post(seat, 'older-order', 'Older ordinary task.')
+    handoff = publish_post(seat, 'own-handoff', 'Read this handoff first.', sender='builder')
+    seat._up(resume=False)
+    opening = first(opened)
+    assert opening.index(handoff.body) < opening.index(older.body)
+    from quarterdeck import thread_context
+    from quarterdeck.harness.types import Input
+    consumed = thread_context.consumed_ids(post.Store(seat.ship.runtime), 'builder', 'worker',
+                    [Input(opening, datetime(2021, 1, 1, tzinfo=timezone.utc), 'accepted')])
+    assert consumed == {older.id, handoff.id}
+
+
 def test_policy_launch_publishes_bounded_whole_and_overflow_before_window(tmp_path, monkeypatch):
     seat, opened = prepared(tmp_path, monkeypatch)
     messages = [publish_post(seat, 'handoff-order', 'Synthetic handoff.\n' * 30, sender='builder')]
