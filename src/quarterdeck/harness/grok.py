@@ -203,7 +203,7 @@ class GrokHarness(Harness):
     # passing needs no login. The end of the grant that renews it and a failed renewal have no field
     # the adapter knows by name, so neither is read.
     grant_kind = "self-renewing"
-    answers_questions = True  # its first-run training question, answered opt out (ord-c304)
+    answers_questions = True  # its first-run training question, answered opt out by the ship's orders
     keys = Keys(submit="Enter", interrupt="C-c")
     reads_usage = True
     private_usage_home = True

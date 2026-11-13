@@ -23,7 +23,7 @@ MODEL_PICKER = Interruption("model picker", r"Grok [0-9.]+ \(current\)", "C-c")
 # November, 112 x 35): one blank row, the title row with its two choices, the body, one blank row, then the
 # composer's top border. Its choices are bracketed buttons with no key; the program asks for SGR mouse
 # reports while it shows. The Admiral's answer is no: the framework clicks [Opt out], chosen by its text,
-# and never [Opt in] (ord-c304).
+# and never [Opt in].
 TRAINING_TITLE = "Help improve Grok"
 TRAINING_TITLE_ROW = re.compile(r"  Help improve Grok +\[Opt out\] \[Opt in\] *")
 TRAINING_BODY = ("Off by default. Opt-in to allow SpaceXAI to retain coding data, e.g., prompts, traces, & metrics, "

@@ -258,7 +258,7 @@ class Interruption:
     """A dialog or notice: how it shows on the screen, and the key that dismisses it.
 
     ``click`` names the one choice the framework answers it with, by the choice's text on the screen: a
-    question the program puts to its account holder whose answer the ship's orders fix (ord-c304).
+    question the program puts to its account holder whose answer the ship's orders fix.
     """
 
     name: str
