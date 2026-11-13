@@ -91,8 +91,18 @@ def retire(runtime, name, registration):
     path = post.watch_file(runtime, name)
     with post.admission(runtime, name):
         try:
-            if (stamp(path) == registration['stamp'] and path.read_text() == registration['watch']
-                    and generation(runtime, name) == registration['generation']):
+            if stamp(path) == registration['stamp'] and path.read_text() == registration['watch']:
+                try:
+                    marker = generation(runtime, name)
+                except FileNotFoundError:
+                    post.watch_retirement_warning(path, registration['generation'])
+                    return
+                if marker != registration['generation']:
+                    # This is still our watch, not a newer registration. Bind the warning to the
+                    # observed marker so its PID cannot turn uncertainty into a not-armed reading.
+                    # A later real registration writes a new generation and releases this hold.
+                    post.watch_retirement_warning(path, marker)
+                    return
                 path.unlink()
                 companion = proof_path(runtime, name)
                 if companion.read_text() == registration['proof']:
