@@ -75,18 +75,24 @@ class Quotas:
                     source TEXT NOT NULL, event TEXT NOT NULL, seat TEXT NOT NULL, pool TEXT NOT NULL,
                     at TEXT, resets_at TEXT, observed_at TEXT NOT NULL, reason TEXT NOT NULL,
                     error_id TEXT, signature TEXT NOT NULL, superseded INTEGER NOT NULL DEFAULT 0,
-                    PRIMARY KEY (source, event));
+                    group_name TEXT, PRIMARY KEY (source, event));
                 CREATE TABLE IF NOT EXISTS usage_reads (pool TEXT PRIMARY KEY, at TEXT NOT NULL, error TEXT);
             """)
+            if "group_name" not in self.columns():  # an older book gains the refused limit's model group
+                db.execute("ALTER TABLE wall_events ADD COLUMN group_name TEXT")
+
+    def columns(self) -> set[str]:
+        return {row[1] for row in self.db.execute("PRAGMA table_info(wall_events)")}
 
     def observe(self, source: str, seat: str, pool: str, event: Wall, now: datetime,
                 *, commit: bool = True) -> None:
         old = self.db.execute("SELECT pool,at,resets_at FROM wall_events WHERE source=? AND event=?",
                               (source, event.key)).fetchone()
         if old is None:
-            self.db.execute("INSERT INTO wall_events VALUES (?,?,?,?,?,?,?,?,?,?,0)",
+            self.db.execute("INSERT INTO wall_events (source,event,seat,pool,at,resets_at,observed_at,reason,"
+                            "error_id,signature,superseded,group_name) VALUES (?,?,?,?,?,?,?,?,?,?,0,?)",
                             (source, event.key, seat, pool, stamp(event.at), stamp(event.resets_at), stamp(now),
-                             event.reason, event.error_id, event.signature))
+                             event.reason, event.error_id, event.signature, event.group))
         # Only fill missing evidence. A duplicate observation never shifts a known time/reset.
         else:
             filled = (pool if old[0] == UNKNOWN else old[0],
@@ -113,14 +119,19 @@ class Quotas:
         if commit and self.db.in_transaction:
             self.db.commit()
 
-    def active(self, now: datetime | None = None) -> list[tuple]:
+    def active(self, now: datetime | None = None, *, scope=None) -> list[tuple]:
+        """Refusals not yet reset. A refusal at a model group's limit applies where ``scope`` proves that group;
+        one with no group applies to every model, as a general window does."""
         now = now or datetime.now(timezone.utc)
-        rows = self.db.execute("SELECT seat,pool,reason,resets_at,observed_at,source FROM wall_events WHERE superseded=0").fetchall()
-        return [r for r in rows if r[3] is None or datetime.fromisoformat(r[3]) > now]
+        group = "group_name" if "group_name" in self.columns() else "NULL"
+        rows = self.db.execute(f"SELECT seat,pool,reason,resets_at,observed_at,source,{group} FROM wall_events "
+                               "WHERE superseded=0").fetchall()
+        return [r[:6] for r in rows if (r[3] is None or datetime.fromisoformat(r[3]) > now)
+                and (r[6] is None or scope is None or scope(r[6]) is True)]
 
-    def walls(self, now: datetime | None = None) -> list[str]:
+    def walls(self, now: datetime | None = None, *, scope=None) -> list[str]:
         return sorted({f"{pool if pool != UNKNOWN else seat + ' (pool unknown)'} {reason} · {reset_text(reset, source.startswith('screen:'))}"
-                       for seat, pool, reason, reset, _, source in self.active(now)})
+                       for seat, pool, reason, reset, _, source in self.active(now, scope=scope)})
 
     def recognized(self, seat: str, event: Wall) -> bool:
         """Persisted evidence also recognizes an old banner when its record is unreadable."""
@@ -128,8 +139,8 @@ class Quotas:
                                "(signature=? OR (error_id IS NOT NULL AND error_id=?)) LIMIT 1",
                                (seat, event.signature, event.error_id)).fetchone() is not None
 
-    def blocked(self, seat: str, pool: str) -> str | None:
-        for owner, charged, reason, reset, _, source in self.active():
+    def blocked(self, seat: str, pool: str, *, scope=None) -> str | None:
+        for owner, charged, reason, reset, _, source in self.active(scope=scope):
             if charged == pool or (charged == UNKNOWN and owner == seat):
                 return f"{charged if charged != UNKNOWN else 'pool unknown'} {reason} · {reset_text(reset, source.startswith('screen:'))}"
         return None

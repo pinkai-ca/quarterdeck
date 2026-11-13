@@ -340,14 +340,22 @@ class _Reader(JsonLinesReader):
         self.subagent_turns = 0
         self.queue_slots = []  # text/phase FIFO, including returned drafts and consumed echo identities
         self.background = BackgroundBash()
+        self.walls = []
         super().__init__(record, snapshot)
 
     def state(self):
-        state = self.background.state(super().state())
+        state = replace(self.background.state(super().state()), walls=tuple(self.walls))
         return replace(state, failure=self.orphan_auth) if self.open is None and self.orphan_auth else state
 
     def take(self, entry: dict) -> None:
         kind = entry.get("type")
+        if kind == "assistant":
+            from .claude_limits import refused_at_limit
+            uuid = entry.get("uuid")
+            wall = refused_at_limit(entry, f"limit:{uuid}" if isinstance(uuid, str) and uuid else f"limit:{len(self.walls)}",
+                                    when(entry.get("timestamp")))
+            if wall is not None:
+                self.walls.append(wall)  # the provider refused work at this limit, whichever branch asked
         if not entry.get('isSidechain'):
             self.background.observe(entry, when(entry.get('timestamp')))
         if kind == "queue-operation":

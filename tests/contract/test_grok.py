@@ -93,12 +93,11 @@ def test_invalid_percent_is_unknown_with_the_weekly_reset_retained(percent):
     assert usage.error == "billing percentage absent or unreadable"
 
 
-def test_retry_record_wall_does_not_invent_reset_or_a_five_hour_window(tmp_path):
+def test_rate_limited_retry_is_no_wall_since_it_names_no_window_or_reset(tmp_path):
     row = {"timestamp": 2208988800, "method": "_x.ai/session/update", "params": {
         "sessionId": "synthetic-wall", "update": {"sessionUpdate": "retry_state", "error_type": "rate_limited"}}}
     record = tmp_path / "updates.jsonl"
     record.write_text(json.dumps(row) + "\n")
     state, turns = Reader.read(record)
     assert turns == [] and state.turn_open is None
-    wall, = state.walls
-    assert wall.signature == "grok:rate_limited" and wall.resets_at is None
+    assert state.walls == (), "a retried rate limit does not prove the subscription spent"

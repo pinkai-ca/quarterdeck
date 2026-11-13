@@ -370,14 +370,19 @@ class Ledger:
         return self.db.execute(query, (pool,) if pool else ()).fetchall()
 
     def walls(self, ship: Ship | None = None, now: datetime | None = None, *, scope=None) -> list[str]:
-        """Pools with a window spent and not yet reset, ``subscription 7d``, and key pools past their budget."""
+        """Pools with a window spent and not yet reset, ``subscription 7d``, key pools past their budget,
+        and pools whose provider refused work at a limit.
+
+        A window is spent only when the provider reports it used in full. A provider's mark that
+        a limit is near (Reading.warning) never makes a wall, so no allowance is left unused.
+        """
         now = now or datetime.now().astimezone()
         found = []
         for reading in self.usage.rows():
             # A spent window is a wall until its own reset. A failed or stale read keeps the
             # last complete measurement, marked last known; only a newer good reading replaces it.
             if ((scope is None or scope(reading.group) is True) and reading.blocks and reading.complete
-                    and (reading.used >= 1.0 or reading.exhausted) and parse(reading.resets_at) > now):
+                    and reading.used >= 1.0 and parse(reading.resets_at) > now):
                 found.append(f"{reading.pool} {reading.window}" +
                              (f" · {reset_text(reading.resets_at)}" if reading.group is not None else "") +
                              ("" if reading.current(now) else " · last known"))
@@ -387,7 +392,7 @@ class Ledger:
                 spent, _ = self.spend(pool.name, budget.period_start(now))
                 if spent is not None and spent >= budget.amount:
                     found.append(f"{pool.name} budget")
-        return found + self.quota.walls(now)
+        return found + self.quota.walls(now, scope=scope)
 
     def walled(self, pool: str, ship: Ship | None = None, *, scope=None) -> bool:
         return any(w.split(" ")[0] == pool for w in self.walls(ship, scope=scope))

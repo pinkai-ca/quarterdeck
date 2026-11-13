@@ -242,19 +242,21 @@ def native_row(percent=35, severity="normal", reset=None, **extra):
             "resets_at": reset or body()["seven_day"]["resets_at"], **extra}
 
 
-@pytest.mark.parametrize("severity,spent", [("normal", False), ("warning", False), ("critical", True),
-                                            ("exceeded", True), ("error", True)])
-def test_native_list_severity_is_explicit_without_inflating_the_percentage(tmp_path, severity, spent):
+@pytest.mark.parametrize("severity,warned", [("normal", False), ("warning", False), ("critical", True),
+                                             ("exceeded", True), ("error", True)])
+def test_native_list_severity_is_a_warning_never_a_wall_and_never_inflates_the_percentage(tmp_path, severity, warned):
     from quarterdeck.harness.claude_limits import snapshot
     at = post.now()
     measured = snapshot({**body(), "limits": [native_row(35, severity)]}, at)
     row = next(w for w in measured.windows if w.group == "fable")
-    assert row.name == "fable / 7d" and row.used == .35 and row.exhausted == spent
+    assert row.name == "fable / 7d" and row.used == .35 and row.warning == warned
     assert not measured.diagnostics
     with Ledger(tmp_path / "ledger.sqlite") as book:
         book.record_usage("synthetic", measured)
-        assert book.walled("synthetic") == spent
-        assert next(r for r in book.usage.rows() if r.group == "fable").used == .35
+        assert not book.walled("synthetic") and book.usage_known("synthetic")
+        reading = next(r for r in book.usage.rows() if r.group == "fable")
+        assert reading.used == .35 and reading.warning == warned
+        assert ("near its limit" in reading.describe()) == warned
 
 
 @pytest.mark.parametrize("matching", [0, 2])
@@ -273,9 +275,9 @@ def test_native_period_needs_one_general_reset_match_and_keeps_known_fraction(tm
         book.record_usage("synthetic", measured)
         assert not book.usage_known("synthetic")
         row = next(r for r in book.usage.rows() if r.group == "fable")
-        assert row.used == .35 and row.exhausted and row.error
+        assert row.used == .35 and row.warning and row.error
         assert "period unknown" in row.describe()
-        assert book.walled("synthetic"), "native critical severity proves the wall despite unknown duration"
+        assert not book.walled("synthetic"), "a critical severity is a warning, whatever the duration"
 
 
 def test_model_period_can_match_the_five_hour_reset_without_defaulting_to_weekly(tmp_path):
@@ -322,12 +324,12 @@ def test_renamed_or_malformed_list_container_remains_visible_and_unknown(tmp_pat
         assert not book.walled("synthetic")
 
 
-def test_top_level_and_list_representation_merge_and_keep_the_native_severity_wall(tmp_path):
+def test_top_level_and_list_representation_merge_and_keep_the_native_severity_warning(tmp_path):
     from quarterdeck.harness.claude_limits import snapshot
     at = post.now()
     measured = snapshot({**body(seven_day_fable=35), "limits": [native_row(35, "critical")]}, at)
     rows = [w for w in measured.windows if w.group == "fable"]
-    assert len(rows) == 1 and rows[0].used == .35 and rows[0].exhausted
+    assert len(rows) == 1 and rows[0].used == .35 and rows[0].warning
 
 
 def test_null_optional_model_fields_and_no_model_rows_keep_legacy_behavior(tmp_path):
@@ -350,14 +352,14 @@ def test_door_scope_uses_the_running_model_and_preserves_another_family(scoped):
     assert "second fable / 7d" in Door(r.seat).wall(None)
 
 
-def test_explicit_wall_survives_failure_and_clears_only_on_newer_good_read(tmp_path):
+def test_full_model_meter_survives_failure_and_clears_only_on_newer_good_read(tmp_path):
     from quarterdeck.harness.claude_limits import snapshot
     at = post.now()
     with Ledger(tmp_path / "ledger.sqlite") as book:
-        book.record_usage("synthetic", snapshot({**body(), "limits": [native_row(35, "critical")]}, at))
+        book.record_usage("synthetic", snapshot({**body(), "limits": [native_row(100, "critical")]}, at))
         book.record_usage("synthetic", Usage((), at+timedelta(seconds=1), "synthetic refused"))
         assert book.walled("synthetic")
-        assert next(r for r in book.usage.rows() if r.group == "fable").used == .35
+        assert next(r for r in book.usage.rows() if r.group == "fable").used == 1
         book.record_usage("synthetic", snapshot({**body(), "limits": [native_row(20)]}, at+timedelta(seconds=2)))
         assert not book.walled("synthetic")
 
@@ -371,10 +373,10 @@ def test_old_book_reading_does_not_migrate_and_writer_adds_explicit_wall_default
         book.db.commit()
     before = path.read_bytes()
     with Ledger.reading(path) as book:
-        assert not book.usage.rows()[0].exhausted and book.usage_known("synthetic")
+        assert not book.usage.rows()[0].warning and book.usage_known("synthetic")
     assert path.read_bytes() == before
     with Ledger(path) as book:
-        assert not book.usage.rows()[0].exhausted
+        assert not book.usage.rows()[0].warning
         assert "exhausted" in {r[1] for r in book.db.execute("PRAGMA table_info(pools)")}
         assert book.usage.rows()[0].used == .8
 
@@ -438,32 +440,33 @@ def test_unknown_or_ambiguous_model_cannot_prove_scoped_wall_or_destination_room
 
 
 @pytest.mark.parametrize("changed", ["used", "resets_at", "read_at", "group_name", "blocks"])
-def test_old_writer_cannot_leave_a_severity_wall_attached_to_a_replaced_measurement(tmp_path, changed):
+def test_old_writer_cannot_leave_a_severity_warning_attached_to_a_replaced_measurement(tmp_path, changed):
     from quarterdeck.harness.claude_limits import snapshot
     at = post.now()
     path = tmp_path / "ledger.sqlite"
     with Ledger(path) as book:
         book.record_usage("synthetic", snapshot({**body(), "limits": [native_row(35, "critical")]}, at))
-        assert book.walled("synthetic")
+        assert next(r for r in book.usage.rows() if r.window == "fable / 7d").warning
+        assert not book.walled("synthetic")
         replacement = {"used": .2, "resets_at": (at+timedelta(days=8)).isoformat(),
                        "read_at": (at+timedelta(seconds=1)).isoformat(), "group_name": "opus", "blocks": 0}[changed]
         # The old schema writer updates ordinary columns and never touches the new evidence column.
         book.db.execute(f"UPDATE pools SET {changed}=? WHERE window='fable / 7d'", (replacement,))
         book.db.commit()
     with Ledger.reading(path) as book:
-        assert not next(r for r in book.usage.rows() if r.window == "fable / 7d").exhausted
-        assert not book.walled("synthetic")
-        assert book.usage_known("synthetic") == (changed == "blocks")
+        row = next(r for r in book.usage.rows() if r.window == "fable / 7d")
+        assert not row.warning and row.error is None, "a stale warning is no warning, and makes nothing unknown"
+        assert not book.walled("synthetic") and book.usage_known("synthetic")
 
 
 @pytest.mark.parametrize("old", ["2ac327daf56413395e7a4f6e7598c5906530570a"], indirect=True)
-def test_actual_settled_base_writer_invalidates_the_new_wall_evidence(tmp_path, old):
+def test_actual_settled_base_writer_invalidates_the_warning_evidence(tmp_path, old):
     from quarterdeck.harness.claude_limits import snapshot
     at = post.now()
     path = tmp_path / "ledger.sqlite"
     with Ledger(path) as book:
         book.record_usage("synthetic", snapshot({**body(), "limits": [native_row(35, "critical")]}, at))
-        assert book.walled("synthetic")
+        assert next(r for r in book.usage.rows() if r.group == "fable").warning and not book.walled("synthetic")
     old('''
 from datetime import datetime
 import sys
@@ -475,25 +478,25 @@ with Ledger(Path(sys.argv[1])) as book:
 ''', path, (at+timedelta(seconds=1)).isoformat(), body()["seven_day"]["resets_at"])
     with Ledger.reading(path) as book:
         row = next(r for r in book.usage.rows() if r.group == "fable")
-        assert row.used == .2 and not row.exhausted and not book.walled("synthetic")
-        assert not book.usage_known("synthetic") and "no longer matches" in row.error
+        assert row.used == .2 and not row.warning and not book.walled("synthetic")
+        assert row.error is None, "a stale warning is no warning, and leaves its window known"
 
 
 @pytest.mark.parametrize("percent", [-0.0, 0.0])
-@pytest.mark.parametrize("severity,spent", [("normal", False), ("critical", True)])
-def test_signed_zero_native_fraction_keeps_its_severity_wall_across_sqlite(tmp_path, percent, severity, spent):
+@pytest.mark.parametrize("severity,warned", [("normal", False), ("critical", True)])
+def test_signed_zero_native_fraction_keeps_its_severity_warning_across_sqlite(tmp_path, percent, severity, warned):
     from quarterdeck.harness.claude_limits import snapshot
     at = post.now()
     path = tmp_path / "ledger.sqlite"
     measured = snapshot({**body(), "limits": [native_row(percent, severity)]}, at)
     native = next(w for w in measured.windows if w.group == "fable")
-    assert native.used == 0 and native.exhausted == spent
+    assert native.used == 0 and native.warning == warned
     with Ledger(path) as book:
         book.record_usage("synthetic", measured)
     with Ledger.reading(path) as book:
         row = next(r for r in book.usage.rows() if r.group == "fable")
-        assert row.used == 0 and row.exhausted == spent and row.error is None
-        assert book.walled("synthetic") == spent and book.usage_known("synthetic")
+        assert row.used == 0 and row.warning == warned and row.error is None
+        assert not book.walled("synthetic") and book.usage_known("synthetic")
 
 
 @pytest.mark.parametrize("running_family,spent_family", [("sonnet", "fable"), ("fable", "sonnet")])

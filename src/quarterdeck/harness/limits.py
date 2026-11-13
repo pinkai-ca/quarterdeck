@@ -14,7 +14,7 @@ class Window:
     bucket: str | None = None
     bucket_name: str | None = None
     error: str | None = None
-    exhausted: bool = False  # An explicit native wall, independent of the reported fraction.
+    warning: bool = False  # The provider marks this window near or at its limit: shown, never a wall.
     uncertainty: str | None = None  # A complete measurement with unresolved scope/period evidence.
     replaces: tuple[tuple[str, float], ...] = ()  # Prior name and proved maximum reset distance (seconds).
 
@@ -37,3 +37,4 @@ class Wall:
     reason: str = "individual quota reached"
     error_id: str | None = None
     signature: str = ""
+    group: str | None = None  # The model group the refused limit applies to; None applies to every model.

@@ -1,16 +1,17 @@
 """Claude's native allowance fields, model families and safe shape diagnostics."""
 
 from dataclasses import replace
+from datetime import datetime, timezone
 import json
 import math
 import re
 
 from .json_record import when
-from .limits import Usage, Window
+from .limits import Usage, Wall, Window
 
 PERIODS = {"five_hour": "5h", "seven_day": "7d"}
 FAMILIES = {"fable": "fable", "sonnet": "sonnet", "opus": "opus", "haiku": "haiku"}
-WALL_SEVERITIES = {"critical", "exceeded", "error"}
+WARNING_SEVERITIES = {"critical", "exceeded", "error"}  # Near or at a limit: warning evidence, never a wall.
 NATIVE_PERIODS = {"weekly_scoped": "7d"}
 RENDER_GROUPS = {"session", "weekly"}  # Display group examples, never a period classifier.
 RESET_TOLERANCE = 2.0
@@ -82,7 +83,7 @@ def snapshot(data: dict, now) -> Usage:
             # The same native cap may have both a named window and a limits entry.
             if (old.used, old.resets_at, old.error, old.uncertainty) == (
                     candidate.used, candidate.resets_at, candidate.error, candidate.uncertainty):
-                candidate = replace(candidate, exhausted=old.exhausted or candidate.exhausted)
+                candidate = replace(candidate, warning=old.warning or candidate.warning)
             else:
                 candidate = Window(candidate.name, None, None, group=candidate.group,
                                    error="conflicting model allowance representations")
@@ -126,7 +127,7 @@ def snapshot(data: dict, now) -> Usage:
         if error or uncertainty or unknown_kind or unknown_group:
             observations.append(shape(row))
         keep(model_window(canonical or "unknown", period, used, reset,
-                    error=error, exhausted=isinstance(severity, str) and severity.lower() in WALL_SEVERITIES,
+                    error=error, warning=isinstance(severity, str) and severity.lower() in WARNING_SEVERITIES,
                     uncertainty=uncertainty))
     windows.extend(scoped.values())
     diagnostics = list(container_notes)
@@ -136,3 +137,36 @@ def snapshot(data: dict, now) -> Usage:
         diagnostics.append(f"limits diagnostics: {len(observations)}; key/type shapes: " + json.dumps(observations, sort_keys=True))
     diagnostics = tuple(diagnostics)
     return Usage(tuple(windows), now, diagnostics=diagnostics) if windows else Usage((), now, "no utilization in response", diagnostics=diagnostics)
+
+
+# Claude Code 2.1.317 writes a refused request as a synthetic assistant row. The usage-limit form, read
+# from its installed source and the shape of a recorded row: ``error`` "rate_limit", ``apiError``
+# "usage_limit_reached", and ``apiErrorParams.rate_limit_info`` with ``status`` "rejected", the
+# provider's ``rateLimitType`` and ``resetsAt`` in Unix seconds. Only these types name a window the
+# usage reading also names. Every other form, among them a plain "rate_limit", a model that needs
+# usage credits, an overage limit or an unknown type, stays unknown and is no wall.
+REFUSED_WINDOWS = {"five_hour": ("5h", None), "seven_day": ("7d", None),
+                   "seven_day_sonnet": ("sonnet / 7d", "sonnet"), "seven_day_opus": ("opus / 7d", "opus")}
+
+
+def refused_at_limit(entry: dict, key: str, at: datetime | None) -> Wall | None:
+    """The wall a recorded usage-limit refusal proves, for its pool and window until its reset; else None."""
+    if not (isinstance(entry, dict) and entry.get("type") == "assistant" and entry.get("isApiErrorMessage") is True
+            and entry.get("error") == "rate_limit" and entry.get("apiError") == "usage_limit_reached"):
+        return None
+    params = entry.get("apiErrorParams")
+    info = params.get("rate_limit_info") if isinstance(params, dict) else None
+    if not isinstance(info, dict) or info.get("status") != "rejected":
+        return None
+    kind, seconds = info.get("rateLimitType"), info.get("resetsAt")
+    if not isinstance(kind, str) or kind not in REFUSED_WINDOWS or type(seconds) is not int or at is None:
+        return None
+    try:
+        reset = datetime.fromtimestamp(seconds, timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+    if reset <= at:
+        return None
+    window, group = REFUSED_WINDOWS[kind]
+    return Wall(key, at, reset, f"refused at its {window} limit",
+                signature=f"claude:usage_limit_reached:{kind}:{seconds}", group=group)

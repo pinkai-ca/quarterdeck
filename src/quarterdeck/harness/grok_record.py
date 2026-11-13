@@ -9,7 +9,6 @@ from pathlib import Path
 from uuid import UUID
 
 from .json_record import JsonLinesReader, RecordError, entries, input_reader, object_lines, records_matching, when
-from .limits import Wall
 from .types import Input, Inputs, Tokens, ToolCall, Turn
 
 METHODS = ("session/update", "_x.ai/session/update")
@@ -126,7 +125,6 @@ class Reader(JsonLinesReader):
         return update(row) is not None
 
     def __init__(self, record: Path, snapshot=None):
-        self.walls = []
         self.execution_seen = False
         self.calls: dict[str, Call] = {}
         self.completed_prompts: set[str] = set()
@@ -193,8 +191,9 @@ class Reader(JsonLinesReader):
             self.ensure_turn()
             self.end(at, event)
         elif kind == "retry_state":
-            if event.get("error_type") == "rate_limited":
-                self.walls.append(Wall(f"retry:{len(self.walls)}", at, None, "native rate limit", signature="grok:rate_limited"))
+            # A rate-limited retry names no window and no reset, and the program retries it: it does
+            # not prove the subscription spent, so it is no wall. Grok's spent allowance is its meter.
+            pass
         elif kind == "config_option_update":
             for option in event.get("configOptions", []):
                 value = option.get("currentValue")
@@ -246,5 +245,4 @@ class Reader(JsonLinesReader):
         state = super().state()
         if self.open is None and self.live_tools:
             state = replace(state, pending_tools=None)  # ended root does not supply a missing tool result
-        return replace(state, walls=tuple(self.walls),
-                       turn_open=self.open is not None if self.execution_seen else None)
+        return replace(state, turn_open=self.open is not None if self.execution_seen else None)

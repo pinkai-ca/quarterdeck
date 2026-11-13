@@ -109,8 +109,9 @@ class Door:
         if book is not None:
             with book:
                 try:
-                    known = book.quota.blocked(self.seat.name, pool) or next(
-                        (w for w in book.walls(self.seat.ship, scope=quota.model_scope(self.seat, pool, running=True)) if w.split(" ")[0] == pool), None)
+                    scope = quota.model_scope(self.seat, pool, running=True)
+                    known = book.quota.blocked(self.seat.name, pool, scope=scope) or next(
+                        (w for w in book.walls(self.seat.ship, scope=scope) if w.split(" ")[0] == pool), None)
                     if known:
                         return known
                     if shown is not None and book.quota.recognized(self.seat.name, shown):

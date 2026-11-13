@@ -108,7 +108,7 @@ def test_mapped_uncertainty_does_not_inflate_unmapped_entry_count(at):
 
 
 @pytest.mark.parametrize("old", [BASE], indirect=True)
-@pytest.mark.parametrize("percent,severity,spent", [(30, "normal", False), (100, "critical", True), (-0.0, "critical", True)])
+@pytest.mark.parametrize("percent,severity,spent", [(30, "normal", False), (100, "critical", True), (-0.0, "critical", False)])
 def test_upgrade_current_writer_unknown_period_is_replaced_by_proved_current_row(tmp_path, old, at, percent, severity, spent):
     path = tmp_path/"runtime/ledger.sqlite"
     old('''
@@ -143,7 +143,7 @@ def test_unknown_identity_is_preserved_without_a_justified_replacement(tmp_path,
     from dataclasses import replace
     path = tmp_path/"ledger.sqlite"
     reset = at+timedelta(days=7)
-    unknown = Window("fable / unknown period", 1, reset, group="fable", exhausted=True,
+    unknown = Window("fable / unknown period", 1, reset, group="fable", warning=True,
                      uncertainty="model allowance period unknown")
     with Ledger(path) as book:
         book.record_usage("synthetic", Usage((unknown,), at))

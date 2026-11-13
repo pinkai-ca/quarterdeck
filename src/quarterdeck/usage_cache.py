@@ -43,8 +43,12 @@ def invalid(used: object, reset: datetime | None, at: datetime | None) -> str | 
     return None
 
 
-def exhaustion_evidence(pool, window, used, resets_at, read_at, blocks, group) -> str | None:
-    """Bind a native wall to its complete tuple; an older writer cannot leave a stale flag."""
+def warning_evidence(pool, window, used, resets_at, read_at, blocks, group) -> str | None:
+    """Bind a provider's near-limit warning to its complete tuple; an older writer cannot leave a stale one.
+
+    Stored in the column ``exhausted``, the name an earlier writer gave it when it read the same
+    severity as a wall. It is warning evidence only: no wall is ever read from it.
+    """
     if type(used) not in (int, float) or not isinstance(resets_at, str) or not isinstance(read_at, str):
         return None
     number = float(used)
@@ -66,7 +70,7 @@ class Reading:
     bucket_name: str | None
     attempted_at: str | None
     error: str | None
-    exhausted: bool = False
+    warning: bool = False  # the provider marks it near or at its limit; never a wall
 
     @property
     def complete(self) -> bool:
@@ -97,7 +101,8 @@ class Reading:
         value = f"{self.used:.0%} used" + (f" ({self.bucket_name})" if self.bucket_name else "")
         reading = f"read {self.read_at} ({age}m ago)"
         stale = f" · LAST KNOWN · {reason}" if reason else ""
-        return f"{label} {value}{stale} · {reset_text(self.resets_at)} · {reading}{next_step}"
+        warning = " · provider warns it is near its limit" if self.warning else ""
+        return f"{label} {value}{warning}{stale} · {reset_text(self.resets_at)} · {reading}{next_step}"
 
 
 class UsageCache:
@@ -114,17 +119,12 @@ class UsageCache:
 
     def rows(self, pool: str | None = None) -> list[Reading]:
         columns = {r[1] for r in self.db.execute("PRAGMA table_info(pools)")}
-        exhausted = "exhausted" if "exhausted" in columns else "''"
-        sql = (f"SELECT pool,window,used,resets_at,read_at,blocks,group_name,bucket,bucket_name,attempted_at,error,{exhausted} FROM pools"
+        warning = "exhausted" if "exhausted" in columns else "''"
+        sql = (f"SELECT pool,window,used,resets_at,read_at,blocks,group_name,bucket,bucket_name,attempted_at,error,{warning} FROM pools"
                + (" WHERE pool=?" if pool is not None else "") + " ORDER BY pool,window")
-        found = []
-        for row in self.db.execute(sql, (pool,) if pool is not None else ()):
-            bound = bool(row[11]) and row[11] == exhaustion_evidence(*row[:7])
-            error = row[10]
-            if row[11] and not bound:
-                error = error or "explicit wall evidence no longer matches the measurement"
-            found.append(Reading(*row[:5], bool(row[5]), *row[6:10], error, bound))
-        return found
+        # A warning left by an older writer that no longer matches its measurement is simply no warning.
+        return [Reading(*row[:5], bool(row[5]), *row[6:11], bool(row[11]) and row[11] == warning_evidence(*row[:7]))
+                for row in self.db.execute(sql, (pool,) if pool is not None else ())]
 
     def record(self, pool: str, usage: Usage, attempted_at: datetime) -> str | None:
         previous = {r.window: r for r in self.rows(pool)}
@@ -163,15 +163,15 @@ class UsageCache:
                                     (pool, name, new.blocks, new.group, attempted_at.isoformat(), error))
                 continue
             bucket = new.bucket if new.bucket is not None else (old.bucket if old else None)
-            exhausted = exhaustion_evidence(pool, name, new.used, new.resets_at.isoformat(),
-                                            usage.read_at.isoformat(), new.blocks, new.group) if new.exhausted else ""
+            warning = warning_evidence(pool, name, new.used, new.resets_at.isoformat(),
+                                       usage.read_at.isoformat(), new.blocks, new.group) if new.warning else ""
             self.db.execute("INSERT INTO pools (pool,window,used,resets_at,read_at,blocks,group_name,bucket,bucket_name,attempted_at,error,exhausted) "
                             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(pool,window) DO UPDATE SET "
                             "used=excluded.used,resets_at=excluded.resets_at,read_at=excluded.read_at,blocks=excluded.blocks,"
                             "group_name=excluded.group_name,bucket=excluded.bucket,bucket_name=excluded.bucket_name,"
                             "attempted_at=excluded.attempted_at,error=excluded.error,exhausted=excluded.exhausted",
                             (pool, name, new.used, new.resets_at.isoformat(), usage.read_at.isoformat(), new.blocks, new.group,
-                             bucket, new.bucket_name, attempted_at.isoformat(), new.uncertainty, exhausted))
+                             bucket, new.bucket_name, attempted_at.isoformat(), new.uncertainty, warning))
             if new.uncertainty:
                 errors.append(f"{name}: {new.uncertainty}")
             accepted.append(new)
