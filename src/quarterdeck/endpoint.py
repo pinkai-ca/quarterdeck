@@ -35,14 +35,26 @@ class Served:
     context: int | None = None
 
 
-def models(url: str, timeout: float = TIMEOUT, *, api_key: str | None = None) -> list[Served]:
-    """What an endpoint serves, from its ``/models`` listing; a ShipError names why it cannot be read."""
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, message, headers, new_url):
+        return None
+
+
+def models(url: str, timeout: float = TIMEOUT, *, api_key: str | None = None,
+           allow_redirects: bool = True) -> list[Served]:
+    """Read ``/models``; False uses direct transport without inherited proxies or redirects.
+
+    Existing callers retain urllib's normal transport. Setup uses the direct form only
+    for its person's loopback server, without a key, before accepting a declaration.
+    """
     headers = {"User-Agent": "quarterdeck"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     request = urllib.request.Request(f"{url.rstrip('/')}/models", headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        opening = (urllib.request.urlopen if allow_redirects else
+                   urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect()).open)
+        with opening(request, timeout=timeout) as response:
             data = json.load(response)
     except urllib.error.HTTPError as error:
         raise ShipError(f"{url} answered {error.code} to /models") from None

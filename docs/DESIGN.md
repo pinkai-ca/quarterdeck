@@ -1089,43 +1089,204 @@ Rebrief uses one request kind, with hashes and launch snapshots in the existing 
 
 ## Guided setup
 
-`qd setup` uses registered adapters and doctor's program, payment and readiness rows to
-explain the programs available on the machine. It asks for programs, their declared
-payment, desk/captain/engineering mapping, workspace and ship name. Every answer has a
-flag or a field in one JSON answers file; without a terminal, a missing answer is named
-and refused. A key answer is only an environment variable name. Endpoint operator and
-model are explicit. Unknown sign-in stays unknown; setup never signs in, installs a
-program or answers a native account question.
+`qd setup` first builds a complete ship proposal in memory. Its questions are ship
+name (with suggestions), operator name (suggested `Admiral`), project, then desk,
+captain and engineering: each seat's display name, harness, model and effort.
+Persona suggestions come from the packaged default ship data, including engineering;
+the stable handles remain `desk`, `captain`, `engineering`. Changing a display name
+changes `persona`, never an address, role or session. A current-folder project
+suggestion requires a non-framework Git project; the framework checkout and its
+linked worktrees get no such suggestion. An explicit workspace can be any existing
+project directory. The ship folder is asked alongside the project, with an existing
+parent; setup creates that one folder and never creates parent project directories.
 
-One selected program receives desk, captain and engineering, except Antigravity: its
-measured shared-state limitation permits only one declared seat in setup. Sole
-Antigravity cannot supply the three-seat crew. Setup validates the complete proposed
-declaration before any creation/update writes, and the kept declaration before readiness,
-checks or start. A seat counts once if any effective pool choice uses Antigravity,
-including retained unrelated seats, disabled seats and fallback choices. More than one
-refuses with a remedy to choose other programs for remaining roles. Generic ship reading
-and runtime policy are unchanged; reruns preserve unrelated seats and existing orders.
+Harness choices come from registered non-synthetic programs found on the selected
+PATH. Credential-file presence can rank suggestions, but is never proof of valid
+sign-in or account entitlement. There is no preferred vendor pair. One ordinary
+harness can supply the whole initial crew, including desk. Antigravity is the narrow
+exception: its shared-state limitation permits only one declared seat. Setup counts
+every seat with any effective Antigravity pool choice, including disabled, retained
+and fallback seats, once. It refuses more than one before creation/update writes or
+keep/readiness/check/start. Sole Antigravity cannot supply the three-seat crew.
+Generic ship/runtime reading policy is unchanged.
 
-On failed readiness, effective subscription choices show adapters' informational native
-sign-in metadata, unknown by default, and official references. These are displayed only.
-Current documentation establishes command syntax, not support in an older installed
-version or successful sign-in. A home prefix requires documented credential-home
-semantics; Codex's unverified storage mode and Grok's unproved auth-home scope remain
-explicit questions without guessed prefixes. Doctor reasons and the exact setup rerun
-remain authoritative. Endpoint-only OpenCode/pi gain no subscription command, and an
-unregistered program gains no speculative support.
+Model and effort suggestions come from the adapters' common pure
+`default_metadata()`/`effort_capability()` contract. Codex's actual legacy suggestion
+is `gpt-6-astra`/`medium`; the shipped Claude pair is `claude-opus-5-5`/`max`.
+Other adapters may suggest the program's own default, never an invented model or
+level. Suggestions have not been checked against an account. The shared
+`model_mode` and `effort_mode` fields are `named` or `program-default`: named requires
+the corresponding nonempty string; program-default requires that string to be
+absent. Omitted modes preserve legacy strings, including the literal `default`.
+Program-default effort names no level and is universally valid; endpoint-only
+OpenCode/pi require an explicit model. Shared validation reports unknown effort
+compatibility as unchecked, rather than inventing or rejecting an unknown enum.
+Setup neither defines a second capability table nor translates effort names.
 
-The default template supplies the crew shape and orders. Creation validates before
-writing, writes files atomically in one exclusively created ship folder, ignores its
-runtime and makes a scoped first commit. Reruns show the declaration and require a
-keep/update choice. Additions use whole validated ship edits; existing-seat changes use
-the same selection, application, refusal and defer path as `qd set`. Relaunch requirements
-are printed and stop the flow until the person applies them. Existing orders are preserved.
+Next, each chosen harness is asked what it runs on, offering exactly “a subscription
+you are signed in to”, “an API key”, “a local model”. Machine values remain
+`subscription`, `key`, `endpoint`. Remote URLs remain possible as explicit answers,
+without being the first offered option. A documented home and a credential-file
+presence reading can be suggested; setup never reads a key value to suggest its
+variable NAME. Existing native key-variable facts provide suggestions where known;
+other variables and endpoint operators remain explicit answers. No model brand
+identifies an endpoint operator. OpenCode/pi remain endpoint-only; an unregistered
+program receives no speculative support.
 
-Doctor rows precede explicit consent to `qd check` for each selected program. Only passing
-checks lead to a separate start answer, then existing up/status operations and desk access.
-Opening briefs may spend turns too. `setup.Operations` is the reusable boundary for all
-machine, account and live interactions; ordinary scripted tests replace that boundary or
-use version-only fake PATH executables. No second setup implementation or live provider
-is needed for those tests. Native sign-in remains the person's task, with an exact setup
-rerun command after a readiness refusal.
+For a local model, a URL suggestion exists only if the person's own loopback server
+answers the existing models-listing helper. That informational read supplies no
+key/cookies/auth, follows no redirects and uses no inherited proxies. It is the
+only pre-accept network read. `endpoint.models(..., allow_redirects=False)` uses
+that direct transport; the default `True` preserves existing callers' transport.
+An explicit non-loopback URL is never queried before acceptance. A unique served
+model can be suggested; an unreachable, empty or multiple-model listing requires a
+named model answer. Endpoint-only model questions without an explicit answer are
+therefore completed after the URL question rather than guessed in the seat section.
+This is a declaration suggestion, not a paid model turn or an account check.
+
+Each seat then chooses an ordered pool list. Its default is the primary pool and
+other declared compatible pools of that same harness and payment kind; there is no
+silent cross-harness fallback. Explicit inline choices can select another found
+harness, with its own model/effort or supported program-default modes, and prompt
+for its payment if needed. The representation is the ship's existing ordered
+strings/inline tables, not a new pool language. The primary effective choice must
+agree with the seat's primary harness/model/effort. Fresh setup declares one new
+payment per chosen harness; it does not provision arbitrary accounts. Existing
+pool names and unrelated seats/pools/orders are preserved. Explicit legacy
+`programs` still includes every selected program, adding a worker if unused by the
+three main roles; omitting it derives the used programs from seat choices.
+
+The complete proposal is shown before acceptance, using one renderer: `Ship name:`,
+`Operator name:`, `Project path:`, a blank line, then five aligned plain columns
+`Seat`, `Name`, `Harness`, `Model`, `Effort`. A separate `Runs on` block has one line
+per effective harness with the full subscription/home, key-variable NAME or local
+model/URL description. An explicit remote URL reads “a model at URL”. The target
+ship folder remains a question/answer, not an extra summary row. A program-default
+column reads `program's default`, with one note that it is not checked against the
+account. Only applicable per-seat fallback orders follow. JSON preserves the same
+field order (`ship_name`, `operator_name`, `project_path`, `seats`, `runs_on`, optional
+`note`/`fallback_order`, then operation `result`), and row field order follows the
+five columns. Key values are never summary data.
+
+The person can change any setup answer by its documented field path, rebuild and
+review again, or accept. Each change invalidates the earlier acceptance. Creation,
+runtime initialization, declaration writes, commits and existing-seat application
+are unreachable until explicit acceptance. Pre-accept discovery is PATH/metadata
+only; native version and real doctor readiness happen afterward. An unaccepted
+existing-ship rerun is read-only. Keep/update is explicit, and keep refuses changes
+rather than silently discarding them. Creation uses the validated atomic writer,
+exclusive folder creation, runtime ignore and scoped first commit. Existing-seat
+changes use the same `qd set` refusal/application/defer path. Before any additions
+or writes, setup refuses existing named-to-program-default changes requiring removal
+of the old string, and unsupported inline-choice updates; it names the field and
+asks for an explicit declaration edit. It adds no generic unset or lifecycle path.
+
+Doctor reasons precede separate explicit paid `check` consent, then separate `start`
+consent and existing up/status/access operations. Interactive suggestions for these
+consents are no; declaration acceptance never spends those turns implicitly.
+Native sign-in hints remain informational current-documentation syntax, unknown by
+default. Installed-version/home/storage unknowns stay explicit; hints are never
+executed. Doctor refusals retain their real reasons and exact rerun, including the
+new explicit acceptance/default flags. Native account questions stay with the
+person. Setup never signs in, installs, buys, changes native settings or uses
+OpenRouter. Enter-only is promised only for a supported program the person is
+already signed in to, with the Antigravity one-seat exception; it is not a promise
+for unknown endpoint/payment facts or a verified running crew.
+
+### Stable answers and flags
+
+The single JSON object uses these existing keys without changing their meanings:
+
+| File key | Flag | Meaning |
+| --- | --- | --- |
+| `name`, `workspace`, `folder` | `--name`, `--workspace`, `--folder` | Ship name, existing project, ship folder; global explicit `--ship` also selects the folder |
+| `programs` | `--programs` | Comma-separated program inclusion/restriction, never display names |
+| `desk`, `captain`, `engineer` | same-named flags | Harness for that stable role; engineer maps to engineering |
+| `payment.PROGRAM` | `--payment PROGRAM=VALUE` | subscription, key, endpoint |
+| `subscription_home.PROGRAM` | `--subscription-home PROGRAM=PATH` | Native sign-in directory, never copied |
+| `provider.PROGRAM` | `--provider PROGRAM=NAME` | Native key company or explicit endpoint operator |
+| `key_env.PROGRAM` | `--key-env PROGRAM=NAME` | Key environment variable NAME, or explicit none for an unkeyed endpoint |
+| `endpoint.PROGRAM` | `--endpoint PROGRAM=URL` | URL without credentials/query/fragment |
+| `model.PROGRAM` | `--model PROGRAM=TEXT` | Literal model for the program, not a role map or a magic default marker |
+| `existing` | `--existing keep|update` | Existing declaration choice; never overwrite a new target |
+| `check`, `start`, `wait_for_sign_in` | same-named hyphenated flags | Separate yes/no choices; wait applies only to interactive failed readiness |
+
+Additive keys are:
+
+| File key | Flag | Meaning |
+| --- | --- | --- |
+| `operator` | `--operator TEXT` | What the crew calls the person |
+| `seats.ROLE.name` | `--seat ROLE.name=TEXT` | Display persona; role handles remain stable |
+| `seats.ROLE.harness` | `--seat ROLE.harness=TEXT` | Primary program |
+| `seats.ROLE.model`, `effort` | `--seat ROLE.model=TEXT`, `ROLE.effort=TEXT` | Exact named values |
+| `seats.ROLE.model_mode`, `effort_mode` | `--seat ROLE.model_mode=MODE`, `ROLE.effort_mode=MODE` | named or program-default; never null or reinterpretation of an old string |
+| `seats.ROLE.pools` | `--seat ROLE.pools=JSON_ARRAY` | Ordered native pool strings/inline objects; each inline object has its own explicit harness/control fields |
+| `use_defaults` | `--use-defaults yes|no` | Explicitly take established suggestions for missing declaration fields in non-TTY; never supplies accept/check/start or unknown external facts |
+| `edits` | repeatable `--edit FIELD=VALUE` | Ordered objects with exactly field and value; JSON for structured values |
+| `accept` | `--accept yes|no` | Explicit final acceptance; separate from check/start |
+
+`ROLE` is desk, captain or engineering. Nested inline paths, for example
+`seats.desk.pools.1.model_mode`, address an existing zero-based pool-list position;
+flags must establish the containing list before addressing its entries. File pools
+use existing keys `pool`, `harness`, `model`, `effort`, `model_mode`, `effort_mode`,
+`settings`, subject to shared validation. Strings inherit seat defaults; inline
+omitted modes reset as the common ship contract defines. A default-mode object has
+no corresponding named string. JSON null is not a mode/unset answer. The terminal's
+`/default` action selects a new mode; a literal model string supplied in a file or
+flag is never repurposed. Terminal fallback input accepts pool names separated by
+commas; an explicit `/other` entry asks for another harness and builds the same
+inline object the file supplies.
+
+File values are merged first, then direct flags (existing map entries merge), then
+file edits in order, then flag edits in order. Direct per-seat flags merge fields,
+not whole roles. Old role flags map additively to the same per-seat harness field;
+conflicting old/new direct inputs refuse with both names. An explicit edit of that
+harness fact updates an already supplied alias consistently. Old `model.PROGRAM`
+remains a literal program-wide choice; conflicting explicit per-seat controls refuse
+rather than silently changing it. An explicit new mode edit changes the draft's
+corresponding control field, but cannot bypass the existing-ship unset refusal.
+Edits cannot carry accept/check/start consent. Interactive summary edits use that
+same setter and require a new acceptance; no alternative wizard implementation.
+
+Non-TTY never starts terminal dialogue. Every applicable missing required answer is
+refused by canonical name and its flag/file remedy, including nested fallback facts
+and acceptance. Without explicit `use_defaults=yes`, a suggestion does not silently
+satisfy a missing scripted answer. With it, absent unknown URL/operator/model/key/home
+facts still refuse by name. Default mode is explicit in the proposed declaration,
+not an inferred model availability claim. `wait_for_sign_in=yes` cannot cause a
+non-TTY pause. A complete example (paths are placeholders, models account-unchecked)
+is:
+
+```json
+{
+  "name": "aurora",
+  "operator": "Admiral",
+  "workspace": "/path/to/project",
+  "folder": "/path/to/project/aurora",
+  "programs": "codex",
+  "seats": {
+    "desk": {"name": "Maeve", "harness": "codex", "model": "gpt-6-astra", "model_mode": "named", "effort": "medium", "effort_mode": "named", "pools": ["codex"]},
+    "captain": {"name": "Picard", "harness": "codex", "model": "gpt-6-astra", "model_mode": "named", "effort": "medium", "effort_mode": "named", "pools": ["codex"]},
+    "engineering": {"name": "Engineer", "harness": "codex", "model": "gpt-6-astra", "model_mode": "named", "effort": "medium", "effort_mode": "named", "pools": ["codex"]}
+  },
+  "payment": {"codex": "subscription"},
+  "subscription_home": {"codex": "~/.codex"},
+  "use_defaults": "no",
+  "accept": "yes",
+  "check": "no",
+  "start": "no",
+  "wait_for_sign_in": "no"
+}
+```
+
+Pass it with `qd setup --answers setup-answers.json`. A shorter explicit suggestion
+request is `qd setup --programs codex --workspace /path/to/project --folder
+/path/to/project/aurora --use-defaults yes --accept yes --check no --start no`.
+The same scalar/map/seat fields are available as flags. Neither form runs a paid
+check or starts the crew without the separate consent. `setup.Operations` owns the
+PATH/account/local-listing/readiness/check/application/up/status/access seams;
+ordinary scripted gates replace these rather than use native programs or accounts.
+Independent gates also cover Enter-only one/two harnesses, summary edits, complete
+files, named non-TTY refusals, zero writes before acceptance, endpoint transport,
+AGY bounds, reruns and paid-consent branches. Source-only work does not run those
+checks or claim that the feature is installed.

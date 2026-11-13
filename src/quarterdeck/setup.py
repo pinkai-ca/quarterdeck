@@ -6,9 +6,9 @@ and qd set's application path; the conversation does not maintain another config
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import shlex
+import shutil
 import sys
 import tomllib
 from pathlib import Path
@@ -16,11 +16,8 @@ from pathlib import Path
 from . import doctor, harness, providers, ship as ships, standing
 from .drill import Check
 from .ship import Ship, ShipError
-
-MAPS = ("payment", "subscription_home", "provider", "key_env", "endpoint", "model")
-SCALARS = ("programs", "desk", "captain", "engineer", "workspace", "name", "folder",
-           "existing", "check", "start", "wait_for_sign_in")
-ROLES = ("desk", "captain", "engineering")
+from .setup_answers import Conversation, MAPS, SCALARS, ROLES, MISSING, read_answers
+from . import setup_proposal
 
 
 def arguments(parser: argparse.ArgumentParser) -> None:
@@ -45,96 +42,57 @@ def arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--check", choices=("yes", "no"), help="consent to qd check for EVERY chosen program; spends turns")
     parser.add_argument("--start", choices=("yes", "no"), help="bring up the crew after successful checks (opening briefs may spend turns)")
     parser.add_argument("--wait-for-sign-in", choices=("yes", "no"), help="pause for the person on a readiness failure; never sign in automatically")
-
-
-class Conversation:
-    def __init__(self, answers: dict, *, interactive: bool, read=input, write=print):
-        self.answers, self.interactive, self.read, self.write = answers, interactive, read, write
-
-    def say(self, message: str) -> None:
-        self.write(message)
-
-    def ask(self, name: str, prompt: str, default: str | None = None) -> str:
-        parts = name.split(".")
-        value = self.answers.get(parts[0])
-        if len(parts) == 2:
-            value = value.get(parts[1]) if isinstance(value, dict) else None
-        if value is not None:
-            if not isinstance(value, str) or not value.strip():
-                raise ShipError(f"answer {name} must be nonempty text; supply {name} again")
-            return value.strip()
-        if not self.interactive:
-            raise ShipError(f"missing answer {name}; pass --{parts[0].replace('_', '-')} "
-                            + (f"{parts[1]}=ANSWER" if len(parts) == 2 else "ANSWER") + " or --answers FILE")
-        try:
-            value = self.read(prompt + (f" [{default}]" if default is not None else "") + ": ").strip()
-        except (EOFError, KeyboardInterrupt):
-            raise ShipError(f"setup stopped at answer {name}; rerun qd setup to continue") from None
-        value = value or default
-        if not value:
-            raise ShipError(f"missing answer {name}; rerun qd setup and supply it")
-        return value
-
-    def choice(self, name: str, prompt: str, choices, default: str | None = None) -> str:
-        value = self.ask(name, prompt, default)
-        if value not in choices:
-            raise ShipError(f"answer {name}: choose {', '.join(choices)}; rerun with that answer")
-        return value
-
-
-def read_answers(args: argparse.Namespace) -> dict:
-    answers = {}
-    if args.answers:
-        try:
-            answers = json.loads(Path(args.answers).expanduser().read_text())
-        except (OSError, ValueError):
-            raise ShipError("cannot read answers file as a JSON object; supply --answers FILE") from None
-        if not isinstance(answers, dict) or set(answers) - set(SCALARS + MAPS):
-            raise ShipError("answers file must be an object containing setup answer names only")
-        for name, value in answers.items():
-            if name in MAPS:
-                if not isinstance(value, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in value.items()):
-                    raise ShipError(f"answer {name} must map program names to text")
-            elif not isinstance(value, str):
-                raise ShipError(f"answer {name} must be text")
-    for name in SCALARS:
-        if (value := getattr(args, name, None)) is not None:
-            answers[name] = value
-    for name in MAPS:
-        merged = dict(answers.get(name, {}))
-        for entry in getattr(args, name, None) or []:
-            program, equals, value = entry.partition("=")
-            if not equals or not program or not value:
-                raise ShipError(f"--{name.replace('_', '-')} needs PROGRAM=ANSWER")
-            merged[program] = value
-        answers[name] = merged
-    if args.ship:
-        if answers.get("folder") and Path(answers["folder"]).expanduser().resolve() != Path(args.ship).expanduser().resolve():
-            raise ShipError("--ship and --folder name different folders; choose one target")
-        answers["folder"] = args.ship
-    return answers
+    parser.add_argument("--operator", help="what the crew calls you; suggested Admiral")
+    parser.add_argument("--seat", action="append", metavar="ROLE.FIELD=ANSWER", help="per-seat name, harness, model, effort or pools (JSON list)")
+    parser.add_argument("--edit", action="append", metavar="FIELD=VALUE", help="revise a proposal field; JSON for structured values")
+    parser.add_argument("--use-defaults", choices=("yes", "no"), help="explicitly use established suggestions for missing declaration answers")
+    parser.add_argument("--accept", choices=("yes", "no"), help="accept the complete proposal before any writes; separate from check/start consent")
 
 
 class Operations:
     """All version/account/check/launch/application interactions; replace whole in scripted tests."""
     def discover(self, defaults: dict) -> dict[str, tuple[Check, str]]:
-        from . import credential
+        from .seat import program_path
         result = {}
         for name in harness.NAMES:
             reader = harness.get(name)
             if reader.synthetic:
                 continue
-            row = doctor.program_check(name)
+            found = shutil.which(reader.program, path=program_path())
+            row = Check(f"program {name}", found is not None,
+                        f"{reader.program} found; version unchecked" if found else f"{reader.program} is not on PATH; choose an installed program")
             info = "sign-in unknown; the native program must complete its own sign-in"
-            table = defaults.get("pools", {}).get(name)
-            if table and reader.credential_file:
-                pool = ships._pool(name, table)
-                file = credential.pool_file(pool)
-                if file is not None:
-                    info = ("credential present; valid sign-in unknown" if file.is_file()
-                            else "no credential in the default template's sign-in directory")
+            home = self.subscription_home(name, defaults)
+            if home and reader.credential_file:
+                info = ("credential present; valid sign-in unknown" if self.credential_present(home, reader.credential_file)
+                        else "no credential in the documented sign-in directory")
             result[name] = row, info
         return result
+
+    def subscription_home(self, program: str, defaults: dict) -> str | None:
+        table = defaults.get("pools", {}).get(program, {})
+        # Official Grok config docs name this location, not an installed-version auth guarantee.
+        return table.get("config_dir", table.get("home", "~/.grok" if program == "grok" else None))
+
+    def credential_present(self, home: str, filename: str) -> bool:
+        return (Path(home).expanduser() / filename).is_file()
+
+    def workspace_default(self) -> str | None:
+        return setup_proposal.workspace_default()
+
+    def default_metadata(self, program: str):
+        return harness.get(program).default_metadata()
+
+    def local_models(self, url: str) -> list[str]:
+        """Only the person's loopback server; no key lookup or remote/provider request."""
+        from . import endpoint
+        url = safe_endpoint(url)
+        if not setup_proposal.local_endpoint(url):
+            return []
+        try:
+            return [model.id for model in endpoint.models(url, allow_redirects=False)]
+        except ShipError:
+            return []
 
     def readiness(self, ship: Ship, selected: list[str]) -> list[Check]:
         rows = [doctor.program_check(name, ship.runtime) for name in selected]
@@ -205,35 +163,62 @@ def safe_endpoint(value: str) -> str:
     return value.rstrip("/")
 
 
-def pool_answers(conversation: Conversation, selected: list[str], defaults: dict) -> tuple[dict, dict]:
+def pool_answers(conversation: Conversation, selected: list[str], defaults: dict,
+                 *, operations: Operations, existing: Ship | None = None) -> tuple[dict, dict]:
     pools, models = {}, {}
+    key_names = {"claude": "ANTHROPIC_API_KEY", "codex": "OPENAI_API_KEY", "grok": "XAI_API_KEY"}
     for name in selected:
         reader = harness.get(name)
-        kind = conversation.choice(f"payment.{name}", f"How is {name} paid? subscription, key or endpoint",
-                                   ("subscription", "key", "endpoint"))
-        provider = reader.native_provider
+        saved = next((existing.pools[pool] for seat in existing.seats.values() for pool in seat.pools
+                      if seat.for_pool(pool).harness == name), None) if existing else None
+        default_kind = saved.kind if saved else "subscription" if reader.native_provider else "endpoint"
+        prompt = (f"What does {setup_proposal.LABELS.get(name, name)} run on? "
+                  "a subscription you are signed in to; an API key; a local model "
+                  "(subscription, key, endpoint)")
+        kind = conversation.choice(f"payment.{name}", prompt, ("subscription", "key", "endpoint"), default_kind)
+        provider = saved.provider if saved and saved.kind == kind else reader.native_provider
         if provider is None or kind in ("key", "endpoint"):
-            provider = conversation.ask(f"provider.{name}", f"Who provides {name}'s key, or operates its endpoint?", provider)
-        if provider and providers.canonical(provider) == "openrouter":
+            provider = conversation.ask(f"provider.{name}", f"Who provides {name}'s key, or operates its model?", provider)
+        if providers.canonical(provider) == "openrouter":
             raise ShipError("setup does not configure OpenRouter; choose your own subscription, key or endpoint operator")
-        values = {"provider": provider}
+        values = ({**tomllib.loads(existing.file.read_text())["pools"][saved.name]}
+                  if saved and saved.kind == kind else {})
+        values["provider"] = provider
         if kind == "subscription" and reader.credential_file:
-            default = defaults.get("pools", {}).get(name, {})
-            home = conversation.ask(f"subscription_home.{name}", f"Which existing folder holds {name}'s native sign-in?",
-                                    default.get("config_dir", default.get("home")))
+            home = str(saved.config_dir) if saved and saved.config_dir else operations.subscription_home(name, defaults)
+            home = conversation.ask(f"subscription_home.{name}", f"Folder holding {name}'s native sign-in", home)
+            values.pop("home", None)
             values["config_dir"] = str(Path(home).expanduser().resolve())
+            present = operations.credential_present(values["config_dir"], reader.credential_file)
+            conversation.say("Credential file present; sign-in not checked." if present else "Credential file not found; sign-in will need attention.")
         if kind == "key":
-            variable = conversation.ask(f"key_env.{name}", f"Environment variable NAME holding {name}'s key (never paste the key)")
+            variable = saved.api_key.removeprefix("env:") if saved and saved.api_key and saved.api_key.startswith("env:") else key_names.get(name)
+            variable = conversation.ask(f"key_env.{name}", f"{name}'s API key variable NAME (never the key)", variable)
             values["api_key"] = key_reference(variable)
         if kind == "endpoint":
-            values["endpoint"] = safe_endpoint(conversation.ask(f"endpoint.{name}", f"URL for {name}'s compatible endpoint"))
-            models[name] = conversation.ask(f"model.{name}", f"Model served by {name}'s endpoint")
-            # An unauthenticated local endpoint is explicit: an empty answer is never interpreted as no key.
-            variable = conversation.ask(f"key_env.{name}", f"Key environment variable NAME for {name}, or none if no key is needed")
+            given = conversation.supplied(f"endpoint.{name}")
+            candidate = given if given is not MISSING else saved.endpoint if saved else "http://127.0.0.1:8000/v1"
+            served = operations.local_models(candidate)
+            suggestion = candidate if served or saved and saved.endpoint == candidate else None
+            url = safe_endpoint(conversation.ask(f"endpoint.{name}", f"URL of {name}'s local model", suggestion))
+            if url != candidate:
+                served = operations.local_models(url)
+            if setup_proposal.local_endpoint(url) and not served:
+                conversation.say("No model listing from your local server; check its URL/server or supply the model by name.")
+            elif len(served) > 1:
+                conversation.say("Your local server lists several models; choose one by name.")
+            values["endpoint"] = url
+            declared_model = conversation.supplied(f"model.{name}")
+            if declared_model is not MISSING:
+                models[name] = conversation.ask(f"model.{name}", f"Model served for {name}")
+            elif len(served) == 1:
+                models[name] = served[0]
+            variable = (saved.api_key.removeprefix("env:") if saved.api_key and saved.api_key.startswith("env:") else "none") if saved else None
+            variable = conversation.ask(f"key_env.{name}", f"{name}'s key variable NAME, or none if no key is needed", variable)
             if variable != "none":
                 values["api_key"] = key_reference(variable)
-        elif name in conversation.answers.get("model", {}):
-            models[name] = conversation.ask(f"model.{name}", f"Model for {name}")
+            else:
+                values.pop("api_key", None)
         pool = ships._pool(name, values)
         if reason := reader.accepts(pool):
             raise ShipError(f"{reason}; choose a payment method supported by {name} and rerun qd setup")
@@ -256,7 +241,7 @@ def new_text(text: str, edits: list[tuple[str, str, object]]) -> str:
             section = match.group(1).strip()
         if section.startswith("pools."):
             continue
-        if section.startswith("seats.") and re.match(r"\s*(model|effort)\s*=", line):
+        if section.startswith("seats.") and re.match(r"\s*(model|effort)(?:_mode)?\s*=", line):
             continue
         lines.append(line)
     result = "\n".join(lines) + "\n"
@@ -265,67 +250,24 @@ def new_text(text: str, edits: list[tuple[str, str, object]]) -> str:
     return result
 
 
-def declaration(conversation: Conversation, selected: list[str], pools: dict, models: dict,
-                name: str, workspace: Path, existing: Ship | None = None) -> tuple[list, dict]:
-    if selected == ["antigravity"]:
-        raise ShipError("Antigravity is limited to one declared seat in setup; it cannot supply the three-seat crew. "
-                        "Choose other programs for the remaining roles and rerun qd setup.")
-    desk = conversation.choice("desk", "Which program will you talk to at the desk?", selected, selected[0])
-    other = next((program for program in selected if program != desk), desk)
-    engineering = desk if other == "antigravity" else other
-    conversation.say(f"Proposed crew: desk={desk}, captain={other}, engineering={engineering}; choose each below.")
-    captain = conversation.choice("captain", "Program for the captain", selected, other)
-    engineer = conversation.choice("engineer", "Program for engineering", selected, engineering)
-    edits = [("ship", "name", name), ("ship", "workspace", str(workspace))]
-    names = {}
-    for program, values in pools.items():
-        pool_name = program
-        if existing:
-            # Add a new payment declaration rather than deleting or mutating a pool shared by other seats.
-            index = 1
-            while pool_name in existing.pools:
-                current = existing.pools[pool_name]
-                proposed = ships._pool(pool_name, values)
-                if current == proposed:
-                    break
-                pool_name = f"{program}-setup-{index}"
-                index += 1
-        names[program] = pool_name
-        edits.extend((f"pools.{pool_name}", key, value) for key, value in values.items())
-    mapping = dict(zip(ROLES, (desk, captain, engineer)))
-    # Every selected program has a seat, even when more programs are selected than the three default roles.
-    seats = {role: (program, "office" if role == "desk" else "bridge", role) for role, program in mapping.items()}
-    for program in selected:
-        if program not in mapping.values():
-            seat_name = f"worker-{program}"
-            if existing and seat_name in existing.seats and existing.seat(seat_name).role != "worker":
-                raise ShipError(f"seat {seat_name} already has another role; choose programs through qd set instead")
-            seats[seat_name] = (program, "bridge", "worker")
-    for seat, (program, session, role) in seats.items():
-        table = f"seats.{seat}"
-        edits += [(table, "harness", program), (table, "pool", names[program])]
-        if not existing or seat not in existing.seats:
-            edits += [(table, "session", session), (table, "role", role)]
-        if program in models:
-            edits.append((table, "model", models[program]))
-        if existing and seat in existing.seats and existing.seat(seat).harness != program:
-            # Do not carry another program's model or effort into a newly selected program.
-            current = existing.seat(seat)
-            if current.effort or (current.model and program not in models):
-                raise ShipError(f"seat {seat}: changing its program needs an explicit model answer and compatible effort; "
-                                "use qd set for that change before rerunning setup")
-    return edits, mapping
-
-
-def validate_declaration(ship: Ship) -> None:
+def validate_declaration(ship: Ship) -> list[str]:
     """Setup's measured one-seat exception; generic ship/runtime reader policy is unchanged."""
     ships._validate(ship)
+    from .harness.capabilities import validate_selection
+    notes = []
+    for seat in ship.seats.values():
+        for pool in seat.pools:
+            selected = seat.for_pool(pool)
+            note = validate_selection(selected, harness.get(selected.harness))
+            if note:
+                notes.append(f"{seat.name}, pool {pool}: {note}")
     antigravity = [seat.name for seat in ship.seats.values()
                    if any(seat.for_pool(pool).harness == "antigravity" for pool in seat.pools)]
     if len(antigravity) > 1:
         raise ShipError("Antigravity is limited to one declared seat in setup; proposed seats: "
                         + ", ".join(antigravity)
                         + ". Choose other programs for the remaining roles and rerun qd setup.")
+    return notes
 
 
 def sign_in_hints(ship: Ship, selected: list[str]) -> list[str]:
@@ -355,20 +297,34 @@ def sign_in_hints(ship: Ship, selected: list[str]) -> list[str]:
     return hints
 
 
-def update(ship: Ship, edits: list, operations: Operations, conversation: Conversation) -> tuple[Ship, list[str]]:
+def preview_update(ship: Ship, edits: list) -> tuple[dict, list]:
+    """Reject unsupported qd set representations BEFORE any additions or existing-seat writes."""
     existing_edits, whole = {}, []
     original = tomllib.loads(ship.file.read_text())
+    for table, key, value in edits:
+        if table.startswith("seats.") and table.split(".")[1] in ship.seats and key in ("model_mode", "effort_mode") and value == "program-default":
+            field = key.removesuffix("_mode")
+            if field in original["seats"][table.split(".")[1]]:
+                raise ShipError(f"{table}.{field}: changing to program-default requires removing the named {field}; "
+                                "qd set cannot unset it. Edit that declaration explicitly before rerunning setup; nothing was written.")
     for table, key, value in edits:
         if table.startswith("seats.") and table.split(".")[1] in ship.seats:
             name = table.split(".")[1]
             if original["seats"][name].get(key) == value:
                 continue
+            if ship.seat(name).pool_choices and key in ("harness", "model", "effort", "model_mode", "effort_mode", "pool"):
+                raise ShipError(f"seats.{name}.{key}: qd set cannot rewrite inline pool choices; edit the declaration explicitly before rerunning setup; nothing was written")
             from .cli import parse_value
             if parse_value(str(value)) != value:
                 raise ShipError(f"seat {name}: qd set cannot express this {key} as plain text; choose a text value without commas, boolean or integer spellings")
             existing_edits.setdefault(name, []).append(f"{key}={value}")
         else:
             whole.append((table, key, value))
+    return existing_edits, whole
+
+
+def update(ship: Ship, edits: list, operations: Operations, conversation: Conversation) -> tuple[Ship, list[str]]:
+    existing_edits, whole = preview_update(ship, edits)
     # Validate the entire proposal before any additions; qd set still owns existing-seat refusals/application.
     text = ship.file.read_text()
     for table, key, value in edits:
@@ -398,59 +354,35 @@ def run(args: argparse.Namespace, *, operations: Operations | None = None,
     available = operations.discover(defaults)
     for name, (row, sign_in) in available.items():
         conversation.say(f"{row} · {sign_in}")
-    folder = Path(conversation.ask("folder", "Folder for this ship (its parent must exist)")).expanduser().absolute()
-    rerun = shlex.join(["qd", "--ship", str(folder), "setup"])
-    existing = None
-    if folder.exists():
-        existing = ships.load(folder)
-        conversation.say(f"Existing ship {existing.name} in {folder}; workspace {existing.workspace}")
-        for seat in existing.seats.values():
-            conversation.say(f"  {seat.name}: {seat.harness}, pools {', '.join(seat.pools)}")
-        if not existing.is_repository:
-            raise ShipError(f"{folder} is not its own git repository; initialize it and commit its declaration yourself, then rerun {rerun}")
-        try:
-            ships._git(folder, "rev-parse", "--verify", "HEAD")
-        except ShipError:
-            raise ShipError(f"{folder} has no first commit; resolve any git identity error yourself and commit only ship.toml, orders.md and .gitignore, then rerun {rerun}") from None
-        mode = conversation.choice("existing", "Keep this declaration, or update it?", ("keep", "update"), "keep")
+    while True:
+        proposal = setup_proposal.build(conversation, operations, text, orders, defaults, available)
+        data = setup_proposal.summary(proposal.ship, setup_proposal.display_control)
+        for note in validate_declaration(proposal.ship):
+            conversation.say(note)
+        accepted = conversation.review(lambda: setup_proposal.render_summary(data))
+        if accepted is not None:
+            break
+    def finish(lines):
+        if args.json:
+            from .output import Reading
+            return Reading({**data, "result": lines}, lambda reading: reading["result"])
+        return lines
+    if not accepted:
+        return finish(["Setup stopped before acceptance; no ship changes were written."])
+    folder = proposal.ship.folder
+    rerun = shlex.join(["qd", "--ship", str(folder), "setup", "--existing", "keep",
+                       "--use-defaults", "yes", "--accept", "yes"])
+    if proposal.mode == "new":
+        ship = ships.create(folder, proposal.text, proposal.orders)
+        conversation.say(f"Created and committed {ship.file} and orders.md; runtime is ignored.")
+    elif proposal.mode == "update":
+        ship, pending = update(proposal.existing, proposal.edits, operations, conversation)
+        if pending:
+            return finish(["Declaration changes followed qd set's application/defer path. Apply the reported relaunch steps (may spend turns):",
+                           *pending, f"Then rerun: {rerun} --check yes --start yes"])
     else:
-        mode = "new"
-    if mode == "keep":
-        ship = existing
-        validate_declaration(ship)
-        selected = sorted({seat.for_pool(pool).harness for seat in ship.seats.values() for pool in seat.pools})
-        if "desk" not in ship.seats:
-            raise ShipError("existing ship has no desk seat; add one before rerunning setup")
-    else:
-        selected = program_list(conversation.ask("programs", "Which programs go in this crew? (comma separated)"), available)
-        pools, models = pool_answers(conversation, selected, defaults)
-        workspace = Path(conversation.ask("workspace", "Existing workspace folder")).expanduser().resolve()
-        if not workspace.is_dir():
-            raise ShipError("workspace is not an existing directory; create it yourself or choose an existing workspace")
-        name = conversation.ask("name", "Ship name")
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", name):
-            raise ShipError("ship name must use letters, numbers, underscores or hyphens; choose a plain name")
-        edits, _ = declaration(conversation, selected, pools, models, name, workspace, existing)
-        if existing:
-            for session in ("bridge", "office"):
-                if session not in existing.sessions:
-                    raise ShipError(f"existing ship has no {session} session; use its own qd set arrangement instead")
-            ship, pending = update(existing, edits, operations, conversation)
-            if pending:
-                return ["Declaration changes followed qd set's application/defer path. Before continuing, apply the reported relaunch steps (may spend turns):",
-                        *pending, f"Then rerun: {rerun} --existing keep --check yes --start yes"]
-        else:
-            if not folder.parent.is_dir():
-                raise ShipError("ship folder's parent does not exist; choose an existing parent (setup writes only the ship folder)")
-            proposed = new_text(text, edits)
-            validate_declaration(ships._from_text(proposed, folder))
-            ship = ships.create(folder, proposed, orders)
-            conversation.say(f"Created and committed {ship.file} and orders.md; runtime is ignored.")
-    for pool in ship.pools.values():
-        if pool.provider == "openrouter":
-            raise ShipError("setup does not use OpenRouter; choose your own subscription, key or endpoint")
-        if pool.endpoint:
-            safe_endpoint(pool.endpoint)
+        ship = proposal.existing
+    selected = sorted({seat.for_pool(pool).harness for seat in ship.seats.values() for pool in seat.pools})
     rows = operations.readiness(ship, selected)
     for row in rows:
         conversation.say(str(row))
@@ -466,10 +398,10 @@ def run(args: argparse.Namespace, *, operations: Operations | None = None,
             failed = [row for row in rows if not row.passed]
         if failed:
             raise ShipError("readiness refused: " + "; ".join(f"{row.name}: {row.detail}" for row in failed)
-                            + f"; resolve those reasons, then rerun {rerun} --existing keep --check yes --start yes")
-    consent = conversation.choice("check", f"Run qd check for {', '.join(selected)}? This spends turns. yes or no", ("yes", "no"))
+                            + f"; resolve those reasons, then rerun {rerun} --check yes --start yes")
+    consent = conversation.choice("check", f"Run qd check for {', '.join(selected)}? This spends turns. yes or no", ("yes", "no"), "no")
     if consent == "no":
-        return [f"Ship saved; live checks declined. To continue: {rerun} --existing keep --check yes --start yes"]
+        return finish([f"Ship saved; live checks declined. To continue: {rerun} --check yes --start yes"])
     for program in selected:
         conversation.say(f"Checking {program}; this spends turns.")
         rows = operations.check(ship, program)
@@ -477,10 +409,10 @@ def run(args: argparse.Namespace, *, operations: Operations | None = None,
             conversation.say(str(row))
         if not rows or not all(row.passed for row in rows):
             reason = "; ".join(f"{row.name}: {row.detail}" for row in rows if not row.passed) or "no proof rows returned"
-            raise ShipError(f"qd check {program} failed: {reason}; resolve that reason, then rerun {rerun} --existing keep --check yes --start yes")
-    start = conversation.choice("start", "Bring up the crew? Opening briefs may spend turns. yes or no", ("yes", "no"))
+            raise ShipError(f"qd check {program} failed: {reason}; resolve that reason, then rerun {rerun} --check yes --start yes")
+    start = conversation.choice("start", "Bring up the crew? Opening briefs may spend turns. yes or no", ("yes", "no"), "no")
     if start == "no":
-        return [f"Checks passed; crew not started. Start with: qd --ship {shlex.quote(str(folder))} up"]
+        return finish([f"Checks passed; crew not started. Start with: qd --ship {shlex.quote(str(folder))} up"])
     result = operations.up(ship)
     for line in ([result] if isinstance(result, str) else result):
         conversation.say(line)
@@ -492,7 +424,7 @@ def run(args: argparse.Namespace, *, operations: Operations | None = None,
     unavailable = {"off", "unknown", "failed", "refused", "needs a human"}
     if (reading.data.get("service") != "ok" or {row.name for row in observed} != set(ship.seats)
             or any(row.activity.state in unavailable for row in observed)):
-        raise ShipError(f"crew readiness is not confirmed by status; resolve the status reasons and rerun {rerun} --existing keep --check yes --start yes")
-    return [f"Desk access: {operations.access(ship)} (desk window)",
+        raise ShipError(f"crew readiness is not confirmed by status; resolve the status reasons and rerun {rerun} --check yes --start yes")
+    return finish([f"Desk access: {operations.access(ship)} (desk window)",
             'First order to type at the desk: "Read this workspace and propose one useful next change."',
-            f"Status: qd --ship {shlex.quote(str(folder))} status"]
+            f"Status: qd --ship {shlex.quote(str(folder))} status"])
