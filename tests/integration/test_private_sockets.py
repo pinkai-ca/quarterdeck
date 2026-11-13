@@ -112,6 +112,7 @@ def test_unset_fallback_refuses_a_symlink_outside_its_verified_project(tmp_path,
     (project/'.gitignore').write_text('.testruns/\n')
     outside=tmp_path/'synthetic-outside';outside.mkdir()
     (project/'.testruns').symlink_to(outside,target_is_directory=True)
+    monkeypatch.delenv('TESTRUNS_JAILED',raising=False)  # the project rule, which holds inside a jail as well
     monkeypatch.setattr(conftest,'ROOT',project)
     with pytest.raises(pytest.UsageError,match='cannot verify the project-owned socket anchor'):
         conftest.socket_parent()
@@ -127,6 +128,7 @@ def test_the_anchor_is_the_projects_fixed_testruns_folder_with_a_margin(tmp_path
         assert effective!=real  # a checkout too long for its own anchor ran only on a shorter outer root
     project=tmp_path/'synthetic-project';project.mkdir()
     conftest.git(project,'init','--quiet')
+    monkeypatch.delenv('TESTRUNS_JAILED',raising=False)  # the project rule, which holds inside a jail as well
     monkeypatch.setattr(conftest,'ROOT',project)
     anchor=conftest.socket_parent()
     assert anchor==project/'.testruns'/'s' and anchor.is_dir() and not anchor.is_symlink()
