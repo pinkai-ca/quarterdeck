@@ -8,6 +8,9 @@ from quarterdeck.ship import Pool, ShipError, load
 PAIRS = [("anthropic", "claude"), ("openai", "codex"), ("google", "antigravity"), ("synthetic", "fake")]
 
 
+pytestmark = pytest.mark.usefixtures('synthetic_disk_room')
+
+
 def declaration(tmp_path, provider, program, *, key=False, endpoint=False):
     text = f'''[ship]
 name="synthetic"

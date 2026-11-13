@@ -1,9 +1,14 @@
 """One reading uses one consistent attempt inventory, and the next reading refreshes it."""
 
+import pytest
+
 from types import SimpleNamespace
 
 from quarterdeck import post, ship as shipmod, watch
 from quarterdeck.service import Service
+
+
+pytestmark = pytest.mark.usefixtures('synthetic_disk_room')
 
 
 def empty_ship(tmp_path):

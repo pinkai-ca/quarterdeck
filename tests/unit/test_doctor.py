@@ -6,14 +6,25 @@ import sys
 
 from pathlib import Path
 
+import pytest
+
 from quarterdeck import cli, doctor
 from quarterdeck.ship import Pool, ShipError, load
+
+
+pytestmark = pytest.mark.usefixtures('synthetic_disk_room')
 
 
 def run(capsys, *argv: str) -> tuple[int, str]:
     code = cli.main(list(argv))
     out = capsys.readouterr()
     return code, out.out
+
+
+def test_disk_pressure_is_still_a_named_failure(drydock: Path, monkeypatch):
+    monkeypatch.setattr(doctor.watch, 'disks', lambda paths: [('synthetic-root', 95)])
+    check = next(c for c in doctor.checks(load(drydock)) if c.name == 'disk')
+    assert not check.passed and check.detail == 'nearly full: synthetic-root 95%'
 
 
 def test_the_drydock_passes_every_check_on_a_machine_that_runs_the_tests(drydock: Path, capsys):

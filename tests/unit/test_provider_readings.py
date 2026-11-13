@@ -2,9 +2,14 @@
 
 import json
 
+import pytest
+
 from quarterdeck import cli, ledger_reading, output, providers, watch
 from quarterdeck.ship import load
 from .test_cross_program_failover import running  # noqa: F401
+
+
+pytestmark = pytest.mark.usefixtures('synthetic_disk_room')
 
 
 def test_status_watch_and_ledger_distinguish_running_program_company_and_pool(running):

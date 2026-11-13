@@ -125,6 +125,14 @@ def private_socket_root():
 
 
 @pytest.fixture
+def synthetic_disk_room(monkeypatch):
+    """Opt in when disk pressure is outside the test's subject."""
+    from quarterdeck import watch
+
+    monkeypatch.setattr(watch, 'disks', lambda paths: [])
+
+
+@pytest.fixture
 def drydock(tmp_path: Path) -> Path:
     """A copy of ships/drydock in a temporary folder, not a repository."""
     from quarterdeck import ship as shipmod

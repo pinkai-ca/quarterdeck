@@ -10,6 +10,9 @@ from quarterdeck.service import Service
 from .test_cascade import current, report, ring  # noqa: F401
 
 
+pytestmark = pytest.mark.usefixtures('synthetic_disk_room')
+
+
 @pytest.mark.parametrize('error,reason', [
     (OSError('Synthetic ordinary run unavailable'), 'cascade evidence is unreadable'),
     (ValueError('Synthetic ordinary coordination unavailable'), 'cascade evidence is inconsistent')])

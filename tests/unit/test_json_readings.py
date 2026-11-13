@@ -13,6 +13,9 @@ from quarterdeck.seat import Seat
 from quarterdeck.tmux import Pane
 
 
+pytestmark = pytest.mark.usefixtures('synthetic_disk_room')
+
+
 @pytest.fixture
 def invoke(drydock, capsys, monkeypatch):
     monkeypatch.delenv("QD_SHIP", raising=False)

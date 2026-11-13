@@ -14,6 +14,9 @@ from quarterdeck.tmux import Tmux
 from .waiting import wait_for
 
 
+pytestmark = pytest.mark.usefixtures('synthetic_disk_room')
+
+
 @pytest.fixture
 def ship(drydock: Path, tmux: Tmux, monkeypatch) -> shipmod.Ship:
     text = (drydock / "ship.toml").read_text()
