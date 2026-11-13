@@ -50,6 +50,12 @@ class ClaudeShape(_Writer):
 
             self.turn = len(claude.turns(self.path))
         self.text = self.effort = None
+        if not self.path.exists():
+            # A launched idle program has a record before its first input. This
+            # supplies known empty tool evidence, never a completed model turn.
+            self.write(dict(type='system', subtype='init', sessionId=self.session,
+                            timestamp=now().isoformat(), cwd=self.cwd,
+                            version='fake', isSidechain=False))
 
     def entry(self, kind: str, message: dict, **extra) -> None:
         uid = str(uuid.uuid4())

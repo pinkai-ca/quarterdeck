@@ -523,7 +523,7 @@ class Service:
             return None
         pane = seat.pane()
         if pane is not None and not pane.dead:
-            state, hold = idle.reading(seat)
+            state, hold = idle.reading(seat, explicit=True)
             if state is None or not seat.harness.waiting_for_human(state):
                 if hold is not None:
                     return None  # deferred-request answers/lifetime are separate; the reason is shared

@@ -64,14 +64,14 @@ def execution(seat, state: State) -> State:
                    active_tools=state.active_tools[:index] + state.active_tools[index + 1:])
 
 
-def check(state: State, seat=None) -> Hold | None:
+def check(state: State, seat=None, *, explicit=False) -> Hold | None:
     """Unknown is never empty. Only native, timed active-input completion supplies proof."""
     if seat is not None:
         state = execution(seat, state)
     if state.turn_open is not False:
         key = 'turn-open' if state.turn_open is True else 'turn-unknown'
         return Hold(key, REASONS[key])
-    if state.queue_error:
+    if state.queue_error and not explicit:
         return Hold('queue-unknown', f'queue unknown: {state.queue_error}')
     if state.queued is None:
         return Hold('queue-unknown', REASONS['queue-unknown'])
@@ -88,7 +88,7 @@ def check(state: State, seat=None) -> Hold | None:
     return None
 
 
-def reading(seat):
+def reading(seat, *, explicit=False):
     """Read and publish the seat-aware proof without requiring a service object."""
     from . import move_hold
     binding = move_hold.generation(seat)
@@ -101,7 +101,7 @@ def reading(seat):
     else:
         if state is not None:
             state = execution(seat, state)
-        hold = check(state) if state is not None else Hold('record', 'it has no joined record')
+        hold = check(state, explicit=explicit) if state is not None else Hold('record', 'it has no joined record')
     if move_hold.generation(seat) != binding:
         state = None
         hold = Hold('identity', REASONS['identity'])

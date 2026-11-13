@@ -97,11 +97,15 @@ def test_all_live_paths_require_known_empty_tools(tmp_path, monkeypatch, path, t
 
 @pytest.mark.parametrize('changes', [{'queued': ('synthetic queued input',)},
                                      {'queued': None}, {'queue_error': 'synthetic ambiguity'}])
-def test_ordinary_relaunch_now_requires_empty_known_queue(tmp_path, monkeypatch, changes):
+def test_explicit_relaunch_requires_empty_known_queue_but_allows_error_alone(tmp_path, monkeypatch, changes):
     service, seat, moved = service_case(tmp_path, monkeypatch, replace(completed(), **changes))
-    assert service.relaunch(seat, False) is None
-    assert moved == []
-    assert 'queue' in move_hold.reading(seat)
+    answer = service.relaunch(seat, False)
+    if changes.get('queue_error'):
+        assert answer == 'synthetic fresh proof' and moved == ['fresh']
+        assert move_hold.reading(seat) is None
+    else:
+        assert answer is None and moved == []
+        assert 'queue' in move_hold.reading(seat)
 
 
 def test_first_proved_reading_releases_wall_move(tmp_path, monkeypatch):
@@ -163,3 +167,13 @@ def test_call_detail_survives_turn_accounting_without_new_certainty(tmp_path):
     reader.close_tool('call-willow', AT + timedelta(seconds=9), False)
     assert reader.state().active_tools == ()
     assert reader.state().pending_tools is None
+
+
+def test_fresh_fake_metadata_proves_no_tools_but_supplies_no_move_completion(tmp_path):
+    from quarterdeck.harness import claude
+    from quarterdeck.harness.synthetic_record import ClaudeShape
+    record = ClaudeShape(tmp_path / 'home-fern', tmp_path, 'conversation-fern', 'model-fern')
+    state = claude.state(record.path)
+    assert state.turn_open is False and state.pending_tools == () and state.queued == ()
+    assert state.completed_turns == ()
+    assert idle.check(state).dimension == 'completion'
