@@ -7,14 +7,16 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import sys
 import time
-import zipfile
+import venv
 
 import pytest
 
 from quarterdeck import statusline as line
+from quarterdeck import resources
 from quarterdeck.harness.claude import ClaudeHarness
 from quarterdeck.ship import Pool, SeatSpec
 
@@ -45,7 +47,8 @@ def test_declared_subscriptions_use_generic_ledger_windows():
     text = plain("\n".join(line.draw(500, {}, "sample-seat", {}, rows)))
     for name in list(pools)[:5]:
         assert name in text
-    assert "● sample-1" in text and "sample interval" in text and "reset 1h" in text
+    assert "● sample-1" in text and "sample interval" in text
+    assert all("reset 1h" in plain(line.cell(row, 3)) for row in rows)
 
 
 def test_unknown_window_and_missing_pool_are_never_zero():
@@ -203,30 +206,42 @@ def test_claude_default_home_command_and_ship_override(tmp_path):
 
 def test_plain_wheel_install_carries_runnable_default_footer(tmp_path):
     source = Path(__file__).resolve().parents[2]
+    # The runner deliberately makes its committed checkout read-only. Build a
+    # wheel from a writable copy of just the framework and declared resources.
+    build_source = tmp_path / "source"
+    shutil.copytree(source / "src", build_source / "src")
+    for name in ("pyproject.toml", "README.md", "LICENSE"):
+        shutil.copy2(source / name, build_source / name)
+    for relative in resources.plan(source):
+        (build_source / relative).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source / relative, build_source / relative)
     wheel_dir = tmp_path / "wheel"
     built = subprocess.run([sys.executable, "-m", "pip", "wheel", "--no-deps", "--no-build-isolation",
-                            "--disable-pip-version-check", "-w", str(wheel_dir), str(source)],
+                            "--disable-pip-version-check", "-w", str(wheel_dir), str(build_source)],
                            capture_output=True, text=True, timeout=60)
     assert built.returncode == 0, built.stdout + built.stderr
     wheel = next(wheel_dir.glob("quarterdeck-*.whl"))
     installed = tmp_path / "installed"
-    with zipfile.ZipFile(wheel) as archive:
-        assert "quarterdeck/statusline.py" in archive.namelist()
-        archive.extractall(installed)
+    venv.create(installed, with_pip=True)
+    python = installed / "bin/python"
+    install = subprocess.run([str(python), "-m", "pip", "install", "--no-index", "--no-deps", str(wheel)],
+                             capture_output=True, text=True, timeout=60)
+    assert install.returncode == 0, install.stdout + install.stderr
     proof = '''import json, shlex, sys
 from pathlib import Path
-sys.path.insert(0, sys.argv[1])
 from quarterdeck.harness.claude import ClaudeHarness
 from quarterdeck.ship import Pool, SeatSpec
-home = Path(sys.argv[2])
+home = Path(sys.argv[1])
 ClaudeHarness().build_home(home, SeatSpec("sample", "sample", "sample", "claude", ("sample",)), Pool("sample", "anthropic"), None)
 print(json.dumps(shlex.split(json.loads((home / "settings.json").read_text())["statusLine"]["command"])))
 '''
-    built_home = subprocess.run([sys.executable, "-I", "-c", proof, str(installed), str(tmp_path / "home")],
+    built_home = subprocess.run([str(python), "-I", "-c", proof, str(tmp_path / "home")],
                                 capture_output=True, text=True, timeout=10)
     assert built_home.returncode == 0, built_home.stderr
     command = json.loads(built_home.stdout)
+    assert command[0] == str(python)
     assert Path(command[3]).is_relative_to(installed)
+    assert (installed / "bin/qd").is_file()
     done = subprocess.run(command, input="{}", capture_output=True, text=True,
                           env={**os.environ, "QD_SHIP": str(tmp_path / "missing")}, timeout=10)
     assert done.returncode == 0 and "ship reading unavailable" in done.stdout
