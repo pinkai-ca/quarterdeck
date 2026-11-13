@@ -90,14 +90,14 @@ def pytest_runtest_makereport(item, call):
 
 
 @contextmanager
-def socket_container(parent, prefix):
+def socket_container(parent, prefix, *, record=False):
     """Own this exact empty container through setup failure; never erase a peer or replacement."""
     folder = Path(tempfile.mkdtemp(prefix=prefix, dir=parent))
     descriptor = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     failure = None
     token = None
     try:
-        token = sessions.register(parent, folder, descriptor)
+        token = sessions.register(parent, folder, descriptor) if record else None
         yield folder
     except BaseException as error:
         failure = error
@@ -136,7 +136,7 @@ def private_socket_root():
         raise pytest.UsageError(f'test socket anchor {parent} gives sockets of {deepest} bytes (named probes '
                                 f'{longest}); the native limit is {SOCKET_LIMIT} and the suite keeps a margin '
                                 f'of {SOCKET_MARGIN}; the project path is too long for its .testruns/s anchor')
-    with socket_container(parent, SESSION_PREFIX) as folder:
+    with socket_container(parent, SESSION_PREFIX, record=True) as folder:
         os.environ['TMUX_TMPDIR'] = str(folder)
         try:
             yield folder

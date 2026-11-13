@@ -67,7 +67,7 @@ def test_fixture_records_its_container_before_use_then_retirement_forgets_it(tmp
     with monkeypatch.context() as patch:
         patch.setenv(sessions.RECORD_ENV, str(registry))
         patch.setenv('TESTRUNS_RUN', run)
-        with socket_container(parent, 'registered-') as folder:
+        with socket_container(parent, 'registered-', record=True) as folder:
             record = json.loads((registry / (folder.name + '.json')).read_text())
             assert record['name'] == folder.name
             assert record['identity'] == identity(folder.stat())
@@ -93,7 +93,7 @@ def test_recording_failure_closes_the_unused_container(tmp_path, monkeypatch):
         patch.setenv('TESTRUNS_RUN', run)
         patch.setattr(sessions, 'write_json', failed)
         with pytest.raises(OSError, match='synthetic recording failure'):
-            with socket_container(parent, 'registered-'):
+            with socket_container(parent, 'registered-', record=True):
                 pytest.fail('an unrecorded container was used')
     assert list(parent.iterdir()) == []
     assert_original(project, run, original)
