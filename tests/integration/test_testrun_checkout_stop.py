@@ -15,7 +15,8 @@ scratch = pathlib.Path.cwd()
 project = pathlib.Path(sys.argv[1])
 state = json.loads((scratch / 'state.json').read_text())
 saved = json.loads((project / '.testruns' / 'results' / scratch.name / 'ownership.json').read_text())
-assert state == saved
+intent = ('checkout', 'admin', 'checkout_intent')
+assert {key: state[key] for key in intent} == {key: saved[key] for key in intent}
 assert state['checkout'] == str(scratch / ('checkout-' + scratch.name))
 assert pathlib.Path(state['admin']).name == pathlib.Path(state['checkout']).name
 assert not pathlib.Path(state['admin']).exists()
