@@ -1,11 +1,26 @@
 """The real shuttle declaration and installed resources, without native programs."""
 
 from pathlib import Path
+import shutil
 
-from quarterdeck import resources, ship, standing
+from quarterdeck import resources, ship, standing, sync_all
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_shuttle_template_is_excluded_but_its_copy_is_a_real_ship(tmp_path):
+    ships = tmp_path / "ships"
+    ships.mkdir()
+    for name in ("shuttle", "mission-copy"):
+        shutil.copytree(ROOT / "ships/shuttle", ships / name)
+    assert ship.candidates(tmp_path) == ["mission-copy"]
+    assert ship.default_ship(tmp_path) == ((ships / "mission-copy").resolve(), "only ship")
+    rows = {row["ship"]: row for row in sync_all.plan(tmp_path)}
+    assert rows["shuttle"]["disposition"] == "passed over"
+    assert rows["shuttle"]["reason"] == "tracked template"
+    assert rows["mission-copy"]["disposition"] == "not tried"
+    assert rows["mission-copy"]["ship_object"].name == "shuttle"
 
 
 def test_shuttle_loads_complete_local_briefs():

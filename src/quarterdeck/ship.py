@@ -187,7 +187,7 @@ def find(argument: str | None = None) -> Path:
 
 
 # The folders under ships/ that travel with the framework: templates, and the practice ship (drydock).
-TEMPLATES = frozenset({"default", "drydock", "forum", "cascade"})
+TEMPLATES = frozenset({"default", "drydock", "forum", "cascade", "shuttle"})
 MARK = ".default"  # ships/.default: the default ship's folder name, relative to ships/
 
 

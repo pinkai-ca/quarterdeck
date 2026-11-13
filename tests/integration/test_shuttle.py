@@ -13,7 +13,6 @@ import time
 import pytest
 
 from quarterdeck import post, seat, service, ship
-from quarterdeck.tmux import Tmux
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -118,7 +117,7 @@ def arrive(controller, predicate):
 
 
 @pytest.mark.parametrize("destination", [True, False], ids=["named-branch", "branchless"])
-def test_fake_shuttle_carries_mission_to_exact_signed_result(tmp_path, destination):
+def test_fake_shuttle_carries_mission_to_exact_signed_result(tmp_path, tmux, destination):
     folder = tmp_path / "shuttle-fixture"
     shutil.copytree(ROOT / "ships" / "shuttle", folder)
     text = (folder / "ship.toml").read_text()
@@ -128,9 +127,12 @@ def test_fake_shuttle_carries_mission_to_exact_signed_result(tmp_path, destinati
     text = re.sub(r'pool = "(?:anthropic|openai)"', 'pool = "fake"', text)
     text = re.sub(r'model = "[^"]+"', 'model = "fake-1"', text)
     (folder / "ship.toml").write_text(text)
-    crew = ship.load(folder)
     repository = tmp_path / "example-repository"
     repository.mkdir()
+    text = text.replace('workspace = "."', 'workspace = ' + json.dumps(str(repository)))
+    text = text.replace('[ship]', '[ship]\ncode = "checkout"')
+    (folder / "ship.toml").write_text(text)
+    crew = ship.load(folder)
     git(repository, "init", "-b", "main")
     (repository / "sentence.txt").write_text("An initial sentence.\n")
     git(repository, "add", "sentence.txt")
@@ -159,7 +161,7 @@ def test_fake_shuttle_carries_mission_to_exact_signed_result(tmp_path, destinati
         " && qd post report --re {this} --body-file " +
         shlex.quote(str(mission / "officer-report.txt")) + "\n")
 
-    terminal = Tmux.private(tmp_path / "tmux")
+    terminal = tmux
     controller = None
     try:
         seat.bring_up(crew, terminal)
@@ -173,10 +175,15 @@ def test_fake_shuttle_carries_mission_to_exact_signed_result(tmp_path, destinati
         candidate = json.loads((mission / "candidate.json").read_text())
         # The test supplies this review; the fake does not interpret its card.
         store.new("answer", "operator", "captain", "Scripted review of " + candidate["tip"] +
-            ". Ask the first officer.\n$ qd post order --to first-officer --re " + root.id +
+            ". Ask the first officer.\n$ qd post answer --re " + engineering_report.id + " " +
+            shlex.quote("Reviewed exact tip " + candidate["tip"] + " tree " + candidate["tree"]) +
+            " && qd post order --to first-officer --re " + root.id +
             " --body-file " + shlex.quote(str(officer)) + "\n", re=engineering_report.id)
         signature_order = arrive(controller, lambda: next((m for m in store.all()
             if m.kind == "order" and m.to == "first-officer" and m.re == root.id), None))
+        reviews = [m for m in store.replies(engineering_report)
+                   if m.kind == "answer" and m.sender == "captain"]
+        assert len(reviews) == 1 and candidate["tree"] in reviews[0].body
         officer_report = arrive(controller, lambda: store.closing_report(signature_order))
         signatures = [m for m in store.replies(signature_order)
                       if m.kind == "answer" and m.sender == "first-officer"]
@@ -200,4 +207,3 @@ def test_fake_shuttle_carries_mission_to_exact_signed_result(tmp_path, destinati
         finally:
             if controller is not None:
                 controller.ledger.close()
-            assert terminal.close(), terminal.held

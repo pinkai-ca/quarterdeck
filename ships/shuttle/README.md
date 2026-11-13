@@ -18,7 +18,7 @@ From a checkout, after the live mission has been authorized:
 ```sh
 cp -R ships/shuttle /path/to/mission-shuttle
 # Edit /path/to/mission-shuttle/ship.toml for this machine and mission.
-qd --ship /path/to/mission-shuttle upgrade COMMIT
+qd --ship /path/to/mission-shuttle sync COMMIT
 qd --ship /path/to/mission-shuttle up
 qd --ship /path/to/mission-shuttle post order --to captain --body-file /path/to/mission.txt
 qd --ship /path/to/mission-shuttle status
@@ -76,7 +76,6 @@ signs without trying the undo. Leave or remove the timer only as the operator
 then directs. No timer, service command, root operation or undo is performed by
 copying, installing or loading this template.
 
-The queued runtime default-selection and sync-all changes must explicitly
-recognize `shuttle` as a tracked template alongside the other four. That later
-composition keeps templates out of real-ship fallback and fleet sync. It is not
-implemented by changing another template or adding runtime behavior here.
+Default selection and `qd sync --all` recognize `ships/shuttle` as a tracked
+template alongside the other four. A copied shuttle under another folder name
+is an ordinary ship; its declared name does not exclude it from discovery.
