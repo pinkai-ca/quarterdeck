@@ -2,8 +2,9 @@
 
 from dataclasses import replace
 from datetime import timedelta
+import json
 
-from quarterdeck import post, quota, record_owner, watch
+from quarterdeck import cli, post, quota, record_owner, watch
 from quarterdeck.harness.claude import ClaudeHarness
 from quarterdeck.harness.codex import CodexHarness
 from quarterdeck.harness.fake import FakeHarness
@@ -14,7 +15,7 @@ from tests.unit.test_pool_choices import declaration
 from .waiting import wait_for
 
 
-def test_private_process_moves_fresh_with_full_messages_and_destination_program(tmp_path, tmux, monkeypatch):
+def test_private_process_moves_fresh_with_full_messages_and_destination_program(tmp_path, tmux, monkeypatch, capsys):
     ship = declaration(tmp_path, '["first", {pool="second",harness="claude",model="synthetic-target",settings={step_seconds="0.05"}}]')
     # Program execution/configuration are synthetic; record and ownership adapters
     # remain the real ones. No provider credentials, programs or model calls.
@@ -56,13 +57,25 @@ def test_private_process_moves_fresh_with_full_messages_and_destination_program(
         assert current.launched().resume is None and current.launched().pid != original_launch.pid
         assert '--resume' not in current.launched().argv
         first = current.launched().argv[current.launched().argv.index('--first')+1]
-        assert post.typed([order, question]) in first
+        rows = {row['id']: row for line in first.splitlines() if line.startswith('{')
+                for row in [json.loads(line)]}
+        for message in (order, question):
+            assert rows[message.id]['thread'] == f'qd thread {message.id}'
+        with monkeypatch.context() as caller:
+            caller.setenv('QD_SHIP', str(ship.file.parent))
+            caller.setenv('QD_SEAT', 'worker')
+            capsys.readouterr()
+            for message in (order, question):
+                assert cli.main(['--ship', str(ship.file.parent), 'thread', message.id]) == 0
+                printed = capsys.readouterr().out
+                assert post.typed([message], whole=True) in printed
+                assert message.body in printed
         brief = (ship.runtime/'brief/worker.md').read_text()
         assert '# Program: Claude Code' in brief and '# Program: Codex' not in brief
         wait_for(lambda: current.record() is not None)
         target = current.record()
         inputs = current.harness.inputs(target)
-        assert any(post.typed([order, question]) in entry.text for entry in inputs)
+        assert any(first in entry.text for entry in inputs)
         assert source.read_bytes() == before and target != source
         assert {item.reader.name for item in record_owner.records(current)} == {'codex', 'claude'}
         wait_for(lambda: not current.harness.state(target).turn_open)
