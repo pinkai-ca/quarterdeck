@@ -927,6 +927,9 @@ quarterdeck/                       the project folder: the framework repository
   CONTRIBUTING.md for whoever works on Quarterdeck itself, person or agent
   src/quarterdeck/
     cli.py         the qd command
+    setup.py       guided ship creation and reruns, with replaceable machine and live-operation seams
+    setup_answers.py   one flags/file/terminal answer model, edits and explicit acceptance
+    setup_proposal.py  read-only setup proposals and their shared text/JSON summary
     ship.py        ship.toml -> Ship: sessions, seats, roles, pools, optional groups and cascade; the line editor; the fence
     providers.py   declared companies, input normalization and public identities
     tmux.py        the only module that runs tmux
@@ -1327,3 +1330,30 @@ OpenRouter suggestion facts are documented in its [developer reference](https://
 and [models-listing reference](https://openrouter.ai/docs/api/api-reference/models/get-models).
 Those documentation facts do not prove anonymous listing success, account access,
 model compatibility or a native launch on the installed version.
+
+### Fresh starts in generated crews
+
+New setup seats on Claude Code or Codex declare `fresh_after_compactions = 2`.
+Other harnesses receive no threshold, including when replacing a default-template
+seat whose original harness was Claude Code or Codex. The generated default ship
+uses the same rule and keeps Geordi as engineering's suggested persona. The
+proposal states these thresholds on the corresponding seat line before acceptance.
+JSON adds optional per-seat `fresh_after_compactions` and `fresh_start_note` fields
+after the existing five control fields; the visible table retains five columns
+with an annotation beside each affected seat. An unchanged retained harness keeps
+its saved explicit threshold or absence, and keep never normalizes it. Changing a
+retained seat from another harness to Claude Code or Codex adds the default `2`
+in the same seat write, with an explicit added-default annotation. Changing away
+preserves the existing key because the shared `qd set` writer has no key-removal
+representation; the seat line says `fresh after compactions: no effect, PROGRAM
+does not count them` and names the retained value. This declared limitation does
+not introduce an unset command or silently disable/remove a saved setting.
+The default ship's orders require a seat to post a handoff addressed to itself
+before starting fresh. The desk's quiet-time instruction is added only once the
+separate human quiet-time reading has landed; setup alone does not claim it exists.
+
+Doctor and setup share one `program_observation` returning the program row and
+its version. `program_check` retains its row-only interface. Readiness receives
+that same version for effort compatibility, without parsing display text or
+probing the program again. Pre-accept setup discovery still reads PATH and
+metadata only; version/readiness operations remain after acceptance.

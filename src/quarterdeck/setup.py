@@ -109,7 +109,9 @@ class Operations:
             return []
 
     def readiness(self, ship: Ship, selected: list[str]) -> list[Check]:
-        rows = [doctor.program_check(name, ship.runtime) for name in selected]
+        observations = {name: doctor.program_observation(name, ship.runtime) for name in selected}
+        rows = [row for row, _ in observations.values()]
+        versions = {name: version for name, (_, version) in observations.items()}
         pools = {pool for seat in ship.seats.values() for pool in seat.pools
                  if seat.for_pool(pool).harness in selected}
         rows += [doctor.pool_check(ship.pools[name]) for name in sorted(pools)]
@@ -117,7 +119,7 @@ class Operations:
         from dataclasses import replace
         chosen = replace(ship, seats={name: seat for name, seat in ship.seats.items()
                                      if any(seat.for_pool(pool).harness in selected for pool in seat.pools)})
-        return rows + doctor.seat_readiness(chosen)
+        return rows + doctor.seat_readiness(chosen, versions=versions)
 
     def check(self, ship: Ship, name: str) -> list[Check]:
         from . import check
@@ -266,7 +268,7 @@ def new_text(text: str, edits: list[tuple[str, str, object]]) -> str:
             section = match.group(1).strip()
         if section.startswith("pools."):
             continue
-        if section.startswith("seats.") and re.match(r"\s*(model|effort)(?:_mode)?\s*=", line):
+        if section.startswith("seats.") and re.match(r"\s*((model|effort)(?:_mode)?|fresh_after_compactions)\s*=", line):
             continue
         lines.append(line)
     result = "\n".join(lines) + "\n"
@@ -389,7 +391,7 @@ def run(args: argparse.Namespace, *, operations: Operations | None = None,
         conversation.say(f"{row} · {sign_in}")
     while True:
         proposal = setup_proposal.build(conversation, operations, text, orders, defaults, available)
-        data = setup_proposal.summary(proposal.ship, setup_proposal.display_control)
+        data = setup_proposal.summary(proposal.ship, setup_proposal.display_control, existing=proposal.existing)
         for note in validate_declaration(proposal.ship):
             conversation.say(note)
         accepted = conversation.review(lambda: setup_proposal.render_summary(data))

@@ -278,6 +278,11 @@ def build(conversation, operations, text: str, orders: str, defaults: dict, avai
                 if choices[0].get(field) != fields.get(field) or field != "harness" and choices[0].get(field + "_mode", "named") != fields.get(field + "_mode", "named"):
                     raise ShipError(f"answer seats.{role}.pools.0.{field} disagrees with seats.{role}.{field}; edit the primary choice together")
         fields["pool"] = choices[0] if len(choices) == 1 and isinstance(choices[0], str) else choices
+        saved = existing.seats.get(role) if existing else None
+        if program in ("claude", "codex") and (saved is None or saved.harness not in ("claude", "codex")):
+            fields["fresh_after_compactions"] = 2
+        # The shared writer cannot remove a key. A move to another harness keeps
+        # the saved threshold and the proposal explicitly names its lack of effect.
         table = f"seats.{role}"
         edits.extend((table, key if key != "name" else "persona", value) for key, value in fields.items())
         if not existing or role not in existing.seats:
@@ -343,7 +348,7 @@ def local_endpoint(url: str) -> bool:
         return False
 
 
-def summary(ship: Ship, display_control) -> dict:
+def summary(ship: Ship, display_control, *, existing: Ship | None = None) -> dict:
     """Ordered summary fields for both plain text and JSON; control modes belong to the shared contract."""
     rows, runs, fallbacks = [], {}, {}
     unchecked = False
@@ -352,8 +357,20 @@ def summary(ship: Ship, display_control) -> dict:
         model, effort = (display_control(selected, name) for name in ("model", "effort"))
         unchecked |= "program's default" in (model, effort)
         label = ROLE_LABELS.get(seat.role, seat.name)
-        rows.append({"seat": label, "name": seat.display,
-                     "harness": LABELS.get(selected.harness, selected.harness), "model": model, "effort": effort})
+        row = {"seat": label, "name": seat.display,
+               "harness": LABELS.get(selected.harness, selected.harness), "model": model, "effort": effort}
+        threshold = seat.fresh_after_compactions
+        if threshold is not None:
+            row["fresh_after_compactions"] = threshold
+            if seat.harness not in ("claude", "codex"):
+                detail = f"no effect, {seat.harness} does not count them (retained value: {threshold})"
+            else:
+                detail = str(threshold) if threshold else "disabled"
+                saved = existing.seats.get(seat.name) if existing else None
+                if saved and saved.harness not in ("claude", "codex"):
+                    detail += f" (default added for {seat.harness})"
+            row["fresh_start_note"] = "fresh after compactions: " + detail
+        rows.append(row)
         for pool_name in seat.pools:
             effective, pool = seat.for_pool(pool_name), ship.pools[pool_name]
             program = LABELS.get(effective.harness, effective.harness)
@@ -394,7 +411,11 @@ def render_summary(data: dict) -> list[str]:
     table = [headings] + [tuple(row[field] for field in fields) for row in data["seats"]]
     widths = [max(len(row[index]) for row in table) for index in range(len(fields))]
     lines.append("")
-    lines += ["  ".join(value.ljust(width) for value, width in zip(row, widths)).rstrip() for row in table]
+    for index, row in enumerate(table):
+        line = "  ".join(value.ljust(width) for value, width in zip(row, widths)).rstrip()
+        if index and (note := data["seats"][index - 1].get("fresh_start_note")):
+            line += f"  ({note})"
+        lines.append(line)
     lines += ["", "Runs on"]
     width = max((len(name) for name in data["runs_on"]), default=0)
     lines += [f"  {name:<{width}}  {value}" for name, value in data["runs_on"].items()]

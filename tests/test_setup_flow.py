@@ -27,6 +27,15 @@ class ScriptedOperations(setup.Operations):
         return {name: (Check(f"program {name}", True, "scripted version 1.2.3"), "sign-in unknown")
                 for name in harness.NAMES if not harness.get(name).synthetic}
 
+    def credential_present(self, home, filename):
+        return False
+
+    def local_models(self, url):
+        return []
+
+    def offered_models(self, url, provider):
+        return []
+
     def readiness(self, current, selected):
         self.calls.append(("readiness", tuple(selected)))
         return [self.refuse] if self.refuse else [Check("chosen programs and accounts", True, "scripted readiness")]
@@ -67,14 +76,15 @@ def answers(tmp_path, monkeypatch):
     monkeypatch.delenv("GIT_WORK_TREE", raising=False)
     return dict(folder=str(tmp_path / "crew"), name="example", workspace=str(tmp_path), programs="codex",
                 payment={"codex": "subscription"}, subscription_home={"codex": str(tmp_path / "sign-in")},
-                desk="codex", captain="codex", engineer="codex", check="yes", start="yes")
+                desk="codex", captain="codex", engineer="codex", check="yes", start="yes",
+                use_defaults="yes", accept="yes")
 
 
 def execute(answers, operations=None, *, interactive=False, read=None):
     lines = []
     operations = operations or ScriptedOperations()
     conversation = setup.Conversation(answers, interactive=interactive, read=read, write=lines.append)
-    result = setup.run(argparse.Namespace(), operations=operations, conversation=conversation)
+    result = setup.run(argparse.Namespace(json=False), operations=operations, conversation=conversation)
     return result, lines, operations
 
 
@@ -94,19 +104,41 @@ def test_scripted_subscription_creates_committed_ship_then_checks_in_order(answe
     assert any("First order" in line for line in result)
 
 
-@pytest.mark.parametrize("missing", ["folder", "programs", "payment.codex", "subscription_home.codex", "workspace", "name", "desk", "captain", "engineer", "check", "start"])
+@pytest.mark.parametrize("missing", ["folder", "operator", "office", "payment.codex", "subscription_home.codex",
+                                   "workspace", "name", "seats.desk.name", "seats.desk.harness",
+                                   "seats.desk.model", "seats.desk.effort", "seats.desk.pools",
+                                   "seats.captain.harness", "seats.engineering.harness",
+                                   "accept", "check", "start"])
 def test_non_tty_names_exact_missing_answer(answers, missing):
-    head, _, tail = missing.partition(".")
-    if tail:
-        del answers[head][tail]
-    else:
-        del answers[head]
+    # Defaults and legacy aliases are optional. This case explicitly supplies every
+    # current required answer and declines defaults, then removes exactly one.
+    for alias in ("desk", "captain", "engineer"):
+        answers.pop(alias)
+    answers.update(operator="Admiral", office="Office", use_defaults="no",
+                   seats={role: dict(name=role.capitalize(), harness="codex", model="gpt-6-astra",
+                                     effort="medium", pools=["codex"])
+                          for role in ("desk", "captain", "engineering")})
+    parts = missing.split(".")
+    parent = answers
+    for part in parts[:-1]:
+        parent = parent[part]
+    del parent[parts[-1]]
     operations = ScriptedOperations()
     with pytest.raises(ship.ShipError, match=f"missing answer {missing}"):
         execute(answers, operations)
     assert "up" not in operations.calls
     if missing != "start":
         assert not any(isinstance(call, tuple) and call[0] == "check" for call in operations.calls)
+
+
+def test_program_and_role_flags_may_be_omitted_when_seat_answers_supply_them(answers):
+    for key in ("programs", "desk", "captain", "engineer"):
+        answers.pop(key)
+    answers["seats"] = {role: {"harness": "codex"} for role in ("desk", "captain", "engineering")}
+    execute(answers)
+    current = ship.load(Path(answers["folder"]))
+    assert set(current.seats) == {"desk", "captain", "engineering"}
+    assert all(seat.harness == "codex" for seat in current.seats.values())
 
 
 def test_key_payment_stores_only_variable_reference(answers):
@@ -142,7 +174,8 @@ def test_endpoint_key_is_explicit_reference(answers):
 
 
 def test_adapter_rejects_unsupported_subscription(answers):
-    answers.update(programs="pi", payment={"pi": "subscription"}, provider={"pi": "openai"})
+    answers.update(programs="pi", desk="pi", captain="pi", engineer="pi",
+                   model={"pi": "example-model"}, payment={"pi": "subscription"}, provider={"pi": "openai"})
     with pytest.raises(ship.ShipError, match="subscription"):
         execute(answers)
     assert not Path(answers["folder"]).exists()
@@ -151,7 +184,7 @@ def test_adapter_rejects_unsupported_subscription(answers):
 def test_unsigned_readiness_stops_before_live_check_and_names_rerun(answers):
     operations = ScriptedOperations()
     operations.refuse = Check("pool codex", False, "no credential; complete native sign-in")
-    with pytest.raises(ship.ShipError, match="readiness refused.*no credential.*--existing keep --check yes --start yes"):
+    with pytest.raises(ship.ShipError, match="readiness refused.*no credential.*--existing keep.*--accept yes --check yes --start yes"):
         execute(answers, operations)
     assert operations.calls == ["discover", ("readiness", ("codex",))]
 
@@ -184,9 +217,9 @@ def test_existing_keep_does_not_rewrite_declaration(answers):
     execute(answers)
     folder = Path(answers["folder"])
     before = (folder / "ship.toml").read_bytes(), (folder / "orders.md").read_bytes()
-    result, lines, operations = execute(dict(folder=str(folder), existing="keep", check="yes", start="yes"))
+    result, lines, operations = execute(dict(folder=str(folder), existing="keep", check="yes", start="yes", use_defaults="yes", accept="yes"))
     assert before == ((folder / "ship.toml").read_bytes(), (folder / "orders.md").read_bytes())
-    assert any("Existing ship" in line for line in lines)
+    assert any("Ship name:" in line and "example" in line for line in lines)
     assert "up" in operations.calls
 
 
@@ -205,8 +238,10 @@ def test_existing_update_reuses_set_boundary_and_reports_relaunch(answers):
 
 def test_existing_rerun_needs_explicit_answer_without_tty(answers):
     execute(answers)
+    rerun = dict(folder=answers["folder"], operator="Admiral", office="Office", name="example",
+                 workspace=answers["workspace"], use_defaults="no", accept="yes", check="yes", start="yes")
     with pytest.raises(ship.ShipError, match="missing answer existing"):
-        execute(answers)
+        execute(rerun)
 
 
 def test_existing_non_ship_folder_is_not_overwritten(answers):
@@ -228,11 +263,14 @@ def test_selected_programs_beyond_three_roles_get_worker_seat(answers):
 
 
 def test_scripted_interactive_questions_use_same_flow(answers):
-    scripted = iter([answers["folder"], "codex", "subscription", answers["subscription_home"]["codex"],
-                     answers["workspace"], "example", "", "", "", "yes", "yes"])
+    scripted = iter(["", "example", "", answers["workspace"], answers["folder"],
+                     "", "codex", "", "", "", "codex", "", "", "", "codex", "", "",
+                     "subscription", answers["subscription_home"]["codex"],
+                     "", "", "", "accept", "yes", "yes"])
     result, _, operations = execute({}, interactive=True, read=lambda _: next(scripted))
     assert "up" in operations.calls
     assert "Desk access" in result[0]
+    assert list(scripted) == []
 
 
 def test_flags_override_answers_file(answers, tmp_path):
@@ -272,12 +310,12 @@ def test_doctor_discovery_uses_registered_adapters_and_fake_path_only(tmp_path, 
         reader = harness.get(name)
         if not reader.synthetic:
             file = tmp_path / reader.program
-            file.write_text("#!/bin/sh\nprintf '1.2.3\\n'\n")
+            file.write_text("#!/bin/sh\nexit 99\n")
             file.chmod(0o755)
     found = setup.Operations().discover({})
     assert set(found) == {name for name in harness.NAMES if not harness.get(name).synthetic}
     assert all(row.passed for row, _ in found.values())
-    assert "1.2.3" in found["codex"][0].detail
+    assert "version unchecked" in found["codex"][0].detail
     assert "unknown" in found["codex"][1]
 
 
@@ -301,16 +339,33 @@ def test_endpoint_answers_do_not_embed_credentials(value):
 
 
 def test_openrouter_is_not_an_automatic_payment_route(answers):
-    answers.update(programs="pi", payment={"pi": "endpoint"}, provider={"pi": "openrouter"})
-    with pytest.raises(ship.ShipError, match="does not configure OpenRouter"):
+    answers.update(programs="pi", desk="pi", captain="pi", engineer="pi",
+                   payment={"pi": "endpoint"}, model={"pi": "example-model"})
+    with pytest.raises(ship.ShipError, match="missing answer provider.pi"):
         execute(answers)
+    assert not Path(answers["folder"]).exists()
+
+
+def test_explicit_openrouter_key_uses_declared_endpoint_and_variable(answers):
+    answers.update(programs="pi", desk="pi", captain="pi", engineer="pi", payment={"pi": "key"},
+                   provider={"pi": "openrouter"}, model={"pi": "example-model"},
+                   key_env={"pi": "EXAMPLE_ROUTER_KEY"})
+    execute(answers)
+    current = ship.load(Path(answers["folder"]))
+    assert current.pool("pi").provider == "openrouter"
+    assert current.pool("pi").endpoint == "https://openrouter.ai/api/v1"
+    assert current.pool("pi").api_key == "env:EXAMPLE_ROUTER_KEY"
 
 
 def test_interactive_readiness_wait_is_person_driven_and_rereads(answers):
     operations = ScriptedOperations()
     operations.refuse = Check("pool codex", False, "complete native sign-in yourself")
-    answers["wait_for_sign_in"] = "yes"
-    def person_finished(_):
+    answers.update(wait_for_sign_in="yes", operator="Admiral", office="Office",
+                   seats={role: dict(name=role.capitalize(), harness="codex", model="gpt-6-astra",
+                                     effort="medium", pools=["codex"])
+                          for role in ("desk", "captain", "engineering")})
+    def person_finished(prompt):
+        assert prompt.startswith("Complete the native steps yourself")
         operations.refuse = None
         return ""
     result, _, operations = execute(answers, operations, interactive=True, read=person_finished)
@@ -327,9 +382,10 @@ def test_status_does_not_claim_success_when_crew_is_down(answers):
 
 
 def test_missing_endpoint_model_is_named_before_writing(answers):
-    answers.update(programs="pi", payment={"pi": "endpoint"}, provider={"pi": "example-operator"},
-                   endpoint={"pi": "http://127.0.0.1:8181/v1"})
-    with pytest.raises(ship.ShipError, match="missing answer model.pi"):
+    answers.update(programs="pi", desk="pi", captain="pi", engineer="pi",
+                   payment={"pi": "endpoint"}, provider={"pi": "example-operator"},
+                   endpoint={"pi": "http://127.0.0.1:8181/v1"}, key_env={"pi": "none"})
+    with pytest.raises(ship.ShipError, match="missing answer seats.desk.model"):
         execute(answers)
     assert not Path(answers["folder"]).exists()
 
@@ -378,4 +434,4 @@ def test_unfinished_first_commit_requires_person_to_resolve_git(answers, monkeyp
         execute(answers)
     assert (Path(answers["folder"]) / "ship.toml").exists()
     with pytest.raises(ship.ShipError, match="has no first commit"):
-        execute(dict(folder=answers["folder"], existing="keep", check="yes", start="yes"))
+        execute(dict(folder=answers["folder"], existing="keep", check="yes", start="yes", use_defaults="yes", accept="yes"))
