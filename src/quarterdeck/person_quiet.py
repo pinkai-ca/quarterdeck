@@ -18,7 +18,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import json
 
-from . import compaction, durable, post
+from . import compaction, durable, idle, post
 from .ship import ShipError
 
 QUIET = timedelta(minutes=20)  # a framework constant; there is no ship-file key
@@ -52,9 +52,9 @@ UNDECLARED = '{} declares no program notices'
 
 
 def waking_lines() -> tuple[str, ...]:
-    """The ship's own fixed waking line, left out of the person's input. It comes from the waking
-    module once that is composed in (human_wake.LINE); until then the ship types no such line."""
-    return ()
+    """The ship's own fixed waking line, left out of the person's input, compared whole."""
+    from .human_wake import LINE
+    return (LINE,)
 
 
 def _unknown(launch, reason: str) -> dict:
@@ -197,24 +197,10 @@ def readiness(seat) -> tuple[dict | None, bool]:
 
 
 def idle_hold(seat, state) -> str | None:
-    """Why the seat is not idle, or None. Strict: any pending tool holds, the seat's own inbox watch
-    included. Composed with the idle proof, this becomes idle.check(state, seat), which lets only a
-    proved, current own watch through."""
-    if state.turn_open is not False:
-        return 'a turn is open' if state.turn_open else 'turn state unknown'
-    if state.queue_error or state.queued is None:
-        return 'queue state unknown'
-    if state.queued:
-        return 'input is queued'
-    if state.pending_tools is None:
-        return 'tool state unknown'
-    if state.pending_tools:
-        return 'tools are pending'
-    if not any(turn.timed and turn.started is not None and turn.ended is not None
-               and state.last_input_at is not None and turn.started <= state.last_input_at <= turn.ended
-               for turn in state.completed_turns):
-        return 'its last input has no recorded completion'
-    return None
+    """Why the seat is not idle, or None: the ship's one idle proof, which lets through only the seat's
+    own proved, current inbox watch among its pending tools."""
+    hold = idle.check(state, seat)
+    return hold.reason if hold else None
 
 
 def _wake(seat) -> dict | None:

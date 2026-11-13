@@ -174,7 +174,8 @@ def test_status_and_watch_read_only_the_kept_fact(desk, monkeypatch):
     shown = person_quiet.summary(w.seat, now=AT + timedelta(minutes=23, seconds=1))
     assert shown == dict(text='person quiet for 23m', last_input_at=stamp(1), quiet_seconds=23 * 60, reason=None)
     row = SimpleNamespace(name='desk', activity='idle', door='open', order_text='-', today=ledger.Count(), harness_text='claude',
-                          provider_name='Synthetic', pool='synthetic', model_text='-', compaction=None, person_quiet=shown)
+                          provider_name='Synthetic', pool='synthetic', model_text='-', effort_text='-', compaction=None, wake=None,
+                          person_quiet=shown)
     full = watch.render_full(dict(seat=row, record=None, state=None, record_absent=None, record_limits=None,
                                   receipt_error=None, receipt_skips=None, screen=None, usage=[]))
     assert '  person quiet for 23m' in full
@@ -367,3 +368,49 @@ def test_an_office_seat_that_is_not_the_desk_is_read_but_never_woken(desk):
         assert tick(w, typed + timedelta(minutes=minutes)) is None
     assert wake_orders(w) == [] and not (w.seat.folder / person_quiet.WAKE).exists()
     assert person_quiet.summary(w.seat, now=typed + timedelta(minutes=20))['text'] == 'person quiet for 20m'
+
+
+# -- the compositions with the waking line and the idle proof ---------------------------------------
+
+def test_the_waking_line_left_out_is_the_ships_own():
+    from quarterdeck import human_wake
+    assert person_quiet.waking_lines() == (human_wake.LINE,)
+
+
+def watching(w, *, other=False):
+    """The desk's own background inbox watch, still running in its closed turn; with another tool beside it."""
+    calls = [('toolu_synthetic_watch', 'qd inbox --wait', 'bkwatchq')]
+    if other:
+        calls.append(('toolu_synthetic_other', 'sleep 600', 'bkothrz'))
+    measured = '2.1.317'  # the version the background watch's rows were measured on
+    w.native.add('assistant', version=measured, message=dict(id='synthetic-call', model='synthetic', stop_reason='tool_use', content=[
+        dict(type='tool_use', id=identity, name='Bash', input=dict(command=command, run_in_background=True))
+        for identity, command, _ in calls]))
+    for identity, _, task in calls:
+        w.native.add('user', version=measured, message=dict(role='user', content=[dict(type='tool_result', tool_use_id=identity,
+                     content='synthetic handle', is_error=False)]),
+                     toolUseResult=dict(stdout='', stderr='', interrupted=False, isImage=False,
+                                        noOutputExpected=False, backgroundTaskId=task))
+    w.native.finish()
+
+
+@pytest.mark.parametrize('proved', [True, False])
+def test_only_the_desks_own_proved_watch_is_let_through(desk, monkeypatch, proved):
+    from quarterdeck import inbox_watch
+    seen = []
+    monkeypatch.setattr(inbox_watch, 'current', lambda seat, at: seen.append(seat.name) or proved)
+    w = desk()
+    watching(w)
+    ready(w.seat)
+    posted = tick(w, latest(w.native) + timedelta(hours=1))
+    assert seen == ['desk']
+    assert bool(posted) is proved and len(wake_orders(w)) == int(proved)
+
+
+def test_a_proved_watch_beside_another_tool_still_holds(desk, monkeypatch):
+    from quarterdeck import inbox_watch
+    monkeypatch.setattr(inbox_watch, 'current', lambda seat, at: True)
+    w = desk()
+    watching(w, other=True)
+    ready(w.seat)
+    assert tick(w, latest(w.native) + timedelta(hours=1)) is None and wake_orders(w) == []
