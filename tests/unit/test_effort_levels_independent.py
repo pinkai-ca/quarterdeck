@@ -268,12 +268,18 @@ def test_launch_selection_returns_unchecked_note_without_translating(
         tmp_path, no_programs, monkeypatch, name, version):
     ship = shipmod.load(write_ship(tmp_path, name, 'model = "model-example"\neffort = "max"'))
     seat = seatmod.Seat(ship, ship.seat("worker-example"), tmux=None)
+    private_home = seat.harness.private_version_home
+    if private_home:
+        (ship.runtime / '.git').mkdir(parents=True)
     monkeypatch.setattr(seatmod, "_version_in_runtime", lambda *args: version)
     observed_version, note = seat._observe_selection()
     assert observed_version == version and "'max' unchecked" in note
     assert (version or "version unknown") in note
     assert "not measured" in note and seat.spec.effort == "max"
-    assert not ship.runtime.exists()
+    if private_home:
+        assert (ship.runtime / '.git').is_dir()
+    else:
+        assert not ship.runtime.exists()
 
 
 def test_launch_selection_passes_a_measured_allowed_level(tmp_path, no_programs, monkeypatch, fixture_vocabulary):
