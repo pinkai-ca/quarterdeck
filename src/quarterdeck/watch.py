@@ -709,7 +709,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
             if (obstruction and not authentication_waiting(authentication)
                     and seat.name not in needs_human):
                 needs_human.append(seat.name)
-            if door.waiting or "pending" in door.reason:
+            if door.waiting or "pending" in door.reason or "; qd submit " in door.reason:
                 pending_lines.append(f"{seat.name}: {door.reason}")
             for reason in pending_delivery.detached(seat):
                 if seat.name not in needs_human:

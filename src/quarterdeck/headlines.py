@@ -35,6 +35,8 @@ def status_line(facts, alerts: list[str]) -> str:
     parts += getattr(facts, 'sign_in_failures', ())
     # A short pane's delivery obstruction must retain its seat and remedy on overflow.
     parts += getattr(facts, 'pane_obstructions', ())
+    # A held delivery's available cure must survive the abbreviated status line.
+    parts += [line for line in facts.pending if '; qd submit ' in line]
     parts += getattr(facts, 'request_waits', ())
     if getattr(facts, 'request_waits', ()):
         # New request details must not push the original operational words out.

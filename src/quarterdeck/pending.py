@@ -26,8 +26,10 @@ from .harness.json_record import RecordError
 from .harness.types import Screen
 
 if TYPE_CHECKING:
+    from .door import Door
     from .seat import Seat
     from .service import Service
+    from .tmux import Pane
 
 WAIT_SECONDS = 600  # intervention policy, not a claim about normal program latency
 TERMINAL = {"delivered", "cancelled", "carried", "abandoned", "withheld", "unacted", "uncertain", closed_record.PHASE}
@@ -239,6 +241,16 @@ def held(seat: Seat, screen: Screen | None, ignored: Proof | None = None,
             raise ValueError('pending journal unreadable')
     except (OSError, ValueError, KeyError):
         return (inspection(seat, "pending delivery journal unreadable; never resent"), "needs a human", False)
+
+    def remedy(reading: tuple[str, str, bool]) -> tuple[str, str, bool]:
+        if reading[1] != "needs a human" or seat.session.human:
+            return reading
+        from .door import Door
+        proof, _ = _submit_candidate(Door(seat), screen, seat.pane(), proofs)
+        if proof is not None:
+            return (reading[0] + f"; qd submit {seat.name} sends it", reading[1], reading[2])
+        return reading
+
     from .recovery import mode_hold
     if reason := mode_hold(seat, proofs, ignored):
         unresolved = [p for p in proofs if p.data.get('recovery') and p.data['recovery']['mode'] != 'done'
@@ -247,7 +259,7 @@ def held(seat: Seat, screen: Screen | None, ignored: Proof | None = None,
                 and (seat.ship.runtime / 'post/store' / (p.data['recovery']['post'] + '.json')).is_file() for p in unresolved):
             for proof in unresolved:
                 if reading := proof.reading(seat, screen):
-                    return reading  # retain the ordinary receipt/draft/600s uncertainty rule
+                    return remedy(reading)  # retain the ordinary receipt/draft/600s uncertainty rule
             return (inspection(seat, reason), 'ended recovery and original native mode', True)
         if unresolved and all(p.data['recovery']['mode'] == 'submitted' and p.data['phase'] == 'delivered'
                 and p.data['recovery']['error'] is None
@@ -259,7 +271,7 @@ def held(seat: Seat, screen: Screen | None, ignored: Proof | None = None,
             if screen is not None and screen.box is not None and screen.box.strip():
                 return ('text in the box', 'needs a human', False)
             return (inspection(seat, reason), 'ended recovery and original native mode', True)
-        return (inspection(seat, reason), 'needs a human', False)
+        return remedy((inspection(seat, reason), 'needs a human', False))
     for proof in proofs:
         if proof.data['phase'] in TERMINAL:
             continue
@@ -268,7 +280,7 @@ def held(seat: Seat, screen: Screen | None, ignored: Proof | None = None,
         if not proof.same_launch(seat) and screen and screen.box == "" and not screen.unknown and not screen.interruption:
             continue  # another empty launch is usable; the old uncertainty remains a global notice
         if reading := proof.reading(seat, screen):
-            return reading
+            return remedy(reading)
     return None
 
 
@@ -672,6 +684,28 @@ def one_look(service: Service, seat: Seat, attempts: Sequence[post.Attempt] | No
     return done
 
 
+def _submit_candidate(door: Door, screen: Screen | None, pane: Pane | None,
+                      proofs: Sequence[Proof] | None = None) -> tuple[Proof | None, str]:
+    """The read-only eligibility check shared by qd submit and held readings."""
+    seat = door.seat
+    if seat.session.human:
+        return None, f"refused: {seat.name} is in a human's session; nothing is pressed there"
+    if screen is None or pane is None or screen.box is None or screen.unknown or screen.interruption:
+        return None, f"refused: {seat.name}'s box cannot be read" + (f" ({screen.unknown})" if screen and screen.unknown else "")
+    if screen.box == "":
+        return None, f"refused: {seat.name}'s box is empty"
+    try:
+        proofs = [p for p in (active(seat) if proofs is None else proofs)
+                  if p.data["phase"] not in TERMINAL and p.same_launch(seat)]
+    except (RecordError, OSError, ValueError, KeyError):
+        return None, f"refused: {seat.name}'s pending journal is unreadable"
+    matching = [p for p in proofs if door.matches(seat.harness.box(p.data["payload"]), screen)]
+    if len(matching) != 1:
+        shown = screen.box if len(screen.box) <= 80 else screen.box[:77] + "..."
+        return None, f"refused: {seat.name}'s box shows {shown!r}, not exactly a pending message of {seat.name}"
+    return matching[0], ""
+
+
 def submit(service: Service, seat: Seat) -> str:
     """qd submit: Enter on the box only when it holds exactly one of the seat's pending messages."""
     from .door import Door
@@ -679,19 +713,9 @@ def submit(service: Service, seat: Seat) -> str:
         return f"refused: {seat.name} is in a human's session; nothing is pressed there"
     door = Door(seat)
     screen, pane = door.screen(), seat.pane()
-    if screen is None or pane is None or screen.box is None or screen.unknown or screen.interruption:
-        return f"refused: {seat.name}'s box cannot be read" + (f" ({screen.unknown})" if screen and screen.unknown else "")
-    if screen.box == "":
-        return f"refused: {seat.name}'s box is empty"
-    try:
-        proofs = [p for p in active(seat) if p.same_launch(seat)]
-    except (RecordError, OSError, ValueError, KeyError):
-        return f"refused: {seat.name}'s pending journal is unreadable"
-    matching = [p for p in proofs if door.matches(seat.harness.box(p.data["payload"]), screen)]
-    if len(matching) != 1:
-        shown = screen.box if len(screen.box) <= 80 else screen.box[:77] + "..."
-        return f"refused: {seat.name}'s box shows {shown!r}, not exactly a pending message of {seat.name}"
-    proof = matching[0]
+    proof, refusal = _submit_candidate(door, screen, pane)
+    if proof is None:
+        return refusal
     known = {a.path.name: a for a in service.attempts.all()}  # one load, on a request, never a pass
     message = _message_of(service, proof, known)
     proof.save(phase="submitted", shown=screen.box,
