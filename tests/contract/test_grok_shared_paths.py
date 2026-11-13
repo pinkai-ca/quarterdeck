@@ -329,7 +329,8 @@ def test_seat_launch_reads_the_selected_version_in_a_fresh_runtime_home(tmp_path
     assert run["home"].parent == ship.runtime and run["grok_home"] == str(run["home"]) and run["empty"]
     assert seat.folder not in run["home"].parents and run["home"] != seat.home, "never the seat's sign-in home"
     assert run["program"] == str(program.resolve())
-    assert opened == [(str(directory / "grok"), str(directory))], "the launch and the version use one selected program"
+    assert opened == [(str(directory / "grok"), seat._path())], "the launch and the version use one selected program"
+    assert seat._path().split(":") == [str(ship.runtime / "bin"), str(directory)]
     assert seat.launched().argv[0] == str(directory / "grok"), "launch.json records the program the seat ran"
     assert run["opened"] == 0 and run["saved"] is None, "read once for this launch, before its window opens and its identity is saved"
     assert not run["home"].exists() and not list(ship.runtime.glob("version-*")), "the fresh home is retired"

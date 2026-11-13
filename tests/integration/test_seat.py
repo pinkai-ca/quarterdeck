@@ -47,7 +47,8 @@ def test_up_brings_up_every_declared_seat_in_its_session(ship: shipmod.Ship, tmu
     env = environ(launched["pid"])
     assert env["QD_SHIP"] == str(ship.folder) and env["QD_SEAT"] == "captain"
     assert env["QD_FAKE_HOME"] == str(runtime / "seats" / "captain" / "home")
-    assert env["PATH"].startswith(str(seatmod.qd_bin()))
+    assert env["PATH"].split(":")[0] == str(runtime / "bin")
+    assert (runtime / "bin" / "qd").resolve() == (seatmod.qd_bin() / "qd").resolve()
     status = tmux.run("show-option", "-v", "-t", "=Bridge:", "status-right").strip()
     assert status.endswith(f"--ship {ship.folder} status --line)"), status
     assert subprocess.run(status[2:-1], shell=True, capture_output=True, text=True).stdout.startswith("SERVICE DOWN")
