@@ -432,11 +432,11 @@ def test_each_module_imports_first_in_a_fresh_interpreter(tmp_path, module):
 
 def test_turn_keeps_its_old_positional_form_and_new_fields_default_unknown():
     names = [item.name for item in fields(Turn)]
-    assert names[-2:] == ['inputs', 'end_reason']
-    assert all(item.default is None for item in fields(Turn)[-2:])
+    assert names[-3:] == ['inputs', 'end_reason', 'successful']
+    assert all(item.default is None for item in fields(Turn)[-3:])
     now = post.now()
     old = Turn(3, now, now + timedelta(seconds=2), 'An old input', 'An old reply', 'validation-model', Tokens())
-    assert old.inputs is None and old.end_reason is None
+    assert old.inputs is None and old.end_reason is None and old.successful is None
     assert replace(old, end_reason='stop') != old and replace(old) == old
 
 
