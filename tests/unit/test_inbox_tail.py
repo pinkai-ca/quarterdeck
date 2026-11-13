@@ -1,6 +1,5 @@
 """The inbox is a bounded reading; its immutable store retains every message."""
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from types import SimpleNamespace
 
 from quarterdeck import cli, post, service
@@ -19,7 +18,7 @@ def message(store, index, *, kind="report", at=AT, body=None):
 def test_all_open_messages_survive_count_and_age_limits(tmp_path, monkeypatch):
     monkeypatch.setattr(post, "now", lambda: AT)
     store = post.Store(tmp_path)
-    opened = message(store, "open", kind="order", at=AT - timedelta(days=7), body="open body " * 40000)
+    opened = message(store, "open", kind="order", at=AT - timedelta(days=7), body="open body " * 40000 + "end")
     for i in range(205):
         message(store, f"new{i:03}", at=AT - timedelta(minutes=i))
     message(store, "old", at=AT - timedelta(days=2))
