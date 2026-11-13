@@ -153,7 +153,7 @@ def test_status_line_names_authentication_with_no_open_order(tmp_path, monkeypat
     seat.spec = SimpleNamespace(pools=['synthetic-pool'])
     monkeypatch.setattr(auth_failure.turn_failure, 'current', Mock(return_value=state.failure))
     monkeypatch.setattr(watch, 'seats', lambda *a: [seat])
-    monkeypatch.setattr(watch, 'limit_holds', lambda *a: ([], []))
+    monkeypatch.setattr(watch, 'limit_state', lambda *a: ([], [], []))
     monkeypatch.setattr(watch, 'service_state', lambda *a: 'ok')
     monkeypatch.setattr(watch, 'headline_readings', lambda *a: [])
     monkeypatch.setattr(watch, 'disks', lambda *a: [])

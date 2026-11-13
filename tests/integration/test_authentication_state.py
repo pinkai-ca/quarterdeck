@@ -19,11 +19,13 @@ def test_recorded_authentication_is_visible_and_only_eligible_crew_resumes(tmp_p
     source = tmp_path / 'synthetic-pool-metadata'
     source.write_text('synthetic metadata stand-in')
     pool = SimpleNamespace(name='synthetic-pool')
-    launched = SimpleNamespace(pool=pool.name, at=START)
+    launched = SimpleNamespace(pool=pool.name, at=START, pane='synthetic-pane',
+                               pid=12345, harness='claude')
     ship = SimpleNamespace(runtime=tmp_path / 'runtime', pools={pool.name: pool})
     seat = SimpleNamespace(name='synthetic-seat', ship=ship, session=SimpleNamespace(human=mode == 'human'),
+                           folder=ship.runtime / 'seats' / 'synthetic-seat',
                            launched=lambda: launched, record=Mock(return_value=record),
-                           pane=lambda: SimpleNamespace(dead=False),
+                           pane=lambda: SimpleNamespace(dead=False, id=launched.pane, pid=launched.pid),
                            join=lambda: SimpleNamespace(record=record), is_up=True,
                            harness=claude.ClaudeHarness(), restart=Mock(return_value='synthetic resumed'))
     monkeypatch.setattr(auth_failure.credential, 'pool_file', lambda p: source)
