@@ -49,6 +49,11 @@ class ClaudeShape(_Writer):
             from . import claude
 
             self.turn = len(claude.turns(self.path))
+        else:
+            # The synthetic program creates its own idle record before its first command. This
+            # metadata row opens no turn and lets the one-record join pin the command boundary.
+            self.write(dict(type='system', subtype='synthetic-startup', sessionId=self.session,
+                            timestamp=now().isoformat()))
         self.text = self.effort = None
 
     def entry(self, kind: str, message: dict, **extra) -> None:
@@ -103,11 +108,17 @@ class ClaudeShape(_Writer):
     consumed = dequeued
 
     def command(self, text: str, output: str) -> None:
-        """A local command, as Claude Code records one: the echo, then its output."""
+        """A local command: caveat, exact arguments and output in one linked prompt."""
         name, _, args = text[1:].partition(" ")
+        prompt = str(uuid.uuid4())
         self.entry("user", {"role": "user", "content":
-                   f"<command-name>/{name}</command-name>\n<command-message>{name}</command-message>\n<command-args>{args}</command-args>"})
-        self.entry("user", {"role": "user", "content": f"<local-command-stdout>{output}</local-command-stdout>"})
+                   "<local-command-caveat>Synthetic local command</local-command-caveat>"},
+                   isMeta=True, promptId=prompt)
+        self.entry("user", {"role": "user", "content":
+                   f"<command-name>/{name}</command-name>\n<command-message>{name}</command-message>\n<command-args>{args}</command-args>"},
+                   promptId=prompt)
+        self.entry("user", {"role": "user", "content": f"<local-command-stdout>{output}</local-command-stdout>"},
+                   promptId=prompt)
 
     def turns_before(self) -> int:
         return self.turn

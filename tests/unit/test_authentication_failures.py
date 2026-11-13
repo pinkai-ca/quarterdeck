@@ -185,9 +185,10 @@ def test_status_line_names_authentication_with_no_open_order(tmp_path, monkeypat
     monkeypatch.setattr(watch, 'ledger_walls', lambda *a: [])
     monkeypatch.setattr(watch.credential, 'login_needed', lambda *a: [])
     monkeypatch.setattr(watch.recovery, 'held', lambda *a: None)
-    from quarterdeck import compaction, compaction_alert, structure_outcome
+    from quarterdeck import compaction, compaction_alert, model_mismatch, structure_outcome
     monkeypatch.setattr(compaction, 'status', lambda *a, **k: None)
     monkeypatch.setattr(compaction_alert, 'unrouted', lambda *a: [])
+    monkeypatch.setattr(model_mismatch, 'unrouted', lambda *args, **kwargs: [])
     monkeypatch.setattr(structure_outcome, 'waits', lambda *a: [])
     store = SimpleNamespace(open_for=lambda *a: [])
     attempts = SimpleNamespace(all=lambda: [], latest=lambda **k: {}, undelivered=lambda *a, **k: [])

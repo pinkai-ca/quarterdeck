@@ -68,9 +68,12 @@ def test_a_working_seat_with_a_queued_message():
     assert s.interruption is None
 
 
-def test_the_switch_model_confirmation_is_known_and_dismissable():
+def test_the_switch_model_confirmation_is_known_and_owned_by_its_control():
     s = screen("switch-model-dialog")
-    assert s.interruption is not None and s.interruption.name == "switch-model confirmation" and s.interruption.key == "Enter"
+    assert s.interruption is not None and s.interruption.name == "switch-model confirmation"
+    assert s.interruption.control == "model"
+    assert s.interruption.key is None
+    assert not s.interruption.dismissable
 
 
 def test_effort_shows_on_the_mode_line_and_model_in_the_record():

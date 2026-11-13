@@ -193,7 +193,7 @@ def test_watch_keeps_standing_hold_after_notification_and_restart(alarm, monkeyp
     alarm.actor = alarm.restart()
     assert notice(alarm) == first
 
-    from quarterdeck import compaction, structure_outcome, turn_failure
+    from quarterdeck import compaction, model_mismatch, structure_outcome, turn_failure
 
     monkeypatch.setattr(watch, 'seats', lambda *args: [alarm.seat])
     monkeypatch.setattr(watch, 'limit_state', lambda *args: ([], [], []))
@@ -202,6 +202,7 @@ def test_watch_keeps_standing_hold_after_notification_and_restart(alarm, monkeyp
     monkeypatch.setattr(turn_failure, 'obstruction', lambda *args: None)
     monkeypatch.setattr(compaction, 'status', lambda *args, **kwargs: None)
     monkeypatch.setattr(compaction_alert, 'unrouted', lambda *args: [])
+    monkeypatch.setattr(model_mismatch, 'unrouted', lambda *args, **kwargs: [])
     monkeypatch.setattr(structure_outcome, 'waits', lambda *args: [])
     monkeypatch.setattr(watch, 'ledger_walls', lambda *args: [])
     monkeypatch.setattr(watch, 'headline_readings', lambda *args: [])

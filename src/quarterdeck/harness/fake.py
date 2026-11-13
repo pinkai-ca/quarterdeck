@@ -127,6 +127,26 @@ class FakeHarness(Harness):
     def read(self, record: Path) -> tuple[State, list[Turn]]:
         return self._reader(record).read(record)
 
+    def model_control_origin(self, seat, record: Path, value: str) -> dict | None:
+        if self._reader(record) is not claude or self.model_identity(value) is None:
+            return None
+        # The simulator owns this literal display/identity contract; no native catalog is inferred.
+        return claude.control_origin(record, dict(display=value, synthetic=True))
+
+    def model_control_result(self, seat, record: Path, value: str, origin: dict) -> str | None:
+        if (self._reader(record) is not claude or origin.get('display') != dict(display=value, synthetic=True)
+                or claude.command_model_result(record, origin, value, value) != value):
+            return None
+        # Keep the fake's existing public screen confirmation too; its record is now required first.
+        found = seat.read_pane()
+        return value if found is not None and self.screen(found[1]).shows.get('model') == value else None
+
+    def model_control_current(self, record: Path, origin: dict) -> bool | None:
+        rows = claude.control_suffix(record, origin)
+        if rows is None or any(row.get('type') in ('user', 'queue-operation') for row in rows):
+            return None
+        return True
+
     # -- screen ------------------------------------------------------------------------
 
     def screen(self, text: str) -> Screen:

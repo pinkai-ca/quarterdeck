@@ -786,6 +786,13 @@ command envelope and requested model. A current model observation that may preda
 insufficient; absent request-specific binding remains unknown. The first question is retained by
 digest only; changed or incomplete focus evidence holds by name.
 
+A switch-model question without a matching pending qd control, including one produced by a person's
+own `/model` command, stays a named obstruction. Ordinary delivery does not dismiss it with Enter.
+The control owner or a person must resolve it. The synthetic Claude-shaped program now writes the
+same linked caveat/command/result triple for `/model`, with its exact requested argument; its adapter
+requires this new record evidence and its existing screen confirmation together. This synthetic
+contract uses literal model identities and gives no catalog or gesture authority to a native adapter.
+
 The service resumes that continuation before its generic consumed-claim hold, only when the original
 payload and claim still agree. It keeps the original thirty-second deadline and one command reservation;
 other requests continue on each pass. A failed or uncertain answer gesture is reserved before the key,

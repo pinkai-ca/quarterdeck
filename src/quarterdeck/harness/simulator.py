@@ -239,7 +239,9 @@ class Program:
         name, _, value = text[1:].partition(" ")
         if name in ("model", "effort") and value:
             setattr(self, name, value)
-            self.record.command(text, f"{name} set to {value}")
+            output = (f"Set model to {value} and saved as your default for new sessions"
+                      if name == 'model' else f"{name} set to {value}")
+            self.record.command(text, output)
             self.say(f"· {name} set to {value}")
         else:
             self.say(f"· unknown command {text}")

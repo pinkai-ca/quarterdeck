@@ -903,7 +903,9 @@ class Service:
                 self.request_wait = ('control-confirmation', 'control observation unavailable; not retyped')
                 return None
         if decision.action == 'confirmed':
-            return f'model = {value} · {confirmation.proof(decision.state)}'
+            pane = decision.state.origin['launch']['pane']
+            return (f'model = {value} · applied by {control.command(value)} in {pane} · '
+                    f'{confirmation.proof(decision.state)} · confirmed by {control.confirmed_by}')
         if decision.action == 'unconfirmed':
             return f'model = {value} · {confirmation.unconfirmed_proof(decision.state)}: {decision.reason}'
         self.request_wait = ('control-confirmation', decision.reason)

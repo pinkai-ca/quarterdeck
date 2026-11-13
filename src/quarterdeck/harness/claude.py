@@ -722,6 +722,75 @@ def control_suffix(record, origin):
         return None
 
 
+def control_origin(record: Path, display: dict) -> dict | None:
+    """Complete-row record boundary for an adapter-proved display binding."""
+    try:
+        before = record.stat()
+        digest = hashlib.sha256()
+        tail = b''
+        with record.open('rb') as stream:
+            for chunk in iter(lambda: stream.read(65536), b''):
+                digest.update(chunk)
+                tail = chunk[-1:]
+        after = record.stat()
+        stamp = lambda stat: (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+        if stamp(before) != stamp(after) or after.st_size and tail != b'\n':
+            return None  # never begin inside a partial native row
+        return dict(path=str(record), device=after.st_dev, inode=after.st_ino, offset=after.st_size,
+                    prefix=digest.hexdigest(), display=display)
+    except OSError:
+        return None
+
+
+def command_model_result(record: Path, origin: dict, value: str, display: str) -> str | None:
+    """A new exact model command/result triple linked by native parents."""
+    try:
+        before = record.stat()
+        rows = control_suffix(record, origin)
+        if rows is None:
+            return None
+        triples = []
+        for index, row in enumerate(rows):
+            content = row.get('message', {}).get('content')
+            if row.get('type') != 'user' or not isinstance(content, str) or '<command-name>' not in content:
+                continue
+            # Any second local model command makes ownership ambiguous, even if its target
+            # happens to agree. A missing caveat/result cannot be filled from older history.
+            if '<command-name>/model</command-name>' not in content:
+                continue
+            if index == 0 or index + 1 >= len(rows):
+                return None
+            caveat, stdout = rows[index - 1], rows[index + 1]
+            group = (caveat, row, stdout)
+            prompt = row.get('promptId')
+            identities = [item.get('uuid') for item in group]
+            if (not isinstance(prompt, str) or not prompt
+                    or any(not isinstance(identity, str) or not identity for identity in identities)
+                    or len(set(identities)) != 3
+                    or any(item.get('type') != 'user' or item.get('promptId') != prompt
+                           or item.get('isSidechain') or item.get('isCompactSummary') for item in group)
+                    or row.get('parentUuid') != identities[0] or stdout.get('parentUuid') != identities[1]
+                    or caveat.get('isMeta') is not True):
+                return None
+            introduction = caveat.get('message', {}).get('content')
+            output = stdout.get('message', {}).get('content')
+            arguments = re.findall(r'<command-args>(.*?)</command-args>', content, re.S)
+            matches = SET_MODEL.findall(output) if isinstance(output, str) else []
+            if (not isinstance(introduction, str) or not introduction.startswith('<local-command-caveat>')
+                    or arguments != [value] or not isinstance(output, str)
+                    or not output.startswith('<local-command-stdout>')
+                    or matches != [display]):
+                return None
+            triples.append(group)
+        after = record.stat()
+        if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) !=
+                (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
+            return None
+        return value if len(triples) == 1 else None
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return None
+
+
 def styled_rows(text):
     """Decode SGR foreground cells; any other terminal escape leaves the frame unknown."""
     rows, letters, colors, foreground = [], [], [], None
@@ -892,75 +961,13 @@ class ClaudeHarness(Harness):
         if self.model_identity(value) is None:
             return None
         display = model_display(seat, value)
-        if display is None:
-            return None
-        try:
-            before = record.stat()
-            digest = hashlib.sha256()
-            tail = b''
-            with record.open('rb') as stream:
-                for chunk in iter(lambda: stream.read(65536), b''):
-                    digest.update(chunk)
-                    tail = chunk[-1:]
-            after = record.stat()
-            stamp = lambda stat: (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
-            if stamp(before) != stamp(after) or after.st_size and tail != b'\n':
-                return None  # never begin inside a partial native row
-            return dict(path=str(record), device=after.st_dev, inode=after.st_ino, offset=after.st_size,
-                        prefix=digest.hexdigest(), display=display)
-        except OSError:
-            return None
+        return control_origin(record, display) if display is not None else None
 
     def model_control_result(self, seat, record: Path, value: str, origin: dict) -> str | None:
-        """One new command envelope linked by native parents, not by timestamp or old display."""
-        try:
-            current_display = model_display(seat, value)
-            if current_display is None or current_display != origin['display'] or str(record) != origin['path']:
-                return None
-            before = record.stat()
-            rows = control_suffix(record, origin)
-            if rows is None:
-                return None
-            triples = []
-            for index, row in enumerate(rows):
-                content = row.get('message', {}).get('content')
-                if row.get('type') != 'user' or not isinstance(content, str) or '<command-name>' not in content:
-                    continue
-                # Any second local model command makes ownership ambiguous, even if its target
-                # happens to agree. A missing caveat/result cannot be filled from older history.
-                if '<command-name>/model</command-name>' not in content:
-                    continue
-                if index == 0 or index + 1 >= len(rows):
-                    return None
-                caveat, stdout = rows[index - 1], rows[index + 1]
-                group = (caveat, row, stdout)
-                prompt = row.get('promptId')
-                identities = [item.get('uuid') for item in group]
-                if (not isinstance(prompt, str) or not prompt
-                        or any(not isinstance(identity, str) or not identity for identity in identities)
-                        or len(set(identities)) != 3
-                        or any(item.get('type') != 'user' or item.get('promptId') != prompt
-                               or item.get('isSidechain') or item.get('isCompactSummary') for item in group)
-                        or row.get('parentUuid') != identities[0] or stdout.get('parentUuid') != identities[1]
-                        or caveat.get('isMeta') is not True):
-                    return None
-                introduction = caveat.get('message', {}).get('content')
-                output = stdout.get('message', {}).get('content')
-                arguments = re.findall(r'<command-args>(.*?)</command-args>', content, re.S)
-                matches = SET_MODEL.findall(output) if isinstance(output, str) else []
-                if (not isinstance(introduction, str) or not introduction.startswith('<local-command-caveat>')
-                        or arguments != [value] or not isinstance(output, str)
-                        or not output.startswith('<local-command-stdout>')
-                        or matches != [current_display['display']]):
-                    return None
-                triples.append(group)
-            after = record.stat()
-            if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) !=
-                    (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
-                return None
-            return value if len(triples) == 1 else None
-        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        current_display = model_display(seat, value)
+        if current_display is None or current_display != origin.get('display'):
             return None
+        return command_model_result(record, origin, value, current_display['display'])
 
     def model_control_current(self, record: Path, origin: dict) -> bool | None:
         rows = control_suffix(record, origin)
