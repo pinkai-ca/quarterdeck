@@ -898,7 +898,9 @@ class Seat:
             pane = self.tmux.pane(pane_id)
             if pane is not None and pane.dead:
                 shown = " ".join(self.tmux.capture(pane_id, history=20).split())[-240:]  # its last words scroll above the death notice
-                raise ShipError(f"{self.name}: {program} exited {pane.exit_status} at once; its pane stays for a look, and "
+                exit_detail = ("exited at once; exit status not yet known" if pane.exit_status is None
+                               else f"exited {pane.exit_status} at once")
+                raise ShipError(f"{self.name}: {program} {exit_detail}; its pane stays for a look, and "
                                 f"qd up {self.name} tries again. It printed: {shown}")
             if pane is not None and self.harness.synthetic and self.harness.synthetic_ready(self.home):
                 return

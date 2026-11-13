@@ -51,7 +51,8 @@ def test_paste_reaches_the_program_and_the_screen_reads_back(tmux: Tmux, tmp_pat
 def test_a_failed_program_leaves_its_pane_with_the_exit_status(tmux: Tmux, tmp_path: Path, exit_code):
     tmux.new_session("Crew")
     pane = tmux.new_window("Crew", "worker-1", tmp_path, ["sh", "-c", f"exit {exit_code}"])
-    dead = wait_for(lambda: dead_pane(tmux, pane.id))
+    dead = wait_for(lambda: found if (found := dead_pane(tmux, pane.id))
+                    and found.exit_status is not None else None)
     assert dead.exit_status == exit_code
     import time
     assert dead.dead_time is not None and abs(time.time() - dead.dead_time) < 60, "tmux's own death time, read with the pane"

@@ -54,7 +54,7 @@ def activity(seat: Seat | UnresolvedSeat, now: datetime | None = None) -> Activi
     if pane is None:
         return Activity("off", "no pane" if seat.launched() else "down")
     if pane.dead:
-        return Activity("off", f"exited {pane.exit_status}")
+        return Activity("off", "exit status not yet known" if pane.exit_status is None else f"exited {pane.exit_status}")
     join = seat.join()
     if join.record is None:
         if join.reason and join.reason.split(":")[0] in ("record missing", "ambiguous", "record reader unknown", "record reader changed", "record unreadable"):

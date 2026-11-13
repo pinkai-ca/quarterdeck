@@ -967,14 +967,16 @@ class Service:
         return None if state.turn_open is None else bool(state.turn_open)
 
     def pane_died(self, seat: Seat, pane) -> None:
-        """Log a seat's dead pane once, with tmux's own death time and exit status, from the pane already read."""
+        """Log death from the pane already read; log again when a pending exit status becomes known."""
         logged = self.__dict__.setdefault("dead_panes", {})
-        if logged.get(seat.name) == (pane.id, pane.pid):
+        identity = (pane.id, pane.pid)
+        previous = logged.get(seat.name)
+        if previous is not None and previous[:2] == identity and (previous[2] or pane.exit_status is None):
             return
-        logged[seat.name] = (pane.id, pane.pid)
         died = (datetime.fromtimestamp(pane.dead_time).astimezone().isoformat(timespec="seconds")
                 if pane.dead_time is not None else None)
         self.log("pane-dead", seat=seat.name, pane=pane.id, pid=pane.pid, died=died, status=pane.exit_status)
+        logged[seat.name] = (*identity, pane.exit_status is not None)
 
     def looks(self) -> None:
         """The door's one look at what it could not confirm (law: one-door): record first, then the screen.
