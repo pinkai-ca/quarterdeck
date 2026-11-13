@@ -124,6 +124,7 @@ class Harness(ABC):
     program: str
     native_provider: str | None = None
     opening_prompt_turn: bool = False  # a fresh brief is itself a model turn
+    waking_inapplicability: str | None = None  # explicit reason to omit only the added live waking step
     synthetic: bool = False
     credential_file: str | None = None
     usage_interval: int = 60

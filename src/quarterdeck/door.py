@@ -127,8 +127,14 @@ class Door:
                 return Reading(False, f"a human owns this session; {reason}", "needs a human")
             if not self.human_wake:
                 return Reading(False, "a human's session", "its watch delivers")  # law: one-door
-            from .human_wake import eligible
-            if reason := eligible(self.seat, screen, self.proof):
+            from .human_wake import candidate_hold, eligible, screen_hold
+            if reason := candidate_hold(self.seat, self.proof):
+                return Reading(False, reason, "needs a human")
+            if screen is None:
+                if reason := eligible(self.seat, proof=self.proof):
+                    return Reading(False, reason, "needs a human")
+                screen = self.screen()
+            if reason := screen_hold(screen):
                 return Reading(False, reason, "needs a human")
         screen = screen or self.screen()
         return self._reading(screen)
@@ -296,10 +302,14 @@ class Door:
         if any(ord(c) < 32 and c not in "\n\t" or ord(c) == 127 for c in text):
             return Delivery("withheld", "message contains unsupported terminal control characters; revise it")
         from . import paste_refusal
+        if self.human_wake:
+            from .human_wake import eligible
+            if reason := eligible(self.seat, proof=proof):
+                return Delivery('withheld', reason)
         screen = self.screen()
         if reading := self.initial_obstruction(screen):
             return Delivery('withheld', str(reading))
-        if reason:=paste_refusal.refused(self.seat,text,screen):
+        if not self.human_wake and (reason:=paste_refusal.refused(self.seat,text,screen)):
             return Delivery('withheld',reason)
         screen = self.clear_known(screen)  # law: one-door
         if wall := self.wall(screen):
@@ -318,10 +328,12 @@ class Door:
         if verify is not None and not verify():
             return Delivery('withheld', 'bound source changed before paste; no keys sent')
         if self.human_wake:
-            from .human_wake import eligible
-            # Re-capture at the last pre-paste boundary; never clear a human draft.
+            from .human_wake import eligible, screen_hold
+            # Exclude metadata holds and prove the record before the last capture.
+            if reason := eligible(self.seat, proof=proof):
+                return Delivery('withheld', reason)
             screen = self.screen()
-            if reason := eligible(self.seat, screen, proof):
+            if reason := screen_hold(screen):
                 return Delivery('withheld', reason)
             if not proof.same_launch(self.seat):
                 return Delivery('blind', 'human wake launch changed before paste; no keys sent')

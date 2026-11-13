@@ -36,6 +36,7 @@ QUEUED_LINE = re.compile(r"^▸ (.*?)\s*\(alt\+m to send immediately\)\s*$")
 
 
 class AntigravityHarness(Harness):
+    waking_inapplicability = "Google pool reading"
     human_tool_policy = "Antigravity: no supported native question-tool exclusion proved; interactive asks still need a human."
     efforts = EffortCapability()  # CLI vocabulary is not measured
     defaults = DefaultMetadata(model_default=True, model=SuggestedValue(None, "program-default"),

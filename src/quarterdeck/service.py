@@ -73,6 +73,7 @@ class Service:
         self.withheld: dict[tuple[str, str], str] = {}  # (message, seat) -> the screen it was withheld on
         self.told: dict[str, str | None] = {}  # seat -> the obstruction the desk was last told of
         self.alarmed: dict[str, tuple[str, set[str]]] = {}  # seat -> its obstruction and who has been told of it
+        self.wake_errors: set[tuple[str, str]] = set()  # safe seat/reason log deduplication only
         self.status_framework = presentation.framework_stamp()
         self.brief_stamp = self._brief_stamp()
         copy = install.installed(self.runtime) if install.running_from(self.runtime / 'venv' / 'bin') else None
@@ -235,12 +236,18 @@ class Service:
             if seat.session.human:
                 from . import human_wake, turn_failure
                 from .auth_failure import status as authentication_status
+                phase = 'ownership'
                 try:
                     if seat.is_up and not (recovery.held(seat) or authentication_status(seat)
                                            or turn_failure.obstruction(seat, self.store)):
+                        phase = 'pass'
                         human_wake.run(seat)
-                finally:
-                    self.needs_human(seat)  # genuine alarms survive a down seat or failed up reading
+                except Exception as error:
+                    self.human_wake_error(seat, phase, error)
+                try:
+                    self.needs_human(seat)  # genuine alarms survive a down seat or failed wake
+                except Exception as error:
+                    self.human_wake_error(seat, 'alarm', error)
                 continue
             pending = [m for m in self.attempts.undelivered(self.store, seat.name, results=results) if self._due(m, seat)]
             if pending:
@@ -248,6 +255,23 @@ class Service:
                     continue
                 self.deliver(seat, pending)
             self.needs_human(seat)
+
+    def human_wake_error(self, seat: Seat, phase: str, error: Exception, *, publish: bool = True) -> None:
+        """One seat's failure cannot stop the crew; no arbitrary exception data escapes."""
+        from . import human_wake
+        reason = human_wake.service_failure_reason(phase, error)
+        key = (seat.name, reason)
+        if key not in self.wake_errors:
+            self.wake_errors.add(key)
+            try:
+                self.log('held', step='human_wake', seat=seat.name, reason=reason)
+            except Exception:
+                pass  # publication below remains independent of an unavailable service log
+        if publish:
+            try:
+                human_wake.observe_failure(seat, reason)
+            except Exception as failure:
+                self.human_wake_error(seat, 'observation', failure, publish=False)
 
     def recoveries(self) -> None:
         recovery.run(self)

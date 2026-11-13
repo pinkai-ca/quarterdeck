@@ -274,7 +274,7 @@ def cmd_stop(args: argparse.Namespace) -> str:
     ship = load_ship(args)
     seat = seat_of(ship, this_seat(ship, args.seat))
     if seat.session.human:
-        raise ShipError(f"{seat.name} sits in a human's session; the ship never presses its keys")
+        raise ShipError(f"{seat.name} sits in a human's session; the ship sends no controls into a human's session")
     return service.request(ship.runtime, "stop", seat=seat.name)
 
 
@@ -376,7 +376,7 @@ def apply_control(ship: shipmod.Ship, seat: seatmod.Seat, key: str, value: str) 
     if control is None or control.session is None or key == "up":
         return f"  {key} written; qd restart {seat.name} applies it" if key != "up" else "  up written"
     if seat.session.human:
-        return f"  {key} written; the ship never types in a human's session: qd restart {seat.name} applies it, or type {control.command(value)} there"
+        return f"  {key} written; the ship sends no controls into a human's session: qd restart {seat.name} applies it, or type {control.command(value)} there"
     if not seat.is_up:
         return f"  {key} written; {seat.name} is down, so qd up {seat.name} applies it"
     return "  " + service.request(ship.runtime, "control", seat=seat.name, name=key, value=value)

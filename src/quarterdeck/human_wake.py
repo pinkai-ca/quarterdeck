@@ -20,6 +20,11 @@ LINE = ('qd > ship: messages are waiting for you. Run `qd inbox --wait` now and 
         'if your program can keep a command running in the background, keep it running there.')
 WAITING = 'human wake confirmed; waiting for watch registration or ended turn'
 BOX = 'human wake box not empty; untouched'
+FAILURE_REASONS = frozenset(
+    f'human wake service failure ({phase}: {kind})'
+    for phase in ('ownership', 'pass', 'alarm', 'observation')
+    for kind in ('I/O', 'metadata', 'ownership', 'operation'))
+NO_SCREEN = object()
 PHASES = {'prepared', 'pasting', 'submitting', 'submitted', 'queued', 'delivered', 'cancelled'}
 
 
@@ -54,7 +59,7 @@ def episode(proof, watch) -> str | None:
     if proof.data['phase'] == 'queued' or proof.data.get('screen_queue'):
         return 'human wake queued; waiting for record consumption'
     if proof.data['phase'] != 'delivered':
-        return 'human wake receipt uncertain; never resent; inspect human-wake.json'
+        return 'human wake pending; waiting for owned-record receipt'
     if watch.generation == proof.data['generation']:
         if watch.armed:
             return 'human wake confirmed; watch rearm generation unknown'
@@ -99,23 +104,95 @@ def record_stamp(seat) -> dict:
     return {'record': name, 'fingerprint': json.loads(json.dumps(record_fingerprint(Path(name))))}
 
 
+def service_failure_reason(phase, error) -> str:
+    """Fixed local categories only: never exception text, values or traceback."""
+    if phase not in ('ownership', 'pass', 'alarm', 'observation'):
+        phase = 'pass'
+    kind = ('I/O' if isinstance(error, OSError) else
+            'ownership' if isinstance(error, (ShipError, TmuxError)) else
+            'metadata' if isinstance(error, (ValueError, TypeError, KeyError)) else 'operation')
+    return f'human wake service failure ({phase}: {kind})'
+
+
+def failure_status(seat) -> str | None:
+    try:
+        data = json.loads(metadata(seat.folder / 'human-wake-status.json'))
+        if data.get('failure') is not True:
+            return None
+        reason = data.get('failure_reason', data.get('reason'))
+        if data.get('format') != 1 or reason not in FAILURE_REASONS:
+            return 'human wake evidence unreadable; service failure observation invalid'
+        saved = data.get('failure_identity', data['identity'])
+        if saved is None:
+            return reason + '; launch identity unknown'
+        launch = seat.launched()
+        if launch is None:
+            return None
+        if (saved['pane'], saved['pid'], saved['launch'], saved['harness']) != (
+                launch.pane, launch.pid, launch.at, seat.harness.name):
+            return None  # historical local failure is not current launch evidence
+        return reason
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, ShipError, TmuxError):
+        return 'human wake evidence unreadable; service failure observation unknown'
+
+
+def observe_failure(seat, reason) -> None:
+    if reason not in FAILURE_REASONS:
+        raise ValueError('unknown wake failure category')
+    try:
+        launch = seat.launched()
+        if launch is None:
+            return  # proved down seats get no wake observation, including failure notes
+        pane = seat.pane()
+        if (pane is not None and pane.id == launch.pane and pane.pid == launch.pid
+                and pane.dead and seat.launched() == launch):
+            return
+        identity = dict(pane=launch.pane, pid=launch.pid, launch=launch.at, harness=seat.harness.name)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, ShipError, TmuxError):
+        identity = None
+    try:
+        source = record_stamp(seat)
+    except (OSError, ValueError, KeyError, TypeError):
+        source = None
+    observe(seat, reason, identity, source, failure=True)
+
+
+def observed_action(seat) -> str | None:
+    """Current actionable observation, including a missing reservation receipt."""
+    try:
+        data = json.loads(metadata(seat.folder / 'human-wake-status.json'))
+        reason = data['reason']
+        if (data['format'] == 1 and isinstance(reason, str) and len(reason) <= 1024
+                and data['identity'] == pending.identity(seat) and data['source'] == record_stamp(seat)
+                and action_required(seat, reason)):
+            return reason
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, KeyError, TypeError):
+        return 'human wake evidence unreadable; no waking input'
+    return None
+
+
 def status(seat) -> str | None:
     try:
         launch = seat.launched()
         pane = seat.pane()
         if seat.launched() != launch:
-            return 'human wake up state unknown; launch changed during reading'
+            return failure_status(seat) or 'human wake up state unknown; launch changed during reading'
         if launch is None:
             return None  # no saved launch is a proved down seat
         if pane is None or pane.id != launch.pane or pane.pid != launch.pid:
-            return 'human wake up state unknown; owned pane unavailable'
+            return failure_status(seat) or 'human wake up state unknown; owned pane unavailable'
         if pane.dead:
             return None  # positively owned dead pane, never a missing/foreign one
     except (OSError, ValueError, KeyError, TypeError, AttributeError, ShipError, TmuxError):
-        return 'human wake up state unknown; ownership reading failed'
+        return failure_status(seat) or 'human wake up state unknown; ownership reading failed'
+    failure = failure_status(seat)
     watch = post.watch_reading(seat.ship.runtime, seat.name)
     if watch.armed is None:
-        return watch.reason
+        return watch.reason if action_required(seat, watch.reason) else failure or watch.reason
     try:
         proof = load(seat)
         if proof is not None and proof.data['phase'] != 'cancelled' and changed_launch(seat, proof):
@@ -128,33 +205,51 @@ def status(seat) -> str | None:
                     and isinstance(observed['reason'], str)
                     and observed['reason'].startswith('human wake evidence unreadable')):
                 return observed['reason']
-            return 'human wake launch changed; awaiting service observation'
-        if reason := episode(proof, watch):
+            return failure or 'human wake launch changed; awaiting service observation'
+        current_episode = episode(proof, watch)
+        if action_required(seat, current_episode):
+            return current_episode
+        if reason := observed_action(seat):
             return reason
+        if current_episode:
+            return failure or current_episode
         waiting = post.Attempts(seat.ship.runtime).undelivered(post.Store(seat.ship.runtime), seat.name)
         if watch.armed or not waiting:
-            return None
+            return failure
         try:
             data = json.loads(metadata(seat.folder / 'human-wake-status.json'))
         except FileNotFoundError:
-            return 'human wake awaiting service observation'
+            return failure or 'human wake awaiting service observation'
         if (data['format'] != 1 or not isinstance(data['reason'], (str, type(None)))
                 or data['reason'] is not None and len(data['reason']) > 1024):
             raise ValueError('invalid wake observation')
         if data['identity'] != pending.identity(seat) or data['source'] != record_stamp(seat):
-            return 'human wake source changed; awaiting service observation'
-        return data['reason']
+            return failure or 'human wake source changed; awaiting service observation'
+        reason = data['reason']
+        return reason if action_required(seat, reason) else failure or reason
     except (OSError, ValueError, KeyError, TypeError):
         return 'human wake evidence unreadable; no waking input'
 
 
-def observe(seat, reason, identity, source) -> None:
+def observe(seat, reason, identity, source, *, failure=False, successful=True) -> None:
     path = seat.folder / 'human-wake-status.json'
     try:
         previous = metadata(path)
     except FileNotFoundError:
         previous = None
     data = dict(format=1, identity=identity, source=source, reason=reason)
+    prior = json.loads(previous) if previous is not None else {}
+    if failure:
+        if prior.get('format') == 1:
+            # Preserve only existing operational fields, never arbitrary extra data.
+            data = dict(format=1, identity=prior.get('identity'), source=prior.get('source'),
+                        reason=prior.get('reason'))
+        data.update(failure=True, failure_identity=identity, failure_reason=reason)
+    elif prior.get('failure') is True:
+        failed_identity = prior.get('failure_identity', prior.get('identity'))
+        if not successful or failed_identity != identity:
+            data.update(failure=True, failure_identity=failed_identity,
+                        failure_reason=prior.get('failure_reason', prior.get('reason')))
     text = json.dumps(data, sort_keys=True) + '\n'
     if text != previous:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -173,8 +268,10 @@ def action_required(seat, reason) -> bool:
     return False
 
 
-def prior_receipt(seat, record, since) -> str | None:
+def prior_receipt(seat, record, since, proof=None) -> str | None:
     """An old identical input must not qualify as this fixed line's fresh receipt."""
+    if reason := candidate_hold(seat, proof):
+        return reason
     if record is None:
         return None
     try:
@@ -195,19 +292,58 @@ def prior_receipt(seat, record, since) -> str | None:
     return None
 
 
-def eligible(seat, screen, proof=None) -> str | None:
-    """Positive empty screen, authoritative record vetoes, and no hidden defaults."""
+def metadata_context(seat):
+    """No native state/input/capture is allowed before every shared hold passes."""
     watch = post.watch_reading(seat.ship.runtime, seat.name)
+    waiting = bool(post.Attempts(seat.ship.runtime).undelivered(post.Store(seat.ship.runtime), seat.name))
+    if watch.armed is None:
+        return watch, waiting, None, watch.reason
+    if recovery.held(seat):
+        return watch, waiting, None, 'human wake recovery held; person must intervene'
+    if pending.detached(seat):
+        return watch, waiting, None, 'prior launch has an unconfirmed delivery; human wake held'
+    try:
+        saved = load(seat)
+    except (OSError, ValueError, KeyError, TypeError):
+        return watch, waiting, None, 'human wake reservation unreadable; never resent'
+    if pending.held(seat, None):
+        return watch, waiting, saved, 'human wake pending metadata hold; no native reads'
+    return watch, waiting, saved, None
+
+
+def candidate_hold(seat, proof=None) -> str | None:
+    watch, waiting, saved, reason = metadata_context(seat)
+    if reason:
+        return reason
     if watch.armed is not False:
-        return watch.reason or 'inbox watch is armed; its watch delivers'
+        return 'inbox watch is armed; its watch delivers'
+    if not waiting:
+        return 'no waiting message; no waking input'
     if proof is not None and watch.generation != proof.data['generation']:
         return 'inbox watch rearmed during wake; no new input authorized'
-    if not post.Attempts(seat.ship.runtime).undelivered(post.Store(seat.ship.runtime), seat.name):
-        return 'no waiting message; no waking input'
-    if recovery.held(seat):
-        return 'human wake recovery held; person must intervene'
-    if pending.detached(seat):
-        return 'prior launch has an unconfirmed delivery; human wake held'
+    if saved is not None and saved.data['phase'] != 'cancelled':
+        own_prepared = (proof is not None and saved.path == proof.path and saved.data == proof.data
+                        and saved.data['phase'] == 'prepared')
+        if not own_prepared:
+            return episode(saved, watch) or 'human wake reservation standing; no new eligibility'
+    return None
+
+
+def screen_hold(screen) -> str | None:
+    if (screen is None or screen.box is None or screen.unknown or screen.interruption
+            or screen.starting):
+        return 'human wake box unknown or obstructed; untouched'
+    if screen.box != '':
+        return BOX
+    if screen.working or screen.queued:
+        return 'human wake waiting for screen work to end'
+    return None
+
+
+def eligible(seat, screen=NO_SCREEN, proof=None) -> str | None:
+    """Metadata holds, owned identity, record proof, then the supplied screen last."""
+    if reason := candidate_hold(seat, proof):
+        return reason
     launch, pane = seat.launched(), seat.pane()
     if launch is None or pane is None or pane.dead or pane.in_mode:
         return 'human wake launch/pane identity unavailable or pane in copy mode'
@@ -237,16 +373,9 @@ def eligible(seat, screen, proof=None) -> str | None:
         if state.failure:
             return 'human wake recorded turn error; person must intervene'
         if proof is not None:
-            if reason := prior_receipt(seat, joined.record, datetime.fromisoformat(proof.data['since'])):
+            if reason := prior_receipt(seat, joined.record, datetime.fromisoformat(proof.data['since']), proof):
                 return reason
-    if (screen is None or screen.box is None or screen.unknown or screen.interruption
-            or screen.starting):
-        return 'human wake box unknown or obstructed; untouched'
-    if screen.box != '':
-        return BOX
-    if screen.working or screen.queued:
-        return 'human wake waiting for screen work to end'
-    return None
+    return None if screen is NO_SCREEN else screen_hold(screen)
 
 
 def authorized(seat, proof, text) -> bool:
@@ -270,21 +399,21 @@ def run(seat) -> str | None:
         before, identity = record_stamp(seat), pending.identity(seat)
         reason = _run(seat)
         after, current = record_stamp(seat), pending.identity(seat)
-        if before != after or identity != current:
+        fresh = before == after and identity == current
+        if not fresh:
             reason = 'human wake source changed; awaiting service observation'
         if seat.is_up:
-            observe(seat, reason, current, after)
+            observe(seat, reason, current, after, successful=fresh)
         return reason
 
 
 def _run(seat) -> str | None:
+    from pathlib import Path
     from .door import Door
 
-    watch = post.watch_reading(seat.ship.runtime, seat.name)
-    try:
-        proof = load(seat)
-    except (OSError, ValueError, KeyError, TypeError):
-        return 'human wake reservation unreadable; never resent'
+    watch, waiting, proof, reason = metadata_context(seat)
+    if reason:
+        return reason
     if proof is not None and proof.data['phase'] != 'cancelled' and changed_launch(seat, proof):
         try:
             release_launch(seat, proof)
@@ -295,39 +424,49 @@ def _run(seat) -> str | None:
             proof.save(phase='cancelled', resolution='prepared wake was provably unsent')
         except OSError:
             return 'human wake evidence unreadable; unsent cancellation not persisted'
-    if watch.armed is None:
-        return watch.reason
-    if proof is not None and not changed_launch(seat, proof) and proof.data['phase'] in ('pasting', 'submitting', 'submitted', 'queued'):
-        # Receipt recovery uses the same pinned record and original time, even
-        # after a service restart. No input is repeated to obtain a receipt.
+    if proof is not None and proof.data['phase'] == 'delivered' and watch.generation != proof.data['generation']:
+        proof.save(phase='cancelled', resolution='confirmed wake rearmed; watch episode complete')
+    if proof is not None and proof.data['phase'] in ('pasting', 'submitting', 'submitted', 'queued'):
+        # Bound settlement exception: original Proof only, no screen
+        # or new candidate. Shared metadata holds have all passed above.
         receipt = proof.confirmed(seat)
-        if receipt in ('delivered', 'queued'):
-            proof.finish(receipt)
-    if proof is not None and proof.data['phase'] == 'delivered' and not proof.data.get('ended') and proof.same_launch(seat):
-        record = seat.record()
-        if record is not None and str(record) == proof.data['record']:
+        if receipt not in ('delivered', 'queued'):
+            return 'human wake receipt uncertain; never resent; inspect human-wake.json'
+        proof.finish(receipt)
+        return episode(proof, watch)
+    if proof is not None and proof.data['phase'] == 'delivered':
+        if not proof.data.get('ended'):
+            record = proof.data['record']
+            if (not record or not proof.same_launch(seat)
+                    or proof.data['identity']['harness'] != seat.harness.name
+                    or record_stamp(seat)['record'] != record):
+                return 'human wake held: record activity unknown (turn); pinned wake identity unknown'
             try:
-                ended = seat.harness.state(record).turn_open is False
+                before = record_fingerprint(Path(record))
+                state = seat.harness.state(Path(record))
+                if before != record_fingerprint(Path(record)) or type(state.turn_open) is not bool:
+                    return 'human wake held: record activity unknown (turn)'
             except (OSError, ValueError, TypeError):
-                ended = False  # no ended-turn claim; the episode remains reserved
-            if ended:
+                return 'human wake held: record activity unknown (turn); pinned wake record unreadable'
+            if state.turn_open is False:
                 proof.save(ended=True)
-    if reason := episode(proof, watch):
-        return reason
-    if watch.armed or not post.Attempts(seat.ship.runtime).undelivered(post.Store(seat.ship.runtime), seat.name):
+        return episode(proof, watch)
+    if watch.armed or not waiting:
         return None
-    door = Door(seat)
-    screen = door.screen()
-    if reason := eligible(seat, screen):
+    if reason := eligible(seat):
         return reason
-    reading = door._reading(screen)
-    if not reading.open:
-        return 'human wake ordinary door obstructed; no waking input'
     identity = pending.identity(seat)
     record = seat.record()
     since = post.now()
     if reason := prior_receipt(seat, record, since):
         return reason
+    door = Door(seat)
+    screen = door.screen()
+    if reason := screen_hold(screen):
+        return reason
+    reading = door._reading(screen)
+    if not reading.open:
+        return 'human wake ordinary door obstructed; no waking input'
     at = since.isoformat()
     proof = pending.Proof(seat.folder / 'human-wake.json', {})
     proof.save(format=1, seat=seat.name, identity=identity, at=at, since=at,

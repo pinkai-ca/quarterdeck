@@ -56,9 +56,6 @@ def check(ship: Ship, name: str, tmux: Tmux) -> list[Check]:
                     f"{name} {version or 'not found on the PATH'} · provider {providers.display(pool.provider)} · pool {pool.name}"
                     + (f" · runs {where}" if where else ""))]
     if version is None:
-        checks.append(Check('human-session waking line', None if name == 'antigravity' else False,
-                            'not applicable: Google pool reading' if name == 'antigravity' else
-                            'installed program unavailable; proof not run'))
         return checks
     like = next((s.for_pool(pool.name) for s in ship.seats.values()
                  if pool.name in s.pools and s.for_pool(pool.name).harness == name), None)
@@ -75,9 +72,12 @@ def check(ship: Ship, name: str, tmux: Tmux) -> list[Check]:
             ran = launched is not None and str(selected) in launched.argv
             checks.append(Check("the seat ran the program doctor shows", ran,
                                 f"{selected} in launch.json" if ran else f"{selected} not in the seat's launch"))
-    if name == 'antigravity':
-        checks.append(Check('human-session waking line', None, 'not applicable: Google pool reading'))
-    elif all(c.passed is True for c in checks):
+    if not all(c.passed is True for c in checks):
+        return checks
+    inapplicable = harness.waking_inapplicability
+    if inapplicable is not None:
+        checks.append(Check('human-session waking line', None, f'not applicable: {inapplicable}'))
+    else:
         human_spec = SeatSpec(f"check-wake-{name}-{run}", f"qd-check-wake-{name}-{run}", "worker", name,
                               (pool.name,), model=like.model if like else None,
                               effort=like.effort if like else None, cwd=ship.workspace,
@@ -95,15 +95,13 @@ def check(ship: Ship, name: str, tmux: Tmux) -> list[Check]:
                         durable.replace_file(evidence, wake.read_text())
         except (OSError, ShipError, TmuxError, ValueError) as error:
             checks.append(Check('human-session waking line', False, f'wake proof obstructed: {error}'))
-    else:
-        checks.append(Check('human-session waking line', False, 'normal contract failed; human proof not run'))
     if all(c.passed is not False for c in checks):
         proven = ship.runtime / "proven"
         proven.mkdir(parents=True, exist_ok=True)
         (proven / f"{name}-{version}").write_text(f"{post.now().isoformat(timespec='seconds')}\n"
                                                   + (f"{where}\n" if where else ""))
         label = "proven: launch, door, paste, task, turn read"
-        if name != 'antigravity':
+        if inapplicable is None:
             label += ", human-session wake and inbox answer"
         checks.append(Check(label, True,
                             f"{proven / f'{name}-{version}'}"))
