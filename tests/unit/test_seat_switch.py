@@ -37,7 +37,7 @@ def run(capsys, *argv):
 
 @pytest.fixture
 def single(tmp_path, monkeypatch):
-    monkeypatch.setenv("QD_TMUX_SOCKET", "qd-test-nobody-here")
+    monkeypatch.delenv("QD_TMUX_SOCKET", raising=False)  # no server: the test ship's own, never started
     (tmp_path / "ship.toml").write_text(SINGLE)
     return tmp_path
 

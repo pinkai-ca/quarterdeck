@@ -241,7 +241,7 @@ def test_cli_status_and_line_json_are_cache_only_and_include_both_windows(tmp_pa
     ship = load(tmp_path)
     monkeypatch.delenv('QD_SHIP', raising=False)
     monkeypatch.delenv('QD_SEAT', raising=False)
-    monkeypatch.setenv('QD_TMUX_SOCKET', 'qd-synthetic-usage-no-server')
+    monkeypatch.delenv('QD_TMUX_SOCKET', raising=False)  # no server: the test ship's own, never started
     monkeypatch.setattr(post, 'now', lambda: AT)
     def forbidden(*args):
         raise AssertionError('status must read only cached usage')
@@ -291,7 +291,7 @@ def test_crowded_codex_cli_keeps_both_windows_in_full_text_and_json(tmp_path, mo
     monkeypatch.setattr(post, 'now', lambda: AT)
     monkeypatch.delenv('QD_SHIP', raising=False)
     monkeypatch.delenv('QD_SEAT', raising=False)
-    monkeypatch.setenv('QD_TMUX_SOCKET', 'qd-synthetic-usage-no-server')
+    monkeypatch.delenv('QD_TMUX_SOCKET', raising=False)  # no server: the test ship's own, never started
     facts = watch.Facts('ok', 0, 0, 0,
                         walls=['synthetic quota wall with reset 2032-01-01 05:00 UTC padding long padding'],
                         usage=watch.headline_readings(ship))

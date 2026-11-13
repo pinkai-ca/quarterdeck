@@ -63,6 +63,8 @@ def test_the_command_hides_the_home_binds_the_workspace_writable_and_the_ship_re
                                          text.index(f"--bind-try {runtime / 'post'} "))
     assert workspace < ship < seats < seat, "a deeper mount comes later, so the ship folder is read-only inside the writable workspace and this seat is writable inside the hidden seats"
     assert ship < post, "the post store is writable inside the read-only ship folder"
+    hidden = text.index(f"--perms 0700 --tmpfs {runtime / 'tmux'}")
+    assert ship < hidden, "the ship's own tmux server is hidden inside the read-only ship folder, by an empty private tmpfs"
     assert f"--ro-bind-try {home / '.local' / 'bin'} {home / '.local' / 'bin'}" in text and f"--ro-bind-try {home / '.opencode'} " in text
     assert text.index(f"--ro-bind-try {home / '.opencode'} ") > args.index(str(home)), "bound back after the home is hidden"
 

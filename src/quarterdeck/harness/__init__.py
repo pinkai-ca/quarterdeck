@@ -37,6 +37,18 @@ def get(name: str) -> Harness:
     return _adapter_class(name)()
 
 
+def inherited_markers() -> tuple[str, ...]:
+    """Every adapter's session markers: a seat of any program drops another program's as well."""
+    found: list[str] = []
+    for name in NAMES:
+        try:
+            markers = _adapter_class(name).inherited_markers
+        except ShipError:
+            continue
+        found += [marker for marker in markers if marker not in found]
+    return tuple(found)
+
+
 def provider_of(name: str) -> str | None:
     """The adapter, not a generic mapping, declares its native company."""
     return _adapter_class(name).native_provider

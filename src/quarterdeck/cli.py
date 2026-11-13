@@ -18,7 +18,7 @@ from .output import Reading
 from . import output, ledger_reading
 from .ship import ShipError
 from .harness.capabilities import selection_label
-from .tmux import Tmux, TmuxError
+from .tmux import CUTOVER, Tmux, TmuxError, ship_socket as shipsocket
 
 RESTART_CONTROLS = {"pool": "restart", "harness": "fresh", "cwd": "restart", "persona": "restart"}
 
@@ -144,6 +144,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = verb("brief", cmd_brief, "print exactly what a seat reads at boot")
     p.add_argument("seat", nargs="?", help="default: this seat (QD_SEAT)")
     p.add_argument("--sources", action="store_true", help="say which file each part came from")
+    p = verb("attach", cmd_attach, "open the ship in this terminal: a session on the ship's own tmux server")
+    p.add_argument("session", nargs="?", help="a session's name or title (default: the person's own session)")
     p = verb("status", cmd_status, "every seat on one screen, then the open orders")
     p.add_argument("--line", action="store_true", help="the one line every ship session's status bar shows")
     p = verb("watch", cmd_watch, "read a seat: activity from its record, the door from its screen")
@@ -195,7 +197,7 @@ def load_ship(args: argparse.Namespace) -> shipmod.Ship:
 
 
 def seat_of(ship: shipmod.Ship, name: str) -> seatmod.Seat:
-    return seatmod.Seat(ship, ship.seat(name), Tmux.default())
+    return seatmod.Seat(ship, ship.seat(name), Tmux.for_ship(ship))
 
 
 def this_seat(ship: shipmod.Ship, name: str | None, operator_too: bool = False) -> str:
@@ -249,14 +251,53 @@ def cmd_up(args: argparse.Namespace) -> list[str] | str:
     if args.seat:
         proof = seat_of(ship, args.seat).up(resume=not args.fresh)
         return proofs + [proof, service.start(ship)]
-    return proofs + seatmod.bring_up(ship, Tmux.default()) + [service.start(ship)]
+    tmux = Tmux.for_ship(ship)
+    return proofs + seatmod.bring_up(ship, tmux) + [service.start(ship)] + ([where(tmux)] if tmux.ship else [])
+
+
+def where(tmux: Tmux) -> str:
+    """The server the ship runs on, as the last line of a whole ship's up."""
+    if tmux.legacy:
+        return f"tmux: this ship still runs on tmux's default server {tmux.socket}; {CUTOVER}"
+    return f"tmux: the ship's own server {tmux.socket} · qd attach opens it"
 
 
 def cmd_down(args: argparse.Namespace) -> list[str] | str:
     ship = load_ship(args)
     if args.seat:
         return seat_of(ship, args.seat).down()
-    return seatmod.bring_down(ship, Tmux.default()) + [service.stop(ship.runtime)]
+    tmux = Tmux.for_ship(ship)
+    proofs = seatmod.bring_down(ship, tmux) + [service.stop(ship.runtime)]
+    if tmux.legacy:
+        proofs.append(f"tmux: brought down on tmux's default server {tmux.socket}, which is left running; "
+                      f"qd up now starts this ship on its own server {shipsocket(ship)}")
+    return proofs
+
+
+def cmd_attach(args: argparse.Namespace) -> None:
+    """Replace this process with a tmux client on the ship's server, in the session asked for."""
+    ship = load_ship(args)
+    tmux = Tmux.for_ship(ship)
+    if args.session:
+        chosen = ship.sessions.get(args.session) or next(
+            (s for s in ship.sessions.values() if s.title == args.session), None)
+        if chosen is None:
+            raise ShipError(f"no session {args.session!r}; this ship has " +
+                            ", ".join(f"{key} ({s.title})" for key, s in ship.sessions.items()))
+    else:
+        chosen = next((s for s in ship.sessions.values() if s.human), None) or next(iter(ship.sessions.values()))
+    if not tmux.has_session(chosen.title):
+        raise ShipError(f"session {chosen.title!r} is not running on {tmux.socket}; qd up brings the ship up")
+    argv = tmux.attach_argv(chosen.title)
+    env = dict(os.environ)
+    inside = env.get("TMUX", "").split(",")[0]
+    if inside and tmux.socket and os.path.realpath(inside) == os.path.realpath(tmux.socket):
+        argv = [*argv[:argv.index("attach-session")], "switch-client", "-t", argv[-1]]
+    else:
+        env.pop("TMUX", None)  # a terminal inside another tmux opens this one as a client of its own
+        env.pop("TMUX_PANE", None)
+    sys.stdout.flush()
+    os.execvpe(argv[0], argv, env)
 
 
 def cmd_restart(args: argparse.Namespace) -> str:
@@ -520,7 +561,7 @@ def cmd_status(args: argparse.Namespace) -> Reading:
     if args.line:
         warning = copy_state.select(ship.folder, mode=ship.code, mode_known=True).warning
         try:
-            facts = watch.facts(ship, Tmux.default())
+            facts = watch.facts(ship, Tmux.for_ship(ship))
             if warning:
                 return Reading({**output.value(facts), 'copy_warning': warning},
                                lambda _: facts.line() + ' · ' + warning)
@@ -531,14 +572,14 @@ def cmd_status(args: argparse.Namespace) -> Reading:
             return Reading(dict(service=state, facts=None, error='status evidence unavailable', copy_warning=warning),
                            lambda _: lead + ' · status unknown: evidence unavailable; inspect qd status'
                            + (' · ' + warning if warning else ''))
-    return Reading(watch.status_reading(ship, Tmux.default()), watch.render_table)
+    return Reading(watch.status_reading(ship, Tmux.for_ship(ship)), watch.render_table)
 
 
 def cmd_watch(args: argparse.Namespace) -> Reading | str:
     ship = load_ship(args)
     if not args.seat:
-        return Reading(watch.status_reading(ship, Tmux.default()), watch.render_table)
-    seat = seatmod.read_seat(ship, ship.seat(args.seat), Tmux.default())
+        return Reading(watch.status_reading(ship, Tmux.for_ship(ship)), watch.render_table)
+    seat = seatmod.read_seat(ship, ship.seat(args.seat), Tmux.for_ship(ship))
     if args.save_screen:
         if isinstance(seat, seatmod.UnresolvedSeat):
             raise seat.error
@@ -699,7 +740,7 @@ def cmd_service(args: argparse.Namespace) -> None:
     ship = load_ship(args)
     # Recovery/exec precedes construction (and therefore the ledger and service lock).
     install.bootstrap_service(ship, ['--ship', str(ship.folder), 'service'])
-    service.Service(ship, Tmux.default()).run()
+    service.Service(ship, Tmux.for_ship(ship)).run()
 
 
 def cmd_ledger(args: argparse.Namespace) -> Reading:
@@ -715,7 +756,7 @@ def cmd_ledger(args: argparse.Namespace) -> Reading:
 
 def cmd_check(args: argparse.Namespace) -> list[str]:
     ship = load_ship(args)
-    checks = check.check(ship, args.harness, Tmux.default())
+    checks = check.check(ship, args.harness, Tmux.for_ship(ship))
     args.exit_code = 0 if all(c.passed is not False for c in checks) else 1
     return [str(c) for c in checks]
 
@@ -731,7 +772,7 @@ def cmd_doctor(args: argparse.Namespace) -> Reading | list[str]:
     lines = [str(c) for c in found]
     failed = [c for c in found if not c.passed]
     if failed and args.fix:
-        lines += ["", "the failures handed to a seat:"] + [str(c) for c in doctor.fix(ship, failed, Tmux.default())]
+        lines += ["", "the failures handed to a seat:"] + [str(c) for c in doctor.fix(ship, failed, Tmux.for_ship(ship))]
         found = doctor.checks(ship)
         lines += ["", "checked again:"] + [str(c) for c in found]
     args.exit_code = 0 if all(c.passed for c in found) else 1
@@ -743,7 +784,8 @@ def cmd_upgrade(args: argparse.Namespace) -> list[str]:
     back, force = getattr(args, 'back', False), getattr(args, 'force', False)
     if back and (args.ref is not None or force):
         raise ShipError('--back cannot be combined with a target or --force')
-    proofs = install.upgrade(load_ship(args), args.ref or 'HEAD', Tmux.default(), back=back, force=force)
+    ship = load_ship(args)
+    proofs = install.upgrade(ship, args.ref or 'HEAD', Tmux.for_ship(ship), back=back, force=force)
     if getattr(args, "upgrade_alias", False):
         proofs[-1] += " · `upgrade` is now `qd sync`"
     return proofs

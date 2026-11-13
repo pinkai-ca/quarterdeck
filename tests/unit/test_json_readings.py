@@ -20,7 +20,7 @@ pytestmark = pytest.mark.usefixtures('synthetic_disk_room')
 def invoke(drydock, capsys, monkeypatch):
     monkeypatch.delenv("QD_SHIP", raising=False)
     monkeypatch.delenv("QD_SEAT", raising=False)
-    monkeypatch.setenv("QD_TMUX_SOCKET", "qd-json-no-server")
+    monkeypatch.delenv("QD_TMUX_SOCKET", raising=False)  # no server: the test ship's own, never started
 
     def run(*args, json_output=True):
         code = cli.main(["--ship", str(drydock), *(["--json"] if json_output else []), *args])

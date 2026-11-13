@@ -45,7 +45,7 @@ def test_no_seat_headlines_are_read_only_complete_data_in_text_and_json(tmp_path
     ship = ship_at(tmp_path)
     monkeypatch.delenv('QD_SHIP', raising=False)
     monkeypatch.delenv('QD_SEAT', raising=False)
-    monkeypatch.setenv('QD_TMUX_SOCKET', 'qd-headline-no-server')
+    monkeypatch.delenv('QD_TMUX_SOCKET', raising=False)  # no server: the test ship's own, never started
     now = AT + timedelta(minutes=2 if state != 'stale' else 61)
     monkeypatch.setattr(post, 'now', lambda: now)
     for name in ('claude', 'antigravity'):

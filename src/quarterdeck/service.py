@@ -35,7 +35,7 @@ from .servicectl import (  # noqa: F401  (the process control, reachable as serv
     acquire_lock, alive, heartbeat_path, locked, read_heartbeat, request, stale, start, stop, write_heartbeat,
 )
 from .ship import Ship, ShipError
-from .tmux import Tmux, TmuxError
+from .tmux import Tmux, TmuxError, ship_sessions
 
 TYPING_QUIET = 30  # seconds since a client's last key or mouse input before its session may be switched
 STATUS_INTERVAL = 0.7  # presentation only; rendering age and owner are checked independently
@@ -111,12 +111,34 @@ class Service:
                 if remaining > 0:
                     time.sleep(min(remaining, max(0.001, self.next_status - time.monotonic())))
 
+    def rebind(self) -> None:
+        """A service that found its ship on tmux's default server follows it to its own once it has moved.
+
+        The move is a ``qd down`` and a ``qd up``; a service left running across it would otherwise keep
+        reading a server that no longer holds the ship. A binding to the old server, inherited from a seat
+        launched before the move, is obsolete then and is dropped from this process."""
+        if not getattr(getattr(self, "tmux", None), "legacy", False):
+            return
+        try:
+            if ship_sessions(self.tmux, self.ship):
+                return
+            if os.environ.get("QD_TMUX_SOCKET") == self.tmux.socket:
+                os.environ.pop("QD_TMUX_SOCKET")
+            found = Tmux.for_ship(self.ship)
+        except TmuxError as error:
+            self.log("error", step="tmux", error=str(error))
+            return
+        if found.socket != self.tmux.socket:
+            self.log("tmux", socket=found.socket, was=self.tmux.socket)
+            self.tmux = found
+
     def tick(self) -> None:
         """One pass: the ship file read afresh, then every duty, each failing alone."""
         try:
             self.ship = shipmod.load(self.ship.folder)  # law: ship-file
         except ShipError as error:
             self.log("error", step="load", error=str(error))
+        self.rebind()
         self.structure_passes.begin()
         for step in (self.reconcile, self.account, self.groups, self.cascades, self.inboxes, self.recoveries, self.refusals, self.answers, self.deliveries, self.follow, self.requests, self.compactions, self.fresh_after_order,
                      self.rebrief, self.credentials, self.authentications, self.failover):  # accounting before anything relaunches a seat

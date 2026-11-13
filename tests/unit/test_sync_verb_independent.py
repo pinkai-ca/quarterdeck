@@ -25,7 +25,7 @@ def test_both_verbs_default_to_head_and_share_handler(verb, monkeypatch):
     assert args.upgrade_alias is (verb == "upgrade")
     synthetic_ship, synthetic_tmux = object(), object()
     monkeypatch.setattr(cli, "load_ship", Mock(return_value=synthetic_ship))
-    monkeypatch.setattr(cli.Tmux, "default", Mock(return_value=synthetic_tmux))
+    monkeypatch.setattr(cli.Tmux, "for_ship", Mock(return_value=synthetic_tmux))
     api = Mock(return_value=["synthetic final proof"])
     monkeypatch.setattr(install, "upgrade", api)
 
@@ -72,13 +72,13 @@ def test_handler_calls_existing_install_api_and_only_alias_marks_final_proof(
     original = ["synthetic installation proof", "synthetic final proof"]
     api = Mock(return_value=original.copy())
     monkeypatch.setattr(cli, "load_ship", load)
-    monkeypatch.setattr(cli.Tmux, "default", tmux)
+    monkeypatch.setattr(cli.Tmux, "for_ship", tmux)
     monkeypatch.setattr(install, "upgrade", api)
 
     result = args.run(args)
 
     load.assert_called_once_with(args)
-    tmux.assert_called_once_with()
+    tmux.assert_called_once_with(synthetic_ship)
     api.assert_called_once_with(synthetic_ship, ref, synthetic_tmux, back=False, force=False)
     assert result == [original[0], original[1] + (ALIAS_NOTE if verb == "upgrade" else "")]
     assert sum(line.count(ALIAS_NOTE) for line in result) == (verb == "upgrade")

@@ -10,13 +10,28 @@ import itertools
 import os
 import secrets
 import shlex
+import stat
 import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from .tmux_socket import Namespace, OwnedSocket, OwnershipError, ShutdownPending, OWNER, locked
+from .tmux_socket import Namespace, OwnedSocket, OwnershipError, ShutdownPending, OWNER, locked, private_endpoint
 
 HISTORY_LINES = 50_000
+SHIP_SOCKET = ("tmux", "server")  # under the ship's runtime: the ship's own server, never tmux's default
+SOCKET_LIMIT = 108  # bytes in a Unix socket's path (sun_path), its terminating NUL included
+CUTOVER = "qd down, then qd up, moves it to its own; the default server itself is left running"
+
+
+def socket_bytes(path) -> int:
+    """A socket path's length as the kernel counts it: its bytes (UTF-8 here) and the terminating NUL."""
+    return len(os.fsencode(path)) + 1
+
+
+def check_socket_length(path, what: str) -> None:
+    if socket_bytes(path) > SOCKET_LIMIT:
+        raise TmuxError(f"{what} {path} would be {socket_bytes(path)} bytes with its terminating NUL, and a socket's "
+                        f"path holds {SOCKET_LIMIT}; nothing was started: move the ship to a shorter folder")
 
 
 class TmuxError(Exception):
@@ -113,15 +128,100 @@ def _transport(args):
     return not command
 
 
-class Tmux:
-    """A tmux server: the user's by default, an owned absolute endpoint in tests."""
+def ship_socket(ship) -> Path:
+    """The ship's own server: a fixed path under its runtime, so qd finds it from the ship folder alone."""
+    return Path(ship.runtime).joinpath(*SHIP_SOCKET)
 
-    def __init__(self, socket: str | None = None, *, _owned=None):
+
+def _check_socket_path(path: Path, *, create: bool) -> None:
+    """Refuse a socket place qd did not make for this user: a link, another owner, open to others, too long to start.
+
+    Nothing found is changed or removed; only a missing folder is made, and only when the server is to start,
+    which is also when the path's length is refused: no server can be listening on a path too long for one.
+    """
+    folder = path.parent
+    if create:
+        check_socket_length(path, "the ship's tmux socket")
+        folder.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            folder.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+    check_private_folder(folder)
+    try:
+        entry = path.lstat()
+    except FileNotFoundError:
+        return
+    if not stat.S_ISSOCK(entry.st_mode) or entry.st_uid != os.getuid():
+        raise TmuxError(f"{path} is not this user's socket; qd changes nothing of it: move it aside")
+
+
+def check_private_folder(folder: Path) -> None:
+    """A folder of this user's alone, as qd made it: no link, this user's, mode 700. Missing is fine."""
+    try:
+        info = folder.lstat()
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise TmuxError(f"{folder} is not a plain folder; qd keeps its tmux sockets only in a folder of its own")
+    if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+        raise TmuxError(f"{folder} belongs to another user or is open to others (mode {stat.S_IMODE(info.st_mode):o}); "
+                        "qd changes nothing of it: make it this user's, mode 700, or move it aside")
+
+
+def _user_socket(path: Path) -> bool:
+    try:
+        info = path.lstat()
+    except (OSError, ValueError):
+        return False
+    return stat.S_ISSOCK(info.st_mode) and info.st_uid == os.getuid()
+
+
+def _default_sockets() -> list[Path]:
+    """Where tmux's default server is for this process, as tmux itself finds it: the socket TMUX names, and
+    the default socket under TMUX_TMPDIR, or /tmp when that is unset."""
+    found = []
+    if inherited := os.environ.get("TMUX", "").split(",")[0]:
+        found.append(Path(inherited))
+    found.append(Path(os.environ.get("TMUX_TMPDIR") or "/tmp") / f"tmux-{os.getuid()}" / "default")
+    sockets = []
+    for path in found:
+        if _user_socket(path) and path not in sockets:
+            sockets.append(path)
+    return sockets
+
+
+def ship_sessions(tmux: "Tmux", ship) -> list[str]:
+    """This ship's sessions on a server: a title the ship declares, whose QD_SHIP is this ship's folder."""
+    try:
+        titles = tmux.sessions()
+    except TmuxError:
+        return []
+    return [title for title in (s.title for s in ship.sessions.values())
+            if title in titles and tmux.session_environment(title, "QD_SHIP") == str(ship.folder)]
+
+
+class Tmux:
+    """A tmux server: a ship's own by its socket, or an owned absolute endpoint in tests.
+
+    ``ship=True`` marks a ship's server: the commands name its socket with ``-S`` and keep the
+    person's tmux configuration. ``legacy`` names the default server a ship ran on before it had
+    its own; qd reaches that one only to read, to bring down and to finish what runs there, and
+    never starts or stops it (``-N``).
+    """
+
+    def __init__(self, socket: str | None = None, *, _owned=None, ship: bool = False, legacy: bool = False):
         self.socket = socket
         self._buffers = itertools.count()
         self._owned = _owned
         self.held = None
         self._closed = False
+        self.ship = ship or legacy
+        self.legacy = legacy
+
+    @property
+    def _private(self) -> bool:
+        return bool(self.socket and Path(self.socket).is_absolute()) and not self.ship
 
     @classmethod
     def private(cls, fallback: Path) -> "Tmux":
@@ -141,25 +241,77 @@ class Tmux:
         except OwnershipError as error:
             raise TmuxError(str(error)) from error
 
-    def attach_command(self, session: str) -> str:
+    def attach_argv(self, session: str) -> list[str]:
+        """The words that attach a person's terminal to ``session`` on this server."""
         address = ['-S' if Path(self.socket).is_absolute() else '-L', self.socket] if self.socket else []
-        if self.socket and Path(self.socket).is_absolute():
+        if self.socket and Path(self.socket).is_absolute() and not (self.ship and not self.legacy):
             address += ['-N']
-        return shlex.join(['tmux', *address, 'attach-session', '-t', _session(session)])
+        return ['tmux', *address, 'attach-session', '-t', _session(session)]
+
+    def attach_command(self, session: str) -> str:
+        return shlex.join(self.attach_argv(session))
 
     @classmethod
-    def default(cls) -> "Tmux":
-        """The user's server, or the one ``QD_TMUX_SOCKET`` names (the drill uses its own)."""
-        return cls(os.environ.get("QD_TMUX_SOCKET") or None)
+    def for_ship(cls, ship) -> "Tmux":
+        """The server a ship runs on, chosen explicitly and never through TMUX.
+
+        - Its own: the socket under its runtime, whenever that holds the ship's sessions or no other
+          server does.
+        - tmux's default server, while that holds the ship's sessions and its own holds none: a ship not
+          moved yet keeps running there, and says so, until one ``qd down`` and ``qd up``.
+        - ``QD_TMUX_SOCKET`` naming another path is honoured only for a creator's private namespace (the
+          tests and the drill), or for the server that holds this ship's sessions while its own holds none,
+          which is what a seat launched before the move is told. Anything else is refused by name: qd never
+          runs one ship on another's server.
+        """
+        own = ship_socket(ship)
+        _check_socket_path(own, create=False)
+        server = cls(str(own), ship=True)
+        named = os.environ.get("QD_TMUX_SOCKET")
+        if named and named != str(own):
+            if private_endpoint(named):
+                return cls(named)
+            if Path(named).is_absolute() and _user_socket(Path(named)):
+                old = cls(named, legacy=True)
+                if ship_sessions(old, ship) and not (own.exists() and ship_sessions(server, ship)):
+                    return old
+            raise TmuxError(f"QD_TMUX_SOCKET names {named}, which is not this ship's server {own}, not a private "
+                            "test server and not a server holding this ship's sessions; qd will not run this ship "
+                            "there. Unset QD_TMUX_SOCKET, or run qd for this ship outside another ship's seat")
+        if own.exists() and ship_sessions(server, ship):
+            return server  # moved: the default server is not read again on every call
+        for old in cls.defaults(own):
+            if ship_sessions(old, ship):
+                return old
+        return server
+
+    def launchable(self) -> None:
+        """Refuse, before anything of a launch is made, a ship server whose socket could never be started."""
+        if self.ship and not self.legacy:
+            check_socket_length(self.socket, "the ship's tmux socket")
+            _check_socket_path(Path(self.socket), create=False)
+
+    @classmethod
+    def defaults(cls, own: Path) -> list["Tmux"]:
+        """tmux's default servers, each reached by its explicit path and never started (``-N``)."""
+        return [cls(str(path), legacy=True) for path in _default_sockets() if path != own]
+
+    def split(self, ship) -> list[str]:
+        """This ship's sessions on a default server while the ship's own server also holds some: a ship in two places."""
+        if not self.ship or self.legacy:
+            return []
+        return [f"{title} on {old.socket}" for old in Tmux.defaults(Path(self.socket)) for title in ship_sessions(old, ship)]
 
     def run(self, *args: str, stdin: str | None = None) -> str:
-        if self.socket and Path(self.socket).is_absolute() and self._owned is None and not _transport(args):
+        if self._private and self._owned is None and not _transport(args):
             raise PrivateTmuxError('private observer generic commands require the typed session/door API')
         return self._invoke(*args, stdin=stdin)
 
     def _invoke(self, *args: str, stdin: str | None = None) -> str:
         """Validated dispatcher for typed operations; generic observers use transport only."""
-        if self.socket and Path(self.socket).is_absolute():
+        if self.ship and not self.legacy and args and args[0] == 'new-session':
+            _check_socket_path(Path(self.socket), create=True)
+        if self._private:
             try:
                 if self._closed:
                     raise OwnershipError('private namespace is closed')
@@ -193,8 +345,12 @@ class Tmux:
         return self._run(*args, stdin=stdin)
 
     def _run(self, *args, stdin=None, start=False):
-        absolute = bool(self.socket and Path(self.socket).is_absolute())
-        address = (['-S', self.socket, '-f', '/dev/null'] + ([] if start else ['-N'])) if absolute else (['-L', self.socket] if self.socket else [])
+        if self.ship:
+            address = ['-S', self.socket] + (['-N'] if self.legacy else [])
+        elif self._private:
+            address = ['-S', self.socket, '-f', '/dev/null'] + ([] if start else ['-N'])
+        else:
+            address = ['-L', self.socket] if self.socket else []
         command = ['tmux', *address, *args]
         env = dict(os.environ, **{OWNER: self._owned.nonce}) if start else None
         done = subprocess.run(command, input=stdin, capture_output=True, text=True, env=env)
@@ -254,7 +410,9 @@ class Tmux:
         self._invoke("kill-session", "-t", _session(name))
 
     def kill_server(self) -> None:
-        if self.socket and Path(self.socket).is_absolute():
+        if self.ship:
+            raise TmuxError("qd never stops a ship's tmux server: qd down ends the ship's sessions, and the server with them")
+        if self._private:
             if self._owned is None:
                 raise TmuxError('a private transport binding grants no server cleanup authority')
             try:

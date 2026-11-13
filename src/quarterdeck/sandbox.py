@@ -90,6 +90,7 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
     folders = [f for f in program_folders((program, *FRAMEWORK_TOOLS), path, home)
                if f != workspace and workspace not in f.parents and ship.folder not in f.parents and f != ship.folder]
     (ship.runtime / "post").mkdir(parents=True, exist_ok=True)  # bound writable, so it must exist before the launch, first post or not
+    (ship.runtime / "tmux").mkdir(mode=0o700, exist_ok=True)  # hidden inside: the mount needs its place in the read-only ship
     return Jail(home, seat_home, seat_folder, workspace, ship.folder, ship.runtime, tuple(folders),
                 (ship.runtime / "post", ship.runtime / "check"), git_identity(workspace))
 
@@ -132,11 +133,16 @@ def command(jail: Jail, argv: list[str]) -> list[str]:
     args = [PROGRAM, "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
             "--size", str(TMP_BYTES), "--tmpfs", "/tmp", "--tmpfs", str(jail.home)]
     mounts: list[tuple[str, Path]] = [("--ro-bind-try", folder) for folder in jail.read_only]
+    # The ship's own tmux server is hidden like the other seats: its socket folder is an empty private
+    # tmpfs inside, so nothing in the jail reaches the server, by its path or any other way.
     mounts += [("--bind", jail.workspace), ("--ro-bind", jail.ship_folder),
-               ("--tmpfs", jail.runtime / "seats"), ("--bind", jail.seat_folder)]
+               ("--tmpfs", jail.runtime / "seats"), ("--private-tmpfs", jail.runtime / "tmux"), ("--bind", jail.seat_folder)]
     mounts += [("--bind-try", folder) for folder in jail.writable]
     for flag, folder in sorted(mounts, key=lambda m: (len(m[1].parts), str(m[1]))):  # parents first: a child mount is never hidden by its parent's
-        args += [flag, str(folder)] if flag == "--tmpfs" else [flag, str(folder), str(folder)]
+        if flag == "--private-tmpfs":
+            args += ["--perms", "0700", "--tmpfs", str(folder)]
+        else:
+            args += [flag, str(folder)] if flag == "--tmpfs" else [flag, str(folder), str(folder)]
     for variable, value in jail.environment:
         args += ["--setenv", variable, value]
     # The launch's TMPDIR may name a filesystem the jail mounts read-only; the program

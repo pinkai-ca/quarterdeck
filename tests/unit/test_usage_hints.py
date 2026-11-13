@@ -15,7 +15,7 @@ def test_cli_hints_are_contextual_and_readings_stay_read_only(tmp_path, monkeypa
     (tmp_path / "ship.toml").write_text('[ship]\ncode="checkout"\nname="synthetic"\n[pools.pool]\nprovider="claude"\n')
     monkeypatch.delenv("QD_SHIP", raising=False)
     monkeypatch.delenv("QD_SEAT", raising=False)
-    monkeypatch.setenv("QD_TMUX_SOCKET", "qd-usage-hint-no-server")
+    monkeypatch.delenv("QD_TMUX_SOCKET", raising=False)  # no server: the test ship's own, never started
     def forbidden(*args):
         pytest.fail("reading called a provider")
     monkeypatch.setattr(harness.get("claude"), "usage", forbidden)

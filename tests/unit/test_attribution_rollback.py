@@ -39,7 +39,7 @@ from quarterdeck.ledger import Ledger
 from quarterdeck.harness.types import Turn,Tokens
 from quarterdeck.post import Store
 p=Path(sys.argv[1]);r=p/'runtime';at=datetime(2032,1,1,tzinfo=timezone.utc)
-os.environ['QD_TMUX_SOCKET']='qd-synthetic-attribution-no-server'
+os.environ.pop('QD_TMUX_SOCKET',None);os.environ.pop('TMUX',None)
 for flags in (['status'],['status','--line'],['ledger'],['ledger','--by','order'],['watch']):
     for json_flag in ([],['--json']):
         assert cli.main(['--ship',str(p),*json_flag,*flags])==0
@@ -64,7 +64,7 @@ print('preceding read, existing replacement and new insert passed')
         assert len(rows)==1 and rows[0].key==root.id and rows[0].turns==2 and rows[0].cost==4
         assert book.attributions.replay(store,runtime,{str(record):{'fake'}})==0
     monkeypatch.delenv('QD_SHIP',raising=False);monkeypatch.delenv('QD_SEAT',raising=False)
-    monkeypatch.setenv('QD_TMUX_SOCKET','qd-synthetic-attribution-no-server')
+    monkeypatch.delenv('QD_TMUX_SOCKET', raising=False)  # no server: the test ship's own, never started
     before=(runtime/'ledger.sqlite').read_bytes()
     for flags in (['status'],['status','--line'],['ledger'],['ledger','--by','order'],['watch']):
         for json_flag in ([],['--json']):

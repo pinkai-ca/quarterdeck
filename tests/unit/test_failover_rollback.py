@@ -37,7 +37,7 @@ from quarterdeck.harness.types import Tokens, Turn
 from quarterdeck.ledger import Ledger
 from quarterdeck.post import Store
 root=Path(sys.argv[1]);runtime=root/'runtime'
-os.environ['QD_TMUX_SOCKET']='qd-synthetic-rollback-no-server'
+os.environ.pop('QD_TMUX_SOCKET',None);os.environ.pop('TMUX',None)
 for args in (['status'],['status','--line'],['ledger'],['--json','ledger'],['--json','status']):
     assert cli.main(['--ship',str(root),*args])==0
 with Ledger(runtime/'ledger.sqlite') as book:

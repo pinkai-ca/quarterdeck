@@ -768,7 +768,7 @@ def test_not_applicable_needs_its_named_reason_and_renders_na():
 @pytest.mark.parametrize('results,code', [([True, None], 0), ([True, True], 0), ([True, None, False], 1), ([False], 1)])
 def test_check_exit_is_a_failure_only_for_a_failed_step(monkeypatch, results, code):
     monkeypatch.setattr(cli, 'load_ship', lambda args: None)
-    monkeypatch.setattr(cli, 'Tmux', SimpleNamespace(default=lambda: None))
+    monkeypatch.setattr(cli, 'Tmux', SimpleNamespace(for_ship=lambda ship: None))
     monkeypatch.setattr(cli.check, 'check', lambda ship, name, tmux: [
         drill.Check(f'step {i}', passed, 'not applicable: synthetic' if passed is None else '')
         for i, passed in enumerate(results)])

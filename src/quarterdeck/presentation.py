@@ -142,7 +142,7 @@ def command_line(argv):
                             and Path(sys.executable).parent.resolve() != selected.qd.parent.resolve()):
         return None
     try:
-        return watch.facts(ship, Tmux.default()).line()
+        return watch.facts(ship, Tmux.for_ship(ship)).line()
     except (TmuxError, shipmod.ShipError):
         return None  # preserve the CLI's native failure exit and independent alarm
     except (OSError, ValueError, KeyError, TypeError):

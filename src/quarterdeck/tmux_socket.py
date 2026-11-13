@@ -88,6 +88,39 @@ def locked(path, namespace=None, *, exclusive=True):
         os.close(directory)
 
 
+def private_endpoint(path) -> bool:
+    """A path inside a creator's private namespace: an exact, ownership-checked scope for tests and the drill.
+
+    Read only: the folder is this user's, mode 700 and no link; its lock is this user's regular mode-600 file
+    with the namespace header; the endpoint's name is the creator's or a delegated peer's; anything already
+    at it is this user's socket.
+    """
+    path = Path(path)
+    if not path.is_absolute() or path.name != 's' and not (path.name.startswith('s-') and len(path.name) > 2 and all(
+            c in '-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789' for c in path.name[2:])):
+        return False
+    try:
+        folder = path.parent.lstat()
+        if (not stat.S_ISDIR(folder.st_mode) or folder.st_uid != os.getuid()
+                or stat.S_IMODE(folder.st_mode) != 0o700):
+            return False
+        descriptor = os.open(path.parent / LOCK, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        try:
+            info = os.fstat(descriptor)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600
+                    or os.read(descriptor, len(HEADER) + 1) != HEADER):
+                return False
+        finally:
+            os.close(descriptor)
+        try:
+            entry = path.lstat()
+        except FileNotFoundError:
+            return True
+        return stat.S_ISSOCK(entry.st_mode) and entry.st_uid == os.getuid()
+    except OSError:
+        return False
+
+
 class Namespace:
     def __init__(self, fallback):
         parent = Path(os.environ.get('TMUX_TMPDIR') or fallback).expanduser().resolve()

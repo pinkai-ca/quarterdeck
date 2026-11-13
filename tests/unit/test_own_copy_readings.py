@@ -111,7 +111,7 @@ def test_line_and_json_status_include_same_copy_warning(vessel, monkeypatch, cap
     monkeypatch.setattr(cli, 'load_ship', lambda args: vessel)
     warning = 'synthetic copy unavailable'
     monkeypatch.setattr(copy_state, 'select', lambda *args, **kwargs: copy_state.Selection(warning=warning))
-    monkeypatch.setattr(cli.Tmux, 'default', lambda: object())
+    monkeypatch.setattr(cli.Tmux, 'for_ship', lambda ship: object())
     # Supply only the ordinary Facts.line interface, without gathering live evidence.
     @dataclass
     class Facts:

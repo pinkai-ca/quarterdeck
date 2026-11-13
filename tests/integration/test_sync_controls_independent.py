@@ -33,7 +33,7 @@ def test_main_sync_dispatches_without_installed_copy_handoff(
     api = Mock(return_value=["synthetic first proof", "synthetic final proof"])
     monkeypatch.setattr(cli.shipmod, "find", find)
     monkeypatch.setattr(cli.shipmod, "load", load)
-    monkeypatch.setattr(cli.Tmux, "default", Mock(return_value=synthetic_tmux))
+    monkeypatch.setattr(cli.Tmux, "for_ship", Mock(return_value=synthetic_tmux))
     monkeypatch.setattr(install, "handoff", handoff)
     monkeypatch.setattr(install, "upgrade", api)
     argv = ["--json"] if json_output else []
@@ -68,7 +68,7 @@ def test_main_preserves_install_refusal_exit_without_alias_success(
     synthetic_ship = object()
     synthetic_tmux = object()
     monkeypatch.setattr(cli, "load_ship", Mock(return_value=synthetic_ship))
-    monkeypatch.setattr(cli.Tmux, "default", Mock(return_value=synthetic_tmux))
+    monkeypatch.setattr(cli.Tmux, "for_ship", Mock(return_value=synthetic_tmux))
     api = Mock(side_effect=ShipError("synthetic refusal; run qd sync from the checkout"))
     monkeypatch.setattr(install, "upgrade", api)
     argv = (["--json"] if json_output else []) + [verb, "synthetic-target-ref"]

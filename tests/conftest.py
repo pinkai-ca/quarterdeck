@@ -152,6 +152,15 @@ def private_socket_root():
                 pass
 
 
+@pytest.fixture(autouse=True)
+def no_default_tmux_server(monkeypatch):
+    """A ship's search for tmux's default server, where it ran before it had its own, finds none in a test:
+    the person's own server, in /tmp, is never read. A test of that search names its own private stand-in."""
+    from quarterdeck import tmux as tmuxmod
+
+    monkeypatch.setattr(tmuxmod, '_default_sockets', lambda: [])
+
+
 @pytest.fixture
 def synthetic_disk_room(monkeypatch):
     """Opt in when disk pressure is outside the test's subject."""

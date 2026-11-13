@@ -32,5 +32,8 @@ def status_line(facts, alerts: list[str]) -> str:
         # New request details must not push the original operational words out.
         parts += [line for line in facts.pending if line.startswith('request claimed: ')]
         parts += facts.unknown
+    # A ship still on tmux's default server can be stopped by any bare kill-server: kept in short.
+    if getattr(facts, 'cutover', ''):
+        parts.append("tmux: default server, qd down then qd up")
     parts.append("details: qd status")
     return SEPARATOR.join(parts)

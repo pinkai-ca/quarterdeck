@@ -390,6 +390,7 @@ class Facts:
     move_holds: list[str] = field(default_factory=list)
     sign_in_failures: list[str] = field(default_factory=list)  # retain seat and fixed failure on overflow
     request_waits: list[str] = field(default_factory=list)
+    cutover: str = ""  # the ship still runs on tmux's default server, until one qd down and qd up
 
     def line(self) -> str:  # law: nothing-waits-silently
         parts = ["SERVICE DOWN" if self.service == "down" else f"service {self.service}"]
@@ -419,6 +420,7 @@ class Facts:
         parts += self.pending
         parts += [f"disk: {name} {pct}%" for name, pct in self.disks]
         parts += [f"{pool} · login needed by {when}" for pool, when in self.login]
+        parts += [self.cutover] if self.cutover else []
         from .headlines import status_line
         return status_line(self, parts)
 
@@ -638,6 +640,8 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         move_holds=move_reasons,
         request_waits=[request_queue.headline(row) for row in
                        (request_queue.pending(ship.runtime) if request_rows is None else request_rows)],
+        cutover=(f"tmux: still on the default server {tmux.socket}; qd down, then qd up, moves it"
+                 if getattr(tmux, "legacy", False) else ""),
         turn_errors=turn_errors,
         sign_in_failures=sign_in_failures,
         group_held=group_post.holds(ship.runtime),

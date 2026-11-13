@@ -205,7 +205,7 @@ def test_last_session_exit_leaves_only_the_creators_proved_dead_endpoint(tmux,re
 # holder), so a busy namespace is reported as uncertainty and the caller retries it within its own deadline.
 # The child retries only that uncertainty; any other refusal still ends it, and it never gains ownership.
 CHILD = ('import os,time\nfrom quarterdeck.tmux import Tmux, PrivateTmuxError\n'
-         'client=Tmux.default()\n'
+         'client=Tmux(os.environ["QD_TMUX_SOCKET"])\n'
          'held,wait=os.environ.get("QD_TEST_HELD"),time.monotonic()+5\n'
          'while held and not os.path.exists(held) and time.monotonic()<wait:time.sleep(.01)\n'
          'if os.environ.get("QD_TEST_MARK"):open(os.environ["QD_TEST_MARK"],"w").close()\n'

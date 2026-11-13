@@ -14,6 +14,7 @@ import shlex
 import shutil
 import sys
 import stat
+import tempfile
 import time
 from contextlib import contextmanager, ExitStack
 from typing import Iterator
@@ -28,7 +29,7 @@ from .harness.capabilities import validate_selection
 from .provenance import remember_launch
 from .pricing import save_price, saved_price
 from .ship import Pool, SeatSpec, Ship, ShipError
-from .tmux import Pane, Tmux
+from .tmux import Pane, Tmux, check_private_folder
 
 
 @dataclass(frozen=True)
@@ -80,12 +81,27 @@ def program_path() -> str:
     return os.pathsep.join(filter(None, [str(qd_bin()), os.environ.get("PATH", "")]))
 
 
-def launch_script(seat: str, path: str, argv: list[str]) -> str:
+def launch_words(path: str, argv: list[str], *, socket: str | None, tmux_tmpdir: Path,
+                 markers: tuple[str, ...] | list[str] = ()) -> list[str]:
+    """The words launch.sh hands to exec: the seat's program, cut off from the tmux server it runs in.
+
+    tmux gives every pane TMUX and TMUX_PANE, and a bare tmux command takes its server from TMUX: a
+    seat's shell that ran ``tmux kill-server`` would stop the whole ship. So both go; TMUX_TMPDIR names
+    a fresh private folder of this launch's own, where a bare tmux finds no server but one it starts
+    itself; QD_TMUX_SOCKET names the ship's server for qd alone. The ``markers`` are the session marks
+    another program left in the server's environment, removed by name.
+    """
+    reach = ["QD_TMUX_SOCKET=" + socket] if socket else ["-u", "QD_TMUX_SOCKET"]
+    unset = [word for name in markers for word in ("-u", name)]
+    return ["env", "-u", "TMUX", "-u", "TMUX_PANE", *unset, *reach, f"TMUX_TMPDIR={tmux_tmpdir}", f"PATH={path}", *argv]
+
+
+def launch_script(seat: str, words: list[str]) -> str:
     """The seat's command as a script for tmux to run: tmux refuses a window command over 16 KiB, and a
     brief or a first message can be longer. The PATH travels inside it, since the login shell resets the
     one tmux passes."""
     return (f"#!/bin/sh\n# {seat}: the command qd up ran, kept in a file because tmux's command line is short\n"
-            f"exec env {shlex.quote(f'PATH={path}')} {shlex.join(argv)}\n")
+            f"exec {shlex.join(words)}\n")
 
 
 class SelectionError(ShipError):
@@ -430,6 +446,8 @@ class Seat:
 
     def _up(self, resume: bool = True, *, observation=None) -> str:
         self._accept_pool()
+        if launchable := getattr(self.tmux, "launchable", None):
+            launchable()  # a socket too long or not this user's refuses before anything of the launch is made
         from .recovery import require_clear
         require_clear(self)
         previous = self.launched()
@@ -479,8 +497,13 @@ class Seat:
                 argv = sandbox.command(jail, argv)
             return launch, argv
 
+        self._launch_tmpdir = self._fresh_tmux_tmpdir()
+
+        def words(argv: list[str], env: dict[str, str]) -> list[str]:
+            return self._launch_words(argv, env, path)
+
         def misfit(launch: Launch, argv: list[str]) -> str | None:
-            return carriagemod.misfit(["env", f"PATH={path}", *argv], launch.env)  # the words launch.sh hands to exec
+            return carriagemod.misfit(words(argv, launch.env), launch.env)  # the words launch.sh hands to exec
 
         carried_file = None
         launch, argv = (None, None) if carriage.size > carriagemod.INLINE_BYTES else command(carriage.text)
@@ -492,7 +515,7 @@ class Seat:
                 if not misfit(launch, argv):
                     break
         known = {**launch.env, "QD_SHIP": str(self.ship.folder), "QD_SEAT": self.name}  # a lower bound: tmux adds its own
-        if reason := carriagemod.refused(["env", f"PATH={path}", *argv], known):  # refused only where exec surely would
+        if reason := carriagemod.refused(words(argv, launch.env), known):  # refused only where exec surely would
             raise ShipError(f"{self.name}: exec would refuse this launch for its size, whatever it carries: {reason}; "
                             "nothing was started")
         at = datetime.now(timezone.utc).isoformat()  # before the program can write a record (law: one-record)
@@ -610,9 +633,53 @@ class Seat:
     def _path() -> str:
         return program_path()
 
+    @property
+    def _tmux_tmpdirs(self) -> Path:
+        """Where each launch's private TMUX_TMPDIR is made: a folder of the seat's own, mode 700."""
+        return self.folder / "tmux"
+
+    def _fresh_tmux_tmpdir(self) -> Path:
+        """A new empty private folder for this launch's TMUX_TMPDIR, so a bare tmux in the seat reaches no
+        server, not even one an earlier launch started there. Earlier launches' folders go only when empty."""
+        base = self._tmux_tmpdirs
+        base.mkdir(mode=0o700, parents=True, exist_ok=True)
+        check_private_folder(base)
+        for earlier in base.iterdir():
+            if earlier.is_dir() and not earlier.is_symlink():
+                for folder in (earlier / f"tmux-{os.getuid()}", earlier):
+                    try:
+                        folder.rmdir()  # never a socket or a file: an earlier launch's server keeps its folder
+                    except FileNotFoundError:
+                        continue
+                    except OSError:
+                        break
+        # Mode 700, made by this launch alone. Where the ship's folder is so deep that a socket in it would be
+        # too long, a bare tmux there fails with "File name too long" and reaches no server at all.
+        return Path(tempfile.mkdtemp(prefix="l", dir=base))
+
+    def _launch_words(self, argv: list[str], env: dict[str, str], path: str) -> list[str]:
+        """This launch's exec words: its fresh private TMUX_TMPDIR, the server it runs on, every adapter's
+        session marks removed but the ones the seat's own adapter sets in ``env``."""
+        markers = [name for name in harnesses.inherited_markers() if name not in env]
+        if getattr(self, "_launch_tmpdir", None) is None:
+            self._launch_tmpdir = self._fresh_tmux_tmpdir()  # set afresh by every up; made here only for another path
+        return launch_words(path, argv, socket=self._socket_for_seat(), tmux_tmpdir=self._launch_tmpdir, markers=markers)
+
+    def _socket_for_seat(self) -> str | None:
+        """What QD_TMUX_SOCKET tells qd inside the seat: the server it runs on, by its path. A seat launched on
+        tmux's default server, before its ship moved to its own, is told that server, explicitly. A jailed
+        seat is told none: tmux stays out of its reach."""
+        if self.ship.jailed(self.spec, self.pool):
+            return None
+        socket = getattr(self.tmux, "socket", None)
+        return socket if socket and Path(socket).is_absolute() else None
+
     def _open_window(self, argv: list[str], env: dict[str, str], path: str) -> Pane:
         session = self.session
         ship_env = {"QD_SHIP": str(self.ship.folder)}
+        if split := (self.tmux.split(self.ship) if getattr(self.tmux, "ship", False) else []):
+            raise ShipError(f"this ship runs in two places: {', '.join(split)}, and also on its own server "
+                            f"{self.tmux.socket}; nothing was started. qd down, then qd up, puts it in one")
         if self.tmux.has_session(session.title):
             owner = self.tmux.session_environment(session.title, "QD_SHIP")
             if owner != str(self.ship.folder):
@@ -627,7 +694,7 @@ class Seat:
         if not cwd.is_dir():
             raise ShipError(f"{self.name}: working directory {cwd} does not exist; qd creates nothing outside its folder")  # law: one-folder
         script = self.folder / "launch.sh"
-        script.write_text(launch_script(self.name, path, argv))
+        script.write_text(launch_script(self.name, self._launch_words(argv, env, path)))
         return self.tmux.new_window(session.title, self.spec.display, cwd, ["sh", str(script)], env)
 
     def _survives(self, pane_id: str, program: str, seconds: float = 0.5) -> None:

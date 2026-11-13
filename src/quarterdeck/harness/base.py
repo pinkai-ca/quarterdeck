@@ -135,6 +135,10 @@ class Harness(ABC):
     screen_walls: bool = False
     home_variable: str | None
     keys: Keys
+    # Variables this program sets for what it runs, naming the session that ran it. A seat must not inherit
+    # them from whoever started the ship's tmux server: each launch removes every adapter's, but for a name
+    # the seat's own adapter sets in its launch.
+    inherited_markers: tuple[str, ...] = ()
     reads_usage: bool = False  # True where usage() reads the provider's windows; a pool of such a program is read before a move
     reads_queue_error: bool = False  # state() can report unresolved native queue identity to automatic status
     remote_control: bool = False  # True where the program can open a seat to the operator's phone and claude.ai as well

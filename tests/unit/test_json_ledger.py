@@ -15,7 +15,7 @@ from quarterdeck.ledger import Ledger
 def invoke(drydock, capsys, monkeypatch):
     monkeypatch.delenv("QD_SHIP", raising=False)
     monkeypatch.delenv("QD_SEAT", raising=False)
-    monkeypatch.setenv("QD_TMUX_SOCKET", "qd-json-no-server")
+    monkeypatch.delenv("QD_TMUX_SOCKET", raising=False)  # no server: the test ship's own, never started
 
     def run(*args, text=False):
         assert cli.main(["--ship", str(drydock), *([] if text else ["--json"]), *args]) == 0

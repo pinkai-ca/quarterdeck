@@ -16,7 +16,7 @@ def run(capsys, *argv: str) -> tuple[int, str, str]:
 
 
 def test_set_writes_the_ship_file_and_says_what_applies_it(drydock: Path, capsys, monkeypatch):
-    monkeypatch.setenv("QD_TMUX_SOCKET", "qd-test-nobody-here")
+    monkeypatch.delenv("QD_TMUX_SOCKET", raising=False)  # no server: the test ship's own, never started
     code, out, err = run(capsys, "--ship", str(drydock), "set", "captain", "model=fake-2", "pool=fake", "remote_control=true")
     assert code == 0 and err == ""
     lines = out.splitlines()
@@ -62,7 +62,7 @@ def test_inside_a_seat_the_seat_is_known_and_outside_the_operator_has_an_inbox(d
 
 
 def test_set_routes_a_programs_own_key_to_the_settings_table(enterprise_ship: Path, capsys, monkeypatch):
-    monkeypatch.setenv("QD_TMUX_SOCKET", "qd-test-nobody-here")
+    monkeypatch.delenv("QD_TMUX_SOCKET", raising=False)  # no server: the test ship's own, never started
     code, out, err = run(capsys, "--ship", str(enterprise_ship), "set", "worker-1", "model_auto_compact_token_limit=100000",
                          "settings.model_reasoning_summary=concise", "effort=low")
     assert code == 0, err
@@ -78,7 +78,7 @@ def test_set_routes_a_programs_own_key_to_the_settings_table(enterprise_ship: Pa
 def test_an_ack_needs_no_body_and_wakes_nobody(drydock: Path, capsys, monkeypatch):
     from quarterdeck import post
 
-    monkeypatch.setenv("QD_TMUX_SOCKET", "qd-test-nobody-here")
+    monkeypatch.delenv("QD_TMUX_SOCKET", raising=False)  # no server: the test ship's own, never started
     monkeypatch.setenv("QD_SHIP", str(drydock))
     monkeypatch.delenv("QD_SEAT", raising=False)  # run from inside a seat, this shell would post as that seat and refuse --from
     code, out, _ = run(capsys, "post", "order", "--to", "worker-1", "build it")
@@ -102,7 +102,7 @@ def test_parse_value():
 def test_a_seat_posts_as_itself_and_only_a_shell_that_is_no_seat_may_name_a_sender(drydock: Path, capsys, monkeypatch):
     from quarterdeck import post
 
-    monkeypatch.setenv("QD_TMUX_SOCKET", "qd-test-nobody-here")
+    monkeypatch.delenv("QD_TMUX_SOCKET", raising=False)  # no server: the test ship's own, never started
     monkeypatch.setenv("QD_SHIP", str(drydock))
     monkeypatch.delenv("QD_SEAT", raising=False)
     code, out, _ = run(capsys, "post", "order", "--to", "worker-1", "from the operator's own shell")

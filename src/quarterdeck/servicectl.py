@@ -136,7 +136,19 @@ def start(ship: Ship, qd: Path | None = None, *, expected: dict | None = None,
         return f"service alive · pid {beat[0] if beat else '?'}" + (f" · busy, last tick {int(late)}s ago" if late else "")
     log_dir = ship.runtime / "log"
     log_dir.mkdir(parents=True, exist_ok=True)
-    environment = dict(os.environ)
+    from .tmux import Tmux, TmuxError
+
+    environment = {key: value for key, value in os.environ.items() if key not in ('TMUX', 'TMUX_PANE')}
+    if named := environment.get('QD_TMUX_SOCKET'):
+        # The service keeps a caller's binding only where the ship's own choice of server accepts it (a
+        # private test namespace, or the default server the ship still runs on); otherwise it finds the
+        # ship's server itself, from the ship, and never runs on another ship's.
+        try:
+            kept = Tmux.for_ship(ship).socket == named
+        except TmuxError:
+            kept = False
+        if not kept:
+            environment.pop('QD_TMUX_SOCKET')
     environment.pop('QD_COPY_START', None)
     if startup_token:
         environment['QD_COPY_START'] = startup_token

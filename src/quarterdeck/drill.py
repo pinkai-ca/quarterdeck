@@ -262,7 +262,7 @@ def run(ship: shipmod.Ship | None, keep: bool = False) -> tuple[bool, list[str]]
         os.environ["QD_TMUX_SOCKET"] = tmux.socket
     else:
         ship, folder = temporary_copy(ship)
-        tmux = Tmux.default()
+        tmux = Tmux.for_ship(ship)
     try:
         checks = Drill(ship, tmux).run()
         passed = all(c.passed for c in checks)

@@ -108,7 +108,7 @@ def test_a_launch_longer_than_tmux_allows_still_carries_every_open_message(ship:
     captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
     assert captain.up(resume=False).endswith("1 open message carried")
     script = (ship.runtime / "seats" / "captain" / "launch.sh").read_text()
-    assert script.startswith("#!/bin/sh\n") and "\nexec env PATH=" in script and order.short in script and body[-200:] in script
+    assert script.startswith("#!/bin/sh\n") and "\nexec env -u TMUX -u TMUX_PANE " in script and " PATH=" in script and order.short in script and body[-200:] in script
     record = wait_for(captain.record)
     wait_for(lambda: captain.harness.state(record).turns)
     first = captain.harness.turns(record)[0]

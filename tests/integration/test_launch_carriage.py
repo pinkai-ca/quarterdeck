@@ -69,6 +69,14 @@ def words(seat: seatmod.Seat) -> list[str]:
     return shlex.split(script.split("\n", 2)[2])
 
 
+def jail_words(seat: seatmod.Seat) -> list[str]:
+    """The jail's own words, from bwrap to its "--": the launch's environment words before it name a fresh
+    private TMUX_TMPDIR every launch."""
+    found = words(seat)
+    start = next(index for index, word in enumerate(found) if Path(word).name == "bwrap")
+    return found[start:found.index("--")]
+
+
 def start(way: str, seat: seatmod.Seat, ship: shipmod.Ship, tmux: Tmux, post_threads) -> tuple[str, int]:
     """Start the seat the named way, the long messages posted just before it; the earlier turns count."""
     if way == "up":
@@ -265,12 +273,12 @@ def test_a_jailed_seat_reads_its_own_file_and_no_other_seats_with_no_mount_added
     store.new("order", "desk", "captain", "short", subject="Short")
     captain = seatmod.Seat(ship, spec, tmux)
     captain.up(resume=False)
-    short_mounts = words(captain)[: words(captain).index("--")]
+    short_mounts = jail_words(captain)
     first_input(captain)
     captain.down()
     long_threads(store)
     captain.up(resume=False)
-    long_mounts = words(captain)[: words(captain).index("--")]
+    long_mounts = jail_words(captain)
     assert long_mounts == short_mounts, "the jail is the same: no mount is added for the file"
     path = carried_file(first_input(captain, 0))
     command = (f"$ sha256sum {path} > {workspace}/seen.txt; cat {other}/synthetic.txt > {workspace}/other.txt 2>&1; "
@@ -344,7 +352,10 @@ def test_only_a_command_the_kernel_would_refuse_is_refused_naming_sizes_not_text
                         lambda *a, **kw: Launch((sys.executable, "-c", "pass", oversized, a[-1] or "")))
     with pytest.raises(ShipError, match="exec would refuse this launch for its size") as raised:
         captain.up(resume=False)
-    assert "word 5" in str(raised.value) and "SYNTHETIC" not in str(raised.value)
+    from quarterdeck import harness
+    prefix = seatmod.launch_words("p", [], socket=tmux.socket, tmux_tmpdir=Path("t"), markers=harness.inherited_markers())
+    oversized_word = len(prefix) + 3  # after the program, "-c" and "pass"
+    assert f"word {oversized_word} " in str(raised.value) and "SYNTHETIC" not in str(raised.value)
     assert captain.pane() is None
 
 

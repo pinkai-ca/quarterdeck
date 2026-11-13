@@ -66,7 +66,7 @@ def migrated(tmp_path, monkeypatch):
     monkeypatch.setattr(Seat, '_open_window', open_window)
     monkeypatch.setattr(Seat, '_survives', lambda *a: None)
     monkeypatch.setattr(seatmod.shutil, 'which', lambda *a, **k: '/usr/bin/sh')
-    monkeypatch.setattr(cli.Tmux, 'default', lambda: tmux)
+    monkeypatch.setattr(cli.Tmux, 'for_ship', lambda ship: tmux)
     for adapter in (CodexHarness, ClaudeHarness):
         monkeypatch.setattr(adapter, 'version', lambda self: 'synthetic')
         monkeypatch.setattr(adapter, 'screen', lambda *a: Screen('', ''))

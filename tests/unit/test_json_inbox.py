@@ -12,7 +12,7 @@ from quarterdeck import cli, output, post
 def inbox(drydock, monkeypatch):
     monkeypatch.delenv("QD_SHIP", raising=False)
     monkeypatch.delenv("QD_SEAT", raising=False)
-    monkeypatch.setenv("QD_TMUX_SOCKET", "qd-json-no-server")
+    monkeypatch.delenv("QD_TMUX_SOCKET", raising=False)  # no server: the test ship's own, never started
     store = post.Store(drydock / "runtime")
     messages = [store.new("order", "captain", "desk", 'first\nquoted "body"', subject="synthetic"),
                 store.new("question", "captain", "desk", "second ünicode")]

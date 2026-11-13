@@ -572,6 +572,15 @@ class ClaudeHarness(Harness):
     program = "claude"
     home_variable = "CLAUDE_CONFIG_DIR"
     keys = Keys(submit="Enter", send_now=("C-x", "C-s"), interrupt="Escape")
+    # From the installed 2.1.317 and 2.1.323, the same in both: the environment it builds for what it runs (CLAUDECODE, the session id, the
+    # child-session and attended marks, its pid) and the session's private messaging socket and token. At its
+    # start it reads CLAUDECODE, CLAUDE_CODE_CHILD_SESSION, CLAUDE_CODE_SESSION_ATTENDED and the session id as
+    # a parent's. Measured on 2.1.317: with TMUX absent, an inherited CLAUDE_CODE_CHILD_SESSION turns transcript
+    # saving off, so the seat keeps no record. With exactly these removed, 2.1.323 kept it (2.1.317 was measured
+    # with every inherited CLAUDE_CODE_* removed). Its preferences, sign-in and privacy names are not among them.
+    inherited_markers = ("CLAUDECODE", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ID",
+                         "CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_PID",
+                         "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN")
 
     def recorded_paste(self, text: str, record: Path, since: datetime) -> str:
         """Measured on 2.1.317 alone (13 November), two changes the program makes to a pasted payload as it records it:

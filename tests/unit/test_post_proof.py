@@ -96,7 +96,7 @@ def test_real_post_with_malformed_caller_launch_stores_once_without_recipient_re
     path.write_text(wire)
     original = path.read_bytes()
     monkeypatch.setenv('QD_SEAT', sender.name)
-    monkeypatch.setattr(cli.Tmux, 'default', lambda: transport)
+    monkeypatch.setattr(cli.Tmux, 'for_ship', lambda ship: transport)
     real_seat_of = cli.seat_of
     def caller_only(current, name):
         assert name == sender.name, 'malformed caller evidence must not reach the recipient'
@@ -128,7 +128,7 @@ def test_real_post_with_malformed_recipient_launch_keeps_storage_and_unknown_sta
     path.write_text(wire)
     original = path.read_bytes()
     monkeypatch.delenv('QD_SEAT', raising=False)
-    monkeypatch.setattr(cli.Tmux, 'default', lambda: transport)
+    monkeypatch.setattr(cli.Tmux, 'for_ship', lambda ship: transport)
     monkeypatch.setattr(cli.service, 'alive', lambda *a: pytest.fail('no service PID read'))
     monkeypatch.setattr(cli.post, 'watch_armed', lambda *a: pytest.fail('no watch PID read'))
     try:
