@@ -106,6 +106,7 @@ def seat_section(ship: Ship, seat: SeatSpec, human_session: bool) -> str:
         "- To give an order, ask or answer: `qd post order --to <seat> \"...\"`, `qd post question --to <seat> \"...\"`, "
         "`qd post answer --re <id> \"...\"`. Long bodies may come from a file: `qd post order --to <seat> --body-file notes.md`.",
         "- Read a seat with `qd watch <seat>`, the ship with `qd status`; your own brief is `qd brief " + seat.name + "`.",
+        "- A message that reaches you twice with the same id is one message: read it once and act on it once.",
     ]
     if human_session:
         lines.append(

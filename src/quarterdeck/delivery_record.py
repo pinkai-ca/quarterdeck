@@ -10,7 +10,7 @@ def receipt(reader, record, message: post.Message, since: datetime) -> str | Non
     if record is None:
         return None
     try:
-        return input_receipt.confirmed(reader, record, post.typed([message]), since)
+        return input_receipt.confirmed(reader, record, post.delivered_forms(message), since)
     except OSError:
         return None
 

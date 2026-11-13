@@ -112,6 +112,10 @@ def test_stop_and_resend_are_requests_to_the_service(ship: shipmod.Ship, tmux: T
     proof = qd(capsys, "post", "resend", message.short)
     assert proof.startswith(f"{message.short} to captain · delivered") and proof.endswith("· resend")
     assert [a.result for a in post.Attempts(ship.runtime).for_message(message.id)] == ["delivered", "delivered"]
+    inputs = [item.text for item in captain.harness.inputs(captain.record())]
+    first, second = post.delivered_forms(message)
+    assert inputs.count(first.strip()) == 1 and inputs[-1].strip() == second.strip(), \
+        "the resend says it is a second delivery, and its receipt read that form"
 
 
 def test_a_worker_starts_fresh_after_its_order_closes(ship: shipmod.Ship, tmux: Tmux, capsys):

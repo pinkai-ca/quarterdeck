@@ -20,6 +20,7 @@ import time
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Collection
 
 from . import durable
 from .ship import ShipError
@@ -267,10 +268,19 @@ class Store:
 # -- the typed form ----------------------------------------------------------------------
 
 
-def typed(messages: list[Message]) -> str:
-    """What the door types: each message in full, under a header and over a footer."""
+SECOND = "qd > second delivery of {id}; you may have it already: act on it once"
+
+
+def typed(messages: list[Message], *, second: Collection[str] = ()) -> str:
+    """What the door types: each message in full, under a header and over a footer.
+
+    A message typed a second time (an id in ``second``) carries one line before its envelope saying so;
+    the envelope itself is unchanged, so its receipt reads either form.
+    """
     parts = []
     for message in messages:
+        if message.id in second:
+            parts.append(SECOND.format(id=message.id) + "\n")
         header = f"qd > {message.kind} from {message.sender} · {message.short}"
         if message.re:
             header += f" · re {short_of(message.re)}"
@@ -283,6 +293,11 @@ def typed(messages: list[Message]) -> str:
             footer = f"qd > reply: qd post {REPLY_VERB[message.kind]} --re {message.short} · {footer[5:]}"
         parts.append(f"{header}\n{message.body.rstrip()}\n{footer}")
     return "\n".join(parts) + "\n"
+
+
+def delivered_forms(message: Message) -> tuple[str, str]:
+    """The two forms a message is typed in: a first delivery, and a second that says it is one."""
+    return typed([message]), typed([message], second=(message.id,))
 
 
 def briefed_header(seat: str, role: str, open_messages: list[Message]) -> str:

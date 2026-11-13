@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 
-from .post import Store, typed
+from .post import Store, delivered_forms, typed
 
 
 def moment(value):
@@ -42,7 +42,7 @@ class Threads:
             if (message.kind == 'report' and order and order.kind == 'order'
                     and message.sender == order.to and message.at >= order.at):
                 self.closed.setdefault(order.id, message)
-        self.envelopes = {typed([m]).strip(): m for m in self.messages}
+        self.envelopes = {form.strip(): m for m in self.messages for form in delivered_forms(m)}
         self.by_header = {}
         for envelope, message in self.envelopes.items():
             self.by_header.setdefault(envelope.partition('\n')[0], []).append((envelope, message))

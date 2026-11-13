@@ -135,7 +135,7 @@ def culprit(seat: Seat, failure: TurnFailure, launch: dict, store: post.Store,
             except ShipError:
                 continue
             if (item.at is not None and item.at >= attempt.receipt_since
-                    and input_receipt.same_text(item.text, post.typed([message]))):
+                    and input_receipt.same_input(item.text, post.delivered_forms(message))):
                 found.add(message.id)
         if len(found) != 1:
             return None, ('an input of the refused turn is not one message the door typed on this launch'

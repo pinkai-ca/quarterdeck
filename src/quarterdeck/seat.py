@@ -700,7 +700,7 @@ class Seat:
                 if item.reader is None:
                     continue
                 try:
-                    if input_receipt.confirmed(item.reader, item.path, post.typed([message]), latest[message.id].receipt_since) == "delivered":
+                    if input_receipt.confirmed(item.reader, item.path, post.delivered_forms(message), latest[message.id].receipt_since) == "delivered":
                         consumed = True
                         break
                 except OSError:

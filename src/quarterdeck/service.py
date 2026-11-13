@@ -455,7 +455,7 @@ class Service:
                 return f"{seat.name}: compaction handoff/transition reserved; held for successor"
             launched = seat.launched()
             attempt = self.attempts.open(message, seat.name, launched.pane, launched.pid, launched.at)
-            text = post.typed([message])
+            text = post.typed([message], second=(message.id,) if resend else ())  # a resend says it is one
             proof = pending_delivery.Proof.begin(seat, attempt, text, before_paste=True)
         delivery = door.deliver(text, speed, proof=proof)
         if proof:

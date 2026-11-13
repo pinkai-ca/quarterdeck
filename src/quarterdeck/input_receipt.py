@@ -24,15 +24,19 @@ def same_input(recorded: str, forms: tuple[str, ...]) -> bool:
     return any(same_text(recorded, form) for form in forms)
 
 
-def confirmed(reader: str | Harness, record: Path, text: str, since: datetime) -> str | None:
-    """Exact fresh acceptance, queueing or consumption; untimed history proves nothing."""
+def confirmed(reader: str | Harness, record: Path, text: str | tuple[str, ...], since: datetime) -> str | None:
+    """Exact fresh acceptance, queueing or consumption; untimed history proves nothing.
+
+    ``text`` may name several forms of one message, its first and second delivery: any of them is its receipt.
+    """
     harness = get(reader) if isinstance(reader, str) else reader
     resolution = getattr(harness, "record_time_resolution", 0.0)
     if resolution > 0:
         # Native precision affects only this comparison, never the saved attempt.
         since = datetime.fromtimestamp(floor(since.timestamp() / resolution) * resolution, since.tzinfo)
     queued = False
-    forms = recorded_forms(harness, record, text, since)
+    forms = tuple(form for each in ((text,) if isinstance(text, str) else text)
+                  for form in recorded_forms(harness, record, each, since))
     for item in harness.inputs(record):
         if item.at is None or item.at < since or not same_input(item.text, forms):
             continue

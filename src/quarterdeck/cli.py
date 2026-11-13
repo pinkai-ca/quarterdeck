@@ -774,7 +774,12 @@ def cmd_inbox(args: argparse.Namespace) -> Reading | None:
     messages, opened = arrived
     if validate is not None:
         validate()
-    batch = Reading({"seat": seat, "messages": messages}, lambda data: post.typed(data["messages"]).rstrip("\n"))
+    # A message this watch's seat was given before (a print judged blind, a resend) says it is a second delivery.
+    now = {attempt.path for attempt in opened}
+    every = post.Attempts(ship.runtime)
+    second = {m.id for m in messages if any(a.seat == seat and a.path not in now for a in every.for_message(m.id))}
+    batch = Reading({"seat": seat, "messages": messages},
+                    lambda data: post.typed(data["messages"], second=second).rstrip("\n"))
     emit(args, batch)  # serialization, output and flush must all succeed before the receipt
     if validate is not None:
         validate()

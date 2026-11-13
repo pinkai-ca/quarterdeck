@@ -157,10 +157,10 @@ def matching(seat: Seat, failure: TurnFailure, store: post.Store, attempts: post
         if attempt.seat != seat.name or attempt.result not in ('delivered', 'queued'):
             continue
         try:
-            text = post.typed([store.get(attempt.message)])
+            forms = post.delivered_forms(store.get(attempt.message))
         except (OSError, KeyError, ValueError):
             continue
-        if any(item.at is not None and item.at >= attempt.receipt_since and input_receipt.same_text(item.text, text)
+        if any(item.at is not None and item.at >= attempt.receipt_since and input_receipt.same_input(item.text, forms)
                for item in failure.inputs):
             found.append(attempt)
     latest = attempts.latest()

@@ -64,6 +64,8 @@ def consumed_ids(store: post.Store, seat: str, role: str, inputs: Iterable[Input
             incoming = False
         elif incoming:
             token = post.typed([message]).strip()
+            second = post.typed([message], second=(message.id,)).strip()  # a second delivery reads as consumed too
+            tokens.setdefault(second.partition('\n')[0], []).append((second, message, incoming))
         elif message.sender == seat and message.kind == 'question':
             token = context(message).strip()
         else:
