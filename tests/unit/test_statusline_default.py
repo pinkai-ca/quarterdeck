@@ -210,6 +210,9 @@ def test_plain_wheel_install_carries_runnable_default_footer(tmp_path):
     # wheel from a writable copy of just the framework and declared resources.
     build_source = tmp_path / "source"
     shutil.copytree(source / "src", build_source / "src")
+    # copytree preserves the runner's read-only directory mode. Setuptools
+    # creates egg-info directly inside src in its writable build copy.
+    (build_source / "src").chmod((build_source / "src").stat().st_mode | 0o200)
     for name in ("pyproject.toml", "README.md", "LICENSE"):
         shutil.copy2(source / name, build_source / name)
     for relative in resources.plan(source):
