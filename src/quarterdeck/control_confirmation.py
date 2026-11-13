@@ -186,4 +186,7 @@ def observe_control(seat, control, state: Continuation, now: datetime, *, persis
         updated = answered(decision.state, typed=delivery.result == 'typed')
         persist(updated)
         return Decision(updated, 'wait', f'{delivery}; waiting for record confirmation')
+    if (decision.action == 'wait' and screen is not None
+            and getattr(screen.interruption, 'control', None) == control.name and answer is None):
+        return Decision(state, 'wait', 'program asked; option/value or selection gesture unknown; no answer sent')
     return decision

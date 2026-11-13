@@ -25,7 +25,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from .json_record import JsonLinesReader, input_reader, input_rows, records_matching
-from .types import AUTHENTICATION, Inputs, TurnFailure, ControlInterruption
+from .types import AUTHENTICATION, Inputs, TurnFailure, ControlAnswer, ControlInterruption
 from .claude_background import BackgroundBash, user_notice
 
 from ..ship import Pool, SeatSpec
@@ -705,6 +705,29 @@ class ClaudeHarness(Harness):
         if value in MODEL_IDENTITIES:
             return value
         return MODEL_DISPLAY_IDENTITIES.get(value) if version == '2.1.317' else None
+
+    def control_answer(self, control: Control, value: str, screen: Screen,
+                       *, version: str | None = None) -> ControlAnswer | None:
+        if (control.name != 'model' or version != '2.1.317'
+                or not isinstance(screen.interruption, ControlInterruption)
+                or screen.interruption.control != 'model'):
+            return None
+        target = self.model_identity(value, version=version)
+        display = next((name for name, identity in MODEL_DISPLAY_IDENTITIES.items() if identity == target), None)
+        if display is None or not any(line.strip(' \u00a0') == 'Switch model?' for line in screen.text.splitlines()):
+            return None
+        pattern = re.compile(r'^[ \u00a0]*(?P<cursor>❯[ \u00a0]*)?(?P<number>[0-9]+)\. (?P<text>.*?)[ \u00a0]*$')
+        options = [match for line in screen.text.splitlines() if (match := pattern.fullmatch(line))]
+        label = f'Yes, switch to {display}'
+        yes = [option for option in options if option['text'] == label and option['number'] == '1']
+        no = [option for option in options if option['text'] == 'No, go back' and option['number'] == '2']
+        if len(options) != 2 or len(yes) != 1 or len(no) != 1:
+            return None
+        # Text/value chooses the option. Enter is proved ONLY with this exact Yes already selected;
+        # the displayed number, movement and every off-Yes gesture remain unsupported.
+        if not yes[0]['cursor'] or no[0]['cursor']:
+            return None
+        return ControlAnswer('model', value, label, ('Enter',))
 
     reads_queue_error = True
     compactions = staticmethod(compactions)

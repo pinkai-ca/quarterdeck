@@ -775,6 +775,9 @@ claim and bounded continuation/deadline metadata; a later tick observes or answe
 command again. Unknown continuation or transport holds without replay. Record confirmation closes a
 model change; expiry names it unconfirmed. Where the program asked and the ship sent the value-matched
 yes, the proof says both explicitly. The existing effort validation and declared control modes remain.
+Claude Code 2.1.317 proves Enter only with the exact Yes option already selected. A different cursor
+position, an unproved gesture or an unproved display alias holds by name; the displayed option number
+does not establish an accelerator. Haiku 5.5 and Sonnet 5.5 have closed display/ID pairs for this version.
 
 An observed model is read from the current owned record first and an adapter-proved screen reading
 second. Comparison uses the effective selected pool/seat declaration and the adapter's exact model
