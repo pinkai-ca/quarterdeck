@@ -213,7 +213,12 @@ def pool_answers(conversation: Conversation, selected: list[str], defaults: dict
                 models[name] = conversation.ask(f"model.{name}", f"Model served for {name}")
             elif len(served) == 1:
                 models[name] = served[0]
-            variable = (saved.api_key.removeprefix("env:") if saved.api_key and saved.api_key.startswith("env:") else "none") if saved else None
+            variable = None
+            if saved:
+                if not saved.api_key:
+                    variable = "none"
+                elif saved.api_key.startswith("env:"):
+                    variable = saved.api_key.removeprefix("env:")
             variable = conversation.ask(f"key_env.{name}", f"{name}'s key variable NAME, or none if no key is needed", variable)
             if variable != "none":
                 values["api_key"] = key_reference(variable)
