@@ -104,7 +104,9 @@ After that, [How to use it](../README.md#how-to-use-it) has the everyday command
 
 ## Fresh starts
 
-A fresh start gives an agent a new conversation, with the agent's brief and every message the agent still has to answer.
+A fresh start gives an agent a new conversation. The agent receives the agent's brief and an index of the agent's open messages, one line for each message, by thread: the messages the agent still has to answer, and the messages the agent sent that still wait for an answer. The index tells the agent to read a thread whole before acting on any message of that thread, and the agent prints the thread with `qd thread <id>`. A handoff is a note that an agent addresses to itself before a fresh start; the agent receives each handoff that is still open in full, ahead of the index.
+
+`carry_bytes`, under `[ship]` in `ship.toml`, bounds the size of an agent's first message after a restart or a fresh start, and of each page of the index. A longer index is split into pages, and a handoff too long for the first message is handed over as a file that the agent reads first.
 
 ```sh
 qd fresh engineering  # by hand, at any time; in the middle of a turn, the fresh start waits for the turn to end
@@ -113,7 +115,7 @@ qd fresh engineering  # by hand, at any time; in the middle of a turn, the fresh
 Two settings in `ship.toml`, each on a seat, let the ship do the same:
 
 - `fresh = "after-order"`: the ship starts the agent fresh when the agent has closed its last open order.
-- `fresh_after_compactions = 2`: when the agent's harness has compacted the conversation twice, the ship asks the agent for a handoff, a note addressed to itself. The agent posts the note, and the ship starts the agent fresh when that turn ends. Claude Code and Codex count compactions; on the other harnesses the setting does nothing.
+- `fresh_after_compactions = 2`: when the agent's harness has compacted the conversation twice, the ship asks the agent for a handoff. The agent posts the handoff, and the ship starts the agent fresh when that turn ends. Claude Code and Codex count compactions; on the other harnesses the setting does nothing.
 
 `qd setup` gives the second setting to every agent on Claude Code or Codex.
 

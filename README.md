@@ -14,7 +14,7 @@ Quarterdeck runs AI coding agents from different companies as one crew, on your 
 
 Every agent runs in its normal terminal interface, the one made for people, in a tmux pane. A ship is a crew of such agents, its panes grouped into tmux sessions: `Office`, where the agent you talk to sits, and one named for the ship, such as `Endeavour Bridge`, for the rest of the crew. The sessions are on a tmux server of the ship's own, apart from any tmux you use yourself, and `qd attach` opens them. At any time you can attach, watch an agent work, scroll back through what it did, give it a command, or simply prompt it yourself.
 
-Quarterdeck is a command, `qd`, and one small service on your machine. It starts the agents, types orders and reports into their panes as you would, watches them, and accounts for what they spend. It adds no plug-ins, tools, hooks or protocols to your harnesses, and runs no agent as a hidden background process. Restart any agent at any moment, and that agent comes back with its brief and every order it still has to answer.
+Quarterdeck is a command, `qd`, and one small service on your machine. It starts the agents, types orders and reports into their panes as you would, watches them, and accounts for what they spend. It adds no plug-ins, tools, hooks or protocols to your harnesses, and runs no agent as a hidden background process. Restart any agent at any moment, and that agent comes back with its brief and a list of its open messages: the ones it still has to answer, and the ones it sent that still wait for an answer.
 
 ## Quick start
 
@@ -148,7 +148,7 @@ Change an agent:
 qd set engineering model=gpt-6.1-sol  # written to the ship's file and committed, then applied
 qd stop engineering                   # interrupt its turn, nothing more
 qd restart engineering                # relaunch it; its conversation goes on
-qd fresh engineering                  # a new conversation, with its brief and its open orders
+qd fresh engineering                  # a new conversation, with its brief and a list of its open messages
 ```
 
 See what it cost, and that all is well:
