@@ -10,6 +10,8 @@ from pathlib import Path
 import pytest
 
 from quarterdeck.harness.pi import PiHarness
+from quarterdeck.endpoint import Choice
+from quarterdeck.ship import Pool, SeatSpec
 
 
 FIXTURES = Path(__file__).parents[1] / 'fixtures' / 'pi' / '0.79.0'
@@ -53,3 +55,17 @@ def test_measured_pi_paste_display(name, payload, width):
     screen = harness.screen((FIXTURES / f'{name}.txt').read_text())
 
     assert harness.box(payload).matches(screen.box, harness.box_columns(width))
+
+
+def test_pi_launch_ignores_project_files_without_first_launch_question(tmp_path):
+    pool = Pool('sample-local', 'local', endpoint='http://sample.invalid/v1')
+    seat = SeatSpec('sample-seat', 'sample-session', 'worker', 'pi', (pool.name,), model='sample-model')
+    Choice(pool.name, seat.model, 32768, 1024).write(tmp_path)
+    brief = tmp_path / 'brief.md'
+    brief.write_text('Sample brief.\n')
+
+    launch = PiHarness().launch(seat, pool, tmp_path, brief, None, None)
+
+    for flag in ('--no-approve', '--no-context-files', '--no-extensions'):
+        assert launch.argv.count(flag) == 1
+    assert launch.argv[launch.argv.index('--append-system-prompt') + 1] == str(brief)

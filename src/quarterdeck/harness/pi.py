@@ -405,7 +405,8 @@ class PiHarness(EndpointHarness):
         choice = endpoint.Choice.read(home)
         argv = [self.program, "--provider", pool.name, "--model", choice.model, "--session-dir", str(home / "sessions"),
                 "--append-system-prompt", str(brief), "--no-context-files",  # the brief, and no instruction file of the user's
-                "--no-extensions", "--no-skills", "--no-prompt-templates"]  # nothing of the project's runs or instructs a seat
+                "--no-extensions", "--no-skills", "--no-prompt-templates",
+                "--no-approve"]  # 0.79.0 ignores project-local files without a first-launch trust question
         if seat.effort:
             argv += ["--thinking", seat.effort]
         if resume:

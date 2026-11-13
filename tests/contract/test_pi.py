@@ -199,7 +199,7 @@ def test_the_home_is_built_from_the_endpoint_and_the_launch_carries_the_brief_an
     brief = tmp_path / "ship" / "runtime" / "brief" / "w.md"
     launch = harness.launch(seat, pool, home, brief, None, "qd > briefed")
     assert launch.argv == ("pi", "--provider", "local-a", "--model", "qwen3.8-27b", "--session-dir", str(home / "sessions"),
-                           "--append-system-prompt", str(brief), "--no-context-files", "--no-extensions", "--no-skills", "--no-prompt-templates",
+                           "--append-system-prompt", str(brief), "--no-context-files", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-approve",
                            "--thinking", "high", "qd > briefed")
     assert launch.env == {"PI_CODING_AGENT_DIR": str(home / "agent"), "PI_SKIP_VERSION_CHECK": "1"}
     record = home / "sessions" / "2026-11-08T01-00-17-898Z_a.jsonl"
