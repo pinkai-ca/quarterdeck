@@ -43,7 +43,7 @@ def test_declared_pool_refresh_without_live_google_seats_and_restart(tmp_path, m
     svc = Service(ship, SimpleNamespace())
     svc.account()
     assert calls == ['default-sign-in'], 'service restart preserves cadence with no Google seats'
-    assert 'google 7d 75% used' in '\n'.join(watch.ledger_usage(ship))
+    assert 'google Gemini 4 Argon / 7d 75% used' in '\n'.join(watch.ledger_usage(ship))
     assert calls == ['default-sign-in'], 'status reads only the cache'
     svc.ledger.quota.usage_read('google', datetime.now(timezone.utc)-timedelta(seconds=301), None)
     svc.account()

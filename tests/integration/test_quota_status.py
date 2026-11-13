@@ -61,7 +61,7 @@ def test_last_known_and_recovery_reach_status_watch_and_ledger_without_query(dry
             assert 'google' not in result.stdout and 'reset' not in result.stdout and 'usage' not in result.stdout
             assert len(result.stdout.rstrip('\n')) <= 160
         else:
-            assert 'google 7d 75%' in result.stdout and 'LAST KNOWN' in result.stdout
+            assert 'google Gemini 4 Argon / 7d 75%' in result.stdout and 'LAST KNOWN' in result.stdout
             assert '75% used' in result.stdout and 'synthetic provider timeout' in result.stdout
             assert good_at.isoformat() in result.stdout and '(12m ago)' in result.stdout
     assert book.db.execute('SELECT * FROM usage_reads').fetchall() == before
@@ -76,7 +76,7 @@ def test_last_known_and_recovery_reach_status_watch_and_ledger_without_query(dry
         if args == ('status', '--line'):
             assert 'google' not in result.stdout and 'reset' not in result.stdout
         else:
-            assert 'google 7d 50%' in result.stdout
+            assert 'google Gemini 4 Argon / 7d 50%' in result.stdout
             assert '50% used' in result.stdout and recovered_at.isoformat() in result.stdout
     assert book.db.execute('SELECT count(*) FROM pools').fetchone() == (5,)
     book.close()

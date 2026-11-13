@@ -51,8 +51,9 @@ def model_scope(seat, pool_name: str, *, running: bool = False, screen=None):
     reader = seat.harness if running else harnesses.get(spec.harness)
     ship = getattr(seat, "ship", None)
     pool = ship.pools.get(pool_name) if ship is not None else None
-    if pool is not None and pool.kind == "subscription":
-        native = harnesses.native_for(pool.provider)
+    name = harnesses.native_name(pool.provider) if pool is not None and pool.kind == "subscription" else None
+    if name is not None:
+        native = harnesses.get(name)
         if native.model_scoped_quota:
             reader = native  # Membership belongs to the paying provider's adapter.
     if not (reader.model_scoped_usage or reader.model_scoped_quota):
@@ -88,7 +89,12 @@ def current_walls(seat, book) -> list[str]:
 
 
 def current_walled(seat, book) -> bool:
-    return bool(current_walls(seat, book))
+    """Main's boolean path: the pool's walls and refusals, under the running model's scope."""
+    pool = seat.pool.name
+    if not book.walled(pool, seat.ship) and not book.quota.blocked(seat.name, pool):
+        return False  # No model reading is needed unless this pool has a wall to scope.
+    scope = model_scope(seat, pool, running=True)
+    return book.walled(pool, seat.ship, scope=scope) or book.quota.blocked(seat.name, pool, scope=scope) is not None
 
 
 def cached_open(ship, book, pool_name: str, seat=None) -> bool:

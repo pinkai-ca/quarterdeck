@@ -63,7 +63,9 @@ def test_no_seat_headlines_are_read_only_complete_data_in_text_and_json(tmp_path
     path = ship.runtime / 'ledger.sqlite'
     before = (path.read_bytes(), path.stat().st_mtime_ns) if path.exists() else None
     rows = watch.headline_readings(ship)
-    assert [r['pool'] for r in rows] == ['claude', 'google']
+    # Each Google group is its own headline once read; before any reading the pool shows one unknown line.
+    expected = ['claude', 'google'] if state in ('never', 'first-failure') else ['claude', 'google', 'google']
+    assert [r['pool'] for r in rows] == expected
     if state in ('never', 'first-failure'):
         assert all(r['reading'] is None for r in rows)
         assert [r['window'] for r in rows] == ['5h', '7d']
@@ -75,7 +77,7 @@ def test_no_seat_headlines_are_read_only_complete_data_in_text_and_json(tmp_path
     for verb in (['status'], ['watch'], ['status', '--line']):
         assert cli.main(['--ship', str(tmp_path), '--json', *verb]) == 0
         data = json.loads(capsys.readouterr().out)
-        assert len(data['usage']) == 2
+        assert len(data['usage']) == len(expected)
         if state not in ('never', 'first-failure'):
             assert data['usage'][0]['reading']['used'] == .25
             assert data['usage'][0]['current'] == (state == 'fresh')
@@ -114,4 +116,4 @@ def test_alert_overflow_counts_held_seats_and_keeps_allowance_facts(tmp_path, mo
         assert label in line
     assert 'walls' not in line and 'usage' not in line
     assert len(line) <= 160
-    assert len(many.usage) == 20 and many.walls == ['long wall reason' * 20]
+    assert len(many.usage) == 10 * len(rows) and many.walls == ['long wall reason' * 20]

@@ -217,7 +217,7 @@ def probe(ship: Ship, seat: Seat, orders: list[post.Message] | None = None, *, r
     turns_shown = state.turns if state and state.turns is not None else "?"
     checks.append(Check("record joined, the turn ended and read", bool(ended),
                         f"{record.name if record else 'no record'} · {turns_shown} turns · "
-                        f"requested {requested_model or 'native default'} · launched {seat.spec.model or 'native default'} · "
+                        f"requested {requested_model or 'native default'} · launched {getattr(getattr(seat, 'spec', None), 'model', None) or 'native default'} · "
                         f"record-observed {state.model if state and state.model else '?'}"))
     if requested_model is not None:
         checks.append(model_confirmation(seat, requested_model, require_record=True))
