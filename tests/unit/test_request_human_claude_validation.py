@@ -1,4 +1,4 @@
-"""Independent gates for queued relaunch requests on human seats (ord-34ca, ord-bef5).
+"""Independent gates for queued relaunch requests on human seats, as the captain ruled for the request lifetime.
 
 A human seat's own request applies only at the end of its own asking turn, and never after the person speaks
 again; a request from anyone else applies only at a break proved at the moment it was asked, and is never held
