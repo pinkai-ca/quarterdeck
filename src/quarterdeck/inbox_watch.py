@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import signal
 import stat
 
 from . import durable, post
@@ -65,26 +66,35 @@ def generation(runtime, name):
     return value
 
 
-def register(runtime, name, *, validate=None):
+def register(runtime, name, *, validate=None, on_registered=None):
     path = post.watch_file(runtime, name)
     with post.admission(runtime, name):
         if validate is not None:
             validate()
-        own = process(os.getpid())
-        source = launch(runtime, name)
-        text = f'{os.getpid()} {post.now().isoformat(timespec="microseconds")}\n'
-        token = secrets.token_hex(16)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # This is the same canonical generation as the waking reader consumes.
-        # A partial publication cannot match the companion's complete binding.
-        durable.replace_file(generation_path(runtime, name), token + '\n')
-        durable.replace_file(path, text)
-        info = stamp(path)
-        proof = json.dumps(dict(version=1, generation=token, watch=text, stamp=info,
-                                process_start=own[1] if own else None,
-                                launch=source[2] if source else None), sort_keys=True) + '\n'
-        durable.replace_file(proof_path(runtime, name), proof)
-        return dict(watch=text, stamp=info, generation=token, proof=proof)
+        # Lock acquisition and validation remain interruptible. Only publication and handing its
+        # token to the already guarded waiter defer SIGINT; the caller's mask is restored exactly.
+        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
+        try:
+            own = process(os.getpid())
+            source = launch(runtime, name)
+            text = f'{os.getpid()} {post.now().isoformat(timespec="microseconds")}\n'
+            token = secrets.token_hex(16)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            # This is the same canonical generation as the waking reader consumes.
+            # A partial publication cannot match the companion's complete binding.
+            durable.replace_file(generation_path(runtime, name), token + '\n')
+            durable.replace_file(path, text)
+            info = stamp(path)
+            proof = json.dumps(dict(version=1, generation=token, watch=text, stamp=info,
+                                    process_start=own[1] if own else None,
+                                    launch=source[2] if source else None), sort_keys=True) + '\n'
+            durable.replace_file(proof_path(runtime, name), proof)
+            registration = dict(watch=text, stamp=info, generation=token, proof=proof)
+            if on_registered is not None:
+                on_registered(registration)
+            return registration
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
 
 
 def retire(runtime, name, registration):

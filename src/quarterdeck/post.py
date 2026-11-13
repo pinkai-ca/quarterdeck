@@ -620,9 +620,17 @@ def wait_batch(runtime: Path, seat: str, interval: float = 1.0, stop_after: floa
     if validate is not None:
         validate()
     from . import inbox_watch
-    registration = inbox_watch.register(runtime, seat, validate=validate)
-    deadline = None if stop_after is None else datetime.now().timestamp() + stop_after
+    registration = None
+
+    def retain_registration(value):
+        nonlocal registration
+        registration = value
+
     try:
+        # The helper retains this token before restoring SIGINT or returning to this assignment.
+        registration = inbox_watch.register(runtime, seat, validate=validate,
+                                             on_registered=retain_registration)
+        deadline = None if stop_after is None else datetime.now().timestamp() + stop_after
         while True:
             with admission(runtime, seat):
                 if validate is not None:
@@ -635,11 +643,12 @@ def wait_batch(runtime: Path, seat: str, interval: float = 1.0, stop_after: floa
                 return None
             time.sleep(interval)
     finally:
-        try:
-            inbox_watch.retire(runtime, seat, registration)
-        except (OSError, ValueError, ShipError):
-            # Preserve the primary wait outcome and the canonical registration proof.
-            watch_retirement_warning(watch_file(runtime, seat), registration['generation'])
+        if registration is not None:
+            try:
+                inbox_watch.retire(runtime, seat, registration)
+            except Exception:
+                # Retain the waking journal warning without replacing the primary outcome.
+                watch_retirement_warning(watch_file(runtime, seat), registration['generation'])
 
 
 def wait(runtime: Path, seat: str, interval: float = 1.0, stop_after: float | None = None) -> tuple[str, list[Attempt]] | None:
