@@ -611,6 +611,8 @@ Status facts add `sign_in_failures`, retaining each affected seat's fixed operat
 
 The generic failure-kind value and status-facts list are additive. Existing native records and turn/accounting formats remain intact. A previous reader does not recognize the new kind in the service's operational failure cache; rolling back therefore also loses this sign-in-failure reading until upgraded again. No other adapter's authentication form is claimed measured by this change.
 
+Turns also carry optional adapter-owned `successful` evidence, defaulting to unknown. Claude proves it only for a root, non-API-error assistant text response closed by native turn duration. An interruption, inferred bound, no response or another API-error envelope cannot clear a consumed authentication episode. Only this positive completion fact, after the attempt, permits a new episode; accounting and receipt rules do not use it. Other adapters retain unknown until their own evidence is implemented.
+
 Two readings, taken together, because they answer two different questions.
 
 **Activity**, from the record, answers "what is it doing":

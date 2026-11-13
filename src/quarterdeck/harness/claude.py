@@ -265,7 +265,7 @@ class _Reader(JsonLinesReader):
         elif kind == "assistant":
             self.assistant(entry)
         elif kind == "system" and entry.get("subtype") == "turn_duration" and self.open is not None:
-            self.end(when(entry.get("timestamp")))  # the one entry that says the turn is over
+            self.end(when(entry.get("timestamp")), native_end=True)  # the one entry that says the turn is over
         elif kind not in ('system', *INPUT_IGNORED):
             self.tools_known = False
 
@@ -390,6 +390,14 @@ class _Reader(JsonLinesReader):
         # Claude Code 2.1.317: a synthetic assistant API error, then turn_duration.
         # Classify the native code, never login words quoted in a user's text.
         content = message.get('content')
+        if self.open is not None:
+            if entry.get('isApiErrorMessage') is True:
+                self.open['api_error'] = True
+            elif (entry.get('isApiErrorMessage', False) is False and entry.get('isSidechain') is False
+                    and entry.get('error') is None and isinstance(message.get('model'), str) and message['model']
+                    and message.get('role') == 'assistant' and self.content_known(content, 'assistant')
+                    and any(b.get('type') == 'text' and b.get('text', '').strip() for b in content)):
+                self.open['normal_output'] = True
         if (entry.get('isApiErrorMessage') is True and entry.get('error') == 'authentication_failed'
                 and entry.get('isSidechain') is False
                 and message.get('role') == 'assistant' and message.get('stop_reason') == 'stop_sequence'
@@ -428,7 +436,7 @@ class _Reader(JsonLinesReader):
             elif block.get("type") == "text" and block.get("text"):
                 self.open["reply"] = (self.open["reply"] + "\n\n" + block["text"]).strip()
 
-    def end(self, at: datetime | None, *, completed: bool = True) -> None:
+    def end(self, at: datetime | None, *, completed: bool = True, native_end: bool = False) -> None:
         turn = self.close_turn()
         tokens = sum(turn["usage"].values(), Tokens()) if turn["usage"] else Tokens.unknown()
         self.record_turn(
@@ -443,6 +451,8 @@ class _Reader(JsonLinesReader):
                 tools=tuple(turn["tools"]),
                 subagent_turns=self.subagent_turns - turn["subagents"],
                 failure=turn.get('auth_failure'),
+                successful=(False if turn.get('api_error') else
+                            True if native_end and turn.get('normal_output') else None),
             ), at if completed else None
         )
 

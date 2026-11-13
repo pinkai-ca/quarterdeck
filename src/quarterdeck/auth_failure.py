@@ -113,7 +113,8 @@ def run(service):
                 completed = state.completed_turns if state is not None else ()
                 if attempt and completed:
                     turn = completed[-1]
-                    if (turn.timed and turn.failure is None and turn.ended is not None
+                    if (getattr(turn, 'successful', None) is True
+                            and turn.timed and turn.failure is None and turn.ended is not None
                             and turn.ended > datetime.fromisoformat(attempt['at'])):
                         _path(seat).unlink()
                         durable.sync_folder(_path(seat).parent)

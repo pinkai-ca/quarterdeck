@@ -137,8 +137,11 @@ def test_opening_another_turn_does_not_clear_attempt_but_completed_success_does(
     seat.harness.state.return_value = state
     auth_failure.run(service)
     assert auth_failure._path(seat).exists()
-    seat.harness.state.return_value = replace(state, turn_open=False, completed_turns=(
-        SimpleNamespace(timed=True, failure=None, ended=now + timedelta(hours=1)),))
+    completed = SimpleNamespace(timed=True, successful=None, failure=None, ended=now + timedelta(hours=1))
+    seat.harness.state.return_value = replace(state, turn_open=False, completed_turns=(completed,))
+    auth_failure.run(service)
+    assert auth_failure._path(seat).exists()  # completion without successful-auth evidence is insufficient
+    completed.successful = True
     auth_failure.run(service)
     assert not auth_failure._path(seat).exists()
 

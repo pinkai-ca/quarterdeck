@@ -73,3 +73,25 @@ def test_standalone_error_is_visible_without_invented_completion(tmp_path):
     assert state.failure.kind == AUTHENTICATION
     assert state.completed_turns == ()
     assert state.last_input is None
+
+
+@pytest.mark.parametrize('ending', ['duration', 'interrupted', 'inferred', 'other-api-error', 'no-output'])
+def test_only_native_completed_normal_response_proves_success(tmp_path, ending):
+    entries = rows()
+    response = entries[1]
+    response['isApiErrorMessage'] = False
+    response.pop('error')
+    response['message']['stop_reason'] = 'end_turn'
+    response['message']['content'][0]['text'] = 'Synthetic completed response.'
+    if ending in ('interrupted', 'inferred'):
+        entries[-1] = dict(type='user', timestamp='2001-02-03T04:05:02+00:00', message=dict(
+            role='user', content='[Request interrupted by user]' if ending == 'interrupted' else 'Synthetic next input.'))
+    elif ending == 'other-api-error':
+        response.update(isApiErrorMessage=True, error='synthetic_other_error')
+    elif ending == 'no-output':
+        entries.pop(1)
+    state, turns = claude.read(write_record(tmp_path / 'synthetic.jsonl', entries))
+    assert turns[0].successful is (True if ending == 'duration' else False if ending == 'other-api-error' else None)
+    assert turns[0].failure is None
+    if ending == 'inferred':
+        assert state.completed_turns == ()

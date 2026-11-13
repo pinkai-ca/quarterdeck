@@ -160,6 +160,7 @@ class Turn:
 
     inputs: tuple[Input, ...] | None = None  # explicit per-turn membership; old readers leave it unknown
     end_reason: str | None = None  # native terminal reason, only where the reader preserves it
+    successful: bool | None = None  # adapter-proved successful completion; unknown is not a successful turn
 
     @property
     def seconds(self) -> float | None:
