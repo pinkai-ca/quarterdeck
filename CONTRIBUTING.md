@@ -39,6 +39,14 @@ A worktree older than the tool is run from the main checkout:
 python3 -I tests/testrun.py run --target work/<branch>
 ```
 
+A change from outside the crew is run jailed, by main's copy of the tool, never by the change's own:
+
+```sh
+python3 -I tests/testrun.py run --jail --target work/<branch>
+```
+
+The jail is bubblewrap with no network, a cleared environment and only the run's own files, `/usr` and a short list of `/etc` inside. The result and the report say that the run was jailed, and by which commit of the tool.
+
 ## Rules
 
 - A law (`standing-orders/laws.md`) is a guarantee the code enforces. Tag the line that enforces the law, and the test that tries to break the law, `# law: <id>`. `qd laws` lists both. A test fails on a law with no carrier or a tag naming no law.

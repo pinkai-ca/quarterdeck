@@ -78,12 +78,13 @@ def add_path_line(purelib: Path, site: str) -> Path:
     return purelib / PATH_LINE
 
 
-def stale_bytecode(vpython: Path, packages: list[str], env: dict) -> list[str]:
-    """Sources in the user site whose bytecode the run's interpreter would have to (re)write."""
+def stale_bytecode(vpython: Path, packages: list[str], env: dict, wrap=None) -> list[str]:
+    """Sources in the user site whose bytecode the run's interpreter would have to (re)write. ``wrap`` puts the
+    check inside the run's jail, where the run's interpreter runs."""
     if not packages:
         return []
-    done = subprocess.run([str(vpython), '-I', '-B', '-c', CURRENT, *packages], capture_output=True, text=True,
-                          timeout=60, env=env)
+    argv = [str(vpython), '-I', '-B', '-c', CURRENT, *packages]
+    done = subprocess.run(wrap(argv) if wrap else argv, capture_output=True, text=True, timeout=60, env=env)
     if done.returncode != 0:
         raise Refused(f'could not check the user site\'s bytecode: {done.stderr.strip()[-500:]}')
     return json.loads(done.stdout)

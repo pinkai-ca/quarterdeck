@@ -63,6 +63,15 @@ PLUGIN_1 = ('Read under evidence plugin version 1, which does not mark a complet
             'is taken as complete.')
 
 
+def jail_line(jail: dict | None) -> str:
+    if not jail or not jail.get('jailed'):
+        return '- jailed: no'
+    tool = jail.get('tool') or {}
+    return (f'- jailed: yes, by the tool at `{tool.get("checkout")}` HEAD `{tool.get("head")}` (files match HEAD: '
+            f'{tool.get("matches_head")}) · {jail.get("bubblewrap")} · {jail.get("namespaces")} · time limit '
+            f'{jail.get("timeout_seconds")} s · memory {jail.get("memory_mib")} MiB ({jail.get("memory_resource")})')
+
+
 def render(result: dict, console: str, failures: list[dict]) -> str:
     target, runner, outcome = result['target'], result['runner'], result['outcome']
     counts = result.get('evidence', {}).get('counts') or {}
@@ -76,6 +85,7 @@ def render(result: dict, console: str, failures: list[dict]) -> str:
            f'- run checkout: tree `{result.get("checkout", {}).get("tree")}` (equals target: '
            f'{result.get("checkout", {}).get("tree") == target["tree"]})',
            f'- runner: `{runner.get("checkout")}` HEAD `{runner.get("head")}` files match HEAD: {runner.get("matches_head")}',
+           jail_line(result.get('jail')),
            f'- command: `{" ".join(result.get("argv", []))}`',
            f'- started {result.get("started")}, ended {result.get("ended")}, {result.get("seconds")} s', '']
     evidence = result.get('evidence') or {}

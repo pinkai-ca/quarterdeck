@@ -20,7 +20,7 @@ import subprocess
 import sys
 import time
 
-from . import clean, environment, evidence, gitops, owned, procs, report, resources, sessions, usersite
+from . import clean, environment, evidence, gitops, jail, owned, procs, report, resources, sessions, usersite
 from .layout import RESULTS, RUNS, RUN_SOCKETS, SOCKETS, Refused, Root, Slot, git_environment, identity, new_run_id, write_json
 
 GRACE = 15.0
@@ -64,6 +64,15 @@ class Runner:
         self.console = None
         self.last_exit = None
         self.started = time.time()
+        self.listed = None  # what the jail holds, once the run checkout exists
+
+    def jailed(self, argv, cwd):
+        """A step that runs the target's code: inside the jail when --jail was given, else as it is."""
+        if not getattr(self.args, 'jail', False):
+            return argv
+        if self.listed is None:
+            raise Refused('the jail was asked for before the run checkout existed')
+        return jail.argv(argv, env=self.env, cwd=cwd, listed=self.listed)
 
     # -- signals and process groups -------------------------------------------------------------------------
     def on_signal(self, number, frame):
@@ -141,8 +150,10 @@ class Runner:
                     break
         return len(left)
 
-    def execute(self, argv, *, env, cwd, title):
+    def execute(self, argv, *, env, cwd, title, jailed=False):
         """One step in its own session, its output appended to the console, the run lock inherited."""
+        if jailed:
+            argv = self.jailed(argv, cwd)
         self.console.write(f'\n## {title}\n$ {" ".join(map(str, argv))}\n')
         self.console.flush()
         process = subprocess.Popen([str(part) for part in argv], cwd=cwd, env=env, stdin=subprocess.DEVNULL,
@@ -181,6 +192,13 @@ class Runner:
                     raise Refused(f'target {target.top} has uncommitted changes; commit them (a WIP commit is fine) so the '
                                   f'result names exactly what ran:\n  {shown}')
                 targets = [check_target(target.top, item) for item in args.targets]
+                if getattr(args, 'jail', False):
+                    try:
+                        jail.tool_outside(self.runner_files, target.top)
+                        jail.program()
+                        jail.python()
+                    except jail.JailRefused as refused:
+                        raise Refused(str(refused)) from None
                 change = None if (target.main_checkout or target.branch is None) else target.branch
                 root = Root(target.project)
                 slot = Slot(root)
@@ -236,7 +254,7 @@ class Runner:
         try:  # from here every failure, the runner's own included, reaches the same fixed ending
             with self.time_limit():
                 result['runner'].update(gitops.runner_identity(self.runner_files))
-                self.python = shutil.which('python3')
+                self.python = jail.python() if getattr(args, 'jail', False) else shutil.which('python3')
                 if self.python is None:
                     raise Refused('no python3 on the ordinary PATH')
                 self.user = usersite.resolve(self.python)  # before HOME is replaced
@@ -246,6 +264,8 @@ class Runner:
                 env['TMUX_TMPDIR'] = str(root.path / RUN_SOCKETS)
                 settings['fixed']['TMUX_TMPDIR'] = env['TMUX_TMPDIR']
                 env[resources.MEMORY_ENV] = str(args.memory_mib)
+                self.env = env
+                result['jail'] = {'jailed': False}
                 result['environment'] = {**settings, 'workers': args.workers, 'timeout': args.timeout,
                                          'memory_mib': args.memory_mib, 'memory_resource': 'RLIMIT_AS',
                                          'memory_soft_and_hard': True, 'uid': os.getuid(), 'cpus': os.cpu_count()}
@@ -346,7 +366,8 @@ class Runner:
         return FINALIZATION_EXIT
 
     def setup_and_test(self, target, targets, scratch, checkout, env, result):
-        if self.execute(['git', '-C', target.project, 'worktree', 'add', '--detach', checkout, target.head],
+        hooks = ['-c', 'core.hooksPath=/dev/null'] if getattr(self.args, 'jail', False) else []
+        if self.execute(['git', *hooks, '-C', target.project, 'worktree', 'add', '--detach', checkout, target.head],
                         env=git_environment(), cwd=scratch, title='checkout') != 0:
             raise Refused('git worktree add failed; see the console')
         admin = gitops.git(checkout, 'rev-parse', '--absolute-git-dir').strip()
@@ -357,28 +378,33 @@ class Runner:
         clean.record(self.root, self.run, self.state)
         tree = gitops.git(checkout, 'rev-parse', 'HEAD^{tree}').strip()
         result['checkout'] = {'path': str(checkout), 'tree': tree, 'admin': admin}
+        if getattr(self.args, 'jail', False):
+            self.listed = jail.binds(scratch, user_site=self.user['site'] if self.user['exists'] else None,
+                                     git_dir=target.project / '.git', admin=Path(admin))
+            result['jail'] = jail.statement(listed=self.listed, env=self.env, timeout=self.args.timeout,
+                                            memory_mib=self.args.memory_mib, tool=result['runner'])
         if tree != target.tree:
             raise Refused(f'run checkout tree {tree} differs from target tree {target.tree}')
         python = self.python
         venv = scratch / 'venv'
         if self.execute([python, '-m', 'venv', '--system-site-packages', '--without-pip', venv],
-                        env=env, cwd=scratch, title='venv') != 0:
+                        env=env, cwd=scratch, title='venv', jailed=True) != 0:
             raise Refused('making the run venv failed; see the console')
         vpython = venv / 'bin' / 'python'
         if self.execute([vpython, '-I', '-m', 'pip', 'install', '--no-deps', '--no-build-isolation', '--no-index',
-                         '-q', '-e', checkout], env=env, cwd=scratch, title='install') != 0:
+                         '-q', '-e', checkout], env=env, cwd=scratch, title='install', jailed=True) != 0:
             raise Refused('editable install of the run checkout failed (it needs pip and setuptools in the system '
                           'site-packages); see the console')
         user = dict(self.user, path_line=None)
         result['tools']['ordinary_python3'] = {'path': python, 'resolved': str(Path(python).resolve())}
         result['tools']['user_site'] = user
         if user['exists']:
-            purelib = Path(json.loads(subprocess.run(
+            purelib = Path(json.loads(subprocess.run(self.jailed(
                 [vpython, '-I', '-c', 'import json, sysconfig; print(json.dumps(sysconfig.get_path("purelib")))'],
-                capture_output=True, text=True, timeout=60, env=env, check=True).stdout))
+                scratch), capture_output=True, text=True, timeout=60, env=env, check=True).stdout))
             user['path_line'] = str(usersite.add_path_line(purelib, user['site']))
         packages = sorted(path.parent.name for path in (checkout / 'src').glob('*/__init__.py'))
-        proof = subprocess.run([vpython, '-I', '-c', PREFLIGHT, *packages], cwd=scratch, env=env,
+        proof = subprocess.run(self.jailed([vpython, '-I', '-c', PREFLIGHT, *packages], scratch), cwd=scratch, env=env,
                                capture_output=True, text=True, timeout=60)
         if proof.returncode != 0:
             raise Refused(f'import proof failed: {proof.stderr.strip()[-2000:]}')
@@ -396,7 +422,7 @@ class Runner:
                           'python3 provides; pass -n 0. Nothing is installed.')
         from_user = [str(Path(found[name]['file']).parent) for name in ('pytest', 'xdist', 'execnet')
                      if found.get(name) and found[name]['origin'] == 'user site']
-        stale = usersite.stale_bytecode(vpython, from_user, env)
+        stale = usersite.stale_bytecode(vpython, from_user, env, wrap=lambda argv: self.jailed(argv, scratch))
         if stale:
             raise Refused(f'{len(stale)} module(s) of the test tools in the user site lack current bytecode, so the '
                           f'run would write into the operator\'s user site; refusing. First: {stale[:3]}')
@@ -410,7 +436,7 @@ class Runner:
         # The startup policy: the run's own code is complete, bytecode included, before its first reader, and
         # its package folders cannot change while readers run. Only run-owned folders are compiled.
         self.execute([vpython, '-I', '-m', 'compileall', '-q', checkout / 'src', checkout / 'tests', purelib],
-                     env=env, cwd=scratch, title='compile (a file that cannot compile is listed, not fatal)')
+                     env=env, cwd=scratch, title='compile (a file that cannot compile is listed, not fatal)', jailed=True)
         readonly = 0
         for folder, _, _ in os.walk(checkout / 'src'):
             os.chmod(folder, 0o555)
@@ -423,7 +449,7 @@ class Runner:
         self.state['stage'] = 'pytest'
         write_json(self.scratch_fd, 'state.json', self.state)
         self.user_before = usersite.stamps(user['site']) if user['exists'] else None
-        return self.execute(argv, env=env, cwd=checkout, title='pytest')
+        return self.execute(argv, env=env, cwd=checkout, title='pytest', jailed=True)
 
 
 def pytest_argv(vpython: Path, scratch: Path, workers: int, targets: list[str]) -> list:

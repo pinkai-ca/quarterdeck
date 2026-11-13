@@ -21,6 +21,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--memory-mib', type=resources.memory_mib, default=resources.DEFAULT_MEMORY_MIB,
                    help=f'per-process address-space cap, at most {resources.DEFAULT_MEMORY_MIB} MiB (default)')
     p.add_argument('--wait', type=float, default=0.0, help='seconds to wait for a busy slot (default: refuse at once)')
+    p.add_argument('--jail', action='store_true',
+                   help='run the target\'s code inside bubblewrap, built by this copy of the tool: for a change '
+                        'from outside the crew')
     p = verbs.add_parser('clean', help='retire a registered change that is merged, or deliberately dropped')
     p.add_argument('--change', required=True, help='the change: its branch name')
     p.add_argument('--drop', action='store_true', help='discard the unmerged branch; needs --reason')
