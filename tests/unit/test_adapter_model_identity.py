@@ -106,6 +106,24 @@ def test_grok_measured_native_id_is_literal():
     assert model_mismatch.compare(harness, 'grok-4.7-build', model).status == 'match'
 
 
+def test_grok_display_name_is_no_identity_reading_and_creates_no_alarm(tmp_path, monkeypatch):
+    seat = codex_seat(tmp_path, monkeypatch)
+    seat.harness = GrokHarness()
+    launched = SimpleNamespace(harness='grok', version='1.0.77')
+    seat.launched = lambda: launched
+    seat.spec.model = 'grok-4.7'
+    seat.record = lambda: None
+    capture = json.loads((FIXTURES / 'grok/1.0.77/idle-mono.json').read_text())
+    screen = seat.harness.screen('\n'.join(capture['lines']))
+    assert screen.shows['model'] == 'Grok 4.7'
+    monkeypatch.setattr(model_mismatch, 'Door', lambda seat: SimpleNamespace(screen=lambda: screen))
+    assert model_mismatch.observe(seat).status == 'unknown'
+    service = SimpleNamespace(store=post.Store(seat.ship.runtime), systems_recipients=lambda seat: ['systems'])
+    model_mismatch.step(service, seat, lambda seat, expected: False)
+    assert not model_mismatch.path(seat.ship.runtime, seat.name).exists()
+    assert service.store.all() == []
+
+
 @pytest.mark.parametrize('native,shown', [
     ('gemini-3.8-flash-low', 'Gemini 3.8 Flash (Low)'),
     ('gemini-4-argon-low', 'Gemini 4 Argon (Low)'),

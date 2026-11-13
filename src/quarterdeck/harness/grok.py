@@ -192,6 +192,14 @@ def program_privacy(path: Path) -> dict | None:
 class GrokHarness(Harness):
     box_geometry_known = True  # box_columns below declares the established text area
 
+    def model_identity(self, value: str | None, *, version: str | None = None) -> str | None:
+        value = super().model_identity(value, version=version)
+        # 1.0.77's footer omits native-id distinctions (for example the build suffix).
+        # Its measured display grammar proves no unique id; record ids remain literal.
+        if value is not None and re.fullmatch(r'Grok [0-9.]+(?: Fast)?', value):
+            return None
+        return value
+
     efforts = EffortCapability()  # CLI vocabulary is not measured
     defaults = DefaultMetadata(model_default=True, model=SuggestedValue(None, "program-default"),
                                effort=SuggestedValue(None, "program-default"))

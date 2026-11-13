@@ -362,6 +362,10 @@ existing model-difference journal's active flag, including an older display-case
 Pi and OpenCode retain literal native model IDs; OpenCode's combined model/endpoint footer
 is not exposed as an identity. Antigravity's identity hook reuses its existing measured
 ID/display-name table, also used by its requested-model checks.
+Grok's measured `Grok 4.7` footer proves no unique native ID (the record may name
+`grok-4.7-build`), so its display-name grammar yields unknown identity while native
+record IDs stay literal. An unknown model observation creates neither an alarm nor a
+model-difference journal; it does not clear a previously observed difference.
 
 ## 6. Seats
 
