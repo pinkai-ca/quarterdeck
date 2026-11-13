@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import fcntl
 import os
+import secrets
 import shlex
 import shutil
 import sys
@@ -112,8 +113,38 @@ def qd_bin() -> Path:
 
 
 def program_path() -> str:
-    """The PATH a seat's program runs with, and the one its program is looked for on: the folder holding ``qd`` first, so the seat can post."""
-    return os.pathsep.join(filter(None, [str(qd_bin()), os.environ.get("PATH", "")]))
+    """Find programs on the caller's PATH without adding the framework's interpreter."""
+    framework_bin = Path(sys.prefix) / 'bin' if sys.prefix != sys.base_prefix else None
+    return os.pathsep.join(entry for entry in os.environ.get('PATH', '').split(os.pathsep)
+                           if not framework_bin or Path(entry).resolve() != framework_bin.resolve())
+
+
+def prepare_program_path(ship: Ship, *, bin_dir: Path | None = None, synthetic: bool = False) -> str:
+    """Publish only the framework commands in a ship-owned PATH folder, before launching."""
+    source = bin_dir or qd_bin()
+    commands = ship.runtime / 'bin'
+    commands.mkdir(parents=True, exist_ok=True)
+    names = ['qd', *(['qd-fakeharness'] if synthetic else [])]
+    for name in names:
+        target = (source / name).resolve()
+        if not target.is_file() or not os.access(target, os.X_OK):
+            if name != 'qd':
+                continue  # the synthetic adapter can also launch through its interpreter
+            raise ShipError('qd is not executable; install the framework before launching a seat')
+        link = commands / name
+        if link.is_symlink() and link.resolve() == target:
+            continue
+        temporary = commands / f'.{name}-{secrets.token_hex(8)}'
+        try:
+            temporary.symlink_to(target)
+            os.replace(temporary, link)
+        finally:
+            temporary.unlink(missing_ok=True)
+    excluded = {commands.resolve(), (ship.runtime / 'venv/bin').resolve()}
+    if (source.parent / 'pyvenv.cfg').is_file():
+        excluded.add(source.resolve())
+    entries = [entry for entry in program_path().split(os.pathsep) if Path(entry).resolve() not in excluded]
+    return os.pathsep.join([str(commands), *entries])
 
 
 def launch_words(path: str, argv: list[str], *, socket: str | None, tmux_tmpdir: Path,
@@ -762,9 +793,8 @@ class Seat:
                 unread.append(message)
         return unread
 
-    @staticmethod
-    def _path() -> str:
-        return program_path()
+    def _path(self) -> str:
+        return prepare_program_path(self.ship, synthetic=self.harness.synthetic)
 
     @property
     def _tmux_tmpdirs(self) -> Path:

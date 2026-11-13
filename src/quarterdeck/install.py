@@ -609,6 +609,8 @@ def _activate(ship: Ship, data: dict, fact: dict, tmux: Tmux | None) -> list[str
     data['current'] = fact
     data['previous_copy'] = pending['old_current']
     _phase(ship, data, 'target_ready')  # durable proof, still ineligible for ordinary handoff
+    from .seat import prepare_program_path
+    prepare_program_path(ship, bin_dir=ship.runtime / 'venv/bin')
     rebrief, request = queue_rebrief(ship, fact['commit'], pending['old_current'], pending['snapshot'])
     proofs = []
     if pending['was_running']:
@@ -673,7 +675,7 @@ def upgrade(ship: Ship, ref: str = 'HEAD', tmux: Tmux | None = None, *,
             return [*recovery_proofs, *dirty_notice(ship, selected.fact), *historical_notice(selected.fact),
                     f'already runs {commit[:7]}; nothing to do']
     # Preload controller dependencies before in-place pip can replace their source files.
-    from .seat import qd_bin  # noqa: F401
+    from .seat import prepare_program_path  # noqa: F401
     with install_lock(ship):
         data = _state(ship.runtime)
         recovered = [*recovery_proofs, *_recover(ship, data)]
