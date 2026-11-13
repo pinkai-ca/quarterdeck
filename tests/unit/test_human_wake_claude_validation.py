@@ -792,7 +792,7 @@ def checking(desk, monkeypatch):
     from contextlib import contextmanager
 
     @contextmanager
-    def temporary(ship, tmux, spec, orders, purpose, *, human=False, check_inbox=False):
+    def temporary(ship, tmux, spec, orders, purpose, *, installed_version=None, human=False, check_inbox=False):
         assert check_inbox is True, 'every check seat is admitted to its own inbox by the check alone'
         launched.append((spec.name, human))
         seat = SimpleNamespace(name=spec.name, ship=ship, folder=ship.runtime / 'seats' / spec.name)
