@@ -304,7 +304,7 @@ class Harness(ABC):
     # Versions whose composer drawn just after that question is answered has been measured (see Screen.fresh).
     fresh_versions: frozenset[str] = frozenset()
     # How long after its launch a program may take to draw its input box. Within it a frame with no box,
-    # no dialog and no unknown layout is the program still starting, not an obstruction (ord-3645).
+    # no dialog and no unknown layout is the program still starting, not an obstruction.
     start_seconds: float = 60.0
 
     def question_cleared(self, text: str, question: Interruption) -> bool:

@@ -1,4 +1,4 @@
-"""A screen that cannot show whether a seat works reads unknown, never idle (ord-3645). Measured fixtures only, cut.
+"""A screen that cannot show whether a seat works reads unknown, never idle. Measured fixtures only, cut.
 
 A mid-redraw frame is a measured idle screen cut above its box, as a redraw between flushes leaves it; a cleared
 pane is empty; an unrecognised layout is text no adapter draws. Measured idle and working screens read as before.
@@ -76,7 +76,7 @@ def test_the_screen_type_never_reports_a_default_as_idle():
 
 @pytest.mark.parametrize("age,clears", [(5, "time"), (59, "time"), (61, "needs a human"), (3600, "needs a human")])
 def test_a_boxless_frame_within_the_launch_start_up_bound_is_starting_not_an_obstruction(monkeypatch, age, clears):
-    """At qd up Codex drew a frame before its box, and the service reported an obstruction (ord-11d1).
+    """At qd up Codex drew a frame before its box, and the service reported an obstruction.
 
     The frame here is synthetic: the measured start-up frames already read as starting, and the frame that raised the
     reports was not captured. Its shape is a Codex banner with neither the status line nor the box drawn yet.
