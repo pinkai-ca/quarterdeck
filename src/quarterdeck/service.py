@@ -973,6 +973,9 @@ class Service:
 
     def account_records(self):
         """Prepare and commit the pass; callers handle only its accounting outcome."""
+        # A usage write whose commit was refused is completed first, never rolled back, so that no
+        # record is read while its transaction stands; if it fails again the pass fails and is counted.
+        self.ledger.prepare_usage()
         table = machine.processes()
         observations, notices, human_readings = [], [], []
         marks, errors = dict(self.read_marks), dict(self.account_errors)
