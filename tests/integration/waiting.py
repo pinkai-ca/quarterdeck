@@ -8,20 +8,29 @@ import subprocess
 import tempfile
 import time
 
+from quarterdeck.harness.json_record import RecordError
 from quarterdeck.tmux import PrivateTmuxError
+
+RECORD_CHANGED = "record changed while being read"  # the one record refusal a fresh read can cure
 
 
 def wait_for(predicate, seconds: float = 10.0):
     deadline = time.monotonic() + seconds
+    last_read_error = None
     while time.monotonic() < deadline:
         try:
             value = predicate()
         except PrivateTmuxError:
             value = None  # retry fresh evidence within the same existing deadline
+        except RecordError as error:
+            if str(error) != RECORD_CHANGED:
+                raise  # every other record refusal is a finding, never retried
+            last_read_error = error  # a concurrent write: read again within the same deadline
+            value = None
         if value:
             return value
         time.sleep(0.05)
-    raise AssertionError("condition not met in time")
+    raise AssertionError("condition not met in time") from last_read_error
 
 
 @contextmanager
