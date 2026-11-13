@@ -65,6 +65,7 @@ def append_error(rec, text, at, index=8):
         db.execute('INSERT INTO steps VALUES (?,17,3,0,?,?,?)', (index,_pb_ts(1,at) if at else b'',b'',payload))
 
 
+@pytest.mark.usefixtures('synthetic_disk_room')  # the machine's disk is not this test's subject
 def test_record_wall_survives_idle_later_input_restart_and_blocks_delivery(tmp_path, monkeypatch):
     seat,rec,shown,actions = synthetic_seat(tmp_path,monkeypatch)
     at = datetime.now(timezone.utc)-timedelta(minutes=1)
@@ -100,6 +101,7 @@ def test_record_wall_survives_idle_later_input_restart_and_blocks_delivery(tmp_p
         assert 'google-a' not in line and 'reset' not in line
 
 
+@pytest.mark.usefixtures('synthetic_disk_room')  # the machine's disk is not this test's subject
 @pytest.mark.parametrize('expired', [True, False])
 def test_screen_fallback_is_stable_then_yields_to_matching_record_time(tmp_path, monkeypatch, expired):
     seat,rec,shown,_=synthetic_seat(tmp_path,monkeypatch)

@@ -139,6 +139,7 @@ def retain_spent_reading(r, reset):
     r.svc.ledger.db.commit()
 
 
+@pytest.mark.usefixtures('synthetic_disk_room')  # the machine's disk is not this test's subject
 @pytest.mark.parametrize("running", [False, True], ids=["managed", "human"], indirect=True)
 @pytest.mark.parametrize("earlier", ["spent", "unknown", "ready"])
 def test_failover_from_the_last_choice_uses_earlier_pool_evidence(running, earlier):

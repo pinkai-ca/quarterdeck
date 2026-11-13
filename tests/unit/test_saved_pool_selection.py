@@ -111,6 +111,7 @@ def unresolved(r):
     assert not (r.worker.folder/'pool').exists()
 
 
+@pytest.mark.usefixtures('synthetic_disk_room')  # the machine's disk is not this test's subject
 def test_unresolved_selection_reads_unknown_without_reading_a_guessed_record(migrated, monkeypatch, capsys):
     r = migrated
     unresolved(r)

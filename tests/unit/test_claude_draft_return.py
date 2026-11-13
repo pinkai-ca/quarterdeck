@@ -252,6 +252,7 @@ def test_known_empty_queue_preserves_tool_and_turn_completion_then_relaunch(tmp_
         svc.ledger.close()
 
 
+@pytest.mark.usefixtures('synthetic_disk_room')  # the machine's disk is not this test's subject
 def test_queue_unknown_is_visible_and_holds_only_proved_empty_queue_actions(setup, monkeypatch):
     svc, original, _, _ = setup
     path = original.home / "claude.jsonl"
