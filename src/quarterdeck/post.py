@@ -285,12 +285,37 @@ def briefed_header(seat: str, role: str, open_messages: list[Message]) -> str:
 # -- the inbox ---------------------------------------------------------------------------
 
 
-def inbox_reading(store: Store, seat: str) -> dict:
+INBOX_TAIL_AGE = timedelta(hours=24)
+INBOX_TAIL_MESSAGES = 200
+INBOX_TAIL_BYTES = 256 * 1024
+
+
+def inbox_reading(store: Store, seat: str, *, recent: bool = False) -> dict:
     messages = [_shown(m, withheld) for withheld in [_withheld(store, seat)] for m in store.for_seat(seat)]
-    return {"seat": seat, "open": [m for m in messages if store.is_open(m)],
+    data = {"seat": seat, "open": [m for m in messages if store.is_open(m)],
             "received": list(reversed([m for m in messages if not store.is_open(m)])),
             "closed_by": {m.id: closed.id for m in messages if m.kind == "order"
                           and (closed := store.closing_report(m))}}
+    if recent:
+        received = data["received"]
+        cutoff = now() - INBOX_TAIL_AGE
+        # Include headings and the closing line in the received tail's byte budget.
+        size = len((f"## Received ({INBOX_TAIL_MESSAGES})\n\n" + _older_line(len(received)) + "\n").encode("utf-8"))
+        tail = []
+        for message in received:
+            entry_size = len(("\n".join(_entry(message, data["closed_by"].get(message.id))) + "\n").encode("utf-8"))
+            if (message.at < cutoff or len(tail) >= INBOX_TAIL_MESSAGES
+                    or size + entry_size > INBOX_TAIL_BYTES):
+                break
+            tail.append(message)
+            size += entry_size
+        data["received"] = tail
+        data["older_received"] = len(received) - len(tail)
+    return data
+
+
+def _older_line(count: int) -> str:
+    return f"Older received messages: {count}. Read the whole history with `qd inbox --all`."
 
 
 def _withheld(store: Store, seat: str) -> frozenset[str] | None:
@@ -314,7 +339,7 @@ def _shown(message: Message, withheld: frozenset[str] | None) -> Message:
 
 
 def inbox_text(store: Store, seat: str) -> str:
-    return render_inbox_reading(inbox_reading(store, seat))
+    return render_inbox_reading(inbox_reading(store, seat, recent=True))
 
 
 def render_inbox_reading(data: dict) -> str:
@@ -323,6 +348,8 @@ def render_inbox_reading(data: dict) -> str:
         lines += [f"## {title} ({len(data[key])})", ""]
         for message in data[key]:
             lines += _entry(message, data["closed_by"].get(message.id))
+    if "older_received" in data:
+        lines += [_older_line(data["older_received"])]
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -344,8 +371,11 @@ def render_inbox(runtime: Path, store: Store, seat: str) -> Path:
     folder = runtime / "post" / "inbox"
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{seat}.md"
+    text = inbox_text(store, seat)
+    if path.exists() and path.read_text() == text:
+        return path
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(inbox_text(store, seat))
+    tmp.write_text(text)
     os.replace(tmp, path)
     return path
 

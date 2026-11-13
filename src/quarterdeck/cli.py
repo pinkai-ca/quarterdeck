@@ -172,7 +172,9 @@ def build_parser() -> argparse.ArgumentParser:
     speed.add_argument("--interrupt", action="store_const", const="interrupt", dest="speed", help="interrupt the turn, then deliver")
     p = verb("inbox", cmd_inbox, "print a seat's inbox, or wait for what arrives next")
     p.add_argument("seat", nargs="?", help="default: this seat")
-    p.add_argument("--wait", action="store_true", help="block until something new arrives, print it in full, exit")
+    inbox_mode = p.add_mutually_exclusive_group()
+    inbox_mode.add_argument("--wait", action="store_true", help="block until something new arrives, print it in full, exit")
+    inbox_mode.add_argument("--all", action="store_true", help="print the whole inbox history from the store to stdout")
     p = verb("ledger", cmd_ledger, "what the crew spends: the pools, or turns rolled up --by seat, order or pool")
     p.add_argument("--by", choices=("seat", "order", "pool"), help="roll the turns up by this")
     p.add_argument("--tools", action="store_true", help="tool calls by name: count, seconds, failures")
@@ -757,7 +759,7 @@ def cmd_inbox(args: argparse.Namespace) -> Reading | None:
     ship = load_ship(args)
     seat, human, validate = _inbox_target(ship, args.seat)
     if not args.wait:
-        data = post.inbox_reading(post.Store(ship.runtime), seat)
+        data = post.inbox_reading(post.Store(ship.runtime), seat, recent=not args.all)
         if validate is not None:
             validate()
         return Reading(data,
