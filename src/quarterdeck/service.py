@@ -574,19 +574,18 @@ class Service:
         if bound is not None and (not isinstance(bound, dict) or any(bound.get(key) != value for key, value in scope.items())):
             return f'refused: {seat.name} asking turn changed; no deferred restart'
         if state.turn_open is True:
-            if type(state.turns) is not int or state.turns < 0:
-                return f'refused: {seat.name} asking turn identity unknown; no deferred restart'
-            if bound is not None and bound.get('index') != state.turns:
+            # Accounting row counts can advance inside one native turn. Only
+            # an explicit completed turn can establish that this break passed.
+            if any(turn.ended is not None and turn.ended >= asked for turn in state.completed_turns):
                 return f'refused: {seat.name} asking turn already ended; no deferred restart'
-            data['asking_turn'] = dict(scope, index=state.turns)
+            data['asking_turn'] = scope
             self.request_wait = ('turn-open', 'own asking turn has not ended')
             return None
         if state.turn_open is not False:
             return f'refused: {seat.name} asking turn state unknown; no deferred restart'
         ending = state.completed_turns[-1] if state.completed_turns else None
         if (ending is None or not ending.timed or ending.started is None or ending.ended is None
-                or not ending.started <= asked <= ending.ended
-                or bound is not None and ending.index != bound.get('index')):
+                or not ending.started <= asked <= ending.ended):
             return f'refused: {seat.name} exact asking-turn end not proved; no deferred restart'
         answer = self.relaunch(seat, bool(data['resume']), reading=(state, hold))
         return answer if answer is not None else f'refused: {seat.name} asking turn ended with {(self.request_wait or (None, "idle proof unknown"))[1]}; request retired, never applied at a later turn'
