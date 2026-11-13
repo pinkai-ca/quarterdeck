@@ -362,7 +362,7 @@ class Service:
                       f'{seat.name} obstructed, {door_reason}' if door_reason else None,
                       desk_now=person_only(door_reason) if door_reason else False,
                       initial=self.alarm_recipients(seat, door_reason) if door_reason else [],
-                      recover_initial=not renewing)
+                      recover_initial=not renewing, ship=seat.ship)
 
     def alarm_recipients(self, seat: Seat, reason: str) -> list[str]:
         """Immediate recipients; a standing untaken alarm may reach the desk later."""

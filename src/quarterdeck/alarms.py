@@ -89,6 +89,8 @@ def taking(service, reports, *, ship=None):
     kinds of reply count too; activity, launches and unrelated posts do not.
     """
     ship = service.ship if ship is None else ship
+    if not hasattr(ship, 'seats'):
+        return None  # a callback-only view supplies no role evidence for taking
     senders = {spec.name for spec in ship.seats.values() if spec.role == 'systems'}
     store = service.store if isinstance(service.store, post.Store) else post.Store(ship.runtime)
     pending = [compaction.decode(intent) for intent in reports]
@@ -162,10 +164,13 @@ def notify(service, name, human, key, body, *, channel='human', ship=None, up=No
         eligible = []
     elif initial is not None:
         eligible = list(initial)
+        # The existing callback also supports views without a role declaration;
+        # their supplied audience stays authoritative, with no invented roles.
+        declared = getattr(ship, 'seats', {})
         up = [recipient for recipient in initial
-              if recipient in {spec.name for spec in ship.seats.values() if spec.role == 'systems'}]
+              if recipient in {spec.name for spec in declared.values() if spec.role == 'systems'}]
         if up and elapsed >= ESCALATE_SECONDS and not prior['taken']:
-            eligible += [spec.name for spec in ship.seats.values()
+            eligible += [spec.name for spec in declared.values()
                          if spec.role == 'desk' and spec.name != name and spec.name not in eligible]
     else:
         eligible = (list(up) if human is None and up is not None else
