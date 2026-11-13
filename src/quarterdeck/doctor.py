@@ -160,6 +160,15 @@ def framework_check(ship: Ship) -> Check:
         lines.append('current installed commit unknown')
     if selected.warning:
         lines.append(selected.warning)
+    copy_ready = selected.qd is not None
+    if selected.first_copy:
+        try:
+            install.source_repo(ship)
+        except (ShipError, OSError):
+            lines.append('source repository unavailable; run qd sync or qd upgrade from a Quarterdeck checkout '
+                         'to make the first copy')
+        else:
+            copy_ready = True
     previous = copy_state.previous(data)
     if previous:
         try:
@@ -206,7 +215,7 @@ def framework_check(ship: Ship) -> Check:
         identity_ok = observed == {key: fact.get(key) for key in ('commit', 'instance', 'package_digest')}
         if not identity_ok:
             lines.append('observed service copy instance is unknown or mismatched')
-    return Check('framework', (selected.qd is not None or selected.first_copy) and identity_ok,
+    return Check('framework', copy_ready and identity_ok,
                  ' · '.join(lines))
 
 

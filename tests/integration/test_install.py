@@ -95,6 +95,16 @@ def test_upgrade_installs_the_checkout_as_the_ships_own_copy_and_qd_hands_off_to
     assert json.loads((drydock / "runtime" / "installed.json").read_text())["previous"] == head
 
 
+def test_a_ship_with_a_source_repository_passes_before_its_first_copy(drydock: Path):
+    declaration = drydock / 'ship.toml'
+    declaration.write_text(declaration.read_text().replace('code = "checkout"\n', ''))
+    ship = load(drydock)
+    assert install.source_repo(ship) == ROOT
+    checked = doctor.framework_check(ship)
+    assert checked.passed and 'no copy yet; qd up makes one' in checked.detail
+    assert not ship.runtime.exists(), 'doctor finds the source without creating a copy'
+
+
 def test_a_ship_without_a_repository_beside_it_is_told_where_to_run_upgrade(tmp_path: Path, monkeypatch):
     from quarterdeck.ship import Pool, SeatSpec, Session, Ship, ShipError
 
@@ -104,4 +114,4 @@ def test_a_ship_without_a_repository_beside_it_is_told_where_to_run_upgrade(tmp_
     with pytest.raises(ShipError, match="no framework repository"):
         install.upgrade(ship, "HEAD")
     checked = doctor.framework_check(ship)
-    assert checked.passed and "no copy yet; qd up makes one" in checked.detail
+    assert not checked.passed and "no copy yet; qd up makes one" in checked.detail
