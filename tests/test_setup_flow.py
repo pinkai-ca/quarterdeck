@@ -305,6 +305,7 @@ def test_doctor_discovery_uses_registered_adapters_and_fake_path_only(tmp_path, 
     # Never search the interpreter's directory for a real installed program in this test.
     from quarterdeck import seat
     monkeypatch.setattr(seat, "qd_bin", lambda: tmp_path)
+    monkeypatch.setattr(setup.Operations, "credential_present", lambda *_: False)
     monkeypatch.setenv("PATH", str(tmp_path))
     for name in harness.NAMES:
         reader = harness.get(name)
