@@ -160,3 +160,58 @@ def test_status_names_the_seat_and_short_pane_even_when_other_alerts_overflow(ov
     assert 'invented-seat: ' + REASON in line
     if overflow:
         assert 'details: qd status' in line
+
+
+@pytest.mark.parametrize('program,adapter', [('codex', CodexHarness()), ('pi', PiHarness())])
+@pytest.mark.parametrize('height', [16, 50])
+def test_delivery_path_adds_only_reason_metadata_to_the_synthetic_failed_paste(program, adapter, height, tmp_path):
+    seat, pane = seat_for(adapter, height)
+    pane.pid, pane.in_mode = 7, False
+    seat.name = 'invented-seat'
+    seat.ship = SimpleNamespace(runtime=tmp_path)
+    seat.pool = SimpleNamespace(name='invented-pool')
+    seat.launched = lambda: None
+    seat.record = lambda: None
+
+    class Terminal:
+        pasted = False
+        submits = []
+
+        def paste(self, target, text):
+            self.pasted = True
+            assert target == pane.id and text == TEXT
+
+        def pane(self, target):
+            return pane
+
+        def keys(self, target, key):
+            self.submits.append(key)
+
+    terminal = Terminal()
+    seat.tmux = terminal
+    seat.read_pane = lambda: (pane, frame(program, TEXT if terminal.pasted else '', height))
+
+    class Journal:
+        path = tmp_path / 'synthetic-journal'
+        data = dict(phase='prepared', payload=TEXT)
+
+        def same_launch(self, seat):
+            return True
+
+        def save(self, **fields):
+            self.data.update(fields)
+
+    proof = Journal()
+    door = Door(seat)
+    check = door.box_shows
+    door.box_shows = lambda box: check(box, seconds=0)  # a stable synthetic frame needs no polling
+    result = door._deliver(TEXT, confirm=False, proof=proof)
+    if height == 16:
+        assert result.result == 'blind' and result.detail.startswith(REASON)
+        assert proof.data['phase'] == 'pasting'
+        assert proof.data['paste_geometry'] == [100, 16]
+        assert terminal.submits == []
+    else:
+        assert result.result == 'typed' and proof.data['phase'] == 'submitted'
+        assert 'paste_geometry' not in proof.data
+        assert terminal.submits == [adapter.keys.submit]
