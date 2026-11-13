@@ -11,7 +11,7 @@
 • I’ll run the command exactly as given.
 
 • Ran qd post report --to desk "spike from codex" .
-  └ rep-6bee to desk · stored · no watch armed on desk; waits in the inbox
+  └ rep-wxyz to desk · stored · no watch armed on desk; waits in the inbox
 
 • POSTED.
 

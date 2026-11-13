@@ -98,19 +98,19 @@ def test_claude_records_queued_messages_and_local_commands(tmp_path: Path):
 def test_claude_unwraps_a_folded_paste_and_keeps_what_a_turn_took_from_its_queue(tmp_path: Path):
     record = ClaudeShape(tmp_path, Path("/work"), "sess-8", "fake-1")
     record.begin("first order", "fake-1", "low")
-    wrapped = '<pasted_content id="758d">\nqd > order from ship · ord-70e2 · qd check\nWrite the file.\n</pasted_content id="758d">'
+    wrapped = '<pasted_content id="758d">\nqd > order from ship · ord-wxyz · qd check\nWrite the file.\n</pasted_content id="758d">'
     record.write({"type": "queue-operation", "operation": "enqueue", "content": wrapped, "sessionId": "sess-8"})
     state = claude.state(record.path)
-    assert state.queued == ("qd > order from ship · ord-70e2 · qd check\nWrite the file.",), "the tags are not the message"
+    assert state.queued == ("qd > order from ship · ord-wxyz · qd check\nWrite the file.",), "the tags are not the message"
     record.write({"type": "queue-operation", "operation": "remove", "content": wrapped, "sessionId": "sess-8"})
     state = claude.state(record.path)
-    assert state.queued == () and state.consumed == ("qd > order from ship · ord-70e2 · qd check\nWrite the file.",)
+    assert state.queued == () and state.consumed == ("qd > order from ship · ord-wxyz · qd check\nWrite the file.",)
     record.end("did both")
     record.entry("user", {"role": "user", "content": wrapped})
-    assert claude.state(record.path).last_input == "qd > order from ship · ord-70e2 · qd check\nWrite the file."
+    assert claude.state(record.path).last_input == "qd > order from ship · ord-wxyz · qd check\nWrite the file."
     assert claude.unwrap("plain text") == "plain text"
-    submitted = '\n\n<pasted_content id="24aa">\nqd > order from ship · ord-ab12 · qd check\nWrite the file.\n</pasted_content id="24aa">\n'
-    assert claude.unwrap(submitted) == "qd > order from ship · ord-ab12 · qd check\nWrite the file.", "a long paste submitted at idle is wrapped with blank lines around it"
+    submitted = '\n\n<pasted_content id="24aa">\nqd > order from ship · ord-vwxy · qd check\nWrite the file.\n</pasted_content id="24aa">\n'
+    assert claude.unwrap(submitted) == "qd > order from ship · ord-vwxy · qd check\nWrite the file.", "a long paste submitted at idle is wrapped with blank lines around it"
 
 
 def test_a_resumed_record_continues_its_turn_count(tmp_path: Path):

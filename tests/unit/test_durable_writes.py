@@ -98,7 +98,7 @@ def launched(pane: str, pid: int) -> Launched:
 
 
 def message(body: str = "synthetic order: Ω durable body") -> post.Message:
-    return post.Message("ord-20261109-2200-pike-0d0a", "order", "pike", "worker", post.now(), body)
+    return post.Message("ord-20300101-2200-lead-0d0a", "order", "lead", "worker", post.now(), body)
 
 
 def journal_data(runtime: Path, phase: str) -> dict:
@@ -125,7 +125,7 @@ def post_new(base, monkeypatch):
 def ack_new_beside_posts(base, monkeypatch):
     store = post.Store(base)
     store.write(message())
-    ack = post.Message("ack-20261109-2201-worker-0d0b", "ack", "worker", "pike", post.now(), "started", re=message().id)
+    ack = post.Message("ack-20300101-2201-worker-0d0b", "ack", "worker", "lead", post.now(), "started", re=message().id)
     return [store.dir / f"{ack.id}.json"], lambda: store.write(ack), \
         lambda: [m.id for m in post.Store(base).all()]
 

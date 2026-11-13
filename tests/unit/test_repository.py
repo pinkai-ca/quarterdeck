@@ -18,9 +18,9 @@ POST_ID = re.compile(rf"\b(?:{KINDS})-(?:[0-9]{{8}}-[0-9]{{4}}-[A-Za-z0-9_.-]+?-
 # Exact values only, never a pattern. The documented examples may stand anywhere they are explained.
 EXAMPLES = {"ord-7f3a", "ord-20261106-2101-desk-7f3a", "ord-9c21", "ord-1a2b"}
 # Invented values that tests and their scrubbed fixtures type, read or match; under tests/ only.
-SAMPLES = {"ord-0000", "ord-0002", "ord-1234", "ord-5678", "ord-7777", "ord-7f3b", "ord-9abc", "ord-a1b2", "ord-ab12",
-           "ord-abcd", "ord-70e2", "ans-1111", "ans-a1b2", "ans-bbbb", "ans-cccc", "que-2222", "que-9999", "rep-6bee",
-           "ord-19990101-0000-lead-0000", "ord-20261109-2200-pike-0d0a", "ack-20261109-2201-worker-0d0b",
+SAMPLES = {"ord-0000", "ord-0002", "ord-1234", "ord-5678", "ord-7777", "ord-7f3b", "ord-9abc", "ord-a1b2",
+           "ord-abcd", "ans-1111", "ans-a1b2", "ans-bbbb", "ans-cccc", "que-2222", "que-9999",
+           "ord-19990101-0000-lead-0000", "ord-20300101-2200-lead-0d0a", "ack-20300101-2201-worker-0d0b",
            "ord-20300101-0000-captain-abcd", "ack-20300101-0000-worker-abcd", "rep-20300101-0000-worker-cdef",
            "que-20990101-0000-operator-0000"}
 
