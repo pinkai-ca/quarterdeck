@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import tempfile
+import unicodedata
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -16,8 +17,16 @@ from . import durable
 from .post_threads import IndexRow
 
 
-def size(text: str) -> int:
-    return len(text.encode('utf-8'))
+def size(text: str | None) -> int:
+    return len(text.encode('utf-8')) if text else 0
+
+
+def _line(data: dict) -> str:
+    """Readable Unicode, with every control/format/line-separator escaped as JSON."""
+    text = json.dumps(data, ensure_ascii=False)
+    return ''.join(json.dumps(char, ensure_ascii=True)[1:-1]
+                   if unicodedata.category(char) in ('Cc', 'Cf', 'Cs', 'Zl', 'Zp') else char
+                   for char in text) + '\n'
 
 
 class ImpossibleBudget(ValueError):
@@ -26,7 +35,7 @@ class ImpossibleBudget(ValueError):
 
 @dataclass(frozen=True)
 class Plan:
-    opening: str
+    opening: str | None
     files: dict[str, str]
     directory: Path
     limit: int
@@ -44,6 +53,8 @@ def build(rows: tuple[IndexRow, ...], *, handoff: str, header: str, directory: P
           limit: int, inline_limit: int = 32768, force_files: bool = False) -> Plan:
     if type(limit) is not int or limit <= 0:
         raise ValueError('carry_bytes must be a positive integer')
+    if not rows and not handoff:
+        return Plan(None, {}, directory, limit)  # an empty index adds no model turn; the native brief still loads
     budget = min(limit, inline_limit)
     files: dict[str, str] = {}
     serial = 0
@@ -95,7 +106,7 @@ def build(rows: tuple[IndexRow, ...], *, handoff: str, header: str, directory: P
                 prefix = prefix[:-1]
             data['subject'] = prefix + '...'
             data['subject_truncated'] = True
-        line = json.dumps(data, ensure_ascii=True) + '\n'
+        line = _line(data)
         if size(line) > limit:
             # The one thread line still names every long id list through bounded pages.
             for key in ('amendments', 'active', 'awaiting', 'withheld'):
@@ -104,7 +115,7 @@ def build(rows: tuple[IndexRow, ...], *, handoff: str, header: str, directory: P
                     path = pages([(f'{n:020d}', json.dumps({'value': value}) + '\n')
                                   for n, value in enumerate(values)], key)
                     data[key] = {'count': len(values), 'index': path}
-            line = json.dumps(data, ensure_ascii=True) + '\n'
+            line = _line(data)
         if size(line) > limit:
             raise ImpossibleBudget('carry_bytes cannot hold a minimal thread-index entry')
         lines.append((row.id, line))

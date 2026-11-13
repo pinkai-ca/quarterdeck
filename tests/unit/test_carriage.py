@@ -128,7 +128,7 @@ def test_the_file_holds_exactly_the_complete_self_handoff_and_index_is_separate(
     assert result.files['handoff.txt'] == text
     assert 'whole first, before acting; it is your handoff' in result.opening
     assert {row['id'] for row in index_rows(result)} == {root.id for root in roots}
-    assert all(root.body not in payload for payload in result.files.values())
+    assert all(root.body not in payload for root in roots for payload in result.files.values())
 
 
 # -- the file -----------------------------------------------------------------------------------

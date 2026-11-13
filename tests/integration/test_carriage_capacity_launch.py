@@ -107,7 +107,7 @@ def test_large_handoff_is_whole_named_file_before_index_and_is_immutable(tmp_pat
     seat._up(resume=False)
     generation, = (seat.folder / 'carried').iterdir()
     path = generation / 'handoff.txt'
-    assert path.read_text() == post.typed([handoff])
+    assert path.read_text() == post.typed([handoff], whole=True)
     opening = first(opened)
     assert str(path) in opening and 'write a shorter one next time' in opening
     assert opening.index(str(path)) < opening.index('open threads:')
@@ -147,6 +147,45 @@ def test_report_is_pending_only_until_existing_delivery_evidence(tmp_path, monke
     attempt = attempts.open(report, seat.name, '%synthetic-pane', 4321, '2020-01-01T00:00:01+00:00')
     attempts.close(attempt, 'delivered', 'synthetic existing receipt')
     assert seat.carriage().rows == ()
+
+
+def test_index_only_launch_is_not_delivery_of_an_unread_report(tmp_path, monkeypatch):
+    seat, opened = prepared(tmp_path, monkeypatch)
+    report = publish(seat, 'incoming-report', 'Invented not-yet-delivered report.', kind='report')
+    seat._up(resume=False)
+    assert report.body not in first(opened)
+    assert [row.id for row in seat.carriage().rows] == [report.id]
+    attempts = post.Attempts(seat.ship.runtime)
+    original = {path: path.read_bytes() for path in attempts.dir.iterdir() if path.is_file()}
+    seat.carriage()
+    assert {path: path.read_bytes() for path in original} == original, 'index reads do not rewrite receipts'
+    actual = attempts.open(report, seat.name, '%synthetic-pane', 4321, seat.launched().at)
+    attempts.close(actual, 'delivered', 'synthetic later confirmed delivery')
+    assert seat.carriage().rows == ()
+
+
+def test_held_unconfirmed_report_is_indexed_without_altering_its_attempt(tmp_path, monkeypatch):
+    seat, _ = prepared(tmp_path, monkeypatch)
+    report = publish(seat, 'held-report', 'Invented unresolved report.', kind='report')
+    attempts = post.Attempts(seat.ship.runtime)
+    held = attempts.open(report, seat.name, '%synthetic-pane', 4321, '2020-01-01T00:00:01+00:00')
+    attempts.close(held, 'pending', 'synthetic unresolved original delivery')
+    before = held.path.read_bytes()
+    assert [row.id for row in seat.carriage().rows] == [report.id]
+    assert held.path.read_bytes() == before and len(attempts.all()) == 1
+
+
+def test_later_index_reference_does_not_hide_a_prior_confirmed_report_delivery(tmp_path, monkeypatch):
+    seat, _ = prepared(tmp_path, monkeypatch)
+    report = publish(seat, 'delivered-report', 'Invented already delivered report.', kind='report')
+    attempts = post.Attempts(seat.ship.runtime)
+    confirmed = attempts.open(report, seat.name, '%synthetic-pane', 4321, '2020-01-01T00:00:01+00:00')
+    attempts.close(confirmed, 'delivered', 'synthetic existing positive delivery')
+    later = attempts.open(report, seat.name, '%synthetic-pane', 4321, '2020-01-01T00:00:02+00:00')
+    attempts.close(later, 'launch', post_threads.INDEXED_LAUNCH_DETAIL)
+    before = {path: path.read_bytes() for path in attempts.dir.iterdir() if path.is_file()}
+    assert seat.carriage().rows == ()
+    assert {path: path.read_bytes() for path in before} == before
 
 
 def test_impossible_minimum_stops_before_any_window_or_publication(tmp_path, monkeypatch):

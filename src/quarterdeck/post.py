@@ -271,11 +271,11 @@ class Store:
 SECOND = "qd > second delivery of {id}; you may have it already: act on it once"
 
 
-def typed(messages: list[Message], *, second: Collection[str] = ()) -> str:
-    """What the door types: each message in full, under a header and over a footer.
+def typed(messages: list[Message], *, second: Collection[str] = (), whole: bool = False) -> str:
+    """Messages under their envelopes; whole preserves the exact thread body.
 
-    A message typed a second time (an id in ``second``) carries one line before its envelope saying so;
-    the envelope itself is unchanged, so its receipt reads either form.
+    A second delivery keeps its explicit line before the unchanged envelope. Ordinary delivery
+    retains its existing trailing-space projection; thread reading can request the whole body.
     """
     parts = []
     for message in messages:
@@ -290,7 +290,8 @@ def typed(messages: list[Message], *, second: Collection[str] = ()) -> str:
         if message.obligation:
             footer = f"qd > reply: qd post {REPLY_VERB[message.kind]} --re {message.short} · {footer[5:]}"
         again = SECOND.format(id=message.id) + "\n" if message.id in second else ""
-        parts.append(f"{again}{header}\n{message.body.rstrip()}\n{footer}")
+        body = message.body if whole else message.body.rstrip()
+        parts.append(f"{again}{header}\n{body}\n{footer}")
     return "\n".join(parts) + "\n"
 
 

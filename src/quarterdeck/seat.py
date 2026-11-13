@@ -667,7 +667,7 @@ class Seat:
         def misfit(launch: Launch, argv: list[str]) -> str | None:
             return carriagemod.misfit(words(argv, launch.env), launch.env)  # the words launch.sh hands to exec
 
-        from . import carriage_plan
+        from . import carriage_plan, post_threads
 
         generation = self.folder / carriagemod.FOLDER / secrets.token_hex(12)
 
@@ -711,7 +711,7 @@ class Seat:
         attempts = post.Attempts(self.ship.runtime)
         for message in carried:
             attempt = attempts.open(message, self.name, pane.id, pane.pid, launched.at)
-            attempts.close(attempt, "launch", "indexed at launch; body not confirmed read")
+            attempts.close(attempt, "launch", post_threads.INDEXED_LAUNCH_DETAIL)
         how = f"resumed {resume_id[:8]}" if resume_id else "fresh"
         carried_note = f" · {len(carriage.rows)} thread{'s' if len(carriage.rows) != 1 else ''} indexed"
         if carried_file:
@@ -747,22 +747,31 @@ class Seat:
                 refused = refusal.excluded(self.ship.runtime, self.name)
             except refusal.JournalError as error:
                 raise ShipError(f"{self.name}: {error}; inspect it before a launch carries anything") from None
-            unread = attempts.undelivered(store, self.name, for_launch=True)
-            extra = unread + self._queued_unread(store, attempts)
+            history = [attempt for attempt in attempts.all() if attempt.seat == self.name]
+            latest = {attempt.message: attempt for attempt in history}
+            unread = attempts.undelivered(store, self.name, results={key: value.result for key, value in latest.items()}, for_launch=True)
+            queued = self._queued_unread(store, attempts)
+            extra = unread + queued
             consumed = self._consumed_messages(store, attempts, resume_id, refused)
             selection = thread_context.select(store, self.name, extra, consumed=consumed, excluded=refused)
             messages = store.all()
             sent = tuple(message for message in messages
                          if message.sender == self.name and message.to != self.name and store.is_open(message))
             pending_messages = tuple(message for message in extra if message.id not in consumed)
-            rows = post_threads.index_rows(store, selection.roots, pending_messages, refused, sent)
+            delivered = {attempt.message for attempt in history if attempt.result in ('delivered', 'watch')}
+            queued_ids = {message.id for message in queued}
+            unconfirmed = tuple(message for message in store.for_seat(self.name)
+                                if message.kind != 'ack' and message.id not in consumed and message.id not in delivered
+                                and not ((attempt := latest.get(message.id)) is not None
+                                         and attempt.result == 'queued' and message.id not in queued_ids))
+            rows = post_threads.index_rows(store, selection.roots, (*pending_messages, *unconfirmed), refused, sent)
         handoffs = [entry.message for entry in selection.entries
                     if not resume_id and not entry.context_only and entry.message.kind == 'order'
                     and entry.message.sender == self.name and entry.message.to == self.name]
         carried = list({message.id: message for message in (*selection.roots, *pending_messages)
                         if message.id not in refused}.values())
         header = post.briefed_header(self.name, self.spec.role, list(selection.roots))
-        return carriagemod.Carriage(post.typed(handoffs) if handoffs else None, carried, header, rows)
+        return carriagemod.Carriage(post.typed(handoffs, whole=True) if handoffs else None, carried, header, rows)
 
     def _consumed_messages(self, store: post.Store, attempts: post.Attempts, resume_id: str | None,
                            excluded: frozenset[str]) -> frozenset[str]:

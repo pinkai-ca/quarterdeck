@@ -48,6 +48,20 @@ def test_small_index_inline_contains_due_amendments_and_whole_thread_instruction
     assert cp.size(result.opening) <= 1800
 
 
+def test_empty_index_does_not_create_an_unnecessary_model_turn():
+    result = plan()
+    assert result.opening is None and result.files == {}
+
+
+def test_unicode_metadata_is_readable_but_cannot_create_extra_index_lines():
+    subject = 'Invented é 🦉\u0085\u2028\u2029\u202e'
+    result = plan([row(subject=subject, notice='Invented notice · sender told')])
+    entry, = index_rows(result)
+    assert entry['subject'] == subject
+    assert 'Invented notice · sender told' in result.opening
+    assert len([line for line in result.opening.splitlines() if line.startswith('{')]) == 1
+
+
 def test_many_threads_form_complete_bounded_index_pages():
     rows = [row(f'order-item-{n:04}') for n in range(150)]
     result = plan(rows)

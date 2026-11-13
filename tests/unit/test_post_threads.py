@@ -48,6 +48,15 @@ def test_parents_precede_children_even_when_timestamps_move_backwards(tmp_path):
     assert [item.id for item in reading.messages] == [root.id, child.id, grandchild.id]
 
 
+def test_whole_thread_preserves_original_body_whitespace(tmp_path):
+    # law: context-is-cache -- even the end of a stored body is part of the whole thread
+    original = message('order-exact')
+    original = post.Message(**{**original.__dict__, 'body': '  Invented indented text.\n\n   '})
+    reading = post_threads.whole(store_posts(tmp_path, [original]), original.id, 'builder')
+    assert original.body in post_threads.render(reading)
+    assert post.typed([original]) == post.typed([original], whole=False), 'ordinary transport matching keeps its historical form'
+
+
 def test_missing_ancestor_is_explicit_instead_of_a_partial_thread(tmp_path):
     store = store_posts(tmp_path, [message('answer-orphan', parent='order-missing')])
     with pytest.raises(ShipError, match='thread ancestry is incomplete'):

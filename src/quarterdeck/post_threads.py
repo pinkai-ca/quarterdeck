@@ -8,6 +8,8 @@ import heapq
 from . import post
 from .ship import ShipError
 
+INDEXED_LAUNCH_DETAIL = 'indexed at launch; body not confirmed read'
+
 
 @dataclass(frozen=True)
 class Thread:
@@ -116,5 +118,5 @@ def whole(store: post.Store, reference: str, reader: str) -> Thread:
 def render(thread: Thread) -> str:
     # law: context-is-cache -- one command prints the complete thread, not a summary or a receipt
     return (f'qd > thread {thread.root}: {len(thread.messages)} messages; read whole before acting on any message in it\n'
-            + post.typed(list(thread.messages))
+            + post.typed(list(thread.messages), whole=True)
             + f'qd > end of thread {thread.root}\n')
