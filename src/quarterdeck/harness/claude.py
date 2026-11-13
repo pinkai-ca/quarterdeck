@@ -16,6 +16,8 @@ import copy
 import email.utils
 import json
 import re
+import shlex
+import sys
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -798,7 +800,12 @@ class ClaudeHarness(Harness):
         self.check_defaults(seat, ship_home)
         home.mkdir(parents=True, exist_ok=True)
         template = ship_template(ship_home, "settings.json")
-        settings = copy.deepcopy(merged(merged(SETTINGS, template), seat.settings))  # policy cannot mutate shared defaults
+        from .. import statusline
+        defaults = merged(SETTINGS, {"statusLine": {
+            "type": "command", "refreshInterval": 30,
+            "command": shlex.join([sys.executable, "-I", "-S", str(Path(statusline.__file__).resolve())]),
+        }})
+        settings = copy.deepcopy(merged(merged(defaults, template), seat.settings))  # policy cannot mutate shared defaults
         if not seat.human_session:
             permissions = settings.setdefault('permissions', {})
             permissions['deny'] = list(dict.fromkeys([*permissions.get('deny', []), 'AskUserQuestion']))
