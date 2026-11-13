@@ -646,17 +646,28 @@ def _activate(ship: Ship, data: dict, fact: dict, tmux: Tmux | None) -> list[str
     return proofs
 
 
+def resolve_target(repo: Path, ref: str = 'HEAD') -> tuple[Path, str]:
+    """Pin one local commit for a single sync or a whole sequential project sync."""
+    repo = repo.resolve()
+    commit = git(repo, 'rev-parse', '--verify', f'{ref}^{{commit}}').decode().strip()
+    if copy_state.COMMIT.fullmatch(commit) is None:
+        raise ShipError('local target did not resolve to a complete commit')
+    return repo, commit
+
+
 def upgrade(ship: Ship, ref: str = 'HEAD', tmux: Tmux | None = None, *,
-            back: bool = False, force: bool = False) -> list[str]:
+            back: bool = False, force: bool = False,
+            target: tuple[Path, str] | None = None) -> list[str]:
     """Stable internal API for canonical sync and its shared upgrade alias handler."""
     if ship.code == 'checkout':
         raise ShipError(copy_state.CHECKOUT_REFUSAL)
     if back and (force or ref != 'HEAD'):
         raise ShipError('--back cannot be combined with a target or --force')
+    if target is not None and (back or copy_state.COMMIT.fullmatch(target[1]) is None):
+        raise ShipError('a pinned local target requires a complete commit and cannot go back')
     recovery_proofs = recover(ship)  # before source discovery, target resolution, or a no-op
-    repo, commit = (None, None) if back else (source_repo(ship), None)
+    repo, commit = (None, None) if back else (target or resolve_target(source_repo(ship), ref))
     if not back:
-        commit = git(repo, 'rev-parse', '--verify', f'{ref}^{{commit}}').decode().strip()
         selected = copy_state.select(ship.folder, mode=ship.code, mode_known=True)
         if not force and selected.qd and selected.fact['commit'] == commit:
             return [*recovery_proofs, *dirty_notice(ship, selected.fact), *historical_notice(selected.fact),

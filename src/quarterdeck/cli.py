@@ -191,6 +191,8 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("ref", nargs="?", help="the local commit to install, forward or back (default: the checkout's HEAD)")
         p.add_argument('--back', action='store_true', help='return to the recorded previous copy, without rebuilding')
         p.add_argument('--force', action='store_true', help='install and prove even when the commit is unchanged')
+        p.add_argument('--all', dest='all_ships', action='store_true',
+                       help='sync project ships one at a time, default last, stopping on failure')
     return parser
 
 
@@ -819,8 +821,25 @@ def cmd_doctor(args: argparse.Namespace) -> Reading | list[str]:
     return lines if args.fix else Reading({"checks": found, **identities(ship)}, lambda d: [str(c) for c in d["checks"]])
 
 
-def cmd_upgrade(args: argparse.Namespace) -> list[str]:
+def cmd_upgrade(args: argparse.Namespace) -> list[str] | Reading:
     back, force = getattr(args, 'back', False), getattr(args, 'force', False)
+    if getattr(args, 'all_ships', False):
+        if back:
+            raise ShipError('--all cannot be combined with --back; go back one ship at a time')
+        if args.ship is not None:
+            raise ShipError('--all selects project ships; omit --ship')
+        from . import selection, sync_all
+
+        data = sync_all.run(selection.project(), args.ref or 'HEAD', Tmux.default(), force=force)
+        args.exit_code = 0 if data['ok'] else 2
+
+        def render(value):
+            lines = sync_all.render(value)
+            if getattr(args, 'upgrade_alias', False):
+                lines[-1] += ' · `upgrade` is now `qd sync`'
+            return lines
+
+        return Reading(data, render)
     if back and (args.ref is not None or force):
         raise ShipError('--back cannot be combined with a target or --force')
     ship = load_ship(args)

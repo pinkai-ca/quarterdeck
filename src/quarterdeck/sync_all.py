@@ -1,0 +1,128 @@
+"""Sequential project sync through the single-ship safe installer.
+
+No fleet state is persisted. Dispositions come from observed copy selection,
+never from parsing an installer's proof text or assuming recovery succeeded.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from . import copy_state, install, ship as shipmod
+from .ship import ShipError
+
+
+def observe(folder: Path) -> tuple[str | None, str | None]:
+    try:
+        selected = copy_state.select(folder)
+    except (ShipError, OSError, ValueError, TypeError, KeyError, AttributeError) as error:
+        return None, f'installed copy observation failed ({type(error).__name__})'
+    if selected.qd is not None and selected.fact is not None:
+        return selected.fact['commit'], None
+    return None, selected.warning or 'no usable installed copy observed'
+
+
+def plan(project: Path) -> list[dict]:
+    """Snapshot only this project's direct ships, putting its marked ship last."""
+    from . import selection
+
+    ships = selection.ships_dir(project)
+    marked = selection.marked(project)
+    last = marked.folder.name if marked is not None else None
+    try:
+        folders = sorted((path for path in ships.iterdir()
+                          if path.is_dir()
+                          and (path / 'ship.toml').is_file()),
+                         key=lambda path: (path.name == last, path.name))
+    except OSError as error:
+        raise ShipError(f'cannot enumerate project ships: {error}') from None
+    rows = []
+    for folder in folders:
+        row = dict(ship=folder.name, folder=folder, disposition='not tried',
+                   before=None, commit=None, reason=None, proof=[], ship_object=None)
+        if folder.name in selection.TEMPLATES:
+            row.update(disposition='passed over', reason='tracked template')
+        else:
+            # Share the project root, without applying default-name eligibility:
+            # a practice or hidden ship is still in scope unless it is checkout.
+            try:
+                folder = folder.resolve()
+                if folder.parent != ships:
+                    raise ShipError('ship folder resolves outside the project ships folder')
+                ship = shipmod.load(folder)
+                row.update(folder=folder, ship_object=ship)
+                if ship.code == 'checkout':
+                    row.update(disposition='passed over', reason='follows the checkout (code = "checkout")')
+                else:
+                    commit, reason = observe(folder)
+                    row.update(before=commit, commit=commit, reason=reason)
+            except (ShipError, OSError, ValueError, TypeError, KeyError, AttributeError) as error:
+                row['reason'] = f'cannot prepare ship: {error}'
+        rows.append(row)
+    return rows
+
+
+def run(project: Path, ref: str = 'HEAD', tmux=None, *, force: bool = False) -> dict:
+    """Resolve once, call the ordinary installer serially, stop on any failure."""
+    target = install.resolve_target(project, ref)
+    rows = plan(project)
+    stopped = False
+    for row in rows:
+        if row['disposition'] == 'passed over':
+            continue
+        if stopped:
+            row['reason'] = 'stopped after an earlier ship failed'
+            continue
+        ship = row['ship_object']
+        if ship is None:
+            row['disposition'] = 'failed'
+            stopped = True
+            continue
+        try:
+            row['proof'] = install.upgrade(ship, ref, tmux, force=force, target=target)
+            commit, reason = observe(ship.folder)
+            row.update(commit=commit, reason=reason)
+            if commit != target[1] or reason is not None:
+                raise ShipError(reason or 'installed copy does not match the pinned target')
+            row.update(disposition='synced', reason=None)
+        except Exception as error:
+            commit, observation = observe(ship.folder)
+            row.update(disposition='failed', commit=commit,
+                       reason=str(error) if isinstance(error, ShipError) else f'sync failed ({type(error).__name__})')
+            if observation:
+                row['reason'] += '; ' + observation
+            stopped = True
+    # A later ship was not operated on, but its copy may have changed independently.
+    # Refresh that observation instead of claiming the initial snapshot is still current.
+    for row in rows:
+        if row['disposition'] == 'not tried':
+            commit, observation = observe(row['folder'])
+            row['commit'] = commit
+            if observation:
+                row['reason'] = (row['reason'] + '; ' if row['reason'] else '') + observation
+    public = [{key: value for key, value in row.items() if key != 'ship_object'} for row in rows]
+    return dict(target=target[1], ships=public, ok=not stopped)
+
+
+def render(data: dict) -> list[str]:
+    # Keep ordinary dirty-source, historical-target and activation notices. They
+    # precede the final dispositions and never decide whether a ship succeeded.
+    lines = [f'{row["ship"]}: {line}' for row in data['ships'] for line in row['proof']]
+    for row in data['ships']:
+        name, state, commit = row['ship'], row['disposition'], row['commit']
+        if state == 'passed over':
+            text = f'passed over: {row["reason"]}'
+        elif state == 'synced':
+            text = f'synced to {commit}'
+        else:
+            if commit is None:
+                where = 'copy unknown'
+            elif row['before'] is not None and commit == row['before']:
+                where = f'still on {commit}'
+            else:
+                where = f'observed on {commit}'
+            text = f'{state} and {where}' if commit is not None else f'{state}; {where}'
+            if row['reason']:
+                text += f': {row["reason"]}'
+        lines.append(f'{name}: {text}')
+    return lines or ['no project ships to sync']
