@@ -221,6 +221,7 @@ def run(service, commit):
     """Existing rebrief duty retries only unfinished progress; no native program runs."""
     from . import pending
     from .seat import SelectionError
+    from .shutdown import never_pasted
     from .tmux import TmuxError
 
     if getattr(service, 'receipt_refresh_commit', None) == commit:
@@ -245,7 +246,7 @@ def run(service, commit):
                     settled = recover(service, proof)
                 elif 'receipt_refresh' in proof.data:
                     settled = True  # delivered or superseded: never replay its positive intent
-                elif proof.data['phase'] in ELIGIBLE:
+                elif proof.data['phase'] in ELIGIBLE and not never_pasted(proof.data):
                     settled = _observe(service, seat, proof, attempts, commit)
                 else:
                     settled = True
