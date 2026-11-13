@@ -1,0 +1,40 @@
+
+ ▐▛███▛█   Claude Code v2.1.317
+▝▜██████▀  Sonnet 5.5 with low effort · Claude
+ ▝▝   ▝▝   ~/work
+
+▎ [✻] [✻] [✻] · Share Claude Code and earn $10 in usage credits · /passes
+
+❯ Reply with the single word ready and nothing else. Do not run any tool.
+
+● ready
+
+✻ Cogitated for 0s · done 9:00 AM
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔ ○ low · /effort ▔
+   Switch model?
+   Your next response will be slower and use more tokens
+
+   This conversation is cached for the current model. Switching to Haiku 5.5 means the full history gets re-read.
+
+   ❯ 1. Yes, switch to Haiku 5.5
+     2. No, go back
+

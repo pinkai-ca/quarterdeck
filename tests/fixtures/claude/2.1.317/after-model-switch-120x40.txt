@@ -1,0 +1,40 @@
+
+ ▐▛███▛█   Claude Code v2.1.317
+▝▜██████▀  Haiku 5.5 with low effort · Claude
+ ▝▝   ▝▝   ~/work
+
+▎ [✻] [✻] [✻] · Share Claude Code and earn $10 in usage credits · /passes
+
+❯ Reply with the single word ready and nothing else. Do not run any tool.
+
+● ready
+
+✻ Cogitated for 0s · done 9:00 AM
+
+❯ /model claude-haiku-5-5
+  ⎿  Set model to Haiku 5.5 and saved as your default for new sessions
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                     tmux detected · scroll with PgUp/PgDn · or add 'set -g mouse on' to ~/.tmux.conf for wheel scroll
+────────────────────────────────────────────────────────────────────────────────────────────────────────────── capture ─
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
