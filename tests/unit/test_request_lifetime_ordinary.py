@@ -171,3 +171,18 @@ def test_bare_cancel_retires_relaunches_not_other_requests(runtime):
     proof = request_queue.cancel(runtime, SEAT)
     assert relaunch.stem in proof and not relaunch.exists()
     assert control.exists()
+
+
+def test_direct_act_retires_queued_relaunch_before_existing_manual_action(runtime, monkeypatch):
+    path = enqueue(runtime)
+
+    def restart():
+        assert not path.exists()
+        assert 'superseded' in path.with_suffix('.done').read_text()
+        return 'synthetic direct restart'
+
+    ship = SimpleNamespace(runtime=runtime, seat=lambda name: SimpleNamespace(name=name))
+    seat = SimpleNamespace(name=SEAT, is_working=lambda: False, restart=restart)
+    monkeypatch.setattr(cli, 'seat_of', lambda *args: seat)
+    proof = cli.relaunch(ship, SEAT, True)
+    assert proof.startswith('synthetic direct restart') and path.stem in proof

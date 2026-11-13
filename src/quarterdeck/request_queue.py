@@ -178,6 +178,13 @@ def supersede(runtime, name, kind):
         return _retire(runtime, name, f'superseded by direct {kind}')
 
 
+@contextmanager
+def direct(runtime, name, kind):
+    """Retirement and the existing direct act share the same writer coordination."""
+    with coordination(runtime):
+        yield _retire(runtime, name, f'superseded by direct {kind}')
+
+
 def enqueue(runtime, kind, data):
     with coordination(runtime):
         retired = _retire(runtime, data['seat'], 'superseded by a newer direct relaunch') if kind == 'relaunch' else []

@@ -226,21 +226,25 @@ def cmd_fresh_ready(args: argparse.Namespace) -> str:
 
 
 def relaunch(ship: shipmod.Ship, name: str | None, resume: bool, cancel=None) -> str:
-    """The service owns live decisions; explicit direct recovery retires old pending work."""
+    """Retain known-idle manual recovery; working seats use the service's queued proof."""
     from . import request_queue
     target = this_seat(ship, name)
     if cancel is not None:
         return request_queue.cancel(ship.runtime, target, None if cancel == '*' else cancel)
     seat = seat_of(ship, target)
-    if service.alive(ship.runtime):
+    if seat.is_working():
         return service.request(ship.runtime, 'relaunch', seat=seat.name, resume=resume,
                                caller=os.environ.get('QD_SEAT'), origin=request_queue.launch_binding(seat))
     kind = 'restart' if resume else 'fresh'
-    retired = request_queue.supersede(ship.runtime, seat.name, kind)
-    if seat.is_working():
-        return service.request(ship.runtime, "relaunch", seat=seat.name, resume=resume)
-    proof = seat.restart() if resume else seat.fresh()
-    return proof + (f'; retired pending relaunch request(s): {", ".join(retired)}' if retired else '')
+    with request_queue.direct(ship.runtime, seat.name, kind) as retired:
+        suffix = f'; retired pending relaunch request(s): {", ".join(retired)}' if retired else ''
+        try:
+            proof = seat.restart() if resume else seat.fresh()
+        except ShipError as error:
+            if retired:
+                raise ShipError(str(error) + suffix) from error
+            raise
+        return proof + suffix
 
 
 def cmd_stop(args: argparse.Namespace) -> str:
