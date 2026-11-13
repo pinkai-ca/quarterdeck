@@ -227,6 +227,7 @@ def test_refresh_error_logs_once_and_does_not_suppress_rebrief(world):
     runner.ship = SimpleNamespace(seats={})
     runner.framework_commit = NEW
     runner.brief_stamp = 'before'
+    runner.brief_texts = {}
     stamps = iter(['after', 'later'])
     runner._brief_stamp = lambda: next(stamps)
     runner.resolved_seats = lambda: []
