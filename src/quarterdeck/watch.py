@@ -293,6 +293,15 @@ def table(ship: Ship, tmux: Tmux) -> list[str]:
     return render_table(status_reading(ship, tmux))
 
 
+def tool_reading(seat, state) -> tuple[str | None, str | None]:
+    """The tool reason as the idle proof reads it: a seat's own inbox watch, proved, is not a pending tool."""
+    if state is None:
+        return None, None
+    executed = idle.execution(seat, state)
+    proved = executed is not state and len(executed.active_tools) < len(state.active_tools)
+    return idle.tool_reason(executed), ("own inbox watch, proved" if proved else None)
+
+
 def seat_reading(seat: Seat | UnresolvedSeat) -> dict:
     r = reading(seat)
     if isinstance(seat, UnresolvedSeat):
@@ -316,7 +325,8 @@ def seat_reading(seat: Seat | UnresolvedSeat) -> dict:
                 skips = evidence.diagnostics()
         except OSError as failure:
             receipt_error = str(failure)
-    return {"seat": r, "record": record, "state": state, "record_error": error,
+    tools, own_watch = tool_reading(seat, state)
+    return {"seat": r, "record": record, "state": state, "record_error": error, "tools": tools, "own_watch": own_watch,
             "requests": request_queue.pending(seat.ship.runtime, seat.name),
             "receipt_skips": skips, "receipt_error": receipt_error,
             "record_absent": seat.join().reason if record is None else None,
@@ -346,8 +356,10 @@ def render_full(data: dict) -> list[str]:
             lines.append(f"  record {record} · {turns_shown} turns · last input: {(state.last_input or '')[:60]!r}")
             if state.queue_error:
                 lines.append(f"  queue unknown: {state.queue_error}; queued is candidate history")
-            if detail := idle.tool_reason(state):
+            if detail := data.get("tools", idle.tool_reason(state)):
                 lines.append(f"  {detail}")
+            if data.get("own_watch"):
+                lines.append(f"  {data['own_watch']}")
     elif data["record_absent"]:
         lines.append(f"  record absent: {data['record_absent']}")
     if data["record_limits"]:

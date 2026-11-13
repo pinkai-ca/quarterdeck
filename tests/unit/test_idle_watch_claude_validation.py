@@ -365,3 +365,25 @@ def test_the_plain_activity_column_says_idle_while_the_reason_stays_with_the_hol
     assert watch.activity(case.seat) == watch.Activity('idle')
     reason = idle.tool_reason(case.harness.state(case.record))
     assert reason and held(case).reason == reason, 'the hold and the full reading still name it'
+
+
+def test_qd_watch_reads_tools_after_the_idle_proof_a_proved_own_watch_is_no_pending_tool(case):
+    """qd watch said 'tools pending: inbox watch (registration unproved)' beside a watch the idle proof proves."""
+    from quarterdeck import watch
+    case.write([('call-hazel', WATCH, True, 'task-hazel')])
+    raw = case.harness.state(case.record)
+    tools, own = watch.tool_reading(case.seat, raw)
+    assert WATCH_LABEL in tools and own is None, 'unregistered: still named unproved'
+    case.watch()
+    tools, own = watch.tool_reading(case.seat, raw)
+    assert tools is None and own == 'own inbox watch, proved', 'proved: left out of the tool reason, said as proved'
+    lines = '\n'.join(watch.render_full(watch.seat_reading(case.seat)))
+    assert WATCH_LABEL not in lines and 'tools pending' not in lines and 'own inbox watch, proved' in lines
+
+
+def test_qd_watch_still_names_other_work_beside_a_proved_watch(case):
+    from quarterdeck import watch
+    case.write([('call-hazel', WATCH, True, 'task-hazel'), ('call-rowan', 'synthetic other command', True, 'task-rowan')])
+    case.watch()
+    tools, own = watch.tool_reading(case.seat, case.harness.state(case.record))
+    assert tools.startswith('tools pending: Bash since ') and own is None, 'nothing is proved while other work runs'
