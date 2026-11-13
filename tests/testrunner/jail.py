@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 
@@ -69,6 +70,56 @@ def tool_outside(tool_files: list[Path], target_top: Path) -> None:
     if inside:
         raise JailRefused(f'--jail is built by the invoked tool, which lies inside the target {top}; run main\'s '
                           f'copy of tests/testrun.py with --target instead')
+
+
+CREDENTIAL_KEYS = (re.compile(r'credential\.(.+\.)?helper'), re.compile(r'http\.(.+\.)?extraheader'))
+URL_USERINFO = re.compile(r'([a-z][a-z0-9+.-]*)://([^/@\s]+)@', re.I)
+SECRET_SCHEMES = ('http', 'https', 'ftp', 'ftps')
+INCLUDE_DEPTH = 10
+
+
+def git_credentials(project: Path) -> list[str]:
+    """What in the project's Git config could carry a credential, by key name only, never its value.
+
+    The jail binds .git read-only, so a change from outside could read its config. Read: .git/config, its
+    worktree configs, and every file they include, conditionally or not, to a fixed depth. Refused: a credential
+    helper, an http extraheader, and a URL with user info: any password, and any user on http, https or ftp.
+    The scp-like ``user@host:path`` and ``ssh://user@host`` name an ssh login, which is no credential.
+    """
+    git_dir = project / '.git'
+    files = [git_dir / 'config', git_dir / 'config.worktree', *sorted(git_dir.glob('worktrees/*/config.worktree'))]
+    found, seen = [], set()
+
+    def scan(path: Path, depth: int) -> None:
+        resolved = path.resolve()
+        if resolved in seen or not path.is_file():
+            return
+        seen.add(resolved)
+        if depth > INCLUDE_DEPTH:
+            found.append(f'includes nested past {INCLUDE_DEPTH} levels at {path}')
+            return
+        done = subprocess.run(['git', 'config', '--file', str(path), '--null', '--list'], capture_output=True,
+                              timeout=30, env={'PATH': PATH, 'GIT_CONFIG_NOSYSTEM': '1', 'HOME': '/nonexistent'})
+        if done.returncode:
+            found.append(f'an unreadable config at {path}')
+            return
+        for item in done.stdout.split(b'\0'):
+            if not item:
+                continue
+            key, _, value = item.decode('utf-8', 'replace').partition('\n')
+            key = key.lower()
+            if any(pattern.fullmatch(key) for pattern in CREDENTIAL_KEYS):
+                found.append(f'{key} in {path}')
+            for scheme, userinfo in URL_USERINFO.findall(value):
+                if ':' in userinfo or scheme.lower() in SECRET_SCHEMES:
+                    found.append(f'a URL with user info in {key} in {path}')
+            if key == 'include.path' or (key.startswith('includeif.') and key.endswith('.path')):
+                target = Path(value).expanduser()
+                scan(target if target.is_absolute() else path.parent / target, depth + 1)
+
+    for file in files:
+        scan(file, 0)
+    return found
 
 
 def environment(env: dict) -> dict:

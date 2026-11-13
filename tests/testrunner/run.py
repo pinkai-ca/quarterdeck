@@ -197,6 +197,12 @@ class Runner:
                         jail.tool_outside(self.runner_files, target.top)
                         jail.program()
                         jail.python()
+                        held = jail.git_credentials(target.project)
+                        if held:
+                            raise jail.JailRefused(
+                                'the project\'s Git config holds what could be a credential, and the jail shows '
+                                '.git read-only to the change: ' + '; '.join(held) + '. Keep credentials out of '
+                                'the repository\'s config, then run again')
                     except jail.JailRefused as refused:
                         raise Refused(str(refused)) from None
                 change = None if (target.main_checkout or target.branch is None) else target.branch

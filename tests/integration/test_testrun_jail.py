@@ -212,3 +212,40 @@ def test_an_unjailed_run_says_so(tmp_path):
     assert found['jail'] == {'jailed': False}
     text = next((project / '.testruns' / 'results').iterdir()).joinpath('report.md').read_text()
     assert '- jailed: no' in text
+
+
+@pytest.mark.parametrize('lines, named', [
+    (['[credential]', '\thelper = store'], 'credential.helper'),
+    (['[credential "https://example.invalid"]', '\thelper = cache'], 'credential.https://example.invalid.helper'),
+    (['[http]', '\textraheader = AUTHORIZATION: synthetic-header-value'], 'http.extraheader'),
+    (['[http "https://example.invalid/"]', '\textraheader = AUTHORIZATION: synthetic-header-value'],
+     'http.https://example.invalid/.extraheader'),
+    (['[remote "mirror"]', '\turl = https://synthetic-user@example.invalid/r.git'], 'a URL with user info'),
+    (['[remote "mirror"]', '\turl = ssh://synthetic-user:synthetic-password@example.invalid/r.git'],
+     'a URL with user info'),
+    (['[include]', '\tpath = extra.config'], 'credential.helper'),
+    (['[includeIf "gitdir:/nowhere/"]', '\tpath = extra.config'], 'credential.helper'),
+])
+def test_a_credential_in_the_projects_git_config_refuses_the_jail(tmp_path, lines, named):
+    """The jail binds .git read-only: a credential in its config, or in a file it includes, refuses the run."""
+    project, worktree = make(tmp_path, {'test_ok.py': 'def test_ok():\n    assert True\n'})
+    clean = jail.git_credentials(project)
+    assert clean == [], clean
+    (project / '.git' / 'extra.config').write_text('[credential]\n\thelper = store\n')
+    with (project / '.git' / 'config').open('a') as config:
+        config.write('\n'.join(lines) + '\n')
+    found = jail.git_credentials(project)
+    assert any(named in item for item in found), found
+    assert not any('synthetic-header-value' in item or 'synthetic-password' in item for item in found)
+    done = tool('run', '--jail', '--target', str(worktree), '-n', '0', cwd=project)
+    assert done.returncode == 2 and 'could be a credential' in done.stderr and named in done.stderr, done.stderr
+    assert 'synthetic-header-value' not in done.stderr and 'synthetic-password' not in done.stderr
+    assert not (project / '.testruns' / 'results').exists() or not os.listdir(project / '.testruns' / 'results')
+
+
+@pytest.mark.parametrize('url', ['git@example.invalid:owner/r.git', 'ssh://git@example.invalid/owner/r.git',
+                                 'https://example.invalid/owner/r.git'])
+def test_an_ssh_login_or_a_plain_url_is_no_credential(tmp_path, url):
+    project, _ = make(tmp_path, {})
+    git(project, 'remote', 'add', 'origin', url)
+    assert jail.git_credentials(project) == []
