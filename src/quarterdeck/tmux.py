@@ -38,6 +38,10 @@ class TmuxError(Exception):
     pass
 
 
+class TmuxFormatError(TmuxError):
+    """A line tmux printed for one of qd's formats that is not in that format; the line is in the message."""
+
+
 class PrivateTmuxError(TmuxError):
     """Private ownership or lock uncertainty is never evidence of a missing server/pane."""
 
@@ -96,18 +100,12 @@ def _session(name: str) -> str:
 
 
 def _parse(line: str) -> Pane:
-    id_, session, window, pid, width, height, in_mode, dead, status = line.split("\t")
-    return Pane(
-        id=id_,
-        session=session,
-        window=window,
-        pid=int(pid),
-        width=int(width),
-        height=int(height),
-        in_mode=in_mode == "1",
-        dead=dead == "1",
-        exit_status=int(status) if status else None,
-    )
+    try:
+        id_, session, window, pid, width, height, in_mode, dead, status = line.split("\t")
+        return Pane(id=id_, session=session, window=window, pid=int(pid), width=int(width), height=int(height),
+                    in_mode=in_mode == "1", dead=dead == "1", exit_status=int(status) if status else None)
+    except ValueError:
+        raise TmuxFormatError(f"tmux printed a pane line not in qd's pane format: {line!r}") from None
 
 
 def _transport(args):
@@ -351,7 +349,8 @@ class Tmux:
             address = ['-S', self.socket, '-f', '/dev/null'] + ([] if start else ['-N'])
         else:
             address = ['-L', self.socket] if self.socket else []
-        command = ['tmux', *address, *args]
+        # -u: a client without a UTF-8 locale prints a format's tabs as "_"; -u keeps them whatever the locale.
+        command = ['tmux', '-u', *address, *args]
         env = dict(os.environ, **{OWNER: self._owned.nonce}) if start else None
         done = subprocess.run(command, input=stdin, capture_output=True, text=True, env=env)
         if done.returncode:
@@ -600,7 +599,8 @@ class Tmux:
             raise
         except TmuxError:
             return next((p for p in self.panes() if p.id == pane_id), None)
-        return _parse(identity) if identity.partition('\t')[0] == pane_id else None
+        pane = _parse(identity) if identity else None  # a line not in the format raises, never reads as gone
+        return pane if pane is not None and pane.id == pane_id else None
 
     def started(self) -> int | None:
         """When the running server began, in whole seconds since the epoch, as tmux reports it; None if unreadable.
@@ -630,7 +630,8 @@ class Tmux:
                 return None
             raise
         identity, separator, text = output.partition('\n')
-        return (_parse(identity), text) if separator and identity.partition('\t')[0] == pane_id else None
+        pane = _parse(identity) if separator and identity else None  # a line not in the format raises
+        return (pane, text) if pane is not None and pane.id == pane_id else None
 
     def clients_attached(self, sessions: list[str]) -> bool | None:
         """Only a successful complete client listing can establish no presentation demand."""
