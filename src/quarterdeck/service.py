@@ -1232,6 +1232,7 @@ class Service:
         observations, notices, human_readings = [], [], []
         marks, errors = dict(self.read_marks), dict(self.account_errors)
         meters = deepcopy(self.meters)
+        checkpoints = {}
         for seat in self.resolved_seats():
             pane, launched = seat.pane(), seat.launched()
             live = pane is not None and not pane.dead
@@ -1272,10 +1273,22 @@ class Service:
                     # New launch/price evidence must be reconciled even if record bytes stand still.
                     if marks.get(record) == stamp and prepared[2] is None:
                         continue
+                    framework = getattr(self, 'status_framework', None)
+                    checkpoint = json.dumps([seat.name, stamp, owned.reason, prepared[1], framework]) if framework else None
+                    if checkpoint is not None and self.ledger.accounted(record, checkpoint):
+                        marks[record] = stamp
+                        continue
                     prior = errors.get(record)
                     if prior is not None and prior[0] == evidence and time.monotonic() < prior[2]:
                         continue
                     state, turns = owned.read()
+                    # Reading concurrently appended bytes must not certify the later file.
+                    try:
+                        stable = stamp == (owned.name, record_fingerprint(record))
+                    except OSError:
+                        stable = False
+                    if stable and state.turns is not None and state.turn_open is not None:
+                        checkpoints[record] = checkpoint
                 except OSError as error:
                     message = str(error)
                     prior = errors.get(record)
@@ -1296,6 +1309,7 @@ class Service:
                 meter = meters.get(seat.name)
                 for record, pool, stamp, state, turns, error, reader, settlement in reads:
                     if error is not None:
+                        book.mark_accounted(record, None)
                         book.mark_record(record, seat.name, pool, error, commit=False, evidence=settlement)
                         marks.pop(record, None)
                         continue
@@ -1315,6 +1329,8 @@ class Service:
                                 meters[seat.name] = machine.Meter(pane.pid)
                             notices.append(("ledger", dict(seat=seat.name, record=record.name, turns=written)))
                     marks[record] = stamp
+                    if record in checkpoints:
+                        book.mark_accounted(record, checkpoints[record])
                     if record == current and seat.session.human:
                         human_readings.append((seat, record, state, turns, stamp[1]))
                 quota.observe_screen(book, seat, screen, launched, commit=False)

@@ -86,6 +86,9 @@ CREATE TABLE IF NOT EXISTS pools (
 CREATE TABLE IF NOT EXISTS records (
     record TEXT PRIMARY KEY, seat TEXT NOT NULL, pool TEXT NOT NULL, error TEXT NOT NULL, evidence TEXT
 );
+CREATE TABLE IF NOT EXISTS record_accounting (
+    record TEXT PRIMARY KEY, evidence TEXT NOT NULL
+);
 """
 # Columns added since a table was first written; an older file gains them when the service opens it.
 ADDED_COLUMNS = {
@@ -183,6 +186,13 @@ class Ledger:
         self.attributions = Attribution(self.db)
         self.costs = CostEvidence(self.db)
         self.provenance = Provenance(self.db)
+        for table in ('turns', 'turn_costs', 'record_launches', 'launch_prices', 'launch_harnesses'):
+            for event in ('INSERT', 'UPDATE', 'DELETE'):
+                source = 'OLD' if event == 'DELETE' else 'NEW'
+                self.db.execute(f'''CREATE TRIGGER IF NOT EXISTS accounting_after_{table}_{event.lower()}
+                    AFTER {event} ON {table} BEGIN
+                    DELETE FROM record_accounting WHERE record={source}.record;
+                    END''')
         self.quota = Quotas(self.db, commit_attempt=self._commit_usage_attempt)
         self.usage = UsageCache(self.db)
         self.db.commit()
@@ -260,6 +270,19 @@ class Ledger:
             self._record_active = staged._record_active = False
 
     # -- turns -----------------------------------------------------------------------------
+
+    def accounted(self, record: Path, evidence: str) -> bool:
+        """A successful committed read of exactly this source and accounting implementation."""
+        row = self.db.execute('SELECT evidence FROM record_accounting WHERE record=?', (str(record),)).fetchone()
+        return row == (evidence,)
+
+    def mark_accounted(self, record: Path, evidence: str | None) -> None:
+        """Join the record transaction; failed or unstable reads never advance the checkpoint."""
+        if evidence is None:
+            if self.db.execute('SELECT 1 FROM record_accounting WHERE record=?', (str(record),)).fetchone():
+                self.db.execute('DELETE FROM record_accounting WHERE record=?', (str(record),))
+        elif not self.accounted(record, evidence):
+            self.db.execute('INSERT OR REPLACE INTO record_accounting VALUES (?,?)', (str(record), evidence))
 
     def ingested(self, record: Path) -> int:
         """How many turns of this record are already in the Ledger."""
