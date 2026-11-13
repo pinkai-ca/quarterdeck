@@ -99,7 +99,11 @@ class Root:
         if not existed:
             # The folder ignores itself, so it never shows as untracked even before a checkout's own
             # .gitignore names it; .gitignore names it too.
-            write_new(self.fd, '.gitignore', b'*\n')
+            try:
+                initial_ignore(self.fd, self.path)
+            except BaseException:
+                os.close(self.fd)
+                raise
         ignored = subprocess.run(['git', '-C', str(project), 'check-ignore', '-q', '--', f'{ROOT_NAME}/{SOCKETS}'],
                                  capture_output=True, env=git_environment())
         if ignored.returncode != 0:
@@ -124,6 +128,37 @@ class Root:
 
     def close(self) -> None:
         os.close(self.fd)
+
+
+def initial_ignore(dir_fd: int, where: Path) -> None:
+    """Coordinate initial writers on Linux's already verified root directory descriptor.
+
+    Directory flock is Linux-specific, as is the test tool's /proc process evidence. The brief lock keeps
+    an equal peer's exclusive write and fsync complete before it is read; no control file is introduced.
+    """
+    name, data = '.gitignore', b'*\n'
+    fcntl.flock(dir_fd, fcntl.LOCK_EX)
+    try:
+        try:
+            write_new(dir_fd, name, data)
+        except FileExistsError:
+            try:
+                peer = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                               dir_fd=dir_fd)
+                try:
+                    info = os.fstat(peer)
+                    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+                        raise Refused(f'{where / name} is not this user\'s regular file; nothing touched')
+                    raw = os.read(peer, len(data) + 1)
+                    current = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                    if identity(current) != identity(info) or raw != data or info.st_size != len(data):
+                        raise Refused(f'{where / name} is not the intended initial ignore file; nothing touched')
+                finally:
+                    os.close(peer)
+            except OSError:
+                raise Refused(f'{where / name} could not be verified; nothing touched') from None
+    finally:
+        fcntl.flock(dir_fd, fcntl.LOCK_UN)
 
 
 def git_environment() -> dict:
