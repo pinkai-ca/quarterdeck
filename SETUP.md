@@ -61,7 +61,7 @@ Follow [A ship of your own](docs/SHIPS.md#a-ship-of-your-own), steps 2 to 4: cop
 
 ## 5. Bring it up, and hand over
 
-When your person says so, run `qd up`. Then hand them to their desk: `tmux attach -t Office`, or the name they gave their office. They start by typing to the desk; it hears the crew only after it has taken a turn.
+When your person says so, run `qd up`. Then hand them to their desk: `qd attach`, which opens their own session, the office. They start by typing to the desk; it hears the crew only after it has taken a turn.
 
 ## Never decide for them
 

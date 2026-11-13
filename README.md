@@ -12,7 +12,7 @@ Quarterdeck runs AI coding agents from different companies as one crew, on your 
 
 <p align="center"><sub>One order, typed once, crossing three programs and back in 38 seconds. Real programs, real models, real speed. <a href="docs/DEMO.md">How this was recorded</a>.</sub></p>
 
-Every agent runs in its normal terminal interface, the one made for people, in a tmux pane. A ship is a crew of such agents, its panes grouped into tmux sessions: `Office`, where the agent you talk to sits, and one named for the ship, such as `Endeavour Bridge`, for the rest of the crew. At any time you can attach, watch an agent work, scroll back through what it did, give it a command, or simply prompt it yourself.
+Every agent runs in its normal terminal interface, the one made for people, in a tmux pane. A ship is a crew of such agents, its panes grouped into tmux sessions: `Office`, where the agent you talk to sits, and `Bridge`, for the rest of the crew. The sessions are on a tmux server of the ship's own, apart from any tmux you use yourself, and `qd attach` opens them. At any time you can attach, watch an agent work, scroll back through what it did, give it a command, or simply prompt it yourself.
 
 Quarterdeck is a command, `qd`, and one small service on your machine. It starts the agents, types orders and reports into their panes as you would, watches them, and accounts for what they spend. It adds no plug-ins, tools, hooks or protocols to your harnesses, and runs no agent as a hidden background process. Restart any agent at any moment, and that agent comes back with its brief and every order it still has to answer.
 
@@ -66,7 +66,7 @@ Then it checks the machine, and brings the crew up when you say so.
 **3. Move into your office.**
 
 ```sh
-tmux attach -t Office
+qd attach
 ```
 
 Your desk is there. Say what you want in plain words, and the desk gives the crew its orders and tells you when the work is done.
@@ -99,7 +99,7 @@ Or write the ship's file yourself: [A ship of your own](docs/SHIPS.md#a-ship-of-
 **3. Move into your office.**
 
 ```sh
-tmux attach -t Office
+qd attach
 ```
 
 Your desk is there. [How to use it](#how-to-use-it) has what to say to it, and the commands you can use beside it.
@@ -128,8 +128,9 @@ Anything the desk does for you, you can do yourself.
 Bring the crew up, and down:
 
 ```sh
-qd up    # start the service and every agent, each resuming where it left off
-qd down  # end every agent and the service; qd down captain ends one
+qd up      # start the service and every agent, each resuming where it left off
+qd attach  # open your office in this terminal; qd attach bridge opens the rest of the crew
+qd down    # end every agent and the service; qd down captain ends one
 ```
 
 Give work, and follow it:
