@@ -67,6 +67,15 @@ class Pane:
 
 
 @dataclass(frozen=True)
+class ControlFrame:
+    """A styled control frame and terminal cursor visibility from the same pane queue."""
+
+    pane: Pane
+    text: str
+    cursor_visible: bool
+
+
+@dataclass(frozen=True)
 class SessionView:
     """One reading of a session, for showing a window there: what it shows, who is scrolling, when its clients last typed."""
 
@@ -648,6 +657,31 @@ class Tmux:
         identity, separator, text = output.partition('\n')
         pane = _identity(identity, pane_id) if separator else None
         return (pane, text) if pane is not None else None
+
+    def read_control_frame(self, pane_id: str) -> ControlFrame | None:
+        """Bracket one styled capture by identical identity/geometry/cursor-flag readings.
+
+        Missing cursor visibility is unknown, never interpreted as a hidden cursor. This adds no
+        terminal action: the adapter decides whether the measured frame proves its control focus.
+        """
+        if not pane_id.startswith('%') or not pane_id[1:].isascii() or not pane_id[1:].isdigit():
+            return None
+        format_ = _FORMAT + '\t#{cursor_flag}'
+        output = self.run('display-message', '-p', '-t', pane_id, format_, ';',
+                          'capture-pane', '-p', '-J', '-e', '-t', pane_id, '-S', '0', ';',
+                          'display-message', '-p', '-t', pane_id, format_)
+        before, separator, rest = output.partition('\n')
+        text, closing, after = rest.rstrip('\n').rpartition('\n')
+        if not separator or not closing or before != after:
+            return None
+        identity, field, cursor = before.rpartition('\t')
+        if not field or cursor not in ('0', '1') or identity.partition('\t')[0] != pane_id:
+            return None
+        try:
+            pane = _parse(identity)
+        except (ValueError, TypeError):
+            return None
+        return ControlFrame(pane, text + '\n', cursor == '1')
 
     def clients_attached(self, sessions: list[str]) -> bool | None:
         """Only a successful complete client listing can establish no presentation demand."""

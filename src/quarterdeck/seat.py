@@ -373,6 +373,17 @@ class Seat:
             return None  # law: identity
         return found
 
+    def read_control_frame(self):
+        """Positive cursor/style evidence belongs to this same live launch, or remains unknown."""
+        launched = self.launched()
+        if launched is None or not hasattr(self.tmux, 'read_control_frame'):
+            return None
+        frame = self.tmux.read_control_frame(launched.pane)
+        if (frame is None or frame.pane.pid != launched.pid or frame.pane.dead or frame.pane.in_mode
+                or self.launched() != launched):
+            return None  # law: identity
+        return frame
+
     def join(self) -> Join:
         """The seat's record: pinned once found, the first written after its launch."""
         pinned = self.folder / "record"

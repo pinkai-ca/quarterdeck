@@ -173,7 +173,7 @@ def observe_control(seat, control, state: Continuation, now: datetime, *, persis
     There is deliberately no command-delivery operation here. A resumed reservation can only observe
     the record or expire; only a positively submitted control can own its subsequent question. verify
     checks the immutable request/launch/declaration; answer_current additionally checks the input scope,
-    not the continuation's mutable phase. confirmed_model must bind the canonical assistant model to
+    not the continuation's mutable phase. confirmed_model must bind the adapter-proved record result to
     this request's command envelope; a current model reading may predate the request and is insufficient.
     A missing request-specific binding remains unknown. No callback is supplied by a second queue.
     """

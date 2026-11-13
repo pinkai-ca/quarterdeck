@@ -304,6 +304,9 @@ class ControlContext:
     display: str
     screen_reader_off: bool | None = None
     focused: bool | None = None
+    composer_hidden: bool | None = None
+    cursor_visible: bool | None = None
+    yes_highlighted: bool | None = None
     scope: tuple = ()
 
 

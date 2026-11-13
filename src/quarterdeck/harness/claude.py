@@ -776,6 +776,8 @@ class ClaudeHarness(Harness):
         target = self.model_identity(value, version=version)
         if (not isinstance(context, ControlContext) or context.version != version or context.target != target
                 or target is None or context.screen_reader_off is not True or context.focused is not True
+                or context.composer_hidden is not True or context.cursor_visible is not False
+                or context.yes_highlighted is not True
                 or not context.scope or not context.display or len(context.display) > 200
                 or not all(char.isprintable() for char in context.display)):
             return None
@@ -788,12 +790,11 @@ class ClaudeHarness(Harness):
         no = [option for option in options if option['text'] == 'No, go back' and option['number'] == '2']
         if len(options) != 2 or len(yes) != 1 or len(no) != 1:
             return None
-        if sum(bool(option['cursor']) for option in options) > 1:
+        if not yes[0]['cursor'] or no[0]['cursor']:
             return None
-        # 2.1.317 source commits an indexed model option by digit independently of the cursor.
-        # Mode, focus and the expected display's current context must all be positively proved.
-        # This is source evidence, not a claim that a native digit press was measured.
-        return ControlAnswer('model', value, label, ('1',))
+        # 2.1.317 measured Enter only on highlighted, selected Yes, with composer/cursor hidden.
+        # No digit action or cursor movement is authorized by that native proof.
+        return ControlAnswer('model', value, label, ('Enter',))
 
     reads_queue_error = True
     compactions = staticmethod(compactions)

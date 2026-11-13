@@ -775,15 +775,16 @@ claim and bounded continuation/deadline metadata; a later tick observes or answe
 command again. Unknown continuation or transport holds without replay. Record confirmation closes a
 model change; expiry names it unconfirmed. Where the program asked and the ship sent the value-matched
 yes, the proof says both explicitly. The existing effort validation and declared control modes remain.
-Claude Code 2.1.317 source proves the indexed model renderer commits option 1 directly, independently of
-cursor, only with screen-reader mode off and the dialog focused. This is source evidence, not a measured
-digit press. Its different effort renderer has no such permission; Home/Up/Down remain unknown. The
-expected option display comes from the current seat/account context, never a global name alias table.
-A display-only command result does not establish model identity: the next assistant's canonical model
-ID, bound to the pending request's command envelope, is the confirmation. A current model observation
-that may predate that request is insufficient; absent request-specific binding remains unknown.
-The first question is retained by digest only; changed or incomplete focus
-evidence holds by name. A complete focused-surface predicate still requires independent native evidence.
+Claude Code 2.1.317's measured answer is Enter on the selected Yes option, whose text exactly matches
+the requested model's current display. Positive focus requires the hidden composer, terminal cursor
+flag 0 and the highlighted selected Yes marker/text in that same current frame. A typed capture keeps
+cursor visibility beside styled text, bracketed by matching pane/process/geometry readings. The digit
+accelerator was not measured and is not sent; neither are cursor movement or effort-dialog keys.
+The expected option display comes from the current seat/account context, never a global name alias
+table. Confirmation uses the successful local-command record result bound to the pending request's
+command envelope and requested model. A current model observation that may predate that request is
+insufficient; absent request-specific binding remains unknown. The first question is retained by
+digest only; changed or incomplete focus evidence holds by name.
 
 An observed model is read from the current owned record first and an adapter-proved screen reading
 second. Comparison uses the effective selected pool/seat declaration and the adapter's exact model
