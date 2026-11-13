@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 import json
+from itertools import count
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +14,7 @@ from quarterdeck.ship import ShipError
 
 AT = datetime(2032, 4, 5, 6, 7, tzinfo=timezone.utc)
 SEAT = 'seat-orchid'
+IDS = count()
 
 
 @pytest.fixture
@@ -22,7 +24,8 @@ def runtime(tmp_path, monkeypatch):
 
 
 def enqueue(runtime, kind='relaunch', **extra):
-    return request_queue.enqueue(runtime, kind, dict(seat=SEAT, resume=True, **extra))
+    return request_queue.enqueue(runtime, kind, dict(seat=SEAT, resume=True, **extra),
+                                 name=f'request-orchid-{next(IDS)}-zz')
 
 
 def service(runtime, answer):
@@ -41,7 +44,7 @@ def test_listing_absent_queue_is_read_only(runtime):
 def test_wait_metadata_names_kind_since_reason_and_cancel_without_arguments(runtime):
     path = enqueue(runtime, 'control', value='synthetic private setting')
     with request_queue.coordination(runtime):
-        data = request_queue.load(path)
+        data = request_queue.metadata(path)
         request_queue.hold(path, data, 'tools-unknown', 'tool state unknown')
     [row] = request_queue.pending(runtime)
     text = request_queue.describe(row)
@@ -53,10 +56,12 @@ def test_wait_metadata_names_kind_since_reason_and_cancel_without_arguments(runt
 
 def test_service_wait_is_visible_and_cancelled_request_is_settled(runtime):
     path = enqueue(runtime)
+    raw = path.read_text()
     calls = []
     runner = service(runtime, None)
 
     def wait(data):
+        assert set(data) == {'kind', 'seat', 'resume'}
         calls.append(data['kind'])
         runner.request_wait = ('tools-unknown', 'tool state unknown')
         return None
@@ -65,6 +70,7 @@ def test_service_wait_is_visible_and_cancelled_request_is_settled(runtime):
     runner.requests()
     [row] = request_queue.pending(runtime)
     assert row['reason'] == 'tool state unknown'
+    assert path.read_text() == raw
     assert not path.with_suffix('.claimed').exists()
     proof = request_queue.cancel(runtime, SEAT, path.stem)
     runner.requests()
@@ -78,7 +84,7 @@ def test_superseding_request_settles_previous_one_with_same_owner(runtime):
     second = enqueue(runtime)
     assert first != second and not first.exists()
     assert 'superseded' in first.with_suffix('.done').read_text()
-    assert request_queue.load(second)['retired'] == [first.stem]
+    assert request_queue.metadata(second)['retired'] == [first.stem]
     assert [row['id'] for row in request_queue.pending(runtime)] == [second.stem]
 
 
@@ -102,7 +108,7 @@ def test_cancel_intent_recovers_after_interrupted_settlement(runtime, monkeypatc
     monkeypatch.setattr(request_queue, 'settle', interrupted)
     with pytest.raises(OSError, match='interrupted settlement'):
         request_queue.cancel(runtime, SEAT, path.stem)
-    assert request_queue.load(path)['terminal']
+    assert request_queue.metadata(path)['terminal']
     assert path.with_suffix('.claimed').exists()
     monkeypatch.setattr(request_queue, 'settle', settle)
     runner = service(runtime, lambda data: pytest.fail('terminal request was dispatched'))
@@ -113,15 +119,14 @@ def test_cancel_intent_recovers_after_interrupted_settlement(runtime, monkeypatc
 
 def test_legacy_request_since_survives_wait_rewrites(runtime, monkeypatch):
     path = enqueue(runtime)
-    data = request_queue.load(path)
-    del data['created_at']
-    path.write_text(json.dumps(data))
+    request_queue.state_path(path).unlink()
+    data = request_queue.metadata(path)
     before = request_queue.created(path, data)
     with request_queue.coordination(runtime):
         request_queue.hold(path, data, 'turn-open', 'a turn is open')
     monkeypatch.setattr(post, 'now', lambda: AT.replace(minute=8))
     with request_queue.coordination(runtime):
-        request_queue.hold(path, request_queue.load(path), 'tools-unknown', 'tool state unknown')
+        request_queue.hold(path, request_queue.metadata(path), 'tools-unknown', 'tool state unknown')
     assert request_queue.pending(runtime)[0]['since'] == before
 
 
@@ -131,7 +136,7 @@ def test_timeout_uses_service_wait_reason(runtime, monkeypatch):
     def waiting(*args, **kwargs):
         path = real_enqueue(*args, **kwargs)
         with request_queue.coordination(runtime):
-            request_queue.hold(path, request_queue.load(path), 'tools-unknown', 'tool state unknown')
+            request_queue.hold(path, request_queue.metadata(path), 'tools-unknown', 'tool state unknown')
         return path
 
     monkeypatch.setattr(request_queue, 'enqueue', waiting)
@@ -190,10 +195,30 @@ def test_direct_act_retires_queued_relaunch_before_existing_manual_action(runtim
 
 def test_unknown_time_keeps_known_target_visible_and_withdrawable(runtime):
     path = enqueue(runtime)
-    data = request_queue.load(path)
+    data = request_queue.metadata(path)
     data['created_at'] = 'synthetic unknown time'
-    path.write_text(json.dumps(data))
+    request_queue.state_path(path).write_text(json.dumps(data))
     [row] = request_queue.pending(runtime, SEAT)
     assert row['seat'] == SEAT and row['since'] is None and row['claimed'] is False
     assert 'unknown' in row['dimension'] and path.stem in request_queue.describe(row)
     assert 'cancelled' in request_queue.cancel(runtime, SEAT, path.stem)
+
+
+def test_complete_answer_precedes_log_and_original_retirement(runtime):
+    path = enqueue(runtime)
+    raw = path.read_text()
+    proof = 'synthetic complete answer\n' * 100
+    runner = service(runtime, lambda data: proof)
+    observed = []
+
+    def log(*args, **kwargs):
+        observed.append(path.with_suffix('.done').read_text())
+        assert path.read_text() == raw
+        assert path.with_suffix('.claimed').exists()
+
+    runner.log = log
+    runner.requests()
+    assert observed == [proof + '\n']
+    assert path.with_suffix('.done').read_text() == proof + '\n'
+    assert not path.exists() and not path.with_suffix('.claimed').exists()
+    assert not request_queue.state_path(path).exists()

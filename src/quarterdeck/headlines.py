@@ -28,5 +28,9 @@ def status_line(facts, alerts: list[str]) -> str:
     # A sign-in failure must still name its seat and failed cure when categories overflow.
     parts += getattr(facts, 'sign_in_failures', ())
     parts += getattr(facts, 'request_waits', ())
+    if getattr(facts, 'request_waits', ()):
+        # New request details must not push the original operational words out.
+        parts += [line for line in facts.pending if line.startswith('request claimed: ')]
+        parts += facts.unknown
     parts.append("details: qd status")
     return SEPARATOR.join(parts)

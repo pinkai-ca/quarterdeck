@@ -10,7 +10,6 @@ import fcntl
 import json
 import os
 from pathlib import Path
-import secrets
 import stat
 
 from . import durable, post
@@ -31,7 +30,7 @@ def launch_binding(seat):
 def coordination(runtime):
     folder = runtime / 'requests'
     folder.mkdir(parents=True, exist_ok=True)
-    path = folder / 'queue.lock'
+    path = runtime / 'request.lock'
     descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
     try:
         opened = os.fstat(descriptor)
@@ -63,6 +62,48 @@ def created(path, data):
     return at.isoformat()
 
 
+def state_path(path):
+    return path.parent.parent / 'request-state' / path.name
+
+
+def metadata(path):
+    try:
+        data = json.loads(state_path(path).read_text())
+    except FileNotFoundError:
+        return dict(version=1, created_at=created(path, {}))
+    if not isinstance(data, dict) or type(data.get('version')) is not int or data['version'] != 1:
+        raise ShipError('request metadata unsupported; retained')
+    return data
+
+
+def save_metadata(path, data):
+    target = state_path(path)
+    data.setdefault('version', 1)
+    if 'created_at' not in data:
+        data['created_at'] = created(path, {})
+    text = json.dumps(data, sort_keys=True) + '\n'
+    if target.exists() and target.read_text() == text:
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    durable.replace_file(target, text)
+
+
+def clear_metadata(path):
+    target = state_path(path)
+    target.unlink(missing_ok=True)
+    if target.parent.exists():
+        durable.sync_folder(target.parent)
+
+
+def acknowledged(path):
+    """Client acknowledgment must never wait for or replace its complete answer."""
+    try:
+        if not path.exists():
+            clear_metadata(path)
+    except OSError:
+        pass  # service settlement also retires metadata; answer delivery stays unchanged
+
+
 def claimed(path):
     try:
         path.with_suffix('.claimed').lstat()
@@ -76,14 +117,15 @@ def claimed(path):
 def view(path, data=None):
     """Operational metadata only, never control arguments or a conversation."""
     data = load(path) if data is None else data
-    waiting = data.get('waiting') or {}
+    meta = metadata(path)
+    waiting = meta.get('waiting') or {}
     reason = waiting.get('reason') if isinstance(waiting, dict) else None
     reason = reason if isinstance(reason, str) and reason else 'service has not supplied its decision yet'
     reason = ''.join(char for char in reason if char.isprintable())[:512]
     kind = data['kind']
     if kind == 'relaunch':
         kind = 'restart' if data.get('resume') is True else 'fresh' if data.get('resume') is False else 'relaunch'
-    return dict(id=path.stem, seat=data.get('seat'), kind=kind, since=created(path, data),
+    return dict(id=path.stem, seat=data.get('seat'), kind=kind, since=created(path, meta),
                 reason=reason, dimension=waiting.get('dimension', 'unknown') if isinstance(waiting, dict) else 'unknown',
                 claimed=claimed(path))
 
@@ -125,28 +167,39 @@ def describe(row):
 
 
 def hold(path, data, dimension, reason):
-    data.setdefault('created_at', created(path, data))
+    if 'created_at' not in data:
+        data['created_at'] = created(path, {})
     prior = data.get('waiting')
     if not isinstance(prior, dict) or (prior.get('dimension'), prior.get('reason')) != (dimension, reason):
         data['waiting'] = dict(dimension=dimension, reason=reason, since=post.now().isoformat())
-    durable.replace_file(path, json.dumps(data, sort_keys=True) + '\n')
+    save_metadata(path, data)
 
 
-def settle(path, proof, *, clear_claim=False):
-    """Under coordination: the done file precedes retirement of the active name."""
+def answer(path, proof):
+    """The original complete answer file is the client's first completion signal."""
     durable.replace_file(path.with_suffix('.done'), proof + '\n')
+
+
+def retire(path, *, clear_claim=False):
     path.unlink()
     durable.sync_folder(path.parent)
     if clear_claim:
         path.with_suffix('.claimed').unlink(missing_ok=True)
         durable.sync_folder(path.parent)
+    clear_metadata(path)
+
+
+def settle(path, proof, *, clear_claim=False):
+    answer(path, proof)
+    retire(path, clear_claim=clear_claim)
 
 
 def terminal(path, data, proof):
     """Durable retirement intent, protected from both new and older service replay."""
-    durable.replace_file(path.with_suffix('.claimed'), json.dumps(data) + '\n')
-    data['terminal'] = proof
-    durable.replace_file(path, json.dumps(data, sort_keys=True) + '\n')
+    durable.replace_file(path.with_suffix('.claimed'), path.read_text())
+    meta = metadata(path)
+    meta['terminal'] = proof
+    save_metadata(path, meta)
     settle(path, proof, clear_claim=True)
 
 
@@ -167,17 +220,18 @@ def _retire(runtime, name, reason, identifier=None):
             continue
         if identifier is None and data['kind'] != 'relaunch':
             continue
-        if claimed(path) is not False and not isinstance(data.get('terminal'), str):
+        meta = metadata(path)
+        if claimed(path) is not False and not isinstance(meta.get('terminal'), str):
             raise ShipError(f'request {path.stem} already claimed; outcome unknown; retained')
-        paths.append((path, data))
+        paths.append((path, data, meta))
     if identifier is None and uncertain:
         raise ShipError('request inventory unreadable; no retirement proved; retained')
     if identifier is not None and not paths:
         raise ShipError(f'no pending request {identifier} for {name}; nothing cancelled')
-    for path, data in paths:
-        proof = data.get('terminal') or f'{name}: {data["kind"]} request {path.stem} {reason}; never applied by this request'
+    for path, data, meta in paths:
+        proof = meta.get('terminal') or f'{name}: {data["kind"]} request {path.stem} {reason}; never applied by this request'
         terminal(path, data, proof)
-    return [path.stem for path, _ in paths]
+    return [path.stem for path, _, _ in paths]
 
 
 def cancel(runtime, name, identifier=None):
@@ -193,20 +247,26 @@ def direct(runtime, name, kind):
         yield _retire(runtime, name, f'superseded by direct {kind}')
 
 
-def enqueue(runtime, kind, data):
+def enqueue(runtime, kind, data, *, name=None):
     with coordination(runtime):
         retired = _retire(runtime, data['seat'], 'superseded by a newer direct relaunch') if kind == 'relaunch' else []
-        name = f'{datetime.now().strftime("%H%M%S")}-{kind}-{os.getpid()}'
+        name = name or f'{datetime.now().strftime("%H%M%S")}-{kind}-{os.getpid()}'
         folder = runtime / 'requests'
         path = folder / f'{name}.json'
-        while any(path.with_suffix(suffix).exists() for suffix in ('.json', '.done', '.claimed')):
-            path = folder / f'{name}-{secrets.token_hex(4)}.json'
-        payload = dict(kind=kind, **data, created_at=post.now().isoformat())
+        data = dict(data)
+        meta = dict(version=1, created_at=post.now().isoformat())
+        for key in ('caller', 'origin'):
+            if key in data:
+                meta[key] = data.pop(key)
+        payload = dict(kind=kind, **data)
         if retired:
-            payload['retired'] = retired
+            meta['retired'] = retired
+        def publish():
+            save_metadata(path, meta)
+            durable.replace_file(path, json.dumps(payload) + '\n')
         if kind in SEAT_KINDS and isinstance(data.get('seat'), str):
             with post.admission(runtime, data['seat']):
-                durable.replace_file(path, json.dumps(payload) + '\n')
+                publish()
         else:
-            durable.replace_file(path, json.dumps(payload) + '\n')
+            publish()
         return path

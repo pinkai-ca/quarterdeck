@@ -142,7 +142,8 @@ def request(runtime: Path, kind: str, **data) -> str:
     if not alive(runtime):
         raise ShipError("service down; qd up restarts it")
     from . import request_queue
-    path = request_queue.enqueue(runtime, kind, data)
+    name = f"{datetime.now().strftime('%H%M%S')}-{kind}-{os.getpid()}"
+    path = request_queue.enqueue(runtime, kind, data, name=name)
     folder, name = path.parent, path.stem
     answer = folder / f"{name}.done"
     deadline = time.monotonic() + ANSWER_SECONDS
@@ -150,16 +151,18 @@ def request(runtime: Path, kind: str, **data) -> str:
         if answer.exists():
             proof = answer.read_text().strip()
             answer.unlink()
+            request_queue.acknowledged(path)
             return proof
         time.sleep(0.1)
     late = stale(runtime)
     if answer.exists():
         proof = answer.read_text().strip()
         answer.unlink()
+        request_queue.acknowledged(path)
         return proof
     try:
         detail = request_queue.describe(request_queue.view(path))
     except (OSError, ValueError, TypeError, ShipError):
         detail = 'request decision unknown; inspect qd status'
     return (f"pending: the service has not answered within {ANSWER_SECONDS:.0f}s (request {name})"
-            + (f"; it last ticked {int(late)}s ago" if late else "") + f'; {detail}')
+            + (f"; it last ticked {int(late)}s ago" if late else "") + f'; it applies when it can; {detail}')

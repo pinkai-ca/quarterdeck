@@ -403,25 +403,26 @@ class Service:
                 data = None
                 try:
                     claim = path.with_suffix(".claimed")
-                    raw = path.read_text()
-                    data = json.loads(raw)
-                    if isinstance(data, dict) and 'terminal' in data:
-                        if not isinstance(data['terminal'], str) or not data['terminal'] or data.get('kind') not in request_queue.SEAT_KINDS:
+                    meta = request_queue.metadata(path)
+                    if 'terminal' in meta:
+                        data = request_queue.load(path)
+                        if not isinstance(meta['terminal'], str) or not meta['terminal'] or data.get('kind') not in request_queue.SEAT_KINDS:
                             raise ShipError('request retirement intent unknown; retained')
-                        request_queue.settle(path, data['terminal'], clear_claim=True)
+                        request_queue.settle(path, meta['terminal'], clear_claim=True)
                         continue  # recover cancellation/supersession without ever dispatching it
                     if claim.exists() or claim.is_symlink():
                         continue  # an earlier action may have run; never replay an ambiguous claim
-                    if isinstance(data, dict) and data.get('kind') in request_queue.SEAT_KINDS:
-                        data.setdefault('created_at', request_queue.created(path, data))
+                    raw = path.read_text()
+                    data = json.loads(raw)
                     if not isinstance(data, dict) or data.get("kind") != "rebrief":
                         durable.replace_file(claim, raw)  # before dispatch: failed archival cannot requeue an executed action
                     try:
                         self.request_wait = None
+                        self.request_metadata = meta
                         answer = self.answer(data)
                     except SelectionError as error:
                         self.hold_selection(error)
-                        request_queue.hold(path, data, 'selection', 'seat selection unknown or held')
+                        request_queue.hold(path, meta, 'selection', 'seat selection unknown or held')
                         self.clear_request_claim(claim)
                         continue  # this request stays held; later healthy-seat requests still run
                     except ShipError as error:
@@ -431,15 +432,17 @@ class Service:
                     if answer is None:
                         if isinstance(data, dict) and data.get('kind') in request_queue.SEAT_KINDS:
                             dimension, reason = self.request_wait or ('unknown', 'service decision unknown')
-                            request_queue.hold(path, data, dimension, reason)
+                            request_queue.hold(path, meta, dimension, reason)
                         self.clear_request_claim(claim)
                         continue  # not yet: the request waits for the seat's turn to end
                     # The final name is the client's completion signal, never an open writer.
-                    retired = data.get('retired') if isinstance(data, dict) else None
+                    retired = meta.get('retired')
                     if retired:
                         answer += f'; retired pending relaunch request(s): {", ".join(retired)}'
+                    request_queue.answer(path, answer)
                     self.log("request", **data, answer=answer)
-                    request_queue.settle(path, answer, clear_claim=True)
+                    request_queue.retire(path)
+                    self.clear_request_claim(claim)
                 except Exception as error:
                     if isinstance(data, dict) and data.get("kind") == "rebrief":
                         retry.append(error)
@@ -540,6 +543,8 @@ class Service:
     def relaunch_request(self, data):
         """A human's own asking turn is its only deferred break; later speech retires it."""
         from . import request_queue
+        meta = getattr(self, 'request_metadata', {})
+        data = {**data, **meta}
         seat = self.seat(data['seat'])
         origin = request_queue.launch_binding(seat)
         if data.get('origin') is not None and data['origin'] != origin:
@@ -583,7 +588,7 @@ class Service:
             # an explicit completed turn can establish that this break passed.
             if any(turn.ended is not None and turn.ended >= asked for turn in state.completed_turns):
                 return f'refused: {seat.name} asking turn already ended; no deferred restart'
-            data['asking_turn'] = scope
+            meta['asking_turn'] = scope
             self.request_wait = ('turn-open', 'own asking turn has not ended')
             return None
         if state.turn_open is not False:

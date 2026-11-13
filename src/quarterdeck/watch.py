@@ -240,7 +240,7 @@ def status_reading(ship: Ship, tmux: Tmux) -> dict:
     requests = request_queue.pending(ship.runtime)
     return {"service": service_state(ship.runtime), "seats": [reading(seat, store) for seat in seats(ship, tmux, False)],
             "open_orders": [m for m in store.all() if m.kind == "order" and store.is_open(m)],
-            "requests": requests, "facts": facts(ship, tmux, request_rows=requests),
+            "requests": requests, "facts": facts(ship, tmux),
             "usage": headline_readings(ship), **providers.identities(ship)}
 
 
