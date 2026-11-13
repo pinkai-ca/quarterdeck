@@ -37,7 +37,7 @@ def test_up_brings_up_every_declared_seat_in_its_session(ship: shipmod.Ship, tmu
     assert all("· fake fake · provider Synthetic · pool fake · fresh" in p for p in proofs[2:])
     assert sorted(tmux.sessions()) == ["Bridge", "Crew", "Drydock Office"]
     assert [p.window for p in tmux.panes("Bridge")] == ["Picard"]
-    assert [p.window for p in tmux.panes("Office")] == ["Maeve"]
+    assert [p.window for p in tmux.panes("Drydock Office")] == ["Maeve"]
     assert [p.window for p in tmux.panes("Crew")] == ["worker-1"]
     runtime = ship.runtime
     assert (runtime / ".git").is_dir() and (runtime / "brief" / "captain.md").is_file()

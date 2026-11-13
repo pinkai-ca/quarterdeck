@@ -162,7 +162,7 @@ def test_wheel_installed_laws_and_fake_drydock(scratch, private_socket_root, cap
     omitted = sorted(set(tracked) - represented)
     assert 'tests/testrun.py' in omitted and 'README.md' in omitted
     assert 'docs/DESIGN.md' in omitted
-    assert any(name.startswith('ships/default/') for name in omitted)
+    assert not any(name.startswith('ships/default/') for name in omitted)
     assert not any(name.startswith(('tests/', 'docs/', 'DESIGN')) for name in installed_names)
 
     laws_text = command(qd, 'laws', cwd=outside, env=env)

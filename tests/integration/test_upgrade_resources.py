@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PREDECESSOR = '5f0f54510c3f65cc05cb2921f79bcb0ec520067d'
 # Single managed-resource catalog for source archives and declaration drift coverage.
 RESOURCE_ROOTS = ('standing-orders', 'ships/drydock', 'ships/forum', 'ships/cascade', 'ships/default')
+HISTORICAL_RESOURCE_ROOTS = ('standing-orders', 'ships/drydock', 'ships/forum', 'ships/cascade')
 
 
 def run(*command, cwd=None, failure=False):
@@ -399,9 +400,9 @@ def test_historical_optional_template_skip(tmp_path):
     from quarterdeck import resources
 
     source = tmp_path / 'historical'
-    archive('6ed33441276232271583a1e193af89dcbb72f62c', source, RESOURCE_ROOTS)
+    archive('6ed33441276232271583a1e193af89dcbb72f62c', source, HISTORICAL_RESOURCE_ROOTS)
     shutil.rmtree(source / 'ships/forum')
     files = resources.plan(source)
-    wanted = {path.relative_to(source) for root in RESOURCE_ROOTS
+    wanted = {path.relative_to(source) for root in HISTORICAL_RESOURCE_ROOTS
               if (source / root).exists() for path in (source / root).rglob('*') if path.is_file()}
     assert files is not None and set(files) == wanted
