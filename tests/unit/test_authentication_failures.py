@@ -48,7 +48,7 @@ def test_valid_newer_file_consumes_one_resume_even_across_service_restart(tmp_pa
     assert 'resume already attempted' in auth_failure.status(seat)
 
 
-@pytest.mark.parametrize('case', ['expired-access', 'expired-grant', 'unknown', 'older', 'same-time', 'missing-launch', 'nonfinite'])
+@pytest.mark.parametrize('case', ['expired-access', 'expired-grant', 'unknown', 'older', 'same-time', 'missing-launch', 'nonfinite', 'changing'])
 def test_ineligible_local_evidence_holds_without_consuming_attempt(tmp_path, monkeypatch, case):
     now, source, seat, state, service = environment(tmp_path, monkeypatch)
     if case == 'expired-access':
@@ -62,6 +62,11 @@ def test_ineligible_local_evidence_holds_without_consuming_attempt(tmp_path, mon
         os.utime(source, (at, at if case == 'same-time' else at - 1))
     elif case == 'missing-launch':
         seat.launched.return_value = None
+    elif case == 'changing':
+        def refresh_during_observation(pool, path):
+            path.write_text('synthetic metadata changed during observation, a different size')
+            return now.timestamp() + 3600, path.stat().st_mtime
+        auth_failure.credential.freshness.side_effect = refresh_during_observation
     else:
         auth_failure.credential.freshness.return_value = (float('inf'), source.stat().st_mtime)
     auth_failure.run(service)
@@ -92,6 +97,17 @@ def test_held_lifecycle_check_is_not_retried(tmp_path, monkeypatch):
     auth_failure.run(service)
     service.relaunch.assert_called_once_with(seat, True)
     assert 'held by existing lifecycle checks' in service.log.call_args.kwargs['proof']
+
+
+def test_failed_resume_call_stays_consumed(tmp_path, monkeypatch):
+    _, _, seat, _, service = environment(tmp_path, monkeypatch)
+    from quarterdeck.ship import ShipError
+    service.relaunch.side_effect = ShipError('synthetic lifecycle failure')
+    auth_failure.run(service)
+    auth_failure.run(service)
+    service.relaunch.assert_called_once_with(seat, True)
+    assert auth_failure._path(seat).exists()
+    assert 'sign-in recovery held' in service.log.call_args.kwargs['proof']
 
 
 def test_opening_another_turn_does_not_clear_attempt_but_completed_success_does(tmp_path, monkeypatch):
