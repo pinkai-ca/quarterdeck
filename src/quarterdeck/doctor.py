@@ -143,9 +143,7 @@ def pool_check(pool: Pool) -> Check:
         return Check(f"pool {pool.name}", True, "the program holds its own sign-in")
     if not file.exists():
         return Check(f"pool {pool.name}", False, f"no credential at {file}; sign in to the program there")
-    expiry = credential.grant_expiry(pool)
-    when = f"; its grant expires {expiry.astimezone():%m-%d %H:%M}" if expiry else ""
-    return Check(f"pool {pool.name}", True, f"signed in at {file.parent}{when}")
+    return Check(f"pool {pool.name}", True, f"signed in at {file.parent}{credential.grant_detail(pool)}")
 
 
 def fix(ship: Ship, failed: list[Check], tmux: Tmux) -> list[Check]:

@@ -2,7 +2,7 @@
 
 Your program is Grok Build, from xAI. The subscription pool names provider `xai`; your seat names harness `grok`.
 
-Quarterdeck supplies a seat-owned `GROK_HOME`, a private `HOME` inside it, the brief through `--rules`, and a link to the pool's `auth.json`. XDG folders stay inside the private `HOME`; the fixed configuration overlay does not adopt an operator file. The service reconciles native credential refreshes with the pool and sibling seats. Leave sign-in and settings to that machinery. Self-update and prompt suggestions are configured off. Nonhuman sessions request normal tools approved and the native `ask_user_question` tool removed; ask through `qd post question`.
+Quarterdeck supplies a seat-owned `GROK_HOME`, a private `HOME` inside it, the brief through `--rules`, and a link to the pool's `auth.json`. XDG folders stay inside the private `HOME`; the fixed configuration overlay does not adopt an operator file. The service reconciles native credential refreshes with the pool and sibling seats. Leave sign-in and settings to that machinery. The sign-in's access grant renews itself on use, so its short expiry is never a login needed. Self-update and prompt suggestions are configured off. Nonhuman sessions request normal tools approved and the native `ask_user_question` tool removed; ask through `qd post question`.
 
 Key pools export `XAI_API_KEY` as the other adapters do. All-adapter key isolation is tracked separately; it is outside this adapter change.
 

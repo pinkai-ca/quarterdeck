@@ -58,6 +58,13 @@ def same_name(shown: str, wanted: str) -> bool:
     return bool(a) and (a == b or b.endswith(a) or b.startswith(a))
 
 
+GRANT_KINDS = (
+    "self-renewing",  # an access grant the program renews on use: its short expiry needs no login
+    "fixed",  # a grant that needs the human's login at its end
+    "unknown",  # not measured: shown as unknown, never counted as a login needed
+)
+
+
 def program_version(argv: tuple[str, ...]) -> str | None:
     """The installed version a program prints for ``--version``, read every time: programs update under a running ship.
 
@@ -268,7 +275,18 @@ class Harness(ABC):
         """A synthetic program may acknowledge this launch instead of a timed observation."""
         return False
 
+    grant_kind: str = "unknown"  # one of GRANT_KINDS: what the pool's grant needs at its end
+
     def grant_expiry(self, path: Path) -> datetime | None:
+        """A fixed grant's end, or a self-renewing grant's short access expiry; read as metadata, never a token."""
+        return None
+
+    def renewal_end(self, path: Path) -> datetime | None:
+        """A self-renewing grant: the end of the grant that renews it, only from a field the adapter knows by name."""
+        return None
+
+    def renewal_failed(self, path: Path) -> bool | None:
+        """A self-renewing grant: True only where the file shows its renewal failed; None where it cannot say."""
         return None
 
     model_scoped_usage = False

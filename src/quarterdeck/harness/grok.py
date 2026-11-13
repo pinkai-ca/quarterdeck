@@ -199,6 +199,10 @@ class GrokHarness(Harness):
     native_provider = "xai"
     home_variable = "GROK_HOME"
     credential_file = "auth.json"
+    # Measured 11 November on 1.0.77: the program renews its short access grant on use, so expires_at
+    # passing needs no login. The end of the grant that renews it and a failed renewal have no field
+    # the adapter knows by name, so neither is read.
+    grant_kind = "self-renewing"
     answers_questions = True  # its first-run training question, answered opt out (ord-c304)
     keys = Keys(submit="Enter", interrupt="C-c")
     reads_usage = True
@@ -256,6 +260,7 @@ class GrokHarness(Harness):
         return None
 
     def grant_expiry(self, path: Path) -> datetime | None:
+        """The short access expiry the program renews on use; never a login reading."""
         grant = auth_metadata(path)
         return when(grant.get("expires_at")) if grant else None
 

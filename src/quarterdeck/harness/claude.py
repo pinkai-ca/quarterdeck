@@ -523,6 +523,8 @@ class ClaudeHarness(Harness):
 
     usage_interval = 300  # the account's other callers share the endpoint; a minute's reads were refused
     credential_file = ".credentials.json"
+    # refreshTokenExpiresAt ends the grant that renews access; only the human's login replaces it.
+    grant_kind = "fixed"
     headline_window = (None, "5h")
     headline_fallback = (None, "7d")  # the provider reports no five-hour figure for some accounts
     remote_control = True

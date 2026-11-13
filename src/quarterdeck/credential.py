@@ -124,17 +124,60 @@ def _install(winner: Path, source: Path) -> None:
 
 
 def grant_expiry(pool: Pool) -> datetime | None:
-    """The grant's expiry, when the pool's adapter can read it."""
+    """The grant's expiry, when the pool's adapter can read it: a fixed grant's end, or a self-renewing one's access."""
     source = pool_file(pool)
     return harnesses.native_for(pool.provider).grant_expiry(source) if source is not None else None
 
 
+RENEWAL_FAILED = "now (its renewal failed)"
+
+
+def _shown(when: datetime) -> str:
+    return when.astimezone().strftime("%m-%d %H:%M")
+
+
 def login_needed(ship: Ship, now: datetime | None = None) -> list[tuple[str, str]]:
-    """Pools whose grant expires within two days, with the local time it does: only a login cures it."""
+    """Pools that only a login cures, with the local time it is needed by.
+
+    The adapter declares its grant's kind. A fixed grant counts within two days of its end. A
+    self-renewing grant counts only when its renewal has visibly failed, or when the grant that renews
+    it is readable and within two days of its end; its own short access expiry never counts. An
+    unknown kind never counts: doctor shows it as unknown.
+    """
     now = now or datetime.now(timezone.utc)
     found = []
     for pool in ship.pools.values():
-        expiry = grant_expiry(pool)
+        source = pool_file(pool)
+        if source is None:
+            continue
+        adapter = harnesses.native_for(pool.provider)
+        if adapter.grant_kind == "fixed":
+            expiry = adapter.grant_expiry(source)
+        elif adapter.grant_kind == "self-renewing":
+            if adapter.renewal_failed(source) is True:
+                found.append((pool.name, RENEWAL_FAILED))
+                continue
+            expiry = adapter.renewal_end(source)
+        else:
+            continue
         if expiry is not None and expiry - now <= WARN_AHEAD:
-            found.append((pool.name, expiry.astimezone().strftime("%m-%d %H:%M")))
+            found.append((pool.name, _shown(expiry)))
     return found
+
+
+def grant_detail(pool: Pool) -> str:
+    """Doctor's reading of a present credential's grant, by the kind its adapter declares; metadata only."""
+    source = pool_file(pool)
+    if source is None:
+        return ""
+    adapter = harnesses.native_for(pool.provider)
+    if adapter.grant_kind == "fixed":
+        expiry = adapter.grant_expiry(source)
+        return f"; its grant expires {_shown(expiry)}" if expiry else ""
+    if adapter.grant_kind == "self-renewing":
+        access = adapter.grant_expiry(source)
+        end = adapter.renewal_end(source)
+        detail = "; its access renews on use" + (f" (current access until {_shown(access)})" if access else "")
+        detail += f"; the grant that renews it ends {_shown(end)}" if end else "; when the grant that renews it ends is unknown"
+        return detail + ("; its renewal failed: log in" if adapter.renewal_failed(source) is True else "")
+    return "; grant kind unknown"
