@@ -132,3 +132,60 @@ def test_a_jailed_programs_scratch_is_the_jails_own_tmp(tmp_path: Path):
     for variable in ("TMPDIR", "TMP", "TEMP"):
         assert args[args.index(variable) - 1] == "--setenv" and args[args.index(variable) + 1] == "/tmp"
     assert args.index("TMPDIR") < args.index("--unshare-pid")
+
+
+# -- a jailed seat's PATH: the qd-only command folder first, the machine's interpreters after, no venv -------------
+
+
+FRAMEWORK_NAMES = ("python", "python3", "pip", "pip3")
+
+
+def venv_bins(ship) -> set[Path]:
+    import sys
+    found = {(ship.runtime / "venv" / "bin").resolve()}
+    if sys.prefix != sys.base_prefix:
+        found.add((Path(sys.prefix) / "bin").resolve())  # the framework's own venv, which runs these tests
+    return found
+
+
+def test_a_jailed_launch_runs_with_the_same_qd_only_path_and_sets_no_path_of_its_own(drydock: Path, tmp_path: Path):
+    from quarterdeck import seat as seatmod
+    ship = shipmod.load(drydock)
+    path = seatmod.prepare_program_path(ship, synthetic=True)
+    entries = path.split(os.pathsep)
+    commands = ship.runtime / "bin"
+    assert entries[0] == str(commands), "the ship's qd-only command folder comes first"
+    assert sorted(p.name for p in commands.iterdir()) in (["qd"], ["qd", "qd-fakeharness"])
+    assert (commands / "qd").resolve() == (seatmod.qd_bin() / "qd").resolve(), "qd is the installed copy"
+    assert not any((commands / name).exists() for name in FRAMEWORK_NAMES), "no interpreter or pip beside qd"
+    assert not {Path(entry).resolve() for entry in entries if entry} & venv_bins(ship), "no venv bin on the PATH"
+    # The jail adds no PATH of its own: the launch's PATH, the same as unjailed, reaches the program inside.
+    jail = sandbox.Jail(home=tmp_path / "home", seat_home=ship.runtime / "seats" / "worker-1" / "home",
+                        seat_folder=ship.runtime / "seats" / "worker-1", workspace=tmp_path / "work",
+                        ship_folder=ship.folder, runtime=ship.runtime, read_only=(), writable=())
+    args = sandbox.command(jail, ["fake"])
+    assert not [args[i + 1] for i, word in enumerate(args) if word == "--setenv" and args[i + 1] == "PATH"]
+    words = seatmod.launch_words(path, args, socket=None, tmux_tmpdir="/synthetic/tmux", markers=[])
+    assert f"PATH={path}" in words and words.index(f"PATH={path}") < words.index("bwrap")
+    # The ship folder is bound back read-only; nothing deeper is mounted over the command folder or its parents.
+    assert f"--ro-bind {ship.folder} {ship.folder}" in " ".join(args)
+    over = [args[i + 1] for i, word in enumerate(args) if word in ("--tmpfs", "--bind", "--bind-try", "--ro-bind-try")
+            and i + 1 < len(args) and ship.folder in Path(args[i + 1]).parents
+            and (commands == Path(args[i + 1]) or Path(args[i + 1]) in commands.parents)]
+    assert over == [], over
+
+
+def test_the_machines_python_and_pip_are_found_through_the_machine_path_never_a_venv(drydock: Path):
+    import shutil
+    from quarterdeck import seat as seatmod
+    ship = shipmod.load(drydock)
+    path = seatmod.prepare_program_path(ship, synthetic=True)
+    bins = venv_bins(ship) | {(ship.runtime / "bin").resolve()}
+    machine = os.pathsep.join(entry for entry in os.environ.get("PATH", "").split(os.pathsep)
+                              if entry and Path(entry).resolve() not in bins)
+    for name in FRAMEWORK_NAMES:
+        found = shutil.which(name, path=path)
+        assert found == shutil.which(name, path=machine), name
+        if found:
+            assert Path(found).parent.resolve() not in bins and not any(
+                Path(found).resolve().is_relative_to(b.parent) for b in bins if b.name == "bin"), (name, found)

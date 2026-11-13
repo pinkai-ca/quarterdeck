@@ -155,3 +155,59 @@ def test_a_jailed_post_to_an_up_recipient_does_not_call_hidden_state_down(drydoc
         worker.down()
         captain.down()
         svc.ledger.close()
+
+
+PROBE = """for n in qd python python3 pip pip3; do
+  p=$(command -v "$n" 2>/dev/null || true)
+  r=""
+  if [ -n "$p" ]; then r=$(readlink -f "$p"); fi
+  printf '%s\\t%s\\t%s\\n' "$n" "$p" "$r"
+done > "$1/resolved.tsv"
+printf '%s\\n' "$PATH" > "$1/path.txt"
+"""
+
+
+def test_a_jailed_seat_sees_the_qd_only_folder_first_and_the_machines_interpreters_never_a_venv(drydock: Path, tmux: Tmux, tmp_path: Path):
+    import shlex
+    import shutil
+    import sys
+    workspace = tmp_path / "work"
+    workspace.mkdir()
+    (workspace / "probe.sh").write_text(PROBE)
+    text = (drydock / "ship.toml").read_text()
+    text = shipmod.edit(text, "seats.worker-1", "sandbox", True)
+    text = shipmod.edit(text, "seats.worker-1", "cwd", str(workspace))
+    (drydock / "ship.toml").write_text(text + '\n[seats.worker-1.settings]\nstep_seconds = "0.05"\n')
+    ship = shipmod.load(drydock)
+    seat = seatmod.Seat(ship, ship.seat("worker-1"), tmux)
+    try:
+        seat.up(resume=False)
+        assert seat.launched().argv[0] == "bwrap"
+        words = shlex.split((seat.folder / "launch.sh").read_text().splitlines()[-1])
+        launch_path = next(word for word in words if word.startswith("PATH="))[len("PATH="):]
+        wait_for(lambda: Door(seat).reading().open)
+        store = post.Store(ship.runtime)
+        message = store.new("order", "desk", "worker-1", f"Resolve.\n$ sh {workspace}/probe.sh {workspace}\n"
+                            "$ qd post report --re {this} resolved", subject="Probe")
+        assert Door(seat).deliver(post.typed([message])).result == "delivered"
+        wait_for(lambda: next((m for m in store.all() if m.kind == "report" and m.re == message.id), None), 30)
+        inside_path = (workspace / "path.txt").read_text().strip()
+        assert inside_path == launch_path, "the jailed program runs with the launch's own PATH"
+        assert inside_path.split(os.pathsep)[0] == str(ship.runtime / "bin")
+        rows = {name: (found, real) for name, found, real in
+                (line.split("\t") for line in (workspace / "resolved.tsv").read_text().splitlines())}
+        assert rows["qd"][0] == str(ship.runtime / "bin" / "qd"), "qd is found in the qd-only folder"
+        assert rows["qd"][1] == str((seatmod.qd_bin() / "qd").resolve()), "and resolves to the installed copy"
+        venvs = [(ship.runtime / "venv").resolve()]
+        if sys.prefix != sys.base_prefix:
+            venvs.append(Path(sys.prefix).resolve())
+        for name in ("python", "python3", "pip", "pip3"):
+            found, real = rows[name]
+            expected = shutil.which(name, path=launch_path)
+            assert found == (expected or ""), (name, found, expected)
+            assert not found.startswith(str(ship.runtime / "bin")), name
+            for venv in venvs:
+                assert not (found and Path(found).parent.resolve() == venv / "bin"), (name, found)
+                assert not (real and Path(real).is_relative_to(venv / "bin")), (name, real)
+    finally:
+        seat.down()
