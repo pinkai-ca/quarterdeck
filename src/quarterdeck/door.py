@@ -1,8 +1,9 @@
 """The Door: the one path anything is typed through (law: one-door).
 
 It clears what it knows how to clear, refuses what it does not, types once into an empty
-box, checks the box as the program shows it, submits, and confirms by the record. It
-never types into a session the human owns. Only the service calls ``deliver``.
+box, checks the box as the program shows it, submits, and confirms by the record.
+Into a session the human owns it types only when a message waits there, no watch is armed
+and the box is empty. Only the service calls ``deliver``.
 """
 
 from __future__ import annotations
@@ -68,6 +69,7 @@ class Door:
         self.tmux = seat.tmux
         self.proof = None
         self.before_submit = None
+        self.human_wake = False
         self.since = datetime.now(timezone.utc)
 
     def screen(self) -> Screen | None:
@@ -123,7 +125,11 @@ class Door:
             from .recovery import held
             if reason := held(self.seat):
                 return Reading(False, f"a human owns this session; {reason}", "needs a human")
-            return Reading(False, "a human's session", "its watch delivers")  # law: one-door
+            if not self.human_wake:
+                return Reading(False, "a human's session", "its watch delivers")  # law: one-door
+            from .human_wake import eligible
+            if reason := eligible(self.seat, screen, self.proof):
+                return Reading(False, reason, "needs a human")
         screen = screen or self.screen()
         return self._reading(screen)
 
@@ -266,13 +272,22 @@ class Door:
             screen = self.screen()
         return screen
 
-    def deliver(self, text: str, speed: str | None = None, confirm: bool = True, proof=None, verify=None) -> Delivery:
+    def deliver(self, text: str, speed: str | None = None, confirm: bool = True, proof=None, verify=None, *, human_wake: bool = False) -> Delivery:
         """Type ``text`` once and confirm it, or withhold it and say why.
 
         A slash command is typed with ``confirm=False``: the control's own confirmation
         follows, since a local command leaves no input in the record.
         """
         self.proof = proof
+        self.human_wake = human_wake
+        if self.seat.session.human:
+            from .human_wake import authorized
+            if not human_wake or not authorized(self.seat, proof, text):
+                return Delivery("withheld", "a human's session; only the reserved fixed waking line may be typed")
+            if speed is not None or not confirm or verify is not None:
+                return Delivery("withheld", "human wake cannot send a control or alter receipt semantics")
+        elif human_wake:
+            return Delivery("withheld", "human wake requires a human-owned session")
         self.before_submit = None
         self.since = datetime.now(timezone.utc)
         from .turn_failure import obstruction
@@ -302,6 +317,14 @@ class Door:
             return Delivery("blind", "launch changed before paste; no keys sent")
         if verify is not None and not verify():
             return Delivery('withheld', 'bound source changed before paste; no keys sent')
+        if self.human_wake:
+            from .human_wake import eligible
+            # Re-capture at the last pre-paste boundary; never clear a human draft.
+            screen = self.screen()
+            if reason := eligible(self.seat, screen, proof):
+                return Delivery('withheld', reason)
+            if not proof.same_launch(self.seat):
+                return Delivery('blind', 'human wake launch changed before paste; no keys sent')
         owned=paste_refusal.owner(self,text,screen)
         if proof:
             proof.save(phase="pasting")
@@ -322,6 +345,16 @@ class Door:
         if proof:
             proof.save(phase="submitting", shown=shown.box)
         self.before_submit = shown
+        if self.human_wake:
+            from . import post
+            watch = post.watch_reading(self.seat.ship.runtime, self.seat.name)
+            if watch.armed is not False or watch.generation != proof.data['generation']:
+                return Delivery('blind', 'watch changed after waking paste; not submitted or cleared')
+            if not post.Attempts(self.seat.ship.runtime).undelivered(post.Store(self.seat.ship.runtime), self.seat.name):
+                return Delivery('blind', 'waiting message changed after waking paste; not submitted or cleared')
+            current = self.seat.pane()
+            if current is None or current.in_mode or not proof.same_launch(self.seat):
+                return Delivery('blind', 'human wake pane changed after paste; not submitted or cleared')
         self.submit(pane.id)
         if proof:
             proof.save(phase="submitted")
@@ -333,6 +366,8 @@ class Door:
 
     def control_keys(self, keys: tuple[str, ...], proof, verify) -> Delivery:
         """One adapter-proved mode-control queue, under the same human/draft/identity Door."""
+        if self.seat.session.human:
+            return Delivery('withheld', 'a human owns this session; no mode-control keys sent')
         self.proof = proof
         screen = self.screen()
         reading = self.reading(screen)
@@ -376,6 +411,8 @@ class Door:
             self.tmux.keys(pane_id, self.harness.keys.submit)
 
     def interrupt(self) -> str:
+        if self.seat.session.human:
+            return f"{self.seat.name}: a human owns this session; no interrupt key sent"
         pane = self.seat.pane()
         key = self.harness.keys.interrupt
         if pane is None:

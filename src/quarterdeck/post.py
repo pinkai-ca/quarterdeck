@@ -538,14 +538,46 @@ def watch_file(runtime: Path, seat: str) -> Path:
     return runtime / "seats" / seat / "watch"
 
 
-def watch_armed(runtime: Path, seat: str) -> bool:
+@dataclass(frozen=True)
+class WatchReading:
+    armed: bool | None
+    generation: str | None = None
+    reason: str = ""
+
+
+def watch_reading(runtime: Path, seat: str) -> WatchReading:
+    """Old PID/time watch files remain valid; unreadable evidence is not absence."""
+    from .turn_failure import metadata
+
     path = watch_file(runtime, seat)
     try:
-        pid = int(path.read_text().split()[0])
+        generation = metadata(path.parent / 'watch-generation').strip()
+        if len(generation) != 32 or any(c not in '0123456789abcdef' for c in generation):
+            raise ValueError('invalid watch generation')
+    except FileNotFoundError:
+        generation = None  # old watches have no durable arm-episode marker
+    except (OSError, ValueError, UnicodeError):
+        return WatchReading(None, reason='inbox watch generation unreadable; no waking input')
+    try:
+        fields = metadata(path).split()
+        if len(fields) != 2 or int(fields[0]) <= 0 or datetime.fromisoformat(fields[1]).tzinfo is None:
+            raise ValueError('invalid watch evidence')
+        pid = int(fields[0])
+    except FileNotFoundError:
+        return WatchReading(False, generation)
+    except (OSError, ValueError, UnicodeError):
+        return WatchReading(None, generation, 'inbox watch evidence unreadable; no waking input')
+    try:
         os.kill(pid, 0)
-    except (FileNotFoundError, ValueError, IndexError, OSError):
-        return False
-    return True
+    except ProcessLookupError:
+        return WatchReading(False, generation)
+    except OSError:
+        return WatchReading(None, generation, 'inbox watch process unknown; no waking input')
+    return WatchReading(True, generation)
+
+
+def watch_armed(runtime: Path, seat: str) -> bool:
+    return watch_reading(runtime, seat).armed is True
 
 
 def wait_batch(runtime: Path, seat: str, interval: float = 1.0, stop_after: float | None = None) -> tuple[list[Message], list[Attempt]] | None:

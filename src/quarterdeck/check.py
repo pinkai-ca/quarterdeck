@@ -13,13 +13,13 @@ from __future__ import annotations
 
 import secrets
 
-from . import harness as harnesses, pending, post, providers, standing
+from . import harness as harnesses, durable, human_wake, pending, post, providers, standing
 from .door import Delivery, Door
 from .drill import Check, wait_for
 from .harness.base import _version_in_runtime, program_where
 from .seat import Seat, temporary_seat
 from .ship import SeatSpec, Ship, ShipError
-from .tmux import Tmux
+from .tmux import Tmux, TmuxError
 
 PATIENCE = 180.0
 
@@ -56,6 +56,9 @@ def check(ship: Ship, name: str, tmux: Tmux) -> list[Check]:
                     f"{name} {version or 'not found on the PATH'} · provider {providers.display(pool.provider)} · pool {pool.name}"
                     + (f" · runs {where}" if where else ""))]
     if version is None:
+        checks.append(Check('human-session waking line', None if name == 'antigravity' else False,
+                            'not applicable: Google pool reading' if name == 'antigravity' else
+                            'installed program unavailable; proof not run'))
         return checks
     like = next((s.for_pool(pool.name) for s in ship.seats.values()
                  if pool.name in s.pools and s.for_pool(pool.name).harness == name), None)
@@ -72,12 +75,37 @@ def check(ship: Ship, name: str, tmux: Tmux) -> list[Check]:
             ran = launched is not None and str(selected) in launched.argv
             checks.append(Check("the seat ran the program doctor shows", ran,
                                 f"{selected} in launch.json" if ran else f"{selected} not in the seat's launch"))
-    if all(c.passed for c in checks):
+    if name == 'antigravity':
+        checks.append(Check('human-session waking line', None, 'not applicable: Google pool reading'))
+    elif all(c.passed is True for c in checks):
+        human_spec = SeatSpec(f"check-wake-{name}-{run}", f"qd-check-wake-{name}-{run}", "worker", name,
+                              (pool.name,), model=like.model if like else None,
+                              effort=like.effort if like else None, cwd=ship.workspace,
+                              sandbox=like.sandbox if like else None)
+        human_orders: list[post.Message] = []
+        try:
+            with temporary_seat(ship, tmux, human_spec, human_orders, "qd check human wake", human=True) as human_seat:
+                try:
+                    checks += probe_wake(human_seat, human_orders)
+                finally:
+                    wake = human_seat.folder / 'human-wake.json'
+                    if wake.exists():
+                        evidence = ship.runtime / 'check' / f'{human_seat.name}-human-wake.json'
+                        evidence.parent.mkdir(parents=True, exist_ok=True)
+                        durable.replace_file(evidence, wake.read_text())
+        except (OSError, ShipError, TmuxError, ValueError) as error:
+            checks.append(Check('human-session waking line', False, f'wake proof obstructed: {error}'))
+    else:
+        checks.append(Check('human-session waking line', False, 'normal contract failed; human proof not run'))
+    if all(c.passed is not False for c in checks):
         proven = ship.runtime / "proven"
         proven.mkdir(parents=True, exist_ok=True)
         (proven / f"{name}-{version}").write_text(f"{post.now().isoformat(timespec='seconds')}\n"
                                                   + (f"{where}\n" if where else ""))
-        checks.append(Check("proven: launch, an open door, a paste the record confirmed, the task, the turn read", True,
+        label = "proven: launch, door, paste, task, turn read"
+        if name != 'antigravity':
+            label += ", human-session wake and inbox answer"
+        checks.append(Check(label, True,
                             f"{proven / f'{name}-{version}'}"))
     return checks
 
@@ -162,4 +190,69 @@ def probe(ship: Ship, seat: Seat, orders: list[post.Message] | None = None) -> l
     turns_shown = state.turns if state and state.turns is not None else "?"
     checks.append(Check("record joined, the turn ended and read", bool(ended),
                         f"{record.name if record else 'no record'} · {turns_shown} turns · model {state.model if state and state.model else '?'}"))
+    return checks
+
+
+def probe_wake(seat: Seat, orders: list[post.Message]) -> list[Check]:
+    """The real service wake path, with its own human-owned throwaway session.
+
+    No message is carried at launch. The order is published only after an empty
+    composer is observed with no watch. An account-holder dialog is a failure;
+    this probe never dismisses one or presses a choice (including training).
+    """
+    checks: list[Check] = []
+    launched = seat.up(resume=False)
+    if not seat.is_up:
+        return [Check('human-session waking line', False, f'human launch failed: {launched}')]
+    door = Door(seat)
+    observed = {'reason': 'human composer not ready'}
+
+    def empty():
+        watch = post.watch_reading(seat.ship.runtime, seat.name)
+        if watch.armed is not False:
+            observed['reason'] = watch.reason or 'watch already armed; wake precondition not met'
+            return False
+        screen = door.screen()
+        reading = door._reading(screen)
+        observed['reason'] = reading.reason
+        if screen is not None and screen.box == '' and not screen.working and not screen.queued and reading.open:
+            return True
+        return False
+
+    if not wait_for(empty, PATIENCE / 3):
+        return [Check('human-session waking line', False, observed['reason'] or 'known-empty composer not established')]
+    generation = post.watch_reading(seat.ship.runtime, seat.name).generation
+    store, attempts = post.Store(seat.ship.runtime), post.Attempts(seat.ship.runtime)
+    token = f'wake-answer-{secrets.token_hex(4)}'
+    order = store.new('order', 'ship', seat.name,
+                      'Keep `qd inbox --wait` armed in the background yourself. '
+                      'Read this order through your inbox watch, then report on this order '
+                      f'with exactly this body: {token}', subject='qd check human wake')
+    orders.append(order)
+    post.render_inbox(seat.ship.runtime, store, seat.name)
+
+    def taken():
+        reason = human_wake.run(seat)
+        observed['reason'] = reason or ''
+        proof = human_wake.load(seat)
+        return proof is not None and proof.data['phase'] == 'delivered'
+
+    received = wait_for(taken, PATIENCE)
+    checks.append(Check('human-session waking line: known-empty paste and record receipt', bool(received),
+                        'fixed ship waking line confirmed; waiting payload was not typed' if received else
+                        observed['reason'] or 'wake receipt not confirmed'))
+    if not received:
+        return checks
+    armed = wait_for(lambda: (reading := post.watch_reading(seat.ship.runtime, seat.name)).armed is not None
+                     and reading.generation is not None and reading.generation != generation, PATIENCE)
+    checks.append(Check('human-session waking line: seat armed its inbox watch', bool(armed),
+                        'durable watch registration observed' if armed else 'watch not armed after confirmed wake'))
+    read = wait_for(lambda: any(a.result == 'watch' for a in attempts.for_message(order.id)), PATIENCE) if armed else None
+    checks.append(Check('human-session waking line: watch read the waiting message', bool(read),
+                        'ordinary watch receipt' if read else 'waiting message has no watch receipt'))
+    report = wait_for(lambda: store.closing_report(order), PATIENCE) if read else None
+    checks.append(Check('human-session waking line: seat answered the message',
+                        bool(report and report.body.strip() == token),
+                        'answer closed the waiting order' if report and report.body.strip() == token else
+                        'matching answer not received'))
     return checks

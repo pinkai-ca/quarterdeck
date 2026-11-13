@@ -35,11 +35,15 @@ DRILL_TICK = 0.1  # seconds: the generated drydock's service passes quickly; shi
 @dataclass(frozen=True)
 class Check:
     name: str
-    passed: bool
+    passed: bool | None
     detail: str = ""
 
+    def __post_init__(self) -> None:
+        if self.passed is None and not self.detail.startswith('not applicable: '):
+            raise ValueError('an inapplicable check needs an explicit named reason')
+
     def __str__(self) -> str:
-        return f"{'PASS' if self.passed else 'FAIL'}  {self.name}" + (f" · {self.detail}" if self.detail else "")
+        return f"{'N/A' if self.passed is None else 'PASS' if self.passed else 'FAIL'}  {self.name}" + (f" · {self.detail}" if self.detail else "")
 
 
 def wait_for(predicate, seconds: float, step: float = 0.1):

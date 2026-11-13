@@ -614,7 +614,7 @@ def cmd_ledger(args: argparse.Namespace) -> Reading:
 def cmd_check(args: argparse.Namespace) -> list[str]:
     ship = load_ship(args)
     checks = check.check(ship, args.harness, Tmux.default())
-    args.exit_code = 0 if all(c.passed for c in checks) else 1
+    args.exit_code = 0 if all(c.passed is not False for c in checks) else 1
     return [str(c) for c in checks]
 
 

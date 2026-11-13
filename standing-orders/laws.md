@@ -15,7 +15,7 @@ What the framework itself guarantees, enforced in code and tests. A rule nothing
 ## Seat
 
 - `identity` A seat's identity is its pane id, process id and record. Names and titles are display.
-- `one-door` Everything typed into a seat goes through one path, in one process: it clears what it knows how to clear, refuses what it does not, types once into an empty box, checks the box as the program shows it, submits, and confirms by the record. It never types into a session the human owns. Never resend what you cannot confirm.
+- `one-door` Everything typed into a seat goes through one path, in one process: it clears what it knows how to clear, refuses what it does not, types once into an empty box, checks the box as the program shows it, submits, and confirms by the record. Into a session the human owns it types only when a message waits there, no watch is armed and the box is empty. Never resend what you cannot confirm.
 - `context-is-cache` After any restart or fresh start a seat receives its brief and every open message in full, except a message its provider refused, which it receives as a notice without the text while the sender is told; so a seat may be relaunched at any time and the ship loses nothing it sent. Where the open messages are too long for a seat's first message, that message gives a short account of each and names a file that holds them in full, which the seat is told to read whole before it acts.
 
 ## Watch

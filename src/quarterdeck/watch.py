@@ -578,7 +578,14 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
                 if seat.name not in needs_human:
                     needs_human.append(seat.name)
                 pending_lines.append(f"{seat.name}: {reason}")
-            if pending and not post.watch_armed(ship.runtime, seat.name):
+            from . import human_wake
+            watch = post.watch_reading(ship.runtime, seat.name)
+            reason = human_wake.status(seat)
+            if reason:
+                if reason != human_wake.WAITING and seat.name not in needs_human:
+                    needs_human.append(seat.name)
+                pending_lines.append(f"{seat.name}: {reason}")
+            if pending and watch.armed is False:
                 unarmed.append(seat.name)
         else:
             # Human alarms use owned metadata only; never read their conversation here.

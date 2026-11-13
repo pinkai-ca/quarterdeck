@@ -109,7 +109,7 @@ def seat_section(ship: Ship, seat: SeatSpec, human_session: bool) -> str:
     ]
     if human_session:
         lines.append(
-            "- Your session belongs to the human, so nothing is ever typed into your pane by the ship. "
+            "- Your session belongs to the human. The ship types only its fixed waking line when a message waits, no watch is armed and your box is known empty. "
             "Messages reach you through your watch: run `qd inbox --wait` in the background as the last act of every turn; "
             "it prints new messages in full when they arrive and exits, and you arm it again."
         )

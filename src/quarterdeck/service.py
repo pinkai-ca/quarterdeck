@@ -52,6 +52,8 @@ PERSON_ONLY = (
     "pending box changed",
     "pending folded box",
     "prior launch has an unconfirmed delivery",
+    "human wake",
+    "inbox watch",
 )
 
 
@@ -231,10 +233,12 @@ class Service:
         results = self.attempts.latest()
         for seat in self.resolved_seats():
             if seat.session.human:
-                from . import turn_failure
+                from . import human_wake, turn_failure
                 from .auth_failure import status as authentication_status
-                if recovery.held(seat) or authentication_status(seat) or turn_failure.obstruction(seat, self.store):
-                    self.needs_human(seat)
+                if not (recovery.held(seat) or authentication_status(seat)
+                        or turn_failure.obstruction(seat, self.store)):
+                    human_wake.run(seat)
+                self.needs_human(seat)
                 continue
             pending = [m for m in self.attempts.undelivered(self.store, seat.name, results=results) if self._due(m, seat)]
             if pending:
@@ -284,6 +288,10 @@ class Service:
         from .auth_failure import status as authentication_status
         reason = authentication_status(seat) or reason
         reason = reason or next(iter(pending_delivery.detached(seat)), None)
+        if seat.session.human:
+            from . import human_wake
+            wake = human_wake.status(seat)
+            reason = reason or (wake if wake != human_wake.WAITING else None)
         if reason != self.told.get(seat.name):
             self.told[seat.name] = reason
         if not reason:

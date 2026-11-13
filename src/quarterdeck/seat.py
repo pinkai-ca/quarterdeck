@@ -688,13 +688,13 @@ class Seat:
 
 @contextmanager
 def temporary_seat(ship: Ship, tmux: Tmux, spec: SeatSpec, orders: list[post.Message], purpose: str,
-                   *, installed_version: str | None = None) -> Iterator[Seat]:
+                   *, installed_version: str | None = None, human: bool = False) -> Iterator[Seat]:
     """Own a fresh temporary seat through transport retirement and every teardown stage.
 
     Callers register only orders this operation opened. Posts and receipts remain;
     a failure to retire transport leaves its home intact for later inspection.
     """
-    session = shipmod.Session(spec.session, spec.session)
+    session = shipmod.Session(spec.session, spec.session, human=human)
     treated = replace(ship, sessions={**ship.sessions, spec.session: session}, seats={**ship.seats, spec.name: spec})
     seat = Seat(treated, spec, tmux)
     if installed_version is not None:
