@@ -29,7 +29,7 @@ def test_doctor_template_read_error_is_a_failed_row(tmp_path, monkeypatch, failu
     def unreadable(*args, **kwargs):
         raise failure
 
-    monkeypatch.setattr(harness.get('fake'), 'check_defaults', unreadable)
+    monkeypatch.setattr(type(harness.get('fake')), 'check_defaults', unreadable)
     failed, = (row for row in doctor.seat_readiness(proxy) if not row.passed)
     assert failed.name == 'seat sample pool synthetic-pool readiness'
     assert failed.detail == str(failure)
