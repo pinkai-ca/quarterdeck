@@ -337,12 +337,15 @@ def _failure(data: dict, phase: str, *, cause: str | None = None) -> None:
         data['last_failure'] = pending['failure']
         return
     command = pending.get('target', {}).get('proof_command') if pending else None
-    reason = (f'{command} proof did not complete' if phase == 'proving'
-              and command in ('origin', '--version', 'laws', '--help') else 'copy operation did not complete')
-    if cause in FAILURE_CAUSES:
-        reason = cause
+    proof_step = phase == 'proving' and command in ('origin', '--version', 'laws', '--help')
+    reason = (f'{command} proof did not complete' if proof_step else
+              cause if cause in FAILURE_CAUSES else 'copy operation did not complete')
     data['last_failure'] = dict(phase=phase, reason=reason,
                                 at=datetime.now(timezone.utc).isoformat(timespec='seconds'))
+    if cause in FAILURE_CAUSES:
+        data['last_failure']['cause'] = cause
+    if proof_step:
+        data['last_failure']['proof_command'] = command
     if pending:
         pending['failure'] = dict(data['last_failure'])
 

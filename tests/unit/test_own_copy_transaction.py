@@ -208,3 +208,17 @@ def test_bad_resource_declaration_names_its_fixed_cause(transaction, monkeypatch
     with pytest.raises(ShipError, match='resource declaration invalid'):
         install.upgrade(tx.ship)
     assert tx.read()['last_failure']['reason'] == 'resource declaration invalid'
+
+
+def test_proof_failure_keeps_both_fixed_category_and_proved_command(transaction, monkeypatch):
+    tx = transaction
+    def failed(ship, selected):
+        selected['proof_command'] = 'laws'
+        raise ShipError('synthetic proof step failed')
+    monkeypatch.setattr(install, '_proof', failed)
+    with pytest.raises(ShipError, match='proof command failed'):
+        install.upgrade(tx.ship)
+    failure = tx.read()['last_failure']
+    assert failure['cause'] == 'proof command failed'
+    assert failure['reason'] == 'laws proof did not complete'
+    assert failure['proof_command'] == 'laws'
