@@ -69,6 +69,7 @@ def test_up_starts_the_service_and_the_service_delivers(ship: shipmod.Ship, tmux
 
 
 def test_a_seat_in_a_human_session_is_reached_by_its_watch_only(ship: shipmod.Ship, tmux: Tmux, capsys):
+    """Reached by its watch, and only the guarded fixed waking line otherwise."""
     qd(capsys, "up", "desk")
     proof = qd(capsys, "post", "question", "--to", "desk", "Which branch?")
     assert proof.endswith("no watch armed on desk; waits in the inbox")

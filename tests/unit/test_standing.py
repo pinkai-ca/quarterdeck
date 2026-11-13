@@ -33,7 +33,7 @@ def test_the_brief_is_built_from_files_the_user_can_edit(drydock: Path):
 def test_a_human_session_seat_is_told_about_its_watch(drydock: Path):
     ship = shipmod.load(drydock)
     brief = standing.brief(ship, ship.seat("desk"))
-    assert "qd inbox --wait" in brief.text and "nothing is ever typed into your pane" in brief.text
+    assert "qd inbox --wait" in brief.text and "The ship types only its fixed waking line when a message waits, no watch is armed and your box is known empty." in brief.text
     assert "typed into your pane in full" not in brief.text
 
 

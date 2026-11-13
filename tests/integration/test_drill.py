@@ -19,6 +19,7 @@ def private_socket(monkeypatch):
 
 
 def test_the_drill_passes_every_check(private_socket):
+    """The desk is reached by its watch, and only the guarded fixed waking line otherwise."""
     passed, lines = drill.run(None)
     assert passed, "\n".join(lines)
     text = "\n".join(lines)
