@@ -327,10 +327,22 @@ def test_account_pass_commits_once_for_history_and_writes_nothing_when_unchanged
         assert svc.ledger.db.total_changes == before
     assert reads == [record]
     # A growing record with the same completed turns must not rewrite old walls or turns.
+    old_checkpoint = svc.ledger.db.execute('SELECT record,evidence FROM record_accounting').fetchall()
     record.write_text('synthetic second revision; only metadata changed')
     trace.clear()
     svc.account()
-    assert sql_writes(trace) == [] and svc.ledger.db.total_changes == before
+    changes = sql_writes(trace)
+    assert len(changes) == 3 and changes[0] == 'BEGIN ' and changes[-1] == 'COMMIT'
+    assert changes[1].startswith('INSERT OR REPLACE INTO record_accounting VALUES ')
+    assert svc.ledger.db.total_changes == before + 1
+    checkpoint = svc.ledger.db.execute('SELECT record,evidence FROM record_accounting').fetchall()
+    assert len(checkpoint) == len(old_checkpoint) == 1
+    assert checkpoint[0][0] == old_checkpoint[0][0] == str(record)
+    assert checkpoint[0][1] != old_checkpoint[0][1]
+    assert reads == [record, record]
+    trace.clear()
+    svc.account()
+    assert sql_writes(trace) == [] and svc.ledger.db.total_changes == before + 1
     assert reads == [record, record]
     svc.ledger.close()
 
