@@ -1175,3 +1175,27 @@ for others; explicit titles remain authoritative. **Compatibility:** syncing a
 hand-made ship with omitted session titles applies these derived titles and
 renames its tmux sessions. Bring that ship down before syncing. Every tracked ship,
 including the operating ship, declares its titles explicitly.
+
+
+The stable JSON answers object uses these keys (flags use hyphens instead of
+underscores). Scalar text keys are `operator`, `name`, `office`, `workspace`,
+`folder`, `programs` (comma-separated registered names), `desk`, `captain`,
+`engineer`, `existing` (`keep|update`), and `use_defaults`, `accept`, `check`,
+`start`, `wait_for_sign_in` (`yes|no`). Program-keyed text objects are `payment`,
+`subscription_home`, `provider`, `key_env`, `endpoint`, `model`. The `seats`
+object is keyed by `desk`, `captain`, `engineering`; each accepts `name`,
+`harness`, `model`, `effort`, `model_mode`, `effort_mode`, and ordered `pools`.
+A pool choice is its name or an object with `pool`, `harness`, `model`, `effort`
+and the two mode keys. `edits` is an ordered list of `{"field": FIELD,
+"value": VALUE}` objects; acceptance/check/start are supplied separately.
+For example, after choosing an existing project and native sign-in directory:
+
+```sh
+qd setup --answers crew-answers.json
+```
+
+```json
+{"name":"Aurora","workspace":"/path/to/project","programs":"codex",
+ "payment":{"codex":"subscription"},"subscription_home":{"codex":"/path/to/native-home"},
+ "use_defaults":"yes","accept":"yes","check":"yes","start":"yes"}
+```
