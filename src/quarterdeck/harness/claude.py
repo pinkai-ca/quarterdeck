@@ -800,10 +800,10 @@ class ClaudeHarness(Harness):
         self.check_defaults(seat, ship_home)
         home.mkdir(parents=True, exist_ok=True)
         template = ship_template(ship_home, "settings.json")
-        from .. import statusline
+        from . import claude_statusline
         defaults = merged(SETTINGS, {"statusLine": {
             "type": "command", "refreshInterval": 30,
-            "command": shlex.join([sys.executable, "-I", "-S", str(Path(statusline.__file__).resolve())]),
+            "command": shlex.join([sys.executable, "-I", "-S", str(Path(claude_statusline.__file__).resolve())]),
         }})
         settings = copy.deepcopy(merged(merged(defaults, template), seat.settings))  # policy cannot mutate shared defaults
         if not seat.human_session:

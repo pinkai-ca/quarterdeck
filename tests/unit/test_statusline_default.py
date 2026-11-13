@@ -15,7 +15,7 @@ import venv
 
 import pytest
 
-from quarterdeck import statusline as line
+from quarterdeck.harness import claude_statusline as line
 from quarterdeck import resources
 from quarterdeck.harness.claude import ClaudeHarness
 from quarterdeck.ship import Pool, SeatSpec
@@ -194,6 +194,8 @@ def test_claude_default_home_command_and_ship_override(tmp_path):
     command = shlex.split(settings["statusLine"]["command"])
     assert command[:3] == [sys.executable, "-I", "-S"]
     assert Path(command[3]).is_file()
+    assert Path(command[3]).name == "claude_statusline.py"
+    assert Path(command[3]).parent.name == "harness"
     env = {**os.environ, "QD_SHIP": str(tmp_path / "missing")}
     done = subprocess.run(command, input="{}", text=True, capture_output=True, env=env, timeout=10)
     assert done.returncode == 0 and "ship reading unavailable" in done.stdout
@@ -244,6 +246,8 @@ print(json.dumps(shlex.split(json.loads((home / "settings.json").read_text())["s
     command = json.loads(built_home.stdout)
     assert command[0] == str(python)
     assert Path(command[3]).is_relative_to(installed)
+    assert Path(command[3]).name == "claude_statusline.py"
+    assert Path(command[3]).parent.name == "harness"
     assert (installed / "bin/qd").is_file()
     done = subprocess.run(command, input="{}", capture_output=True, text=True,
                           env={**os.environ, "QD_SHIP": str(tmp_path / "missing")}, timeout=10)
