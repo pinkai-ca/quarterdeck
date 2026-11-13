@@ -62,7 +62,7 @@ def assert_original(project, run, original):
 def test_fixture_records_its_container_before_use_then_retirement_forgets_it(tmp_path, monkeypatch):
     project, run, state, original = crashed(tmp_path)
     parent = project / '.testruns' / SOCKETS
-    parent.mkdir()
+    parent.mkdir(mode=0o700)
     registry = project / '.testruns' / RESULTS / run / 'sessions'
     with monkeypatch.context() as patch:
         patch.setenv(sessions.RECORD_ENV, str(registry))
@@ -82,7 +82,7 @@ def test_fixture_records_its_container_before_use_then_retirement_forgets_it(tmp
 def test_recording_failure_closes_the_unused_container(tmp_path, monkeypatch):
     project, run, state, original = crashed(tmp_path)
     parent = project / '.testruns' / SOCKETS
-    parent.mkdir()
+    parent.mkdir(mode=0o700)
     registry = project / '.testruns' / RESULTS / run / 'sessions'
 
     def failed(*args, **kwargs):
