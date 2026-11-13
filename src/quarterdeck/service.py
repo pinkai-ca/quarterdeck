@@ -160,7 +160,7 @@ class Service:
             self.log("error", step="load", error=str(error))
         self.rebind()
         self.structure_passes.begin()
-        for step in (self.server_recovery, self.reconcile, self.account, self.groups, self.cascades, self.inboxes, self.recoveries, self.refusals, self.answers, self.deliveries, self.follow, self.requests, self.compactions, self.person_quiet, self.fresh_after_order,
+        for step in (self.server_recovery, self.reconcile, self.account, self.groups, self.cascades, self.inboxes, self.recoveries, self.refusals, self.answers, self.looks, self.deliveries, self.follow, self.requests, self.compactions, self.person_quiet, self.fresh_after_order,
                      self.rebrief, self.credentials, self.authentications, self.model_differences, self.failover):  # accounting before anything relaunches a seat
             self.heartbeat()  # before every step: a slow delivery or usage read reads as busy, never as dead
             try:
@@ -666,6 +666,8 @@ class Service:
             if not seat.is_up:
                 return f"{message.short}: {seat.name} is down; it is delivered at qd up"
             return self.deliver(seat, [message], resend=True)
+        if kind == "submit":
+            return pending_delivery.submit(self, self.seat(data["seat"]))
         if kind == "control":
             return self.control(self.seat(data["seat"]), data["name"], str(data["value"]))
         if kind == "relaunch":
@@ -971,6 +973,15 @@ class Service:
         died = (datetime.fromtimestamp(pane.dead_time).astimezone().isoformat(timespec="seconds")
                 if pane.dead_time is not None else None)
         self.log("pane-dead", seat=seat.name, pane=pane.id, pid=pane.pid, died=died, status=pane.exit_status)
+
+    def looks(self) -> None:
+        """The door's one look at what it could not confirm (law: one-door): record first, then the screen."""
+        for seat in self.resolved_seats():
+            try:
+                for line in pending_delivery.one_look(self, seat):
+                    self.log("look", seat=seat.name, proof=line)
+            except (ShipError, OSError, TmuxError) as error:
+                self.log("error", step="looks", seat=seat.name, error=str(error))
 
     def show_window(self, seat: Seat) -> str | None:
         """Show the seat's window in its session, or say why not; nothing is typed, closed or resized."""

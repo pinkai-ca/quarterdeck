@@ -134,6 +134,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument('--cancel', action='store_true')
     p = verb("stop", cmd_stop, "interrupt a seat's turn, nothing more")
     p.add_argument("seat", nargs="?", help="default: this seat (QD_SEAT)")
+    p = verb("submit", cmd_submit, "press Enter on a seat's box when it holds exactly one of its pending messages")
+    p.add_argument("seat", help="the seat whose box holds the message")
     p = verb("set", cmd_set, "change a seat: writes the ship file, then applies what it can")
     p.add_argument("seat", nargs="?", help="default: this seat (QD_SEAT)")
     p.add_argument("changes", nargs="*", metavar="KEY=VALUE", help="model=…, effort=…, pool=a,b, up=true")
@@ -387,6 +389,14 @@ def cmd_stop(args: argparse.Namespace) -> str:
     if seat.session.human:
         raise ShipError(f"{seat.name} sits in a human's session; the ship sends no controls into a human's session")
     return service.request(ship.runtime, "stop", seat=seat.name)
+
+
+def cmd_submit(args: argparse.Namespace) -> str:
+    ship = load_ship(args)
+    seat = seat_of(ship, args.seat)
+    if seat.session.human:
+        raise ShipError(f"{seat.name} sits in a human's session; nothing is pressed in a human's session")
+    return service.request(ship.runtime, "submit", seat=seat.name)
 
 
 def cmd_set(args: argparse.Namespace) -> list[str]:

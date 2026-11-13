@@ -18,7 +18,7 @@ from . import durable, post
 from .ship import ShipError
 
 
-SEAT_KINDS = frozenset({'relaunch', 'control', 'select', 'stop'})
+SEAT_KINDS = frozenset({'relaunch', 'control', 'select', 'stop', 'submit'})
 
 
 class RequestHold(ShipError):
