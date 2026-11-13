@@ -231,20 +231,28 @@ def relaunch(ship: shipmod.Ship, name: str | None, resume: bool, cancel=None) ->
     target = this_seat(ship, name)
     if cancel is not None:
         return request_queue.cancel(ship.runtime, target, None if cancel == '*' else cancel)
+    asked = post.now().isoformat()
     seat = seat_of(ship, target)
     if seat.is_working():
         return service.request(ship.runtime, 'relaunch', seat=seat.name, resume=resume,
-                               caller=os.environ.get('QD_SEAT'), origin=request_queue.launch_binding(seat))
+                               caller=os.environ.get('QD_SEAT'), origin=request_queue.launch_binding(seat),
+                               requested_at=asked)
     kind = 'restart' if resume else 'fresh'
     with request_queue.direct(ship.runtime, seat.name, kind) as retired:
         suffix = f'; retired pending relaunch request(s): {", ".join(retired)}' if retired else ''
-        try:
-            proof = seat.restart() if resume else seat.fresh()
-        except ShipError as error:
-            if retired:
-                raise ShipError(str(error) + suffix) from error
-            raise
-        return proof + suffix
+        if not seat.is_working():
+            try:
+                proof = seat.restart() if resume else seat.fresh()
+            except ShipError as error:
+                if retired:
+                    raise ShipError(str(error) + suffix) from error
+                raise
+            return proof + suffix
+    # The existing working guard is rechecked after writer coordination, so
+    # waiting for that lock never turns a direct act into an unexamined restart.
+    return service.request(ship.runtime, 'relaunch', seat=seat.name, resume=resume,
+                           caller=os.environ.get('QD_SEAT'), origin=request_queue.launch_binding(seat),
+                           requested_at=asked) + suffix
 
 
 def cmd_stop(args: argparse.Namespace) -> str:

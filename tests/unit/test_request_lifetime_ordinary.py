@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import cli, post, request_queue, servicectl, watch
+from quarterdeck import cli, durable, post, request_queue, servicectl, watch
 from quarterdeck.service import Service
 from quarterdeck.ship import ShipError
 
@@ -24,7 +24,10 @@ def runtime(tmp_path, monkeypatch):
 
 
 def enqueue(runtime, kind='relaunch', **extra):
-    return request_queue.enqueue(runtime, kind, dict(seat=SEAT, resume=True, **extra),
+    data = dict(seat=SEAT, resume=True, **extra)
+    if kind == 'relaunch':
+        data['caller'] = SEAT
+    return request_queue.enqueue(runtime, kind, data,
                                  name=f'request-orchid-{next(IDS)}-zz')
 
 
@@ -41,6 +44,22 @@ def test_listing_absent_queue_is_read_only(runtime):
     assert not runtime.exists()
 
 
+def test_legacy_publication_keeps_one_original_payload_write(runtime, monkeypatch):
+    writes = []
+    replace = durable.replace_file
+
+    def record(path, text):
+        writes.append((path, text))
+        replace(path, text)
+
+    monkeypatch.setattr(durable, 'replace_file', record)
+    path = request_queue.enqueue(runtime, 'control', dict(seat=SEAT, value='synthetic value'),
+                                 name='request-orchid-legacy-zz')
+    assert writes == [(path, json.dumps(dict(kind='control', seat=SEAT, value='synthetic value')) + '\n')]
+    assert not request_queue.state_path(path).exists()
+    assert request_queue.pending(runtime)[0]['since'] == request_queue.created(path, {})
+
+
 def test_wait_metadata_names_kind_since_reason_and_cancel_without_arguments(runtime):
     path = enqueue(runtime, 'control', value='synthetic private setting')
     with request_queue.coordination(runtime):
@@ -48,7 +67,7 @@ def test_wait_metadata_names_kind_since_reason_and_cancel_without_arguments(runt
         request_queue.hold(path, data, 'tools-unknown', 'tool state unknown')
     [row] = request_queue.pending(runtime)
     text = request_queue.describe(row)
-    assert row['kind'] == 'control' and row['since'] == AT.isoformat()
+    assert row['kind'] == 'control' and row['since'] == request_queue.created(path, request_queue.metadata(path))
     assert row['reason'] == 'tool state unknown' and not row['claimed']
     assert path.stem in text and 'qd restart seat-orchid --cancel' in text
     assert 'synthetic private setting' not in text and 'value' not in row
@@ -191,6 +210,28 @@ def test_direct_act_retires_queued_relaunch_before_existing_manual_action(runtim
     monkeypatch.setattr(cli, 'seat_of', lambda *args: seat)
     proof = cli.relaunch(ship, SEAT, True)
     assert proof.startswith('synthetic direct restart') and path.stem in proof
+
+
+def test_direct_act_rechecks_work_after_coordination_and_keeps_asking_time(runtime, monkeypatch):
+    path = enqueue(runtime)
+    working = iter([False, True])
+    ship = SimpleNamespace(runtime=runtime, seat=lambda name: SimpleNamespace(name=name))
+    seat = SimpleNamespace(name=SEAT, is_working=lambda: next(working),
+                           launched=lambda: None,
+                           restart=lambda: pytest.fail('direct action after work appeared'))
+    monkeypatch.setattr(cli, 'seat_of', lambda *args: seat)
+    observed = []
+
+    def request(target, kind, **data):
+        observed.append((target, kind, data))
+        assert not path.exists()
+        return 'synthetic queued answer'
+
+    monkeypatch.setattr(cli.service, 'request', request)
+    proof = cli.relaunch(ship, SEAT, True)
+    assert proof.startswith('synthetic queued answer') and path.stem in proof
+    assert len(observed) == 1 and observed[0][:2] == (runtime, 'relaunch')
+    assert observed[0][2]['requested_at'] == AT.isoformat()
 
 
 def test_unknown_time_keeps_known_target_visible_and_withdrawable(runtime):

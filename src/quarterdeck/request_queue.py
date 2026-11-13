@@ -248,21 +248,25 @@ def direct(runtime, name, kind):
 
 
 def enqueue(runtime, kind, data, *, name=None):
+    data = dict(data)
+    context = {}
+    if kind == 'relaunch':
+        for key in ('caller', 'origin', 'requested_at'):
+            if key in data:
+                context[key] = data.pop(key)
+    born = context.pop('requested_at', None) or post.now().isoformat()
     with coordination(runtime):
         retired = _retire(runtime, data['seat'], 'superseded by a newer direct relaunch') if kind == 'relaunch' else []
         name = name or f'{datetime.now().strftime("%H%M%S")}-{kind}-{os.getpid()}'
         folder = runtime / 'requests'
         path = folder / f'{name}.json'
-        data = dict(data)
-        meta = dict(version=1, created_at=post.now().isoformat())
-        for key in ('caller', 'origin'):
-            if key in data:
-                meta[key] = data.pop(key)
+        meta = dict(version=1, created_at=born, **context)
         payload = dict(kind=kind, **data)
         if retired:
             meta['retired'] = retired
         def publish():
-            save_metadata(path, meta)
+            if context or retired:
+                save_metadata(path, meta)
             durable.replace_file(path, json.dumps(payload) + '\n')
         if kind in SEAT_KINDS and isinstance(data.get('seat'), str):
             with post.admission(runtime, data['seat']):
