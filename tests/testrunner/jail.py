@@ -33,8 +33,10 @@ ETC = ('alternatives', 'ld.so.cache', 'ld.so.conf', 'ld.so.conf.d', 'localtime',
 ALLOWED = ('HOME', 'TMPDIR', 'XDG_CACHE_HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'PIP_CACHE_DIR',
            'PIP_NO_INDEX', 'PIP_NO_INPUT', 'PIP_DISABLE_PIP_VERSION_CHECK', 'PYTHONNOUSERSITE', 'TESTRUNS_RUN',
            'TESTRUNS_USERBASE', 'TESTRUN_EVIDENCE', 'TESTRUNS_MEMORY_MIB', 'OPENBLAS_NUM_THREADS', 'GIT_CONFIG_NOSYSTEM')
-FIXED = {'PATH': PATH, 'LANG': 'C.UTF-8', 'TMUX_TMPDIR': SOCKET_DIR, 'TESTRUNS_SOCKETS': SOCKET_DIR,
-         'TESTRUNS_JAILED': '1'}
+# SHELL is fixed, not passed through: tools such as script(1) run their command with it, and only a shell
+# under /usr exists inside.
+FIXED = {'PATH': PATH, 'LANG': 'C.UTF-8', 'SHELL': '/bin/bash' if Path('/usr/bin/bash').exists() else '/bin/sh',
+         'TMUX_TMPDIR': SOCKET_DIR, 'TESTRUNS_SOCKETS': SOCKET_DIR, 'TESTRUNS_JAILED': '1'}
 SET_BY_BUBBLEWRAP = ('PWD',)  # bubblewrap's --chdir sets it, to the jail's working folder
 # Named so a reader can check them; the allowlist alone already keeps them, and every other name, out.
 FORBIDDEN = ('SSH_AUTH_SOCK', 'DBUS_SESSION_BUS_ADDRESS', 'TMUX', 'TMUX_PANE', 'XDG_RUNTIME_DIR', 'DISPLAY',
