@@ -24,7 +24,7 @@ from pathlib import Path
 
 from .json_record import JsonLinesReader, input_reader, input_rows, records_matching
 from .types import AUTHENTICATION, Inputs, TurnFailure
-from .claude_background import BackgroundBash
+from .claude_background import BackgroundBash, user_notice
 
 from ..ship import Pool, SeatSpec
 from .base import (Box, ship_template, trimmed, Input, Control, Credential, Harness, Interruption, Keys, Launch, Screen, Tokens,
@@ -77,12 +77,13 @@ def session_id(record: Path) -> str | None:
 
 
 def prompt_text(entry: dict) -> str | None:
-    """The text of a typed prompt, or None for a tool result, a local command's echo or a compaction summary.
+    """Typed text, excluding tool results, local echoes, compaction and measured native notices.
 
     A compaction writes its summary as a user row marked ``isCompactSummary``; nothing typed it,
     and an idle compaction is followed by no reply, so counting it would open a turn nothing closes.
     """
-    if entry.get("type") != "user" or entry.get("isSidechain") or entry.get("isCompactSummary") is True:
+    if (entry.get("type") != "user" or entry.get("isSidechain")
+            or entry.get("isCompactSummary") is True or user_notice(entry)):
         return None
     content = entry.get("message", {}).get("content")
     if isinstance(content, list):
@@ -342,6 +343,7 @@ class _Reader(JsonLinesReader):
         self.queue_slots = []  # text/phase FIFO, including returned drafts and consumed echo identities
         self.background = BackgroundBash()
         self.walls = []
+        self.notice_input = None  # accounting candidate only: a notice cannot open a turn
         super().__init__(record, snapshot)
 
     def state(self):
@@ -371,8 +373,10 @@ class _Reader(JsonLinesReader):
             self.user(entry)
         elif kind == "assistant":
             self.assistant(entry)
-        elif kind == "system" and entry.get("subtype") == "turn_duration" and self.open is not None:
-            self.end(when(entry.get("timestamp")), native_end=True)  # the one entry that says the turn is over
+        elif kind == "system" and entry.get("subtype") == "turn_duration":
+            self.notice_input = None
+            if self.open is not None:
+                self.end(when(entry.get("timestamp")), native_end=True)  # the one entry that says the turn is over
         elif kind not in ('system', *INPUT_IGNORED):
             self.tools_known = False
 
@@ -458,6 +462,10 @@ class _Reader(JsonLinesReader):
             self.tools_known = False
         text = prompt_text(entry)
         content = entry.get("message", {}).get("content")
+        if user_notice(entry):
+            if self.open is None:
+                self.notice_input = content
+            return
         if isinstance(content, str) and content.startswith("<local-command-stdout>"):
             if match := SET_MODEL.search(content):
                 self.model = match.group(1)  # the display name, until the next assistant entry names the id
@@ -469,6 +477,7 @@ class _Reader(JsonLinesReader):
                 self.end(when(entry.get("timestamp")))
             return
         if text is not None:
+            self.notice_input = None
             self.orphan_auth = None
             self.last_input, self.last_input_at = text, when(entry.get("timestamp"))
             matching = next((i for i, (item, _) in enumerate(self.queue_slots) if item.strip() == text.strip()), None)
@@ -494,6 +503,14 @@ class _Reader(JsonLinesReader):
         next prompt does.
         """
         message = entry.get("message", {})
+        if (self.open is None and self.notice_input is not None
+                and message.get('role') == 'assistant'
+                and self.content_known(message.get('content'), 'assistant')):
+            text, self.notice_input = self.notice_input, None
+            self.orphan_auth = None
+            self.start_turn({"started": when(entry.get('timestamp')), "input": text,
+                             "usage": {}, "tools": [], "reply": "", "model": None,
+                             "subagents": self.subagent_turns})
         # Claude Code 2.1.317: a synthetic assistant API error, then turn_duration.
         # Classify the native code, never login words quoted in a user's text.
         content = message.get('content')
@@ -544,6 +561,7 @@ class _Reader(JsonLinesReader):
                 self.open["reply"] = (self.open["reply"] + "\n\n" + block["text"]).strip()
 
     def end(self, at: datetime | None, *, completed: bool = True, native_end: bool = False) -> None:
+        self.notice_input = None
         turn = self.close_turn()
         tokens = sum(turn["usage"].values(), Tokens()) if turn["usage"] else Tokens.unknown()
         self.record_turn(

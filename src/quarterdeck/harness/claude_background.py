@@ -75,6 +75,23 @@ def notification(text):
     return fields['tool-use-id'], fields['task-id'], fields['status'], fields.get('note')
 
 
+def user_notice(entry):
+    """A measured native notice is program input, separate from its task's execution evidence.
+
+    Only the known user-row carrier is set aside. Text alone, an unfamiliar origin,
+    version, status or payload remains ordinary/unclassified input, never an idle proof.
+    """
+    if (entry.get('type') != 'user' or entry.get('isSidechain')
+            or entry.get('origin') != {'kind': 'task-notification'}
+            or entry.get('version') not in NOTICE_VERSIONS[('user', 'task-notification')]):
+        return False
+    message = entry.get('message')
+    if not isinstance(message, dict) or message.get('role') != 'user':
+        return False
+    fields = notification(message.get('content'))
+    return fields is not None and fields[2] in {*TERMINAL, 'stopped'}
+
+
 @dataclass
 class Task:
     call: str
