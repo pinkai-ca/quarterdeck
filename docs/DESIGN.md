@@ -542,6 +542,13 @@ Unknown identity, a replaced/nonregular/symlink path or an unreadable boundary l
 Forced `pasting`/`submitting` cuts remain uncertain for explicit resend. Stop annotations read at most 8 MiB
 of one journal and never wait for a new lock owner or scan the pending directory.
 
+The same stop boundary recognizes the fixed waking line's existing `seats/<seat>/human-wake.json`
+reservation. It validates that wake with its own reader's schema and binds its immutable reservation
+identity in the service pointer, without adding ordinary message-attempt fields to it. A stop before
+paste keeps that prepared reservation byte-for-byte unchanged and unsent; its existing wake pass
+settles it on restart. Submitted wakes retain their own receipt path. A wake failure remains named
+and held for its seat, while the delivery pass continues to later crew seats.
+
 The `paste_boundary = "prepared-before-paste-v1"` marker is a runtime-only writer fact, not a resend command.
 Only its still-prepared journal with no conflicting recovery/clear evidence proves that no payload paste began;
 the next service may cancel that reservation and deliver the open message once through the ordinary door.

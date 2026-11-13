@@ -287,6 +287,8 @@ class Door:
     def deliver(self, text: str, speed: str | None = None, confirm: bool = True, proof=None, verify=None, *, human_wake: bool = False) -> Delivery:
         from . import shutdown
         with shutdown.delivery(proof):
+            if proof and shutdown.requested():
+                return Delivery('withheld', 'service stopping before paste')
             return self._deliver(text, speed, confirm, proof, verify, human_wake=human_wake)
 
     def _deliver(self, text: str, speed: str | None = None, confirm: bool = True, proof=None, verify=None, *, human_wake: bool = False) -> Delivery:

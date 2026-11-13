@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
 from functools import wraps
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -74,10 +75,31 @@ def owner(runtime: Path, pid: int | None = None) -> dict | None:
     return data
 
 
+def journal_kind(runtime: Path, path: Path) -> str | None:
+    try:
+        parts = path.relative_to(runtime).parts
+    except ValueError:
+        return None
+    if '..' in parts:
+        return None
+    if len(parts) == 4 and parts[:2] == ('post', 'pending'):
+        return 'pending'
+    if len(parts) == 3 and parts[0] == 'seats' and parts[2] == 'human-wake.json':
+        return 'human wake'
+    return None
+
+
+def wake_token(data: dict) -> str:
+    # Bind the reservation's immutable identity, not its evolving receipt/phase.
+    fields = {key: data[key] for key in
+              ('format', 'seat', 'identity', 'at', 'since', 'payload', 'attempts', 'generation')}
+    return hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest()
+
+
 def confined(runtime: Path, path: Path, *, missing=False) -> bool:
     try:
         relative = path.relative_to(runtime)
-        if len(relative.parts) != 4 or relative.parts[:2] != ("post", "pending") or ".." in relative.parts:
+        if journal_kind(runtime, path) is None:
             return False
         current = runtime
         if current.is_symlink():
@@ -107,7 +129,8 @@ def inflight(runtime: Path, expected: dict | None) -> dict | None:
             or type(data.get("before_paste")) is not bool or not isinstance(data.get("journal"), str)):
         return None
     relative = Path(data["journal"])
-    if relative.is_absolute() or not confined(runtime, runtime / relative):
+    if (relative.is_absolute() or not confined(runtime, runtime / relative)
+            or data.get('kind', 'pending') != journal_kind(runtime, runtime / relative)):
         return None
     return data
 
@@ -132,17 +155,30 @@ def finish(runtime: Path, expected: dict | None, *, forced: bool | None) -> str:
     if read is None:
         return "delivery journal unreadable or too large for bounded stop annotation; left unchanged"
     journal, _ = read
-    if (not isinstance(journal, dict) or journal.get("service_owner") != expected
-            or journal.get("delivery_token") != data["token"]):
+    wake = data.get('kind') == 'human wake'
+    if not isinstance(journal, dict):
         return "delivery journal identity unknown; left unchanged"
     from .pending import Proof, validate
 
     try:
-        validate(journal, path.parent.name)
+        if wake:
+            from .human_wake import validate as validate_wake
+            validate_wake(journal, path.parent.name)
+            matched = wake_token(journal) == data['token']
+        else:
+            validate(journal, path.parent.name)
+            matched = journal.get('service_owner') == expected and journal.get('delivery_token') == data['token']
+        if not matched:
+            return "delivery journal identity unknown; left unchanged"
     except (ValueError, TypeError, KeyError):
         return "delivery journal boundary unknown; left unchanged"
     phase = journal["phase"]
     fields = {}
+    if wake and phase == 'prepared':
+        # The wake owns its reservation and already proves prepared means unsent.
+        # Keep it byte-for-byte for the wake's existing next-pass settlement.
+        pointer_path(runtime).unlink()
+        return "human wake stopped before paste; reservation unchanged and unsent"
     if never_pasted(journal):
         fields.update(phase="cancelled", resolution="service stopped before paste; never typed")
         detail = "delivery cancelled before paste"
@@ -240,9 +276,17 @@ class Stop:
     def publish(self, proof):
         if not confined(self.runtime, proof.path):
             raise RuntimeError("delivery journal is not a confined regular runtime file")
-        data = dict(version=1, owner=self.owner, token=proof.data["delivery_token"],
-                    before_paste=proof.data.get("paste_boundary") == BEFORE_PASTE,
-                    journal=proof.path.relative_to(self.runtime).as_posix())
+        kind = journal_kind(self.runtime, proof.path)
+        if kind == 'human wake':
+            from .human_wake import validate
+            validate(proof.data, proof.path.parent.name)
+            token = wake_token(proof.data)
+            before = proof.data['phase'] == 'prepared' and proof.data['shown'] is None
+        else:
+            token = proof.data['delivery_token']
+            before = proof.data.get('paste_boundary') == BEFORE_PASTE
+        data = dict(version=1, owner=self.owner, token=token, kind=kind,
+                    before_paste=before, journal=proof.path.relative_to(self.runtime).as_posix())
         durable.replace_file(pointer_path(self.runtime), json.dumps(data) + "\n")
 
     @contextmanager
@@ -252,9 +296,12 @@ class Stop:
         path = pointer_path(self.runtime)
         try:
             active = inflight(self.runtime, self.owner)
-            if (active is None or active["journal"] != proof.path.relative_to(self.runtime).as_posix()
-                    or active["token"] != proof.data.get("delivery_token")):
-                proof.save(**self.reserve())
+            wake = journal_kind(self.runtime, proof.path) == 'human wake'
+            token = wake_token(proof.data) if wake else proof.data.get('delivery_token')
+            if (active is None or active['journal'] != proof.path.relative_to(self.runtime).as_posix()
+                    or active['token'] != token):
+                if not wake:
+                    proof.save(**self.reserve())
                 self.publish(proof)
             yield
         finally:

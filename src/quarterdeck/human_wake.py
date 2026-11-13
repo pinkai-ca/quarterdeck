@@ -34,8 +34,14 @@ def load(seat) -> pending.Proof | None:
         data = json.loads(metadata(path))
     except FileNotFoundError:
         return None
+    validate(data, seat.name)
+    return pending.Proof(path, data)
+
+
+def validate(data, seat: str) -> None:
+    """Validate the existing fixed-wake reservation without changing it."""
     identity = data['identity']
-    if (type(data.get('format')) is not int or data['format'] != 1 or data['seat'] != seat.name or data['payload'] != LINE
+    if (type(data.get('format')) is not int or data['format'] != 1 or data['seat'] != seat or data['payload'] != LINE
             or data['phase'] not in PHASES or data['attempts'] != []
             or type(data.get('ended', False)) is not bool
             or not isinstance(identity['pane'], str) or type(identity['pid']) is not int
@@ -49,7 +55,6 @@ def load(seat) -> pending.Proof | None:
     for stamp in (data['at'], data['since'], identity['launch']):
         if datetime.fromisoformat(stamp).tzinfo is None:
             raise ValueError('untimed human wake reservation')
-    return pending.Proof(path, data)
 
 
 def rearmed(proof, watch) -> bool:
