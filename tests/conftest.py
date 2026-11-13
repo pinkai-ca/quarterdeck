@@ -136,7 +136,7 @@ def private_socket_root():
         raise pytest.UsageError(f'test socket anchor {parent} gives sockets of {deepest} bytes (named probes '
                                 f'{longest}); the native limit is {SOCKET_LIMIT} and the suite keeps a margin '
                                 f'of {SOCKET_MARGIN}; the project path is too long for its .testruns/s anchor')
-    with socket_container(parent, SESSION_PREFIX, record=True) as folder:
+    with socket_container(parent, SESSION_PREFIX, record=sessions.automatic(parent)) as folder:
         os.environ['TMUX_TMPDIR'] = str(folder)
         try:
             yield folder

@@ -8,6 +8,7 @@ import pytest
 
 from tests.testrunner import owned, sessions
 from tests.testrunner.layout import RESULTS, RUN_SOCKETS, SOCKETS, Refused, Root, git_environment, identity, write_json
+from tests.conftest import socket_container
 
 
 RUN = '20000101-000000-0000'  # invented schema-valid run, never a captured runtime identity
@@ -58,6 +59,7 @@ def test_run_container_is_separate_from_the_direct_pytest_anchor(root, monkeypat
     record = json.loads((root.path / RESULTS / RUN / 'sessions/u-sample.json').read_text())
 
     assert record['anchor'] == RUN_SOCKETS
+    assert sessions.automatic(root.path / RUN_SOCKETS)
     assert not any((root.path / SOCKETS).iterdir())
     assert sessions.retire(root, RUN)['outcome'] == 'complete'
     assert not folder.exists()
@@ -92,15 +94,10 @@ def test_child_pytest_using_the_direct_anchor_keeps_local_cleanup(root, monkeypa
     register(root, RUN_SOCKETS, monkeypatch)
     os.close(root.child(SOCKETS))
     parent = root.path / SOCKETS
-    child = parent / 'u-child'
-    child.mkdir()
-    descriptor = os.open(child, owned.DIRECTORY)
-    try:
-        assert sessions.register(parent, child, descriptor) is None
+    assert not sessions.automatic(parent)
+    with socket_container(parent, 'u-', record=sessions.automatic(parent)) as child:
         assert not any(child.iterdir())
-    finally:
-        os.close(descriptor)
-        child.rmdir()
+    assert not child.exists()
     assert not any(parent.iterdir())
     assert sessions.retire(root, RUN)['outcome'] == 'complete'
 

@@ -15,6 +15,13 @@ from .layout import RESULTS, ROOT_NAME, RUN_SOCKETS, SOCKETS, Root, Refused, ide
 RECORD_ENV = 'TESTRUN_SESSION_RECORDS'
 
 
+def automatic(parent: Path) -> bool:
+    """Only the tool's own outer fixture auto-registers, not a child pytest."""
+    registry = os.environ.get(RECORD_ENV)
+    return bool(registry and parent.name == RUN_SOCKETS and parent.parent.name == ROOT_NAME
+                and Path(registry) == parent.parent / RESULTS / os.environ.get('TESTRUNS_RUN', '') / 'sessions')
+
+
 def register(parent: Path, folder: Path, descriptor: int) -> str | None:
     registry = os.environ.get(RECORD_ENV)
     if not registry:
@@ -23,7 +30,7 @@ def register(parent: Path, folder: Path, descriptor: int) -> str | None:
     # A child pytest may use its own project or nest below an outer fixture. It
     # owns that container locally; it must not register it as a direct child of
     # this run's anchor. A nonempty outer container still holds retirement.
-    if parent.name != RUN_SOCKETS or parent.parent.name != ROOT_NAME:
+    if parent.name not in (SOCKETS, RUN_SOCKETS) or parent.parent.name != ROOT_NAME:
         return None
     if Path(registry) != parent.parent / RESULTS / run / 'sessions':
         return None
