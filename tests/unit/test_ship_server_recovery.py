@@ -218,3 +218,11 @@ def test_the_status_line_carries_a_stopped_recovery(ship):
     recovery.save(ship.runtime, dict(format=1, stopped='2 attempts in the last hour', unknown=None, attempts=[]))
     facts = watch.Facts(service='ok', waiting=0, oldest=None, blind=0, server_recovery=recovery.status(ship.runtime))
     assert 'ship server gone: recovery stopped (2 attempts in the last hour); needs a human: qd up' in facts.line()
+
+
+def test_a_live_formerly_up_seat_proves_the_server_alive_and_nothing_is_probed(ship):
+    launch(ship.ship, 'captain')
+    launch(ship.ship, 'worker-1')
+    ship.upped.add('captain')  # its pane answers: the server lives; worker-1's missing pane is the per-seat path
+    ship.service.tmux = SimpleNamespace(socket=None)  # nothing to probe, and nothing is
+    assert recovery.pass_once(ship.service) is None and ship.calls == [] and recovery.status(ship.runtime) == []

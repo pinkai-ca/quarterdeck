@@ -137,6 +137,12 @@ def pass_once(service) -> str | None:
     members, stray = formerly_up(ship, tmux)
     if not members:
         return _settle_unknown(runtime, data, None)
+    for seat in members:  # one live formerly-up seat proves the server lives; a missing pane is the per-seat path
+        try:
+            if seat.is_up:
+                return _settle_unknown(runtime, data, None)
+        except Exception:
+            continue
     gone, reason = server_gone(tmux)
     if gone is False:
         return _settle_unknown(runtime, data, None)
