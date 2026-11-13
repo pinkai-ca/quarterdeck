@@ -16,7 +16,7 @@ import secrets
 from . import harness as harnesses, pending, post, providers, standing
 from .door import Delivery, Door
 from .drill import Check, wait_for
-from .harness.base import _version_in_runtime
+from .harness.base import _version_in_runtime, program_where
 from .seat import Seat, temporary_seat
 from .ship import SeatSpec, Ship, ShipError
 from .tmux import Tmux
@@ -50,8 +50,11 @@ def check(ship: Ship, name: str, tmux: Tmux) -> list[Check]:
     if pool is None:
         raise ShipError(f"no pool in {ship.file} that {name} runs on; declare one to check it against")
     version = _version_in_runtime(harness, ship.runtime)
+    where = program_where(harness)
+    selected = harness.selected_program() if where is not None else None
     checks = [Check("installed", version is not None,
-                    f"{name} {version or 'not found on the PATH'} · provider {providers.display(pool.provider)} · pool {pool.name}")]
+                    f"{name} {version or 'not found on the PATH'} · provider {providers.display(pool.provider)} · pool {pool.name}"
+                    + (f" · runs {where}" if where else ""))]
     if version is None:
         return checks
     like = next((s.for_pool(pool.name) for s in ship.seats.values()
@@ -64,10 +67,16 @@ def check(ship: Ship, name: str, tmux: Tmux) -> list[Check]:
     orders: list[post.Message] = []
     with temporary_seat(ship, tmux, spec, orders, "qd check", installed_version=version) as seat:
         checks += probe(seat.ship, seat, orders)
+        if selected is not None:
+            launched = seat.launched()
+            ran = launched is not None and str(selected) in launched.argv
+            checks.append(Check("the seat ran the program doctor shows", ran,
+                                f"{selected} in launch.json" if ran else f"{selected} not in the seat's launch"))
     if all(c.passed for c in checks):
         proven = ship.runtime / "proven"
         proven.mkdir(parents=True, exist_ok=True)
-        (proven / f"{name}-{version}").write_text(f"{post.now().isoformat(timespec='seconds')}\n")
+        (proven / f"{name}-{version}").write_text(f"{post.now().isoformat(timespec='seconds')}\n"
+                                                  + (f"{where}\n" if where else ""))
         checks.append(Check("proven: launch, an open door, a paste the record confirmed, the task, the turn read", True,
                             f"{proven / f'{name}-{version}'}"))
     return checks

@@ -204,6 +204,7 @@ class GrokHarness(Harness):
     # the adapter knows by name, so neither is read.
     grant_kind = "self-renewing"
     answers_questions = True  # its first-run training question, answered opt out by the ship's orders
+    fresh_versions = frozenset({"1.0.77", "1.0.70"})  # M1 to M3 and M5: the composer after the press, before any turn
     keys = Keys(submit="Enter", interrupt="C-c")
     reads_usage = True
     private_usage_home = True
@@ -231,14 +232,23 @@ class GrokHarness(Harness):
     def workspace_notice(self, home: Path, cwd: Path) -> str | None:
         return grok_notice.inventory(cwd, private_environment(home))
 
-    def version(self, home: Path | None = None) -> str | None:
-        from ..seat import program_path  # the same selected program as ordinary Seat launch
+    def selected_program(self) -> Path | None:
+        """The one Grok program this ship runs: the first ``grok`` on the PATH a seat launches with.
+
+        A seat's launch, doctor's reading and qd check all take it from here, and the launch names it by its
+        absolute path, so the program a seat runs is the one doctor showed and the check proved.
+        """
+        from ..seat import program_path
 
         selected = shutil.which(self.program, path=program_path())
+        return Path(selected).absolute() if selected else None
+
+    def version(self, home: Path | None = None) -> str | None:
+        selected = self.selected_program()
         if selected is None:
             return None
         try:
-            program = Path(selected).resolve(strict=True)
+            program = selected.resolve(strict=True)
             if home is None:
                 match = re.fullmatch(r"grok-(\d+\.\d+\.\d+(?:[-+][A-Za-z0-9][A-Za-z0-9.+_-]*)?)-linux-x86_64", program.name)
                 return match[1] if match else None
@@ -300,7 +310,10 @@ class GrokHarness(Harness):
         workspace_args = grok_workspace.launch_args(seat.cwd)
         self.preflight(home, seat.cwd)
         launch_home(home, seat)
-        argv = [self.program, "--fullscreen", "--always-approve", "--sandbox", "off", "--no-memory",
+        program = self.selected_program()
+        if program is None:
+            raise ShipError(f"{self.program} is not on the PATH qd runs with; install it, or put it on that PATH")
+        argv = [str(program), "--fullscreen", "--always-approve", "--sandbox", "off", "--no-memory",
                 "--leader-socket", str(home / "leader.sock"), "--rules", brief.read_text()]
         argv += workspace_args
         if not seat.human_session:
@@ -334,7 +347,7 @@ class GrokHarness(Harness):
             self.preflight(home, home)
         except ShipError as error:
             return Usage((), datetime.now(timezone.utc), str(error), called=False)
-        return grok_usage.billing(self.program, home, private_environment(home))
+        return grok_usage.billing(str(self.selected_program() or self.program), home, private_environment(home))
 
     def screen(self, text: str) -> Screen:
         return grok_screen.read(text)

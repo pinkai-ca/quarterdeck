@@ -19,7 +19,7 @@ from pathlib import Path
 
 from . import credential, endpoint, harness as harnesses, install, post, providers, sandbox, servicectl, watch
 from .drill import Check, wait_for
-from .harness.base import _version_in_runtime, key_environment, program_version
+from .harness.base import _version_in_runtime, key_environment, program_version, program_where
 from .harness.capabilities import validate_selection
 from .seat import program_path, temporary_seat
 from .ship import Pool, SeatSpec, Ship, ShipError
@@ -53,7 +53,7 @@ def checks(ship: Ship) -> list[Check]:
         checked = pool_check(pool)
         native = harnesses.native_name(pool.provider)
         identity = f"provider {providers.display(pool.provider)} · {pool.kind} · native harness {native or 'none'}"
-        found.append(Check(checked.name, checked.passed, f"{identity} · {checked.detail}"))
+        found.append(Check(checked.name, checked.passed, f"{identity} · {checked.detail}{selected_program(ship, native, versions)}"))
         if pool.declared_provider != pool.provider:
             found.append(Check(f"provider spelling {pool.name}", True,
                                f'in [pools.{pool.name}] change provider = "{pool.declared_provider}" to provider = "{pool.provider}"; '
@@ -77,6 +77,17 @@ def checks(ship: Ship) -> list[Check]:
     found.append(Check("disk", not low, "room on every filesystem the ship writes to" if not low
                        else "nearly full: " + ", ".join(f"{mount} {pct}%" for mount, pct in low)))
     return found
+
+
+def selected_program(ship: Ship, name: str | None, versions: dict[str, str | None]) -> str:
+    """Beside a pool: the program its adapter settles once, the path a seat launches by, and its version."""
+    harness = harnesses.get(name) if name else None
+    where = program_where(harness) if harness is not None else None
+    if where is None:
+        return ""
+    if name not in versions:
+        versions[name] = _version_in_runtime(harness, ship.runtime)
+    return f" · runs {where} · {harness.program} {versions[name] or 'version unknown'}"
 
 
 def seat_readiness(ship: Ship, *, versions: dict[str, str | None] | None = None) -> list[Check]:

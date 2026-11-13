@@ -81,6 +81,18 @@ def program_version(argv: tuple[str, ...]) -> str | None:
     return None
 
 
+def program_where(harness) -> str | None:
+    """The program an adapter settles once, as a seat launches it: its path, and the file a link there reaches."""
+    program = harness.selected_program() if hasattr(harness, "selected_program") else None
+    if program is None:
+        return None
+    try:
+        target = program.resolve(strict=True)
+    except (OSError, RuntimeError):
+        target = None
+    return f"{program} -> {target}" if target is not None and target != program else str(program)
+
+
 def _version_in_runtime(harness, runtime: Path) -> str | None:
     """Only the adapter's explicit private-version-home flag creates a context."""
     version = harness.version
@@ -261,6 +273,8 @@ class Harness(ABC):
         return None
 
     answers_questions: bool = False  # declares a question with a fixed answer (Interruption.click) to watch for
+    # Versions whose composer drawn just after that question is answered has been measured (see Screen.fresh).
+    fresh_versions: frozenset[str] = frozenset()
 
     def question_cleared(self, text: str, question: Interruption) -> bool:
         """After the framework answered ``question``: it is gone and an empty composer is drawn."""

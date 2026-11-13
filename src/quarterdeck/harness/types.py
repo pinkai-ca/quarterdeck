@@ -301,6 +301,9 @@ class Screen:
     echoes: tuple[str, ...] = ()  # inputs the transcript shows above a running turn, possibly cut short with …
     quota: str | None = None
     starting: bool = False  # a recognized drawing/loading frame, never permission to type or clear
+    # A composer the adapter knows only as drawn after this question was answered: read unknown here, and
+    # idle only where the launch's own record shows that question answered and cleared (the Door decides).
+    fresh: str | None = None
 
 
 def _cells(text: str) -> int | None:

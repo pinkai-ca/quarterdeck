@@ -35,6 +35,7 @@ TRAINING_QUESTION = Interruption(
 TRAINING_ALTERED = Interruption(
     "first-run training-data question (Help improve Grok) for the account holder, not as measured; nothing pressed",
     r"Help improve Grok", None)
+FRESH = "Grok composer with no hint row: idle only after this launch answered its training question"
 TRAINING_NEAR = 8  # rows above the composer's top border in which an altered question is looked for
 PASTE_FOLD_LINES = 4
 HINT_STATES = {
@@ -259,7 +260,13 @@ def read(text: str) -> Screen:
         return Screen(plain, box=box, working=working, interruption=TRAINING_QUESTION, shows=shows)
     if training_altered(rows, top):
         return Screen(plain, box=box, interruption=TRAINING_ALTERED, shows=shows)
-    working = hint_working(rows[footer_at + 1:])
+    below = rows[footer_at + 1:]
+    if not any(row.strip(" ") for row in below) and len(body) == 1 and not box.strip():
+        # The fresh form M1 to M3 measured after the press, before any turn: the empty one-row composer,
+        # the footer, and nothing at all under it. Unknown to this reader; the Door reads it idle only in
+        # a launch whose record shows the training question answered and cleared.
+        return Screen(plain, box=None, unknown=FRESH, shows=shows, fresh=TRAINING_QUESTION.name)
+    working = hint_working(below)
     if working is None:
         return Screen(plain, box=None, unknown="unmeasured Grok composer hint", shows=shows)
     return Screen(plain, box=box, working=working, shows=shows)

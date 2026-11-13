@@ -108,8 +108,33 @@ def test_the_answered_frame_clears_the_question_and_shows_the_empty_composer():
     assert adapter.question_cleared(ANSWERED, grok_screen.TRAINING_QUESTION)
     assert not adapter.question_cleared(QUESTION, grok_screen.TRAINING_QUESTION)
     screen = adapter.screen(ANSWERED)
-    # No hint row shows yet under the footer: cleared, but no reading of readiness is inferred.
-    assert screen.interruption is None and screen.unknown == "unmeasured Grok composer hint"
+    # No hint row shows yet under the footer: the fresh form. The reader alone infers no readiness from it;
+    # it names the question whose answer, in the launch's own record, lets the Door read it idle.
+    assert screen.interruption is None and screen.box is None and screen.unknown == grok_screen.FRESH
+    assert screen.fresh == grok_screen.TRAINING_QUESTION.name
+
+
+def answered_plain() -> list[str]:
+    return grok_screen.characters(ANSWERED)[0].split("\n")
+
+
+def footer_at(lines: list[str]) -> int:
+    return max(i for i, row in enumerate(lines) if grok_screen.FOOTER.fullmatch(row))
+
+
+def test_the_fresh_form_is_only_an_empty_box_with_nothing_at_all_under_the_footer():
+    lines = answered_plain()
+    at = footer_at(lines)
+    assert at < len(lines) - 1 and not any(row.strip() for row in lines[at + 1:]), "M3: blank rows under the footer"
+    assert GrokHarness().screen("\n".join(lines)).fresh == grok_screen.TRAINING_QUESTION.name
+    for row in ("  x", "  Shift+Tab:mode │ Ctrl+x:shortcuts", "  Grok Build 1.0.77", "   ·"):
+        under = lines[:at + 1] + [row] + lines[at + 2:]
+        screen = GrokHarness().screen("\n".join(under))
+        assert screen.fresh is None, f"something under the footer is no fresh form: {row!r}"
+    typed = list(lines)
+    typed[at - 1] = typed[at - 1].replace("❯  ", "❯ x", 1)
+    screen = GrokHarness().screen("\n".join(typed))
+    assert screen.fresh is None and screen.unknown == "unmeasured Grok composer hint", "a draft is no fresh form"
 
 
 PLAIN = grok_screen.characters(QUESTION)[0]  # the same frame without its styling, for exact edits of its words
@@ -217,3 +242,14 @@ def test_an_extra_key_beside_the_answer_is_not_carried(tmp_path):
     config.write_text(config.read_text() + '\n[privacy]\nprivacy_banner_acked = "2026-11-13T08:49:45Z"\nopt_in = true\n')
     adapter.build_home(home, spec, pool, None)
     assert acked(home) == {"privacy_banner_acked": "2026-11-13T08:49:45Z"}
+
+
+def test_1_0_70_draws_the_same_fresh_form_after_the_press():
+    """M5 ran 1.0.70, the program a bare grok reaches on the measured machine; only its banner differs."""
+    fresh = "\n".join(json.loads((FIXTURES.parent / "1.0.70" / "training-answered-256.json").read_text())["lines"]) + "\n"
+    adapter = GrokHarness()
+    assert adapter.question_cleared(fresh, grok_screen.TRAINING_QUESTION)
+    screen = adapter.screen(fresh)
+    assert screen.fresh == grok_screen.TRAINING_QUESTION.name and screen.unknown == grok_screen.FRESH
+    assert "1.0.70" in fresh and grok_screen.characters(fresh)[0].split("\n")[-6:] == \
+        grok_screen.characters(ANSWERED)[0].split("\n")[-6:], "the composer and below are the same as 1.0.77's"

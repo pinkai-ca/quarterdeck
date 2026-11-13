@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 
 from . import ledger as ledgermod, pending, input_receipt, quota
@@ -144,6 +144,8 @@ class Door:
                 return Reading(False, *self._question(screen))
             return Reading(False, screen.interruption.name,
                            "dismissable" if screen.interruption.dismissable else "needs a human")
+        if screen.fresh is not None and self.answered_and_cleared(screen.fresh):
+            screen = replace(screen, box="", unknown=None, fresh=None)  # the measured form, in its own launch
         if screen.unknown is not None:
             return Reading(False, f"unknown dialog: {screen.unknown}", "needs a human")
         if screen.starting:
@@ -184,6 +186,13 @@ class Door:
         if screen is None or screen.unknown is not None or (screen.box is None and screen.interruption is None):
             return self._reading(screen)
         return None
+
+    def answered_and_cleared(self, question: str) -> bool:
+        """This launch's record shows ``question`` answered and cleared, on a version whose composer after it is measured."""
+        launched = self.seat.launched()
+        return (launched is not None and launched.version in self.harness.fresh_versions
+                and any(item.get("question") == question and item.get("outcome") == "cleared"
+                        for item in launched.answered or ()))
 
     def _question(self, screen: Screen) -> tuple[str, str]:
         """A question the framework answers: once per launch, on a screen that reads not working with its box read;

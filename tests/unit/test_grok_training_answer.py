@@ -189,3 +189,67 @@ def test_no_press_under_a_hint_row_that_reads_neither(grok):
 def test_the_launch_record_keeps_its_old_shape_until_a_question_is_answered(grok):
     data = json.loads((grok.seat.folder / "launch.json").read_text())
     assert "answered" not in data
+
+
+# The fresh composer after the press reads idle only in the launch that answered the question.
+
+def relaunch(grok, **fields):
+    launched = grok.seat.launched()
+    replace(launched, **fields).write(grok.seat.folder / "launch.json")
+
+
+def test_after_the_press_the_fresh_composer_reads_idle_in_that_launch(grok):
+    door = Door(grok.seat)
+    door.clear_known()
+    assert grok.seat.launched().answered[0]["outcome"] == "cleared"
+    reading = Door(grok.seat).reading()
+    assert reading.open and not reading.working
+
+
+def test_the_fresh_composer_alone_is_not_idle(grok):
+    grok.shown[0] = ANSWERED  # the same frame, but this launch answered nothing
+    reading = Door(grok.seat).reading()
+    assert not reading.open and reading.clears == "needs a human" and grok_screen.FRESH in reading.reason
+
+
+@pytest.mark.parametrize("outcome", ["pressed", "did not clear"])
+def test_an_answer_not_cleared_does_not_make_the_fresh_composer_idle(grok, outcome):
+    entry = dict(question=grok_screen.TRAINING_QUESTION.name, choice="[Opt out]", at="2030-01-01T00:00:01+00:00",
+                 outcome=outcome)
+    relaunch(grok, answered=[entry])
+    grok.shown[0] = ANSWERED
+    assert not Door(grok.seat).reading().open
+
+
+def test_another_question_answered_does_not_make_the_fresh_composer_idle(grok):
+    entry = dict(question="some other question", choice="[Opt out]", at="2030-01-01T00:00:01+00:00", outcome="cleared")
+    relaunch(grok, answered=[entry])
+    grok.shown[0] = ANSWERED
+    assert not Door(grok.seat).reading().open
+
+
+def test_an_unmeasured_version_keeps_the_fresh_composer_unknown(grok):
+    Door(grok.seat).clear_known()
+    relaunch(grok, version="1.0.71")
+    reading = Door(grok.seat).reading()
+    assert not reading.open and grok_screen.FRESH in reading.reason
+
+
+def test_something_under_the_footer_keeps_the_composer_unknown_after_the_press(grok):
+    Door(grok.seat).clear_known()
+    lines = grok_screen.characters(ANSWERED)[0].split("\n")
+    at = max(i for i, row in enumerate(lines) if grok_screen.FOOTER.fullmatch(row))
+    lines[at + 1] = "  unmeasured"
+    grok.shown[0] = "\n".join(lines)
+    reading = Door(grok.seat).reading()
+    assert not reading.open and "unmeasured Grok composer hint" in reading.reason
+
+
+def test_on_1_0_70_its_own_measured_fresh_composer_reads_idle_after_the_press(grok):
+    """M5 (13 November, 1.0.70 by path, 112 x 35): the same question, and after the press the same fresh form."""
+    fresh = "\n".join(json.loads((FIXTURES / "grok/1.0.70" / "training-answered-256.json").read_text())["lines"]) + "\n"
+    relaunch(grok, version="1.0.70")
+    grok.after[0] = fresh
+    Door(grok.seat).clear_known()
+    assert grok.seat.launched().answered[0]["outcome"] == "cleared"
+    assert Door(grok.seat).reading().open
