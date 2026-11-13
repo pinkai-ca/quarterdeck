@@ -523,6 +523,30 @@ def pool_account(pool: Pool) -> dict | None:
     return account if isinstance(account, dict) else None
 
 
+class ClaudeBox(Box):
+    """2.1.317 may paint two spaces beyond the text area, including on blank rows."""
+
+    def matches(self, shown: str | None, columns: int | None = None, slack: int = 0) -> bool:
+        if shown is None or not columns or columns < 1:
+            return super().matches(shown, columns, slack)
+        if self.folded and re.fullmatch(self.folded, shown.strip()):
+            return True
+        from .types import _cells
+        rows = []
+        for row in shown.split('\n'):
+            width = _cells(row)
+            if width is not None:
+                content = _cells(row.rstrip(' '))
+                if width > columns + 2 or content is not None and content > columns:
+                    return False
+                if width > columns:
+                    # Only ASCII spaces can occupy the two measured non-text columns. The content
+                    # bound above proves these final cells are padding, not part of the input.
+                    row = row[:len(row) - (width - columns)]
+            rows.append(row)  # unsupported cell layouts retain the shared matcher's existing behavior
+        return super().matches('\n'.join(rows), columns, slack)
+
+
 class ClaudeHarness(Harness):
     def human_wake_box_margin(self, pane_width: int) -> int:
         # 2.1.317: fixture non-text width 4, plus the conservative allowance 4.
@@ -696,7 +720,7 @@ class ClaudeHarness(Harness):
         newlines, a trailing one too, and names no count at all for a paste without any."""
         newlines = text.count("\n")
         lines = rf" \+{newlines} lines" if newlines else ""
-        return Box(text, folded=rf"\[Pasted text #\d+{lines}\]")
+        return ClaudeBox(text, folded=rf"\[Pasted text #\d+{lines}\]")
 
     def controls(self) -> tuple[Control, ...]:
         return (
