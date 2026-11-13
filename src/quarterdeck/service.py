@@ -694,10 +694,17 @@ class Service:
                 self.log("fresh", seat=seat.name, proof=proof)
 
     def _brief_stamp(self) -> tuple:
-        paths = [standing.FRAMEWORK_DIR / "laws.md", self.ship.folder / "orders.md"]
-        for folder in (standing.FRAMEWORK_DIR, self.ship.folder):
-            paths += sorted((folder / "roles").glob("*.md")) + sorted((folder / "harnesses").glob("*.md"))
-        return tuple((str(p), p.stat().st_mtime) for p in paths if p.exists())
+        """Fingerprint rendered inputs through the renderer, including session and selection.
+
+        No publication or selection alarm belongs to this reading. An unresolved seat
+        keeps a marker until ordinary rebrief can resolve and render it.
+        """
+        selected = seats(self.ship, self.tmux, False)
+        texts = {seat.name: standing.brief(self.ship, seat.spec).text
+                 for seat in selected if not isinstance(seat, UnresolvedSeat)}
+        self.brief_texts = texts  # reuse this pass's exact text when publication owns it
+        return tuple((seat.name, hashlib.sha256(texts[seat.name].encode()).digest()
+                      if seat.name in texts else None) for seat in selected)
 
     def credentials(self) -> None:
         """A seat whose credential link became a file has refreshed the token: reseed the pool and relink."""
@@ -872,7 +879,7 @@ class Service:
         return quota.cached_open(self.ship, self.ledger, pool_name, seat)
 
     def rebrief(self) -> None:
-        """When the orders or a card change, every brief is rendered again and each seat is told."""
+        """When rendered content changes, refresh briefs and tell affected running seats."""
         if self.framework_commit and (self.runtime / 'requests' / f'upgrade-rebrief-{self.framework_commit}.json').exists():
             return  # the durable upgrade publisher owns these edits until its request completes
         stamp = self._brief_stamp()
@@ -880,12 +887,14 @@ class Service:
             return
         selected = self.resolved_seats()
         for seat in selected:
+            if (text := self.brief_texts.get(seat.name)) is None:
+                continue  # a selection resolved after the stamp; retry it next pass
             path = self.runtime / 'brief' / f'{seat.name}.md'
             before = path.read_text() if path.exists() else None
-            standing.render(self.ship, seat.spec)
+            standing.render(self.ship, seat.spec, text=text)
             if seat.is_up and path.read_text() != before:
                 self.store.new("report", "ship", seat.name, f"ship's orders changed · read runtime/brief/{seat.name}.md")
-        if len(selected) == len(self.ship.seats):
+        if len(selected) == len(self.brief_texts) == len(self.ship.seats):
             self.brief_stamp = stamp
         self.log("rebrief", seats=[seat.name for seat in selected])
 
@@ -895,12 +904,13 @@ class Service:
         affected, changed = [], []
         selected = self.resolved_seats()
         for seat in selected:
+            if (text := self.brief_texts.get(seat.name)) is None:
+                continue  # a selection resolved after the stamp; retry it next pass
             launch = seat.folder / 'launch.json'
             same = (data['launches'].get(seat.name) is not None
                     and install.launch_stamp(launch) == data['launches'][seat.name] and seat.is_up)
             if same and data['before'].get(seat.name) is None:
                 return None  # no known prior brief to compare; never overwrite that unknown baseline
-            text = standing.brief(self.ship, seat.spec).text
             digest = hashlib.sha256(text.encode()).hexdigest()
             notice = self.upgrade_notice(data, seat.name, digest) if same else None
             standing.render(self.ship, seat.spec, text=text)
@@ -914,7 +924,7 @@ class Service:
                 else:
                     self.store.write(notice)
                 affected.append(seat.name)
-        if len(selected) != len(self.ship.seats):
+        if len(selected) != len(self.ship.seats) or len(self.brief_texts) != len(self.ship.seats):
             return None  # healthy briefs progressed; the unresolved seat keeps this operation held
         self.brief_stamp = stamp  # edits arriving during this pass still belong to ordinary rebrief
         if changed:
