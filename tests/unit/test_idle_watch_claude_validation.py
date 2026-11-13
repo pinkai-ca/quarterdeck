@@ -70,7 +70,7 @@ class Case:
 
     def launch(self, pid: int, at: datetime) -> None:
         (self.folder / 'launch.json').write_text(json.dumps(dict(pid=pid, at=at.isoformat())) + '\n')
-        self.launched = SimpleNamespace(pane='%41', pid=pid, at=at.isoformat(), harness='claude', resume=None)
+        self.launched = SimpleNamespace(pane='%41', pid=pid, at=at.isoformat(), harness='claude', resume=None, version=None)
 
     def write(self, calls, *, unresolved_delegation=False, extra=()) -> None:
         """A prompt, background Bash calls with their returned task handles, and an ended turn."""
