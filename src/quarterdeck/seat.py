@@ -277,7 +277,7 @@ class Seat:
             self.harness.preflight_resume(selected, self.home, self._resume_id)
         self.record()
         credential.reseed(self.ship, [self])
-        stopped = self._down(relaunch=True)
+        stopped = self._relaunch_down()
         self.move_to(pool)
         self.spec = selected
         if not same_program:
@@ -526,7 +526,7 @@ class Seat:
             if same_program and resume:
                 self.harness.preflight_resume(selected, self.home, self._resume_id)
             if self.launched() is not None:
-                self._down(relaunch=True)  # retain the old record and reseed its source pool before changing selection
+                self._relaunch_down()  # retain the old record and reseed its source pool before changing selection
             self.move_to(target)
             self.spec = selected
             if not same_program:
@@ -836,12 +836,21 @@ class Seat:
         with self._lifecycle():
             return self._down()
 
+    def _relaunch_down(self) -> str:
+        """Down as the first half of a relaunch in this lifecycle: the longer observation applies."""
+        self._relaunching = True
+        try:
+            return self._down()
+        finally:
+            self._relaunching = False
+
     def _down(self, relaunch: bool = False) -> str:
         """Close the pane, observe the program end, then reseed and remove the launch.
 
         ``relaunch``: an up follows in this lifecycle (restart, fresh, a pool move), so past the first bound
         down keeps observing the same process up to RELAUNCH_END_SECONDS before the relaunch is refused.
         """
+        relaunch = relaunch or getattr(self, "_relaunching", False)
         launched = self.launched()
         pane = self._lifecycle_pane(launched)
         if launched is not None:
@@ -922,7 +931,7 @@ class Seat:
             require_clear(self)
             self.harness.preflight_resume(self.spec, self.home, self._resume_id)
             observation = self._observe_selection()
-            return self._down(relaunch=True) + "\n" + self._up(resume=True, observation=observation)
+            return self._relaunch_down() + "\n" + self._up(resume=True, observation=observation)
 
     def fresh(self) -> str:
         """Relaunch without resume: a new conversation that begins with the brief and the open messages."""
@@ -931,7 +940,7 @@ class Seat:
             from .recovery import require_clear
             require_clear(self)
             observation = self._observe_selection()
-            return self._down(relaunch=True) + "\n" + self._up(resume=False, observation=observation)
+            return self._relaunch_down() + "\n" + self._up(resume=False, observation=observation)
 
 
 @contextmanager

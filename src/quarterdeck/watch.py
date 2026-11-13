@@ -646,7 +646,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
             needs_human.append(seat.name)
             unknown.append(str(seat.error).partition(';')[0])
             continue
-        if words := seat.relaunch_refused():
+        if (refused := getattr(seat, "relaunch_refused", None)) and (words := refused()):
             ending.append(words)  # law: nothing-waits-silently
         launched = seat.launched()
         from .turn_failure import obstruction as failure_obstruction
