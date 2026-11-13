@@ -15,7 +15,8 @@ from quarterdeck.harness.synthetic_record import ClaudeShape, CodexShape, PiShap
 
 
 def launch(harness, home, shape="claude"):
-    spec = SimpleNamespace(settings={"as": shape}, model="synthetic-model", effort="medium")
+    spec = SimpleNamespace(name="synthetic-seat", settings={"as": shape}, model="synthetic-model",
+                           effort="medium", model_mode=None, effort_mode=None)
     harness.build_home(home, spec, None, None)
     return harness.launch(spec, None, home, home / "brief.md", None, None)
 
