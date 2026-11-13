@@ -46,6 +46,11 @@ class AntigravityHarness(Harness):
     native_provider = "google"
     opening_prompt_turn = True
     program = "agy"
+    sign_in_command = ("agy",)
+    sign_in_note = ("Current docs describe browser sign-in on launch with shared OS-keyring storage. "
+                    "A separate login subcommand and credential-home selector are unknown; ask the person "
+                    "for the installed version's sign-in steps.")
+    sign_in_sources = ("https://antigravity.google/docs/install?tab=cli",)
     home_variable = None  # no home switch: the seat runs in the program's own state directory
     reads_usage = True
     usage_interval = 300

@@ -1097,6 +1097,24 @@ and refused. A key answer is only an environment variable name. Endpoint operato
 model are explicit. Unknown sign-in stays unknown; setup never signs in, installs a
 program or answers a native account question.
 
+One selected program receives desk, captain and engineering, except Antigravity: its
+measured shared-state limitation permits only one declared seat in setup. Sole
+Antigravity cannot supply the three-seat crew. Setup validates the complete proposed
+declaration before any creation/update writes, and the kept declaration before readiness,
+checks or start. A seat counts once if any effective pool choice uses Antigravity,
+including retained unrelated seats, disabled seats and fallback choices. More than one
+refuses with a remedy to choose other programs for remaining roles. Generic ship reading
+and runtime policy are unchanged; reruns preserve unrelated seats and existing orders.
+
+On failed readiness, effective subscription choices show adapters' informational native
+sign-in metadata, unknown by default, and official references. These are displayed only.
+Current documentation establishes command syntax, not support in an older installed
+version or successful sign-in. A home prefix requires documented credential-home
+semantics; Codex's unverified storage mode and Grok's unproved auth-home scope remain
+explicit questions without guessed prefixes. Doctor reasons and the exact setup rerun
+remain authoritative. Endpoint-only OpenCode/pi gain no subscription command, and an
+unregistered program gains no speculative support.
+
 The default template supplies the crew shape and orders. Creation validates before
 writing, writes files atomically in one exclusively created ship folder, ignores its
 runtime and makes a scoped first commit. Reruns show the declaration and require a

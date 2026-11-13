@@ -651,6 +651,12 @@ class CodexHarness(Harness):
     name = "codex"
     native_provider = "openai"
     program = "codex"
+    sign_in_command = ("codex", "login")
+    sign_in_note = ("Current docs place file-backed sign-in under CODEX_HOME (the directory must already exist), "
+                    "but keyring/auto can use OS storage. Native storage selection is unknown; ask the person "
+                    "how to sign in to the declared file-backed directory. No home-specific command is established here.")
+    sign_in_sources = ("https://learn.chatgpt.com/docs/auth?surface=cli",
+                       "https://learn.chatgpt.com/docs/config-file/environment-variables")
     credential_file = "auth.json"
     home_variable = "CODEX_HOME"
     keys = Keys(submit="Enter", send_now=None, interrupt="Escape")

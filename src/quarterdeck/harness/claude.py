@@ -676,6 +676,12 @@ class ClaudeHarness(Harness):
     name = "claude"
     native_provider = "anthropic"
     program = "claude"
+    sign_in_command = ("claude", "auth", "login")
+    sign_in_home_variable = "CLAUDE_CONFIG_DIR"
+    sign_in_note = ("Current docs place file-backed credentials in CLAUDE_CONFIG_DIR; macOS may use Keychain instead. "
+                    "File-backed pool readiness is still decided by doctor, not this hint.")
+    sign_in_sources = ("https://code.claude.com/docs/en/cli-reference",
+                       "https://code.claude.com/docs/en/authentication")
     home_variable = "CLAUDE_CONFIG_DIR"
     keys = Keys(submit="Enter", send_now=("C-x", "C-s"), interrupt="Escape")
     # From the installed 2.1.317 and 2.1.323, the same in both: the environment it builds for what it runs (CLAUDECODE, the session id, the

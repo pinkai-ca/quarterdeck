@@ -267,11 +267,15 @@ def new_text(text: str, edits: list[tuple[str, str, object]]) -> str:
 
 def declaration(conversation: Conversation, selected: list[str], pools: dict, models: dict,
                 name: str, workspace: Path, existing: Ship | None = None) -> tuple[list, dict]:
+    if selected == ["antigravity"]:
+        raise ShipError("Antigravity is limited to one declared seat in setup; it cannot supply the three-seat crew. "
+                        "Choose other programs for the remaining roles and rerun qd setup.")
     desk = conversation.choice("desk", "Which program will you talk to at the desk?", selected, selected[0])
     other = next((program for program in selected if program != desk), desk)
-    conversation.say(f"Proposed crew: desk={desk}, captain={other}, engineering={other}; choose each below.")
+    engineering = desk if other == "antigravity" else other
+    conversation.say(f"Proposed crew: desk={desk}, captain={other}, engineering={engineering}; choose each below.")
     captain = conversation.choice("captain", "Program for the captain", selected, other)
-    engineer = conversation.choice("engineer", "Program for engineering", selected, other)
+    engineer = conversation.choice("engineer", "Program for engineering", selected, engineering)
     edits = [("ship", "name", name), ("ship", "workspace", str(workspace))]
     names = {}
     for program, values in pools.items():
@@ -313,6 +317,44 @@ def declaration(conversation: Conversation, selected: list[str], pools: dict, mo
     return edits, mapping
 
 
+def validate_declaration(ship: Ship) -> None:
+    """Setup's measured one-seat exception; generic ship/runtime reader policy is unchanged."""
+    ships._validate(ship)
+    antigravity = [seat.name for seat in ship.seats.values()
+                   if any(seat.for_pool(pool).harness == "antigravity" for pool in seat.pools)]
+    if len(antigravity) > 1:
+        raise ShipError("Antigravity is limited to one declared seat in setup; proposed seats: "
+                        + ", ".join(antigravity)
+                        + ". Choose other programs for the remaining roles and rerun qd setup.")
+
+
+def sign_in_hints(ship: Ship, selected: list[str]) -> list[str]:
+    """Render current documentation, never execute it or infer readiness from it."""
+    hints, seen = [], set()
+    for seat in ship.seats.values():
+        for name in seat.pools:
+            program, pool = seat.for_pool(name).harness, ship.pools[name]
+            if program not in selected or pool.kind != "subscription" or (program, name) in seen:
+                continue
+            seen.add((program, name))
+            reader = harness.get(program)
+            hints.append(f"{program}, pool {name}: {reader.sign_in_note}")
+            if reader.sign_in_command is not None:
+                command = shlex.join(reader.sign_in_command)
+                if reader.sign_in_home_variable and pool.config_dir is not None:
+                    # _pool expands ~ but permits relative homes; show the same absolute target.
+                    command = f"{reader.sign_in_home_variable}={shlex.quote(str(pool.config_dir.absolute()))} {command}"
+                elif pool.config_dir is not None:
+                    hints.append(f"Declared sign-in directory: {pool.config_dir}; its sign-in invocation remains unknown.")
+                elif reader.credential_file:
+                    hints.append("Declared sign-in directory unknown; ask the person before any native sign-in.")
+                hints.append(f"Current official documentation command (display only): {command}")
+                hints.append("Installed-version support is unknown; current docs do not prove this command for an older version. "
+                             "Ask the person to confirm the native steps; qd cannot answer its account questions.")
+            hints.extend(f"Official sign-in reference: {url}" for url in reader.sign_in_sources)
+    return hints
+
+
 def update(ship: Ship, edits: list, operations: Operations, conversation: Conversation) -> tuple[Ship, list[str]]:
     existing_edits, whole = {}, []
     original = tomllib.loads(ship.file.read_text())
@@ -331,7 +373,7 @@ def update(ship: Ship, edits: list, operations: Operations, conversation: Conver
     text = ship.file.read_text()
     for table, key, value in edits:
         text = ships.edit(text, table, key, value)
-    ships._validate(ships._from_text(text, ship.folder))
+    validate_declaration(ships._from_text(text, ship.folder))
     for line in ships.set_values(ship, whole):
         conversation.say(line)
     pending = []
@@ -375,6 +417,7 @@ def run(args: argparse.Namespace, *, operations: Operations | None = None,
         mode = "new"
     if mode == "keep":
         ship = existing
+        validate_declaration(ship)
         selected = sorted({seat.for_pool(pool).harness for seat in ship.seats.values() for pool in seat.pools})
         if "desk" not in ship.seats:
             raise ShipError("existing ship has no desk seat; add one before rerunning setup")
@@ -399,7 +442,9 @@ def run(args: argparse.Namespace, *, operations: Operations | None = None,
         else:
             if not folder.parent.is_dir():
                 raise ShipError("ship folder's parent does not exist; choose an existing parent (setup writes only the ship folder)")
-            ship = ships.create(folder, new_text(text, edits), orders)
+            proposed = new_text(text, edits)
+            validate_declaration(ships._from_text(proposed, folder))
+            ship = ships.create(folder, proposed, orders)
             conversation.say(f"Created and committed {ship.file} and orders.md; runtime is ignored.")
     for pool in ship.pools.values():
         if pool.provider == "openrouter":
@@ -411,8 +456,8 @@ def run(args: argparse.Namespace, *, operations: Operations | None = None,
         conversation.say(str(row))
     failed = [row for row in rows if not row.passed]
     if failed:
-        for program in selected:
-            conversation.say(f"If sign-in is needed, complete it yourself in the native {harness.get(program).program} program. qd cannot answer its account questions.")
+        for hint in sign_in_hints(ship, selected):
+            conversation.say(hint)
         if conversation.interactive and conversation.choice("wait_for_sign_in", "Pause while you fix readiness yourself? yes or no", ("yes", "no"), "no") == "yes":
             conversation.read("Complete the native steps yourself, then press Enter to re-read readiness: ")
             rows = operations.readiness(ship, selected)

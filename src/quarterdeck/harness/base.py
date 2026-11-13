@@ -127,6 +127,11 @@ class Harness(ABC):
     waking_inapplicability: str | None = None  # explicit reason to omit only the added live waking step
     synthetic: bool = False
     credential_file: str | None = None
+    # Informational current-vendor-doc hints only: never an executable auth path or version proof.
+    sign_in_command: tuple[str, ...] | None = None
+    sign_in_home_variable: str | None = None  # only when docs establish credential-home selection
+    sign_in_note: str = "Native sign-in command and declared-home behavior unknown; ask the person."
+    sign_in_sources: tuple[str, ...] = ()
     usage_interval: int = 60
     background_usage: bool = False
     usage_from_records = None  # optional reader of (joined record, saved launch time) sources

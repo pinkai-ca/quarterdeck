@@ -196,6 +196,10 @@ class GrokHarness(Harness):
 
     name = "grok"
     program = "grok"
+    sign_in_command = ("grok", "login")
+    sign_in_note = ("Current docs document GROK_HOME for configuration, but do not establish credential-home "
+                    "selection here. Declared-home sign-in is unknown; ask the person. No home-specific command is established here.")
+    sign_in_sources = ("https://docs.x.ai/build/cli/reference", "https://docs.x.ai/build/settings")
     native_provider = "xai"
     home_variable = "GROK_HOME"
     credential_file = "auth.json"
