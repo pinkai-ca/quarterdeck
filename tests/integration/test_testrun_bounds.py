@@ -55,8 +55,9 @@ def test_tool_caps_an_older_target_and_retains_the_first_memory_failure(syntheti
     project, commit = synthetic_project
     # No conftest in this old/synthetic target: the executing runner must bound it itself.
     (project / 'tests/test_memory.py').write_text('''
-import resource
+import os, resource
 def test_synthetic_allocation():
+    assert os.environ['OPENBLAS_NUM_THREADS'] == '1'
     soft, hard = resource.getrlimit(resource.RLIMIT_AS)
     assert soft == hard == 6144 * 1024 * 1024
     bytearray(12288 * 1024 * 1024)
@@ -69,6 +70,7 @@ def test_synthetic_allocation():
     assert done.returncode == 1 and result['outcome']['status'] == 'failed'
     assert result['evidence']['counts']['failed'] == 1
     assert result['environment']['memory_mib'] == 6144
+    assert result['environment']['fixed']['OPENBLAS_NUM_THREADS'] == '1'
     failures = list((folder / 'failures').glob('*.txt'))
     assert len(failures) == 1
     assert 'MemoryError' in failures[0].read_text() and 'MemoryError' in report

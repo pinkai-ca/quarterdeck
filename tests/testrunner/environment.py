@@ -15,7 +15,8 @@ import subprocess
 STRIP_PREFIXES = ('PYTHON', 'PIP_', 'PYTEST_', 'GIT_', 'XDG_')
 STRIP_NAMES = ('VIRTUAL_ENV', 'VIRTUAL_ENV_PROMPT', 'CONDA_PREFIX', 'CONDA_DEFAULT_ENV', '__PYVENV_LAUNCHER__',
                'TMUX_TMPDIR', 'TMPDIR', 'TEMP', 'TMP', 'HOME', 'QD_SHIP', 'QD_SEAT', 'QD_TMUX_SOCKET',
-               'TESTRUN_EVIDENCE', 'TESTRUNS_RUN', 'TESTRUNS_USERBASE', 'TESTRUNS_MEMORY_MIB')
+               'TESTRUN_EVIDENCE', 'TESTRUNS_RUN', 'TESTRUNS_USERBASE', 'TESTRUNS_MEMORY_MIB',
+               'OPENBLAS_NUM_THREADS')
 KEEP_GIT = ('GIT_CONFIG_NOSYSTEM',)  # nothing else of git's environment may redirect a test's repository
 
 
@@ -36,7 +37,7 @@ def build(scratch: Path, run: str, userbase: str | None = None) -> tuple[dict, d
         path.mkdir(mode=0o700, parents=True, exist_ok=True)
         env[name] = str(path)
     fixed = {'PIP_NO_INDEX': '1', 'PIP_NO_INPUT': '1', 'PIP_DISABLE_PIP_VERSION_CHECK': '1',
-             'PYTHONNOUSERSITE': '1', 'TESTRUNS_RUN': run}
+             'PYTHONNOUSERSITE': '1', 'TESTRUNS_RUN': run, 'OPENBLAS_NUM_THREADS': '1'}
     if userbase:
         fixed['TESTRUNS_USERBASE'] = userbase  # resolved before HOME was replaced; for a run inside this one only
     env.update(fixed)

@@ -13,6 +13,7 @@ import pytest
 
 from tests.testrunner import layout, resources
 
+OPENBLAS_AT_IMPORT = os.environ.get('OPENBLAS_NUM_THREADS')
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 TEST_TICK = 0.1  # seconds: every test ship's declared [ship] tick, so the service passes quickly (production: 1.0)
@@ -70,7 +71,11 @@ def pytest_configure(config):
 
 
 def pytest_report_header(config):
-    return f'test memory limit: RLIMIT_AS soft=hard={config._qd_memory_limit} bytes (children inherit)'
+    startup = (f'OPENBLAS_NUM_THREADS={OPENBLAS_AT_IMPORT!r} observed at conftest import; '
+               'earlier plugin-import timing is unverified')
+    if OPENBLAS_AT_IMPORT != '1':
+        startup += '; required: set OPENBLAS_NUM_THREADS=1 before starting pytest; setting it now is too late'
+    return [f'test memory limit: RLIMIT_AS soft=hard={config._qd_memory_limit} bytes (children inherit)', startup]
 
 
 @pytest.hookimpl(hookwrapper=True, tryfirst=True)

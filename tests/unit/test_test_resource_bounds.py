@@ -77,3 +77,43 @@ if __name__ == "__main__":
 def test_this_pytest_process_is_capped_before_tests_start():
     soft, hard = resource.getrlimit(resource.RLIMIT_AS)
     assert 0 < soft == hard <= resources.DEFAULT_MEMORY_MIB * resources.MIB
+
+
+def test_runner_sets_openblas_before_starting_pytest_without_disabling_plugins(tmp_path, monkeypatch):
+    from tests.testrunner import environment
+
+    monkeypatch.setenv('OPENBLAS_NUM_THREADS', '32')
+    env, recorded = environment.build(tmp_path, 'synthetic-memory-policy-zzzz')
+    assert env['OPENBLAS_NUM_THREADS'] == recorded['fixed']['OPENBLAS_NUM_THREADS'] == '1'
+    assert 'OPENBLAS_NUM_THREADS' in recorded['removed_names']
+    assert 'PYTEST_DISABLE_PLUGIN_AUTOLOAD' not in env
+
+
+@pytest.mark.parametrize('observed', [None, '1', '32'])
+def test_shared_header_never_attests_earlier_plugin_import_timing(monkeypatch, observed):
+    from types import SimpleNamespace
+    from tests import conftest
+
+    monkeypatch.setattr(conftest, 'OPENBLAS_AT_IMPORT', observed)
+    header = '\n'.join(conftest.pytest_report_header(SimpleNamespace(_qd_memory_limit=8192 * resources.MIB)))
+    assert 'earlier plugin-import timing is unverified' in header
+    assert ('setting it now is too late' in header) == (observed != '1')
+
+
+def test_runner_restores_alarm_state_after_its_deadline():
+    import signal
+    import time
+    from types import SimpleNamespace
+    from tests.testrunner import run
+
+    handler = signal.getsignal(signal.SIGALRM)
+    timer = signal.getitimer(signal.ITIMER_REAL)
+    runner = run.Runner(SimpleNamespace(timeout=.02), [])
+    with pytest.raises(run.Stop, match='time limit'):
+        with runner.time_limit():
+            time.sleep(.1)
+    assert runner.timed_out
+    assert signal.getsignal(signal.SIGALRM) == handler
+    restored = signal.getitimer(signal.ITIMER_REAL)
+    assert restored[1] == timer[1]
+    assert restored[0] <= timer[0]
