@@ -24,7 +24,12 @@ SESSION_PREFIX = 'u-'  # the session's container under the anchor: short, so the
 
 def socket_parent():
     """The fixed short anchor ``<project>/.testruns/s``, the project being the parent of the Git common
-    directory: one place for the checkout, every worktree and every run checkout of tests/testrun.py."""
+    directory: one place for the checkout, every worktree and every run checkout of tests/testrun.py. Inside
+    ``testrun.py run --jail`` the project is not visible: the anchor is the jail's own, in its private /tmp."""
+    if os.environ.get('TESTRUNS_JAILED') == '1' and os.environ.get('TESTRUNS_SOCKETS'):
+        anchor = Path(os.environ['TESTRUNS_SOCKETS'])
+        anchor.mkdir(mode=0o700, parents=True, exist_ok=True)
+        return anchor
     try:
         common = Path(subprocess.check_output(
             ['git', '-C', str(ROOT), 'rev-parse', '--path-format=absolute', '--git-common-dir'],
