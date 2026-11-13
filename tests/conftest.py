@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.testrunner import layout, resources, sessions
+from tests.testrunner import layout, resources, sessions, scratch
 
 OPENBLAS_AT_IMPORT = os.environ.get('OPENBLAS_NUM_THREADS')
 ROOT = Path(__file__).resolve().parent.parent
@@ -50,8 +50,11 @@ def socket_parent():
 
 
 def plain_temp():
-    """TMPDIR of a plain pytest run: ``<project>/.testruns/t``, verified like the socket anchor."""
+    """TMPDIR of plain pytest: owned memory storage, or the verified disk fallback .testruns/t."""
     anchor = socket_parent()
+    memory = scratch.plain(anchor.parent.parent)
+    if memory is not None:
+        return memory
     root = layout.Root(anchor.parent.parent)
     try:
         os.close(root.child(layout.PLAIN_TEMP))
@@ -62,8 +65,7 @@ def plain_temp():
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_configure(config):
-    """Pytest run directly puts its temporary products, basetemp included, under .testruns/t, where
-    pyproject's tmp_path_retention_count keeps only the last three sessions. A run of tests/testrun.py has
+    """Direct pytest uses owned memory storage, retaining at most three failed tmp_path sessions. A run of tests/testrun.py has
     already given the run its own TMPDIR, HOME and caches in its scratch, and is left as it is."""
     try:
         config._qd_memory_limit = resources.apply_from_environment()
@@ -74,8 +76,37 @@ def pytest_configure(config):
     os.environ.pop('TMUX_PANE', None)
     if os.environ.get('TESTRUNS_RUN'):
         return
-    os.environ['TMPDIR'] = str(plain_temp())
+    folder = plain_temp()
+    os.environ['TMPDIR'] = str(folder)
+    config._qd_scratch_path = folder
+    extra = [Path(config.option.basetemp).absolute()] if config.option.basetemp else []
+    extra = [path for path in extra if scratch.in_memory(path)]
+    config._qd_scratch_monitor = (scratch.Monitor(folder, extra=extra)
+                                  if folder.parent != socket_parent().parent else None)
     tempfile.tempdir = None  # gettempdir() reads TMPDIR again
+
+
+def pytest_sessionstart(session):
+    config = session.config
+    monitor = getattr(config, '_qd_scratch_monitor', None)
+    if monitor is not None and not hasattr(config, 'workerinput'):
+        config._qd_scratch_observer = scratch.PlainMonitor(monitor.paths[0], monitor.paths[1:])
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_sessionfinish(session, exitstatus):
+    observer = getattr(session.config, '_qd_scratch_observer', None)
+    if observer is None:
+        return
+    try:
+        refusal = observer.finish()['refusal']
+    except (layout.Refused, OSError, ValueError, subprocess.TimeoutExpired) as error:
+        refusal = str(error)
+    if refusal:
+        session.exitstatus = pytest.ExitCode.USAGE_ERROR
+        reporter = session.config.pluginmanager.get_plugin('terminalreporter')
+        if reporter:
+            reporter.write_line('pytest: refused: ' + refusal, red=True)
 
 
 def pytest_report_header(config):
@@ -83,7 +114,8 @@ def pytest_report_header(config):
                'earlier plugin-import timing is unverified')
     if OPENBLAS_AT_IMPORT != '1':
         startup += '; required: set OPENBLAS_NUM_THREADS=1 before starting pytest; setting it now is too late'
-    return [f'test memory limit: RLIMIT_AS soft=hard={config._qd_memory_limit} bytes (children inherit)', startup]
+    working = f'pytest working files: {getattr(config, "_qd_scratch_path", os.environ.get("TMPDIR"))}'
+    return [working, f'test memory limit: RLIMIT_AS soft=hard={config._qd_memory_limit} bytes (children inherit)', startup]
 
 
 @pytest.hookimpl(hookwrapper=True, tryfirst=True)

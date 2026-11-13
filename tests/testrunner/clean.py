@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 import time
 
-from . import evidence, gitops, owned, procs, report, sessions
+from . import evidence, gitops, owned, procs, report, sessions, scratch as storage
 from .layout import (CHANGES, DIRECTORY, KEEPS, RESULTS, RETIREMENTS, RUNS, RUN_SOCKETS, SOCKETS, Refused, Root, Slot, change_file,
                      identity, read_json, run_name, write_json)
 
@@ -56,7 +56,7 @@ def retire_run(root: Root, runs_fd: int, run: str, state: dict) -> dict:
         return _retire_run(root, runs_fd, run, state)
     except Exception as error:
         # The finalization alarm is a BaseException: its emergency ending still owns that deadline.
-        return {'outcome': 'held', 'scratch': str(root.path / RUNS / run),
+        return {'outcome': 'held', 'scratch': str(storage.path(root, run)),
                 'reason': f'{type(error).__name__}: {error}; exact remainder retained'}
 
 
@@ -64,21 +64,30 @@ def _retire_run(root: Root, runs_fd: int, run: str, state: dict) -> dict:
     """Remove a finished run's scratch by its recorded identity, and its checkout's Git admin entry."""
     note = kept(root, run)
     if note:
-        return {'outcome': 'kept', 'reason': note['reason'], 'scratch': str(root.path / RUNS / run)}
+        return {'outcome': 'kept', 'reason': note['reason'], 'scratch': str(storage.path(root, run))}
     admin = state.get('admin')
     if admin:
         # The forced removal below must reach this run's own checkout only. state.json is read back from disk
         # on recovery, so before anything goes it must name what run.py made: the run's own checkout path and
         # an admin entry directly under the project's .git/worktrees. Otherwise nothing is touched.
-        own = root.path / RUNS / run / 'checkout'
+        own = storage.path(root, run) / 'checkout'
         checkout = state.get('checkout')
         if checkout != str(own) or Path(admin).parent != root.project / '.git' / 'worktrees':
-            return {'outcome': 'held', 'scratch': str(root.path / RUNS / run),
+            return {'outcome': 'held', 'scratch': str(storage.path(root, run)),
                     'reason': f'state.json names checkout {checkout} and Git admin {admin}, not this run\'s own '
                               f'{own} under {root.project / ".git" / "worktrees"}; nothing removed'}
     budget = owned.Budget()
-    cleanup = owned.retire(runs_fd, run, state.get('scratch'), root.path / RUNS / run,
-                           state.get('owner'), budget=budget)
+    parent = None
+    try:
+        parent = storage.parent(root, run, create=False)
+    except FileNotFoundError:
+        cleanup = {'outcome': 'complete', 'scratch': str(storage.path(root, run)), 'removed': {}}
+    else:
+        try:
+            cleanup = owned.retire(parent, run, state.get('scratch'), storage.path(root, run),
+                                   state.get('owner'), budget=budget)
+        finally:
+            os.close(parent)
     cleanup['sessions'] = sessions.retire(root, run, budget=budget)
     if cleanup['sessions']['outcome'] == 'held':
         cleanup['outcome'] = 'held'
@@ -121,6 +130,7 @@ def discard_records(root: Root, run: str, state: dict, cleanup: dict) -> dict:
                                             or data.get('owner') != state.get('owner')):
                 raise Refused('ownership record changed; retained')
             owned.unlink_file(fd, name, root.path / RESULTS / run / name)
+        storage.discard(root, run)
     except Exception as error:
         cleanup.update(outcome='held', reason=f'recovery records retained: {error}')
     finally:
@@ -162,7 +172,7 @@ def retire(args) -> int:
                 fd = root.child(RESULTS, run, create=False)
                 try:
                     write_json(fd, 'retirement-timeout.json', {'run': run, 'outcome': 'retirement-timeout',
-                               'scratch': str(root.path / RUNS / run), 'first_result_preserved': True,
+                               'scratch': str(storage.path(root, run)), 'first_result_preserved': True,
                                'finalization_seconds': FINALIZATION_SECONDS, 'emergency_seconds': EMERGENCY_SECONDS})
                 finally:
                     os.close(fd)
@@ -180,14 +190,17 @@ def retire(args) -> int:
 
 
 def retire_within(root: Root, run: str) -> int:
-    where = root.path / RUNS / run
+    where = storage.path(root, run)
     results = runs = scratch = lock = None
     try:
         results = root.child(RESULTS, run, create=False)
-        runs = root.child(RUNS, create=False)
+        try:
+            runs = storage.parent(root, run, create=False)
+        except FileNotFoundError:
+            runs = root.child(RUNS)
         state = read_json(results, 'ownership.json', root.path / RESULTS / run / 'ownership.json')
         try:
-            scratch = root.child(RUNS, run, create=False)
+            scratch = storage.child(root, run, create=False)
         except FileNotFoundError:
             pass
         if state is None and scratch is not None:
@@ -295,15 +308,33 @@ def recover(root: Root, change: str | None) -> list[str]:
     lines = []
     runs_fd = root.child(RUNS)
     try:
-        for name in sorted(os.listdir(runs_fd)):
+        for name in sorted(set(os.listdir(runs_fd)) | set(storage.pending(root))):
             try:
                 run_name(name)
-                fd = root.child(RUNS, name, create=False)
+                fd = storage.child(root, name, create=False)
+            except FileNotFoundError:
+                record_fd = root.child(RESULTS, name, create=False)
+                try:
+                    state = read_json(record_fd, "ownership.json", root.path / RESULTS / name / "ownership.json")
+                finally:
+                    os.close(record_fd)
+                if state and state.get("change") != change:
+                    lines.append(f"run {name}: memory scratch absent; only its own change recovers its records")
+                    continue
+                if state:
+                    finish_abandoned(root, name, state)
+                    cleanup = retire_run(root, runs_fd, name, state)
+                    discard_records(root, name, state, cleanup)
+                    lines.append(f"run {name}: absent memory scratch retired; cleanup {cleanup['outcome']}")
+                else:
+                    storage.discard(root, name)
+                    lines.append(f"run {name}: memory setup never created scratch; storage reservation retired")
+                continue
             except Refused as refused:
                 lines.append(f'runs/{name}: left alone ({refused})')
                 continue
             try:
-                state = read_json(fd, 'state.json', root.path / RUNS / name / 'state.json')
+                state = read_json(fd, 'state.json', storage.path(root, name) / 'state.json')
                 if state is None or state.get('change') != change:
                     owner = 'unknown' if state is None else state.get('change')
                     lines.append(f'run {name} of change {owner} has scratch left; only its own change recovers it')
@@ -322,7 +353,7 @@ def recover(root: Root, change: str | None) -> list[str]:
                         lines.append(f'run {name}: processes {live} remain in its own groups; held, not killed')
                         continue
                     lines.append(f'recovering abandoned run {name} of change {change}: removing '
-                                 f'{root.path / RUNS / name} {state["scratch"]} and Git admin {state.get("admin")}')
+                                 f'{storage.path(root, name)} {state["scratch"]} and Git admin {state.get("admin")}')
                     finish_abandoned(root, name, state)
                     record(root, name, state)
                     cleanup = retire_run(root, runs_fd, name, state)
@@ -345,7 +376,7 @@ def finish_abandoned(root: Root, run: str, state: dict, *, scratch_fd=None) -> N
         result = read_json(results_fd, 'result.json', root.path / RESULTS / run / 'result.json') or {'run': run}
         if result.get('outcome', {}).get('status') not in (None, 'running'):
             return  # its own ending was written; only the scratch removal was interrupted
-        scratch = root.path / RUNS / run
+        scratch = storage.path(root, run)
         console_path = scratch / 'console.txt'
         if scratch_fd is None:
             console = console_path.read_text(encoding='utf-8', errors='replace') if console_path.is_file() else ''
@@ -398,7 +429,7 @@ def clean_within(root: Root, args) -> int:
             raise Refused('main and the project checkout are never cleaned')
         for line in recover(root, change):
             print(line)
-        leftover = [run['run'] for run in data['runs'] if (root.path / RUNS / run['run']).exists()
+        leftover = [run['run'] for run in data['runs'] if (storage.path(root, run['run'])).exists()
                     and not kept(root, run['run'])]
         if leftover:
             raise Refused(f'runs {leftover} of {change} still have scratch (live or held); nothing more touched')
@@ -501,12 +532,12 @@ def keep(args) -> int:
     root = Root(project, create=False)
     try:
         try:
-            fd = root.child(RUNS, run, create=False)
+            fd = storage.child(root, run, create=False)
         except (Refused, FileNotFoundError):
             raise Refused(f'run {run} has no scratch left to keep; its result, report and failure output are '
                           'always retained') from None
         try:
-            state = read_json(fd, 'state.json', root.path / RUNS / run / 'state.json')
+            state = read_json(fd, 'state.json', storage.path(root, run) / 'state.json')
             if state is None or identity(os.fstat(fd)) != state['scratch']:
                 raise Refused(f'run {run}: scratch identity unrecorded or changed; nothing kept')
         finally:
@@ -518,7 +549,7 @@ def keep(args) -> int:
                                                  'scratch': state['scratch']})
         finally:
             os.close(keeps_fd)
-        print(f'kept run {run} scratch at {root.path / RUNS / run}: {args.reason} · its end and its change\'s clean '
+        print(f'kept run {run} scratch at {storage.path(root, run)}: {args.reason} · its end and its change\'s clean '
               'leave it; the note is ' + str(root.path / KEEPS / (run + '.json')))
         return 0
     finally:

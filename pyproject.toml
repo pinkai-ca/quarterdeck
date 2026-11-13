@@ -61,3 +61,4 @@ where = ["src"]
 testpaths = ["tests"]
 addopts = ["-p", "no:cacheprovider"]
 tmp_path_retention_count = 3
+tmp_path_retention_policy = "failed"

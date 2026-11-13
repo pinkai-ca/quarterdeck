@@ -30,7 +30,7 @@ def boundary(tmp_path, monkeypatch):
         return original_stat(path, *args, **kwargs)
 
     def scan(path):
-        if Path(path) == store.dir:
+        if isinstance(path, (str, os.PathLike)) and Path(path) == store.dir:
             scans.append(clock.now)
         return original_scan(path)
 

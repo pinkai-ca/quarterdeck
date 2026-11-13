@@ -136,6 +136,11 @@ def render(result: dict, console: str, failures: list[dict]) -> str:
         out.append(f'- {key}: `{json.dumps(value, sort_keys=True)}`')
     for key, value in result.get('tools', {}).items():
         out.append(f'- {key}: `{json.dumps(value, sort_keys=True)}`')
+    out += ['', '## Working storage', '',
+            'Disk fallback: ' + result['working_storage']['reason']
+            if result.get('working_storage', {}).get('reason') else 'Working files use ' + result.get('working_storage', {}).get('kind', 'unrecorded storage'),
+            '', block(json.dumps(result.get('working_storage', {}), indent=2, sort_keys=True)),
+            '', '## Drive writes', '', block(json.dumps(result.get('drive_writes', {}), indent=2, sort_keys=True))]
     out += ['', '## Cleanup', '', block(json.dumps(result.get('cleanup', {}), indent=2, sort_keys=True)), '',
             '## Complete console output', '', block(console or '(no console output)'), '']
     return '\n'.join(out)

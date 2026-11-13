@@ -20,7 +20,7 @@ import subprocess
 import sys
 import time
 
-from . import clean, environment, evidence, gitops, jail, owned, procs, report, resources, sessions, usersite
+from . import clean, environment, evidence, gitops, jail, owned, procs, report, resources, scratch as storage, sessions, usersite
 from .layout import RESULTS, RUNS, RUN_SOCKETS, SOCKETS, Refused, Root, Slot, git_environment, identity, new_run_id, write_json
 
 GRACE = 15.0
@@ -64,6 +64,8 @@ class Runner:
         self.console = None
         self.last_exit = None
         self.started = time.time()
+        self.monitor = None
+        self.storage_refused = False
         self.listed = None  # what the jail holds, once the run checkout exists
 
     def jailed(self, argv, cwd):
@@ -114,6 +116,12 @@ class Runner:
         raise FinalizationTimeout
 
     def check(self):
+        if self.monitor is not None:
+            try:
+                self.monitor.check()
+            except Refused:
+                self.storage_refused = True
+                raise
         if self.signal is not None:
             raise Stop(f'signal {self.signal}')
         if self.deadline is not None and time.monotonic() > self.deadline:
@@ -168,7 +176,7 @@ class Runner:
             while process.poll() is None:
                 self.check()
                 time.sleep(0.2)
-        except Stop:
+        except (Stop, Refused):
             self.stop_group(process)
             raise
         finally:
@@ -217,6 +225,7 @@ class Runner:
                     print(line)
                 if change:
                     clean.register(root, target, self.run)  # a refusal here leaves nothing made
+            self.storage = storage.prepare(root, self.run)
             return self.within(root, target, targets, change)
         except Stop as stopped:
             print(f'testrun: timeout before test setup: {stopped}; no test result claimed', file=sys.stderr)
@@ -233,10 +242,13 @@ class Runner:
     def within(self, root: Root, target, targets, change) -> int:
         args, run = self.args, self.run
         self.root = root
-        runs_fd = root.child(RUNS)
+        runs_fd = storage.parent(root, run)
         results_fd = root.child(RESULTS, run)
-        self.scratch_fd = root.child(RUNS, run)
-        scratch = root.path / RUNS / run
+        self.scratch_fd = storage.child(root, run)
+        scratch = storage.path(root, run)
+        self.monitor = storage.Monitor(scratch) if self.storage["kind"] != "disk" else None
+        self.disk_before = storage.diskstats(root.project)
+        self.io_before = storage.process_io()
         owner = owned.mark(self.scratch_fd)
         self.lock = os.open('lock', os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=self.scratch_fd)
         fcntl.flock(self.lock, fcntl.LOCK_EX)  # this descriptor is inherited: held while any run process lives
@@ -250,6 +262,7 @@ class Runner:
         result = {'run': run, 'change': change, 'started': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
                   'target': {'top': str(target.top), 'project': str(target.project), 'head': target.head,
                              'tree': target.tree, 'branch': target.branch},
+                  'working_storage': self.storage,
                   'runner': {'argv': sys.argv, 'executable': sys.executable},
                   'outcome': {'status': 'running', 'wrapper_exit': None}}
         write_json(results_fd, 'result.json', result)
@@ -301,7 +314,15 @@ class Runner:
         found = evidence.analyse(scratch / 'evidence', pytest_exit)
         if note:
             found.update(complete=False, causes=[note, *found['causes']], counts=dict.fromkeys(evidence.CATEGORIES))
-        status = decide(found, self.timed_out, self.signal)
+        status = 'refused' if self.storage_refused else decide(found, self.timed_out, self.signal)
+        if self.monitor is not None:
+            try:
+                self.monitor.check(force=True)
+            except Refused as refused:
+                status = 'refused'
+                note = str(refused)
+            result['working_storage']['peak'] = self.monitor.peak
+        self.monitor = None
         result['evidence'] = {key: value for key, value in found.items() if key != 'failures'}
         result['failures'] = report.write_failures(results_fd, found['failures'])
         result['manifests'] = {'target': manifests_target(target, target_before) if target_before else {}}
@@ -330,6 +351,7 @@ class Runner:
             result['outcome']['wrapper_exit'] = CLEANUP_HELD
         report.write(results_fd, result, console, found['failures'])
         cleanup = clean.discard_records(root, run, self.state, cleanup)
+        result['drive_writes'] = storage.writes_since(root.project, self.disk_before, self.io_before)
         if cleanup['outcome'] == 'held' and status == 'passed':
             result['outcome']['wrapper_exit'] = CLEANUP_HELD
         report.write(results_fd, result, console, found['failures'])

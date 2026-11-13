@@ -1,6 +1,6 @@
-"""Pytest run directly, under the project's retention settings: ordinary session history is bounded to the
-last three sessions, each keeping its trees, its result, report and failing output. tests/testrun.py removes
-all of its scratch at a run's end instead, keeping the complete failure output in its results."""
+"""Plain pytest retains at most three failed sessions and only their failed tmp_path folders.
+The tool removes run scratch and retains failure output in durable results instead.
+"""
 
 import os
 from pathlib import Path
@@ -41,17 +41,18 @@ def sessions(history):
                   key=lambda path: int(path.name.split("-")[1]))
 
 
-def test_ordinary_session_history_is_bounded_to_the_last_three(tmp_path):
+def test_failed_session_history_is_bounded_to_the_last_three(tmp_path):
     history = tmp_path / "history"
     history.mkdir()
     for number in range(5):
-        result = session(tmp_path / str(number), history, fail=number == 3)
-        assert result.returncode == (1 if number == 3 else 0), result.stdout + result.stderr
+        result = session(tmp_path / str(number), history, fail=number >= 1)
+        assert result.returncode == (1 if number >= 1 else 0), result.stdout + result.stderr
         assert (tmp_path / str(number) / "report.xml").is_file()
     kept = sessions(history)
-    assert [path.name for path in kept] == ["pytest-2", "pytest-3", "pytest-4"]
-    for path in kept:  # each kept session keeps its trees whole: nothing is removed during a test's teardown
-        assert len(list(path.rglob("passed-evidence"))) == 1 and len(list(path.rglob("other-evidence"))) == 1
+    assert [path.name for path in kept] == ["pytest-1", "pytest-2", "pytest-3"]
+    for path in kept:
+        assert not list(path.rglob("passed-evidence"))
+        assert len(list(path.rglob("other-evidence"))) == 1
 
 
 def test_a_failed_session_keeps_its_output_report_and_tree(tmp_path):

@@ -2,8 +2,9 @@
 fixed result, report and complete per-failure output, and cleans up after a change.
 
 Standard library only, and nothing from ``src/``: the framework never imports it and it never imports the
-framework. The entry point is ``python3 -I tests/testrun.py``; everything it creates lives under the
-project's ignored ``.testruns/`` folder, the project being the parent of the Git common directory.
+framework. The entry point is ``python3 -I tests/testrun.py``. Durable results and control records live
+under the project's ignored ``.testruns/`` folder, the project being the parent of the Git common directory.
+Working files prefer bounded, owned memory storage and fall back to .testruns/runs on disk.
 """
 
 FORMAT = 1  # control state, journals, results: a reader refuses a format it does not know
