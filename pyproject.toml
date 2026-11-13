@@ -56,6 +56,14 @@ where = ["src"]
 "share/quarterdeck/ships/cascade/roles" = [
     "ships/cascade/roles/orchestrator.md", "ships/cascade/roles/ring.md",
 ]
+"share/quarterdeck/ships/shuttle" = [
+    "ships/shuttle/README.md", "ships/shuttle/mission-record.md",
+    "ships/shuttle/orders.md", "ships/shuttle/ship.toml",
+]
+"share/quarterdeck/ships/shuttle/roles" = [
+    "ships/shuttle/roles/captain.md", "ships/shuttle/roles/engineering.md",
+    "ships/shuttle/roles/first-officer.md",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

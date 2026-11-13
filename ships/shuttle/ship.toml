@@ -1,0 +1,41 @@
+# Copy this complete folder, then declare this mission's workspace and available programs.
+# These are examples, not discovered sign-ins or promises that a model is available.
+[ship]
+name = "shuttle"
+operator = "operator"
+workspace = "."                  # EDIT: the repository or approved non-repository working folder
+
+[pools.anthropic]
+provider = "anthropic"
+config_dir = "~/.claude"
+
+[pools.openai]
+provider = "openai"
+config_dir = "~/.codex"
+
+[sessions.crew]
+title = "Shuttle"                 # EDIT for each shuttle running at the same time
+
+[seats.captain]
+session = "crew"
+role = "captain"
+harness = "claude"
+pool = "anthropic"
+model = "claude-opus-5-5"
+effort = "high"
+
+[seats.engineer]
+session = "crew"
+role = "engineering"
+harness = "codex"
+pool = "openai"
+model = "gpt-6-astra"
+effort = "high"
+
+[seats.first-officer]
+session = "crew"
+role = "first-officer"
+harness = "claude"
+pool = "anthropic"                # a different provider from the engineer where available
+model = "claude-opus-5-5"
+effort = "high"
