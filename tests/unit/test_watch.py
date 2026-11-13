@@ -9,6 +9,38 @@ from quarterdeck import watch
 from quarterdeck.watch import Facts
 
 
+def live_pointer_seat(drydock, monkeypatch):
+    from types import SimpleNamespace
+    from quarterdeck.seat import Seat
+    from quarterdeck.ship import load
+
+    ship = load(drydock)
+    seat = Seat(ship, ship.seat("worker-1"), SimpleNamespace())
+    seat.folder.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(seat, "pane", lambda: SimpleNamespace(dead=False))
+    return seat
+
+
+def test_an_empty_record_pointer_reads_unknown_with_its_reason(drydock, monkeypatch):
+    seat = live_pointer_seat(drydock, monkeypatch)
+    pointer = seat.folder / "record"
+    pointer.write_text(" \n\t ")
+    reason = seat.join().reason
+    assert reason.startswith("record pointer empty:")
+    assert watch.activity(seat) == watch.Activity("unknown", reason)
+    assert pointer.read_text() == " \n\t "
+
+
+def test_an_unreadable_record_pointer_reads_unknown_with_its_reason(drydock, monkeypatch):
+    seat = live_pointer_seat(drydock, monkeypatch)
+    pointer = seat.folder / "record"
+    pointer.write_bytes(b"\xff")
+    reason = seat.join().reason
+    assert reason.startswith("record pointer unreadable:")
+    assert watch.activity(seat) == watch.Activity("unknown", reason)
+    assert pointer.read_bytes() == b"\xff"
+
+
 def test_the_status_line_says_everything_that_waits():  # law: nothing-waits-silently
     quiet = Facts(service="ok", waiting=0, oldest=0, blind=0)
     assert quiet.line() == "service ok · 0 waiting"

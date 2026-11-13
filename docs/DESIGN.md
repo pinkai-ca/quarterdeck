@@ -240,7 +240,7 @@ success. `cascade_runtime.py` owns this runtime evidence and no native control o
 
 ## 5. Harness adapters
 
-One class per agent program, on one interface, `Harness` in `harness/base.py`. A new adapter writes the members below; the rest is written once in the base. Every fact about a program lives in its adapter: no module outside `harness/` names a program, and a test holds the line.
+One class per agent program, on one interface, `Harness` in `harness/base.py`. A new adapter writes the members below; the rest is written once in the base. Every fact about a program lives in its adapter: no module outside `harness/` names a program, and a test holds the line, taking its names from the harness registry so that each newly registered program is covered.
 
 A program of a frontier provider starts with the trust its maker gives a person who trusts the working folder: the folder instructions, skills, hooks and tool servers load as they would for that person. The ship adds security particular to one program only afterwards, each piece on the Admiral's word. The operator's own HOME files stay out of a seat; the declared workspace is trusted separately. The existing hands and their workspace jails are unchanged.
 

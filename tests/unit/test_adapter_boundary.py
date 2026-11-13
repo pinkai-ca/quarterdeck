@@ -62,12 +62,25 @@ def test_steered_and_consumed_inputs_keep_their_own_timestamps(tmp_path):
             Input("later", at + timedelta(seconds=2), "consumed", at + timedelta(seconds=2))]
 
 
+def program_knowledge_outside_adapters(root):
+    names = re.compile(r"\b(?:" + "|".join(re.escape(name) for name in harness.NAMES) + r")\b", re.I)
+    return sorted(p.relative_to(root) for p in root.rglob("*.py")
+                  if "harness" not in p.relative_to(root).parts and names.search(p.read_text()))
+
+
 def test_production_program_knowledge_stays_in_adapters():
     root = Path(harness.__file__).parent.parent
-    names = re.compile(r"\b(?:claude|codex|antigravity|opencode|pi|fake)\b", re.I)
-    offenders = [p.relative_to(root) for p in root.rglob("*.py")
-                 if "harness" not in p.relative_to(root).parts and names.search(p.read_text())]
+    offenders = program_knowledge_outside_adapters(root)
     assert offenders == [], f"program knowledge outside harness/: {offenders}"
+
+
+def test_a_new_registered_program_is_guarded_without_changing_the_scan(tmp_path, monkeypatch):
+    monkeypatch.setattr(harness, "NAMES", (*harness.NAMES, "future+agent"))
+    (tmp_path / "harness").mkdir()
+    (tmp_path / "harness" / "future.py").write_text('# FUTURE+AGENT belongs here\n')
+    (tmp_path / "generic.py").write_text('# FUTURE+AGENT does not belong here\n')
+    (tmp_path / "unrelated.py").write_text('# futureeeeeagent and future+agentish are not its name\n')
+    assert program_knowledge_outside_adapters(tmp_path) == [Path("generic.py")]
 
 
 def test_queue_uncertainty_reading_is_declared_by_its_adapter():

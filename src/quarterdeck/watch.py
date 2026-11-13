@@ -57,7 +57,9 @@ def activity(seat: Seat | UnresolvedSeat, now: datetime | None = None) -> Activi
         return Activity("off", "exit status not yet known" if pane.exit_status is None else f"exited {pane.exit_status}")
     join = seat.join()
     if join.record is None:
-        if join.reason and join.reason.split(":")[0] in ("record missing", "ambiguous", "record reader unknown", "record reader changed", "record unreadable", "record pointer unreadable", "record pointer empty"):
+        if join.reason and join.reason.split(":")[0] in (
+                "record missing", "ambiguous", "record reader unknown", "record reader changed",
+                "record unreadable", "record pointer unreadable", "record pointer empty"):
             return Activity("unknown", join.reason)  # what the Watch cannot see, it says, never a default
         return Activity("idle", join.reason or "")  # a seat that has never moved is idle, not stalled
     try:
