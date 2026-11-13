@@ -87,6 +87,8 @@ class Transaction:
         @contextmanager
         def locked(selected, **kwargs):
             assert selected == ship
+            # Production install_lock calls ship.fence, which creates the runtime.
+            ship.runtime.mkdir(parents=True, exist_ok=True)
             self.calls.append(('lock',))
             yield
 
