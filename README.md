@@ -1,178 +1,190 @@
 # Quarterdeck
 
-Quarterdeck runs a crew of coding agents as visible terminal sessions under one human's command. Each agent is an ordinary terminal program, Claude Code, Codex, Antigravity, OpenCode, pi or Grok Build, in its own tmux window, where the human can read it and type into it at any time. Quarterdeck seats the agents, carries orders and reports between them, watches them, and accounts for what they spend.
+**One crew, every provider.**
 
-Grok Build uses provider `xai` and harness `grok`. It grants native trust to the whole repository containing the seat's workspace, or the workspace itself outside a repository. Project instructions, rules and skills load; project hooks run, project MCP servers start and project LSP processes start. The ship's brief takes precedence over project instructions. These project imports follow the maker's trusted-folder behavior; the operator's home files stay out of the seat. Doctor and launch report declared hook/MCP/LSP source paths and established names, with incomplete inventory shown as unknown. LSP formats are unestablished, so their notices report source paths with unknown shape. Its [contract inventory](docs/GROK.md) distinguishes measured 1.0.77 behavior from remaining limits and installed acceptance.
+Quarterdeck runs AI coding agents from different companies as one crew, on your machine and under your command. You direct it by talking to its agents in plain words, or by typing its commands yourself. The agents hand each other orders, report back, and rotate providers when a quota is spent.
 
-It is a control plane and nothing more. It is not the agents, not the code they write, and not the way they review or land that code. Those rules are the ship's standing orders, which Quarterdeck carries to every seat and does not enforce in code.
+**Supported harnesses:** Claude Code (Anthropic) · Codex (OpenAI) · Grok (xAI) · Antigravity (Google) · OpenCode and pi (OpenRouter, local models) · Muse (Meta), being added
 
-## The shape of it
+<p align="center">
+  <img src="docs/assets/quarterdeck-demo.gif" alt="A terminal recording. One order is typed in a control window. The window splits as a captain on Claude Code takes the order and hands out two more; an engineer on Codex and a hand on a local model work at the same time, each in its own pane; the captain checks the work, and one report comes back to the control window." width="100%">
+</p>
 
-A **ship** is one file, `ship.toml`, naming the tmux sessions, the seats in each, and every seat's role, program, pool, model and persona. A **harness** is the terminal coding program. A **provider** is the company whose models or plans a pool uses, or the declared operator of its endpoint. A **pool** is one way of paying that provider: a subscription, named by its credential directory; an API key, named by the variable that holds it; or an endpoint, a model served at a URL, local or remote, with no quota and no credential of its own. A **seat** is one running program in one pane under one role, with a home of its own built from the ship's files and nothing of the user's. Orders, reports, questions, answers and acknowledgments are immutable files in the **post**; the ship's one service types each message in full into its addressee's pane, through one door, or hands it to the seat's own watch in a session the human owns. The **watch** reads a seat from its record first and its screen second. The **ledger** accounts every turn by pool, by seat and by order, with the tool calls it made and what it cost the machine. Fourteen **laws** say what the framework itself guarantees, each tagged where the code enforces it and where a test tries to break it; `qd laws` lists them. The **drill** proves the whole thing on a fake harness, and `qd check` proves an installed program live.
+<p align="center"><sub>One order, typed once, crossing three programs and back in 38 seconds. Real programs, real models, real speed. <a href="docs/DEMO.md">How this was recorded</a>.</sub></p>
 
-Read [Design decisions](docs/DECISIONS.md) for the choices and their code and test evidence. The full design is `docs/DESIGN.md`.
+Every agent runs in its normal terminal interface, the one made for people, in a tmux pane. A ship is a crew of such agents, its panes grouped into tmux sessions: `Office`, where the agent you talk to sits, and one named for the ship, such as `Endeavour Bridge`, for the rest of the crew. At any time you can attach, watch an agent work, scroll back through what it did, give it a command, or simply prompt it yourself.
 
-## Running it
+Quarterdeck is a command, `qd`, and one small service on your machine. It starts the agents, types orders and reports into their panes as you would, watches them, and accounts for what they spend. It adds no plug-ins, tools, hooks or protocols to your harnesses, and runs no agent as a hidden background process. Restart any agent at any moment, and that agent comes back with its brief and every order it still has to answer.
 
-Python 3.12 or later, tmux 3.x, git. The framework uses the standard library only.
+## Quick start
 
-Wheels and source distributions declare the laws, role and harness cards, and the
-drydock, forum and cascade templates through the explicit file list in
-`pyproject.toml`. One `qd upgrade` installs new target templates even when the
-incumbent predates them. Updated upgrade code replaces the managed
-`share/quarterdeck` tree with the target's declared files, removing stale resources
-on rollback. For targets before that declaration, it reads a supported literal
-copy step without executing target source. If that old shape is unsupported,
-upgrade copies only the target's standing orders and drydock where present,
-then proves the installed laws and prints one fallback line; extra templates
-may remain. A target with no standing orders uses `--help` proof and explicitly
-reports unavailable laws/cards and potentially unusable seat briefs.
-Read commands never repair the share tree.
+You need Linux, with Python 3.12 or later, tmux 3.x and git; Quarterdeck itself uses Python's standard library only. macOS is not supported yet. You also need at least one of the harnesses listed at the top, installed and signed in. Any of them will do: a crew can sit on one harness or on several, so use what you already have and like.
 
-If installed proof fails, an environment that existed before the upgrade is
-retained and its installation record names the target with a failed-proof marker.
-Upgrade reports failure and leaves the service stopped; doctor marks that proof
-as failed. Only a genuinely first install may remove its half-made environment.
+### Ask your agent (recommended)
 
-This resource mechanism also supports ordinary packaging. Fresh installed
-`qd laws` and fake-drill acceptance remain separate checks. An installed package
-omits the repository tests, test runner, design documentation and development
-ships such as `ships/default`; it contains only the explicitly listed templates.
+**1. Ask the harness you already use to install it.**
 
-```
-git clone <this repository> quarterdeck && cd quarterdeck
-python3 -m venv --system-site-packages .venv && .venv/bin/pip install -e .
-.venv/bin/qd drill                      # the all-hands exercise on the fake harness, about 25 seconds
-.venv/bin/qd --ship ships/drydock up    # the drydock: three fake seats in three tmux sessions
-.venv/bin/qd --ship ships/drydock status
-.venv/bin/qd doctor                     # is this machine ready: programs, versions, sign-ins, tmux, disk
-```
-
-A ship of your own is a folder under `ships/`, its own git repository, holding a `ship.toml` and an `orders.md`. `ships/default/` is the smallest crew on real programs, a desk on Claude Code with a captain and an engineer on Codex, using the sign-ins already on the machine; copy it and change what differs.
-
-[`ships/forum/`](ships/forum/README.md) is a complete lead-and-four-reviewer template.
-Set its pools and models for your machine, install it with `qd upgrade`, and bring
-it up with `qd up`. `qd post order --to reviewers --body-file brief.txt` files the
-same brief to each declared member under one request. The service tells the lead
-once when every member has filed or positively failed, naming any failures; the lead's card
-requires one combined report preserving dissent and adding no new analysis.
-Groups accept orders only. Each inbox and launch carries its own messages; the
-shared store stays readable and writable, so reviewer independence is instruction-only.
-
-The example ship's names follow its Star Trek theme. Scott, the engineer, is addressed as `scott` in the commands below.
-
-Point `qd` at a ship with `--ship` or `QD_SHIP`. Then:
-
-```
-qd up                               # the service and every seat marked up, resuming what has a record
-qd post order --to scott "Build the thing. Report when its tests pass."
-qd status                           # every seat on one screen, then the open orders
-qd watch scott                      # one seat in full
-qd set scott model=gpt-6-astra      # writes the ship file, commits it, applies what it can
-qd fresh worker-1                   # a new conversation, briefed, with its open messages
-qd ledger --by order                # what each order cost
-qd check claude                     # prove the installed Claude Code on a throwaway seat (spends tokens)
-qd upgrade                          # install the checkout's HEAD as the ship's own copy and run on it; qd upgrade <commit> rolls back
-```
-
-Every verb prints a proof line saying what was done and how it was confirmed; every refusal names the reason and what would lift it; every reading is available as `--json`. The command is written for an agent at the keyboard as much as for a person: the human's word reaches the ship through a desk seat that runs `qd`.
-
-### Reading as JSON
-
-Put `--json` before the verb, for example `qd --json status` or
-`qd --json ledger --by seat`. Each invocation emits one JSON document, followed
-by a newline. No table or Markdown wrapper is used for structured readings:
-
-- `status` and `watch` without a seat: seat readings, open order messages, and
-  status facts. `status --line`: the facts themselves, including waiting counts,
-  operational warnings. Detailed status and ledger show cached provider allowances.
-- `watch <seat>`: the seat reading, full record state and parsed screen, with
-  separate record absence/error fields. Observed model, declared model, harness
-  and version remain separate; an unobserved value is `null`.
-- `ledger`: stored windows and their freshness, declared pools, key-pool spend,
-  usage attempts and active wall events. `ledger --by seat|order|pool` and
-  `ledger --tools`: named row fields with their unmeasured/untimed/unjudged
-  counts. A missing book has `available: false` and a reason; an empty book is
-  available with empty collections. These commands neither write the book nor
-  request usage from a provider.
-- `controls`: adapter control definitions and the ship's relaunch controls.
-  `laws`: each law's id, part, text and comment-token carrier paths/line numbers.
-  `brief`, including `--sources`: the brief text, source files and word count.
-  `doctor` without `--fix`: checks with names, boolean results and details.
-- `inbox`: open and received message objects plus closing-report references.
-  `inbox --wait`: one object with `seat` and a `messages` array, then exit. This
-  is one batch, not JSON Lines or a continuing stream. The complete document is
-  serialized, printed and flushed before watch receipts are recorded. An output
-  failure leaves attempts unresolved; emitted messages do not assert a receipt.
-
-Dataclass fields retain numbers, booleans, `null` and collections; timestamps use
-ISO 8601 and paths are strings. Stored usage keeps its original reading/reset
-pair and latest error; `current`, `complete`, `reason` and `age_seconds` describe
-freshness at `observed_at`. Unknown token/price semantics and headline selection
-are the same as in text. Mutating commands, including `watch --save-screen` and
-`doctor --fix`, retain their proof output.
-
-Pool providers use company identifiers such as `anthropic`, `openai` and `google`; seats still name `claude`, `codex` and `antigravity` as harnesses. Subscriptions run only in the company's native harness. A native harness takes its own company's key; open harnesses OpenCode and pi take compatible endpoint pools with an optional key. An endpoint's operator is explicitly declared, regardless of the model's brand. Legacy native harness spellings on pools remain readable; `qd doctor` names the exact edits. Install the new reader before editing those spellings; restore old spellings and validate before downgrading.
-
-Structured readings separate `provider_id`/`provider_name`, harness/program and paying pool. Status, watch, doctor and Ledger add declared `pools` and `harnesses` metadata; Ledger replaces `pools[].provider` with `pools[].provider_id`. Seat readings add company identity and executable `program`. Native record/model provider IDs and stored launch harnesses retain their protocol meaning. The operational status line and its facts are unchanged.
-
-### Seat cards
-
-`dashboard/seat_cards.py` turns the status reading and the ship file into one HTML page with a card for each seat, grouped by session. A card shows the seat's name and role; its program, model and effort; whether it is working and whether its door is open; the subject of the order it holds; and today's tokens. It keeps the reading's register: what the reading could not see says unknown, a count with unmeasured turns keeps its `+`, and a model or effort taken only from the ship file is marked declared. The page fetches nothing, so it opens from disk:
-
-```bash
-.venv/bin/python dashboard/seat_cards.py --ship ships/default > seats.html
-```
-
-The page carries your ship's own text: order subjects are the crew's free-form words and may name customers, paths or anything else the ship works on. Escaping keeps them from breaking the page, not private. A page rendered from a real ship is not ready to publish; read it, as you would any of the ship's text, before it leaves your machine.
-
-## What is proven, and what is not
-
-Claude Code 2.1.317 and Codex 0.166.0 were proven live by `qd check` on 7 November 2026: each launched, took a long paste its record confirmed, wrote a named file, posted a report and had its turn read. What their adapters know of each program's record, screen, keys, dialogs and controls is pinned separately, by the contract tests' fixtures under `tests/fixtures/`. Antigravity 1.5.5 passed the same live check on 11 November 2026 UTC (10 November in Vancouver), using Gemini 3.8 Flash: its opening brief and the check task were two separately read native turns. It has no home switch, so its seat runs in the user's Antigravity state; its SQLite/protobuf record is read from a snapshot of its bytes. A visible working queue waits for an exact record receipt before delivery is confirmed. The fields, version evidence and queue behavior are in `docs/ANTIGRAVITY.md`. OpenCode 1.19.5 and pi 0.74.2 run on endpoint pools, a model served at an OpenAI-compatible URL; both were spiked against a local vLLM server on 7 November 2026, and their records, screens, folds and wraps are pinned by fixtures. A seat on an endpoint pool runs in a bubblewrap jail unless the ship says otherwise: the operator's home hidden, the workspace writable, `qd post` working from inside.
-
-The readings keep uncertainty visible. A trailing `+` marks an incomplete measured total: at least what was read, with unmeasured contributions counted separately. An unreadable or unavailable reading says what could not be seen, and an unknown measurement remains distinct from measured zero. New or unproven program versions run with the newest known adapter facts and remain unproven until `qd check` proves the installed program live.
-
-## A law from statement to test
-
-The complete **one-door** law, from [the framework's laws](standing-orders/laws.md#seat):
-
-> Everything typed into a seat goes through one path, in one process: it clears what it knows how to clear, refuses what it does not, types once into an empty box, checks the box as the program shows it, submits, and confirms by the record. It never types into a session the human owns. Never resend what you cannot confirm.
-
-A tagged carrier excerpt from [Door.deliver](src/quarterdeck/door.py#L192):
-
-```python
-return self.confirm(text)  # law: one-door
-```
-
-A tagged assertion excerpt from [the foreign-draft test](tests/integration/test_door.py#L96):
-
-```python
-assert delivery.result == "withheld" and "text in the box" in delivery.detail  # law: one-door
-```
-
-The [full test](tests/integration/test_door.py#L89) starts with an occupied box and checks that the original draft stays untouched and nothing is submitted. Box verification permits submission; exact, fresh record evidence confirms delivery. Queue acceptance remains queued until consumption is established, and uncertain submissions are not automatically resent.
-
-Both tags can be found from the checkout:
-
-```sh
-grep -rn 'law: one-door' src/quarterdeck/door.py tests/integration/test_door.py
-```
-
-Run `.venv/bin/qd laws` from the checkout. Two verbatim entries from one-door's carrier line are shown below on separate lines; the other carrier entries and the law statement are omitted here. A checkout lists repository tests; an installed package does not ship them.
+Copy this as a prompt to your agent:
 
 ```text
-src/quarterdeck/door.py:110, 160, 178, 192
-tests/integration/test_door.py:41, 96, 163, 179, 203
+Clone https://github.com/pinkai-ca/quarterdeck and follow its SETUP.md to set up my first ship.
 ```
 
-## Working on it
+Your agent installs Quarterdeck and sees which harnesses you have. It will not sign in to anything, install a harness or spend anything without asking you first.
 
-`AGENTS.md` is for whoever works on the framework itself. The tests run with `python3 -I tests/testrun.py run`, the repository's own test tool, in fresh scratch under the ignored `.testruns/`, leaving a result, a report and each failing test's output: unit tests, contract tests against recorded screens, and integration tests on a private tmux server with the fake harness. Nothing from a runtime may be tracked, and every law must be carried in code and tried by a test; two tests guard those.
+**2. Commission your ship.**
 
-Pytest run directly keeps its temporary products under `.testruns/t`, where pytest keeps only its last three sessions (`tmp_path_retention_count = 3`); a test's scratch is never removed during its own teardown. `tests/testrun.py clean --change <branch>` retires a merged or deliberately dropped change; `docs/DESIGN.md` section 15 has the whole contract.
+Your agent asks, and you choose:
 
-## Authorship
+- **Your name and your office's**: what the crew calls you, and the name of the office you work from.
+- **Your ship**: its name, and your project, the folder the crew works in.
+- **Your crew.** Three to begin with: a desk that you talk to, a captain who turns what you say into orders and reviews the work, and an engineer who builds it. Each gets a name, a harness, a model and an effort.
+- **What each harness runs on**: a subscription you are signed in to, an API key, or a local model.
 
-Quarterdeck was designed and directed by Tyler Dwyer. Its code was written by coding agents (Claude Code, Codex, and local models under pi and OpenCode) under this repository's standing orders. Each change is reviewed once by a second agent and its tests pass before merge; the history records what changed.
+It shows you the whole ship before it writes anything:
 
-MIT licence. Copyright (c) 2026 Tyler Dwyer.
+```
+Operator name:  Admiral
+Office name:    Office
+
+Ship name:      Endeavour
+Project path:   ~/code/my-app
+
+Seat       Name     Harness       Model             Effort
+Desk       Maeve    Claude Code   claude-opus-5-5   max
+Captain    Picard   Codex         gpt-6-astra       xhigh
+Engineer   Geordi   pi            qwen3.8-27b       medium
+
+Runs on
+  Claude Code   a subscription you are signed in to (~/.claude)
+  Codex         a subscription you are signed in to (~/.codex)
+  pi            a local model at http://127.0.0.1:8000/v1
+```
+
+Then it checks the machine, and brings the crew up when you say so.
+
+**3. Move into your office.**
+
+```sh
+tmux attach -t Office
+```
+
+Your desk is there. Say what you want in plain words, and the desk gives the crew its orders and tells you when the work is done.
+
+### Or do it yourself
+
+**1. Install.**
+
+```sh
+git clone https://github.com/pinkai-ca/quarterdeck.git
+cd quarterdeck
+python3 -m venv --system-site-packages .venv
+.venv/bin/pip install -e .  # ends: Successfully installed quarterdeck-0.1.0
+mkdir -p ~/.local/bin  # your folder for commands, made if it is missing
+ln -sf "$PWD/.venv/bin/qd" ~/.local/bin/qd  # qd is linked into it, so that it runs from any folder
+```
+
+**2. Commission your ship.**
+
+Either let the setup command ask you:
+
+```sh
+qd setup
+```
+
+It asks the same questions in your terminal, with a suggestion for each: on a harness you are already signed in to, pressing Enter at every one gives a working ship. It shows you the whole ship, writes it and brings the crew up.
+
+Or write the ship's file yourself: [A ship of your own](docs/SHIPS.md#a-ship-of-your-own) goes through it step by step, and ends with the crew up.
+
+**3. Move into your office.**
+
+```sh
+tmux attach -t Office
+```
+
+Your desk is there. [How to use it](#how-to-use-it) has what to say to it, and the commands you can use beside it.
+
+## How to use it
+
+### Ask your desk (recommended)
+
+Your desk is the agent in your office. Say what you want in plain words:
+
+> Add a dark theme to the settings page, and have it reviewed.
+
+The desk asks what you meant where it is unclear, gives the crew its orders, and tells you when the work is done. It runs the ship for you as well, so ask it for the rest in the same way:
+
+- "What is everyone working on?"
+- "What did the dark theme cost?"
+- "Put the engineer on a stronger model."
+- "The captain looks stuck. Start it fresh."
+
+This is the way its creator works.
+
+### Or use the commands
+
+Anything the desk does for you, you can do yourself.
+
+Bring the crew up, and down:
+
+```sh
+qd up    # start the service and every agent, each resuming where it left off
+qd down  # end every agent and the service; qd down captain ends one
+```
+
+Give work, and follow it:
+
+```sh
+qd post order --to captain "Build the thing. Report when its tests pass."
+qd inbox --wait   # wait for the crew's next message to you, and print it
+qd status         # every agent on one screen, then the open orders
+qd watch captain  # one agent in full
+```
+
+Change an agent:
+
+```sh
+qd set engineering model=gpt-6.1-sol  # written to the ship's file and committed, then applied
+qd stop engineering                   # interrupt its turn, nothing more
+qd restart engineering                # relaunch it; its conversation goes on
+qd fresh engineering                  # a new conversation, with its brief and its open orders
+```
+
+See what it cost, and that all is well:
+
+```sh
+qd ledger --by order  # what each order cost
+qd doctor             # is the machine ready for this ship
+qd check claude       # prove an installed harness live; spends a few turns
+```
+
+Keep it up to date:
+
+```sh
+git pull       # get the latest Quarterdeck code
+qd sync        # bring your ship's copy of the code up to it
+qd sync --all  # the same for every ship you have, one after another
+```
+
+- An order from your own shell goes out in your name, unchecked: the machine is yours.
+- Agents go by their names in the ship's file: `desk`, `captain` and `engineering` by default.
+- With no ship named, `qd` acts on your default ship, the one setup made, and says which. Name another with `--ship <folder>`, or make another the default with `qd default <ship>`.
+- Every command says what it did, and every refusal says why and what would lift it.
+- These are the commands you will use most. `qd --help` lists them all.
+- Add `--json` to get any reading as JSON instead of text, as in `qd --json status`: [Reading as JSON](docs/JSON.md).
+- What `qd sync` does, and how to go back: [Updating your ship](docs/SYNC.md).
+
+## More
+
+- [Harnesses](docs/HARNESSES.md): each supported harness, what it can run on, and what has been proven of it.
+- [Ships](docs/SHIPS.md): the ships to start from, and how to write one by hand.
+- [The parts of Quarterdeck](docs/PARTS.md): ship, seat, pool, post, watch and ledger, in a line each.
+- [The laws](docs/LAWS.md): fourteen guarantees, each enforced in code and tried by a test.
+- [Design decisions](docs/DECISIONS.md): the five choices that shape it, each with the code and the test behind it.
+- [CONTRIBUTING.md](CONTRIBUTING.md) is for whoever changes Quarterdeck itself. [SETUP.md](SETUP.md) and [AGENTS.md](AGENTS.md) are for an agent that arrives here.
+
+## Free and open source
+
+Everything in this repository is free under the MIT licence.
+
+Designed and directed by one person, [Tyler Dwyer](https://tylerdwyer.ca), and written by its own crew of agents. Write to him at [tyler@pinkai.ca](mailto:tyler@pinkai.ca). Copyright (c) 2026 Tyler Dwyer.

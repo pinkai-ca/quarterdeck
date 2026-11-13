@@ -68,3 +68,9 @@ During ordinary work, 1.5.5 shows a queued envelope preview above the composer, 
 A service restart reconciles the same payload, original timestamp and saved reader. Check transport uses the same Proof and, for a queued/pending submitted input, waits up to 180 seconds for exact consumption without resending. Task/report and ended-turn checks remain separate. A check that times out tears down its own seat and retains the abandoned, explicitly unconfirmed history; late receipts never authorize another submission. No record, token class, quota group or wall rule is rewritten.
 
 `screen_queue` is an optional boolean in the existing private pending journal; old readers continue to hold its `submitted` phase. Existing public queue result values remain, but `queued` may now explicitly describe screen-only queue evidence; its detail and the pending journal distinguish that from a record receipt. Status/watch show the pending wait. Only the record still yields `delivered`.
+
+## In brief, as the README stated it
+
+This paragraph stood in the README until 12 November 2026. The sections above hold each of its facts in full.
+
+Proven and not yet in daily use: Antigravity. In its check the opening brief and the check task were two separately read native turns. It has no home switch, so its seat runs in the program's own state; its record, a SQLite database of protobuf messages, is read from a snapshot of its bytes, so deliveries are confirmed and turns accounted like the others, and what the record does not hold is marked rather than guessed. A visible working queue waits for an exact record receipt before delivery is confirmed. The fields, version evidence and queue behaviour are in the sections above.

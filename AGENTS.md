@@ -1,32 +1,34 @@
-# Working on Quarterdeck
+# For an agent that arrives here
 
-For whoever works on the framework itself, person or agent. The design is `docs/DESIGN.md`; read its sections 2, 11, 13 and 15 before changing anything.
+- Your person asked for a ship to be set up: follow [SETUP.md](SETUP.md).
+- You are here to change Quarterdeck itself: read [CONTRIBUTING.md](CONTRIBUTING.md).
+- You are a seat of a Quarterdeck ship, which you are if `QD_SEAT` is set in your shell: your brief governs, and this file does not apply.
 
-## Shape
+## What Quarterdeck is
 
-- `src/quarterdeck/` is the framework: standard library only, Python 3.12 or later. One module per part, named in `docs/DESIGN.md` section 13, plus the pieces that grew beside them: `servicectl.py` (the service's heartbeat, lock, start, stop and requests), `credential.py` (the one link a seat shares with its pool, reseeded and relinked on the tick), `machine.py` (a seat's process tree sampled for the Ledger), `check.py` (`qd check`, the live proof of an installed program), `output.py` (one shape for every reading, rendered for a person or serialized as JSON), `ledger_reading.py` (the Ledger's rows and usage windows as a reading takes them, and their tables), `pricing.py` (a pool's stated rates, and the price saved beside a launch or a model choice), `cost_evidence.py` (a turn's cost evidence, kept beside the Ledger's turns), `headlines.py` (operational status-line formatting; provider allowances belong in detailed readings), `doctor.py` (`qd doctor`, the installation checked and handed to a seat to fix), `install.py` (`qd upgrade`, the framework at one commit installed as the ship's own copy, which every `qd` then hands off to), `fakeharness.py` (the entry point installed as `qd-fakeharness`, for the simulator under `harness/`), `pending.py` and `delivery_record.py` (durable paste evidence and historical receipts; the service schedules each message), `input_receipt.py` (the one rule that matches a delivery to the record's evidence of its input), `paste_refusal.py` (proved owned-unsubmitted paste cleanup and payload/version/geometry-scoped refusal evidence), `turn_failure.py` (a turn that ended in a recorded error: the door's hold, its alarm, the receipts it unsettles and a human seat's operational metadata), `refusal.py` (a provider-refused crew seat started fresh once, the refused message withheld and its sender told), `provenance.py` and `record_owner.py` (which launch and which program a record belongs to), `quota.py` (quota walls and the usage refresh), `usage_cache.py` (the latest real reading of each usage window, and its last attempt), `endpoint.py` (endpoint pools: what a server serves, the model a seat takes from it, the key beside it), `sandbox.py` (the bubblewrap jail around a sandboxed seat's program). Under `harness/`: `types.py` (the values the adapters and the framework pass between them: inputs, tokens, turns and their recorded failures, state, keys, controls, screens, boxes, credentials, launches), `failures.py` (a recorded error's bounded first words), `home.py` (building a seat's home: a pool's credential brought into it, a key pool's environment, and the ship's settings layered over a program's own), `limits.py` (usage windows and walls), `json_record.py` (JSON-lines records), `sqlite_snapshot.py` (a SQLite record read from a snapshot of its bytes and its log, shared by the Antigravity and OpenCode readers), `costs.py` (an endpoint program's step costs: what its record states, what stated rates prove, and what stays unpriced), `opencode_record.py` (the OpenCode database read session by session: the latest root session is the seat's, a task's child sessions are accounted on their own), `antigravity_record.py`, `antigravity_wire.py` and `antigravity_quota.py` (the Antigravity record decoded from its snapshot, its wire format and its quota facts), `simulator.py`, `synthetic_record.py` and `synthetic_control.py` (the fake program the drill runs, its records in Claude Code's or Codex's shape, and the rendezvous a test holds it at). `tmux.py` is the only module that runs tmux.
-- A harness is the terminal program, a provider is its company or a declared endpoint operator, and a pool is one payment/access choice. Native provider facts belong in each adapter. Use company identifiers in pool declarations; subscriptions run only in their native harness. Keep native record provider/model identifiers as source evidence. `providers.py` normalizes declared companies and builds public identity metadata.
-- Keep files small by splitting them by concept. About 400 lines is a good size to aim for; it is guidance, not a rule, and code is never compressed to fit a number.
-- `standing-orders/` holds the laws and the generic cards; each ship carries the orders and cards for its own crew and may replace any generic card. Two ships are tracked here: `ships/drydock/`, three fake seats for the tests and the drill, and `ships/default/`, the smallest crew on real programs. Every other ship under `ships/` is its own repository, ignored by this one, and its `runtime/` is a nested repository with no commits.
-- `tests/testrun.py` and `tests/testrunner/` are the test tool, standard library only and imported by nothing in `src/`. `tests/unit` is pure logic, `tests/integration` runs a private tmux server and the fake harness, `tests/contract` runs each adapter against recorded fixtures. Nothing in the suite spends real tokens: `qd check` and `qd drill --ship` do that, when asked.
-- Work on the framework happens in worktrees under `work/`, inside the project folder and ignored; nothing is edited in the main checkout in place. A ship runs its own installed copy once `qd upgrade` has made one, and until then the main checkout, so main can move without the ship moving.
+Quarterdeck runs AI coding agents from different companies as one crew, on your person's machine. It is a command, `qd`, and one small service; every agent runs in its normal terminal interface, in a tmux pane. Your person directs the crew by talking to its desk, one of its agents, in plain words, and may type any of its commands themselves.
+
+## Commands
+
+Your person works with the desk. If they ask you to give an order or to look for them, you are the operator's hands from your own shell: what you post goes out in the operator's name, and the crew's reports to the operator come back to you. Only one agent does this at a time: two waiting at once would split the reports.
+
+- `qd post order --to <seat> "..."`: give a seat work.
+- `qd inbox --wait`: wait for the next message to the operator and print it. Keep it running in the background if your harness wakes you when it ends; otherwise wait in the foreground, one order at a time.
+- `qd status`: every seat, then the open orders.
+- `qd watch <seat>`: one seat in full.
+- `qd ledger --by order`: what each order cost.
+- `qd doctor`: is the machine ready for this ship.
+- `qd up`, `qd down`: bring the crew up; end every seat and the service.
+- `qd drill`: stand-in programs; spends nothing.
+- `qd check <harness>`: prove a harness live. Ask first.
+- `qd laws`: every law, with its code and test.
+
+With no ship named, `qd` acts on your person's default ship and says which; name another with `--ship <folder>` before the verb. In the checkout `qd` is `.venv/bin/qd`.
 
 ## Rules
 
-- A law (`standing-orders/laws.md`) is a guarantee the code enforces. Tag the line that enforces it `# law: <id>` and the test that tries to break it the same way; `qd laws` lists both and a test fails when a law has no carrier or a tag names no law.
-- Nothing from a runtime enters this repository: no seat ids, records, credentials or usage. Fixtures are scrubbed before they are saved.
-- Every `qd` verb prints a proof line saying what was done and how it was confirmed; every refusal names the reason and what would lift it. A reading that could not see something says so, and a figure built on turns that could not be measured carries a trailing `+`.
-- A reading never writes: `qd status`, `qd watch` and `qd ledger` open the Ledger read-only, and the service is the only process that writes it.
-- A seat runs its program without a sandbox and without approval prompts; a ship that wants a seat sandboxed asks for it in the ship file with `sandbox = true`, and a seat on an endpoint pool (a model served at a URL, trusted less) is sandboxed unless the ship says `sandbox = false`. A program is found on the PATH or named in the ship file, and its version is proven live by `qd check`, never pinned by path or by hash.
-- A commit message says what changed, in plain words, and carries no attribution trailer: several models work on this code by default, and the history records what changed, not who typed.
-
-## Running
-
-```
-python3 -I tests/testrun.py run                      # the whole suite of this worktree's committed HEAD, -n 8
-python3 -I tests/testrun.py run tests/unit/test_x.py # named targets
-python3 -I tests/testrun.py clean --change <branch>  # after the branch is merged (or --drop --reason TEXT)
-python3 -m venv --system-site-packages .venv && .venv/bin/pip install -e .   # only to run qd itself from a worktree
-```
-
-The test tool (`docs/DESIGN.md` section 15) is the one way to run the suite: one run at a time in the project, in fresh scratch under the ignored `.testruns/`, leaving its result, its report and each failing test's output, and nothing else. A worktree older than the tool is run with the main checkout's copy and `--target`.
+- Work goes to another agent by `qd post` only, never by typing into its pane, tmux keys or MCP.
+- Never read, print or copy a sign-in file or key.
+- You type nothing into a session a person owns: in a ship made from the default, its `Office`. That pane is your person's.
+- `qd setup` and Muse are not in the code yet: do not run or promise them.
+- A refusal names its reason and what would lift it: report it, do not retry. Report a failed check as failed.
