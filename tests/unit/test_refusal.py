@@ -229,3 +229,45 @@ def test_an_unknown_tool_set_holds_only_the_fresh_start_and_still_quarantines_an
     assert [m.id for m in carried] == [other.id] and other.body in first
     assert refused.body not in first and refused.short in first and refusal.WITHHELD in first
     assert world.svc.store.is_open(refused) and world.svc.store.get(refused.id).body == refused.body
+
+
+def test_a_held_refusal_survives_a_later_change_of_its_notices_words(world, monkeypatch):
+    """A notice already published is recognized by its id; republication never rebuilds its text."""
+    world.launch('worker')
+    refused = world.order('worker', 'The invented order the provider refused.')
+    world.turn('worker', refused, error=REFUSED)
+    monkeypatch.setattr(Seat, 'fresh', lambda seat: (_ for _ in ()).throw(ShipError('synthetic relaunch failure')))
+    world.svc.refusals()
+    events = refusal.load(world.svc.runtime, 'worker')
+    assert [e['stage'] for e in events] == ['held'] and len(notices(world, 'tester')) == 1
+    published = notices(world, 'tester')[0]
+    original = refusal.notice
+    monkeypatch.setattr(refusal, 'notice', lambda event, entry, seat: post.Message(
+        *[getattr(original(event, entry, seat), f) for f in ('id', 'kind', 'sender', 'to', 'at')],
+        'Synthetic reworded notice text, as a later version might write it.', re=entry['message']))
+    logged = []
+    monkeypatch.setattr(world.svc, 'log', lambda *args, **kwargs: logged.append((args, kwargs)))
+    for _ in range(3):
+        world.svc.refusals()
+    assert not any(kwargs.get('step') == 'refusals' for _, kwargs in logged), 'no conflict, on any tick'
+    assert notices(world, 'tester') == [published], 'the published notice stands, unrebuilt, and is not doubled'
+
+
+def test_one_seats_refusal_failure_never_stops_the_next_seat_and_is_logged_once(world, monkeypatch):
+    seen, logged = [], []
+    original = refusal.step
+
+    def step(service, seat):
+        seen.append(seat.name)
+        if seat.name == 'worker':
+            raise RuntimeError('synthetic unexpected failure')
+        return original(service, seat)
+    monkeypatch.setattr(refusal, 'step', step)
+    monkeypatch.setattr(world.svc, 'log', lambda *args, **kwargs: logged.append(kwargs))
+    for _ in range(3):
+        world.svc.refusals()
+    crew = [name for name in seen[:len(seen) // 3]]
+    assert 'worker' in crew and len(crew) > 1 and crew[-1] != 'worker' or crew.index('worker') < len(crew) - 1
+    assert seen.count('tester') == 3, 'the seats after it still ran, every tick'
+    errors = [entry for entry in logged if entry.get('step') == 'refusals' and entry.get('seat') == 'worker']
+    assert len(errors) == 1 and 'synthetic unexpected failure' in errors[0]['error'], 'logged once while it stands'

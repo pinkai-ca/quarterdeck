@@ -173,13 +173,20 @@ def _publish(store: post.Store, message: post.Message) -> None:
 
 
 def run(service: Service) -> None:
+    """Each seat's step on its own: one seat's failure is logged once while it stands, and never stops the next seat."""
+    logged = service.__dict__.setdefault('refusal_errors', {})
     for seat in service.resolved_seats():
         if seat.session.human:
             continue  # a human's own seats stay with the desk
         try:
             step(service, seat)
-        except JournalError as error:
-            service.log('error', step='refusals', seat=seat.name, error=str(error))
+        except Exception as error:
+            text = str(error) if isinstance(error, (JournalError, ShipError, OSError)) else f'{type(error).__name__}: {error}'
+            if logged.get(seat.name) != text:
+                logged[seat.name] = text
+                service.log('error', step='refusals', seat=seat.name, error=text)
+            continue
+        logged.pop(seat.name, None)
 
 
 def step(service: Service, seat: Seat) -> None:
@@ -245,8 +252,11 @@ def step(service: Service, seat: Seat) -> None:
 
 
 def _tell(service: Service, seat: Seat, event: dict) -> None:
+    """Publish each notice not yet published. One already published is recognized by its id and never rebuilt,
+    so a later change of the notice's words never conflicts with a notice an earlier version wrote."""
     for entry in event['quarantined']:
-        if any(n['message'] == entry['message'] for n in event['notices']):
+        record = next((n for n in event['notices'] if n['message'] == entry['message']), None)
+        if record is not None and not (service.store.dir / f"{record['id']}.json").exists():
             _publish(service.store, notice(event, entry, seat.name))
 
 
