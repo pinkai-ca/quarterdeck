@@ -679,8 +679,9 @@ class Tmux:
             return None
         try:
             pane = _parse(identity)
-        except (ValueError, TypeError):
-            return None
+        except (TmuxFormatError, ValueError, TypeError):
+            # Keep the named failure, without persisting the raw pane identity row.
+            raise TmuxFormatError('control frame identity is not in qd format; observation unknown') from None
         return ControlFrame(pane, text + '\n', cursor == '1')
 
     def clients_attached(self, sessions: list[str]) -> bool | None:

@@ -780,6 +780,8 @@ the requested model's current display. Positive focus requires the hidden compos
 flag 0 and the highlighted selected Yes marker/text in that same current frame. A typed capture keeps
 cursor visibility beside styled text, bracketed by matching pane/process/geometry readings. The digit
 accelerator was not measured and is not sent; neither are cursor movement or effort-dialog keys.
+A malformed control-frame identity remains unknown and grants no key; its named `TmuxFormatError`
+is retained in the request's held reason or final unconfirmed answer, without retaining the raw row.
 The expected option display comes from the current seat/account context, never a global name alias
 table. Confirmation uses the successful local-command record result bound to the pending request's
 command envelope and requested model. A current model observation that may predate that request is

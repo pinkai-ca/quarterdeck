@@ -905,13 +905,15 @@ class Service:
                 seat, control, state, post.now(), persist=persist, verify=verify, answer_current=answer_current,
                 confirmed_model=lambda record, current: seat.harness.model_control_result(
                     seat, record, current.value, current.origin.get('record', {})))
-        except (OSError, ShipError, TmuxError):
+        except (OSError, ShipError, TmuxError) as error:
             # A failed observation/gesture keeps the durable reservation. Its next pass observes
             # the record or original deadline, never the command or an uncertain key a second time.
             decision = confirmation.advance(state, post.now(), confirmed=None)
             if decision.action == 'wait':
-                self.request_wait = ('control-confirmation', 'control observation unavailable; not retyped')
+                self.request_wait = ('control-confirmation',
+                                     f'control observation unavailable ({type(error).__name__}); not retyped')
                 return None
+            decision = replace(decision, reason=f'{decision.reason}; control observation unavailable ({type(error).__name__})')
         if decision.action == 'confirmed':
             pane = decision.state.origin['launch']['pane']
             return (f'model = {value} · applied by {control.command(value)} in {pane} · '
