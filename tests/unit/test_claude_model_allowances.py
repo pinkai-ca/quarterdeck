@@ -425,7 +425,10 @@ def test_cross_program_destination_uses_its_model_and_fresh_carriage(running):
     r.svc.failover()
     assert r.seat.pool.name == "third" and r.seat.harness.name == "claude"
     assert r.seat.spec.model == "claude-opus-5-5"
-    assert "--resume" not in r.launches[-1] and post.typed([message]) in r.launches[-1][-1]
+    assert "--resume" not in r.launches[-1]
+    assert message.id in r.launches[-1][-1] and f"qd thread {message.id}" in r.launches[-1][-1]
+    assert message.body not in r.launches[-1][-1]
+    assert r.svc.attempts.latest()[message.id] == "launch"
     assert r.source.path.read_bytes() == old
 
 

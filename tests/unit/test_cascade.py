@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import cascade, cli, post, ship as shipmod
+from quarterdeck import cascade, cli, post, post_threads, ship as shipmod
 from quarterdeck.harness.base import Control, Input, State, Tokens, Turn
 from quarterdeck.harness.types import TurnFailure
 from quarterdeck.seat import Seat
@@ -409,8 +409,13 @@ def test_fresh_orchestrator_recarriage_keeps_already_delivered_final_notice_once
     seat = Seat(ring.ship, ring.ship.seat("conductor"), None)
     before = ring.store.all()
     first, incoming = seat.first_message(resume_id=None)
-    assert incoming == [ring.question, final]
-    assert first.count(final.body) == 1 and first.index(ring.question.body) < first.index(final.body)
+    assert incoming == [ring.question]
+    rows = {row['id']: row for row in (json.loads(line) for line in first.splitlines() if line.startswith('{'))}
+    assert rows[ring.question.id]['amendments'].count(final.id) == 1
+    assert json.dumps(rows[ring.question.id]).count(final.id) == 1
+    assert ring.question.body not in first and final.body not in first
+    printed = post_threads.render(post_threads.whole(ring.store, ring.question.id, seat.name))
+    assert printed.count(final.body) == 1 and printed.index(ring.question.body) < printed.index(final.body)
     assert seat.first_message(resume_id=None) == (first, incoming)
     assert ring.store.all() == before and ring.store.is_open(ring.question)
     assert len(attempts.for_message(final.id)) == 1, "carriage selection is not another delivery receipt"

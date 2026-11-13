@@ -59,12 +59,12 @@ def test_fake_forum_files_four_identical_reviews_and_one_notice(forum, tmux, cap
     body = ('Review this fictional change. Preserve dissent.\n'
             '$ if [ "$QD_SEAT" != lead ]; then '
             'qd post report --re {this} "review:$QD_SEAT; dissent preserved"; fi')
+    qd(capsys, 'up')
     qd(capsys, 'post', 'order', '--to', 'reviewers', body)
     store = post.Store(forum.runtime)
     root, = store.open_for('lead')
     copies = [m for m in store.all() if m.re == root.id and m.kind == 'order']
     assert len(copies) == 4 and all(m.body.encode() == root.body.encode() for m in copies)
-    qd(capsys, 'up')
     wait_for(lambda: all(store.closing_report(m) for m in copies), seconds=30)
     notices = wait_for(lambda: [m for m in store.for_seat('lead') if m.sender == post.SHIP
                                 and m.re == root.id and 'all filed' in m.body], seconds=30)

@@ -97,7 +97,8 @@ def test_plain_seat_gaining_choices_preserves_its_pool_before_stop(migrated, act
     assert restored.harness.name == 'codex' and restored.pool.name == 'first'
     assert restored.launched().pool == 'first' and restored.launched().harness == 'codex'
     assert bool(restored.launched().resume) is (action != 'fresh')
-    assert post.typed([message]) in r.launches[0][2][-1]
+    assert message.id in r.launches[0][2][-1] and f'qd thread {message.id}' in r.launches[0][2][-1]
+    assert message.body not in r.launches[0][2][-1]
     assert store.is_open(message) and attempts.for_message(message.id)[0].result == 'blind'
     assert attempts.latest()[message.id] == 'launch'
     assert r.source.path.read_bytes() == original

@@ -18,7 +18,7 @@ def message(store: post.Store, index: int, kind: str = "order", subject: str | N
 
 def built(tmp_path, roots, refused=frozenset(), text='', limit=24576, generation='generation', force_files=False):
     store = post.Store(tmp_path / 'runtime')
-    rows = post_threads.index_rows(store, tuple(roots), tuple(store.for_seat('captain')), frozenset(refused))
+    rows = post_threads.index_rows(store, tuple(roots), tuple(store.for_seat('captain')), frozenset(refused), seat='captain')
     return carriage_plan.build(rows, handoff=text, header=post.briefed_header('captain', 'captain', list(roots)),
                                directory=tmp_path / 'seat' / 'carried' / generation,
                                limit=limit, force_files=force_files)

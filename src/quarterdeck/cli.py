@@ -172,7 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
     speed = p.add_mutually_exclusive_group()
     speed.add_argument("--now", action="store_const", const="now", dest="speed", help="deliver mid-turn, read at the next step")
     speed.add_argument("--interrupt", action="store_const", const="interrupt", dest="speed", help="interrupt the turn, then deliver")
-    p = verb("thread", cmd_thread, "print a message's whole thread, its ancestry and every reply, in order")
+    p = verb("thread", cmd_thread, "print a thread in order, as far as this seat sent or received it")
     p.add_argument("message", help="a full or short message id")
     p = verb("inbox", cmd_inbox, "print a seat's inbox, or wait for what arrives next")
     p.add_argument("seat", nargs="?", help="default: this seat")

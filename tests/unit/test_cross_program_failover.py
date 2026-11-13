@@ -94,7 +94,9 @@ def test_actual_cross_program_move_is_fresh_carries_context_and_keeps_readers(ru
     r.svc.failover()
     assert r.seat.pool.name == 'second' and r.seat.harness.name == 'claude'
     assert r.seat.launched().harness == 'claude' and r.seat.launched().resume is None
-    assert '--resume' not in r.launches[0] and post.typed([message]) in r.launches[0][-1]
+    assert '--resume' not in r.launches[0]
+    assert message.id in r.launches[0][-1] and f'qd thread {message.id}' in r.launches[0][-1]
+    assert message.body not in r.launches[0][-1]
     assert r.seat.spec.model == 'synthetic-target' and r.seat.spec.settings == {} and r.seat.spec.effort is None
     assert r.reseeds[0] == ('first', 'codex', 'first')
     assert r.svc.attempts.latest()[message.id] == 'launch'

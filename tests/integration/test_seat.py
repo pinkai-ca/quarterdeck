@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from quarterdeck import post, seat as seatmod, ship as shipmod
+from quarterdeck import post, post_threads, seat as seatmod, ship as shipmod
 from quarterdeck.ship import ShipError
 from quarterdeck.tmux import Tmux
 
@@ -74,46 +74,55 @@ def test_restart_resumes_the_record_and_fresh_does_not(ship: shipmod.Ship, tmux:
     standing_order = post.Store(ship.runtime).new("order", "desk", "captain", "still open across the restart")
     proof = captain.restart()
     assert proof.splitlines()[0].startswith("captain down · pane %") and " · resumed " in proof
-    assert proof.endswith("1 open message carried"), "every open message, on a restart too"  # law: context-is-cache
+    assert proof.endswith("1 thread indexed"), "every open thread, on a restart too"  # law: context-is-cache
     assert captain.record() == record, "the same conversation, in a new process"
-    wait_for(lambda: standing_order.short in " ".join(t.input for t in captain.harness.turns(record)))
+    wait_for(lambda: standing_order.id in " ".join(t.input for t in captain.harness.turns(record)))
     assert "· 1 turns" in wait_for(lambda: tmux.capture(captain.pane().id) if "resumed" in tmux.capture(captain.pane().id) else None)
     proof = captain.fresh()
-    assert "· fresh · 1 open message carried" in proof, "the still-open order comes along into the new conversation"
+    assert "· fresh · 1 thread indexed" in proof, "the still-open thread is indexed in the new conversation"
     assert captain.join().reason in ("no record yet", None), "a fresh start begins a new record"
     assert record.exists(), "the old record stays for the Ledger"
 
 
-def test_a_fresh_seat_receives_its_open_messages_in_full(ship: shipmod.Ship, tmux: Tmux):
+def test_a_fresh_seat_indexes_its_open_messages_and_reads_each_thread_whole(ship: shipmod.Ship, tmux: Tmux):
     store = post.Store(ship.runtime)
-    order = store.new("order", "desk", "captain", "Count the stars.\n$ echo counted", subject="Stars")
-    store.new("report", "captain", "desk", "an old report, not open", re=None)
-    captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
+    order = store.new('order', 'desk', 'captain', 'Count the stars.\n$ echo counted', subject='Stars')
+    store.new('report', 'captain', 'desk', 'an old report, not open', re=None)
+    captain = seatmod.Seat(ship, ship.seat('captain'), tmux)
     captain.up(resume=False)
     record = wait_for(captain.record)
-    state = wait_for(lambda: s if (s := captain.harness.state(record)).turns else None)  # law: context-is-cache
+    wait_for(lambda: state if (state := captain.harness.state(record)).turns else None)  # law: context-is-cache
     first = captain.harness.turns(record)[0]
-    assert first.input.startswith("qd > briefed as captain, captain · 1 order open\n")
-    assert f"qd > order from desk · {order.short} · Stars\nCount the stars." in first.input
-    assert f"qd > reply: qd post report --re {order.short}" in first.input
-    assert [t.name for t in first.tools] == ["Bash"]
-    assert "briefed: " in tmux.capture(captain.pane().id, history=100)
+    assert first.input.startswith('qd > briefed as captain, captain · 1 order open\n')
+    rows = {row['id']: row for row in (json.loads(line) for line in first.input.splitlines() if line.startswith('{'))}
+    assert rows[order.id]['subject'] == 'Stars' and rows[order.id]['thread'] == f'qd thread {order.id}'
+    assert order.body not in first.input
+    printed = post_threads.render(post_threads.whole(store, order.id, captain.name))
+    assert order.body in printed and f'qd > reply: qd post report --re {order.short}' in printed
+    assert first.tools and all(tool.name == 'Read' for tool in first.tools), 'an index uses only the simulator default Read steps, never the stored body command'
+    assert 'briefed: ' in tmux.capture(captain.pane().id, history=100)
 
 
-def test_a_launch_longer_than_tmux_allows_still_carries_every_open_message(ship: shipmod.Ship, tmux: Tmux):
-    """tmux refuses a window command over 16 KiB; a brief or an open order can be longer, so the command goes in a file."""
+def test_a_launch_longer_than_tmux_allows_keeps_full_self_handoff_and_indexes_other_work(ship: shipmod.Ship, tmux: Tmux):
+    """A full self-handoff over tmux's 16 KiB command limit still uses launch.sh; ordinary work stays indexed."""
     store = post.Store(ship.runtime)
-    body = "A long order.\n" + "\n".join(f"paragraph {i}: " + " ".join(["words"] * 40) for i in range(80))
-    assert len(body) > 16_384
-    order = store.new("order", "desk", "captain", body)
-    captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
-    assert captain.up(resume=False).endswith("1 open message carried")
-    script = (ship.runtime / "seats" / "captain" / "launch.sh").read_text()
-    assert script.startswith("#!/bin/sh\n") and "\nexec env -u TMUX -u TMUX_PANE " in script and " PATH=" in script and order.short in script and body[-200:] in script
+    body = 'A long self handoff.\n' + '\n'.join(f'paragraph {n}: ' + ' '.join(['words'] * 40) for n in range(80))
+    assert len(body) > 16384
+    handoff = store.new('order', 'captain', 'captain', body)
+    ordinary = store.new('order', 'desk', 'captain', 'A distinct long ordinary task.\n' + body)
+    captain = seatmod.Seat(ship, ship.seat('captain'), tmux)
+    assert captain.up(resume=False).endswith('2 threads indexed')
+    script = (ship.runtime / 'seats' / 'captain' / 'launch.sh').read_text()
+    assert script.startswith('#!/bin/sh\n') and '\nexec env -u TMUX -u TMUX_PANE ' in script and ' PATH=' in script
+    assert len(script.encode()) > 16384 and handoff.short in script and body[-200:] in script
+    assert ordinary.id in script and ordinary.body not in script
     record = wait_for(captain.record)
     wait_for(lambda: captain.harness.state(record).turns)
     first = captain.harness.turns(record)[0]
-    assert order.short in first.input and body.splitlines()[-1] in first.input, "the whole order reached the program"  # law: context-is-cache
+    assert handoff.short in first.input and body.splitlines()[-1] in first.input, 'the complete handoff reached the program'  # law: context-is-cache
+    rows = {row['id']: row for row in (json.loads(line) for line in first.input.splitlines() if line.startswith('{'))}
+    assert rows[ordinary.id]['thread'] == f'qd thread {ordinary.id}' and ordinary.body not in first.input
+    assert ordinary.body in post_threads.render(post_threads.whole(store, ordinary.id, captain.name))
 
 
 def test_a_program_missing_from_the_path_is_refused_before_anything_opens(ship: shipmod.Ship, tmux: Tmux, monkeypatch):

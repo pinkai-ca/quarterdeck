@@ -7,6 +7,8 @@ with failover's refusals and an explicit choice of destination.
 
 from datetime import timedelta
 
+import json
+
 import pytest
 
 from quarterdeck import cli, post, service as servicemod, watch
@@ -91,7 +93,8 @@ def test_a_seat_moves_back_to_its_first_choice_by_failovers_path(running):
     assert "moved to first from second" in answer, answer
     assert r.seat.pool.name == "first" and r.seat.harness.name == "codex"
     assert r.seat.launched().pool == "first" and r.seat.launched().resume is None, "another program starts fresh"
-    assert post.typed([message]) in r.launches[-1][-1], "with its brief and open messages"
+    assert message.id in r.launches[-1][-1], "with its brief and open thread index"
+    assert f"qd thread {message.id}" in r.launches[-1][-1]
     assert r.reseeds[-1][0] == "second", "the source credential is reseeded first"
     assert any(m.body == "moved to pool first from second by qd set" for m in r.svc.store.for_seat("worker"))
     assert (r.seat.folder / "pool").read_text().strip() == "first"
@@ -170,8 +173,9 @@ def test_failover_from_the_last_choice_uses_earlier_pool_evidence(running, earli
     assert r.seat.pool.name == "first" and r.seat.harness.name == "codex"
     assert len(r.launches) == 3 and r.seat.launched().resume is None
     assert r.seat.record() == r.created[-1].path
-    assert post.typed([open_order]) in r.launches[-1][-1]
-    assert post.typed([unread]) in r.launches[-1][-1]
+    assert open_order.id in r.launches[-1][-1]
+    rows = {row["id"]: row for row in (json.loads(line) for line in r.launches[-1][-1].splitlines() if line.startswith("{"))}
+    assert unread.id in rows and unread.id in rows[unread.id]["active"]
 
 
 def back_to_codex_after_a_wall(r, reset):

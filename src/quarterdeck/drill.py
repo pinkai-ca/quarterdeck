@@ -206,17 +206,17 @@ class Drill:
                        f"in the record {typed} time(s); submissions {submits}; {restarted}")
 
     def fresh_all(self) -> None:
-        """Every seat relaunched fresh receives its brief and every open message in full."""
+        """Every seat relaunched fresh receives its brief and an index of its open threads."""
         pending = {name: self.store.new("order", "ship", name, f"drill: still open for {name} across a fresh start")
                    for name in self.ship.seats}
         time.sleep(1.5)  # let the service deliver them to the running seats first
         for seat in self.seats():
             proof = seat.fresh().splitlines()[-1]
-            self.check(f"{seat.name} fresh", "· fresh ·" in proof and proof.endswith("carried"), proof)
+            self.check(f"{seat.name} fresh", "· fresh ·" in proof and proof.endswith("indexed"), proof)
         for seat in self.seats():
             record = wait_for(seat.record, self.patience)
             first = wait_for(lambda: (seat.harness.turns(record) or [None])[0] if record else None, self.patience)
-            carried = first is not None and pending[seat.name].short in first.input and "qd > briefed as" in first.input
+            carried = first is not None and pending[seat.name].id in first.input and "qd > briefed as" in first.input
             self.check(f"{seat.name} briefed with its open order", carried,
                        first.input.splitlines()[0] if first else "no first turn")  # law: context-is-cache
             self.store.new("report", seat.name, "ship", "closing the carried order", re=pending[seat.name].id)

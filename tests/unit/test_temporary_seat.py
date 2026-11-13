@@ -83,7 +83,7 @@ def test_both_callers_retire_transport_and_finish_cleanup_after_exceptions(tmp_p
 
     def up(seat, **kwargs):
         orders = [m for m in svc.store.for_seat(seat.name) if m.subject == "qd doctor"]
-        assert len(orders) == 1 and orders[0].short in seat.first_message()[0]
+        assert len(orders) == 1 and orders[0].id in seat.first_message()[0]
         body(seat, orders)
         return "synthetic up"
 

@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from quarterdeck import input_receipt, post, watch
+from quarterdeck import input_receipt, post, post_threads, watch
 from quarterdeck.harness import claude
 from quarterdeck.seat import Seat
 from quarterdeck.service import Service
@@ -98,7 +98,13 @@ def test_popped_nonopen_post_is_unread_and_carried_until_actual_submission(setup
         seat.restart()
         seat.fresh()
         assert [resume for resume, _, _ in carried] == [True, False]
-        assert all(message in messages and text in first for _, first, messages in carried)
+        assert all(message in messages for _, _, messages in carried)
+        for _, first, _ in carried:
+            rows = {row['id']: row for row in (json.loads(line) for line in first.splitlines() if line.startswith('{'))}
+            assert message.id in rows[parent.id]['amendments']
+            assert text not in first
+        printed = post_threads.render(post_threads.whole(svc.store, message.id, seat.name))
+        assert message.body in printed
         assert live["pasted"] == live["submitted"] == 0
         append(path, user(text, 10))
         restarted.reconcile()
