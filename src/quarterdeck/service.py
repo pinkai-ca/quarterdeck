@@ -36,7 +36,6 @@ from .servicectl import (  # noqa: F401  (the process control, reachable as serv
 from .ship import Ship, ShipError
 from .tmux import Tmux, TmuxError
 
-TICK = 1.0
 TYPING_QUIET = 30  # seconds since a client's last key or mouse input before its session may be switched
 STATUS_INTERVAL = 0.7  # presentation only; rendering age and owner are checked independently
 ACCOUNT_RETRY = 60.0  # unchanged transient source failures, never provider pacing
@@ -95,7 +94,7 @@ class Service:
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
         while True:
             self.tick()
-            until = time.monotonic() + TICK
+            until = time.monotonic() + self.ship.tick  # read after tick() reloads the ship file
             while time.monotonic() < until:
                 self.status_due()
                 remaining = until - time.monotonic()

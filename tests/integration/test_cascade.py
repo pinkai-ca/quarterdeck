@@ -12,15 +12,17 @@ import pytest
 from quarterdeck import cli, post, seat as seatmod, service, ship as shipmod
 from .progress import service_progress
 from .waiting import wait_for
+from tests.conftest import TEST_TICK
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture
 def ring(drydock, tmux, monkeypatch):
-    text = '''[ship]
+    text = f'''[ship]
 name = "synthetic-ring"
 operator = "operator"
+tick = {TEST_TICK}
 [cascade]
 seats = ["alpha", "beta", "gamma"]
 orchestrator = "conductor"

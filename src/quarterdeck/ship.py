@@ -10,6 +10,7 @@ above it out of the ship's state.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import subprocess
@@ -18,6 +19,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 RUNTIME = "runtime"
+TICK = 1.0  # the service's default wait after each pass, in seconds
+TICK_BOUNDS = (0.05, 5.0)  # inclusive; the heartbeat stays well inside servicectl's stale age
 
 
 class ShipError(Exception):
@@ -133,6 +136,7 @@ class Ship:
     seats: dict[str, SeatSpec]
     groups: dict[str, Group] = field(default_factory=dict)
     cascade: Cascade | None = None
+    tick: float = TICK  # seconds the service waits after each pass; [ship] tick
 
     @property
     def file(self) -> Path:
@@ -222,7 +226,21 @@ def _from_text(text: str, folder: Path) -> Ship:
         seats=seats,
         groups=groups,
         cascade=declaration(data.get("cascade")),
+        tick=_tick(head.get("tick", TICK)),
     )
+
+
+def _tick(value: object) -> float:
+    """The service's wait after each pass: a finite number of seconds within TICK_BOUNDS, else refused by name."""
+    low, high = TICK_BOUNDS
+    refused = ShipError(f"ship.tick must be a number of seconds from {low:g} to {high:g}; got {value!r}")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise refused
+    if isinstance(value, int) and not low <= value <= high:  # compared as an int: a huge one never converts
+        raise refused
+    if not math.isfinite(value) or not low <= value <= high:
+        raise refused
+    return float(value)
 
 
 def _group(name: str, table: dict) -> Group:

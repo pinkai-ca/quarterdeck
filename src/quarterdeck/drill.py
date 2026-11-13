@@ -28,6 +28,7 @@ from .seat import Seat
 from .tmux import Tmux, TmuxError
 
 DRYDOCK = standing.PROJECT_DIR / "ships" / "drydock"
+DRILL_TICK = 0.1  # seconds: the generated drydock's service passes quickly; ships/drydock keeps the default
 
 
 
@@ -225,7 +226,7 @@ def temporary_drydock() -> tuple[shipmod.Ship, Tmux, Path]:
     shutil.copytree(DRYDOCK, folder)
     ship = shipmod.load(folder)
     slow = next(name for name, spec in ship.seats.items() if not ship.session_of(spec).human)
-    text = ship.file.read_text()
+    text = shipmod.edit(ship.file.read_text(), "ship", "tick", DRILL_TICK)  # this generated copy only
     for name, spec in ship.seats.items():
         for key, value in harnesses.get(spec.harness).drill_settings(name == slow).items():
             text = shipmod.edit(text, f"seats.{name}.settings", key, value)

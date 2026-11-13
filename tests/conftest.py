@@ -15,6 +15,7 @@ from tests.testrunner import layout
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
+TEST_TICK = 0.1  # seconds: every test ship's declared [ship] tick, so the service passes quickly (production: 1.0)
 SOCKET_LIMIT = 107   # bytes of a Unix socket path, without its terminating zero
 SOCKET_MARGIN = 12   # kept free below the limit on the deepest socket path the suite generates
 SESSION_PREFIX = 'u-'  # the session's container under the anchor: short, so the margin holds
@@ -126,8 +127,12 @@ def private_socket_root():
 @pytest.fixture
 def drydock(tmp_path: Path) -> Path:
     """A copy of ships/drydock in a temporary folder, not a repository."""
+    from quarterdeck import ship as shipmod
+
     folder = tmp_path / "ships" / "drydock"
     shutil.copytree(ROOT / "ships" / "drydock", folder)
+    file = folder / "ship.toml"
+    file.write_text(shipmod.edit(file.read_text(), "ship", "tick", TEST_TICK))  # the copy only; ships/ is unchanged
     return folder
 
 
