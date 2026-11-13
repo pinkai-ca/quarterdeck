@@ -21,7 +21,12 @@ PHASES = frozenset({'reserved', 'submitted', 'answering', 'answered'})
 def input_scope(seat, record) -> dict | None:
     """Complete input evidence as identities/digest only; never persist a native input body."""
     if record is None:
-        return None
+        from .request_queue import launch_binding
+        launch = launch_binding(seat)
+        if getattr(seat.harness, 'synthetic', False) is not True or launch is None or seat.record() is not None:
+            return None
+        return dict(record=None, device=None, inode=None, input_count=0,
+                    inputs_digest=hashlib.sha256(json.dumps([]).encode()).hexdigest(), launch=launch)
     try:
         before = record.stat()
         inputs = seat.harness.inputs(record)

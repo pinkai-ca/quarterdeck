@@ -18,6 +18,7 @@ import time
 import traceback
 from copy import deepcopy
 from contextlib import ExitStack
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -836,7 +837,7 @@ class Service:
             return 'model held: durable request owner unavailable; command not typed'
         record = seat.record()
         inputs = confirmation.input_scope(seat, record)
-        bound = seat.harness.model_control_origin(seat, record, value) if record is not None else None
+        bound = seat.harness.model_control_origin(seat, record, value)
         launch = request_queue.launch_binding(seat)
         if inputs is None or bound is None or launch is None:
             self.request_wait = ('control-confirmation', 'request-bound model record/display evidence unknown')
@@ -875,6 +876,7 @@ class Service:
         def verify():
             current = request_queue.control_continuation(path)
             return (current == state and state.origin.get('launch') == request_queue.launch_binding(seat)
+                    and (state.origin['inputs']['record'] is not None or getattr(seat.harness, 'synthetic', False) is True)
                     and state.origin.get('declaration') == [seat.harness.name, seat.spec.model_mode, seat.spec.model])
 
         def persist(updated):
@@ -883,7 +885,15 @@ class Service:
             request_queue.save_metadata(path, meta)
             state = updated
 
+        record = seat.record()
+        if record is not None and verify():
+            bound = seat.harness.model_control_join(seat, record, state.origin['record'])
+            if bound is not None and bound != state.origin['record'] and verify():
+                persist(replace(state, origin={**state.origin, 'record': bound}))
+
         def answer_current():
+            if state.origin['inputs']['record'] is None:
+                return None  # first-input synthetic continuation observes only; it owns no dialog key
             record = seat.record()
             if not verify() or confirmation.input_scope(seat, record) != state.origin.get('inputs'):
                 return False

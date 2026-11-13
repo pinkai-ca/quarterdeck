@@ -49,11 +49,6 @@ class ClaudeShape(_Writer):
             from . import claude
 
             self.turn = len(claude.turns(self.path))
-        else:
-            # The synthetic program creates its own idle record before its first command. This
-            # metadata row opens no turn and lets the one-record join pin the command boundary.
-            self.write(dict(type='system', subtype='synthetic-startup', sessionId=self.session,
-                            timestamp=now().isoformat()))
         self.text = self.effort = None
 
     def entry(self, kind: str, message: dict, **extra) -> None:

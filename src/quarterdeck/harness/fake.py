@@ -127,11 +127,31 @@ class FakeHarness(Harness):
     def read(self, record: Path) -> tuple[State, list[Turn]]:
         return self._reader(record).read(record)
 
-    def model_control_origin(self, seat, record: Path, value: str) -> dict | None:
-        if self._reader(record) is not claude or self.model_identity(value) is None:
+    def model_control_origin(self, seat, record: Path | None, value: str) -> dict | None:
+        from ..request_queue import launch_binding
+        if (self.model_identity(value) is None
+                or (self.shape_of(seat.spec) != 'claude' if record is None else self._reader(record) is not claude)):
             return None
         # The simulator owns this literal display/identity contract; no native catalog is inferred.
-        return claude.control_origin(record, dict(display=value, synthetic=True))
+        return claude.control_origin(record, dict(display=value, synthetic=True), launch=launch_binding(seat))
+
+    def model_control_join(self, seat, record: Path, origin: dict) -> dict | None:
+        from ..request_queue import launch_binding
+        if origin.get('path') is not None:
+            return origin
+        launched = seat.launched()
+        if (launched is None or origin.get('first_record_launch') != launch_binding(seat)
+                or self._reader(record) is not claude or seat.record() != record
+                or record in tuple(Path(path) for path in launched.records_before)):
+            return None
+        try:
+            first = self.first_timestamp(record)
+            if first is None or first.tzinfo is None or first < launched.when:
+                return None
+            info = record.stat()
+            return {**origin, 'path': str(record), 'device': info.st_dev, 'inode': info.st_ino}
+        except (OSError, ValueError, TypeError):
+            return None
 
     def model_control_result(self, seat, record: Path, value: str, origin: dict) -> str | None:
         if (self._reader(record) is not claude or origin.get('display') != dict(display=value, synthetic=True)

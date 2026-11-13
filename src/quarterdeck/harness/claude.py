@@ -722,8 +722,13 @@ def control_suffix(record, origin):
         return None
 
 
-def control_origin(record: Path, display: dict) -> dict | None:
+def control_origin(record: Path | None, display: dict, *, launch: dict | None = None) -> dict | None:
     """Complete-row record boundary for an adapter-proved display binding."""
+    if record is None:
+        if launch is None or display.get('synthetic') is not True:
+            return None
+        return dict(path=None, device=None, inode=None, offset=0, prefix=hashlib.sha256(b'').hexdigest(),
+                    display=display, first_record_launch=dict(launch))
     try:
         before = record.stat()
         digest = hashlib.sha256()
@@ -957,8 +962,8 @@ class ClaudeHarness(Harness):
                     model = None
         return model if record_fingerprint(record) == before else None
 
-    def model_control_origin(self, seat, record: Path, value: str) -> dict | None:
-        if self.model_identity(value) is None:
+    def model_control_origin(self, seat, record: Path | None, value: str) -> dict | None:
+        if record is None or self.model_identity(value) is None:
             return None
         display = model_display(seat, value)
         return control_origin(record, display) if display is not None else None

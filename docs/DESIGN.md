@@ -792,6 +792,12 @@ The control owner or a person must resolve it. The synthetic Claude-shaped progr
 same linked caveat/command/result triple for `/model`, with its exact requested argument; its adapter
 requires this new record evidence and its existing screen confirmation together. This synthetic
 contract uses literal model identities and gives no catalog or gesture authority to a native adapter.
+When that synthetic command is the seat's first input, no startup record is manufactured. Its empty
+prefix is bound to the current launch until the ordinary one-record join finds that launch's first
+record. The request owner then persists the joined path and file identity before confirming its
+command triple. A pre-launch or excluded record cannot supply it. This initially unjoined synthetic
+continuation can observe a result but never grants a dialog key; real Claude controls still require
+their existing owned record before transport.
 
 The service resumes that continuation before its generic consumed-claim hold, only when the original
 payload and claim still agree. It keeps the original thirty-second deadline and one command reservation;

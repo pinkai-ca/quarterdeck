@@ -478,9 +478,13 @@ class Harness(ABC):
         state = self.state(record)
         return self.model_identity(state.model)
 
-    def model_control_origin(self, seat, record: Path, value: str) -> dict | None:
+    def model_control_origin(self, seat, record: Path | None, value: str) -> dict | None:
         """Request-specific record boundary and display binding, or unsupported."""
         return None
+
+    def model_control_join(self, seat, record: Path, origin: dict) -> dict | None:
+        """Resolve a supported initially absent record through this seat's ordinary one-record join."""
+        return origin if origin.get('path') is not None else None
 
     def model_control_result(self, seat, record: Path, value: str, origin: dict) -> str | None:
         """A new result linked to this request's exact command, never an old model reading."""

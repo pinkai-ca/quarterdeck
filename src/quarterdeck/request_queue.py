@@ -7,6 +7,7 @@ dispatch and settlement with cancellation and direct-request supersession.
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -151,17 +152,32 @@ def control_continuation(path, data=None, meta=None):
                             and all(char in '0123456789abcdef' for char in value))
     if (state.control != 'model' or not isinstance(launch, dict) or not isinstance(inputs, dict)
             or not isinstance(record, dict) or not isinstance(origin.get('declaration'), list)
-            or len(origin['declaration']) != 3
+            or len(origin['declaration']) != 3 or not isinstance(record.get('display'), dict)
+            or any(key not in inputs for key in ('record', 'device', 'inode', 'input_count', 'inputs_digest'))
+            or any(key not in record for key in ('path', 'device', 'inode'))
             or any(not isinstance(launch.get(key), str) or not launch[key] for key in ('pane', 'at', 'harness'))
             or type(launch.get('pid')) is not int or launch['pid'] <= 0
-            or not isinstance(inputs.get('record'), str) or not inputs['record']
-            or any(type(inputs.get(key)) is not int or inputs[key] < 0 for key in ('device', 'inode', 'input_count'))
-            or not digest(inputs.get('inputs_digest'))
-            or record.get('path') != inputs['record']
-            or any(record.get(key) != inputs[key] for key in ('device', 'inode'))
             or type(record.get('offset')) is not int or record['offset'] < 0
-            or not digest(record.get('prefix')) or not isinstance(record.get('display'), dict)):
+            or not digest(record.get('prefix'))):
         raise ShipError('control continuation provenance unknown; retained without retyping')
+    bound_record = (isinstance(record.get('path'), str) and bool(record['path'])
+                    and all(type(record.get(key)) is int and record[key] >= 0 for key in ('device', 'inode')))
+    pinned_inputs = (isinstance(inputs.get('record'), str) and bool(inputs['record'])
+                     and all(type(inputs.get(key)) is int and inputs[key] >= 0
+                             for key in ('device', 'inode', 'input_count'))
+                     and digest(inputs.get('inputs_digest')) and bound_record
+                     and record['path'] == inputs['record']
+                     and all(record[key] == inputs[key] for key in ('device', 'inode')))
+    first_inputs = (inputs.get('record') is None and inputs.get('device') is None and inputs.get('inode') is None
+                    and type(inputs.get('input_count')) is int and inputs['input_count'] == 0
+                    and inputs.get('inputs_digest') == hashlib.sha256(json.dumps([]).encode()).hexdigest()
+                    and inputs.get('launch') == launch and record.get('first_record_launch') == launch
+                    and record['offset'] == 0 and record['prefix'] == hashlib.sha256(b'').hexdigest()
+                    and record['display'].get('synthetic') is True
+                    and (bound_record or record.get('path') is None and record.get('device') is None
+                         and record.get('inode') is None))
+    if not pinned_inputs and not first_inputs:
+        raise ShipError('control continuation record provenance unknown; retained without retyping')
     if (data.get('kind') != 'control' or data.get('name') != state.control
             or str(data.get('value')) != state.value or data.get('seat') != state.origin.get('seat')
             or claimed(path) is not True or path.read_bytes() != path.with_suffix('.claimed').read_bytes()):
@@ -177,6 +193,7 @@ def pending_model(seat, expected):
             state = control_continuation(path)
             if (state is not None and state.control == 'model' and state.value == expected
                     and state.origin.get('seat') == seat.name
+                    and (state.origin['inputs']['record'] is not None or getattr(seat.harness, 'synthetic', False) is True)
                     and state.origin.get('launch') == launch_binding(seat)
                     and state.origin.get('declaration') == [seat.harness.name, seat.spec.model_mode, seat.spec.model]
                     and datetime.fromisoformat(state.started) <= post.now() < datetime.fromisoformat(state.deadline)):
