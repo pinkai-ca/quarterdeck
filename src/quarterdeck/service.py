@@ -828,6 +828,16 @@ class Service:
         self.work_marks[seat.name] = mark
         return None if state.turn_open is None else bool(state.turn_open)
 
+    def pane_died(self, seat: Seat, pane) -> None:
+        """Log a seat's dead pane once, with tmux's own death time and exit status, from the pane already read."""
+        logged = self.__dict__.setdefault("dead_panes", {})
+        if logged.get(seat.name) == (pane.id, pane.pid):
+            return
+        logged[seat.name] = (pane.id, pane.pid)
+        died = (datetime.fromtimestamp(pane.dead_time).astimezone().isoformat(timespec="seconds")
+                if pane.dead_time is not None else None)
+        self.log("pane-dead", seat=seat.name, pane=pane.id, pid=pane.pid, died=died, status=pane.exit_status)
+
     def show_window(self, seat: Seat) -> str | None:
         """Show the seat's window in its session, or say why not; nothing is typed, closed or resized."""
         session = seat.session
@@ -1005,6 +1015,8 @@ class Service:
         for seat in self.resolved_seats():
             pane, launched = seat.pane(), seat.launched()
             live = pane is not None and not pane.dead
+            if pane is not None and pane.dead:
+                self.pane_died(seat, pane)
             current = seat.record()
             prepared = self.ledger.provenance.prepare(seat, current, launched)
             meter = meters.get(seat.name)

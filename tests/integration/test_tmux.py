@@ -53,6 +53,8 @@ def test_a_failed_program_leaves_its_pane_with_the_exit_status(tmux: Tmux, tmp_p
     pane = tmux.new_window("Crew", "worker-1", tmp_path, ["sh", "-c", f"exit {exit_code}"])
     dead = wait_for(lambda: dead_pane(tmux, pane.id))
     assert dead.exit_status == exit_code
+    import time
+    assert dead.dead_time is not None and abs(time.time() - dead.dead_time) < 60, "tmux's own death time, read with the pane"
     assert dead.id == pane.id and dead.pid == pane.pid and pane.pid > 0
     assert dead.window == "worker-1" and dead.session == "Crew"
     tmux.kill_window(pane.id)

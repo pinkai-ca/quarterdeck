@@ -63,6 +63,7 @@ class Pane:
     in_mode: bool
     dead: bool
     exit_status: int | None
+    dead_time: int | None = None  # when the pane's program died, in whole seconds since the epoch, as tmux reports it
 
 
 @dataclass(frozen=True)
@@ -90,6 +91,7 @@ _FORMAT = "\t".join(
         "#{pane_in_mode}",
         "#{pane_dead}",
         "#{pane_dead_status}",
+        "#{pane_dead_time}",
     ]
 )
 
@@ -101,9 +103,12 @@ def _session(name: str) -> str:
 
 def _parse(line: str) -> Pane:
     try:
-        id_, session, window, pid, width, height, in_mode, dead, status = line.split("\t")
+        fields = line.split("\t")
+        died = fields.pop() if len(fields) == 10 else ""  # a nine-field line is the format before the death time
+        id_, session, window, pid, width, height, in_mode, dead, status = fields
         return Pane(id=id_, session=session, window=window, pid=int(pid), width=int(width), height=int(height),
-                    in_mode=in_mode == "1", dead=dead == "1", exit_status=int(status) if status else None)
+                    in_mode=in_mode == "1", dead=dead == "1", exit_status=int(status) if status else None,
+                    dead_time=int(died) if died else None)
     except ValueError:
         raise TmuxFormatError(f"tmux printed a pane line not in qd's pane format: {line!r}") from None
 
