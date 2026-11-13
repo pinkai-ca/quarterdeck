@@ -287,3 +287,16 @@ def test_stopped_and_unknown_show_in_qd_status_with_no_server_and_none_is_starte
     assert cli.main(['status']) == 0
     assert 'ship server unknown: the ship server socket refuses connections' in capsys.readouterr().out
     assert not absent.exists(), 'no server was started merely to display it'
+
+
+def test_a_ship_still_on_tmux_default_server_is_never_recovered_there(ship):
+    """qd never starts tmux's default server: a ship that ran there waits, said, for the service to follow it."""
+    launch(ship.ship, 'captain')
+    ship.server.legacy = True
+    assert recovery.server_gone(ship.server)[0] is True
+    assert recovery.pass_once(ship.service).startswith("unknown: the ship ran on tmux's default server")
+    assert ship.calls == [] and recovery.read(ship.runtime)['attempts'] == []
+    assert any("tmux's default server" in line for line in recovery.status(ship.runtime))
+    ship.server.legacy = False  # the service has followed the ship to its own server
+    assert recovery.pass_once(ship.service) == 'recovered'
+    assert recovery.status(ship.runtime) == []

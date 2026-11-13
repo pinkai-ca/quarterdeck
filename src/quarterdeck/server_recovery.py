@@ -160,6 +160,11 @@ def pass_once(service) -> str | None:
         launches.append((seat, launched))
     if not launches:
         return _settle_unknown(runtime, data, None)
+    if getattr(tmux, 'legacy', False):
+        # qd never starts tmux's default server. The service follows a ship whose default server holds none of
+        # its sessions to its own, and the next pass recovers it there.
+        return _settle_unknown(runtime, data, "the ship ran on tmux's default server; it is recovered on its own "
+                                              "server once the service has followed it there")
     for seat, _ in launches:
         try:
             with seat._lifecycle(automatic=True):
