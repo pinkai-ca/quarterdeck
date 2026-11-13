@@ -25,13 +25,19 @@ python3 -m venv --system-site-packages .venv
 
 ## Run the tests
 
-`tests/testrun.py` runs the suite for a change's signature. The tool tests the worktree's committed HEAD, one tool run at a time, with results under `.testruns/`. The tool caps every test process at 8 GiB of address space and stops a run at a timeout, 3600 seconds by default.
+`tests/testrun.py` runs the suite for a change's signature. The tool tests the worktree's committed HEAD, one tool run at a time. The tool caps every test process at 8 GiB of address space and stops a run at a timeout, 3600 seconds by default.
 
 ```sh
 python3 -I tests/testrun.py run                       # the whole suite, 8 workers
 python3 -I tests/testrun.py run tests/unit/test_x.py  # named targets
+python3 -I tests/testrun.py retire <run-id>           # clear up after one run that crashed
 python3 -I tests/testrun.py clean --change <branch>   # after the branch is merged, or --drop --reason TEXT
 ```
+
+- A run's working files live in memory: the run's checkout, its virtual environment and pytest's temporary folders. They sit in a folder the project owns, under the first of `TMPDIR`, `/dev/shm` and `/tmp` that is in memory with 4 GiB free, and the tool removes them when the run ends.
+- The run's result stays on the drive, under `.testruns/results/<run-id>/`: `result.json`, `report.md` and one file of output for each failing test.
+- On a machine with no such folder in memory, the tool keeps the working files on the drive under `.testruns/`, and prints `testrun: working files on disk: <reason>`.
+- `retire` takes the exact id of one run, as in `.testruns/results/<run-id>/`. It sends no signal to any process, and holds while that run's processes are alive. The run's result, report and failure output stay as they were.
 
 A worktree older than the tool is run from the main checkout:
 
@@ -46,6 +52,16 @@ python3 -I tests/testrun.py run --jail --target work/<branch>
 ```
 
 The jail is bubblewrap with no network, a cleared environment and only the run's own files, `/usr` and a short list of `/etc` inside. The result and the report say that the run was jailed, and by which commit of the tool.
+
+While you build, run pytest directly, under the same bounds:
+
+```sh
+env -u TMUX -u TMUX_PANE -u QD_TMUX_SOCKET OPENBLAS_NUM_THREADS=1 TMPDIR=/tmp timeout --kill-after=15s 1200s python3 -m pytest --basetemp=/tmp/<new-folder> -n 2
+```
+
+- `/tmp` must be in memory: `stat -f -c %T /tmp` prints `tmpfs`. Where `/tmp` is on a drive, name a folder that is in memory, for `TMPDIR` and for `--basetemp`.
+- Give each run a new `--basetemp` folder, and remove that one folder by its exact path when the run has ended.
+- The suite makes private tmux servers of its own and never touches yours. The three `-u` keep a shell that is inside tmux, or inside a ship, from pointing the suite at a live server.
 
 ## Rules
 
