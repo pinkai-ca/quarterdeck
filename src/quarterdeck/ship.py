@@ -272,7 +272,7 @@ def mark_default(name: str, project: Path | None = None) -> Path:
     folder = ships / name
     if not (folder / "ship.toml").is_file():
         raise ShipError(f"{folder} is missing or holds no ship.toml; qd default marks only a ship that exists")
-    durable.replace_file(ships / MARK, name + "\n")
+    durable.replace_file(ships / MARK, name + "\n")  # law: one-folder
     return folder.resolve()
 
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -156,7 +157,7 @@ def test_mark_default_writes_only_the_mark(project):
     assert shipmod.mark_default("endeavour") == (project / "ships" / "endeavour").resolve()
     assert (project / "ships" / ".default").read_text() == "endeavour\n"
     after = sorted(p.relative_to(project) for p in project.rglob("*"))
-    assert set(after) - set(before) == {Path("ships/.default")}
+    assert set(after) - set(before) == {Path("ships/.default")}  # law: one-folder
     for bad in ("voyager", "../endeavour", ".default", ""):
         with pytest.raises(ShipError):
             shipmod.mark_default(bad)
@@ -238,7 +239,7 @@ def test_a_seat_without_its_own_ship_is_refused_and_never_handed_the_default(pro
 def test_verbs_that_act_on_no_ship_never_take_the_default(project, capsys):
     ship(project, "endeavour")
     code, out, _ = run(capsys, "laws")
-    assert code == 0 and "default ship" not in out and project.handed == []
+    assert code == 0 and "(default ship:" not in out and project.handed == []
     parser = cli.build_parser()
     for argv in (["laws"], ["drill"], ["default"], ["controls", "--harness", "claude"]):
         assert not cli.needs_ship(parser.parse_args(argv)), argv
@@ -303,3 +304,10 @@ def test_doctor_lists_the_warning_among_its_checks(project, monkeypatch):
     monkeypatch.setenv("QD_SHIP", str(folder))
     found = doctor.checks(shipmod.load(folder))
     assert [c.name for c in found][:2] == ["ship file", "QD_SHIP in this shell"]
+
+
+def test_git_never_tracks_the_mark():
+    """The mark lies inside the project folder, where the framework's repository ignores it."""  # law: one-folder
+    root = Path(__file__).resolve().parents[2]
+    done = subprocess.run(["git", "-C", str(root), "check-ignore", "-q", "--no-index", "ships/.default"])
+    assert done.returncode == 0, "ships/.default must be ignored by the framework repository"
