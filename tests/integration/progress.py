@@ -1,6 +1,7 @@
 """Prove service progress after a test establishes the condition it is checking."""
 
 import json
+import os
 import time
 
 from .waiting import wait_for
@@ -15,8 +16,10 @@ def service_progress(ship, seconds=8):
     Duties after requests (including failover) also ran between the two answers.
     A heartbeat before a blocked duty cannot satisfy either acknowledgment.
     The service owns a published request until it removes it, after writing the
-    full answer. On timeout or failure, leave that request and any partial answer
-    to the service; the enclosing test tears down its temporary runtime afterward.
+    full answer, and then clears its replay claim; a request counts as answered only
+    once that claim is gone too, so no status read can catch it. On timeout or
+    failure, leave that request and any partial answer to the service; the
+    enclosing test tears down its temporary runtime afterward.
     """
     folder = ship.runtime / "requests"
     folder.mkdir(parents=True, exist_ok=True)
@@ -24,9 +27,10 @@ def service_progress(ship, seconds=8):
         path = folder / f"test-progress-{time.monotonic_ns()}.json"
         pending = path.with_suffix(".tmp")
         done = path.with_suffix(".done")
+        claim = path.with_suffix(".claimed")
 
         def acknowledged():
-            if path.exists():
+            if path.exists() or os.path.lexists(claim):
                 return False
             try:
                 return done.read_text() == "unknown request 'test-progress'\n"

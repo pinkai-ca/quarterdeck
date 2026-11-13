@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 import quarterdeck
-from quarterdeck import cli, human_wake, post, seat as seatmod, service, ship as shipmod
+from quarterdeck import cli, human_wake, post, seat as seatmod, service, ship as shipmod, watch
 from quarterdeck.tmux import Tmux
 
 from .progress import service_progress
@@ -170,8 +170,12 @@ def test_a_down_human_seat_gets_no_wake_pass_and_leaves_a_named_alert_on_the_lin
     service_progress(ship)
     assert not (desk.folder / 'human-wake-status.json').exists(), 'no wake observation for a seat that is not up'
     assert not (desk.folder / 'human-wake.json').exists(), 'no wake pass for a seat that is not up'
+    facts = watch.facts(ship, tmux)
+    assert facts.needs_human == ['captain'], facts.pending
+    assert 'desk' in facts.unarmed, facts.pending
+    assert not [p for p in facts.pending if p.startswith('desk') or 'wake' in p], facts.pending
     line = qd(capsys, 'status', '--line')
-    assert 'captain needs a human' in line, line
+    assert 'captain needs a human' in line, (line, facts.pending)
     assert 'human wake' not in line, line
     assert box(captain, tmux) == "a person's half-written thought"
 
