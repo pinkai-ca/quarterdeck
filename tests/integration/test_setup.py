@@ -58,9 +58,9 @@ def test_setup_cli_prepares_copy_only_after_check_and_start_consent(
             raise ship.ShipError("synthetic install failure; no seats started")
         return ["synthetic copy proved"], True
 
-    def delegate(current, *, seat, fresh, reload_required):
+    def delegate(current, *, seat, fresh, reload_required, pool):
         calls.append("installed-up")
-        assert (seat, fresh, reload_required) == (None, False, True)
+        assert (seat, fresh, reload_required, pool) == (None, False, True, None)
         return ["synthetic installed crew up"]
 
     monkeypatch.setattr(setup, "Operations", SyntheticOperations)
