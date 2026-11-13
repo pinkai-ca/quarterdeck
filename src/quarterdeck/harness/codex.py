@@ -303,6 +303,18 @@ class _Reader(JsonLinesReader):
     kinds = ('event_msg', 'response_item', 'session_meta', 'turn_context')
     label = "Codex"
 
+    @classmethod
+    def read_snapshot(cls, record, snapshot):
+        state, turns = super().read_snapshot(record, snapshot)
+        if snapshot.rows and snapshot.rows[-1][0] > snapshot.complete_lines:
+            entry = snapshot.rows[-1][1]
+            payload = entry.get('payload')
+            if entry.get('type') == 'event_msg' and isinstance(payload, dict) and payload.get('type') == 'item_completed':
+                from dataclasses import replace
+                # This exact metadata row may still be extended by the native writer.
+                state = replace(state, pending_tools=None)
+        return state, turns
+
     def __init__(self, record, snapshot=None):
         self.process_inputs = {}
         self.active_processes = {}

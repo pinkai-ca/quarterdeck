@@ -137,3 +137,16 @@ def test_truncated_row_stays_unknown_and_unreadable_record_raises(tmp_path):
     path.unlink()
     with pytest.raises(OSError):
         codex.state(path)
+
+
+@pytest.mark.parametrize('cached', [False, True], ids=['initial-read', 'append'])
+def test_unterminated_completion_needs_physical_line_end(tmp_path, cached):
+    path = write(tmp_path, history())
+    if cached:
+        assert codex.state(path).pending_tools == ()
+    with path.open('a') as stream:
+        stream.write(json.dumps(completed(ITEMS[3])))
+    assert codex.state(path).pending_tools is None
+    with path.open('a') as stream:
+        stream.write('\n')
+    assert codex.state(path).pending_tools == ()
