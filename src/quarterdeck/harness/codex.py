@@ -628,6 +628,13 @@ def config_text(config: dict) -> str:
 class CodexHarness(Harness):
     box_geometry_known = True  # box_columns below declares the established text area
 
+    def model_identity(self, value: str | None, *, version: str | None = None) -> str | None:
+        # 0.166.0's footer displays the native id in title case (GPT-6-Astra).
+        # Keep every character except case significant; the inherited record_model
+        # reads turn_context.model through this same identity rule before screen fallback.
+        value = super().model_identity(value, version=version)
+        return value.casefold() if value is not None else None
+
     def check_tool_evidence(self, record: Path) -> dict:
         from .check_evidence import json_tools, codex_tools
         return json_tools(record, codex_tools)

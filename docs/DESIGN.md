@@ -354,6 +354,15 @@ The shared `default_label(unchecked=True)` displays exactly `program's default (
 
 Codex's `item_completed` events are native completion metadata, distinct from response-item tool results. The reader recognizes only the measured envelope and item shapes: text user/agent messages, empty reasoning metadata, commands with terminal status and an integer exit code, and completed file changes. Unknown fields, malformed timing and progress variants keep tool completeness unknown. These events never close a response call or restore previously unknown evidence. In particular, an opaque `exec` wrapper stays unknown even with a paired output and a completed command event: wrapper completion does not establish a complete inventory of detached native children. Relaunch, move, control and readiness retain their normal idle proof.
 
+Codex model identity folds case only: the measured 0.166.0 footer's `GPT-6-Astra` names
+`gpt-6-astra`. Punctuation, prefixes and family names remain distinct. The inherited
+`record_model` reads the latest native `turn_context.model` through the record reader;
+model-difference observations consult it before the screen. A matching observation clears an
+existing model-difference journal's active flag, including an older display-case false alarm.
+Pi and OpenCode retain literal native model IDs; OpenCode's combined model/endpoint footer
+is not exposed as an identity. Antigravity's identity hook reuses its existing measured
+ID/display-name table, also used by its requested-model checks.
+
 ## 6. Seats
 
 A seat is one running program in one pane, under one role. `qd up <seat>` launches it with what its adapter builds: the pool's credential, the model and effort, the brief and the seat's settings, all as flags and overrides on the program's own command line, with the seat's open messages as the first message where the program takes one there. `qd up` with no seat brings up the ship and resumes every seat that has a record. `qd down <seat>` ends one. Restart and fresh are one relaunch path with one difference: `qd restart <seat>` relaunches with resume, keeping the conversation, for a control that has only a launch form or a program that has stopped answering; `qd fresh <seat>` relaunches without resume, a new conversation that begins with the brief and the open messages. Nothing is typed to clear a seat, because a typed clear cannot change a seat's pool or program, leaves a second record in its home, and cannot refresh a brief that was passed at launch. The seat's current record is the first record written after its launch, which is exact because one process writes a home; older records stay for the Ledger.
