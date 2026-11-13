@@ -189,9 +189,10 @@ class Ledger:
         for table in ('turns', 'turn_costs', 'record_launches', 'launch_prices', 'launch_harnesses'):
             for event in ('INSERT', 'UPDATE', 'DELETE'):
                 source = 'OLD' if event == 'DELETE' else 'NEW'
+                previous = ' OR record=OLD.record' if event == 'UPDATE' else ''
                 self.db.execute(f'''CREATE TRIGGER IF NOT EXISTS accounting_after_{table}_{event.lower()}
                     AFTER {event} ON {table} BEGIN
-                    DELETE FROM record_accounting WHERE record={source}.record;
+                    DELETE FROM record_accounting WHERE record={source}.record{previous};
                     END''')
         self.quota = Quotas(self.db, commit_attempt=self._commit_usage_attempt)
         self.usage = UsageCache(self.db)
