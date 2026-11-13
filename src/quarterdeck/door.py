@@ -285,6 +285,11 @@ class Door:
         return screen
 
     def deliver(self, text: str, speed: str | None = None, confirm: bool = True, proof=None, verify=None, *, human_wake: bool = False) -> Delivery:
+        from . import shutdown
+        with shutdown.delivery(proof):
+            return self._deliver(text, speed, confirm, proof, verify, human_wake=human_wake)
+
+    def _deliver(self, text: str, speed: str | None = None, confirm: bool = True, proof=None, verify=None, *, human_wake: bool = False) -> Delivery:
         """Type ``text`` once and confirm it, or withhold it and say why.
 
         A slash command is typed with ``confirm=False``: the control's own confirmation
@@ -346,6 +351,11 @@ class Door:
                 return Delivery('withheld', reason)
             if not proof.same_launch(self.seat):
                 return Delivery('blind', 'human wake launch changed before paste; no keys sent')
+        from . import shutdown
+        if proof and shutdown.requested():
+            if shutdown.never_pasted(proof.data):
+                proof.save(phase="cancelled", resolution="service stopped before paste; never typed")
+            return Delivery("withheld", "service stopping before paste")
         owned=paste_refusal.owner(self,text,screen)
         if proof:
             proof.save(phase="pasting")
@@ -380,6 +390,8 @@ class Door:
         self.submit(pane.id)
         if proof:
             proof.save(phase="submitted")
+        if proof and shutdown.requested():
+            return Delivery("pending", "submitted once before service stop; record confirmation remains pending")
         if speed == "now" and shown.working and self.harness.keys.send_now:
             self.tmux.keys(pane.id, *self.harness.keys.send_now)
         if not confirm:
@@ -448,6 +460,9 @@ class Door:
         """Only a fresh exact input in the owned record confirms acceptance."""
         deadline = time.monotonic() + seconds
         while True:
+            from . import shutdown
+            if self.proof and shutdown.requested() and self.proof.data["phase"] in ("submitted", "queued"):
+                return Delivery("pending", "submitted once before service stop; record confirmation remains pending")
             result = None
             if self.proof:
                 result = self.proof.confirmed(self.seat)

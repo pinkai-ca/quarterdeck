@@ -513,11 +513,14 @@ These `.claimed` files are optional runtime evidence, with no post or ledger for
 runtime/
   .git/                a fence: no commits, never tracked, keeps git run above it out
   service.heartbeat    pid and time, written each tick
+  service.lock         exclusive service ownership; runtime-only PID, process start and generation token stamp
+  service.delivery     runtime-only in-flight owner/transaction token and confined pending-journal path
   seats/<seat>/home/   the program's home, built by qd: the ship's settings, the seat's records and logs
   seats/<seat>/record  the path of the current record, taken at launch
   seats/<seat>/watch   pid and time of the seat's armed watch, if any
   post/store/          every message, one immutable file each
   post/attempts/       every delivery attempt, written before typing
+  post/pending/<seat>/ durable paste/submit journals; new paste_boundary marker attests preparation before any paste
   post/groups/         fixed group fanouts, per-copy terminal outcomes and notice intents
   post/group-holds/    derived per-group operational errors, read by status
   post/cascade-holds/  derived per-run cascade operational errors, read by status
@@ -528,6 +531,22 @@ runtime/
   proven/              versions proven here by qd check
   log/                 the service's and the door's own logs, JSON lines
 ```
+
+**Stopping a delivery.** SIGTERM exits immediately outside a delivery. During one it is deferred until the new
+prepared journal is cancelled before paste, or the checked submission and its `submitted` journal are durable.
+The rest of the tick is not run. Stop keeps its ordinary 3-second grace; an exact observed in-flight delivery
+extends the total grace to 30 seconds from SIGTERM, then at most 2 seconds for SIGKILL release. Its proof names
+the delivery wait and elapsed time. The stopper annotates only the matching journal after the old process is
+gone and one nonblocking claim proves the original lock inode, PID/start/generation and transaction token.
+Unknown identity, a replaced/nonregular/symlink path or an unreadable boundary leaves the journal unchanged.
+Forced `pasting`/`submitting` cuts remain uncertain for explicit resend. Stop annotations read at most 8 MiB
+of one journal and never wait for a new lock owner or scan the pending directory.
+
+The `paste_boundary = "prepared-before-paste-v1"` marker is a runtime-only writer fact, not a resend command.
+Only its still-prepared journal with no conflicting recovery/clear evidence proves that no payload paste began;
+the next service may cancel that reservation and deliver the open message once through the ordinary door.
+An older service ignores the added fields: a prepared journal still reads as uncertain and is not replayed.
+Legacy preparation, recovery reservations and every ambiguous paste/submission retain their existing holds.
 
 **Temporary seats.** `seat.temporary_seat` owns the lifetime shared by `qd check` and `qd doctor --fix`. Each caller supplies its own specification and registers only the orders it opens. Ownership is held before any transport through teardown; the service leaves an active owner alone and abandons orphaned unresolved attempts after that owner dies. Teardown retires unresolved transport before removing the home, attempts every cleanup even after an exception, closes only registered orders, and kills only the session it created. Existing seats, folders, history and sessions are refused, not adopted. Posts, attempt receipts and journals survive cleanup; confirmed delivery is never relabelled abandonment. Failure to retire transport retains the home for inspection. For `qd check` only, `temporary_seat(..., check_inbox=True)` publishes a bounded registration beside its held transient lock, holds its exclusive registration lease before transport through teardown, and then removes that registration. It binds runtime, exact seat, the check-owned human flag, and both registration/transient-lock device/inode identities; owner PID/start are optional diagnostics, not admission authority. Only the inbox resolver admits that otherwise undeclared seat; the generic seat/config/control resolver is unchanged. Admission opens those same regular inodes and tests each lease non-blockingly without retaining a lock. A successful attempt releases immediately and refuses the named stale registration; busy is live lease evidence. Replaced files or unreadable/missing registration refuse by name. Admission does not query the outer owner through `/proc` or depend on its PID namespace. It uses the already-visible writable post mount without widening any mount; the real namespace gate remains separate from source preparation. Missing visibility is a refusal, not permission to add a mount. This is check liveness within a crew whose inboxes are not secret, not a new security boundary. Names alone never authorize a seat or human watch. Nonhuman temporary seats can read their inbox but cannot use `--wait`; the check must explicitly make the seat human. Temporary watch registration, wait iterations and output/receipt boundaries revalidate ownership; existing declared-seat and operator watch behavior is unchanged. The registration is operational lifetime evidence, not another ship declaration, and `ship.toml` is never written for a check.
 
@@ -954,6 +973,7 @@ quarterdeck/                       the project folder: the framework repository
                    the machine sample; the one writer of the Ledger
     servicectl.py  the service's lock, heartbeat, start, stop and requests
     request_queue.py   one queued-request owner: visible holds, terminal cancellation/supersession and writer coordination
+    shutdown.py    service-local SIGTERM deferral, runtime owner/boundary facts and bounded stop annotation
     presentation.py   disposable status text rendering and freshness checks; the console bootstrap's optional fast path,
                    never lifecycle, receipt or usage evidence
     harness/       base.py types.py home.py claude.py codex.py antigravity.py opencode.py pi.py grok.py fake.py; json_record.py limits.py sqlite_snapshot.py costs.py

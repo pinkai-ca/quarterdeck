@@ -1,6 +1,7 @@
 """Durable evidence for a single paste/submit, never a license to resend it.
 
-Only the service writes these journals. Door/watch read them without advancing
+The service writes these journals; its stopped owner may be annotated by a stopper
+holding the exclusive service lock. Door/watch read them without advancing
 clocks or marking delivery. The original attempt time survives every restart.
 """
 
@@ -78,15 +79,21 @@ class Proof:
         self.data = merged
 
     @classmethod
-    def begin(cls, seat: Seat, attempt: post.Attempt, text: str) -> Proof:
+    def begin(cls, seat: Seat, attempt: post.Attempt, text: str, *, before_paste: bool = False) -> Proof:
         path = seat.ship.runtime / "post" / "pending" / seat.name / attempt.path.name
         record = seat.record()
         proof = cls(path, {})
         original = min(a.at for a in post.Attempts(seat.ship.runtime).for_message(attempt.message))
+        from .shutdown import BEFORE_PASTE, prepare, prepared
+        boundary = {"paste_boundary": BEFORE_PASTE} if before_paste else {}
+        if before_paste:
+            boundary.update(prepare(proof))
         proof.save(seat=seat.name, identity=identity(seat), at=original,
                    since=post.now().isoformat(), payload=text, phase="prepared",
                    record=str(record) if record else None, shown=None,
-                   attempts=[attempt.path.name])
+                   attempts=[attempt.path.name], **boundary)
+        if before_paste:
+            prepared(proof)
         return proof
 
     def same_launch(self, seat: Seat) -> bool:
@@ -446,6 +453,9 @@ def reconcile(service: Service) -> set[Path]:
                 paths.update(attempts[n].path for n in proof.data['attempts'])
                 recover(service, proof)
                 continue  # unfinished positive intents never enter transport/absence recovery
+            from .shutdown import confined, never_pasted
+            if never_pasted(proof.data) and confined(service.runtime, proof.path):
+                proof.save(phase="cancelled", resolution="attested prepared reservation; no paste began; eligible for ordinary delivery")
             phase = proof.data["phase"]
             carried = [attempts[n] for n in proof.data["attempts"]]
             if phase not in TERMINAL and all(any(a.message == old.message and a.seat == old.seat

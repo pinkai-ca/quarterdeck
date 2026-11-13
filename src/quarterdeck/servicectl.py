@@ -194,17 +194,34 @@ def stop(runtime: Path) -> str:
     if beat is None:
         raise ShipError(f"a service holds {lock_path(runtime)} and has written no heartbeat; fuser {lock_path(runtime)} names it")
     pid = beat[0]
-    for sig, patience, how in ((signal.SIGTERM, 3.0, "stopped"), (signal.SIGKILL, 2.0, "killed")):
+    from . import shutdown
+    owner = shutdown.owner(runtime, pid)
+    if owner is not None and shutdown.process_start(pid) != owner["start"]:
+        owner = None
+    term_started = time.monotonic()
+    extended = shutdown.inflight(runtime, owner) is not None
+    for sig, patience, how in ((signal.SIGTERM, shutdown.ORDINARY_GRACE, "stopped"), (signal.SIGKILL, 2.0, "killed")):
         try:
             os.kill(pid, sig)
         except ProcessLookupError:
             pass
         deadline = time.monotonic() + patience
+        if sig == signal.SIGTERM and extended:
+            deadline = max(deadline, term_started + shutdown.DELIVERY_GRACE)
         while time.monotonic() < deadline and locked(runtime):
+            if sig == signal.SIGTERM and shutdown.inflight(runtime, owner) is not None:
+                extended = True
+                deadline = max(deadline, term_started + shutdown.DELIVERY_GRACE)
             time.sleep(0.05)
         if not locked(runtime):
-            heartbeat_path(runtime).unlink(missing_ok=True)
-            return f"service {how} · pid {pid}" + (" · it did not answer SIGTERM within 3s" if how == "killed" else "")
+            extended = extended or shutdown.inflight(runtime, owner) is not None
+            detail = shutdown.annotate(runtime, owner, forced=how == "killed")
+            bound = shutdown.DELIVERY_GRACE if extended else shutdown.ORDINARY_GRACE
+            return (f"service {how} · pid {pid}"
+                    + (f" · it did not answer SIGTERM within {bound:g}s" if how == "killed" else "")
+                    + (f" · waited {time.monotonic() - term_started:.2f}s for delivery boundary (limit {shutdown.DELIVERY_GRACE:g}s)"
+                       if extended else "")
+                    + (f" · {detail}" if detail else ""))
     raise ShipError(f"service {pid} still holds {lock_path(runtime)} after SIGKILL")
 
 

@@ -63,6 +63,9 @@ def person_only(reason: str) -> bool:
 BLIND_INTERVAL = 60.0  # how often the blind attempts are read against the records
 
 
+from . import shutdown
+
+
 class Service:
     def __init__(self, ship: Ship, tmux: Tmux):
         self.ship, self.tmux = ship, tmux
@@ -101,15 +104,16 @@ class Service:
         self.lock = acquire_lock(self.runtime)  # one service per ship, for its whole life
         servicectl.acknowledge(self.runtime, self.copy_identity, self.copy_start_token)
         self.log("start", pid=os.getpid())
-        signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-        while True:
-            self.tick()
-            until = time.monotonic() + self.ship.tick  # read after tick() reloads the ship file
-            while time.monotonic() < until:
-                self.status_due()
-                remaining = until - time.monotonic()
-                if remaining > 0:
-                    time.sleep(min(remaining, max(0.001, self.next_status - time.monotonic())))
+        from .shutdown import Stop
+        with Stop(self.runtime, self.lock).installed():
+            while True:
+                self.tick()
+                until = time.monotonic() + self.ship.tick  # read after tick() reloads the ship file
+                while time.monotonic() < until:
+                    self.status_due()
+                    remaining = until - time.monotonic()
+                    if remaining > 0:
+                        time.sleep(min(remaining, max(0.001, self.next_status - time.monotonic())))
 
     def rebind(self) -> None:
         """A service that found its ship on tmux's default server follows it to its own once it has moved.
@@ -400,6 +404,7 @@ class Service:
                 break  # an occupied or uncertain door holds every remaining item
         return "\n".join(lines)
 
+    @shutdown.transaction
     def _deliver(self, seat: Seat, message: post.Message, resend: bool = False) -> str:
         """One isolated transport, journaled before typing."""
         door = Door(seat)
@@ -416,7 +421,7 @@ class Service:
             launched = seat.launched()
             attempt = self.attempts.open(message, seat.name, launched.pane, launched.pid, launched.at)
             text = post.typed([message])
-            proof = pending_delivery.Proof.begin(seat, attempt, text)
+            proof = pending_delivery.Proof.begin(seat, attempt, text, before_paste=True)
         delivery = door.deliver(text, speed, proof=proof)
         if proof:
             proof.finish(delivery.result)
