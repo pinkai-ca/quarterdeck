@@ -20,6 +20,7 @@ LINE = ('qd > ship: messages are waiting for you. Run `qd inbox --wait` now and 
         'if your program can keep a command running in the background, keep it running there.')
 WAITING = 'human wake confirmed; waiting for watch registration or ended turn'
 BOX = 'human wake box not empty; untouched'
+GENERATION_UNKNOWN = 'human wake held: watch rearm generation unknown'
 FAILURE_REASONS = frozenset(
     f'human wake service failure ({phase}: {kind})'
     for phase in ('ownership', 'pass', 'alarm', 'observation')
@@ -52,15 +53,22 @@ def load(seat) -> pending.Proof | None:
     return pending.Proof(path, data)
 
 
+def rearmed(proof, watch) -> bool:
+    """Only a known new marker proves registration; absence never does."""
+    return watch.generation is not None and watch.generation != proof.data['generation']
+
+
 def episode(proof, watch) -> str | None:
     """Read-only episode state; only a receipt plus a later arm releases a wake."""
     if proof is None or proof.data['phase'] in ('prepared', 'cancelled'):
         return None
+    if watch.generation is None and proof.data['generation'] is not None:
+        return GENERATION_UNKNOWN
     if proof.data['phase'] == 'queued' or proof.data.get('screen_queue'):
         return 'human wake queued; waiting for record consumption'
     if proof.data['phase'] != 'delivered':
         return 'human wake pending; waiting for owned-record receipt'
-    if watch.generation == proof.data['generation']:
+    if not rearmed(proof, watch):
         if watch.armed:
             return 'human wake confirmed; watch rearm generation unknown'
         return ('human wake confirmed but watch not armed; person must intervene'
@@ -306,6 +314,10 @@ def metadata_context(seat):
         saved = load(seat)
     except (OSError, ValueError, KeyError, TypeError):
         return watch, waiting, None, 'human wake reservation unreadable; never resent'
+    if (saved is not None and saved.data['phase'] not in ('prepared', 'cancelled')
+            and not changed_launch(seat, saved) and saved.data['generation'] is not None
+            and watch.generation is None):
+        return watch, waiting, saved, GENERATION_UNKNOWN
     if pending.held(seat, None):
         return watch, waiting, saved, 'human wake pending metadata hold; no native reads'
     return watch, waiting, saved, None
@@ -320,6 +332,8 @@ def candidate_hold(seat, proof=None) -> str | None:
     if not waiting:
         return 'no waiting message; no waking input'
     if proof is not None and watch.generation != proof.data['generation']:
+        if watch.generation is None:
+            return GENERATION_UNKNOWN
         return 'inbox watch rearmed during wake; no new input authorized'
     if saved is not None and saved.data['phase'] != 'cancelled':
         own_prepared = (proof is not None and saved.path == proof.path and saved.data == proof.data
@@ -424,7 +438,7 @@ def _run(seat) -> str | None:
             proof.save(phase='cancelled', resolution='prepared wake was provably unsent')
         except OSError:
             return 'human wake evidence unreadable; unsent cancellation not persisted'
-    if proof is not None and proof.data['phase'] == 'delivered' and watch.generation != proof.data['generation']:
+    if proof is not None and proof.data['phase'] == 'delivered' and rearmed(proof, watch):
         proof.save(phase='cancelled', resolution='confirmed wake rearmed; watch episode complete')
     if proof is not None and proof.data['phase'] in ('pasting', 'submitting', 'submitted', 'queued'):
         # Bound settlement exception: original Proof only, no screen
