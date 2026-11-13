@@ -43,6 +43,21 @@ REAPED_VERSIONS = {  # the killed notice with REAPED, by its carrier
 }
 
 
+# The single-shell resume emitter in 2.1.317 writes these two exact notes. They describe
+# the prior process, never prove that a command ended. Only relaunch admission uses them.
+RESUME_STOPPED = (
+    'No completion record was found for it in the previous session. It may have been stopped'
+    ' (via the UI, Monitor timeout, or agent teardown — these leave no transcript marker),'
+    ' or it may have been running when the previous Claude Code process exited.'
+)
+RESUME_NOTES = frozenset({RESUME_STOPPED, RESUME_STOPPED +
+    ' Check the output file for partial results before assuming it completed.'})
+RESUME_VERSIONS = {
+    ('queue-operation', 'enqueue'): frozenset({VERSION}),
+    ('user', 'task-notification'): frozenset({VERSION}),
+}
+
+
 def notification(text):
     """Read only the tag envelope and header, excluding the free-text summary. The note comes back as its text
     when it follows the summary, as measured, as '' when it comes before it, and None when there is none."""
@@ -102,6 +117,8 @@ class Task:
     terminal: str | None = None
     invalid: bool = False
     inbox_watch_started: datetime | None = None
+    resume_stopped_at: datetime | None = None
+    other_evidence_at: datetime | None = None
 
 
 class BackgroundBash:
@@ -149,7 +166,7 @@ class BackgroundBash:
                     or call in self.tasks or task in self.task_calls):
                 self.unknown_calls.add(call)
                 return
-            self.tasks[call] = Task(call, task, at, at,
+            self.tasks[call] = Task(call, task, at, at, other_evidence_at=at,
                                     inbox_watch_started=called_at if watch else None)
             self.task_calls[task] = call
             for early in self.early.pop(call, ()):
@@ -171,6 +188,8 @@ class BackgroundBash:
         self.end(self.tasks[target], 'task-stop', at)
 
     def end(self, task, status, at):
+        if at is not None:
+            task.other_evidence_at = max(at, task.other_evidence_at)
         if at is None or at < task.latest or task.invalid:
             task.phase, task.invalid = 'unknown', True
         elif task.phase == 'ended' and task.terminal != status:
@@ -225,6 +244,10 @@ class BackgroundBash:
         self.notice(task, identity, status, note, at, version, carrier)
 
     def notice(self, task, identity, status, note, at, version, carrier):
+        resumed = (status == 'stopped' and note in RESUME_NOTES
+                   and version in RESUME_VERSIONS.get(carrier, ()))
+        if at is not None and not resumed:
+            task.other_evidence_at = max(at, task.other_evidence_at)
         if (task.task != identity or version not in NOTICE_VERSIONS.get(carrier, ())
                 or at is None or at < task.started):
             task.phase, task.invalid = 'unknown', True
@@ -236,6 +259,8 @@ class BackgroundBash:
             # and says the command may have been running when the previous process exited.
             task.phase = 'unknown'
             task.latest = max(at, task.latest)
+            if resumed:
+                task.resume_stopped_at = max(at, task.resume_stopped_at or at)
 
     def running(self, attachment, at, version):
         identity = attachment.get('taskId')
@@ -244,14 +269,23 @@ class BackgroundBash:
             self.unbound = True
             return
         task = self.tasks[target]
+        if at is not None:
+            task.other_evidence_at = max(at, task.other_evidence_at)
         if (version not in STATUS_VERSIONS or attachment.get('status') != 'running' or at is None
                 or at < task.latest or task.phase == 'ended' or task.invalid):
             task.phase, task.invalid = 'unknown', True
         else:
             task.phase, task.latest = 'pending', at
 
-    def state(self, state):
-        active = [task for task in self.tasks.values() if task.phase != 'ended']
+    def state(self, state, *, launched_at=None):
+        def prior_launch(task):
+            return (launched_at is not None and task.phase == 'unknown' and not task.invalid
+                    and task.resume_stopped_at is not None and task.other_evidence_at is not None
+                    and task.started < launched_at <= task.resume_stopped_at
+                    and task.other_evidence_at < launched_at)
+
+        # A separate admission view; task phases and the ordinary record reading stay unchanged.
+        active = [task for task in self.tasks.values() if task.phase != 'ended' and not prior_launch(task)]
         unknown = (self.unbound or self.early or self.unknown_calls
                    or any(task.phase == 'unknown' for task in active))
         return replace(state,

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import cli, idle, post, recovery, watch
+from quarterdeck import cli, idle, move_hold, post, recovery, watch
 from quarterdeck.harness import claude
 from quarterdeck.harness.types import Screen
 from quarterdeck.seat import Seat
@@ -16,6 +16,11 @@ from quarterdeck.service import Service
 
 
 AT = datetime(2032, 4, 5, 6, 7, tzinfo=timezone.utc)
+RESUME_NOTE = (
+    'No completion record was found for it in the previous session. It may have been stopped'
+    ' (via the UI, Monitor timeout, or agent teardown — these leave no transcript marker),'
+    ' or it may have been running when the previous Claude Code process exited.'
+)
 
 
 def row(kind, second, **fields):
@@ -37,10 +42,12 @@ def completed_background_turn():
 
 
 def notice(status='completed', *, note=False, version='2.1.317'):
+    if note is True:
+        note = RESUME_NOTE
     text = ('<task-notification>\n<task-id>task-willow</task-id>\n'
             '<tool-use-id>call-spruce</tool-use-id>\n'
             f'<status>{status}</status>\n<summary>synthetic summary</summary>\n'
-            + ('<note>synthetic resume uncertainty</note>\n' if note else '')
+            + (f'<note>{note}</note>\n' if note else '')
             + '</task-notification>')
     return {**row('user', 5, origin=dict(kind='task-notification'),
                   message=dict(role='user', content=text)), 'version': version}
@@ -128,14 +135,14 @@ def test_notice_text_typed_by_a_person_is_still_input(tmp_path):
     assert state.turn_open is True and state.last_input_at == AT + timedelta(seconds=5)
 
 
-def resumed_seat(tmp_path, monkeypatch, *, stopped):
-    path = record(tmp_path, completed_background_turn() + [
+def resumed_seat(tmp_path, monkeypatch, *, stopped, rows=None, launch_second=4):
+    path = record(tmp_path, rows if rows is not None else completed_background_turn() + [
         notice('stopped' if stopped else 'completed', note=stopped)])
     reader = claude.ClaudeHarness()
     screen = Screen('synthetic empty composer', box='', working=False, queued=0)
     monkeypatch.setattr(reader, 'screen', lambda _: screen)
     launch = SimpleNamespace(pane='%pane-spruce', pid=101001,
-                             at=(AT + timedelta(seconds=4)).isoformat(), harness='claude')
+                             at=(AT + timedelta(seconds=launch_second)).isoformat(), harness='claude')
     pane = SimpleNamespace(id=launch.pane, pid=launch.pid, dead=False)
     calls = []
     spec = SimpleNamespace(name='seat-spruce')
@@ -157,7 +164,7 @@ def resumed_seat(tmp_path, monkeypatch, *, stopped):
 
 
 @pytest.mark.parametrize('stopped', [False, True])
-def test_resumed_notice_only_seat_reads_idle_and_service_keeps_tool_evidence(tmp_path, monkeypatch, stopped):
+def test_resumed_notice_only_seat_reads_idle_and_service_restart_applies(tmp_path, monkeypatch, stopped):
     seat, service, calls = resumed_seat(tmp_path, monkeypatch, stopped=stopped)
     state = seat.harness.state(seat.record())
     assert state.last_input_at == AT
@@ -169,9 +176,10 @@ def test_resumed_notice_only_seat_reads_idle_and_service_keeps_tool_evidence(tmp
                                          created_at=(AT + timedelta(seconds=6)).isoformat()))
     if stopped:
         assert state.pending_tools is None
-        assert service.request_wait == ('tools-unknown', 'tool state unknown')
-        assert answer == 'refused: seat-spruce waits for tool state unknown; human request not deferred'
-        assert calls == []
+        assert idle.check(state).dimension == 'tools-unknown'
+        assert move_hold.reading(seat) == 'tool state unknown'
+        assert answer == 'synthetic restart applied' and calls == ['restart']
+        assert seat.harness.state(seat.record()) == state
     else:
         assert state.pending_tools == ()
         assert answer == 'synthetic restart applied' and calls == ['restart']
@@ -251,3 +259,88 @@ def test_real_prompt_replaces_the_pending_notice_for_accounting(tmp_path):
     assert state.last_input == 'synthetic next input' and state.turns == 2
     assert state.completed_turns[-1].input == 'synthetic next input'
     assert state.completed_turns[-1].tokens.written == 2
+
+
+@pytest.mark.parametrize('carrier', ['user', 'enqueue-and-user'])
+@pytest.mark.parametrize('suffix', ['', ' Check the output file for partial results before assuming it completed.'])
+@pytest.mark.parametrize('human', [False, True])
+def test_exact_prior_launch_resume_forms_admit_only_relaunch(tmp_path, monkeypatch, carrier, suffix, human):
+    entry = notice('stopped', note=RESUME_NOTE + suffix)
+    rows = completed_background_turn()
+    if carrier == 'enqueue-and-user':
+        rows += [row('queue-operation', 4, operation='enqueue', content=entry['message']['content'])]
+    seat, service, calls = resumed_seat(tmp_path, monkeypatch, stopped=True, rows=rows + [entry])
+    seat.session.human = human
+    original = seat.harness.state(seat.record())
+    assert original.pending_tools is None and original.turn_open is False and original.queued == ()
+    assert watch.activity(seat, now=AT + timedelta(hours=1)).state == 'idle'
+    assert idle.reading(seat).hold.dimension == 'tools-unknown'
+    # The ordinary cached record and ordinary move/status proof remain unknown.
+    assert idle.reading(seat, explicit=True, relaunch=True).hold is None
+    assert move_hold.reading(seat) == 'tool state unknown'
+    answer = service.relaunch_request(dict(seat=seat.name, resume=True, caller='synthetic-controller',
+                                         created_at=(AT + timedelta(seconds=6)).isoformat()))
+    assert answer == 'synthetic restart applied' and calls == ['restart']
+    assert seat.harness.state(seat.record()) == original
+
+
+@pytest.mark.parametrize('launch_second', [1, 2, 5.5])
+def test_current_launch_or_no_resume_notice_since_launch_still_holds(tmp_path, monkeypatch, launch_second):
+    seat, service, calls = resumed_seat(tmp_path, monkeypatch, stopped=True, launch_second=launch_second)
+    assert idle.reading(seat, explicit=True, relaunch=True).hold.dimension == 'tools-unknown'
+    assert service.relaunch(seat, True) is None and calls == []
+
+
+@pytest.mark.parametrize('launch_time', ['synthetic-unknown-time', None, '2032-04-05T06:07:04'])
+def test_unknown_launch_start_cannot_scope_the_task(tmp_path, monkeypatch, launch_time):
+    seat, service, calls = resumed_seat(tmp_path, monkeypatch, stopped=True)
+    seat.launched().at = launch_time
+    assert service.relaunch(seat, True) is None and calls == []
+    assert service.request_wait == ('tools-unknown', 'tool state unknown')
+
+
+@pytest.mark.parametrize('difference', ['note', 'status', 'version', 'unmeasured-carrier', 'unknown-start',
+                                         'later-running', 'earlier-running', 'other-note', 'other-status',
+                                         'delegated', 'other-task'])
+def test_other_task_evidence_is_never_hidden_by_the_resume_allowance(tmp_path, monkeypatch, difference):
+    rows = completed_background_turn()
+    entry = notice('stopped', note=True)
+    if difference == 'note':
+        entry = notice('stopped', note=RESUME_NOTE + ' synthetic extra text')
+    elif difference == 'status':
+        entry = notice('killed', note=RESUME_NOTE)
+    elif difference == 'version':
+        entry['version'] = '2.1.322'
+    elif difference == 'unmeasured-carrier':
+        entry = row('attachment', 5, attachment=dict(type='queued_command', commandMode='task-notification',
+                    origin=dict(kind='task-notification'), prompt=entry['message']['content']))
+    elif difference == 'unknown-start':
+        del rows[1]['timestamp']
+    elif difference in ('later-running', 'earlier-running'):
+        running = row('attachment', 6 if difference == 'later-running' else 4,
+                      attachment=dict(type='task_status', taskType='local_bash',
+                                      taskId='task-willow', status='running'))
+        if difference == 'later-running':
+            rows += [entry]
+            entry = running
+        else:
+            rows += [running]
+    elif difference in ('other-note', 'other-status'):
+        other = notice('stopped' if difference == 'other-note' else 'completed',
+                       note='synthetic other note' if difference == 'other-note' else False)
+        other['timestamp'] = (AT + timedelta(seconds=4)).isoformat()
+        rows += [other]
+    elif difference == 'delegated':
+        rows[1]['message']['content'][0]['name'] = 'Agent'
+    elif difference == 'other-task':
+        rows += [row('user', 3.1, message=dict(role='user', content='synthetic other input')),
+                 row('assistant', 3.2, message=dict(role='assistant', content=[dict(
+                     type='tool_use', id='call-oak', name='Bash',
+                     input=dict(command='synthetic other work', run_in_background=True))])),
+                 row('user', 3.3, message=dict(role='user', content=[dict(
+                     type='tool_result', tool_use_id='call-oak', content='synthetic result')]),
+                     toolUseResult=dict(backgroundTaskId='task-ash')),
+                 row('system', 3.4, subtype='turn_duration')]
+    seat, service, calls = resumed_seat(tmp_path, monkeypatch, stopped=True, rows=rows + [entry])
+    assert idle.reading(seat, explicit=True, relaunch=True).hold is not None
+    assert service.relaunch(seat, True) is None and calls == []

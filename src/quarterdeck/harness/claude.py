@@ -348,8 +348,8 @@ class _Reader(JsonLinesReader):
         self.notice_input = None  # accounting candidate only: a notice cannot open a turn
         super().__init__(record, snapshot)
 
-    def state(self):
-        state = replace(self.background.state(super().state()), walls=tuple(self.walls))
+    def state(self, *, launched_at=None):
+        state = replace(self.background.state(super().state(), launched_at=launched_at), walls=tuple(self.walls))
         return replace(state, failure=self.orphan_auth) if self.open is None and self.orphan_auth else state
 
     def take(self, entry: dict) -> None:
@@ -679,6 +679,10 @@ class ClaudeBox(Box):
 
 
 class ClaudeHarness(Harness):
+    def state_for_relaunch(self, record, launched_at):
+        # This rare lifecycle read uses a fresh reader, never changes the cached record state.
+        return _Reader(record).state(launched_at=launched_at)
+
     def human_wake_box_margin(self, pane_width: int) -> int:
         # 2.1.317: fixture non-text width 4, plus the conservative allowance 4.
         return 8

@@ -1157,6 +1157,18 @@ Rebrief uses one request kind, with hashes and launch snapshots in the existing 
 
 `qd sync [ref]` is the canonical command; `qd upgrade [ref]` is its compatibility alias. Both use `cmd_upgrade` and its installed-copy handoff bypass, forwarding local references and the installed-copy `--back`/`--force` controls to the same `install.upgrade` API. The alias appends “`upgrade` is now `qd sync`” exactly once to the final proof line, including that string in JSON output; the proof-list shape is unchanged. No command fetches a remote. Internal installer, staging and rebrief names retain `upgrade` for compatibility with historical copies. Removing the alias is a separate change after the announced two-week compatibility period.
 
+A resume-stopped background Bash task remains unknown in the record. For relaunch
+admission only, Claude Code can exclude it from the current launch's tool set when
+its known start predates that launch and its only evidence since is the exact
+single-shell resume stopped note. The note and its optional output-file sentence
+are measured in the public 2.1.317 executable, on the known enqueue and native user
+notification carriers. 2.1.322, other versions, wording, statuses and carriers keep
+their ordinary unknown reading. Any other evidence since launch, an unknown start,
+a current-launch task, or delegated work still holds. This separate adapter view
+never changes task phases, accounting, ordinary moves, controls or status evidence.
+Service restart admission, including human and queued requests, uses the same idle
+proof with this launch-scoped view; the existing request lifetime rules still apply.
+
 ## Guided setup
 
 `qd setup` asks, in order, what the crew calls the person (Admiral), ship name,

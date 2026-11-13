@@ -672,7 +672,7 @@ class Service:
         pane = seat.pane()
         if pane is None or pane.dead:
             return self.relaunch(seat, bool(data['resume']))
-        state, hold = idle.reading(seat, explicit=True)
+        state, hold = idle.reading(seat, explicit=True, relaunch=True)
         try:
             asked = datetime.fromisoformat(data['created_at'])
         except (KeyError, TypeError, ValueError):
@@ -726,7 +726,7 @@ class Service:
             return None
         pane = seat.pane()
         if pane is not None and not pane.dead:
-            state, hold = reading if reading is not None else idle.reading(seat, explicit=True)
+            state, hold = reading if reading is not None else idle.reading(seat, explicit=True, relaunch=True)
             if state is None or not seat.harness.waiting_for_human(state):
                 if hold is not None:
                     if self is not None:

@@ -372,6 +372,10 @@ class Harness(ABC):
     def state(cls, record: Path) -> State:
         return cls.read(record)[0]
 
+    def state_for_relaunch(self, record: Path, launched_at: datetime | None) -> State:
+        """Launch-scoped relaunch admission; ordinary adapters retain their record evidence."""
+        return self.state(record)
+
     @classmethod
     def turns(cls, record: Path) -> list[Turn]:
         return cls.read(record)[1]

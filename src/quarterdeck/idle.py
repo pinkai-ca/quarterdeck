@@ -1,6 +1,7 @@
 """One ordinary live idle proof, independent of routing and explicit question recovery."""
 
 from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import NamedTuple
 
 from .harness.types import State
@@ -119,22 +120,34 @@ def check(state: State | None, seat=None, *, explicit=False) -> Hold | None:
     return None
 
 
-def reading(seat, *, explicit=False):
-    """Read and publish the seat-aware proof without requiring a service object."""
+def reading(seat, *, explicit=False, relaunch=False):
+    """Read the shared proof; only relaunch may request a launch-scoped adapter view."""
     from . import move_hold
     binding = move_hold.generation(seat)
     state = None
     try:
         record = seat.record()
         state = seat.harness.state(record) if record is not None else None
-    except OSError:
-        hold = Hold('record', 'its record is unreadable')
-    else:
         if state is not None:
             state = execution(seat, state)
+        published_hold = check(state, seat=seat if state is None else None, explicit=explicit)
+        reader = getattr(seat.harness, 'state_for_relaunch', None)
+        if (relaunch and state is not None and state.pending_tools is None and reader is not None
+                and binding is not None and binding['harness'] == getattr(seat.harness, 'name', None)):
+            launched_at = None
+            try:
+                parsed = datetime.fromisoformat(binding['at'])
+                if parsed.tzinfo is not None:
+                    launched_at = parsed
+            except (TypeError, ValueError):
+                pass
+            state = execution(seat, reader(record, launched_at))
         hold = check(state, seat=seat if state is None else None, explicit=explicit)
+    except OSError:
+        hold = published_hold = Hold('record', 'its record is unreadable')
     if move_hold.generation(seat) != binding:
         state = None
-        hold = Hold('identity', REASONS['identity'])
-    move_hold.publish(seat, binding, hold)
+        hold = published_hold = Hold('identity', REASONS['identity'])
+    # A relaunch allowance must not clear the ordinary move/status hold.
+    move_hold.publish(seat, binding, published_hold)
     return Reading(state, hold)
