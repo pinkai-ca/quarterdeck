@@ -470,7 +470,8 @@ def test_an_account_pass_that_fails_leaves_no_membership_behind(tmp_path, monkey
         parsed = spy.ownership(registry)
         assert parsed == 1
         record_owner.bindings(seat)
-        assert spy.ownership(registry) == parsed + 1
+        # Outside a pass both bindings and the register of the fixture's pin read fresh: nothing is reused.
+        assert spy.ownership(registry) == parsed + 2
     finally:
         w.svc.ledger.close()
 
@@ -604,6 +605,7 @@ def test_an_unreadable_registry_is_skipped_by_the_replay_and_never_answered_from
         w.svc.account()
         assert all(replay_readers(w)[str(path)] == 'fake' for path in w.typed[broken.name])
         registry.write_text('{\n')
+        spy.writes.clear()  # the test's own corrupting write is not the framework's
         before = totals(spy, w)
         w.svc.account()
         assert totals(spy, w)[healthy.name] == before[healthy.name] + 1, 'a healthy registry still reads once'
