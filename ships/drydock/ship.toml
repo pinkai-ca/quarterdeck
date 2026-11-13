@@ -13,7 +13,7 @@ provider = "synthetic"                # the fake harness needs no credential
 title = "Bridge"
 
 [sessions.office]
-title = "Drydock Office"
+title = "Office"
 human = true                     # Into a session the human owns it types only when a message waits there, no watch is armed and the box is empty.
 
 [sessions.crew]
