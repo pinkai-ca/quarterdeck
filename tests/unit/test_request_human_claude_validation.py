@@ -268,3 +268,19 @@ def test_status_shows_kind_since_and_reason_at_once_without_reading_the_human_re
     assert f'cancel: qd restart {SEAT} --cancel {path.stem}' in text
     assert 'captain' not in text and 'origin' not in text and 'pid' not in text, 'no arguments or identities'
     assert desk.reads == 0, 'the status path never reads the seat'
+
+
+def test_equal_time_candidates_show_a_named_order_wait_and_a_cancel_settles_the_order(desk):
+    desk.state = state(open_=False, input_at=-20, turns=[turn(-20, -10)])
+    first = desk.ask(caller='captain-larch', seconds=0, name='r00000-larch')
+    second = desk.ask(caller='captain-larch', seconds=0, name='r00001-larch', resume=True)
+    desk.tick(1)
+    desk.tick(1.5)
+    rows = {row['id']: row for row in request_queue.pending(desk.runtime)}
+    assert set(rows) == {first.stem, second.stem}, 'both stay visible'
+    assert all('order' in row['reason'] and 'unknown' in row['reason'] for row in rows.values()), rows
+    assert all(row['claimed'] is False for row in rows.values()), 'neither was claimed or dispatched'
+    assert not (desk.runtime / 'requests' / 'failed').exists(), 'neither is archived as failed'
+    request_queue.cancel(desk.runtime, SEAT, first.stem)
+    desk.tick(2)
+    assert desk.applied == ['restart'] and 'never applied' in desk.answer(first) and 'restarted' in desk.answer(second)
