@@ -39,7 +39,7 @@ A harness runs on a pool, one way of paying:
 [A ship of your own](SHIPS.md#a-ship-of-your-own) shows how to write the ship's file, `ship.toml`, where an agent is a seat. [The parts of Quarterdeck](PARTS.md) explains the other words.
 
 - A pool's `provider` is the company's identifier, such as `anthropic`, `openai`, `google` or `xai`, and for an endpoint, whoever operates the endpoint, whichever company made the model.
-- A seat's `pool` is one pool's name, or an ordered list, whose entries may name another harness and model. When a subscription is spent, the agent moves on to the next entry, and stays there. `qd set <seat> pool=<choice>` moves the agent by hand.
+- A seat's `pool` is one pool's name, or an ordered list, whose entries may name another harness and model. When a subscription is spent, the agent moves on to the next entry, and stays there while the agent runs. The agent's next launch takes the first entry that has room. `qd set <seat> pool=<choice>` moves a running agent by hand, and for an agent that is down chooses the pool of the agent's next launch. `qd up <seat> --pool <choice>` chooses the pool for one launch.
 
 ## Special cases
 
