@@ -128,7 +128,7 @@ def test_missing_or_nonstring_text_is_not_an_empty_receipt(tmp_path,candidate,mi
     assert input_receipt.confirmed(name,record,'',T0) is None
     assert harness.get(name).inputs(record).skipped==[
         {'line':2,'kind':'response_item' if name=='codex' else ('queue-operation' if candidate=='claude-queue' else 'user'),
-         'reason':'malformed input row'}]
+         'reason':'queued input text not recorded' if candidate=='claude-queue' and missing else 'malformed input row'}]
 
 
 @pytest.mark.parametrize('name',['codex','claude'])

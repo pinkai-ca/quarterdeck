@@ -207,6 +207,10 @@ def inputs(record: Path) -> list[Input]:
                     # Keep acceptance identity for a later real submission; no receipt now.
                     queued[matching] = entry, 'draft'
                 continue
+            if operation == 'enqueue' and 'content' not in row:
+                # Measured in Claude Code 2.1.317: activity, but no text identity for a receipt or attribution.
+                found.skip(line, 'queue-operation', 'queued input text not recorded')
+                continue
             if operation == 'dequeue' and 'content' not in row:
                 # No identity is stated: retain FIFO slots, hold until readable input.
                 queued = [(entry, 'pending' if phase == 'queued' else phase) for entry, phase in queued]
@@ -262,7 +266,8 @@ def person_inputs(record: Path, excluded: tuple[str, ...]) -> list[datetime]:
     and a line in ``excluded`` (compared whole, so only exactly that text is left out). An input row
     the reader cannot classify or date raises ValueError: the caller reads the quiet time as unknown.
     A queued input counts both when it was typed and when it was taken in, so the later time wins:
-    an unrecognized row can only make the person seem more recent, never quieter.
+    an unrecognized row can only make the person seem more recent, never quieter. An enqueue without
+    a content key records activity at its own time, but cannot identify excluded text or a receipt.
     """
     class Evidence:
         def __init__(self):
@@ -306,7 +311,10 @@ def person_inputs(record: Path, excluded: tuple[str, ...]) -> list[datetime]:
                 continue
             person(row, _row_text(content))
         elif kind == 'queue-operation' and row.get('operation') == 'enqueue':
-            content = row.get('content')
+            if 'content' not in row:
+                person(row, None)  # absent text is activity, never a guessed notice or excluded waking line
+                continue
+            content = row['content']
             if not isinstance(content, str):
                 raise ValueError('a queued input is malformed')
             if not _notice_text(content):
