@@ -23,7 +23,7 @@ def forum(tmp_path, tmux, monkeypatch):
     shutil.copytree(ROOT / 'ships/forum/roles', folder / 'roles')
     shutil.copy(ROOT / 'ships/forum/orders.md', folder / 'orders.md')
     names = ['lead', 'reviewer-1', 'reviewer-2', 'reviewer-3', 'reviewer-4']
-    text = (f'[ship]\nname="forum"\noperator="operator"\nworkspace="."\ntick={TEST_TICK}\n'
+    text = (f'[ship]\ncode="checkout"\nname="forum"\noperator="operator"\nworkspace="."\ntick={TEST_TICK}\n'
             '[pools.fake]\nprovider="synthetic"\n'
             '[sessions.forum]\ntitle="Synthetic forum"\n'
             '[groups.reviewers]\nlead="lead"\n'

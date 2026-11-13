@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
 @pytest.fixture
 def ring(drydock, tmux, monkeypatch):
     text = f'''[ship]
+code = "checkout"
 name = "synthetic-ring"
 operator = "operator"
 tick = {TEST_TICK}
