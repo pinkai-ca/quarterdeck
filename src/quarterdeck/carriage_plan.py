@@ -134,6 +134,7 @@ def build(items: tuple[Item, ...], *, seat: str, header: str, inline: str,
         """
         nonlocal serial
         level = [(key, key, line) for key, line in rows]
+        routing = False
         while True:
             pages: list[list[tuple[str, str, str]]] = []
             page: list[tuple[str, str, str]] = []
@@ -158,9 +159,10 @@ def build(items: tuple[Item, ...], *, seat: str, header: str, inline: str,
                 routes.append((first, last, route))
             if len(routes) == 1:
                 return path
-            if len(routes) >= len(level):
+            if routing and len(routes) >= len(level):
                 raise ImpossibleBudget('carry_bytes cannot hold a shrinking index')
             level = routes
+            routing = True
 
     def opening(whole_count: int, overflow_count: int, root: str) -> str:
         return (f'{header}\nqd > carriage: {whole_count} whole; {overflow_count} overflow; '

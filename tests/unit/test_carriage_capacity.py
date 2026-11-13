@@ -47,21 +47,21 @@ def test_handoff_whole_oldest_fitting_order_and_complete_overflow():
 
 @pytest.mark.parametrize('kind', ['question', 'answer', 'report', 'ack'])
 def test_self_traffic_is_not_promoted_to_handoff(kind):
-    result = plan([item('self-traffic', 's' * 900, kind=kind, sender='builder', at='a'),
-                   item('ordinary-order', 'o' * 900, at='z')])
+    result = plan([item('self-traffic', 's' * 1200, kind=kind, sender='builder', at='a'),
+                   item('ordinary-order', 'o' * 1200, at='z')])
     assert result.whole == ('ordinary-order',)
     assert result.overflow == ('self-traffic',)
 
 
 def test_context_only_order_is_not_a_handoff():
-    context = replace(item('context', 'c' * 900, sender='builder', at='a'), context_only=True)
-    result = plan([context, item('ordinary-order', 'o' * 900, at='z')])
+    context = replace(item('context', 'c' * 1200, sender='builder', at='a'), context_only=True)
+    result = plan([context, item('ordinary-order', 'o' * 1200, at='z')])
     assert result.whole == ('ordinary-order',)
 
 
 def test_handoff_requires_recipient_as_well_as_sender():
-    result = plan([item('outgoing', 'x' * 900, sender='builder', recipient='other', at='z'),
-                   item('self-handoff', 'h' * 900, sender='builder', at='a')])
+    result = plan([item('outgoing', 'x' * 1200, sender='builder', recipient='other', at='z'),
+                   item('self-handoff', 'h' * 1200, sender='builder', at='a')])
     assert result.whole == ('self-handoff',)
 
 
@@ -126,6 +126,14 @@ def test_metadata_is_one_line_and_subject_summary_is_explicit():
     assert '\n' not in row and '\t' not in row
     assert '...' in row
     assert 'original="/synthetic/posts/multiline.json"' in row
+
+
+def test_one_large_leaf_per_page_can_still_have_a_small_routing_index():
+    posts = [replace(item(f'large-metadata-{n}', 'body' * 2000),
+                     source=Path('/synthetic/' + 'long-path-' * 90 + str(n))) for n in range(8)]
+    result = plan(posts, limit=1600)
+    assert len(leaves(result)) == 8
+    assert all(cp.size(value) <= 1600 for value in result.files.values())
 
 
 def test_tiny_minimal_account_fails_before_publication(tmp_path):
