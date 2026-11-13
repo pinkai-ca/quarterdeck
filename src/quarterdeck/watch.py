@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from . import accounting_health, check_outcome, credential, idle, ledger, move_hold, server_recovery, pending as pending_delivery, post, program_use, providers, quota, record_owner, recovery, request_queue, servicectl as service
+from . import accounting_health, acts, check_outcome, credential, idle, ledger, move_hold, server_recovery, pending as pending_delivery, post, program_use, providers, quota, record_owner, recovery, request_queue, servicectl as service
 from .door import Door, Reading
 from .harness.capabilities import selection_label
 from .seat import Seat, UnresolvedSeat, leftover_checks, seats
@@ -320,7 +320,7 @@ def seat_reading(seat: Seat | UnresolvedSeat) -> dict:
                     requests=request_queue.pending(seat.ship.runtime, seat.name),
                     receipt_skips=dict(total=0, counts=[], examples=[], omitted=0),
                     receipt_error=str(seat.error), record_absent=str(seat.error),
-                    record_limits=None, screen=None, answered=[], usage=headline_readings(seat.ship),
+                    record_limits=None, screen=None, answered=[], act=None, usage=headline_readings(seat.ship),
                     **providers.identities(seat.ship))
     record = seat.record()
     state, error = None, None
@@ -343,6 +343,7 @@ def seat_reading(seat: Seat | UnresolvedSeat) -> dict:
             "record_absent": seat.join().reason if record is None else None,
             "record_limits": getattr(seat.harness, "record_limits", None),
             "screen": Door(seat).screen(), "answered": list((launched.answered or []) if (launched := seat.launched()) else []),
+            "act": acts.last(seat),
             "usage": headline_readings(seat.ship), **providers.identities(seat.ship)}
 
 
@@ -385,6 +386,8 @@ def render_full(data: dict) -> list[str]:
     for done in data.get("answered") or []:
         lines.append(f"  answered for the account holder: {done.get('question')} · {done.get('choice')} pressed at "
                      f"{done.get('at')} · {done.get('outcome')}")
+    if data.get("act"):
+        lines.append(f"  {acts.describe(data['act'])}")
     screen = data["screen"]
     if screen:
         lines.append(f"  screen: box {screen.box!r} · working {'unknown, not seen' if screen.working is None else screen.working} · queued {screen.queued} · shows {screen.shows}")

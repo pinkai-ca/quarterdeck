@@ -136,6 +136,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("seat", nargs="?", help="default: this seat (QD_SEAT)")
     p = verb("submit", cmd_submit, "press Enter on a seat's box when it holds exactly one of its pending messages")
     p.add_argument("seat", help="the seat whose box holds the message")
+    p = verb("press", cmd_press, "systems only: press a named choice of the dialog on a seat's screen, recorded first")
+    p.add_argument("seat", help="the seat whose screen shows the dialog")
+    p.add_argument("choice", help="the choice as the screen shows it, such as '1. Yes' or '[0] Skip'")
+    p = verb("type", cmd_type, "systems only: type one line into a stalled seat's empty box and submit it, recorded first")
+    p.add_argument("seat", help="the stalled seat")
+    p.add_argument("line", help="the one line to type")
     p = verb("set", cmd_set, "change a seat: writes the ship file, then applies what it can")
     p.add_argument("seat", nargs="?", help="default: this seat (QD_SEAT)")
     p.add_argument("changes", nargs="*", metavar="KEY=VALUE", help="model=…, effort=…, pool=a,b, up=true")
@@ -401,6 +407,25 @@ def cmd_submit(args: argparse.Namespace) -> str:
     if seat.session.human:
         raise ShipError(f"{seat.name} sits in a human's session; nothing is pressed in a human's session")
     return service.request(ship.runtime, "submit", seat=seat.name)
+
+
+def _act(args: argparse.Namespace, kind: str, **data) -> str:
+    """qd press and qd type: refused here first when the caller may not act, then decided by the service."""
+    from . import acts
+    ship = load_ship(args)
+    seat = seat_of(ship, args.seat)
+    caller = os.environ.get("QD_SEAT") or None
+    if reason := acts.authority(ship, caller, seat):
+        raise ShipError(reason)
+    return service.request(ship.runtime, kind, seat=seat.name, caller=caller, **data)
+
+
+def cmd_press(args: argparse.Namespace) -> str:
+    return _act(args, "press", choice=args.choice)
+
+
+def cmd_type(args: argparse.Namespace) -> str:
+    return _act(args, "type", line=args.line)
 
 
 def cmd_set(args: argparse.Namespace) -> list[str]:
