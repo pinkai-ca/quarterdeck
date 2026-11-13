@@ -1,11 +1,11 @@
 """Ordinary synthetic notification transitions; no delivery or native record actions."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import compaction_alert, post, service, unconfirmed_alert, watch
+from quarterdeck import alarms, auth_failure, compaction_alert, post, service, unconfirmed_alert, watch
 from quarterdeck.door import Reading
 
 
@@ -23,7 +23,10 @@ def alarm(tmp_path, monkeypatch):
     seat = SimpleNamespace(name='worker', ship=ship, session=SimpleNamespace(human=False),
                            spec=SimpleNamespace(pools=('pool',)),
                            harness=SimpleNamespace(reads_queue_error=False), launched=lambda: None)
-    state = SimpleNamespace(detached=[OLD], door=None, up={'systems'}, counter=0)
+    state = SimpleNamespace(detached=[OLD], door=None, up={'systems'}, counter=0,
+                            when=datetime(2030, 1, 1, tzinfo=timezone.utc))
+    monkeypatch.setattr(alarms, 'now', lambda: state.when)
+    monkeypatch.setattr(auth_failure, 'status', lambda seat: None)
 
     def prepare(store, kind, sender, to, body, **fields):
         state.counter += 1
@@ -55,7 +58,7 @@ def notice(alarm):
 
 def test_repeated_passes_restart_and_door_changes_keep_one_reading(alarm):
     first = notice(alarm)
-    assert {message.to for message in first} == {'systems', 'desk'}
+    assert {message.to for message in first} == {'systems'}
     path = unconfirmed_alert.path(alarm.ship.runtime, 'worker')
     before = path.stat()
     original = path.read_bytes()
@@ -83,16 +86,16 @@ def test_new_recipient_gets_one_without_resending_to_returning_recipient(alarm):
 
 
 def test_changed_then_cleared_reading_rearms_even_after_restart(alarm):
-    assert len(notice(alarm)) == 2
+    assert len(notice(alarm)) == 1
     alarm.detached = [OTHER]
-    assert len(notice(alarm)) == 4
+    assert len(notice(alarm)) == 2
     alarm.actor = alarm.restart()
-    assert len(notice(alarm)) == 4
+    assert len(notice(alarm)) == 2
     alarm.detached = []
     notice(alarm)
     alarm.actor = alarm.restart()
     alarm.detached = [OTHER]
-    assert len(notice(alarm)) == 6
+    assert len(notice(alarm)) == 3
 
 
 def test_unknown_evidence_does_not_clear_or_rearm(alarm):
@@ -122,7 +125,7 @@ def test_initial_door_obstruction_keeps_existing_alarm_ownership(alarm, monkeypa
     monkeypatch.setattr(service.pending_delivery, 'detached', lambda seat: pytest.fail(
         'the existing door alarm must not read detached journals'))
     assert notice(alarm) == []
-    assert {message.to for message in alarm.actor.store.all()} == {'systems', 'desk'}
+    assert {message.to for message in alarm.actor.store.all()} == {'systems'}
     assert not unconfirmed_alert.path(alarm.ship.runtime, 'worker').exists()
 
 
@@ -148,7 +151,7 @@ def test_fixed_intents_recover_publication_interruption(alarm, monkeypatch, publ
     with pytest.raises(OSError, match='synthetic publication interruption'):
         notice(alarm)
     saved = unconfirmed_alert.load(alarm.ship.runtime, 'worker')
-    assert len(saved['reports']) == 2
+    assert len(saved['reports']) == 1
     fixed = sorted(post.Message.from_json(intent).id for intent in saved['reports'])
     monkeypatch.setattr(compaction_alert, 'publish', publish)
     alarm.actor = alarm.restart()
@@ -157,7 +160,7 @@ def test_fixed_intents_recover_publication_interruption(alarm, monkeypatch, publ
     assert notice(alarm) == recovered
 
 
-def test_committed_notifications_survive_clear_before_recovery(alarm, monkeypatch):
+def test_unpublished_notifications_retire_when_clear_before_recovery(alarm, monkeypatch):
     publish = compaction_alert.publish
     monkeypatch.setattr(compaction_alert, 'publish', lambda *args: (_ for _ in ()).throw(
         OSError('synthetic publication interruption')))
@@ -166,7 +169,7 @@ def test_committed_notifications_survive_clear_before_recovery(alarm, monkeypatc
     monkeypatch.setattr(compaction_alert, 'publish', publish)
     alarm.actor = alarm.restart()
     alarm.detached = []
-    assert len(notice(alarm)) == 2
+    assert notice(alarm) == []
     assert unconfirmed_alert.load(alarm.ship.runtime, 'worker')['key'] is None
 
 
@@ -174,6 +177,7 @@ def test_watch_keeps_standing_hold_after_notification_and_restart(alarm, monkeyp
     first = notice(alarm)
     alarm.actor = alarm.restart()
     assert notice(alarm) == first
+
     from quarterdeck import compaction, structure_outcome, turn_failure
 
     monkeypatch.setattr(watch, 'seats', lambda *args: [alarm.seat])
@@ -193,3 +197,178 @@ def test_watch_keeps_standing_hold_after_notification_and_restart(alarm, monkeyp
     assert 'worker' in facts.line()
     assert unconfirmed_alert.PREFIX in facts.line()
     assert notice(alarm) == first
+
+def reply(alarm, sender='systems', kind='ack', parent=None):
+    root = next(message for message in notice(alarm) if message.to == 'systems')
+    return alarm.actor.store.new(kind, sender, post.SHIP, 'synthetic alarm reply', re=parent or root.id)
+
+
+def test_untaken_alarm_escalates_at_ten_minutes_once_across_restart(alarm):
+    assert [message.to for message in notice(alarm)] == ['systems']
+    first_at = unconfirmed_alert.load(alarm.ship.runtime, 'worker')['first_at']
+    alarm.when += timedelta(seconds=599)
+    assert len(notice(alarm)) == 1
+    alarm.actor = alarm.restart()
+    alarm.when += timedelta(seconds=1)
+    assert {message.to for message in notice(alarm)} == {'systems', 'desk'}
+    alarm.when += timedelta(minutes=30)
+    assert len(notice(alarm)) == 2
+    assert unconfirmed_alert.load(alarm.ship.runtime, 'worker')['first_at'] == first_at
+
+
+def test_systems_ack_takes_alarm_without_closing_a_human_order(alarm):
+    order = alarm.actor.store.new('order', 'captain', 'worker', 'synthetic open work')
+    notice(alarm)
+    acknowledgment = reply(alarm)
+    alarm.when += timedelta(minutes=10)
+    assert [message.to for message in notice(alarm)] == ['systems']
+    assert unconfirmed_alert.load(alarm.ship.runtime, 'worker')['taken'] == acknowledgment.id
+    alarm.actor = alarm.restart()
+    alarm.when += timedelta(minutes=20)
+    assert len(notice(alarm)) == 1
+    assert alarm.actor.store.is_open(order)
+
+
+def test_any_systems_descendant_in_alarm_thread_takes_it(alarm):
+    middle = reply(alarm, sender='desk', kind='question')
+    response = reply(alarm, kind='answer', parent=middle.id)
+    alarm.when += timedelta(minutes=10)
+    assert len(notice(alarm)) == 1
+    assert unconfirmed_alert.load(alarm.ship.runtime, 'worker')['taken'] == response.id
+
+
+@pytest.mark.parametrize('unrelated', [False, True])
+def test_other_posts_do_not_take_alarm(alarm, unrelated):
+    notice(alarm)
+    if unrelated:
+        parent = alarm.actor.store.new('report', post.SHIP, 'systems', 'synthetic other alarm')
+        reply(alarm, parent=parent.id)
+    else:
+        reply(alarm, sender='worker')
+    alarm.when += timedelta(minutes=10)
+    assert {message.to for message in notice(alarm)} == {'systems', 'desk'}
+    assert unconfirmed_alert.load(alarm.ship.runtime, 'worker')['taken'] is None
+
+
+def test_clear_before_deadline_never_escalates_and_next_reading_gets_new_clock(alarm):
+    notice(alarm)
+    alarm.when += timedelta(seconds=599)
+    alarm.detached = []
+    assert len(notice(alarm)) == 1
+    alarm.when += timedelta(minutes=10)
+    assert len(notice(alarm)) == 1
+    alarm.actor = alarm.restart()
+    alarm.detached = [OLD]
+    assert len(notice(alarm)) == 2
+    alarm.when += timedelta(seconds=599)
+    assert len(notice(alarm)) == 2
+    alarm.when += timedelta(seconds=1)
+    assert len(notice(alarm)) == 3
+
+
+def test_no_systems_routes_desk_immediately_even_after_taking(alarm):
+    notice(alarm)
+    reply(alarm)
+    notice(alarm)
+    alarm.up.clear()
+    assert {message.to for message in notice(alarm)} == {'systems', 'desk'}
+    alarm.actor = alarm.restart()
+    assert len(notice(alarm)) == 2
+
+
+def test_human_owned_alarm_goes_to_desk_immediately(alarm):
+    alarm.seat.session.human = True
+    assert [message.to for message in notice(alarm)] == ['desk']
+    alarm.when += timedelta(minutes=30)
+    alarm.actor = alarm.restart()
+    assert len(notice(alarm)) == 1
+
+
+def test_desk_can_receive_its_own_alarm_through_post(alarm):
+    alarms.notify(alarm.actor, 'desk', True, 'synthetic desk hold', 'desk needs attention')
+    reports = alarm.actor.store.all()
+    assert len(reports) == 1 and reports[0].to == 'desk'
+
+
+@pytest.mark.parametrize('cleared', [False, True])
+def test_pending_escalation_is_not_published_after_taking_or_clear(alarm, monkeypatch, cleared):
+    notice(alarm)
+    alarm.when += timedelta(minutes=10)
+    publish = compaction_alert.publish
+
+    def interrupted(runtime, intent):
+        if post.Message.from_json(intent).to == 'desk':
+            raise OSError('synthetic escalation interruption')
+        return publish(runtime, intent)
+
+    monkeypatch.setattr(compaction_alert, 'publish', interrupted)
+    with pytest.raises(OSError, match='synthetic escalation interruption'):
+        notice(alarm)
+    saved = unconfirmed_alert.load(alarm.ship.runtime, 'worker')
+    assert len(saved['reports']) == 2
+    if cleared:
+        alarm.detached = []
+    else:
+        root = next(message for message in alarm.actor.store.all() if message.to == 'systems')
+        alarm.actor.store.new('ack', 'systems', post.SHIP, 'synthetic taking', re=root.id)
+    monkeypatch.setattr(compaction_alert, 'publish', publish)
+    alarm.actor = alarm.restart()
+    assert [message.to for message in notice(alarm)] == ['systems']
+
+
+def test_unknown_reading_cannot_escalate_or_restart_its_clock(alarm):
+    notice(alarm)
+    first_at = unconfirmed_alert.load(alarm.ship.runtime, 'worker')['first_at']
+    alarm.detached = [UNKNOWN]
+    alarm.when += timedelta(minutes=10)
+    assert len(notice(alarm)) == 1
+    alarm.actor = alarm.restart()
+    alarm.detached = [OLD]
+    assert {message.to for message in notice(alarm)} == {'systems', 'desk'}
+    assert unconfirmed_alert.load(alarm.ship.runtime, 'worker')['first_at'] == first_at
+
+
+def test_manual_fresh_alarm_uses_same_taking_and_escalation(alarm, monkeypatch):
+    key = dict(generation='generationg', source={}, reading='ready for manual fresh')
+    monkeypatch.setattr(compaction_alert, 'observation', lambda seat: (key, dict(protocol_requests=[])))
+    compaction_alert.step(alarm.actor, alarm.seat)
+    assert [message.to for message in alarm.actor.store.all()] == ['systems']
+    alarm.when += timedelta(minutes=10)
+    alarm.actor = alarm.restart()
+    compaction_alert.step(alarm.actor, alarm.seat)
+    assert {message.to for message in alarm.actor.store.all()} == {'systems', 'desk'}
+    assert compaction_alert.load(alarm.ship.runtime, 'worker')['key'] == key
+
+
+def test_older_manual_alert_starts_escalation_clock_at_next_observation(alarm, monkeypatch):
+    import json
+    key = dict(generation='generationg', source={}, reading='ready for manual fresh')
+    monkeypatch.setattr(compaction_alert, 'observation', lambda seat: (key, dict(protocol_requests=[])))
+    compaction_alert.step(alarm.actor, alarm.seat)
+    path = compaction_alert.path(alarm.ship.runtime, 'worker')
+    old = json.loads(path.read_text())
+    del old['first_at']
+    del old['taken']
+    path.write_text(json.dumps(old))
+    alarm.when += timedelta(days=1)
+    compaction_alert.step(alarm.actor, alarm.seat)
+    assert [message.to for message in alarm.actor.store.all()] == ['systems']
+    assert compaction_alert.load(alarm.ship.runtime, 'worker')['first_at'] == alarm.when.isoformat()
+    alarm.when += timedelta(minutes=10)
+    compaction_alert.step(alarm.actor, alarm.seat)
+    assert {message.to for message in alarm.actor.store.all()} == {'systems', 'desk'}
+
+
+def test_selection_alarm_keeps_same_clock_and_clears_on_resolution(alarm):
+    from quarterdeck.seat import SelectionError
+    alarm.ship.seat = lambda name: alarm.ship.seats[name]
+    alarm.ship.session_of = lambda spec: alarm.seat.session
+    alarm.actor.log = lambda *args, **kwargs: None
+    error = SelectionError('worker', 'synthetic selection unavailable')
+    alarm.actor.hold_selection(error)
+    assert [message.to for message in alarm.actor.store.all()] == ['systems']
+    alarm.when += timedelta(minutes=10)
+    alarm.actor.hold_selection(error)
+    assert {message.to for message in alarm.actor.store.all()} == {'systems', 'desk'}
+    alarms.notify(alarm.actor, 'worker', False, None, None, channel='selection')
+    assert alarms.load(alarm.ship.runtime, 'worker', 'selection')['key'] is None

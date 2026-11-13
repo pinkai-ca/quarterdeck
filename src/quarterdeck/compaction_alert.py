@@ -4,7 +4,6 @@ The existing compaction pass calls this once. Fixed report intents survive servi
 restart independently of the compaction generation that the controller may retire.
 """
 
-from contextlib import ExitStack
 import json
 
 from . import compaction, durable, post
@@ -48,7 +47,8 @@ def load(runtime, name):
         if not isinstance(intent, str):
             raise ShipError('manual fresh alert intent invalid; reports held')
         message = compaction.decode(intent)
-        if message.kind != 'report' or message.sender != post.SHIP or message.to == name:
+        if (message.kind != 'report' or message.sender != post.SHIP
+                or message.to == name and not data.get('human')):
             raise ShipError('manual fresh alert recipient invalid; reports held')
     return data
 
@@ -114,45 +114,18 @@ def publish(runtime, intent):
 
 
 def step(service, seat):
-    runtime = seat.ship.runtime
-    prior = load(runtime, seat.name)
-    recipients = service.systems_recipients(seat)
-    names = {seat.name, *recipients, *(compaction.decode(intent).to for intent in prior['reports'])}
-    with ExitStack() as held:
-        for name in sorted(names):
-            held.enter_context(post.admission(runtime, name))
-        # Only this service writes the alert journal. Publish already committed
-        # intents even if the reading cleared before a crash could publish them.
-        for intent in prior['reports']:
-            publish(runtime, intent)
-        key, data = observation(seat)
-        if key is UNKNOWN:
-            return
-        if key != prior['key']:
-            body = None
-            if key is not None:
-                open_handoffs = ', '.join(handoffs(service.store, seat.name, data)) or 'none open'
-                body = (f'Observed {seat.name}: idle in its record; {key["reading"]}. '
-                        f'Open compaction handoff(s) at observation: {open_handoffs}. '
-                        'Notification only; execution may remain unknown. The outside controller '
-                        'must choose the idle break under the ship\'s orders.')
-            prior = dict(version=1, key=key, body=body, reports=[])
-        if key is not None:
-            told = {compaction.decode(intent).to for intent in prior['reports']}
-            planned = {compaction.decode(intent).short for intent in prior['reports']}
-            for name in recipients:
-                if name not in told:
-                    while True:
-                        message = service.store.prepare('report', post.SHIP, name, prior['body'])
-                        if message.short not in planned:
-                            break
-                    planned.add(message.short)
-                    prior['reports'].append(message.to_json())
-        if prior['key'] is None and not path(runtime, seat.name).exists():
-            return
-        save(runtime, seat.name, prior)  # fixed names and bytes precede every publication
-        for intent in prior['reports']:
-            publish(runtime, intent)
+    from . import alarms
+    key, data = observation(seat)
+    if key is UNKNOWN:
+        key = alarms.UNKNOWN
+
+    def body():
+        open_handoffs = ', '.join(handoffs(service.store, seat.name, data)) or 'none open'
+        return (f'Observed {seat.name}: idle in its record; {key["reading"]}. '
+                f'Open compaction handoff(s) at observation: {open_handoffs}. '
+                'Notification only; execution may remain unknown. The outside controller '
+                "must choose the idle break under the ship's orders.")
+    alarms.notify(service, seat.name, seat.session.human, key, body, channel='manual-fresh')
 
 
 def unrouted(ship, selected):

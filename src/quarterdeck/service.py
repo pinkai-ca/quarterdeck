@@ -44,8 +44,8 @@ ACCOUNT_RETRY = 60.0  # unchanged transient source failures, never provider paci
 
 # Door alarms only a person can clear: a sign-in (every adapter names that dialog "login"),
 # or a delivery whose paste or submit outcome is uncertain (the pending journal's own reasons).
-# These go to the desk as well as the systems seat; every other alarm goes to the systems
-# seat alone while one is up. With no systems seat up, every alarm goes to the desk.
+# This reason category does not determine routing: crew alarms go to systems
+# first, with the desk's escalation owned by the durable alarm reading.
 PERSON_ONLY = (
     "login",
     "paste/submit outcome uncertain",
@@ -73,7 +73,6 @@ class Service:
         self.log_path = self.runtime / "log" / "service.jsonl"
         self.withheld: dict[tuple[str, str], str] = {}  # (message, seat) -> the screen it was withheld on
         self.told: dict[str, str | None] = {}  # seat -> the obstruction the desk was last told of
-        self.alarmed: dict[str, tuple[str, set[str]]] = {}  # seat -> its obstruction and who has been told of it
         self.wake_errors: set[tuple[str, str]] = set()  # safe seat/reason log deduplication only
         self.status_framework = presentation.framework_stamp()
         self.brief_stamp = self._brief_stamp()
@@ -182,14 +181,14 @@ class Service:
         return Seat(self.ship, self.ship.seat(name), self.tmux)
 
     def hold_selection(self, error: SelectionError) -> None:
+        from . import alarms
         reason = str(error)
-        if self.told.get(error.seat) == reason:
-            return
-        self.told[error.seat] = reason
-        self.log('held', seat=error.seat, error=reason)
-        for desk in self.ship.seats.values():
-            if desk.role == 'desk':
-                self.store.new('report', 'ship', desk.name, f'{reason}; seat held, restore its declared selection')
+        if self.told.get(error.seat) != reason:
+            self.told[error.seat] = reason
+            self.log('held', seat=error.seat, error=reason)
+        spec = self.ship.seat(error.seat)
+        alarms.notify(self, error.seat, self.ship.session_of(spec).human, reason,
+                      f'{reason}; seat held, restore its declared selection', channel='selection')
 
     def resolved_seats(self) -> list[Seat]:
         found = []
@@ -197,6 +196,9 @@ class Service:
             if isinstance(seat, UnresolvedSeat):
                 self.hold_selection(seat.error)
             else:
+                from . import alarms
+                if alarms.path(self.runtime, seat.name, 'selection').exists():
+                    alarms.notify(self, seat.name, seat.session.human, None, None, channel='selection')
                 found.append(seat)
         return found
 
@@ -281,9 +283,7 @@ class Service:
                     self.human_wake_error(seat, 'alarm', error)
                 continue
             pending = [m for m in self.attempts.undelivered(self.store, seat.name, results=results) if self._due(m, seat)]
-            if pending:
-                if not seat.is_up:
-                    continue
+            if pending and seat.is_up:
                 self.deliver(seat, pending)
             self.needs_human(seat)
 
@@ -336,17 +336,13 @@ class Service:
         return screen is None or screen.text != last  # law: events-not-clocks
 
     def needs_human(self, seat: Seat) -> None:
-        """When a seat's door needs a human, each of the alarm's recipients is told once, with a report from ``ship``.
-
-        Once is per addressee and per reason: a repeated reading tells no one again, a changed
-        reason tells again, and a recipient added while the reason stands is told it then.
-        """
+        """Observe the standing alarm; the shared owner routes it once per reading."""
         _, reason = Door(seat).human_obstruction()
         from .auth_failure import status as authentication_status, waiting as authentication_waiting
         authentication = authentication_status(seat)
         # A pending renewal stays visible in status; call a person only after its bounded retries.
         reason = None if authentication_waiting(authentication) else authentication or reason
-        from . import unconfirmed_alert
+        from . import alarms, unconfirmed_alert
         if not reason:
             detached = pending_delivery.detached(seat)
             unconfirmed_alert.step(self, seat, detached)
@@ -359,30 +355,14 @@ class Service:
             reason = reason or (wake if human_wake.action_required(seat, wake) else None)
         if reason != self.told.get(seat.name):
             self.told[seat.name] = reason
-        if not reason or reason.startswith(unconfirmed_alert.PREFIX):
-            self.alarmed.pop(seat.name, None)
-            return
-        told = self.alarmed.get(seat.name)
-        if told is None or told[0] != reason:
-            told = self.alarmed[seat.name] = (reason, set())
-        for name in self.alarm_recipients(seat, reason):
-            if name not in told[1]:
-                told[1].add(name)
-                self.store.new("report", "ship", name, f"{seat.name} obstructed, {reason}")
+        door_reason = reason if reason and not reason.startswith(unconfirmed_alert.PREFIX) else None
+        alarms.notify(self, seat.name, seat.session.human, door_reason,
+                      f'{seat.name} obstructed, {door_reason}' if door_reason else None)
 
     def alarm_recipients(self, seat: Seat, reason: str) -> list[str]:
-        """The systems seats that are up, and the desk too for what only a person can clear.
-
-        The obstructed seat is never its own recipient: its door is the one that cannot take the report.
-        """
-        desks = [spec.name for spec in self.ship.seats.values() if spec.role == "desk" and spec.name != seat.name]
-        systems = [spec.name for spec in self.ship.seats.values()
-                   if spec.role == "systems" and spec.name != seat.name and self._up(spec.name)]
-        if not systems:
-            return desks
-        from .turn_failure import KINDS
-        mine = seat.session.human and reason.startswith(KINDS)  # the desk keeps the human's own seats
-        return (systems + [name for name in desks if name not in systems]) if person_only(reason) or mine else systems
+        """Immediate recipients; a standing untaken alarm may reach the desk later."""
+        from . import alarms
+        return alarms.recipients(self, seat.name, seat.session.human)
 
     def systems_recipients(self, seat: Seat) -> list[str]:
         """Every up systems seat, excluding the subject of its own alarm."""

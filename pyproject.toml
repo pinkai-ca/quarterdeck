@@ -40,6 +40,7 @@ where = ["src"]
     "standing-orders/roles/desk.md",
     "standing-orders/roles/engineering.md",
     "standing-orders/roles/hand.md",
+    "standing-orders/roles/systems.md",
     "standing-orders/roles/worker.md",
 ]
 "share/quarterdeck/ships/drydock" = ["ships/drydock/orders.md", "ships/drydock/ship.toml"]
