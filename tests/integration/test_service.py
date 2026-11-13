@@ -60,7 +60,11 @@ def test_up_starts_the_service_and_the_service_delivers(ship: shipmod.Ship, tmux
     captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
     wait_for(lambda: captain.record() and captain.harness.turns(captain.record()))
     assert "⎿ counted" in tmux.capture(captain.pane().id, history=100)
-    inbox = wait_for(lambda: (ship.runtime / "post" / "inbox" / "captain.md").exists() and (ship.runtime / "post" / "inbox" / "captain.md").read_text())
+    inbox_path = ship.runtime / "post" / "inbox" / "captain.md"
+    def rendered_order():
+        text = inbox_path.read_text() if inbox_path.exists() else ""
+        return text if f"order {message.short} from operator" in text else None
+    inbox = wait_for(rendered_order)
     assert f"order {message.short} from operator" in inbox and "## Open (1)" in inbox
     # the addressee's report closes it, and the inbox follows
     qd(capsys, "post", "report", "--from", "captain", "--re", message.short, "counted: many")

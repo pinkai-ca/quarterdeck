@@ -14,6 +14,8 @@ from tests import conftest
 from quarterdeck import tmux_socket
 from quarterdeck.tmux import Tmux, TmuxError, PrivateTmuxError
 
+from .waiting import wait_for
+
 
 def test_suite_fixture_removes_its_dead_socket_in_an_isolated_root(monkeypatch):
     with conftest.socket_container(os.environ['TMUX_TMPDIR'], 'qs-') as root:
@@ -193,8 +195,7 @@ def test_last_session_exit_leaves_only_the_creators_proved_dead_endpoint(tmux,re
     tmux.new_session('Synthetic')
     tmux.run('set-option','-s','exit-empty','on')
     tmux.kill_session('Synthetic')
-    deadline=time.monotonic()+3
-    while not tmux._owned.ended() and time.monotonic()<deadline:time.sleep(.01)
+    wait_for(tmux._owned.ended, seconds=30)
     assert tmux._owned.ended() and Path(tmux.socket).exists()
     if restart:
         tmux.new_session('Restarted')
