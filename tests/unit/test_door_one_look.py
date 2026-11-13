@@ -83,3 +83,53 @@ def test_the_service_answers_a_submit_request_through_the_same_path(setup, monke
     unconfirmed(svc, seat, monkeypatch)
     live["box"] = ""
     assert svc.answer({"kind": "submit", "seat": "worker"}) == "refused: worker's box is empty"
+
+
+
+def traced_opens(patch, folder):
+    """Every open of a file under the folder, by name, through the ways the code reads a file."""
+    from pathlib import Path
+    opened = []
+    for method in ("open", "read_text", "read_bytes"):
+        def traced(self, *args, _original=getattr(Path, method), **kwargs):
+            if folder in self.parents:
+                opened.append(self.name)
+            return _original(self, *args, **kwargs)
+        patch.setattr(Path, method, traced)
+    return opened
+
+
+def test_a_pass_with_nothing_unconfirmed_opens_no_journal_and_finds_the_one_that_is(setup, monkeypatch):
+    """The look's candidates come from the attempts the pass already holds: settled history is never opened."""
+    import json
+    svc, seat, live, record = setup
+    message, proof = send(svc, seat)
+    svc.attempts.close(next(a for a in svc.attempts.all() if a.message == message.id), "delivered", "synthetic")
+    proof.finish("delivered")
+    folder, template = proof.path.parent, proof.data
+    attempt = json.loads((svc.attempts.dir / proof.path.name).read_text())
+    for n in range(400):  # many settled deliveries: delivered journals and delivered attempts
+        name = f"ord-20261101-0000-desk-{n:04x}-1.json"
+        (folder / name).write_text(json.dumps({**template, "attempts": [name]}))
+        (svc.attempts.dir / name).write_text(json.dumps({**attempt, "message": name[:-7], "result": "delivered"}))
+    later = post.now() + timedelta(seconds=pending.WAIT_SECONDS + 5)
+
+    svc.reconcile()  # the pass loads the attempts once, in its own reconcile
+    with monkeypatch.context() as patch:
+        opened = traced_opens(patch, folder)
+        patch.setattr(svc.attempts, "all", lambda: pytest.fail("the look loads no attempts of its own"))
+        patch.setattr(post, "now", lambda: later)
+        svc.looks()
+    assert opened == [], "a pass with nothing unconfirmed opens no journal"
+    assert live["pasted"] == 1 and live["submitted"] == 1
+
+    live["box"] = ""
+    second, unsettled = send(svc, seat, body="a second synthetic payload")  # one the door will not confirm
+    svc.reconcile()
+    later = post.now() + timedelta(seconds=pending.WAIT_SECONDS + 5)
+    with monkeypatch.context() as patch:
+        opened = traced_opens(patch, folder)
+        patch.setattr(post, "now", lambda: later)
+        svc.looks()
+    assert set(opened) == {unsettled.path.name}, "only the journal its unconfirmed attempt names"
+    assert looks(unsettled)["outcome"] == "submitted" and live["submitted"] == 3

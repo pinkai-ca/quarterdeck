@@ -537,11 +537,44 @@ def detached(seat: Seat) -> list[str]:
 # the door never types that message again by itself.
 
 RETYPED = "retyped by the door's one look"
+# The latest results of a delivery the door could not confirm: unfinished, typed and waiting for the record,
+# blind, or queued and not yet read. Every other result is settled, and its journal is never opened by the look.
+UNCONFIRMED = (None, "pending", "typed", "blind", "queued")
 
 
-def _message_of(service: Service, proof: Proof) -> post.Message | None:
-    attempts = {a.path.name: a for a in service.attempts.all()}
-    ids = {attempts[n].message for n in proof.data["attempts"] if n in attempts}
+def candidates(attempts: Sequence[post.Attempt]) -> dict[str, list[post.Attempt]]:
+    """Per seat, the attempts whose message's latest result there is one the door could not confirm.
+
+    Read from the attempts the pass already holds, in memory: a pass with nothing to look at opens nothing."""
+    latest: dict[tuple[str, str], post.Attempt] = {}
+    for attempt in attempts:  # oldest first: the latest attempt is the one that speaks
+        latest[(attempt.seat, attempt.message)] = attempt
+    found: dict[str, list[post.Attempt]] = {}
+    for attempt in latest.values():
+        if attempt.result in UNCONFIRMED:
+            found.setdefault(attempt.seat, []).append(attempt)
+    return found
+
+
+def _named(seat: Seat, names: Sequence[str], known: dict[str, post.Attempt]) -> list[Proof]:
+    """The journals these attempts name, and only those; one that is missing or unreadable is left to reconcile."""
+    found = []
+    for name in dict.fromkeys(names):
+        path = seat.ship.runtime / "post" / "pending" / seat.name / name
+        try:
+            data = json.loads(path.read_text())
+            validate(data, seat.name)
+        except FileNotFoundError:
+            continue  # an attempt with no journal: a watch's, or the door's before journals
+        except (OSError, ValueError, TypeError, KeyError):
+            continue  # reconcile and the status line already name an unreadable journal; the look holds it
+        if all(n in known for n in data["attempts"]):
+            found.append(Proof(path, data))
+    return found
+
+
+def _message_of(service: Service, proof: Proof, known: dict[str, post.Attempt]) -> post.Message | None:
+    ids = {known[n].message for n in proof.data["attempts"] if n in known}
     if len(ids) != 1:
         return None  # a batch, or an attempt receipt missing: never settled by the look
     try:
@@ -560,39 +593,46 @@ def _in_record(seat: Seat, message: post.Message, since: str) -> str | None:
         return "unreadable"
 
 
-def _looked_before(seat: Seat, message: post.Message) -> bool:
-    """A message the look already typed once more is never typed again by itself."""
-    found, _ = journals(seat)
-    return any(p.data.get("look", {}).get("outcome") in ("retyped", "second delivery")
-               and any(n.startswith(message.id + "-") for n in p.data["attempts"]) for p in found)
+def _looked_before(seat: Seat, message: post.Message, attempts: Sequence[post.Attempt],
+                   known: dict[str, post.Attempt]) -> bool:
+    """A message the look already typed once more is never typed again by itself.
+
+    Only the journals this message's own attempts at this seat name are opened."""
+    names = [a.path.name for a in attempts if a.seat == seat.name and a.message == message.id]
+    if any(known[n].detail == RETYPED for n in names):
+        return True
+    return any(p.data.get("look", {}).get("outcome") in ("retyped", "second delivery") for p in _named(seat, names, known))
 
 
-def one_look(service: Service, seat: Seat) -> list[str]:
+def one_look(service: Service, seat: Seat, attempts: Sequence[post.Attempt] | None = None) -> list[str]:
+    """Look once at the seat's deliveries the door could not confirm, from the attempts the pass holds."""
     from . import idle
     from .door import Door
+    if attempts is None:
+        attempts = service.attempts.all()
+    mine = candidates(attempts).get(seat.name)
+    if not mine:
+        return []  # nothing unconfirmed: no journal opened, no screen read
     if seat.session.human or not seat.is_up:
         return []  # a human's session takes only its waking line
-    try:
-        proofs = active(seat)
-    except (RecordError, OSError, ValueError, KeyError):
-        return []
+    known = {a.path.name: a for a in attempts}
     done = []
-    for proof in proofs:
+    for proof in _named(seat, [a.path.name for a in mine], known):
         data = proof.data
-        if ("look" in data or not proof.same_launch(seat) or data.get("recovery") or "receipt_refresh" in data
-                or data.get("paste_clear")):
+        if (data["phase"] in TERMINAL or "look" in data or not proof.same_launch(seat) or data.get("recovery")
+                or "receipt_refresh" in data or data.get("paste_clear")):
             continue
         door = Door(seat)
         screen = door.screen()
         reading = proof.reading(seat, screen)
         if reading is None or reading[1] != "needs a human":
             continue  # still within its ordinary wait: the look is only for what the door cannot confirm
-        message = _message_of(service, proof)
+        message = _message_of(service, proof, known)
         if message is None:
             proof.save(look=dict(at=post.now().isoformat(), outcome="held", saw="not one message"))
             continue
         at = post.now().isoformat()
-        if _looked_before(seat, message):
+        if _looked_before(seat, message, attempts, known):
             proof.save(look=dict(at=at, outcome="held", saw="typed once more already; never again by itself"))
             continue
         seen = _in_record(seat, message, data["since"])
@@ -600,8 +640,7 @@ def one_look(service: Service, seat: Seat) -> list[str]:
             proof.save(look=dict(at=at, outcome="delivered", saw="the record shows it"))
             proof.finish("delivered")
             for name in data["attempts"]:
-                attempt = next(a for a in service.attempts.all() if a.path.name == name)
-                service.attempts.close(attempt, "delivered", "the record shows it at the door's one look")
+                service.attempts.close(known[name], "delivered", "the record shows it at the door's one look")
             done.append(f"{message.short} to {seat.name}: delivered (the record shows it)")
             continue
         clear = screen is not None and not screen.unknown and not screen.interruption and not screen.starting
@@ -617,12 +656,15 @@ def one_look(service: Service, seat: Seat) -> list[str]:
             proof.save(look=dict(at=at, outcome="retyped", saw="an empty box, an idle seat, not in the record"),
                        phase="cancelled", resolution=RETYPED)
             for name in data["attempts"]:
-                attempt = next(a for a in service.attempts.all() if a.path.name == name)
-                service.attempts.close(attempt, "blind", RETYPED)
+                service.attempts.close(known[name], "blind", RETYPED)
             proof_line = service.deliver(seat, [message], resend=True)
-            for later in journals(seat)[0]:
-                if (later.path != proof.path and "look" not in later.data
-                        and any(n.startswith(message.id + "-") for n in later.data["attempts"])):
+            # The second delivery's journal is named by its new attempt: only this message's journals are listed.
+            folder = seat.ship.runtime / "post" / "pending" / seat.name
+            for path in sorted(folder.glob(f"{message.id}-*.json")):
+                if path == proof.path:
+                    continue
+                later = Proof(path, json.loads(path.read_text()))
+                if "look" not in later.data:
                     later.save(look=dict(at=at, outcome="second delivery", of=proof.path.name))
             done.append(f"{message.short} to {seat.name}: typed once more ({proof_line})")
             continue
@@ -650,7 +692,8 @@ def submit(service: Service, seat: Seat) -> str:
         shown = screen.box if len(screen.box) <= 80 else screen.box[:77] + "..."
         return f"refused: {seat.name}'s box shows {shown!r}, not exactly a pending message of {seat.name}"
     proof = matching[0]
-    message = _message_of(service, proof)
+    known = {a.path.name: a for a in service.attempts.all()}  # one load, on a request, never a pass
+    message = _message_of(service, proof, known)
     proof.save(phase="submitted", shown=screen.box,
                look=dict(at=post.now().isoformat(), outcome="submitted", saw="qd submit"))
     door.submit(pane.id)
@@ -659,7 +702,7 @@ def submit(service: Service, seat: Seat) -> str:
     proof.finish(delivery.result)
     if delivery.result in ("delivered", "queued"):
         for name in proof.data["attempts"]:
-            attempt = next(a for a in service.attempts.all() if a.path.name == name)
-            service.attempts.close(attempt, delivery.result, "submitted from the box by qd submit")
+            if name in known:
+                service.attempts.close(known[name], delivery.result, "submitted from the box by qd submit")
     label = message.short if message else "its pending message"
     return f"{label} to {seat.name}: submitted from the box · {delivery}"

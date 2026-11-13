@@ -111,6 +111,7 @@ class Service:
         self.working: dict[str, bool] = {}  # seat -> whether its record last showed a turn open
         self.work_marks: dict[str, tuple] = {}  # seat -> (record, fingerprint) its working state was read at
         self.blind_checked = -BLIND_INTERVAL  # when the blind attempts were last read against the records
+        self.loaded_attempts: list | None = None  # the attempts reconcile loaded this pass; the look reads these
         self.next_status = 0.0
         self.status_checked: float | None = None
         from .structure_outcome import Passes
@@ -259,6 +260,7 @@ class Service:
         if retry_blind:
             self.blind_checked = time.monotonic()
         records = self.attempts.all()
+        self.loaded_attempts = records
         latest = self.attempts.latest(attempts=records)
         queued = {message for message, result in latest.items() if result == 'queued'}
         blind = {message for message, result in latest.items() if result == 'blind'}
@@ -975,10 +977,19 @@ class Service:
         self.log("pane-dead", seat=seat.name, pane=pane.id, pid=pane.pid, died=died, status=pane.exit_status)
 
     def looks(self) -> None:
-        """The door's one look at what it could not confirm (law: one-door): record first, then the screen."""
+        """The door's one look at what it could not confirm (law: one-door): record first, then the screen.
+
+        Its candidates come from the attempts reconcile already loaded this pass: a pass with nothing
+        unconfirmed resolves no seat and opens no journal."""
+        records = self.loaded_attempts if self.loaded_attempts is not None else self.attempts.all()
+        waiting = pending_delivery.candidates(records)
+        if not waiting:
+            return
         for seat in self.resolved_seats():
+            if seat.name not in waiting:
+                continue
             try:
-                for line in pending_delivery.one_look(self, seat):
+                for line in pending_delivery.one_look(self, seat, records):
                     self.log("look", seat=seat.name, proof=line)
             except (ShipError, OSError, TmuxError) as error:
                 self.log("error", step="looks", seat=seat.name, error=str(error))
