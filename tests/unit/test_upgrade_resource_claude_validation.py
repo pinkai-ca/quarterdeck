@@ -30,7 +30,9 @@ TARGET = 'c' * 40
 PRIOR = 'd' * 40
 UNRESOLVED = 'e' * 40
 SENTINEL = 'PRIVATE-SENTINEL-test'
-DECLARED_ROOTS = ('standing-orders', 'ships/drydock', 'ships/forum', 'ships/cascade')
+DECLARED_ROOTS = ('standing-orders', 'ships/drydock', 'ships/default', 'ships/forum', 'ships/cascade')
+HISTORICAL_ROOTS = ('standing-orders', 'ships/drydock', 'ships/forum', 'ships/cascade')
+DEFAULT_TEMPLATES = ['ships/default/orders.md', 'ships/default/ship.toml']
 
 LEGACY_INSTALLER = '''
 import shutil
@@ -110,7 +112,8 @@ def test_claude_declaration_lists_exactly_the_tracked_framework_templates():
     for target, names in declaration.items():
         for name in names:
             assert target == destination(name)
-            assert not name.startswith(('ships/default/', 'runtime/')) and '/runtime/' not in name
+            assert not name.startswith('runtime/') and '/runtime/' not in name
+    assert sorted(name for name in declared if name.startswith('ships/default/')) == DEFAULT_TEMPLATES
     assert resources.plan(ROOT) == tuple(sorted(Path(name) for name in declared))
 
 
@@ -179,9 +182,9 @@ def test_claude_real_historical_installers_are_read_as_supported(tmp_path, revis
     """The first copy loop and the single-template skip; the predecessor and the tuple skip are ordinary's."""
     source = tmp_path / 'historical'
     source.mkdir()
-    tracked = subprocess.run(['git', '-C', str(ROOT), 'ls-tree', '-r', '--name-only', revision, '--', *DECLARED_ROOTS],
+    tracked = subprocess.run(['git', '-C', str(ROOT), 'ls-tree', '-r', '--name-only', revision, '--', *HISTORICAL_ROOTS],
                              capture_output=True, check=True, text=True).stdout.split()
-    listed = [root for root in DECLARED_ROOTS if any(name.startswith(root + '/') for name in tracked)]
+    listed = [root for root in HISTORICAL_ROOTS if any(name.startswith(root + '/') for name in tracked)]
     assert listed[:2] == ['standing-orders', 'ships/drydock']
     done = subprocess.run(['git', '-C', str(ROOT), 'archive', revision, 'pyproject.toml', 'src', *listed],
                           capture_output=True, check=True)
