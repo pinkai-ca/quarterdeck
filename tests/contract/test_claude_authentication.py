@@ -18,7 +18,8 @@ def test_measured_error_ends_as_authentication_failure_not_idle_success(tmp_path
     assert state.failure.model_output is None  # no inference about earlier output in the failed turn
 
 
-@pytest.mark.parametrize('change', ['code', 'flag', 'flag-int', 'role', 'stop', 'block', 'sidechain'])
+@pytest.mark.parametrize('change', ['code', 'flag', 'flag-int', 'role', 'stop', 'block', 'sidechain',
+                                  'sidechain-missing', 'sidechain-int'])
 def test_other_envelopes_do_not_gain_auth_classification(tmp_path, change):
     entries = rows()
     row = entries[1]
@@ -34,6 +35,10 @@ def test_other_envelopes_do_not_gain_auth_classification(tmp_path, change):
         row['message']['stop_reason'] = 'synthetic-other-stop'
     elif change == 'block':
         row['message']['content'] = [dict(type='thinking', thinking='Synthetic thought.')]
+    elif change == 'sidechain-missing':
+        row.pop('isSidechain')
+    elif change == 'sidechain-int':
+        row['isSidechain'] = 0
     else:
         row['isSidechain'] = True
     assert claude.state(write_record(tmp_path / 'synthetic.jsonl', entries)).failure is None

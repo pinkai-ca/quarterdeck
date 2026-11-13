@@ -391,6 +391,7 @@ class _Reader(JsonLinesReader):
         # Classify the native code, never login words quoted in a user's text.
         content = message.get('content')
         if (entry.get('isApiErrorMessage') is True and entry.get('error') == 'authentication_failed'
+                and entry.get('isSidechain') is False
                 and message.get('role') == 'assistant' and message.get('stop_reason') == 'stop_sequence'
                 and isinstance(content, list) and content
                 and all(isinstance(b, dict) and b.get('type') == 'text' and isinstance(b.get('text'), str)

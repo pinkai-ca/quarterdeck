@@ -609,6 +609,8 @@ If a subsequent recorded authentication failure is later than the consumed attem
 
 Status facts add `sign_in_failures`, retaining each affected seat's fixed operational reading even when the status line compresses its other categories. This prevents a generic overflow count from hiding which program needs its sign-in repaired.
 
+The generic failure-kind value and status-facts list are additive. Existing native records and turn/accounting formats remain intact. A previous reader does not recognize the new kind in the service's operational failure cache; rolling back therefore also loses this sign-in-failure reading until upgraded again. No other adapter's authentication form is claimed measured by this change.
+
 Two readings, taken together, because they answer two different questions.
 
 **Activity**, from the record, answers "what is it doing":
