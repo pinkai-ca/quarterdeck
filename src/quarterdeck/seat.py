@@ -1049,6 +1049,8 @@ def bring_up(ship: Ship, tmux: Tmux) -> list[str]:
 def bring_down(ship: Ship, tmux: Tmux) -> list[str]:
     proofs = [seat.down() for seat in seats(ship, tmux)]
     for session in ship.sessions.values():
-        if tmux.has_session(session.title) and not tmux.panes(session.title):
+        if (tmux.has_session(session.title)
+                and tmux.session_environment(session.title, "QD_SHIP") == str(ship.folder)
+                and not tmux.panes(session.title)):
             tmux.kill_session(session.title)
     return proofs
