@@ -582,7 +582,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
             watch = post.watch_reading(ship.runtime, seat.name)
             reason = human_wake.status(seat)
             if reason:
-                if reason != human_wake.WAITING and seat.name not in needs_human:
+                if human_wake.action_required(seat, reason) and seat.name not in needs_human:
                     needs_human.append(seat.name)
                 pending_lines.append(f"{seat.name}: {reason}")
             if pending and watch.armed is False:

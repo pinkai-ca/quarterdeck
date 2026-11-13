@@ -291,7 +291,7 @@ class Service:
         if seat.session.human:
             from . import human_wake
             wake = human_wake.status(seat)
-            reason = reason or (wake if wake != human_wake.WAITING else None)
+            reason = reason or (wake if human_wake.action_required(seat, wake) else None)
         if reason != self.told.get(seat.name):
             self.told[seat.name] = reason
         if not reason:
@@ -310,7 +310,7 @@ class Service:
 
         The obstructed seat is never its own recipient: its door is the one that cannot take the report.
         """
-        desks = [spec.name for spec in self.ship.seats.values() if spec.role == "desk"]
+        desks = [spec.name for spec in self.ship.seats.values() if spec.role == "desk" and spec.name != seat.name]
         systems = [spec.name for spec in self.ship.seats.values()
                    if spec.role == "systems" and spec.name != seat.name and self._up(spec.name)]
         if not systems:

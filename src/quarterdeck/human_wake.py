@@ -6,6 +6,7 @@ an input receipt; the ordinary inbox watch still delivers the actual messages.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime
 
@@ -17,6 +18,7 @@ from .ship import ShipError
 LINE = ('qd > ship: messages are waiting for you. Run `qd inbox --wait` now and follow what it prints; '
         'if your program can keep a command running in the background, keep it running there.')
 WAITING = 'human wake confirmed; waiting for watch registration or ended turn'
+BOX = 'human wake box not empty; untouched'
 PHASES = {'prepared', 'pasting', 'submitting', 'submitted', 'queued', 'delivered', 'cancelled'}
 
 
@@ -46,16 +48,42 @@ def load(seat) -> pending.Proof | None:
 
 def episode(proof, watch) -> str | None:
     """Read-only episode state; only a receipt plus a later arm releases a wake."""
-    if proof is None or proof.data['phase'] == 'cancelled':
+    if proof is None or proof.data['phase'] in ('prepared', 'cancelled'):
         return None
+    if proof.data['phase'] == 'queued' or proof.data.get('screen_queue'):
+        return 'human wake queued; waiting for record consumption'
     if proof.data['phase'] != 'delivered':
         return 'human wake receipt uncertain; never resent; inspect human-wake.json'
     if watch.generation == proof.data['generation']:
         if watch.armed:
-            return 'human wake confirmed but watch rearm generation unproved; person must intervene'
+            return 'human wake confirmed; watch rearm generation unknown'
         return ('human wake confirmed but watch not armed; person must intervene'
                 if proof.data.get('ended') else WAITING)
     return None
+
+
+def changed_launch(seat, proof) -> bool:
+    """A new saved launch releases an episode; a missing/replaced pane alone does not."""
+    launch = seat.launched()
+    if launch is None:
+        return False
+    old = proof.data['identity']
+    return (launch.pane, launch.pid, launch.at) != (old['pane'], old['pid'], old['launch'])
+
+
+def release_launch(seat, proof) -> None:
+    raw = metadata(proof.path)
+    archive = seat.folder / 'human-wake-history' / (hashlib.sha256(raw.encode()).hexdigest() + '.json')
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        retained = metadata(archive)
+    except FileNotFoundError:
+        pass
+    else:
+        if retained != raw:
+            raise ValueError('wake history identity conflict')
+    durable.replace_file(archive, raw, encoding='utf-8')
+    proof.save(phase='cancelled', resolution='new launch released prior wake episode; original retained in human-wake-history')
 
 
 def record_stamp(seat) -> dict:
@@ -76,6 +104,17 @@ def status(seat) -> str | None:
         return watch.reason
     try:
         proof = load(seat)
+        if proof is not None and proof.data['phase'] != 'cancelled' and changed_launch(seat, proof):
+            try:
+                observed = json.loads(metadata(seat.folder / 'human-wake-status.json'))
+            except FileNotFoundError:
+                observed = None
+            if (observed and observed['identity'] == pending.identity(seat)
+                    and observed['source'] == record_stamp(seat)
+                    and isinstance(observed['reason'], str)
+                    and observed['reason'].startswith('human wake evidence unreadable')):
+                return observed['reason']
+            return 'human wake launch changed; awaiting service observation'
         if reason := episode(proof, watch):
             return reason
         waiting = post.Attempts(seat.ship.runtime).undelivered(post.Store(seat.ship.runtime), seat.name)
@@ -96,16 +135,28 @@ def status(seat) -> str | None:
 
 
 def observe(seat, reason, identity, source) -> None:
-    data = dict(format=1, identity=identity, source=source, reason=reason)
     path = seat.folder / 'human-wake-status.json'
-    text = json.dumps(data, sort_keys=True) + '\n'
     try:
         previous = metadata(path)
     except FileNotFoundError:
         previous = None
+    data = dict(format=1, identity=identity, source=source, reason=reason)
+    text = json.dumps(data, sort_keys=True) + '\n'
     if text != previous:
         path.parent.mkdir(parents=True, exist_ok=True)
         durable.replace_file(path, text)
+
+
+def action_required(seat, reason) -> bool:
+    """Only terminal intervention states generate immutable reports, never waits."""
+    if not reason:
+        return False
+    if reason.startswith(('human wake confirmed but watch not armed',
+                          'human wake receipt uncertain', 'human wake reservation unreadable',
+                          'human wake evidence unreadable', 'inbox watch generation unreadable',
+                          'inbox watch evidence unreadable', 'inbox watch retirement unconfirmed')):
+        return True
+    return False
 
 
 def prior_receipt(seat, record, since) -> str | None:
@@ -155,13 +206,20 @@ def eligible(seat, screen, proof=None) -> str | None:
             stamp = record_fingerprint(joined.record)
             state = seat.harness.state(joined.record)
             if record_fingerprint(joined.record) != stamp:
-                return 'human wake record changed during reading; no waking input'
+                return 'human wake held: record activity unknown (turn, tools, queue); record changed'
         except (OSError, ValueError, TypeError):
-            return 'human wake record unreadable'
-        if state.turn_open is True or state.queued or state.pending_tools:
+            return 'human wake held: record activity unknown (turn, tools, queue); record unreadable'
+        unknown = []
+        if type(state.turn_open) is not bool:
+            unknown.append('turn')
+        if not isinstance(state.pending_tools, tuple):
+            unknown.append('tools')
+        if not isinstance(state.queued, tuple) or state.queue_error is not None:
+            unknown.append('queue')
+        if unknown:
+            return 'human wake held: record activity unknown (' + ', '.join(unknown) + ')'
+        if state.turn_open is not False or state.pending_tools != () or state.queued != ():
             return 'human wake waiting for recorded work to end'
-        if state.queue_error:
-            return 'human wake record queue unknown'
         if state.failure:
             return 'human wake recorded turn error; person must intervene'
         if proof is not None:
@@ -171,7 +229,7 @@ def eligible(seat, screen, proof=None) -> str | None:
             or screen.starting):
         return 'human wake box unknown or obstructed; untouched'
     if screen.box != '':
-        return 'human wake box not empty; untouched'
+        return BOX
     if screen.working or screen.queued:
         return 'human wake waiting for screen work to end'
     return None
@@ -204,17 +262,28 @@ def _run(seat) -> str | None:
     from .door import Door
 
     watch = post.watch_reading(seat.ship.runtime, seat.name)
-    if watch.armed is None:
-        return watch.reason
     try:
         proof = load(seat)
     except (OSError, ValueError, KeyError, TypeError):
         return 'human wake reservation unreadable; never resent'
-    if proof is not None and proof.data['phase'] in ('pasting', 'submitting', 'submitted', 'queued'):
+    if proof is not None and proof.data['phase'] != 'cancelled' and changed_launch(seat, proof):
+        try:
+            release_launch(seat, proof)
+        except (OSError, ValueError, KeyError, TypeError):
+            return 'human wake evidence unreadable; old launch reservation retained'
+    if proof is not None and proof.data['phase'] == 'prepared':
+        try:
+            proof.save(phase='cancelled', resolution='prepared wake was provably unsent')
+        except OSError:
+            return 'human wake evidence unreadable; unsent cancellation not persisted'
+    if watch.armed is None:
+        return watch.reason
+    if proof is not None and not changed_launch(seat, proof) and proof.data['phase'] in ('pasting', 'submitting', 'submitted', 'queued'):
         # Receipt recovery uses the same pinned record and original time, even
         # after a service restart. No input is repeated to obtain a receipt.
-        if proof.confirmed(seat) == 'delivered':
-            proof.finish('delivered')
+        receipt = proof.confirmed(seat)
+        if receipt in ('delivered', 'queued'):
+            proof.finish(receipt)
     if proof is not None and proof.data['phase'] == 'delivered' and not proof.data.get('ended') and proof.same_launch(seat):
         record = seat.record()
         if record is not None and str(record) == proof.data['record']:
@@ -249,4 +318,8 @@ def _run(seat) -> str | None:
     # transitions cannot race this reservation. Door still verifies each input.
     delivered = door.deliver(LINE, proof=proof, human_wake=True)
     proof.finish(delivered.result)
+    if proof.data['phase'] == 'prepared':
+        proof.save(phase='cancelled', resolution='pre-paste wake outcome was provably unsent')
+    if proof.data['phase'] == 'cancelled':
+        return 'human wake unsent; waiting for fresh eligibility'
     return None if delivered.result == 'delivered' else f'human wake {delivered.result}; inspect retained reservation'

@@ -21,7 +21,7 @@ title = "Bridge"
 
 [sessions.office]
 title = "Office"
-human = true                     # the operator types here; the ship never does
+human = true                     # Into a session the human owns it types only when a message waits there, no watch is armed and the box is empty.
 
 [seats.desk]
 session = "office"

@@ -559,6 +559,19 @@ def watch_reading(runtime: Path, seat: str) -> WatchReading:
     except (OSError, ValueError, UnicodeError):
         return WatchReading(None, reason='inbox watch generation unreadable; no waking input')
     try:
+        retired = json.loads(metadata(path.parent / 'watch-retirement.json'))
+        if (retired.get('format') != 1 or not isinstance(retired.get('generation'), str)
+                or len(retired['generation']) != 32
+                or any(c not in '0123456789abcdef' for c in retired['generation'])
+                or retired.get('reason') != 'inbox watch retirement unconfirmed; inspect watch metadata'):
+            raise ValueError('invalid watch retirement evidence')
+        if generation is None or generation == retired['generation']:
+            return WatchReading(None, generation, retired['reason'])
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError, TypeError, AttributeError):
+        return WatchReading(None, generation, 'inbox watch retirement unconfirmed; evidence unreadable')
+    try:
         fields = metadata(path).split()
         if len(fields) != 2 or int(fields[0]) <= 0 or datetime.fromisoformat(fields[1]).tzinfo is None:
             raise ValueError('invalid watch evidence')
@@ -578,6 +591,21 @@ def watch_reading(runtime: Path, seat: str) -> WatchReading:
 
 def watch_armed(runtime: Path, seat: str) -> bool:
     return watch_reading(runtime, seat).armed is True
+
+
+def watch_retirement_warning(path: Path, generation: str) -> None:
+    """Retain an operational warning without replacing a wait result or primary error."""
+    reason = 'inbox watch retirement unconfirmed; inspect watch metadata'
+    try:
+        durable.replace_file(path.parent / 'watch-retirement.json',
+                             json.dumps(dict(format=1, generation=generation, reason=reason)) + '\n')
+    except Exception:
+        reason += '; operational warning could not be saved'
+    try:
+        import sys
+        print(reason, file=sys.stderr)
+    except Exception:
+        pass  # preserving the primary return/error takes precedence if stderr also fails
 
 
 def wait_batch(runtime: Path, seat: str, interval: float = 1.0, stop_after: float | None = None) -> tuple[list[Message], list[Attempt]] | None:
@@ -603,7 +631,11 @@ def wait_batch(runtime: Path, seat: str, interval: float = 1.0, stop_after: floa
                 return None
             time.sleep(interval)
     finally:
-        inbox_watch.retire(runtime, seat, registration)
+        try:
+            inbox_watch.retire(runtime, seat, registration)
+        except (OSError, ValueError, ShipError):
+            # Preserve the primary wait outcome and the canonical registration proof.
+            watch_retirement_warning(watch_file(runtime, seat), registration['generation'])
 
 
 def wait(runtime: Path, seat: str, interval: float = 1.0, stop_after: float | None = None) -> tuple[str, list[Attempt]] | None:
