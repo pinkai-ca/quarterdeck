@@ -116,6 +116,8 @@ def test_both_callers_retire_transport_and_finish_cleanup_after_exceptions(tmp_p
         return real_abandon(*args)
 
     monkeypatch.setattr(check, "probe", probe)
+    if caller == "check" and outcome == "success":  # the wake step's own seat lifetime is proved by its own gates
+        monkeypatch.setattr(check, "probe_wake", lambda seat, orders: [Check("human-session waking line", True, "stubbed")])
     monkeypatch.setattr(seatmod.Seat, "up", up)
     monkeypatch.setattr(seatmod.Seat, "down", down)
     monkeypatch.setattr(tmux, "kill_session_id", kill)
@@ -133,7 +135,8 @@ def test_both_callers_retire_transport_and_finish_cleanup_after_exceptions(tmp_p
             with pytest.raises(RuntimeError, match=outcome):
                 run()
         seat = state["seat"]
-        assert tmux.names == {"pre-existing": "$0"} and tmux.killed == ["$1"]
+        # A successful check also retires its second session: the wake step's human seat.
+        assert tmux.names == {"pre-existing": "$0"} and tmux.killed == (["$1", "$1"] if (caller, outcome) == ("check", "success") else ["$1"])
         assert seat.folder.exists() == (outcome in ("remove", "retire"))
         assert svc.store.is_open(state["foreign"]), "unrelated orders are never closed by teardown"
         assert svc.store.is_open(state["own"]) == (outcome == "report")

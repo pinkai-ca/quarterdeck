@@ -9,22 +9,37 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
+import quarterdeck
 from quarterdeck import cli, human_wake, post, seat as seatmod, service, ship as shipmod
 from quarterdeck.tmux import Tmux
 
 from .progress import service_progress
 from .waiting import wait_for
 
+ROOT = Path(__file__).resolve().parents[2]
+QD = Path(sys.executable).parent / 'qd'  # this checkout's own qd, never an installed copy on the PATH
+
 EXACT = ('qd > ship: messages are waiting for you. Run `qd inbox --wait` now and follow what it prints; '
          'if your program can keep a command running in the background, keep it running there.')
 
 
+def test_the_qd_these_gates_run_is_this_checkouts_own():
+    """Provenance: the qd beside this interpreter runs this interpreter, which imports this checkout."""
+    assert QD.is_file()
+    assert QD.read_text().splitlines()[0] == f'#!{sys.executable}'
+    assert Path(quarterdeck.__file__).resolve().is_relative_to(ROOT / 'src')
+    assert seatmod.qd_bin() == QD.parent, 'the seats run the same qd'
+
+
 @pytest.fixture
 def ship(drydock: Path, tmux: Tmux, monkeypatch) -> shipmod.Ship:
+    assert QD.is_file(), 'no installed-copy fallback'
+    monkeypatch.setenv('PATH', f"{QD.parent}{os.pathsep}{os.environ.get('PATH', '')}")
     text = (drydock / "ship.toml").read_text()
     text += ('\n[seats.captain.settings]\nstep_seconds = "0.05"\n\n[seats.desk.settings]\nstep_seconds = "0.05"\n'
              '\n[seats.worker-1.settings]\nstep_seconds = "0.05"\n')
@@ -80,13 +95,15 @@ def test_a_fresh_crew_order_by_hand_reaches_the_unwatched_desk_by_one_wake_and_c
     assert all(to_desk.body not in text for text in inputs(desk))
 
     # The desk's agent does what the line says: it runs the watch, which prints the waiting order.
-    done = subprocess.run(['qd', 'inbox', '--wait'], env=as_desk(), capture_output=True, text=True, timeout=60)
+    done = subprocess.run([str(QD), 'inbox', '--wait'], env=as_desk(), capture_output=True, text=True, timeout=60)
     assert done.returncode == 0, done.stderr
     assert to_desk.short in done.stdout and 'Synthetic: the change is ready' in done.stdout
     assert [a.result for a in post.Attempts(ship.runtime).for_message(to_desk.id)] == ['watch']
     qd(capsys, 'post', 'report', '--from', 'desk', '--re', to_desk.short, 'synthetic: received')
     assert post.Store(ship.runtime).closing_report(to_desk) is not None
 
+    marker = (post.watch_file(ship.runtime, 'desk').parent / 'watch-generation').read_text().strip()
+    assert len(marker) == 32, 'the checkout\'s own watch registered a generation'
     service_progress(ship)
     service_progress(ship)
     assert inputs(desk) == [EXACT], 'one wake for the episode, never repeated'
@@ -121,7 +138,7 @@ def test_an_armed_watch_delivers_and_nothing_is_typed(ship, tmux, capsys):
     qd(capsys, 'up', 'desk')
     desk = seatmod.Seat(ship, ship.seat('desk'), tmux)
     wait_for(lambda: box(desk, tmux) == '', seconds=30)
-    watch = subprocess.Popen(['qd', 'inbox', '--wait'], env=as_desk(), stdout=subprocess.PIPE,
+    watch = subprocess.Popen([str(QD), 'inbox', '--wait'], env=as_desk(), stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, text=True)
     try:
         wait_for(lambda: post.watch_armed(ship.runtime, 'desk'), seconds=30)

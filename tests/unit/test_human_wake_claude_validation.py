@@ -15,13 +15,13 @@ import subprocess
 import sys
 import threading
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import check as checkmod, cli, drill, human_wake, post, ship as shipmod
+from quarterdeck import check as checkmod, cli, drill, human_wake, input_receipt, post, ship as shipmod
 from quarterdeck.door import Door
 from quarterdeck.harness.synthetic_record import ClaudeShape
 from quarterdeck.harness.types import Join, Screen, State
@@ -137,11 +137,20 @@ def reservation(d) -> dict:
     return json.loads((d.seat.folder / 'human-wake.json').read_text())
 
 
+def received(d) -> bool:
+    """The reservation is delivered and the owned record holds the fixed line after its own time."""
+    data = reservation(d)
+    since = datetime.fromisoformat(data['since'])
+    return (data['phase'] == 'delivered' and data['record'] == str(d.record.path)
+            and input_receipt.confirmed(d.seat.harness, d.record.path, EXACT, since) == 'delivered')
+
+
 def confirmed_wake(d):
+    """Success is the reservation's phase and the record's receipt; run()'s return is no contract."""
     d.order()
-    assert human_wake.run(d.seat) is None
+    human_wake.run(d.seat)
     assert d.pastes() == [EXACT] and d.keys() == [('Enter',)]
-    assert reservation(d)['phase'] == 'delivered'
+    assert received(d)
 
 
 # -- the line and the one wake -----------------------------------------------------------------
@@ -154,11 +163,11 @@ def test_the_line_is_the_captains_exact_fixed_text_with_no_control_characters():
 
 def test_a_waiting_message_with_no_watch_and_an_empty_box_gets_one_fixed_line_confirmed_by_the_record(desk):
     message = desk.order()
-    assert human_wake.run(desk.seat) is None
+    human_wake.run(desk.seat)
     assert desk.pastes() == [EXACT], 'the fixed line only, never the waiting payload'
     assert desk.keys() == [('Enter',)], 'one submit, no clear, no Escape, no other key'
     data = reservation(desk)
-    assert data['phase'] == 'delivered' and data['payload'] == EXACT and data['seat'] == 'desk'
+    assert received(desk) and data['payload'] == EXACT and data['seat'] == 'desk'
     assert [a.result for a in post.Attempts(desk.runtime).for_message(message.id)] == [], \
         'the wake is no delivery of the waiting message; only the watch delivers it'
     assert message.id in [m.id for m in post.Attempts(desk.runtime).undelivered(desk.store, 'desk')]
@@ -170,7 +179,7 @@ def test_a_waiting_message_with_no_watch_and_an_empty_box_gets_one_fixed_line_co
 
 def test_no_waiting_message_means_no_input(desk):
     for _ in range(3):
-        assert human_wake.run(desk.seat) is None
+        human_wake.run(desk.seat)
     assert desk.tmux.typed() == []
     assert not (desk.seat.folder / 'human-wake.json').exists()
     assert human_wake.status(desk.seat) is None
@@ -395,6 +404,7 @@ def test_a_relaunch_after_a_confirmed_wake_releases_it_for_exactly_one_new_wake(
     for _ in range(3):
         human_wake.run(desk.seat)
     assert desk.pastes() == [EXACT, EXACT] and desk.keys() == [('Enter',), ('Enter',)]
+    assert received(desk), 'the new launch\'s wake has its own receipt'
     assert 'person must intervene' not in (human_wake.status(desk.seat) or '')
     history = list((desk.seat.folder / 'human-wake-history').iterdir())
     assert len(history) == 1 and json.loads(history[0].read_text())['phase'] == 'delivered', \
@@ -426,7 +436,7 @@ def test_a_crash_left_typing_phase_with_its_receipt_is_recovered_without_input(d
     data['phase'] = phase
     (desk.seat.folder / 'human-wake.json').write_text(json.dumps(data))
     human_wake.run(desk.seat)
-    assert reservation(desk)['phase'] == 'delivered'
+    assert received(desk)
     assert desk.pastes() == [EXACT] and desk.keys() == [('Enter',)]
 
 
@@ -448,7 +458,7 @@ def test_a_crash_left_prepared_reservation_is_provably_unsent_and_no_person_hold
     assert 'uncertain' not in (human_wake.status(desk.seat) or '')
     human_wake.run(desk.seat)
     assert desk.pastes() == [EXACT] and desk.keys() == [('Enter',)]
-    assert reservation(desk)['phase'] == 'delivered'
+    assert received(desk)
 
 
 def test_a_pre_paste_launch_change_cancels_without_keys_or_a_person_hold(desk, monkeypatch):
@@ -689,3 +699,62 @@ def test_the_wake_probe_passes_end_to_end_through_the_watch_and_the_answer(desk,
     checks = checkmod.probe_wake(desk.seat, [])
     assert [c.passed for c in checks] == [True, True, True, True], [str(c) for c in checks]
     assert desk.pastes() == [EXACT] and desk.keys() == [('Enter',)] and done
+
+
+@pytest.mark.parametrize('outcome', ['success', 'exception', 'obstructed'])
+def test_the_wake_steps_own_human_seat_retires_its_transport_and_cleans_up(tmp_path, monkeypatch, outcome):
+    """The real temporary_seat on the fake harness: the wake seat is human, owned while probed,
+    and retired, its session killed, its order closed and its home removed whatever happens,
+    with its reservation kept as evidence first."""
+    from quarterdeck import pending, seat as seatmod
+    from quarterdeck.harness.fake import FakeHarness
+    from tests.unit.test_check_lifetime import synthetic_ship
+    from tests.unit.test_temporary_seat import Sessions
+
+    ship, tmux = synthetic_ship(tmp_path), Sessions()
+    monkeypatch.setattr(FakeHarness, 'version', lambda self: 'synthetic')
+    monkeypatch.setattr(checkmod, 'probe', lambda checked, seat, orders: [drill.Check('normal contract', True)])
+    seen, downs = {}, []
+
+    def probe_wake(seat, orders):
+        assert seat.session.human and seat.name.startswith('check-wake-fake-') and seat.name not in ship.seats
+        with pending.transient_lock(ship.runtime, seat.name) as available:
+            assert not available, 'the check owns the wake seat while it probes'
+        order = post.Store(ship.runtime).new('order', 'ship', seat.name, 'Synthetic wake order')
+        orders.append(order)
+        (seat.folder / 'human-wake.json').write_text('{"synthetic": "wake reservation"}\n')
+        seen.update(seat=seat, order=order)
+        if outcome == 'exception':
+            raise RuntimeError('synthetic wake exception')
+        if outcome == 'obstructed':
+            raise shipmod.ShipError('synthetic wake obstruction')
+        return [drill.Check('human-session waking line: synthetic', True)]
+
+    def down(seat):
+        with pending.transient_lock(ship.runtime, seat.name) as available:
+            assert not available, 'ownership lasts through cleanup'
+        downs.append(seat.name)
+        return 'synthetic stop'
+    monkeypatch.setattr(checkmod, 'probe_wake', probe_wake)
+    monkeypatch.setattr(seatmod.Seat, 'down', down)
+    if outcome == 'exception':
+        with pytest.raises(RuntimeError, match='synthetic wake exception'):
+            checkmod.check(ship, 'fake', tmux)
+    else:
+        checks = checkmod.check(ship, 'fake', tmux)
+        wake = [c for c in checks if c.name.startswith('human-session waking line')]
+        proven = [c for c in checks if c.name.startswith('proven')]
+        if outcome == 'success':
+            assert wake and all(c.passed is True for c in wake) and len(proven) == 1
+        else:
+            assert [c.passed for c in wake] == [False] and 'synthetic wake obstruction' in wake[0].detail
+            assert proven == []
+    seat = seen['seat']
+    assert len(downs) == 2 and downs[1] == seat.name, 'the normal seat, then the wake seat, each stopped'
+    assert tmux.names == {'pre-existing': '$0'} and tmux.killed == ['$1', '$1'], 'both sessions retired'
+    assert not seat.folder.exists(), 'the wake seat home is removed'
+    with pending.transient_lock(ship.runtime, seat.name) as available:
+        assert available, 'ownership is released'
+    assert not post.Store(ship.runtime).is_open(seen['order']), 'its own order is closed by teardown'
+    kept = ship.runtime / 'check' / f'{seat.name}-human-wake.json'
+    assert kept.read_text() == '{"synthetic": "wake reservation"}\n', 'the reservation is kept before teardown'

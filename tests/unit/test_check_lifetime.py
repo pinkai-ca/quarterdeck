@@ -89,6 +89,8 @@ def test_service_leaves_live_check_to_owner_and_teardown_retires_only_uncertaint
         return "synthetic stop"
     monkeypatch.setattr(check, "probe", probe)
     monkeypatch.setattr(Seat, "down", down)
+    if outcome == "delivered":  # the wake step's own seat lifetime is proved by its own gates
+        monkeypatch.setattr(check, "probe_wake", lambda seat, orders: [Check("human-session waking line", True, "stubbed")])
     try:
         if outcome == "exception":
             with pytest.raises(RuntimeError, match="synthetic check exception"):
