@@ -399,6 +399,48 @@ class Attempts:
             self._write(replace(current, result=result, detail=detail))
             return True
 
+    def settle_closed_receipt(self, expected: list[Attempt], intent=None) -> str:
+        """Complete only a saved positive closed-record decision, never generic close.
+
+        The service holds seat admission first. All snapshots must still match,
+        or already be this decision's delivered write after an interrupted pass.
+        The intent callback publishes journal ownership before any attempt changes.
+        """
+        detail = 'exact payload found in saved closed record after framework refresh'
+        eligible = {None, 'pending', 'blind', 'queued', 'not-in-closed-record',
+                    'launch', 'uncertain', 'unsettled'}
+        if not expected or any(a.result not in eligible or a.path.parent != self.dir for a in expected):
+            return 'superseded'
+        with self._locked():
+            updates = []
+            for original in expected:
+                current = Attempt(**json.loads(original.path.read_text()), path=original.path)
+                target = replace(original, result='delivered', detail=detail)
+                if current != original and current != target:
+                    if (current.message, current.seat, current.at, current.pane, current.pid, current.launched_at) != (
+                            original.message, original.seat, original.at, original.pane, original.pid, original.launched_at):
+                        return 'superseded'
+                    if current.result in {'delivered', 'withheld', 'cancelled', 'abandoned',
+                                          'unacted', 'carried', 'launch', 'uncertain', 'unsettled'}:
+                        return 'superseded'
+                    return 'retry'  # still-unresolved progress made this snapshot stale
+                updates.append((current, target))
+            owned = {old.path for old in expected}
+            for other in self.all():
+                if other.path not in owned and other.result in {'delivered', 'watch', 'abandoned', 'unacted'} and any(
+                        other.message == old.message and other.seat == old.seat
+                        and other.when >= old.when
+                        for old in expected):
+                    return 'superseded'  # another attempt already settled the message
+                # A distinct "launch; not confirmed read" stays latest and unchanged;
+                # it does not forbid a true receipt for an older carried submission.
+            if intent is not None:
+                intent()
+            for current, target in updates:
+                if current != target:
+                    self._write(target)
+        return 'settled'
+
     def abandon(self, seat: str, detail: str) -> list[Attempt]:
         """Retire uncertainty, never a confirmed receipt; keep every historical file."""
         changed = []

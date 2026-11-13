@@ -184,6 +184,9 @@ def validate(data: Any, seat: str) -> None:
         raise ValueError("invalid pending journal")
     if "screen_queue" in data and type(data["screen_queue"]) is not bool:
         raise ValueError("invalid screen queue evidence")
+    if 'receipt_refresh' in data:
+        from .receipt_refresh import validate_intent
+        validate_intent(data)
     if 'paste_clear' in data:
         from .paste_refusal import validate_clear
         validate_clear(data['paste_clear'],identity)
@@ -319,6 +322,11 @@ def reconcile(service: Service) -> set[Path]:
                 paths.update(a.path for a in attempts.values() if a.seat == name)
                 service.log("error", step="reconcile", seat=name, error=inspection(seat, "pending attempt receipt missing; never resent", proof.data["attempts"]))
                 continue
+            from .receipt_refresh import recover, unfinished
+            if unfinished(proof.data):
+                paths.update(attempts[n].path for n in proof.data['attempts'])
+                recover(service, proof)
+                continue  # unfinished positive intents never enter transport/absence recovery
             phase = proof.data["phase"]
             carried = [attempts[n] for n in proof.data["attempts"]]
             if phase not in TERMINAL and all(any(a.message == old.message and a.seat == old.seat
@@ -360,7 +368,15 @@ def explicit_resend(service: Service, seat: Seat, messages: list[post.Message], 
         return
     requested = {m.id for m in messages}
     attempts = {a.path.name: a for a in service.attempts.all()}
-    for proof in active(seat):
+    proofs = active(seat, include_terminal=True)
+    for proof in proofs:
+        if ('receipt_refresh' in proof.data and proof.data['phase'] != 'delivered'
+                and proof.data['receipt_refresh'].get('outcome') != 'superseded'
+                and any(attempts[name].message in requested for name in proof.data['attempts'])):
+            raise RecordError('closed receipt refresh settlement pending; original input never resent')
+    for proof in proofs:
+        if proof.data['phase'] in TERMINAL:
+            continue
         carried = [attempts[name] for name in proof.data["attempts"]]
         if {a.message for a in carried} <= requested:
             proof.save(phase="cancelled", resolution="explicit resend requested with empty box")

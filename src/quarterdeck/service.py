@@ -888,6 +888,20 @@ class Service:
 
     def rebrief(self) -> None:
         """When rendered content changes, refresh briefs and tell affected running seats."""
+        if self.framework_commit:
+            from . import receipt_refresh
+            try:
+                receipt_refresh.run(self, self.framework_commit)
+            except Exception as error:
+                key = (type(error).__name__, str(error))
+                if getattr(self, 'receipt_refresh_error', None) != key:
+                    self.receipt_refresh_error = key
+                    try:
+                        self.log('error', step='receipt-refresh', error=str(error))
+                    except OSError:
+                        pass  # a refresh or logging failure cannot suppress brief publication
+            else:
+                self.receipt_refresh_error = None
         if self.framework_commit and (self.runtime / 'requests' / f'upgrade-rebrief-{self.framework_commit}.json').exists():
             return  # the durable upgrade publisher owns these edits until its request completes
         stamp = self._brief_stamp()
