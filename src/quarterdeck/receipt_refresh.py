@@ -43,7 +43,7 @@ def _validate(data):
 class Checkpoint:
     """One service writes; marking follows completed journal/attempt settlement."""
 
-    def __init__(self, runtime, commit):
+    def __init__(self, runtime, commit, *, deferred=False):
         if not _commit(commit):
             raise ShipError('closed receipt refresh revision unknown; retained')
         self.path = runtime / 'post' / 'receipt-refresh.json'
@@ -55,6 +55,9 @@ class Checkpoint:
             raise ShipError('closed receipt refresh checkpoint unreadable; retained') from error
         self.data = (saved if saved is not None and saved['commit'] == commit else
                      dict(format=1, commit=commit, observed=[], complete=False))
+        self._observed = set(self.data['observed'])
+        self._deferred = deferred
+        self._dirty = False
 
     @property
     def complete(self):
@@ -63,12 +66,14 @@ class Checkpoint:
     def seen(self, key):
         if not _key(key):
             raise ShipError('closed receipt refresh journal key unknown; retained')
-        return key in self.data['observed']
+        return key in self._observed
 
     def _save(self, data):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         durable.replace_file(self.path, json.dumps(data, sort_keys=True) + '\n')
         self.data = data  # a failed publication never advances in-memory progress
+        self._observed = set(data['observed'])
+        self._dirty = False
 
     def mark(self, key):
         """Call only when an unchanged negative or both positive owners are settled."""
@@ -76,11 +81,20 @@ class Checkpoint:
             return
         if self.complete:
             raise ShipError('closed receipt refresh already complete; retained')
-        self._save({**self.data, 'observed': sorted([*self.data['observed'], key])})
+        if self._deferred:
+            self._observed.add(key)
+            self._dirty = True
+        else:
+            self._save({**self.data, 'observed': sorted(self._observed | {key})})
+
+    def flush(self):
+        """Publish partial progress once; a killed pass may safely repeat its reads."""
+        if self._dirty:
+            self._save({**self.data, 'observed': sorted(self._observed)})
 
     def finish(self):
         if not self.complete:
-            self._save({**self.data, 'complete': True})
+            self._save({**self.data, 'observed': sorted(self._observed), 'complete': True})
 
 
 def _submission(data):
@@ -226,7 +240,7 @@ def run(service, commit):
 
     if getattr(service, 'receipt_refresh_commit', None) == commit:
         return
-    checkpoint = Checkpoint(service.runtime, commit)
+    checkpoint = Checkpoint(service.runtime, commit, deferred=True)
     if checkpoint.complete:
         service.receipt_refresh_commit = commit
         return
@@ -260,3 +274,5 @@ def run(service, commit):
     if complete:
         checkpoint.finish()
         service.receipt_refresh_commit = commit
+    else:
+        checkpoint.flush()
