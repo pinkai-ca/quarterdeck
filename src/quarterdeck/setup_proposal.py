@@ -126,7 +126,8 @@ def build(conversation, operations, text: str, orders: str, defaults: dict, avai
     for char in (".", ":"):
         if char in office:
             raise ShipError(f"answer office contains {char!r}; choose a tmux session name without that character")
-    workspace = Path(c.ask("workspace", "Project folder", str(existing.workspace) if existing else operations.workspace_default())).expanduser().resolve()
+    workspace = Path(c.ask("workspace", "Project folder", str(existing.workspace) if existing else operations.workspace_default(),
+                           again=WORKSPACE_AGAIN)).expanduser().resolve()
     if not workspace.is_dir():
         raise ShipError("answer workspace is not an existing project folder; choose an existing directory")
     folder = ship_folder(c.ask("folder", "Folder for this ship", str(project / "ships" / name)))
@@ -340,12 +341,18 @@ def git_root(folder: Path, flag: str) -> Path | None:
         return None
 
 
+WORKSPACE_AGAIN = "the crew needs a folder to work in: type its path"
+
+
 def workspace_default() -> str | None:
+    """The folder qd setup was started from, unless it is the Quarterdeck checkout or inside it."""
     cwd = Path.cwd().resolve()
+    framework = standing.project_dir().resolve()
+    if cwd.is_relative_to(framework):
+        return None
     root = git_root(cwd, "--show-toplevel")
     if root is None:
-        return None
-    framework = standing.project_dir().resolve()
+        return str(cwd)  # a plain folder, in no repository, is a workspace like any other
     own_common = git_root(framework, "--git-common-dir")
     if root == framework or own_common is not None and git_root(cwd, "--git-common-dir") == own_common:
         return None

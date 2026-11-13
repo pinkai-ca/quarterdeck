@@ -515,3 +515,78 @@ def test_default_ship_folder_is_in_quarterdeck_not_the_workspace(answers, tmp_pa
     current = ship.load(tmp_path / "ships" / answers["name"])
     assert current.workspace == workspace
     assert list(workspace.iterdir()) == []
+
+
+# -- the project folder: always a suggestion where one is known, never an exit on Enter --------------------------
+
+
+def test_enter_at_a_project_folder_with_no_suggestion_asks_again_and_never_exits(answers, tmp_path, monkeypatch):
+    monkeypatch.setattr(setup.Operations, "workspace_default", lambda _: None)
+    operations = ScriptedOperations()
+    monkeypatch.setattr(operations, "discover", lambda _: {
+        "codex": (Check("program codex", True, "synthetic program"), "sign-in unknown")})
+    asked = []
+
+    def enter(prompt):
+        if prompt.startswith("Project folder"):
+            asked.append(prompt)
+            return str(tmp_path) if len(asked) == 3 else ""
+        return ""
+
+    result, lines, operations = execute({}, operations, interactive=True, read=enter)
+    assert asked == ["Project folder: "] * 3, "no suggestion is shown where none is known"
+    assert lines.count("the crew needs a folder to work in: type its path") == 2
+    assert "Desk access" in result[0]
+    assert ship.load(tmp_path / "ships" / "aurora").workspace == tmp_path
+
+
+def test_enter_at_a_suggested_project_folder_takes_it(answers, tmp_path, monkeypatch):
+    monkeypatch.setattr(setup.Operations, "workspace_default", lambda _: str(tmp_path))
+    operations = ScriptedOperations()
+    monkeypatch.setattr(operations, "discover", lambda _: {
+        "codex": (Check("program codex", True, "synthetic program"), "sign-in unknown")})
+    prompts = []
+    result, lines, _ = execute({}, operations, interactive=True, read=lambda prompt: prompts.append(prompt) or "")
+    assert f"Project folder [{tmp_path}]: " in prompts
+    assert "the crew needs a folder to work in: type its path" not in lines
+
+
+def test_an_answers_file_without_a_workspace_still_refuses_with_its_remedy(answers):
+    del answers["workspace"]
+    with pytest.raises(setup.ShipError, match=r"missing answer workspace; pass --workspace ANSWER or --answers FILE"):
+        execute(answers)
+
+
+@pytest.fixture
+def places(tmp_path, monkeypatch):
+    """A synthetic Quarterdeck checkout, a plain folder, another repository and a second Quarterdeck clone."""
+    from quarterdeck import setup_proposal, standing
+    from tests.conftest import git
+
+    def repository(path, quarterdeck=False):
+        path.mkdir(parents=True)
+        git(path, "init", "-q")
+        if quarterdeck:
+            (path / "pyproject.toml").write_text('[project]\nname = "quarterdeck"\n')
+            (path / "src" / "quarterdeck").mkdir(parents=True)
+        return path
+
+    # git looks no higher than this test's folder, which itself lies inside the checkout that runs the tests
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    framework = repository(tmp_path / "quarterdeck", quarterdeck=True)
+    monkeypatch.setattr(standing, "project_dir", lambda: framework)
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    (framework / "work").mkdir()
+    return SimpleNamespace(framework=framework, inside=framework / "work", plain=plain,
+                           other=repository(tmp_path / "other"), clone=repository(tmp_path / "clone", quarterdeck=True),
+                           default=setup_proposal.workspace_default)
+
+
+@pytest.mark.parametrize("where,suggested", [("plain", True), ("other", True), ("framework", False),
+                                             ("inside", False), ("clone", False)])
+def test_the_suggestion_is_the_start_folder_unless_it_is_the_quarterdeck_checkout_or_inside_it(
+        places, monkeypatch, where, suggested):
+    folder = getattr(places, where)
+    monkeypatch.chdir(folder)
+    assert places.default() == (str(folder.resolve()) if suggested else None)

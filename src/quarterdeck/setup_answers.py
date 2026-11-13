@@ -191,7 +191,8 @@ class Conversation:
             flag = f"--{field.replace('_', '-')} ANSWER"
         raise ShipError(f"missing answer {field}; pass {flag} or --answers FILE")
 
-    def value(self, field: str, prompt: str, default=MISSING):
+    def value(self, field: str, prompt: str, default=MISSING, again: str | None = None):
+        """``again``: with no suggestion, an empty answer in a conversation says this line and asks again."""
         value = self.supplied(field)
         if value is MISSING:
             defaults_allowed = self.answers.get("use_defaults") == "yes" and field not in ("accept", "check", "start")
@@ -202,10 +203,14 @@ class Conversation:
                 self.suggestions.add(field)
             else:
                 shown = "" if default is MISSING else " [" + (default if isinstance(default, str) else json.dumps(default)) + "]"
-                try:
-                    raw = self.read(prompt + shown + ": ").strip()
-                except (EOFError, KeyboardInterrupt):
-                    raise ShipError(f"setup stopped at answer {field}; rerun qd setup to continue") from None
+                while True:
+                    try:
+                        raw = self.read(prompt + shown + ": ").strip()
+                    except (EOFError, KeyboardInterrupt):
+                        raise ShipError(f"setup stopped at answer {field}; rerun qd setup to continue") from None
+                    if raw or default is not MISSING or again is None:
+                        break
+                    self.say(again)
                 if not raw:
                     if default is MISSING:
                         self.missing(field)
@@ -218,8 +223,8 @@ class Conversation:
             put(self.answers, field, value)
         return self.supplied(field)
 
-    def ask(self, name: str, prompt: str, default: str | None = None) -> str:
-        value = self.value(name, prompt, MISSING if default is None else default)
+    def ask(self, name: str, prompt: str, default: str | None = None, again: str | None = None) -> str:
+        value = self.value(name, prompt, MISSING if default is None else default, again)
         if not isinstance(value, str) or not value.strip():
             raise ShipError(f"answer {name} must be nonempty text; supply {name} again")
         if "\n" in value or "\r" in value:
