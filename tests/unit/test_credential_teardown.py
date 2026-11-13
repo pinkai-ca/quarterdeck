@@ -129,18 +129,24 @@ def test_a_checks_temporary_seat_with_the_service_down_leaves_the_pool_holding_t
     assert token(ship.source) == "newer", "the pool holds the refresh"
 
 
-def test_a_temporary_home_whose_seat_would_not_go_down_still_hands_its_refresh_to_the_pool(ship, monkeypatch):
+def test_a_temporary_home_whose_seat_would_not_go_down_keeps_its_refresh_until_qd_down_hands_it_to_the_pool(ship, monkeypatch):
     spec = SeatSpec("check-claude-0001", "qd-check-claude-0001", "worker", "claude", ("claude-primary",),
                     model="synthetic-model", cwd=ship.ship.workspace)
 
     def stuck(self, launched):
         raise ShipError("synthetic: the window would not close")
 
-    with pytest.raises(ShipError, match="would not close"):
-        with temporary_seat(ship.ship, ship.tmux, spec, [], "qd check") as seat:
-            seat.up(resume=False)
-            refreshed(seat.home)
-            monkeypatch.setattr(Seat, "_retire_window", stuck)
+    with monkeypatch.context() as patch:
+        with pytest.raises(ShipError, match="would not close"):
+            with temporary_seat(ship.ship, ship.tmux, spec, [], "qd check") as seat:
+                seat.up(resume=False)
+                link = refreshed(seat.home)
+                patch.setattr(Seat, "_retire_window", stuck)
+    # Nothing proved its program ended: its home, and the refresh in it, stay; the status line names it.
+    assert token(link) == "newer" and token(ship.source) == "older"
+    assert seatmod.leftover_checks(ship.ship)[0].startswith("check-claude-0001 outlived its check")
+    proof = seatmod.down_leftover_check(ship.ship, ship.tmux, "check-claude-0001")
+    assert "home removed" in proof and not seat.folder.exists()
     assert token(ship.source) == "newer", "removing the home reseeded the pool first"
 
 

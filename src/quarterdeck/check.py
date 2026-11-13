@@ -12,8 +12,11 @@ real tokens and runs only when asked.
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from pathlib import Path
 import secrets
+import signal
+import threading
 from dataclasses import dataclass
 
 from . import check_outcome, harness as harnesses, durable, human_wake, pending, post, providers, record_owner, standing
@@ -58,6 +61,30 @@ def ready_for_probe(seat: Seat, door: Door) -> bool:
     return state.turns is not None and state.turns >= 1 and state.turn_open is False and not state.queued
 
 
+class CheckInterrupted(KeyboardInterrupt):
+    """A signal that ends qd check, raised where the check stands, so its throwaway seat is taken down."""
+
+
+@contextmanager
+def interruptible():
+    """TERM and HUP end qd check as Ctrl-C does: by an exception, so the throwaway seat's teardown runs.
+
+    Killed outright (KILL), nothing in the process runs: the seat it leaves is named in the status line
+    until qd down takes it down."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def interrupted(signum, frame):
+        raise CheckInterrupted(f"qd check interrupted by {signal.Signals(signum).name}")
+    previous = {number: signal.signal(number, interrupted) for number in (signal.SIGTERM, signal.SIGHUP)}
+    try:
+        yield
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+
+
 def check(ship: Ship, name: str, tmux: Tmux, *, model: str | None = None) -> list[Check]:
     if model is not None and not model.strip():
         raise ShipError("check --model requires a nonempty model identifier")
@@ -65,7 +92,8 @@ def check(ship: Ship, name: str, tmux: Tmux, *, model: str | None = None) -> lis
     check_outcome.publish(ship.runtime, name, check_outcome.event('unknown', reason='incomplete'))
     version = None
     try:
-        checks, version = _check(ship, name, tmux, harness, model)
+        with interruptible():
+            checks, version = _check(ship, name, tmux, harness, model)
     except BaseException as error:
         reason = 'interrupted' if isinstance(error, (KeyboardInterrupt, SystemExit)) else 'unclassified'
         check_outcome.publish(ship.runtime, name, check_outcome.event('unknown', version, reason))

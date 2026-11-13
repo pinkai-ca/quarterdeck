@@ -118,7 +118,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("seat", nargs="?")
     p.add_argument("--fresh", action="store_true", help="without resume: a new conversation")
     p.add_argument("--pool", help="for this one launch of a down seat: one of its declared pool choices")
-    p = verb("down", cmd_down, "end one seat, or every seat of the ship and its service")
+    p = verb("down", cmd_down, "end one seat, a check's seat left behind (check-<program>-<run>), or every seat of the ship and its service")
     p.add_argument("seat", nargs="?")
     p = verb("restart", cmd_restart, "relaunch a seat with resume: the conversation continues")
     p.add_argument("seat", nargs="?", help="default: this seat (QD_SEAT)")
@@ -296,6 +296,8 @@ def where(tmux: Tmux) -> str:
 def cmd_down(args: argparse.Namespace) -> list[str] | str:
     ship = load_ship(args)
     if args.seat:
+        if args.seat not in ship.seats and seatmod.CHECK_SEAT.fullmatch(args.seat):
+            return seatmod.down_leftover_check(ship, Tmux.for_ship(ship), args.seat)  # a check's seat it left behind
         return seat_of(ship, args.seat).down()
     tmux = Tmux.for_ship(ship)
     proofs = seatmod.bring_down(ship, tmux) + [service.stop(ship.runtime)]

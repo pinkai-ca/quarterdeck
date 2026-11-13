@@ -10,12 +10,15 @@ from __future__ import annotations
 import json
 import fcntl
 import os
+import re
 import secrets
 import shlex
 import shutil
+import signal
 import sys
 import stat
 import tempfile
+import threading
 import time
 from contextlib import contextmanager, ExitStack
 from typing import Iterator
@@ -1029,42 +1032,162 @@ def temporary_seat(ship: Ship, tmux: Tmux, spec: SeatSpec, orders: list[post.Mes
                 or any(a.seat == seat.name for a in post.Attempts(ship.runtime).all())):
             raise ShipError(f"{seat.name}: temporary seat/session/history already exists; retry {purpose}")
         seat.folder.mkdir(parents=True, exist_ok=False)
-        retired = False
         session_id = None
-
-        def retire() -> None:
-            nonlocal retired
-            pending.abandon(ship.runtime, seat.name, f"{purpose} ended; submission unconfirmed and never resent")
-            retired = True
-
-        def close_orders() -> None:
-            with ExitStack() as closing:
-                for order in orders:
-                    if order.kind == "order" and order.to == seat.name and store.is_open(order):
-                        closing.callback(store.new, "report", seat.name, order.sender,
-                                         f"{purpose} ended; closed by the temporary operation", re=order.id)
-
-        def remove_home() -> None:
-            if retired:
-                from . import credential
-
-                credential.reseed(treated, [seat])  # its one pool: a refresh left in the home is not deleted with it
-                shutil.rmtree(seat.folder)
-
         # Cleanup is registered before publication can fail, and runs before the
         # outer lease retires. The transient lock remains held around both.
         with ExitStack() as lifetime, ExitStack() as cleanup:
-            cleanup.callback(remove_home)
-            cleanup.callback(close_orders)
-            cleanup.callback(lambda: tmux.kill_session_id(session_id) if session_id is not None else None)
-            cleanup.callback(seat.down)
-            cleanup.callback(retire)
+            _teardown(cleanup, treated, seat, tmux, orders, purpose,
+                      lambda: tmux.kill_session_id(session_id) if session_id is not None else None)
             lifetime.enter_context(pending.check_inbox_registration(
                 ship.runtime, seat.name, human, enabled=check_inbox))
             session_id = tmux.new_session(session.title, env={"QD_SHIP": str(ship.folder)})
             status = shlex.join([str(qd_bin() / "qd"), "--ship", str(ship.folder), "status", "--line"])
             tmux.status_line(session.title, status)
             yield seat
+
+
+def _teardown(cleanup: ExitStack, treated: Ship, seat: Seat, tmux: Tmux, orders: list[post.Message], purpose: str,
+              end_session, down=None) -> None:
+    """Register a temporary seat's teardown, run last-first: retire its transport, take it down, end its
+    session, close the orders it was given, then remove its home, only once its program is proved ended."""
+    store = post.Store(treated.runtime)
+    retired = False
+    launched = None
+
+    def retire() -> None:
+        nonlocal retired, launched
+        launched = seat.launched()  # the program to prove ended before the home goes
+        pending.abandon(treated.runtime, seat.name, f"{purpose} ended; submission unconfirmed and never resent")
+        retired = True
+
+    def close_orders() -> None:
+        with ExitStack() as closing:
+            for order in orders:
+                if order.kind == "order" and order.to == seat.name and store.is_open(order):
+                    closing.callback(store.new, "report", seat.name, order.sender,
+                                     f"{purpose} ended; closed by the temporary operation", re=order.id)
+
+    def remove_home() -> None:
+        # A launch still standing means down did not prove its program ended: the home stays, the status
+        # line names the seat, and qd down <seat> finishes it (law: nothing-waits-silently).
+        running = launched is not None and launched.start and process_alive(launched.pid, launched.start)
+        if retired and not running and not (seat.folder / "launch.json").exists():
+            from . import credential
+
+            credential.reseed(treated, [seat])  # its one pool: a refresh left in the home is not deleted with it
+            shutil.rmtree(seat.folder)
+
+    held: list[int] = []
+    previous: dict = {}
+
+    def hold() -> None:
+        """A signal that arrives during teardown waits for it: a second Ctrl-C or TERM never cuts it short."""
+        if threading.current_thread() is threading.main_thread():
+            for number in TEARDOWN_SIGNALS:
+                previous[number] = signal.signal(number, lambda signum, frame: held.append(signum))
+
+    def release() -> None:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+        if held:
+            signal.raise_signal(held[0])  # acts now, through whatever handler stood before the teardown
+
+    cleanup.callback(release)
+    cleanup.callback(remove_home)
+    cleanup.callback(close_orders)
+    cleanup.callback(end_session)
+    cleanup.callback(down or seat.down)
+    cleanup.callback(retire)
+    cleanup.callback(hold)
+
+
+TEARDOWN_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+
+
+# -- a check's seat that outlived its check ----------------------------------------------------
+
+CHECK_SEAT = re.compile(r"check-(?:wake-)?[a-z][a-z0-9]*(?:-[a-z0-9]+)*-[0-9a-f]{4}")
+
+
+def _leftover(ship: Ship, name: str) -> dict | None:
+    """The launch a check's seat left, when no running check owns the seat; None otherwise."""
+    if name in ship.seats or not CHECK_SEAT.fullmatch(name):
+        return None
+    try:
+        launch = json.loads((ship.runtime / "seats" / name / "launch.json").read_text())
+    except FileNotFoundError:
+        return None  # no launch: nothing of it can be running
+    except (OSError, ValueError):
+        launch = {}
+    with pending.transient_lock(ship.runtime, name) as unowned:
+        if not unowned:
+            return None  # its check is running and owns it; it takes its own seat down
+    return launch if isinstance(launch, dict) else {}
+
+
+def leftover_checks(ship: Ship) -> list[str]:
+    """Plain words for every check's seat that outlived its check, for the status line, until it is gone."""
+    folder = ship.runtime / "seats"
+    words = []
+    for path in sorted(folder.glob("check-*")) if folder.is_dir() else []:
+        launch = _leftover(ship, path.name)
+        if launch is None:
+            continue
+        pid, start = launch.get("pid"), launch.get("start")
+        state = ("its program still runs" if isinstance(pid, int) and process_alive(pid, start)
+                 else "its program has ended" if isinstance(pid, int) else "its launch is unreadable")
+        words.append(f"{path.name} outlived its check: {state}; qd down {path.name}")  # law: nothing-waits-silently
+    return words
+
+
+def down_leftover_check(ship: Ship, tmux: Tmux, name: str) -> str:
+    """qd down check-<program>-<run>: take down a check's seat that its check left, by the check's own teardown."""
+    folder = ship.runtime / "seats" / name
+    if not CHECK_SEAT.fullmatch(name) or name in ship.seats or not folder.is_dir():
+        raise ShipError(f"{name}: no seat of this ship, and no check's seat left behind by that name")
+    with pending.transient_lock(ship.runtime, name) as owned:
+        if not owned:
+            raise ShipError(f"{name}: its check is still running and takes its own seat down; nothing done")
+        try:
+            launch = json.loads((folder / "launch.json").read_text())
+        except FileNotFoundError:
+            launch = None
+        except (OSError, ValueError) as error:
+            raise ShipError(f"{name}: its launch is unreadable ({error}); retained for inspection") from None
+        harness_name = (launch or {}).get("harness") or name.removeprefix("check-").removeprefix("wake-").rsplit("-", 1)[0]
+        pool = (launch or {}).get("pool") or next(
+            (p.name for p in ship.pools.values() if harnesses.get(harness_name).accepts(p) is None), None)
+        if pool not in ship.pools:
+            raise ShipError(f"{name}: its pool {pool!r} is not declared; retained for inspection")
+        human = name.startswith("check-wake-")
+        title = "qd-" + name
+        spec = SeatSpec(name, title, "worker", harness_name, (pool,), cwd=ship.workspace)
+        session = shipmod.Session(title, title, human=human)
+        treated = replace(ship, sessions={**ship.sessions, title: session}, seats={**ship.seats, name: spec})
+        seat = Seat(treated, spec, tmux)
+        orders = post.Store(ship.runtime).open_for(name)
+        downed: list[str] = []
+        with ExitStack() as cleanup:
+            _teardown(cleanup, treated, seat, tmux, orders, "qd down of a check's seat left behind",
+                      lambda: tmux.kill_session(title) if tmux.has_session(title) else None,
+                      down=lambda: downed.append(seat.down()))
+        _, marker = pending._check_paths(ship.runtime, name)
+        if not folder.exists():
+            try:
+                descriptor = os.open(marker, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            except FileNotFoundError:
+                descriptor = None
+            if descriptor is not None:
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)  # its check's lease is gone with it
+                    marker.unlink()
+                except BlockingIOError:
+                    pass
+                finally:
+                    os.close(descriptor)
+            return f"{name} down: " + (downed[0] if downed else "taken down") + " · its session ended, its home removed"
+        return (f"{name}: " + (downed[0] if downed else "not taken down")
+                + f" · its home is kept until its program has ended; qd down {name} again")
 
 
 # -- the ship ------------------------------------------------------------------------------

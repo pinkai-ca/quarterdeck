@@ -94,6 +94,7 @@ def test_both_callers_retire_transport_and_finish_cleanup_after_exceptions(tmp_p
         assert svc.attempts.latest()[state["own"].id] == expected
         if outcome == "down":
             raise RuntimeError("down")
+        (seat.folder / "launch.json").unlink(missing_ok=True)  # as a down that proved its program ended
 
     def kill(ident):
         Sessions.kill_session_id(tmux, ident)
@@ -137,7 +138,8 @@ def test_both_callers_retire_transport_and_finish_cleanup_after_exceptions(tmp_p
         seat = state["seat"]
         # A successful check also retires its second session: the wake step's human seat.
         assert tmux.names == {"pre-existing": "$0"} and tmux.killed == (["$1", "$1"] if (caller, outcome) == ("check", "success") else ["$1"])
-        assert seat.folder.exists() == (outcome in ("remove", "retire"))
+        # A down that failed proved no end: the home stays, named in the status line until qd down takes it.
+        assert seat.folder.exists() == (outcome in ("remove", "retire", "down"))
         assert svc.store.is_open(state["foreign"]), "unrelated orders are never closed by teardown"
         assert svc.store.is_open(state["own"]) == (outcome == "report")
         assert state["proof"].path.exists() and len(svc.attempts.all()) == 1

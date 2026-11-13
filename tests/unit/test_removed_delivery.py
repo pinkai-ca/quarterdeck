@@ -137,6 +137,7 @@ def test_check_retires_all_unresolved_attempts_and_journals_before_deleting_seat
         assert not pending.active(seat)
         if outcome == "stop-exception":
             raise RuntimeError("synthetic stop exception")
+        (seat.folder / "launch.json").unlink(missing_ok=True)  # as a down that proved its program ended
         return "synthetic down"
     monkeypatch.setattr(check, "probe", probe)
     monkeypatch.setattr(Seat, "down", down)
@@ -149,7 +150,8 @@ def test_check_retires_all_unresolved_attempts_and_journals_before_deleting_seat
         result = check.check(ship, "fake", tmux)
         assert all(c.passed for c in result) == (outcome == "success")
     seat = state["seat"]
-    assert not seat.folder.exists() and not state["session"]
+    # A down that failed proved no end: the home stays, named in the status line until qd down takes it.
+    assert seat.folder.exists() == (outcome == "stop-exception") and not state["session"]
     attempts = post.Attempts(ship.runtime)
     assert len(attempts.all()) == 6 and len(attempts.accepted_ids()) == 1
     assert len(pending.active(seat, include_terminal=True)) == 6, "terminal journal history stays in post"

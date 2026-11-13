@@ -86,6 +86,7 @@ def test_service_leaves_live_check_to_owner_and_teardown_retires_only_uncertaint
         expected = "delivered" if outcome == "delivered" else "abandoned"
         assert svc.attempts.latest()[observed["message"].id] == expected
         assert not pending.active(seat)
+        (seat.folder / "launch.json").unlink(missing_ok=True)  # as a down that proved its program ended
         return "synthetic stop"
     monkeypatch.setattr(check, "probe", probe)
     monkeypatch.setattr(Seat, "down", down)

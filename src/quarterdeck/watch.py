@@ -19,7 +19,7 @@ from pathlib import Path
 from . import accounting_health, check_outcome, credential, idle, ledger, move_hold, server_recovery, pending as pending_delivery, post, program_use, providers, quota, record_owner, recovery, request_queue, servicectl as service
 from .door import Door, Reading
 from .harness.capabilities import selection_label
-from .seat import Seat, UnresolvedSeat, seats
+from .seat import Seat, UnresolvedSeat, leftover_checks, seats
 from .ship import Ship, ShipError
 from .servicectl import STALE_SECONDS
 from .tmux import Tmux
@@ -268,6 +268,7 @@ def render_table(data: dict) -> list[str]:
     state = data["service"]
     head = f"service {state}" + ("; qd up restarts it" if state == "down" else "")
     recovery_lines = list(getattr(data.get("facts"), "server_recovery", None) or [])  # law: nothing-waits-silently
+    recovery_lines += list(getattr(data.get("facts"), "leftover_checks", None) or [])  # a check's seat left running
     rows = [head, *recovery_lines, f"{'seat':<10} {'activity':<24} {'door':<40} {'order':<10} {'today':>8}  harness · provider · pool · model · effort"]
     if accounting := getattr(data.get('facts'), 'accounting', None):
         rows.insert(1, accounting)
@@ -435,6 +436,7 @@ class Facts:
     manual_fresh: list[str] = field(default_factory=list)  # no systems recipient: retain names on overflow
     move_holds: list[str] = field(default_factory=list)
     ending: list[str] = field(default_factory=list)  # a seat down because its program is still ending: names kept
+    leftover_checks: list[str] = field(default_factory=list)  # a check's seat that outlived its check, until it is gone
     sign_in_failures: list[str] = field(default_factory=list)  # retain seat and fixed failure on overflow
     request_waits: list[str] = field(default_factory=list)
     cutover: str = ""  # the ship still runs on tmux's default server, until one qd down and qd up
@@ -475,6 +477,7 @@ class Facts:
         parts += [f"{name} held at limit" for name in self.held]
         parts += self.move_holds
         parts += self.ending
+        parts += self.leftover_checks
         parts += self.request_waits
         parts += self.server_recovery
         parts += self.routes
@@ -740,6 +743,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         held=held,
         move_holds=move_reasons,
         ending=ending,
+        leftover_checks=leftover_checks(ship),
         request_waits=[request_queue.headline(row) for row in
                        (request_queue.pending(ship.runtime) if request_rows is None else request_rows)],
         cutover=(f"tmux: still on the default server {tmux.socket}; qd down, then qd up, moves it"
