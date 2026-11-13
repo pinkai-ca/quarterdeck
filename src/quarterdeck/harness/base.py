@@ -253,6 +253,13 @@ class Harness(ABC):
     def freshness(self, path: Path) -> tuple[float, float] | None:
         return None
 
+    answers_questions: bool = False  # declares a question with a fixed answer (Interruption.click) to watch for
+
+    def question_cleared(self, text: str, question: Interruption) -> bool:
+        """After the framework answered ``question``: it is gone and an empty composer is drawn."""
+        screen = self.screen(text)
+        return screen.interruption is None and screen.box is not None and not screen.box.strip()
+
     def startup_ready(self, home: Path | None) -> bool:
         """Any program-specific startup decision required before its composer can take input."""
         return True

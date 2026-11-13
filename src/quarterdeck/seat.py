@@ -47,6 +47,7 @@ class Launched:
     price: dict | None = None
     recovery: dict | None = None
     notice: str | None = None
+    answered: list[dict] | None = None  # the account holder's questions the framework answered in this launch
 
     def write(self, path: Path) -> None:
         data = asdict(self)
@@ -55,6 +56,8 @@ class Launched:
             data.pop('recovery')  # unchanged launch shape for programs without this optional proof
         if data['notice'] is None:
             data.pop('notice')
+        if data['answered'] is None:
+            data.pop('answered')  # unchanged launch shape until a question is answered
         durable.replace_file(path, json.dumps(data, indent=2) + "\n")
         save_price(path, price)
 
@@ -243,6 +246,19 @@ class Seat:
     def is_up(self) -> bool:
         pane = self.pane()
         return pane is not None and not pane.dead
+
+    def record_answer(self, launched: Launched, entry: dict) -> Launched | None:
+        """Write one answered question into this launch's record, only while the launch is still ``launched``.
+
+        Written before the press and again with its outcome, so a crash between them never lets the same
+        launch be pressed twice.
+        """
+        if self.launched() != launched:
+            return None  # law: identity
+        answered = [item for item in (launched.answered or []) if item.get("question") != entry["question"]]
+        updated = replace(launched, answered=[*answered, entry])
+        updated.write(self.folder / "launch.json")
+        return updated
 
     def read_pane(self, history: int = 0) -> tuple[Pane, str] | None:
         """A fresh screen still belongs to the launch whose identity we checked."""

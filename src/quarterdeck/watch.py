@@ -262,7 +262,8 @@ def seat_reading(seat: Seat | UnresolvedSeat) -> dict:
         return dict(seat=r, record=None, state=None, record_error=str(seat.error),
                     receipt_skips=dict(total=0, counts=[], examples=[], omitted=0),
                     receipt_error=str(seat.error), record_absent=str(seat.error),
-                    record_limits=None, screen=None, usage=headline_readings(seat.ship), **providers.identities(seat.ship))
+                    record_limits=None, screen=None, answered=[], usage=headline_readings(seat.ship),
+                    **providers.identities(seat.ship))
     record = seat.record()
     state, error = None, None
     skips, receipt_error = dict(total=0, counts=[], examples=[], omitted=0), None
@@ -281,7 +282,8 @@ def seat_reading(seat: Seat | UnresolvedSeat) -> dict:
             "receipt_skips": skips, "receipt_error": receipt_error,
             "record_absent": seat.join().reason if record is None else None,
             "record_limits": getattr(seat.harness, "record_limits", None),
-            "screen": Door(seat).screen(), "usage": headline_readings(seat.ship), **providers.identities(seat.ship)}
+            "screen": Door(seat).screen(), "answered": list((launched.answered or []) if (launched := seat.launched()) else []),
+            "usage": headline_readings(seat.ship), **providers.identities(seat.ship)}
 
 
 def render_full(data: dict) -> list[str]:
@@ -311,6 +313,9 @@ def render_full(data: dict) -> list[str]:
         groups = '; '.join(f"{item['count']} {item['kind']}: {item['reason']}" for item in skips['counts'])
         examples = ','.join(str(item['line']) for item in skips['examples'])
         lines.append(f"  receipt skipped {skips['total']} rows · {groups} · example lines {examples} · {skips['omitted']} omitted")
+    for done in data.get("answered") or []:
+        lines.append(f"  answered for the account holder: {done.get('question')} · {done.get('choice')} pressed at "
+                     f"{done.get('at')} · {done.get('outcome')}")
     screen = data["screen"]
     if screen:
         lines.append(f"  screen: box {screen.box!r} · working {screen.working} · queued {screen.queued} · shows {screen.shows}")

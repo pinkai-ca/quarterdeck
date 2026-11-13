@@ -18,7 +18,7 @@ from .base import Harness, program_version
 from .home import credential, key_environment, merged, ship_template
 from .json_record import when
 from .limits import Usage
-from .types import Box, Control, Credential, Keys, Launch, Screen
+from .types import Box, Control, Credential, Interruption, Keys, Launch, Screen
 from . import grok_notice, grok_record, grok_screen, grok_usage, grok_workspace
 
 VENDORS = ("claude", "cursor", "codex")
@@ -167,6 +167,27 @@ class GrokBox(Box):
         return super().matches(shown, columns, slack)
 
 
+def program_privacy(path: Path) -> dict | None:
+    """The [privacy] table the program itself wrote in this seat's home when its training question was answered.
+
+    Kept across the home's rebuilds, so the same seat is not asked again at every launch: the program's own
+    state in the ship's own home, never the account holder's file and never a setting. Only its measured key,
+    privacy_banner_acked, as the RFC 3339 timestamp the guide describes; anything else is not carried.
+    """
+    try:
+        table = tomllib.loads(path.read_text()).get("privacy")
+    except (OSError, ValueError, UnicodeError):
+        return None
+    acked = table.get("privacy_banner_acked") if isinstance(table, dict) else None
+    if not isinstance(acked, str):
+        return None
+    try:
+        datetime.fromisoformat(acked.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return {"privacy_banner_acked": acked}
+
+
 class GrokHarness(Harness):
     efforts = EffortCapability()  # CLI vocabulary is not measured
     defaults = DefaultMetadata(model_default=True, model=SuggestedValue(None, "program-default"),
@@ -178,6 +199,7 @@ class GrokHarness(Harness):
     native_provider = "xai"
     home_variable = "GROK_HOME"
     credential_file = "auth.json"
+    answers_questions = True  # its first-run training question, answered opt out (ord-c304)
     keys = Keys(submit="Enter", interrupt="C-c")
     reads_usage = True
     private_usage_home = True
@@ -263,6 +285,9 @@ class GrokHarness(Harness):
         skills["disabled"] = list(dict.fromkeys([*disabled, "resume-claude", "resume-codex", "resume-cursor"]))
         if not seat.human_session:
             settings.setdefault("features", {})["ask_user_question"] = False
+        settings.pop("privacy", None)  # never seeded: only the program writes that its question was answered
+        if (kept := program_privacy(home / "config.toml")) is not None:
+            settings["privacy"] = kept
         (home / "config.toml").write_text(config_text(settings))
         return credential(pool, home / self.credential_file, "XAI_API_KEY")
 
@@ -308,6 +333,9 @@ class GrokHarness(Harness):
 
     def screen(self, text: str) -> Screen:
         return grok_screen.read(text)
+
+    def question_cleared(self, text: str, question: Interruption) -> bool:
+        return question is grok_screen.TRAINING_QUESTION and grok_screen.question_cleared(text)
 
     def box_columns(self, pane_width: int) -> int | None:
         # 1.0.77 fullscreen: margins, borders, prompt and one reserved cursor cell.

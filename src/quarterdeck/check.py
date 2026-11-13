@@ -28,6 +28,9 @@ def ready_for_probe(seat: Seat, door: Door) -> bool:
     """An opening prompt's own turn must finish before the check task is sent."""
     opened = door.reading()
     if not opened.open:
+        screen = door.screen()
+        if screen is not None and screen.interruption is not None and screen.interruption.click is not None:
+            door.clear_known(screen)  # the account holder's question the orders answer, through the door, once
         return False
     if not seat.harness.opening_prompt_turn:
         return True
@@ -79,6 +82,9 @@ def probe(ship: Ship, seat: Seat, orders: list[post.Message] | None = None) -> l
     checks.append(Check("launch", seat.is_up, launched))
     door = Door(seat)
     opened = wait_for(lambda: ready_for_probe(seat, door), PATIENCE if seat.harness.opening_prompt_turn else PATIENCE / 3)
+    for done in getattr(seat.launched(), "answered", None) or []:
+        checks.append(Check(f"answered for the account holder: {done.get('question')}", done.get("outcome") == "cleared",
+                            f"{done.get('choice')} pressed at {done.get('at')} · {done.get('outcome')}"))
     checks.append(Check("door open at start", bool(opened), str(door.reading()) +
                         (" · opening brief turn ended in the record" if opened and seat.harness.opening_prompt_turn else "")))
     if not opened:

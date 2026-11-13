@@ -14,12 +14,14 @@ from datetime import datetime, timezone
 
 from . import ledger as ledgermod, pending, input_receipt, quota
 from .harness.base import Screen
+from .harness.types import _cells
 from .quota import reset_text, stamp
 from .seat import Seat
 
 CONFIRM_SECONDS = 5.0
 BOX_SECONDS = 2.0
 SETTLE_SECONDS = 0.1
+ANSWER_SECONDS = 5.0  # measured: Grok's training question was gone within one second of the press
 TRANSCRIPT_LINES = 2000  # scrollback read for an echo: a long message's echo climbs above the screen
 UNCAPTURED = object()
 
@@ -138,6 +140,8 @@ class Door:
         if wall:
             return Reading(False, wall, "quota reset or another pool")
         if screen.interruption is not None:
+            if screen.interruption.click is not None:
+                return Reading(False, *self._question(screen))
             return Reading(False, screen.interruption.name,
                            "dismissable" if screen.interruption.dismissable else "needs a human")
         if screen.unknown is not None:
@@ -181,6 +185,60 @@ class Door:
             return self._reading(screen)
         return None
 
+    def _question(self, screen: Screen) -> tuple[str, str]:
+        """A question the framework answers: once per launch, on a screen that reads not working with its box read;
+        after that a screen still showing it needs a human."""
+        question = screen.interruption
+        launched = self.seat.launched()
+        done = next((item for item in (launched.answered or []) if item.get("question") == question.name), None) if launched else None
+        if done is not None:
+            return (f"{question.name}: {done.get('choice')} was pressed at {done.get('at')} and the question did not clear; "
+                    "nothing more is pressed", "needs a human")
+        if screen.unknown is not None:
+            return f"{question.name}; {screen.unknown}; nothing is pressed", "needs a human"
+        if screen.working:
+            return f"{question.name}; answered {question.click} once the turn under it ends", "time"
+        return f"{question.name}; the framework answers it {question.click}", "dismissable"
+
+    def answer(self, screen: Screen) -> Screen | None:
+        """Press the one choice the orders fix for this question, by its text, once in this launch (law: one-door).
+
+        Only on an empty box, only where the program has asked for SGR mouse reports, and only on the frame
+        read just before the press. The press is recorded in the launch before it is sent, then its outcome.
+        """
+        question = screen.interruption
+        launched = self.seat.launched()
+        if launched is None or any(item.get("question") == question.name for item in launched.answered or ()):
+            return screen  # once per launch: never pressed again
+        found = self.seat.read_pane()
+        if found is None:
+            return screen
+        pane, raw = found
+        current = self.harness.screen(raw)
+        if (current.interruption is not question or current.text != screen.text or current.working
+                or current.box is None or current.box.strip()):
+            return current  # changed under us, or a turn still running (unmeasured there): nothing is pressed
+        cell = choice_cell(current.text, question.click)
+        modes = self.tmux.mouse_modes(pane.id, pane.pid)
+        if cell is None or not modes or not modes["sgr"] or not (modes["button"] or modes["all"] or modes["standard"]):
+            return current
+        at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        entry = dict(question=question.name, choice=question.click, at=at, outcome="pressed")
+        recorded = self.seat.record_answer(launched, entry)
+        if recorded is None:
+            return current
+        self.tmux.click(pane.id, *cell)
+        after, cleared = current, False
+        deadline = time.monotonic() + ANSWER_SECONDS
+        while time.monotonic() < deadline and not cleared:
+            time.sleep(SETTLE_SECONDS)
+            found = self.seat.read_pane()
+            if found is None:
+                break
+            after, cleared = self.harness.screen(found[1]), self.harness.question_cleared(found[1], question)
+        self.seat.record_answer(recorded, dict(entry, outcome="cleared" if cleared else "did not clear"))
+        return after
+
     def clear_known(self, screen=UNCAPTURED) -> Screen | None:
         """Dismiss a notice the adapter knows, once, and read again (law: one-door).
 
@@ -189,7 +247,10 @@ class Door:
         if screen is UNCAPTURED:
             screen = self.screen()
         if self.seat.session.human:
-            return screen  # no key of ours is ever pressed in a human's session
+            return screen  # no key of ours is ever pressed in a human's session; the person answers there
+        if (not pending.held(self.seat, screen, self.proof) and screen and screen.interruption
+                and screen.interruption.click is not None and screen.box is not None and not screen.box.strip()):
+            return self.answer(screen)
         if not pending.held(self.seat, screen, self.proof) and screen and screen.interruption and screen.interruption.dismissable and not (screen.box or "").strip():
             self.tmux.keys(self.seat.pane().id, screen.interruption.key)
             time.sleep(SETTLE_SECONDS)
@@ -338,3 +399,16 @@ class Door:
             if time.monotonic() >= deadline:
                 return Delivery("pending" if self.proof else "blind", "submitted once; waiting for record confirmation")
             time.sleep(0.2)
+
+
+def choice_cell(text: str, choice: str) -> tuple[int, int] | None:
+    """The 1-based cell at the middle of ``choice``, found by its text exactly once on the screen."""
+    rows = text.split("\n")
+    found = [(y, row.index(choice)) for y, row in enumerate(rows) if choice in row]
+    if len(found) != 1 or rows[found[0][0]].count(choice) != 1:
+        return None
+    y, at = found[0]
+    left = _cells(rows[y][:at])
+    if left is None:
+        return None  # an unmeasured width before the choice: no place is guessed
+    return left + len(choice) // 2 + 1, y + 1

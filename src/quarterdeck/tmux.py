@@ -523,6 +523,27 @@ class Tmux:
     def keys(self, pane_id: str, *keys: str) -> None:
         self.run("send-keys", "-t", pane_id, *keys)
 
+    def mouse_modes(self, pane_id: str, expected_pid: int) -> dict[str, bool] | None:
+        """The mouse reports the pane's program has asked for, bound to this exact process; None if unreadable."""
+        raw = self._invoke('display-message', '-p', '-t', pane_id,
+                           '#{pane_pid}\t#{mouse_any_flag}\t#{mouse_button_flag}\t#{mouse_all_flag}'
+                           '\t#{mouse_standard_flag}\t#{mouse_sgr_flag}').strip()
+        parts = raw.split('\t')
+        if len(parts) != 6 or not all(part in ('0', '1') for part in parts[1:]):
+            return None
+        try:
+            if int(parts[0]) != expected_pid:
+                return None
+        except ValueError:
+            return None
+        return dict(zip(('any', 'button', 'all', 'standard', 'sgr'), (part == '1' for part in parts[1:])))
+
+    def click(self, pane_id: str, x: int, y: int) -> None:
+        """One left-button press and its release at the 1-based cell, as SGR mouse reports, sent as raw bytes."""
+        for final in ('M', 'm'):
+            report = f'\x1b[<0;{x};{y}{final}'.encode()
+            self.run('send-keys', '-t', pane_id, '-H', *(f'{byte:02x}' for byte in report))
+
     def editor_position(self,pane_id: str,expected_pid: int):
         """One cursor/geometry reading bound to this exact native process."""
         raw=self._invoke('display-message','-p','-t',pane_id,

@@ -108,7 +108,7 @@ class Service:
         except ShipError as error:
             self.log("error", step="load", error=str(error))
         self.structure_passes.begin()
-        for step in (self.reconcile, self.account, self.groups, self.cascades, self.inboxes, self.recoveries, self.refusals, self.deliveries, self.follow, self.requests, self.compactions, self.fresh_after_order,
+        for step in (self.reconcile, self.account, self.groups, self.cascades, self.inboxes, self.recoveries, self.refusals, self.answers, self.deliveries, self.follow, self.requests, self.compactions, self.fresh_after_order,
                      self.rebrief, self.credentials, self.failover):  # accounting before anything relaunches a seat
             self.heartbeat()  # before every step: a slow delivery or usage read reads as busy, never as dead
             try:
@@ -237,6 +237,26 @@ class Service:
 
     def recoveries(self) -> None:
         recovery.run(self)
+
+    def answers(self) -> None:
+        """A question the orders answer for the account holder is answered as soon as it shows, message or not.
+
+        Only for adapters that declare such a question, only in seats no human owns, through the door alone.
+        """
+        for seat in self.resolved_seats():
+            if seat.session.human or not seat.harness.answers_questions or not seat.is_up:
+                continue
+            door = Door(seat)
+            screen = door.screen()
+            if screen is None or screen.interruption is None or screen.interruption.click is None:
+                continue
+            before = seat.launched()
+            door.clear_known(screen)
+            after = seat.launched()
+            if after is not None and after != before and after.answered:
+                done = after.answered[-1]
+                self.log("answered", seat=seat.name, question=done.get("question"), choice=done.get("choice"),
+                         pressed_at=done.get("at"), outcome=done.get("outcome"))
 
     def _due(self, message: post.Message, seat: Seat) -> bool:
         """A withheld message is tried again when the screen has changed since, not on a clock (law: events-not-clocks)."""
