@@ -417,3 +417,20 @@ def test_four_field_notification_sink_keeps_once_per_reading_on_restart(alarm):
     for _ in range(2):
         alarms.notify(owner, 'worker', False, 'synthetic mendable reading', MENDABLE, up=['systems'])
     assert sent == [('report', post.SHIP, 'systems', MENDABLE), ('report', post.SHIP, 'desk', MENDABLE)]
+
+
+def test_needs_human_uses_only_existing_alarm_recipient_callback(alarm):
+    mendable(alarm)
+    asked = []
+
+    def recipients(seat, reason):
+        asked.append((seat.name, reason))
+        return ['systems']
+
+    owner = SimpleNamespace(ship=alarm.ship, store=alarm.actor.store, told={}, alarm_recipients=recipients)
+    service.Service.needs_human(owner, alarm.seat)
+    assert [message.to for message in owner.store.all()] == ['systems']
+    alarm.when += timedelta(minutes=10)
+    service.Service.needs_human(owner, alarm.seat)
+    assert {message.to for message in owner.store.all()} == {'systems', 'desk'}
+    assert asked == [('worker', MENDABLE)] * 2

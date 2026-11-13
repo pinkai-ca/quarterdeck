@@ -113,7 +113,8 @@ def publish(service, runtime, name, channel, data, intent):
     save(runtime, name, channel, data)
 
 
-def notify(service, name, human, key, body, *, channel='human', ship=None, up=None, desk_now=False):
+def notify(service, name, human, key, body, *, channel='human', ship=None, up=None, desk_now=False,
+           initial=None):
     """Observe once on the existing pass, saving identities before publication.
 
     Committed initial notifications survive a changed reading. A cleared or
@@ -156,9 +157,19 @@ def notify(service, name, human, key, body, *, channel='human', ship=None, up=No
     # Some notification views supply only an explicit recipient callback, with
     # no session metadata. Keep that port authoritative rather than inventing
     # whether its subject belongs to a human. Full seats supply the session.
-    eligible = ((list(up) if human is None and up is not None else
-                 recipients(service, name, human, elapsed=elapsed, taken=prior['taken'] is not None,
-                            ship=ship, up=up, desk_now=desk_now)) if key is not None else [])
+    if key is None:
+        eligible = []
+    elif initial is not None:
+        eligible = list(initial)
+        up = [recipient for recipient in initial
+              if recipient in {spec.name for spec in ship.seats.values() if spec.role == 'systems'}]
+        if up and elapsed >= ESCALATE_SECONDS and not prior['taken']:
+            eligible += [spec.name for spec in ship.seats.values()
+                         if spec.role == 'desk' and spec.name not in eligible]
+    else:
+        eligible = (list(up) if human is None and up is not None else
+                    recipients(service, name, human, elapsed=elapsed, taken=prior['taken'] is not None,
+                               ship=ship, up=up, desk_now=desk_now))
     names = {name, *eligible, *(compaction.decode(intent).to for intent in prior['reports'])}
     with ExitStack() as held:
         for recipient in sorted(names):

@@ -360,13 +360,15 @@ class Service:
         alarms.notify(self, seat.name, seat.session.human, door_reason,
                       f'{seat.name} obstructed, {door_reason}' if door_reason else None,
                       desk_now=person_only(door_reason) if door_reason else False,
-                      up=self.systems_recipients(seat))
+                      initial=self.alarm_recipients(seat, door_reason) if door_reason else [])
 
     def alarm_recipients(self, seat: Seat, reason: str) -> list[str]:
         """Immediate recipients; a standing untaken alarm may reach the desk later."""
         from . import alarms
+        systems = getattr(self, 'systems_recipients', None)
+        up = systems(seat) if systems is not None else Service.systems_recipients(self, seat)
         return alarms.recipients(self, seat.name, seat.session.human, desk_now=person_only(reason),
-                                 up=self.systems_recipients(seat))
+                                 up=up)
 
     def systems_recipients(self, seat: Seat) -> list[str]:
         """Every up systems seat, excluding the subject of its own alarm."""
