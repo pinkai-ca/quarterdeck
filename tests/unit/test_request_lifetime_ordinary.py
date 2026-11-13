@@ -98,13 +98,25 @@ def test_service_wait_is_visible_and_cancelled_request_is_settled(runtime):
     assert not path.exists() and 'cancelled' in path.with_suffix('.done').read_text()
 
 
-def test_superseding_request_settles_previous_one_with_same_owner(runtime):
+def test_superseding_request_settles_previous_one_with_same_owner(runtime, monkeypatch):
     first = enqueue(runtime)
+    monkeypatch.setattr(post, 'now', lambda: AT.replace(second=1))
     second = enqueue(runtime)
-    assert first != second and not first.exists()
+    assert first != second and first.exists()
+    seen = []
+    runner = service(runtime, lambda data: seen.append(data) or None)
+    runner.requests()
+    assert len(seen) == 1 and not first.exists()
     assert 'superseded' in first.with_suffix('.done').read_text()
     assert request_queue.metadata(second)['retired'] == [first.stem]
     assert [row['id'] for row in request_queue.pending(runtime)] == [second.stem]
+
+
+def test_client_publication_never_takes_dispatch_coordination(runtime, monkeypatch):
+    monkeypatch.setattr(request_queue, 'coordination',
+                        lambda *args: pytest.fail('client took dispatch coordination'))
+    path = enqueue(runtime)
+    assert path.exists() and request_queue.state_path(path).suffix == '.state'
 
 
 def test_claimed_outcome_unknown_is_retained(runtime):

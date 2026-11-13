@@ -414,6 +414,9 @@ class Service:
                         continue  # an earlier action may have run; never replay an ambiguous claim
                     raw = path.read_text()
                     data = json.loads(raw)
+                    if isinstance(data, dict) and not request_queue.supersede(self.runtime, path, data):
+                        continue
+                    meta = request_queue.metadata(path)  # supersession may add retired identities
                     if not isinstance(data, dict) or data.get("kind") != "rebrief":
                         durable.replace_file(claim, raw)  # before dispatch: failed archival cannot requeue an executed action
                     try:

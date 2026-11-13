@@ -63,7 +63,7 @@ def created(path, data):
 
 
 def state_path(path):
-    return path.parent.parent / 'request-state' / path.name
+    return path.parent.parent / 'request-state' / path.with_suffix('.state').name
 
 
 def metadata(path):
@@ -247,6 +247,50 @@ def direct(runtime, name, kind):
         yield _retire(runtime, name, f'superseded by direct {kind}')
 
 
+def supersede(runtime, path, data):
+    """Service-owned retirement, before any pending relaunch can dispatch.
+
+    The caller holds writer coordination. Client publication never takes it,
+    so a paused publication cannot block a healthy seat's request.
+    """
+    if data.get('kind') != 'relaunch' or not isinstance(data.get('seat'), str):
+        return True
+    candidates = []
+    for other in sorted((runtime / 'requests').glob('*.json')):
+        try:
+            item = load(other)
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError, ShipError):
+            continue  # unrelated unreadable requests retain their own named outcome
+        if item.get('kind') != 'relaunch' or item.get('seat') != data['seat']:
+            continue
+        meta = metadata(other)
+        if 'terminal' in meta:
+            continue
+        at = datetime.fromisoformat(created(other, meta))
+        candidates.append((at, other.stem, other, item, meta))
+    if not candidates:
+        return True
+    latest = max(row[0] for row in candidates)
+    newest = [row for row in candidates if row[0] == latest]
+    if len(newest) != 1:
+        raise ShipError('relaunch request order unknown; creation times are equal; retained')
+    _, _, winner, _, meta = newest[0]
+    older = [row for row in candidates if row[2] != winner]
+    if not older:
+        return True
+    for _, _, old, _, _ in older:
+        if claimed(old) is not False:
+            raise ShipError(f'request {old.stem} already claimed; outcome unknown; retained')
+    meta['retired'] = sorted(set(meta.get('retired', [])) | {old.stem for _, _, old, _, _ in older})
+    save_metadata(winner, meta)
+    for _, _, old, item, _ in older:
+        terminal(old, item, f'{data["seat"]}: relaunch request {old.stem} superseded by '
+                 f'{winner.stem}; never applied by this request')
+    return path == winner
+
+
 def enqueue(runtime, kind, data, *, name=None):
     data = dict(data)
     context = {}
@@ -255,22 +299,16 @@ def enqueue(runtime, kind, data, *, name=None):
             if key in data:
                 context[key] = data.pop(key)
     born = context.pop('requested_at', None) or post.now().isoformat()
-    with coordination(runtime):
-        retired = _retire(runtime, data['seat'], 'superseded by a newer direct relaunch') if kind == 'relaunch' else []
-        name = name or f'{datetime.now().strftime("%H%M%S")}-{kind}-{os.getpid()}'
-        folder = runtime / 'requests'
-        path = folder / f'{name}.json'
-        meta = dict(version=1, created_at=born, **context)
-        payload = dict(kind=kind, **data)
-        if retired:
-            meta['retired'] = retired
-        def publish():
-            if context or retired:
-                save_metadata(path, meta)
-            durable.replace_file(path, json.dumps(payload) + '\n')
-        if kind in SEAT_KINDS and isinstance(data.get('seat'), str):
-            with post.admission(runtime, data['seat']):
-                publish()
-        else:
-            publish()
-        return path
+    name = name or f'{datetime.now().strftime("%H%M%S")}-{kind}-{os.getpid()}'
+    folder = runtime / 'requests'
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f'{name}.json'
+    if context:
+        save_metadata(path, dict(version=1, created_at=born, **context))
+    payload = json.dumps(dict(kind=kind, **data)) + '\n'
+    if kind in SEAT_KINDS and isinstance(data.get('seat'), str):
+        with post.admission(runtime, data['seat']):
+            durable.replace_file(path, payload)
+    else:
+        durable.replace_file(path, payload)
+    return path
