@@ -14,8 +14,8 @@ from .harness.base import record_fingerprint
 from .turn_failure import metadata
 from .ship import ShipError
 
-LINE = ('qd > ship: Arm `qd inbox --wait` in the background yourself, '
-        'then read and follow your inbox.')
+LINE = ('qd > ship: messages are waiting for you. Run `qd inbox --wait` now and follow what it prints; '
+        'if your program can keep a command running in the background, keep it running there.')
 WAITING = 'human wake confirmed; waiting for watch registration or ended turn'
 PHASES = {'prepared', 'pasting', 'submitting', 'submitted', 'queued', 'delivered', 'cancelled'}
 
