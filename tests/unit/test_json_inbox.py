@@ -32,7 +32,7 @@ def test_inbox_contains_messages_open_state_and_closing_references(inbox, capsys
     text = capsys.readouterr().out
     assert f"closed by {closed.short}" in text and messages[0].body in text and "## Open (1)" in text
     assert cli.main(["--ship", str(folder), "--json", "inbox"]) == 0
-    assert json.loads(capsys.readouterr().out) == {"seat": "operator", "open": [], "received": [], "closed_by": {}}
+    assert json.loads(capsys.readouterr().out) == {"seat": "operator", "open": [], "received": [], "closed_by": {}, "older_received": 0}
 
 
 @pytest.mark.parametrize("json_output", [False, True])
