@@ -1,0 +1,247 @@
+"""Bring a ship back when its own tmux server has gone: proved, bounded, and through qd up's own path.
+
+A seat counts as formerly up while its launch.json exists; qd down deletes it, so a deliberate down is never
+resurrected. The server counts as gone only when its explicit socket is absent or refuses a connection and every
+formerly-up launch's process is dead, so no second owner can exist. Anything else is unknown and starts nothing.
+At most two attempts in an hour, each written durably before any effect: a crash counts, a clock that runs
+backwards counts as exhausted, and a third attempt or any bring-up that is not whole stops until a person runs
+qd up (law: nothing-waits-silently; law: context-is-cache).
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+import json
+import os
+from pathlib import Path
+import socket
+import stat
+
+from . import durable
+from .ship import Ship, ShipError
+
+FORMAT = 1
+LIMIT = 2  # attempts within WINDOW
+WINDOW = timedelta(hours=1)
+KEEP = 8  # attempts kept on file
+CLEARED = 'cleared by qd up'
+
+
+def state_path(runtime: Path) -> Path:
+    return runtime / 'recovery' / 'ship-server.json'
+
+
+def read(runtime: Path) -> dict:
+    """The saved state; absent is empty. Malformed raises: it is never read as empty."""
+    try:
+        data = json.loads(state_path(runtime).read_text())
+    except FileNotFoundError:
+        return dict(format=FORMAT, attempts=[], stopped=None, unknown=None)
+    if (not isinstance(data, dict) or data.get('format') != FORMAT or not isinstance(data.get('attempts'), list)
+            or any(not isinstance(item, dict) or not isinstance(item.get('at'), str) for item in data['attempts'])):
+        raise ShipError('ship server recovery state unreadable; inspect runtime/recovery/ship-server.json')
+    data.setdefault('stopped', None)
+    data.setdefault('unknown', None)
+    return data
+
+
+def save(runtime: Path, data: dict) -> None:
+    target = state_path(runtime)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    data['attempts'] = data['attempts'][-KEEP:]
+    durable.replace_file(target, json.dumps(data, indent=2, sort_keys=True) + '\n')
+
+
+def now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def server_gone(tmux) -> tuple[bool | None, str]:
+    """True only when the explicit socket is absent or refuses; False while a server answers; None is unknown."""
+    address = getattr(tmux, 'socket', None)
+    if not address or not os.path.isabs(address):
+        try:  # no explicit socket: a server that answers is fine, and absence cannot be proved
+            return (False, 'the ship server answers') if tmux.running() else (None, 'the ship server does not answer and its socket is not explicit')
+        except Exception as error:
+            return None, f'the ship server is unreadable: {type(error).__name__}'
+    try:
+        info = os.lstat(address)
+    except FileNotFoundError:
+        return True, 'the ship server socket is gone'
+    except OSError as error:
+        return None, f'the ship server socket is unreadable: {error.strerror}'
+    if not stat.S_ISSOCK(info.st_mode):
+        return None, 'the ship server socket path is not a socket'
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    probe.settimeout(2)
+    try:
+        probe.connect(address)
+    except ConnectionRefusedError:
+        return True, 'the ship server socket refuses connections'
+    except OSError as error:
+        return None, f'the ship server socket did not answer: {error.strerror or type(error).__name__}'
+    finally:
+        probe.close()
+    return False, 'the ship server answers'
+
+
+def pid_dead(pid) -> bool | None:
+    """True when no such process exists; None when it exists or cannot be judged."""
+    if type(pid) is not int or pid <= 0:
+        return None
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return None
+    return None  # alive, or reused: either way not proved gone
+
+
+def formerly_up(ship: Ship, tmux) -> tuple[list, list[str]]:
+    """Declared seats whose launch.json exists, and the names of undeclared ones that have one."""
+    from .seat import Seat
+    members = [Seat(ship, spec, tmux) for spec in ship.seats.values() if (ship.runtime / 'seats' / spec.name / 'launch.json').exists()]
+    folder = ship.runtime / 'seats'
+    stray = sorted(path.parent.name for path in folder.glob('*/launch.json') if path.parent.name not in ship.seats) \
+        if folder.is_dir() else []
+    return members, stray
+
+
+def window(data: dict, moment: datetime) -> tuple[int, bool]:
+    """Attempts within the last hour, and whether the clock is unknown (it reads earlier than an attempt)."""
+    count, backwards = 0, False
+    for item in data['attempts']:
+        if item.get('outcome') == CLEARED:
+            count = 0  # a person brought the ship up: the hour starts again from there
+            continue
+        try:
+            at = datetime.fromisoformat(item['at'])
+        except ValueError:
+            return LIMIT, True
+        if at.tzinfo is None or at > moment:
+            backwards = True
+        elif moment - at < WINDOW:
+            count += 1
+    return count, backwards
+
+
+def pass_once(service) -> str | None:
+    """One service pass: recover the ship if, and only if, its server is proved gone. Returns what it did."""
+    ship, tmux, runtime = service.ship, service.tmux, service.ship.runtime
+    data = read(runtime)
+    if data['stopped']:
+        return None  # a person's qd up clears it
+    members, stray = formerly_up(ship, tmux)
+    if not members:
+        return _settle_unknown(runtime, data, None)
+    gone, reason = server_gone(tmux)
+    if gone is False:
+        return _settle_unknown(runtime, data, None)
+    if gone is None:
+        return _settle_unknown(runtime, data, reason)
+    launches = []
+    for seat in members:
+        try:
+            launched = seat.launched()
+        except (OSError, ValueError, TypeError, ShipError):
+            return _settle_unknown(runtime, data, f'{seat.name} launch unreadable')
+        if launched is None:
+            continue  # taken down between the reads: a deliberate down wins
+        if not pid_dead(launched.pid):
+            return _settle_unknown(runtime, data, f'{seat.name} old launch process is not proved gone')
+        launches.append(seat)
+    if not launches:
+        return _settle_unknown(runtime, data, None)
+    for seat in launches:
+        try:
+            with seat._lifecycle(automatic=True):
+                pass
+        except ShipError:
+            return _settle_unknown(runtime, data, f'{seat.name} lifecycle busy; waiting, no attempt used')
+    moment = now()
+    count, backwards = window(data, moment)
+    if backwards or count >= LIMIT:
+        data['stopped'] = ('the clock reads earlier than the last attempt' if backwards
+                           else f'{count} attempts in the last hour')
+        data['unknown'] = None
+        save(runtime, data)
+        _report(service, f'ship tmux server gone; recovery stopped ({data["stopped"]}); needs a human: qd up')
+        return 'stopped'
+    attempt = dict(at=moment.isoformat(), outcome='started', seats=[seat.name for seat in launches])
+    data['attempts'].append(attempt)
+    data['unknown'] = None
+    save(runtime, data)  # consumed before any effect: a crash after this line still counts
+    from . import ship as shipmod
+    failures = []
+    try:
+        shipmod.fence(ship)
+    except (OSError, ShipError) as error:
+        failures.append(f'fence: {error}')
+    for seat in launches:
+        try:
+            seat.up(resume=True)
+        except Exception as error:  # every seat gets its one try; the outcome names each failure
+            failures.append(f'{seat.name}: {str(error)[:200]}')
+    for seat in launches:
+        try:
+            if not seat.is_up and not any(item.startswith(f'{seat.name}:') for item in failures):
+                failures.append(f'{seat.name}: not up after bring-up')
+        except Exception as error:
+            failures.append(f'{seat.name}: up state unknown: {str(error)[:120]}')
+    attempt['outcome'] = 'recovered' if not failures else 'failed: ' + '; '.join(failures)[:800]
+    if failures:
+        data['stopped'] = 'recovery failed: ' + '; '.join(failures)[:400]
+    save(runtime, data)
+    k = count + 1
+    if failures:
+        _report(service, f'ship tmux server was gone; recovery attempt {k} of {LIMIT} this hour failed '
+                         f'({"; ".join(failures)[:300]}); needs a human: qd up')
+        return 'failed'
+    note = f'; not declared, left alone: {", ".join(stray)}' if stray else ''
+    _report(service, f'ship tmux server was gone; recovered {len(launches)} seat(s) '
+                     f'({", ".join(seat.name for seat in launches)}), attempt {k} of {LIMIT} this hour{note}')
+    return 'recovered'
+
+
+def _settle_unknown(runtime: Path, data: dict, reason: str | None) -> str | None:
+    if data.get('unknown') != reason:
+        data['unknown'] = reason
+        save(runtime, data)
+    return f'unknown: {reason}' if reason else None
+
+
+def _report(service, text: str) -> None:
+    ship = service.ship
+    systems = [spec.name for spec in ship.seats.values() if spec.role == 'systems' and service._up(spec.name)]
+    desks = [spec.name for spec in ship.seats.values() if spec.role == 'desk']
+    for name in systems or desks:
+        service.store.new('report', 'ship', name, text)
+
+
+def status(runtime: Path) -> list[str]:
+    """Status-line facts: STOPPED needs a human; an unknown server is said, never silent."""
+    try:
+        data = read(runtime)
+    except ShipError as error:
+        return [str(error)]
+    lines = []
+    if data['stopped']:
+        lines.append(f'ship server gone: recovery stopped ({data["stopped"]}); needs a human: qd up')
+    elif data['unknown']:
+        lines.append(f'ship server unknown: {data["unknown"]}')
+    return lines
+
+
+def clear_by_person(runtime: Path) -> str | None:
+    """A person's qd up of the whole ship clears a stopped recovery and says so."""
+    try:
+        data = read(runtime)
+    except ShipError:
+        return None
+    if not data['stopped']:
+        return None
+    data['attempts'].append(dict(at=now().isoformat(), outcome=CLEARED, seats=[]))
+    data['stopped'], data['unknown'] = None, None
+    save(runtime, data)
+    return 'ship server recovery cleared by qd up'

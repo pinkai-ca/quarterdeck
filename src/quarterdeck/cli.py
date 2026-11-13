@@ -268,7 +268,11 @@ def cmd_up(args: argparse.Namespace) -> list[str] | str:
         proof = seat_of(ship, args.seat, launching=True).up(resume=not args.fresh, pool=getattr(args, 'pool', None))
         return proofs + [proof, service.start(ship)]
     tmux = Tmux.for_ship(ship)
-    return proofs + seatmod.bring_up(ship, tmux) + [service.start(ship)] + ([where(tmux)] if tmux.ship else [])
+    ups = seatmod.bring_up(ship, tmux)
+    from . import server_recovery
+    if cleared := server_recovery.clear_by_person(ship.runtime):  # a person brought the whole ship up
+        ups.append(cleared)
+    return proofs + ups + [service.start(ship)] + ([where(tmux)] if tmux.ship else [])
 
 
 def where(tmux: Tmux) -> str:

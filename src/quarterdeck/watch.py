@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from . import credential, idle, ledger, move_hold, pending as pending_delivery, post, providers, quota, record_owner, recovery, request_queue, servicectl as service
+from . import credential, idle, ledger, move_hold, server_recovery, pending as pending_delivery, post, providers, quota, record_owner, recovery, request_queue, servicectl as service
 from .door import Door, Reading
 from .harness.base import same_name
 from .harness.capabilities import selection_label
@@ -396,6 +396,7 @@ class Facts:
     sign_in_failures: list[str] = field(default_factory=list)  # retain seat and fixed failure on overflow
     request_waits: list[str] = field(default_factory=list)
     cutover: str = ""  # the ship still runs on tmux's default server, until one qd down and qd up
+    server_recovery: list[str] = field(default_factory=list)  # a gone ship server: stopped or unknown
 
     def line(self) -> str:  # law: nothing-waits-silently
         parts = ["SERVICE DOWN" if self.service == "down" else f"service {self.service}"]
@@ -421,6 +422,7 @@ class Facts:
         parts += [f"{name} held at limit" for name in self.held]
         parts += self.move_holds
         parts += self.request_waits
+        parts += self.server_recovery
         parts += self.routes
         parts += self.pending
         parts += [f"disk: {name} {pct}%" for name, pct in self.disks]
@@ -644,6 +646,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         queue_unknown=queue_unknown,
         compactions=compactions,
         manual_fresh=compaction_alert.unrouted(ship, [seat for seat in selected if not isinstance(seat, UnresolvedSeat)]),
+        server_recovery=server_recovery.status(ship.runtime),
         held=held,
         move_holds=move_reasons,
         request_waits=[request_queue.headline(row) for row in

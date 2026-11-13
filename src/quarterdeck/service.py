@@ -142,7 +142,7 @@ class Service:
             self.log("error", step="load", error=str(error))
         self.rebind()
         self.structure_passes.begin()
-        for step in (self.reconcile, self.account, self.groups, self.cascades, self.inboxes, self.recoveries, self.refusals, self.answers, self.deliveries, self.follow, self.requests, self.compactions, self.person_quiet, self.fresh_after_order,
+        for step in (self.server_recovery, self.reconcile, self.account, self.groups, self.cascades, self.inboxes, self.recoveries, self.refusals, self.answers, self.deliveries, self.follow, self.requests, self.compactions, self.person_quiet, self.fresh_after_order,
                      self.rebrief, self.credentials, self.authentications, self.failover):  # accounting before anything relaunches a seat
             self.heartbeat()  # before every step: a slow delivery or usage read reads as busy, never as dead
             try:
@@ -200,6 +200,13 @@ class Service:
                 found.append(seat)
         return found
 
+
+    def server_recovery(self) -> None:
+        """The ship's own tmux server proved gone: bring back exactly the formerly-up seats, at most twice an hour."""
+        from . import server_recovery
+        done = server_recovery.pass_once(self)
+        if done and not done.startswith('unknown'):
+            self.log('server-recovery', outcome=done)
 
     def reconcile(self) -> None:
         """Reconcile journals first, then unjournaled attempts through the same fresh receipt rule.
