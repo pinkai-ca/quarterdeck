@@ -26,6 +26,7 @@ def ship_view(tmp_path, monkeypatch):
     ship = Ship(tmp_path, 'synthetic', 'operator', tmp_path, pools, {'crew': Session('crew', 'Crew')}, {})
     monkeypatch.setattr(post, 'now', lambda: AT)
     monkeypatch.setattr(watch, 'service_state', lambda _: 'ok')
+    monkeypatch.setattr(watch.accounting_health, 'reading', lambda _: None)  # a running service's healthy accounting
     monkeypatch.setattr(watch, 'disks', lambda _: [])
     monkeypatch.setattr(watch.credential, 'login_needed', lambda _: [])
     monkeypatch.setattr(get('claude'), 'screen', lambda box: Screen('Synthetic screen', box))

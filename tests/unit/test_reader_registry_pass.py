@@ -465,8 +465,8 @@ def test_an_account_pass_that_fails_leaves_no_membership_behind(tmp_path, monkey
     monkeypatch.setattr(seat.harness, 'read', broken)
     spy = Spy(monkeypatch)
     try:
-        with pytest.raises(RuntimeError, match='synthetic reader failure q'):
-            w.svc.account()
+        w.svc.account()  # the pass fails; the service counts it rather than raising
+        assert (w.svc.accounting_health.failures, w.svc.accounting_health.current) == (1, 'accounting exception')
         parsed = spy.ownership(registry)
         assert parsed == 1
         record_owner.bindings(seat)
