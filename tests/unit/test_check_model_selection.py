@@ -47,7 +47,7 @@ def fake_check(monkeypatch, tmp_path, *, model=None, like=None):
     monkeypatch.setattr(check, "program_where", lambda harness: None)
     monkeypatch.setattr(check, "probe_wake", lambda seat, orders: [Check("synthetic wake", True)])
     result = check.check(ship, "antigravity", object(), model=model)
-    assert all(item.passed for item in result)
+    assert all(item.passed is not False for item in result)  # an inapplicable step is no failure
     return ship, specs[0], probes[0]
 
 

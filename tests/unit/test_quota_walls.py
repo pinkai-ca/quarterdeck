@@ -3,6 +3,7 @@
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import json
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -97,7 +98,7 @@ def test_record_wall_survives_idle_later_input_restart_and_blocks_delivery(tmp_p
     for session in seat.ship.sessions:
         monkeypatch.setenv('TMUX',f'synthetic-{session}')
         line=watch.line(seat.ship,seat.tmux)
-        assert f'{seat.name} held at limit' in line  # law: nothing-waits-silently
+        assert re.search(rf'{seat.name} \([^)]*\) held at limit', line)  # law: nothing-waits-silently
         assert 'google-a' not in line and 'reset' not in line
 
 
@@ -109,7 +110,7 @@ def test_screen_fallback_is_stable_then_yields_to_matching_record_time(tmp_path,
     reading = Door(seat).reading()
     assert not reading.open and 'estimated from first screen observation' in reading.reason, 'the banner alone holds the door, before anything is written'
     tick(seat)
-    assert f'{seat.name} held at limit' in watch.line(seat.ship,seat.tmux)
+    assert re.search(rf'{seat.name} \([^)]*\) held at limit', watch.line(seat.ship,seat.tmux))
     book=Ledger(seat.ship.runtime/'ledger.sqlite')
     first=book.db.execute('SELECT at,resets_at,observed_at FROM wall_events').fetchone()
     assert 'estimated from first screen observation' in book.quota.walls()[0]

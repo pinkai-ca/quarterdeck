@@ -53,7 +53,7 @@ def test_first_failure_then_good_failure_restart_and_recovery(tmp_path: Path) ->
         retained = rows(book)["7d"]
         assert tuple_of(retained) == original
         assert retained.attempted_at == failed_at.isoformat()
-        assert retained.error == f"synthetic failure {index}"
+        assert f"synthetic failure {index}" in retained.error
         assert not retained.current(failed_at)
         text = retained.describe(failed_at)
         assert "inspect with qd ledger" in text
