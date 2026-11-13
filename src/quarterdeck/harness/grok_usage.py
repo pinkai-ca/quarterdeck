@@ -20,8 +20,9 @@ def decode(result: object, at: datetime) -> Usage:
     """Only an explicit weekly meter establishes a window; absence is unknown."""
     config = result.get("config") if isinstance(result, dict) else None
     tier = result.get("subscription_tier") if isinstance(result, dict) else None
-    diagnostics = ((f"native subscription tier: {tier}",) if tier in ("Free", "SuperGrok", "SuperGrokHeavy")
-                   else ("native subscription tier unavailable or unrecognized",))
+    # The tier is a live billing fact apart from the weekly window; its value, a plan name, is never named or shown.
+    diagnostics = (("native subscription tier reported",) if isinstance(tier, str) and tier.strip()
+                   else ("native subscription tier unavailable",))
     period = config.get("currentPeriod") if isinstance(config, dict) else None
     if not isinstance(period, dict) or period.get("type") != "USAGE_PERIOD_TYPE_WEEKLY":
         return Usage((), at, "billing did not report a recognized weekly period", diagnostics=diagnostics)

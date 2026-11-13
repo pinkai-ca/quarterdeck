@@ -58,9 +58,21 @@ def test_absent_percentage_stays_unknown():
 
 def test_live_tier_is_separate_from_weekly_measurement():
     payload = json.loads((FIXTURES / "billing.json").read_text())
-    payload["subscription_tier"] = "SuperGrok"
+    payload["subscription_tier"] = "SyntheticTier"
     usage = decode(payload, datetime(2040, 1, 2, tzinfo=timezone.utc))
-    assert usage.diagnostics == ("native subscription tier: SuperGrok",)
+    assert usage.diagnostics == ("native subscription tier reported",)
+    assert usage.windows[0].used == .375
+
+
+@pytest.mark.parametrize("tier", [None, "", "  ", 3, ["SyntheticTier"]])
+def test_an_absent_or_unreadable_tier_is_said_and_leaves_the_weekly_window_alone(tier):
+    payload = json.loads((FIXTURES / "billing.json").read_text())
+    if tier is None:
+        del payload["subscription_tier"]
+    else:
+        payload["subscription_tier"] = tier
+    usage = decode(payload, datetime(2040, 1, 2, tzinfo=timezone.utc))
+    assert usage.diagnostics == ("native subscription tier unavailable",)
     assert usage.windows[0].used == .375
 
 

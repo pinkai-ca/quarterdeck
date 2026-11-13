@@ -1,6 +1,6 @@
 
  ▐▛███▛█   Claude Code v2.1.317
-▝▜██████▀  Haiku 5.5 with low effort · Claude Max
+▝▜██████▀  Haiku 5.5 with low effort · Synth Plan
  ▝▝   ▝▝   ~/work
 
 ▎ Auto mode is now Claude Code's default permission mode.
