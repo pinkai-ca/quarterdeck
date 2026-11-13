@@ -148,8 +148,8 @@ def test_a_pass_that_fails_after_staged_writes_rolls_back_rows_and_publishes_no_
 
     with monkeypatch.context() as patch:
         patch.setattr(Attribution, 'replay', replay_then_fail)
-        with pytest.raises(RuntimeError, match='synthetic failure'):
-            svc.account()
+        svc.account()  # the pass fails; the service counts it rather than raising
+    assert (svc.accounting_health.failures, svc.accounting_health.current) == (1, 'accounting exception')
     assert not svc.ledger.db.in_transaction
     assert counts(svc.ledger.db) == baseline, 'no row of the failed pass survives'
     assert caches(svc) == before, 'no fingerprint, retry state or attribution stamp ran ahead of the rows'
@@ -181,8 +181,8 @@ def test_a_commit_refused_by_a_concurrent_reader_rolls_back_and_the_next_pass_co
         status.execute('BEGIN')
         assert status.execute('SELECT COUNT(*) FROM turns').fetchone() == (1,)  # holds its read lock
         svc.ledger.db.execute('PRAGMA busy_timeout=50')
-        with pytest.raises(sqlite3.OperationalError):
-            svc.account()
+        svc.account()  # the commit is refused; the service counts it rather than raising
+        assert (svc.accounting_health.failures, svc.accounting_health.current) == (1, 'database busy')
         assert status.execute('SELECT COUNT(*) FROM turns').fetchone() == (1,), 'the reader saw one consistent book'
     finally:
         status.rollback()
