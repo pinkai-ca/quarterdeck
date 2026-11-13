@@ -553,8 +553,9 @@ class Service:
             return f"{name} written; qd restart {seat.name} applies it{unchecked}"
         if not seat.is_up:
             return f"{name} written; {seat.name} is down, so qd up {seat.name} applies it{unchecked}"
-        if seat.is_working():
-            return None  # at the turn's end
+        _, hold = self.idle_reading(seat)
+        if hold is not None:
+            return None  # ordinary work, including other background tasks, still waits
         door = Door(seat)
         command = control.command(value)
         delivery = door.deliver(command, confirm=False)
@@ -821,6 +822,8 @@ class Service:
         except OSError:
             hold = idle.Hold('record', 'its record is unreadable')
         else:
+            if state is not None:
+                state = idle.execution(seat, state)
             hold = idle.check(state) if state is not None else idle.Hold('record', 'it has no joined record')
         if move_hold.generation(seat) != binding:
             state = None

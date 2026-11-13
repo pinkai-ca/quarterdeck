@@ -237,6 +237,9 @@ def current(seat):
     reading = seat.harness.compactions(joined.record)
     if reading.reason or reading.count is None or reading.state is None:
         raise ShipError(reading.reason or 'compaction count unknown')
+    from dataclasses import replace
+    from . import idle
+    reading = replace(reading, state=idle.execution(seat, reading.state))
     if launched and launched.resume and launched.resume != reading.conversation:
         raise ShipError('saved resume does not name the joined native conversation')
     if seat.launched() != launched:

@@ -1,6 +1,6 @@
 """One ordinary live idle proof, independent of routing and explicit question recovery."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .harness.types import State
 
@@ -36,6 +36,8 @@ def tool_reason(state: State) -> str | None:
         # Tool names are bounded single-line labels, not source text or command arguments.
         label = ''.join(c for c in name if c.isascii() and (c.isalnum() or c in '._-'))[:64] or 'tool'
         item = next((item for item in observed if item.name == name), None)
+        if item is not None and item.inbox_watch_started is not None:
+            label = 'inbox watch (registration unproved)'
         since = item.started.isoformat() if item is not None and item.started is not None else 'unknown'
         details.append(f'{label} since {since}')
     if len(state.pending_tools) > 3:
@@ -43,8 +45,29 @@ def tool_reason(state: State) -> str | None:
     return 'tools pending: ' + '; '.join(details)
 
 
-def check(state: State) -> Hold | None:
+def execution(seat, state: State) -> State:
+    """A registered own inbox watch is infrastructure, while all other work stays pending."""
+    if state.pending_tools is None or not state.pending_tools:
+        return state
+    if tuple(tool.name for tool in state.active_tools) != state.pending_tools:
+        return state
+    candidates = [index for index, tool in enumerate(state.active_tools)
+                  if tool.inbox_watch_started is not None]
+    if len(candidates) != 1:
+        return state
+    from . import inbox_watch
+    index = candidates[0]
+    if not inbox_watch.current(seat, state.active_tools[index].inbox_watch_started):
+        return state
+    return replace(state,
+                   pending_tools=state.pending_tools[:index] + state.pending_tools[index + 1:],
+                   active_tools=state.active_tools[:index] + state.active_tools[index + 1:])
+
+
+def check(state: State, seat=None) -> Hold | None:
     """Unknown is never empty. Only native, timed active-input completion supplies proof."""
+    if seat is not None:
+        state = execution(seat, state)
     if state.turn_open is not False:
         key = 'turn-open' if state.turn_open is True else 'turn-unknown'
         return Hold(key, REASONS[key])

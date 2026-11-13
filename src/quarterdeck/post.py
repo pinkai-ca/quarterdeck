@@ -515,9 +515,8 @@ def wait_batch(runtime: Path, seat: str, interval: float = 1.0, stop_after: floa
     is armed. Nothing is typed into the seat's pane: this is the Office's one path.
     """
     store, attempts = Store(runtime), Attempts(runtime)
-    path = watch_file(runtime, seat)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(f"{os.getpid()} {now().isoformat(timespec='seconds')}\n")
+    from . import inbox_watch
+    registration = inbox_watch.register(runtime, seat)
     deadline = None if stop_after is None else datetime.now().timestamp() + stop_after
     try:
         while True:
@@ -530,7 +529,7 @@ def wait_batch(runtime: Path, seat: str, interval: float = 1.0, stop_after: floa
                 return None
             time.sleep(interval)
     finally:
-        path.unlink(missing_ok=True)
+        inbox_watch.retire(runtime, seat, registration)
 
 
 def wait(runtime: Path, seat: str, interval: float = 1.0, stop_after: float | None = None) -> tuple[str, list[Attempt]] | None:

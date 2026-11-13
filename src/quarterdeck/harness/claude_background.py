@@ -53,6 +53,7 @@ class Task:
     phase: str = 'pending'
     terminal: str | None = None
     invalid: bool = False
+    inbox_watch_started: datetime | None = None
 
 
 class BackgroundBash:
@@ -73,7 +74,8 @@ class BackgroundBash:
         if call in self.calls or call in self.tasks:
             self.unknown_calls.add(call)
         wanted = arguments.get('run_in_background', False) if name == 'Bash' else arguments.get('task_id')
-        self.calls[call] = name, wanted, at, version
+        watch = name == 'Bash' and arguments.get('command') == 'qd inbox --wait'
+        self.calls[call] = name, wanted, at, version, watch
         if name == 'Bash' and (not isinstance(wanted, bool) or wanted and version != VERSION):
             self.unknown_calls.add(call)
 
@@ -81,7 +83,7 @@ class BackgroundBash:
         info = self.calls.pop(call, None)
         if info is None:
             return
-        name, wanted, called_at, version = info
+        name, wanted, called_at, version, watch = info
         result = entry.get('toolUseResult')
         supported = version == VERSION and entry.get('version') == VERSION
         if name == 'Bash':
@@ -94,7 +96,8 @@ class BackgroundBash:
                     or call in self.tasks or task in self.task_calls):
                 self.unknown_calls.add(call)
                 return
-            self.tasks[call] = Task(call, task, at, at)
+            self.tasks[call] = Task(call, task, at, at,
+                                    inbox_watch_started=called_at if watch else None)
             self.task_calls[task] = call
             return
         # A failed stop ends only the TaskStop invocation, never the Bash task.
@@ -189,4 +192,5 @@ class BackgroundBash:
         return replace(state,
                        pending_tools=None if state.pending_tools is None or unknown else
                        state.pending_tools + tuple('Bash' for task in active),
-                       active_tools=state.active_tools + tuple(ActiveTool('Bash', task.started) for task in active))
+                       active_tools=state.active_tools + tuple(
+                           ActiveTool('Bash', task.started, task.inbox_watch_started) for task in active))

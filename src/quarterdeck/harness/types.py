@@ -185,6 +185,7 @@ class ActiveTool:
 
     name: str
     started: datetime | None = None
+    inbox_watch_started: datetime | None = None  # exact native command candidate, not permission
 
 
 @dataclass(frozen=True)
