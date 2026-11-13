@@ -120,11 +120,12 @@ def model_confirmation(seat: Seat, requested: str, *, require_record: bool = Fal
     except OSError:
         state = None
     recorded = state.model if state else None
-    screen = Door(seat).screen() if not recorded and not require_record else None
+    screen = Door(seat).screen()
     shown = screen.shows.get("model") if screen else None
     observed = recorded or shown
     launched = seat.spec.model
     passed = (launched == requested and seat.harness.model_matches(requested, observed) is True
+              and (not shown or seat.harness.model_matches(requested, shown) is True)
               and (not require_record or recorded is not None))
     detail = (f"requested {requested} · launched {launched or '?'} · record-observed {recorded or '?'}"
               + (f" · screen-observed {shown}" if shown else ""))

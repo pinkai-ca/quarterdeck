@@ -76,6 +76,7 @@ def test_requested_model_is_confirmed_record_first(monkeypatch):
     harness.state = lambda record: SimpleNamespace(model="model-synth")
     seat = SimpleNamespace(harness=harness, spec=SimpleNamespace(model="model-synth"),
                            record=lambda: Path("record-synth"))
+    monkeypatch.setattr(check, "Door", lambda seat: SimpleNamespace(screen=lambda: Screen("", shows={})))
     result = check.model_confirmation(seat, "model-synth", require_record=True)
     assert result.passed
     assert "requested model-synth" in result.detail
