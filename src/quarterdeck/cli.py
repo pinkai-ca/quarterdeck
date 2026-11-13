@@ -832,7 +832,7 @@ def cmd_upgrade(args: argparse.Namespace) -> list[str] | Reading:
             raise ShipError('--all selects project ships; omit --ship')
         from . import sync_all
 
-        data = sync_all.run(standing.PROJECT_DIR, args.ref or 'HEAD', Tmux.default(), force=force)
+        data = sync_all.run(standing.PROJECT_DIR, args.ref or 'HEAD', force=force)
         args.exit_code = 0 if data['ok'] else 2
 
         def render(value):

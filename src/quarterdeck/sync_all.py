@@ -10,6 +10,7 @@ from pathlib import Path
 
 from . import copy_state, install, ship as shipmod
 from .ship import ShipError
+from .tmux import Tmux
 
 
 def observe(folder: Path) -> tuple[str | None, str | None]:
@@ -72,7 +73,7 @@ def plan(project: Path) -> list[dict]:
     return rows
 
 
-def run(project: Path, ref: str = 'HEAD', tmux=None, *, force: bool = False) -> dict:
+def run(project: Path, ref: str = 'HEAD', *, force: bool = False) -> dict:
     """Resolve once, call the ordinary installer serially, stop on any failure."""
     target = install.resolve_target(project, ref)
     rows = plan(project)
@@ -89,7 +90,7 @@ def run(project: Path, ref: str = 'HEAD', tmux=None, *, force: bool = False) -> 
             stopped = True
             continue
         try:
-            row['proof'] = install.upgrade(ship, ref, tmux, force=force, target=target)
+            row['proof'] = install.upgrade(ship, ref, Tmux.for_ship(ship), force=force, target=target)
             commit, reason = observe(ship.folder)
             row.update(commit=commit, reason=reason)
             if commit != target[1] or reason is not None:

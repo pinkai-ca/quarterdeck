@@ -25,6 +25,8 @@ def write_ship(project, name, *, checkout=False):
 
 
 def modeled_project(tmp_path, monkeypatch, *, fail=None, after_failure=None, marked=True):
+    # Keep modeled installer tests independent of the host's running servers.
+    monkeypatch.setattr(sync_all.Tmux, 'for_ship', lambda ship: SimpleNamespace(ship=ship.folder))
     project = tmp_path / 'synthetic-project-zzzz'
     crew = ['alpha-crew-zzzz', 'beta-crew-zzzz']
     office = 'aaa-office-zzzz'  # sorts first, but the explicit mark must put it last
@@ -259,3 +261,33 @@ def test_upgrade_all_alias_note_is_once_and_json_data_is_unmodified(tmp_path, mo
     text = capsys.readouterr().out
     assert text.count('`upgrade` is now `qd sync`') == 1
     assert 'synced to ' + TARGET in text
+
+
+def test_cli_all_passes_each_ships_own_server_to_its_installer(tmp_path, monkeypatch, capsys):
+    from quarterdeck import standing
+    from quarterdeck.tmux import Tmux, ship_socket
+
+    project = tmp_path / 'synthetic-two-ships-zzzz'
+    folders = [write_ship(project, name) for name in ['alpha-zzzz', 'beta-zzzz']]
+    states = {folder: OLD for folder in folders}
+    servers = []
+    monkeypatch.setattr(standing, 'PROJECT_DIR', project)
+    for name in ['QD_SHIP', 'QD_SEAT', 'QD_TMUX_SOCKET']:
+        monkeypatch.delenv(name, raising=False)
+    # No legacy servers in this synthetic project; use the real per-ship selector.
+    monkeypatch.setattr(Tmux, 'defaults', lambda own: [])
+    monkeypatch.setattr(install, 'resolve_target', lambda project, ref: (project, TARGET))
+    monkeypatch.setattr(sync_all, 'observe', lambda folder: (states[folder], None))
+
+    def upgrade(ship, ref, tmux, *, force=False, target=None):
+        assert tmux.socket == str(ship_socket(ship))
+        servers.append((ship.folder, tmux))
+        states[ship.folder] = target[1]
+        return ['synthetic copy checked']
+
+    monkeypatch.setattr(install, 'upgrade', upgrade)
+    assert cli.main(['sync', '--all']) == 0
+    assert [folder for folder, _ in servers] == folders
+    assert len({server.socket for _, server in servers}) == 2
+    assert servers[0][1] is not servers[1][1]
+    assert capsys.readouterr().out.count('synced to ' + TARGET) == 2
