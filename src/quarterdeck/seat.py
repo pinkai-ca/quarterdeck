@@ -411,7 +411,11 @@ class Seat:
         return False
 
     def is_working(self) -> bool:
-        """Whether a turn is open: from the record first, from the screen when its state is unknown."""
+        """Whether a turn is open: from the record first, from the screen when its state is unknown.
+
+        A screen that cannot show it, or a pane that cannot be read, answers True: every caller holds
+        on working, and none may act as if the seat were idle on what it could not see (law: record-first).
+        """
         pane = self.pane()
         if pane is None or pane.dead:
             return False
@@ -423,7 +427,7 @@ class Seat:
             if turn_open is not None:
                 return turn_open  # law: record-first
         found = self.read_pane()
-        return bool(found and self.harness.screen(found[1]).working)
+        return found is None or self.harness.screen(found[1]).working is not False
 
     def record(self) -> Path | None:
         return self.join().record

@@ -176,6 +176,8 @@ class Door:
         if screen.box is None and not screen.text.strip():
             return Reading(False, "blank screen, the program is starting or drawing", "time")
         if screen.box is None:
+            if self.starting_up():
+                return Reading(False, "starting, the input box is not drawn yet", "time")
             return Reading(False, "box not found on the screen", "needs a human")
         if screen.box.strip():
             return Reading(False, "text in the box", "needs a human")
@@ -184,6 +186,17 @@ class Door:
         if not self.harness.startup_ready(getattr(self.seat, 'home', None)):
             return Reading(False, "starting, waiting for the program's startup choice", "time")
         return Reading(True, working=screen.working)
+
+    def starting_up(self) -> bool:
+        """Within the launch's start-up bound: a boxless frame then is the program drawing, not a fault."""
+        launched = self.seat.launched()
+        try:
+            at = datetime.fromisoformat(launched.at) if launched else None
+        except (TypeError, ValueError):
+            return False
+        if at is None or at.tzinfo is None:
+            return False
+        return 0 <= (datetime.now(timezone.utc) - at).total_seconds() < self.harness.start_seconds
 
     def human_obstruction(self) -> tuple[Reading, str | None]:
         """Alarm evidence only: confirm an unknown frame twice, never grant Door authority."""

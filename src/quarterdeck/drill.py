@@ -171,7 +171,7 @@ class Drill:
         gate = Rendezvous(captain.home, "accept", marker, self.patience * 2) if captain.harness.synthetic else None
         with gate or nullcontext():
             ready = wait_for(lambda: (pane := captain.pane()) and
-                             not captain.harness.screen(self.tmux.capture(pane.id)).working, self.patience)
+                             captain.harness.screen(self.tmux.capture(pane.id)).working is False, self.patience)
             if not ready:
                 self.check("service killed mid-delivery, recovered", False, "seat never became idle; no crash claimed")
                 return

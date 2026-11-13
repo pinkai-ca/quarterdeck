@@ -293,7 +293,9 @@ class Screen:
 
     text: str
     box: str | None
-    working: bool = False
+    # True when the program's working sign is seen; False only when the part that decides it, the box,
+    # is seen without that sign; None (unknown) otherwise (law: record-first: no default reported as a fact).
+    working: bool | None = None
     interruption: Interruption | None = None
     unknown: str | None = None
     queued: int = 0
@@ -304,6 +306,12 @@ class Screen:
     # A composer the adapter knows only as drawn after this question was answered: read unknown here, and
     # idle only where the launch's own record shows that question answered and cleared (the Door decides).
     fresh: str | None = None
+
+    def __post_init__(self):
+        # Not seeing the working sign proves idle only where the deciding part of the screen was read:
+        # no box, an unknown layout, a start-up frame or a composer unread as fresh is unknown, never idle.
+        if self.working is not True and (self.box is None or self.unknown or self.starting or self.fresh):
+            object.__setattr__(self, 'working', None)
 
 
 def _cells(text: str) -> int | None:

@@ -37,7 +37,7 @@ def ready_for_probe(seat: Seat, door: Door) -> bool:
     if not seat.harness.opening_prompt_turn:
         return True
     record = seat.record()
-    if record is None or opened.working:
+    if record is None or opened.working is not False:
         return False
     try:
         state = seat.harness.state(record)
@@ -268,7 +268,7 @@ def _probe_wake(seat: Seat, orders: list[post.Message], observed: dict) -> list[
         screen = door.screen()
         reading = door._reading(screen)
         observed['reason'] = reading.reason
-        if screen is not None and screen.box == '' and not screen.working and not screen.queued and reading.open:
+        if screen is not None and screen.box == '' and screen.working is False and not screen.queued and reading.open:
             return True
         return False
 

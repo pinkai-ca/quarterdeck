@@ -432,7 +432,7 @@ def obstruction(seat, data, record, reading):
     if any(message.id != request.id for message in attempts.undelivered(store, seat.name)):
         return 'incoming work has not reached the seat; automatic fresh held'
     screen = Door(seat).screen()
-    if (screen is None or screen.box != '' or screen.working or screen.queued
+    if (screen is None or screen.box != '' or screen.working is not False or screen.queued
             or screen.unknown or screen.interruption or screen.starting):
         return 'composer/queue not proved empty and idle'
     if not open_handoff(seat.ship.runtime, data):

@@ -67,7 +67,7 @@ def require_clear(seat):
 
 def _idle(state, screen):
     return (state.turn_open is False and state.pending_tools == () and not state.queued
-            and screen is not None and screen.box == '' and not screen.working and not screen.queued
+            and screen is not None and screen.box == '' and screen.working is False and not screen.queued
             and not screen.unknown and not screen.interruption and not screen.starting)
 
 
@@ -98,7 +98,7 @@ def _current(seat, proof=None, *, occupied=False):
         if (errors or any(p.path != proof.path and p.data['phase'] not in pending.TERMINAL for p in proofs)
                 or mode_hold(seat, proofs, proof) or door.wall(screen)
                 or state.turn_open is not False or state.pending_tools != () or state.queued
-                or screen is None or screen.working or screen.queued or screen.unknown or screen.interruption or screen.starting
+                or screen is None or screen.working is not False or screen.queued or screen.unknown or screen.interruption or screen.starting
                 or not door.matches(seat.harness.box(proof.data['payload']), screen)):
             return None  # only this already-verified paste may occupy the box before its submit check
     elif not _idle(state, screen) or not door.reading(screen).open:
@@ -191,12 +191,12 @@ def _restore(seat, proof):
                          and record_owner.pinned_reader(seat, record) == seat.harness.name
                          and state is not None and state.turn_open is True and state.pending_tools == () and not state.queued
                          and native is not None and meta['recovery_input'] in (None, native)
-                         and screen is not None and screen.box == '' and screen.working and not screen.queued
+                         and screen is not None and screen.box == '' and screen.working is True and not screen.queued
                          and not screen.unknown and not screen.interruption and not screen.starting
                          and not Door(seat).wall(screen) and client.mode(state, screen) == 'off'
                          and wait_fact(record, meta['source'], native, proof.data['payload'],
                                        datetime.fromisoformat(proof.data['since']), state))
-            if safe_wait or (known_work and (state.turn_open or state.pending_tools or state.queued or (screen and screen.working))):
+            if safe_wait or (known_work and (state.turn_open or state.pending_tools or state.queued or (screen is not None and screen.working is True))):
                 _save(proof, recovery_input=native, error=None)  # ordinary work, not a request for a human
             else:
                 _save(proof, error='fresh recovery source/receipt/idle/box evidence unknown; original mode not restored')

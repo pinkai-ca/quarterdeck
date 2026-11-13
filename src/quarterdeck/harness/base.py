@@ -303,6 +303,9 @@ class Harness(ABC):
     answers_questions: bool = False  # declares a question with a fixed answer (Interruption.click) to watch for
     # Versions whose composer drawn just after that question is answered has been measured (see Screen.fresh).
     fresh_versions: frozenset[str] = frozenset()
+    # How long after its launch a program may take to draw its input box. Within it a frame with no box,
+    # no dialog and no unknown layout is the program still starting, not an obstruction (ord-3645).
+    start_seconds: float = 60.0
 
     def question_cleared(self, text: str, question: Interruption) -> bool:
         """After the framework answered ``question``: it is gone and an empty composer is drawn."""

@@ -19,7 +19,7 @@ def record_binding(seat):
 def context(seat,text,screen):
     launch=seat.launched();pane=seat.pane()
     if (not launch or not launch.version or not pane or pane.dead or pane.in_mode
-            or screen is None or screen.box!='' or screen.working or screen.interruption
+            or screen is None or screen.box!='' or screen.working is not False or screen.interruption
             or screen.unknown or screen.starting):return None
     return dict(format=1,identity=pending.identity(seat),adapter=seat.harness.name,version=launch.version,
                 geometry=[pane.width,pane.height],payload=hashlib.sha256(text.encode()).hexdigest(),
@@ -49,7 +49,7 @@ def owner(door,text,screen):
         if (seat.session.human or not proof or proof.data['phase']!='prepared'
                 or proof.data['payload']!=text or not proof.same_launch(seat)
                 or proof.data.get('recovery') or screen is None or screen.box!=''
-                or screen.working or screen.unknown or screen.interruption):return None
+                or screen.working is not False or screen.unknown or screen.interruption):return None
         view=seat.tmux.session_view(seat.session.title)
         if view is None or view.scrolling or any(at>=int(door.since.timestamp()) for at in view.inputs):return None
         return dict(identity=pending.identity(seat),inputs=view.inputs,record=record_binding(seat))
@@ -62,7 +62,7 @@ def clear(door,text,owned,failed,seconds):
     try:
         if not owned or seat.session.human or proof.data['phase']!='pasting' or not proof.same_launch(seat):return None
         screen=door.screen();pane=seat.pane();launch=seat.launched()
-        if (not pane or not launch or pane.in_mode or pane.dead or screen is None or screen.working
+        if (not pane or not launch or pane.in_mode or pane.dead or screen is None or screen.working is not False
                 or screen.unknown or screen.interruption or screen.starting or not proof.same_launch(seat)
                 or pending.identity(seat)!=owned['identity'] or record_binding(seat)!=owned['record']
                 or proof.confirmed(seat) is not None):return None
@@ -98,7 +98,7 @@ def clear(door,text,owned,failed,seconds):
         while True:
             empty=door.screen()
             if not proof.same_launch(seat):return None
-            if (empty is not None and empty.box=='' and not empty.working and not empty.unknown
+            if (empty is not None and empty.box=='' and empty.working is False and not empty.unknown
                     and not empty.interruption and not empty.starting):break
             if time.monotonic()>=deadline:return None
             time.sleep(.05)

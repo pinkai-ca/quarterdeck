@@ -346,7 +346,7 @@ def render_full(data: dict) -> list[str]:
                      f"{done.get('at')} · {done.get('outcome')}")
     screen = data["screen"]
     if screen:
-        lines.append(f"  screen: box {screen.box!r} · working {screen.working} · queued {screen.queued} · shows {screen.shows}")
+        lines.append(f"  screen: box {screen.box!r} · working {'unknown, not seen' if screen.working is None else screen.working} · queued {screen.queued} · shows {screen.shows}")
         if screen.interruption or screen.unknown:
             lines.append(f"  notice: {screen.interruption.name if screen.interruption else 'unknown: ' + screen.unknown}")
     return lines + render_headlines(data["usage"])

@@ -353,7 +353,7 @@ def screen_hold(screen) -> str | None:
         return 'human wake box unknown or obstructed; untouched'
     if screen.box != '':
         return BOX
-    if screen.working or screen.queued:
+    if screen.working is not False or screen.queued:
         return 'human wake waiting for screen work to end'
     return None
 

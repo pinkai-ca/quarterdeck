@@ -356,7 +356,7 @@ def _proof(seat, order, *, readonly=False):
         return None, 'input association unknown'
     door = Door(seat)
     screen = door.screen()
-    if (screen is None or screen.box != '' or screen.working or screen.queued
+    if (screen is None or screen.box != '' or screen.working is not False or screen.queued
             or screen.unknown or screen.interruption or screen.starting
             or (seat.harness.synthetic and not screen.shows) or not door.reading(screen).open):
         return None, 'seat active'
