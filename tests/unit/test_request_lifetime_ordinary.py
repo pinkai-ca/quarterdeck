@@ -186,3 +186,14 @@ def test_direct_act_retires_queued_relaunch_before_existing_manual_action(runtim
     monkeypatch.setattr(cli, 'seat_of', lambda *args: seat)
     proof = cli.relaunch(ship, SEAT, True)
     assert proof.startswith('synthetic direct restart') and path.stem in proof
+
+
+def test_unknown_time_keeps_known_target_visible_and_withdrawable(runtime):
+    path = enqueue(runtime)
+    data = request_queue.load(path)
+    data['created_at'] = 'synthetic unknown time'
+    path.write_text(json.dumps(data))
+    [row] = request_queue.pending(runtime, SEAT)
+    assert row['seat'] == SEAT and row['since'] is None and row['claimed'] is False
+    assert 'unknown' in row['dimension'] and path.stem in request_queue.describe(row)
+    assert 'cancelled' in request_queue.cancel(runtime, SEAT, path.stem)

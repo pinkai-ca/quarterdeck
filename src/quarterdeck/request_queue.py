@@ -63,6 +63,16 @@ def created(path, data):
     return at.isoformat()
 
 
+def claimed(path):
+    try:
+        path.with_suffix('.claimed').lstat()
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+
+
 def view(path, data=None):
     """Operational metadata only, never control arguments or a conversation."""
     data = load(path) if data is None else data
@@ -75,12 +85,13 @@ def view(path, data=None):
         kind = 'restart' if data.get('resume') is True else 'fresh' if data.get('resume') is False else 'relaunch'
     return dict(id=path.stem, seat=data.get('seat'), kind=kind, since=created(path, data),
                 reason=reason, dimension=waiting.get('dimension', 'unknown') if isinstance(waiting, dict) else 'unknown',
-                claimed=path.with_suffix('.claimed').exists())
+                claimed=claimed(path))
 
 
 def pending(runtime, name=None):
     rows = []
     for path in sorted((runtime / 'requests').glob('*.json')):
+        data = None
         try:
             before = path.stat()
             data = load(path)
@@ -97,18 +108,20 @@ def pending(runtime, name=None):
         except FileNotFoundError:
             continue  # a settled request disappeared; never write to repair a reading
         except (OSError, ValueError, TypeError, ShipError):
-            if name is None:
-                rows.append(dict(id=path.stem, seat=None, kind='unknown', since=None,
-                                 reason='request metadata unreadable', dimension='unknown', claimed=True))
+            target = data.get('seat') if isinstance(data, dict) and isinstance(data.get('seat'), str) else None
+            if name is None or target == name:
+                rows.append(dict(id=path.stem, seat=target, kind='unknown', since=None,
+                                 reason='request metadata unreadable', dimension='unknown', claimed=claimed(path)))
     return rows
 
 
 def describe(row):
-    claimed = '; outcome unknown, already claimed' if row['claimed'] else ''
+    claim = ('; outcome unknown, already claimed' if row['claimed'] is True else
+             '; claim state unknown' if row['claimed'] is None else '')
     target = row['seat'] or 'unknown seat'
-    cancel = f'; cancel: qd restart {target} --cancel {row["id"]}' if row['seat'] and not row['claimed'] else ''
+    cancel = f'; cancel: qd restart {target} --cancel {row["id"]}' if row['seat'] and row['claimed'] is not True else ''
     return (f'{target}: request {row["id"]} {row["kind"]} since {row["since"] or "unknown"}; '
-            f'waiting: {row["reason"]}{claimed}{cancel}')
+            f'waiting: {row["reason"]}{claim}{cancel}')
 
 
 def hold(path, data, dimension, reason):
@@ -154,7 +167,7 @@ def _retire(runtime, name, reason, identifier=None):
             continue
         if identifier is None and data['kind'] != 'relaunch':
             continue
-        if path.with_suffix('.claimed').exists() and not isinstance(data.get('terminal'), str):
+        if claimed(path) is not False and not isinstance(data.get('terminal'), str):
             raise ShipError(f'request {path.stem} already claimed; outcome unknown; retained')
         paths.append((path, data))
     if identifier is None and uncertain:
@@ -171,11 +184,6 @@ def cancel(runtime, name, identifier=None):
     with coordination(runtime):
         ids = _retire(runtime, name, 'cancelled', identifier)
     return f'{name}: cancelled request(s) {", ".join(ids)}; settled without applying' if ids else f'{name}: no pending relaunch; nothing cancelled'
-
-
-def supersede(runtime, name, kind):
-    with coordination(runtime):
-        return _retire(runtime, name, f'superseded by direct {kind}')
 
 
 @contextmanager
