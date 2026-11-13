@@ -161,12 +161,25 @@ def test_record_growth_alone_does_not_rearm(env):
     assert len(reports(env)) == 1
 
 
-def test_observed_clear_rearms(env):
+@pytest.mark.parametrize('state', [
+    State(turn_open=True, pending_tools=None, queued=()),
+    State(turn_open=False, pending_tools=None, queued=('input-orchid',)),
+    State(turn_open=False, open_tool='tool-orchid', pending_tools=None, queued=()),
+    State(turn_open=False, pending_tools=('tool-orchid',), queued=()),
+])
+def test_busy_activity_preserves_standing_reading_without_rearming(env, state):
     step(env)
-    change(env, state=State(turn_open=True, pending_tools=None, queued=()))
+    original = compaction_alert.load(env.ship.runtime, SUBJECT)['key']
+    change(env, state=state)
+    step(env)
+    assert compaction_alert.load(env.ship.runtime, SUBJECT)['key'] == original
+    change(env, state=State(turn_open=False, pending_tools=None, queued=()))
+    step(env)
+    assert len(reports(env)) == 1
+    change(env, state=state, manual=None, reason='handoff published; waiting for explicit readiness')
     step(env)
     assert compaction_alert.load(env.ship.runtime, SUBJECT)['key'] is None
-    change(env, state=State(turn_open=False, pending_tools=None, queued=()))
+    change(env, manual=MANUAL, state=State(turn_open=False, pending_tools=None, queued=()))
     step(env)
     assert len(reports(env)) == 2
 

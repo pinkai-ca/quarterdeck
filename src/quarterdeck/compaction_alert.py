@@ -82,16 +82,16 @@ def observation(seat):
             or (data['count'], data.get('extent'), data.get('digest')) !=
                (reading.count, reading.extent, reading.digest)):
         return UNKNOWN, data
+    manual = (data.get('manual') or '').startswith('ready for manual fresh:')
+    released = not data.get('ready') and not data.get('attestation') and data['reason'] in RELEASED
+    if not (manual or released):
+        return None, data
     state = reading.state
     if state.turn_open is None or state.queue_error or state.queued is None:
         return UNKNOWN, data
     if (state.turn_open is not False or state.queued or state.open_tool is not None
             or state.pending_tools not in ((), None)):
-        return None, data
-    manual = (data.get('manual') or '').startswith('ready for manual fresh:')
-    released = not data.get('ready') and not data.get('attestation') and data['reason'] in RELEASED
-    if not (manual or released):
-        return None, data
+        return UNKNOWN, data  # activity does not clear a standing compaction reading
     return dict(generation=data['generation'], source=source,
                 reading=compaction.status(seat, alerts_only=True)), data
 
