@@ -12,7 +12,7 @@ Quarterdeck runs AI coding agents from different companies as one crew, on your 
 
 <p align="center"><sub>One order, typed once, crossing three programs and back in 38 seconds. Real programs, real models, real speed. <a href="docs/DEMO.md">How this was recorded</a>.</sub></p>
 
-Every agent runs in its normal terminal interface, the one made for people, in a tmux pane. A ship is a crew of such agents, its panes grouped into tmux sessions: `Office`, where the agent you talk to sits, and `Bridge`, for the rest of the crew. The sessions are on a tmux server of the ship's own, apart from any tmux you use yourself, and `qd attach` opens them. At any time you can attach, watch an agent work, scroll back through what it did, give it a command, or simply prompt it yourself.
+Every agent runs in its normal terminal interface, the one made for people, in a tmux pane. A ship is a crew of such agents, its panes grouped into tmux sessions: `Office`, where the agent you talk to sits, and one named for the ship, such as `Endeavour Bridge`, for the rest of the crew. The sessions are on a tmux server of the ship's own, apart from any tmux you use yourself, and `qd attach` opens them. At any time you can attach, watch an agent work, scroll back through what it did, give it a command, or simply prompt it yourself.
 
 Quarterdeck is a command, `qd`, and one small service on your machine. It starts the agents, types orders and reports into their panes as you would, watches them, and accounts for what they spend. It adds no plug-ins, tools, hooks or protocols to your harnesses, and runs no agent as a hidden background process. Restart any agent at any moment, and that agent comes back with its brief and every order it still has to answer.
 
@@ -92,7 +92,7 @@ Either let the setup command ask you:
 qd setup
 ```
 
-It asks the same questions in your terminal, with a suggestion for each: on a harness you are already signed in to, pressing Enter at every one gives a working ship. It shows you the whole ship, writes it and brings the crew up.
+It asks the same questions in your terminal, with a suggestion for every one but your project's folder: on a harness you are already signed in to, name the folder, press Enter at the rest, and you have a working ship. It shows you the whole ship, writes it and brings the crew up.
 
 Or write the ship's file yourself: [A ship of your own](docs/SHIPS.md#a-ship-of-your-own) goes through it step by step, and ends with the crew up.
 

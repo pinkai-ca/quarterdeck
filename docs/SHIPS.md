@@ -29,7 +29,7 @@ cp -r ships/default ships/mine
 cd ships/mine
 git init  # the copy becomes a git repository of its own
 git add ship.toml orders.md
-git commit -m "My ship"  # prints: 2 files changed, 61 insertions(+)
+git commit -m "My ship"  # prints: 2 files changed
 cd ../..  # back to the folder you cloned
 ```
 
@@ -65,6 +65,7 @@ git -C ships/mine commit -am "My crew"
 
 - `unproven: qd check <name> proves it`: no live check has proved that version of the harness. The crew runs either way, and `qd check claude`, for one, spends a few turns.
 - `no credential at <folder>; sign in to the program there`: sign in to that harness.
+- `no copy yet; qd up makes one`: nothing to mend. The first `qd up`, in the next step, makes the ship's own copy of the Quarterdeck code.
 - `effort '<effort>' is not supported by <harness>; the levels are …`: the harness does not take that effort. Set one of the levels the line names.
 - `<harness> takes no effort; effort '<effort>' is not supported`: the harness takes no effort. Remove `effort` from the seat.
 - `levels of <harness> <version> not measured; '<effort>' unchecked`, on a line marked PASS: Quarterdeck has no measurement of the efforts that version takes, and passes yours unchecked.
@@ -77,9 +78,9 @@ git -C ships/mine commit -am "My crew"
 ```
 
 - The first `qd up` makes the ship's own copy of the Quarterdeck code, and says so. The copy changes only when you run `qd sync`: see [Updating your ship](SYNC.md).
-- `qd up` starts Quarterdeck's service, which delivers the crew's messages, and every agent marked up, then prints a line for each agent, such as `desk up in %1 · claude … · fresh`, and ends `service started`.
-- `qd up` spends nothing: an agent takes no turn until the agent has something to do.
-- `attach` opens the tmux session `Office`, where the desk is. The captain and the engineer are in the session `Bridge`: `.venv/bin/qd --ship ships/mine attach bridge` opens that one. Both sessions are on a tmux server of the ship's own, apart from any tmux you use yourself.
+- `qd up` starts Quarterdeck's service, which delivers the crew's messages, and every agent marked up, then prints a line for each agent, such as `desk up in %1 · claude … · fresh`, then `service started`, and last a line that begins `tmux: the ship's own server`.
+- `qd up` gives each agent one first turn, to read its brief. After that an agent takes a turn only when the agent has something to do.
+- `attach` opens the tmux session `Office`, where the desk is. The captain and the engineer are in a session named for the ship, such as `Endeavour Bridge`: `.venv/bin/qd --ship ships/mine attach bridge` opens that one. Both sessions are on a tmux server of the ship's own, apart from any tmux you use yourself.
 
 **6. Give the first order.** Speak to the desk first, in the desk's pane: until the desk has taken one turn, the desk cannot hear the crew, and an order given by hand waits for the desk.
 
