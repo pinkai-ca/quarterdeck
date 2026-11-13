@@ -251,6 +251,54 @@ def _failure(error, at, inputs, output):
                        output if known else None, kind, code)
 
 
+def _shape(value, fields):
+    return (isinstance(value, dict) and value.keys() == fields.keys()
+            and all(type(value[key]) is kind for key, kind in fields.items()))
+
+
+def _completed_item(payload):
+    """Measured native completion metadata; never a result for a response-item call.
+
+    In particular, this cannot establish completion of an opaque exec wrapper or
+    its detached children. Unknown and progress variants remain unknown.
+    """
+    if not _shape(payload, {'type': str, 'thread_id': str, 'turn_id': str, 'item': dict,
+                            'started_at_ms': int, 'completed_at_ms': int}):
+        return False
+    if (not payload['thread_id'] or not payload['turn_id']
+            or not 0 <= payload['started_at_ms'] <= payload['completed_at_ms']):
+        return False
+    item = payload['item']
+    kind = item.get('type')
+    schemas = {
+        'UserMessage': {'type': str, 'id': str, 'client_id': str, 'content': list},
+        'AgentMessage': {'type': str, 'id': str, 'phase': str, 'content': list},
+        'Reasoning': {'type': str, 'id': str, 'raw_content': list, 'summary_text': list},
+        'CommandExecution': {'type': str, 'id': str, 'command': list, 'cwd': str, 'duration': dict,
+                             'exit_code': int, 'parsed_cmd': list, 'process_id': str, 'source': str,
+                             'status': str, 'aggregated_output': str},
+        'FileChange': {'type': str, 'id': str, 'changes': dict, 'status': str,
+                       'stdout': str, 'stderr': str},
+    }
+    if not isinstance(kind, str) or kind not in schemas or not _shape(item, schemas[kind]) or not item['id']:
+        return False
+    if kind in ('UserMessage', 'AgentMessage'):
+        fields = {'type': str, 'text': str}
+        if kind == 'UserMessage':
+            fields['text_elements'] = list
+        return all(_shape(block, fields) and block['type'] == ('text' if kind == 'UserMessage' else 'Text')
+                   for block in item['content'])
+    if kind == 'Reasoning':
+        return not item['raw_content'] and not item['summary_text']  # only this measured variant
+    if kind == 'CommandExecution':
+        duration = item['duration']
+        return (item['status'] in ('completed', 'failed') and bool(item['process_id'])
+                and bool(item['command']) and all(isinstance(part, str) for part in item['command'])
+                and _shape(duration, {'secs': int, 'nanos': int})
+                and duration['secs'] >= 0 and 0 <= duration['nanos'] < 1_000_000_000)
+    return item['status'] == 'completed'  # FileChange: no unmeasured progress/failure variant
+
+
 class _Reader(JsonLinesReader):
     kinds = ('event_msg', 'response_item', 'session_meta', 'turn_context')
     label = "Codex"
@@ -292,7 +340,10 @@ class _Reader(JsonLinesReader):
             self.item(sub, payload, at)
 
     def event(self, sub: str | None, payload: dict, at: datetime | None) -> None:
-        if sub == "task_started":
+        if sub == 'item_completed':
+            if at is None or not _completed_item(payload):
+                self.tools_known = False
+        elif sub == "task_started":
             self.orphan_failure = None
             self.unbound_inputs = []
             if self.open is not None:
