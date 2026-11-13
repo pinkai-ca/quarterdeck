@@ -109,6 +109,7 @@ class SeatReading:
     declared_effort: str | None = None
     model_mode: str | None = None
     effort_mode: str | None = None
+    wake: str | None = None  # all wake states in detailed readings; the line filters actionable ones
 
     @property
     def model_text(self) -> str:
@@ -159,7 +160,8 @@ def reading(seat: Seat | UnresolvedSeat, store: post.Store | None = None) -> Sea
     order = claimed or (open_orders[0].id if len(open_orders) == 1 else None)
     if isinstance(seat, UnresolvedSeat):
         return SeatReading(seat.name, act, Reading(False, str(seat.error), 'needs a human'),
-                           order, tokens_today(seat), 'unknown', None, 'unknown')
+                           order, tokens_today(seat), 'unknown', None, 'unknown',
+                           wake='human wake unknown: seat selection unresolved' if seat.ship.session_of(seat.spec).human else None)
     door = Door(seat).reading() if act.state not in ("off",) else Reading(False, act.detail or "off", "qd up")
     observed = running_settings(seat) if act.state != "off" else {}
     running = observed.get("model")
@@ -167,11 +169,13 @@ def reading(seat: Seat | UnresolvedSeat, store: post.Store | None = None) -> Sea
     version = launched.version if launched else None
     pool = launched.pool if launched and launched.pool in seat.ship.pools else seat.pool.name
     from .compaction import status as compaction_status
+    from . import human_wake
+    wake = human_wake.status(seat) if seat.session.human else None
     return SeatReading(seat.name, act, door, order, tokens_today(seat), pool, running,
                        seat.harness.name, seat.spec.model, version, compaction_status(seat),
                        seat.ship.pool(pool).provider, providers.display(seat.ship.pool(pool).provider), seat.harness.program,
                        effort=observed.get('effort'), declared_effort=seat.spec.effort,
-                       model_mode=seat.spec.model_mode, effort_mode=seat.spec.effort_mode)
+                       model_mode=seat.spec.model_mode, effort_mode=seat.spec.effort_mode, wake=wake)
 
 
 def tokens_today(seat: Seat | UnresolvedSeat) -> ledger.Count:
@@ -252,6 +256,8 @@ def render_table(data: dict) -> list[str]:
         rows.append(f"{r.name:<10} {str(r.activity):<24} {str(r.door):<40} {r.order_text:<10} {str(r.today):>8}  {r.harness_text} · {r.provider_name or 'unknown'} · {r.pool} · {r.model_text} · {r.effort_text}")
         if r.compaction:
             rows.append(f"  {r.compaction}")
+        if r.wake:
+            rows.append(f"  {r.wake}")
     rows.append(f"open orders: {len(data['open_orders'])}")
     for m in data["open_orders"]:
         rows.append(f"  {m.short} {m.sender} → {m.to} · {m.at.strftime('%m-%d %H:%M')}" + (f" · {m.subject}" if m.subject else ""))
@@ -303,6 +309,8 @@ def render_full(data: dict) -> list[str]:
     if r.compaction:
         lines.append(f"  {r.compaction}")
     lines += ['  ' + request_queue.describe(row) for row in data.get('requests', ())]
+    if r.wake:
+        lines.append(f"  {r.wake}")
     record, state = data["record"], data["state"]
     if record:
         if data["record_error"] is not None:
@@ -581,8 +589,8 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
             from . import human_wake
             watch = post.watch_reading(ship.runtime, seat.name)
             reason = human_wake.status(seat)
-            if reason:
-                if human_wake.action_required(seat, reason) and seat.name not in needs_human:
+            if human_wake.action_required(seat, reason):
+                if seat.name not in needs_human:
                     needs_human.append(seat.name)
                 pending_lines.append(f"{seat.name}: {reason}")
             if pending and watch.armed is False:

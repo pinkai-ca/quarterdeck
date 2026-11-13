@@ -248,13 +248,18 @@ def run(seat) -> str | None:
     """Called by the serialized service (or its throwaway check), never by a sender."""
     if not seat.session.human:
         raise ShipError('human wake requires a human-owned session')
+    if not seat.is_up:
+        return None  # no pass or observation; failed ownership reads still raise
     with post.admission(seat.ship.runtime, seat.name):
+        if not seat.is_up:
+            return None
         before, identity = record_stamp(seat), pending.identity(seat)
         reason = _run(seat)
         after, current = record_stamp(seat), pending.identity(seat)
         if before != after or identity != current:
             reason = 'human wake source changed; awaiting service observation'
-        observe(seat, reason, current, after)
+        if seat.is_up:
+            observe(seat, reason, current, after)
         return reason
 
 

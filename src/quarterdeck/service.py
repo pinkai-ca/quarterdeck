@@ -235,10 +235,12 @@ class Service:
             if seat.session.human:
                 from . import human_wake, turn_failure
                 from .auth_failure import status as authentication_status
-                if not (recovery.held(seat) or authentication_status(seat)
-                        or turn_failure.obstruction(seat, self.store)):
-                    human_wake.run(seat)
-                self.needs_human(seat)
+                try:
+                    if seat.is_up and not (recovery.held(seat) or authentication_status(seat)
+                                           or turn_failure.obstruction(seat, self.store)):
+                        human_wake.run(seat)
+                finally:
+                    self.needs_human(seat)  # genuine alarms survive a down seat or failed up reading
                 continue
             pending = [m for m in self.attempts.undelivered(self.store, seat.name, results=results) if self._due(m, seat)]
             if pending:
