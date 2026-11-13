@@ -9,7 +9,6 @@ from unittest.mock import Mock
 
 import pytest
 
-import quarterdeck
 from quarterdeck import cli, doctor, install
 from quarterdeck.ship import ShipError
 
@@ -86,14 +85,14 @@ def test_handler_calls_existing_install_api_and_only_alias_marks_final_proof(
 
 
 def test_source_repository_refusal_names_sync(tmp_path, monkeypatch):
-    monkeypatch.setattr(quarterdeck, "__file__", str(tmp_path / "code" / "src" / "quarterdeck" / "__init__.py"))
+    monkeypatch.setattr(install, "__file__", str(tmp_path / "code" / "src" / "quarterdeck" / "install.py"))
     synthetic_ship = SimpleNamespace(folder=tmp_path / "ships" / "synthetic-ship")
 
     with pytest.raises(ShipError) as refused:
         install.source_repo(synthetic_ship)
 
     assert str(refused.value) == (
-        "no framework repository beside the ship or behind this qd; run qd sync from the checkout"
+        "no unambiguous local framework checkout; run qd sync from the checkout"
     )
 
 
@@ -170,7 +169,7 @@ def test_doctor_without_source_repository_reports_unknown_checkout(tmp_path, mon
     )
     read = Mock()
     monkeypatch.setattr(doctor.copy_state, "select", read)
-    monkeypatch.setattr(quarterdeck, "__file__", str(tmp_path / "code" / "src" / "quarterdeck" / "__init__.py"))
+    monkeypatch.setattr(install, "__file__", str(tmp_path / "code" / "src" / "quarterdeck" / "install.py"))
 
     check = doctor.framework_check(synthetic_ship)
 
