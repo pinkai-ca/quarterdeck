@@ -184,7 +184,7 @@ def test_start_and_result_each_require_measured_version(tmp_path, position):
 
 def test_queue_carrier_uses_nearest_preceding_version_not_start_version(tmp_path):
     rows = initial() + [row('agent-name', 4)]
-    rows[-1]['version'] = '2.1.322'
+    rows[-1]['version'] = '2.1.323'  # a version no form has been measured on
     rows.append(notice('enqueue', 5))
     _, state = read(tmp_path, rows)
     assert state.pending_tools is None

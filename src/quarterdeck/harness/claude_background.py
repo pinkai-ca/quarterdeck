@@ -1,7 +1,9 @@
-"""Claude Code 2.1.317 root Bash task evidence, independent of turn accounting.
+"""Claude Code root Bash task evidence, independent of turn accounting.
 
 Only measured structural fields are joined. Notification summaries and command/output
 text supply no execution proof. Unknown evidence is never a record-wide reset.
+Each evidence form trusts only the exact versions measured to record it the same way;
+an unmeasured version, including any later one, stays unknown.
 """
 
 from dataclasses import dataclass, replace
@@ -11,7 +13,17 @@ import re
 from .types import ActiveTool
 
 
-VERSION = '2.1.317'
+VERSION = '2.1.317'  # the first version measured for every form below
+MEASURED = frozenset({VERSION, '2.1.322'})  # 2.1.322 measured the same, form for form, where it appears below
+CALL_VERSIONS = MEASURED  # a root background Bash call and its joined result row
+STATUS_VERSIONS = MEASURED  # a running local_bash task_status attachment
+STOP_VERSIONS = frozenset({VERSION})  # TaskStop call and result: no 2.1.322 instance measured
+NOTICE_VERSIONS = {  # a task notification, by its carrier
+    ('queue-operation', 'enqueue'): MEASURED,
+    ('queue-operation', 'remove'): frozenset({VERSION}),  # no 2.1.322 remove carrier measured
+    ('user', 'task-notification'): MEASURED,
+    ('attachment', 'queued_command'): frozenset({VERSION}),  # no 2.1.322 attachment carrier measured
+}
 TERMINAL = frozenset({'completed', 'failed', 'killed'})
 
 
@@ -80,7 +92,7 @@ class BackgroundBash:
         wanted = arguments.get('run_in_background', False) if name == 'Bash' else arguments.get('task_id')
         watch = name == 'Bash' and arguments.get('command') == 'qd inbox --wait'
         self.calls[call] = name, wanted, at, version, watch
-        if name == 'Bash' and (not isinstance(wanted, bool) or wanted and version != VERSION):
+        if name == 'Bash' and (not isinstance(wanted, bool) or wanted and version not in CALL_VERSIONS):
             self.unknown_calls.add(call)
 
     def result(self, call, entry, block, at):
@@ -89,7 +101,8 @@ class BackgroundBash:
             return
         name, wanted, called_at, version, watch = info
         result = entry.get('toolUseResult')
-        supported = version == VERSION and entry.get('version') == VERSION
+        allowed = CALL_VERSIONS if name == 'Bash' else STOP_VERSIONS
+        supported = version in allowed and entry.get('version') == version
         if name == 'Bash':
             task = result.get('backgroundTaskId') if isinstance(result, dict) else None
             advertised = isinstance(result, dict) and 'backgroundTaskId' in result
@@ -139,11 +152,13 @@ class BackgroundBash:
         if 'version' in entry:
             self.version = entry['version']
         version = self.version if kind == 'queue-operation' else entry.get('version')
-        text, notice = None, False
+        text, notice, carrier = None, False, None
         if kind == 'queue-operation' and entry.get('operation') in ('enqueue', 'remove'):
+            carrier = ('queue-operation', entry['operation'])
             text = entry.get('content')
             notice = isinstance(text, str) and text.lstrip().startswith('<task-notification>')
         elif kind == 'user' and isinstance(entry.get('origin'), dict) and entry['origin'].get('kind') == 'task-notification':
+            carrier = ('user', 'task-notification')
             text = entry.get('message', {}).get('content')
             notice = True
         elif kind == 'attachment' and isinstance(entry.get('attachment'), dict):
@@ -152,6 +167,7 @@ class BackgroundBash:
                 self.running(attachment, at, version)
                 return
             if attachment.get('type') == 'queued_command' and attachment.get('commandMode') == 'task-notification':
+                carrier = ('attachment', 'queued_command')
                 origin = attachment.get('origin')
                 notice = isinstance(origin, dict) and origin.get('kind') == 'task-notification'
                 text = attachment.get('prompt')
@@ -168,12 +184,12 @@ class BackgroundBash:
         if task is None:
             # Held until this root call's own result arrives later in the file. A subagent file's call never
             # arrives here, so a main-file notification still cannot establish a start it owns.
-            self.early.setdefault(call, []).append((identity, status, note, at, version))
+            self.early.setdefault(call, []).append((identity, status, note, at, version, carrier))
             return
-        self.notice(task, identity, status, note, at, version)
+        self.notice(task, identity, status, note, at, version, carrier)
 
-    def notice(self, task, identity, status, note, at, version):
-        if (task.task != identity or version != VERSION
+    def notice(self, task, identity, status, note, at, version, carrier):
+        if (task.task != identity or version not in NOTICE_VERSIONS.get(carrier, ())
                 or at is None or at < task.started):
             task.phase, task.invalid = 'unknown', True
         elif status in TERMINAL and not note:
@@ -190,7 +206,7 @@ class BackgroundBash:
             self.unbound = True
             return
         task = self.tasks[target]
-        if (version != VERSION or attachment.get('status') != 'running' or at is None
+        if (version not in STATUS_VERSIONS or attachment.get('status') != 'running' or at is None
                 or at < task.latest or task.phase == 'ended' or task.invalid):
             task.phase, task.invalid = 'unknown', True
         else:
