@@ -28,7 +28,8 @@ class ProposalOperations(setup.Operations):
 
 
 def proposal(tmp_path, programs, **extra):
-    answers = dict(name="aurora", workspace=str(tmp_path), folder=str(tmp_path / "crew"),
+    (tmp_path / "ships").mkdir(exist_ok=True)
+    answers = dict(name="aurora", workspace=str(tmp_path), folder=str(tmp_path / "ships" / "crew"),
                    programs=programs, use_defaults="yes", **extra)
     operations = ProposalOperations()
     operations.project_folder = lambda: tmp_path

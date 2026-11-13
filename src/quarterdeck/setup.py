@@ -37,7 +37,7 @@ def arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--engineer", help="program for engineering; interactive proposes a choice")
     parser.add_argument("--workspace", help="existing folder the crew works on")
     parser.add_argument("--name", help="ship name")
-    parser.add_argument("--folder", help="ship folder inside the Quarterdeck project (default: ships/NAME); or use global --ship")
+    parser.add_argument("--folder", help="new ship folder directly under the Quarterdeck project's ships/ (default: ships/NAME); or use global --ship")
     parser.add_argument("--existing", choices=("keep", "update"), help="explicit rerun choice; never overwrite an existing ship")
     parser.add_argument("--check", choices=("yes", "no"), help="consent to qd check for EVERY chosen program; spends turns")
     parser.add_argument("--start", choices=("yes", "no"), help="bring up the crew after successful checks (opening briefs may spend turns)")
@@ -403,7 +403,7 @@ def update(ship: Ship, edits: list, operations: Operations, conversation: Conver
 def run(args: argparse.Namespace, *, operations: Operations | None = None,
         conversation: Conversation | None = None) -> list[str]:
     operations = operations or Operations()
-    conversation = conversation or Conversation(read_answers(args), interactive=sys.stdin.isatty() and not args.json,
+    conversation = conversation or Conversation(read_answers(args), interactive=sys.stdin.isatty() and not args.json and not args.answers,
                                                 write=lambda line: print(line, file=sys.stderr if args.json else sys.stdout, flush=True))
     text, orders, defaults = template()
     available = operations.discover(defaults)
@@ -430,6 +430,8 @@ def run(args: argparse.Namespace, *, operations: Operations | None = None,
     if proposal.mode == "new":
         ship = ships.create(folder, proposal.text, proposal.orders)
         conversation.say(f"Created and committed {ship.file} and orders.md; runtime is ignored.")
+        ships.mark_default(folder.name, project=operations.project_folder())
+        conversation.say(f"{folder.name} marked as your default ship: qd acts on it when no ship is named")
     elif proposal.mode == "update":
         ship, pending = update(proposal.existing, proposal.edits, operations, conversation)
         if pending:
@@ -454,18 +456,18 @@ def run(args: argparse.Namespace, *, operations: Operations | None = None,
         if failed:
             raise ShipError("readiness refused: " + "; ".join(f"{row.name}: {row.detail}" for row in failed)
                             + f"; resolve those reasons, then rerun {rerun} --check yes --start yes")
-    consent = conversation.choice("check", f"Run qd check for {', '.join(selected)}? This spends turns. yes or no", ("yes", "no"), "no")
+    consent = conversation.choice("check", f"Run qd check for {', '.join(selected)}? This spends turns on each program's subscription. yes or no", ("yes", "no"), "yes")
     if consent == "no":
         return finish([f"Ship saved; live checks declined. To continue: {rerun} --check yes --start yes"])
     for program in selected:
-        conversation.say(f"Checking {program}; this spends turns.")
+        conversation.say(f"Checking {program}; this spends turns on its subscription.")
         rows = operations.check(ship, program)
         for row in rows:
             conversation.say(str(row))
         if not rows or not all(row.passed for row in rows):
             reason = "; ".join(f"{row.name}: {row.detail}" for row in rows if not row.passed) or "no proof rows returned"
             raise ShipError(f"qd check {program} failed: {reason}; resolve that reason, then rerun {rerun} --check yes --start yes")
-    start = conversation.choice("start", "Bring up the crew? Opening briefs may spend turns. yes or no", ("yes", "no"), "no")
+    start = conversation.choice("start", "Bring up the crew? Opening briefs may spend turns on each program's subscription. yes or no", ("yes", "no"), "yes")
     if start == "no":
         return finish([f"Checks passed; crew not started. Start with: qd --ship {shlex.quote(str(folder))} up"])
     result = operations.up(ship)

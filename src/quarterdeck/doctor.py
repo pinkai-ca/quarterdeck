@@ -114,7 +114,6 @@ def program_check(name: str, runtime: Path | None = None) -> Check:
     return program_observation(name, runtime)[0]
 
 
-
 def seat_readiness(ship: Ship, *, versions: dict[str, str | None] | None = None) -> list[Check]:
     """Readiness failures and passing information notices; no seat is launched."""
     found = []

@@ -156,6 +156,11 @@ def build(conversation, operations, text: str, orders: str, defaults: dict, avai
                 raise ShipError(f"existing ship has no {key} session; use its own arrangement rather than setup's default crew")
     else:
         mode = "new"
+        ships_folder = (project / "ships").resolve()
+        if folder.parent != ships_folder:
+            raise ShipError(f"a new ship lives directly under {project / 'ships'}; choose a folder name there")
+        if not ships.valid_name(folder.name):
+            raise ShipError(f"answer folder {folder.name!r} is not a ship folder name; choose a nonhidden folder name under {project / 'ships'}")
         if not folder.parent.is_dir():
             raise ShipError("answer folder needs an existing parent; setup creates only its own ship folder")
     candidates = (setup.program_list(c.ask("programs", "Programs"), available) if c.supplied("programs") is not MISSING

@@ -68,6 +68,7 @@ class ScriptedOperations(setup.Operations):
 @pytest.fixture
 def answers(tmp_path, monkeypatch):
     monkeypatch.setattr(setup.Operations, "project_folder", lambda _: tmp_path)
+    (tmp_path / "ships").mkdir()
     # A synthetic git identity for a disposable repository, never the operator's config.
     for name, value in {"GIT_AUTHOR_NAME": "Setup Example", "GIT_AUTHOR_EMAIL": "setup@example.invalid",
                         "GIT_COMMITTER_NAME": "Setup Example", "GIT_COMMITTER_EMAIL": "setup@example.invalid",
@@ -75,7 +76,7 @@ def answers(tmp_path, monkeypatch):
         monkeypatch.setenv(name, value)
     monkeypatch.delenv("GIT_DIR", raising=False)
     monkeypatch.delenv("GIT_WORK_TREE", raising=False)
-    return dict(folder=str(tmp_path / "crew"), name="example", workspace=str(tmp_path), programs="codex",
+    return dict(folder=str(tmp_path / "ships" / "crew"), name="example", workspace=str(tmp_path), programs="codex",
                 payment={"codex": "subscription"}, subscription_home={"codex": str(tmp_path / "sign-in")},
                 desk="codex", captain="codex", engineer="codex", check="yes", start="yes",
                 use_defaults="yes", accept="yes")
@@ -103,6 +104,8 @@ def test_scripted_subscription_creates_committed_ship_then_checks_in_order(answe
     assert operations.calls == ["discover", ("readiness", ("codex",)), ("check", "codex"), "up", "status", "access"]
     assert any("sign-in unknown" in line for line in lines)
     assert any("First order" in line for line in result)
+    assert (folder.parent / ship.MARK).read_text() == "crew\n"
+    assert any("marked as your default ship: qd acts on it when no ship is named" in line for line in lines)
 
 
 @pytest.mark.parametrize("missing", ["folder", "operator", "office", "payment.codex", "subscription_home.codex",
@@ -238,6 +241,17 @@ def test_existing_update_reuses_set_boundary_and_reports_relaunch(answers):
     assert (current.folder / "orders.md").read_bytes() == original_orders
 
 
+@pytest.mark.parametrize("mode", ["keep", "update"])
+def test_existing_rerun_leaves_default_mark_alone(answers, mode):
+    execute(answers)
+    mark = Path(answers["folder"]).parent / ship.MARK
+    mark.write_text("another-ship\n")
+    before = mark.read_bytes(), mark.stat().st_mtime_ns
+    _, lines, _ = execute({**answers, "existing": mode})
+    assert (mark.read_bytes(), mark.stat().st_mtime_ns) == before
+    assert not any("marked as your default ship" in line for line in lines)
+
+
 def test_existing_rerun_needs_explicit_answer_without_tty(answers):
     execute(answers)
     rerun = dict(folder=answers["folder"], operator="Admiral", office="Office", name="example",
@@ -268,11 +282,30 @@ def test_scripted_interactive_questions_use_same_flow(answers):
     scripted = iter(["", "example", "", answers["workspace"], answers["folder"],
                      "", "codex", "", "", "", "codex", "", "", "", "codex", "", "",
                      "subscription", answers["subscription_home"]["codex"],
-                     "", "", "", "accept", "yes", "yes"])
+                     "", "", "", "accept", "", ""])
     result, _, operations = execute({}, interactive=True, read=lambda _: next(scripted))
     assert "up" in operations.calls
     assert "Desk access" in result[0]
     assert list(scripted) == []
+
+
+def test_enter_only_checks_starts_and_reaches_desk(answers, tmp_path, monkeypatch):
+    monkeypatch.setattr(setup.Operations, "workspace_default", lambda _: str(tmp_path))
+    operations = ScriptedOperations()
+    monkeypatch.setattr(operations, "discover", lambda _: {
+        "codex": (Check("program codex", True, "synthetic program"), "sign-in unknown")})
+    prompts = []
+
+    def enter(prompt):
+        prompts.append(prompt)
+        return ""
+
+    result, lines, operations = execute({}, operations, interactive=True, read=enter)
+    assert operations.calls == [("readiness", ("codex",)), ("check", "codex"), "up", "status", "access"]
+    assert "Desk access" in result[0]
+    assert any("Run qd check" in prompt and "subscription" in prompt and "[yes]" in prompt for prompt in prompts)
+    assert any("Bring up the crew?" in prompt and "subscription" in prompt and "[yes]" in prompt for prompt in prompts)
+    assert (tmp_path / "ships" / "aurora" / "ship.toml").is_file()
 
 
 def test_flags_override_answers_file(answers, tmp_path):
@@ -440,8 +473,39 @@ def test_unfinished_first_commit_requires_person_to_resolve_git(answers, monkeyp
         execute(dict(folder=answers["folder"], existing="keep", check="yes", start="yes", use_defaults="yes", accept="yes"))
 
 
+@pytest.mark.parametrize("relative", ["crew", "ships/group/crew"])
+def test_new_ship_folder_must_be_directly_under_ships_before_acceptance(answers, tmp_path, relative):
+    answers["folder"] = str(tmp_path / relative)
+    operations = ScriptedOperations()
+    lines = []
+    conversation = setup.Conversation(answers, interactive=False, write=lines.append)
+    with pytest.raises(ship.ShipError, match="a new ship lives directly under .*; choose a folder name there"):
+        setup.run(argparse.Namespace(json=False), operations=operations, conversation=conversation)
+    assert not Path(answers["folder"]).exists()
+    assert not (tmp_path / "ships" / ship.MARK).exists()
+    assert not any(line.startswith("Ship name:") for line in lines)
+    assert operations.calls == ["discover"]
+
+
+@pytest.mark.parametrize("mode", ["keep", "update"])
+def test_existing_ship_at_legacy_path_stays_there_and_preserves_mark(answers, tmp_path, mode):
+    execute(answers)
+    original = Path(answers["folder"])
+    legacy = tmp_path / "legacy-crew"
+    original.rename(legacy)
+    mark = tmp_path / "ships" / ship.MARK
+    mark.write_text("another-ship\n")
+    before = mark.read_bytes(), mark.stat().st_mtime_ns
+    result, lines, operations = execute({**answers, "folder": str(legacy), "existing": mode})
+    assert ship.load(legacy).name == "example"
+    assert not original.exists()
+    assert (mark.read_bytes(), mark.stat().st_mtime_ns) == before
+    assert not any("marked as your default ship" in line for line in lines)
+    assert "up" in operations.calls
+    assert "Desk access" in result[0]
+
+
 def test_default_ship_folder_is_in_quarterdeck_not_the_workspace(answers, tmp_path):
-    (tmp_path / "ships").mkdir()
     workspace = tmp_path / "person-project"
     workspace.mkdir()
     answers.pop("folder")

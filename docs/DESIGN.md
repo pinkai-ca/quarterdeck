@@ -1114,14 +1114,21 @@ Keys are environment variable names only. Endpoint operator, URL and model are
 explicit facts; a model name never identifies its operator or subscription.
 
 The ship defaults to `<Quarterdeck project>/ships/<name>`, independently of its
-workspace. Any explicit folder must resolve inside the Quarterdeck project; an
-outside folder refuses with the one-folder reason and an inside-folder remedy.
+workspace. New ships must be direct children of `<Quarterdeck project>/ships`,
+with a valid nonhidden folder name; the folder name may differ from the display
+name. Other new folders refuse before acceptance with the reason and remedy.
+Existing ships may keep or update any existing path inside the Quarterdeck
+project. An outside folder refuses with the one-folder reason and an inside-folder remedy.
 The same `install.source_repo` resolver owns the checkout identity for installation
 and setup. An installed copy without an identifiable checkout refuses and asks for
 setup from the Quarterdeck checkout. Its parent must exist. Setup creates only the ship folder,
 with validated
 `ship.toml`, `orders.md`, runtime `.gitignore`, and a scoped first Git commit;
 it never overwrites an existing directory or creates the person's project.
+After creation it marks that folder as the default through `ship.mark_default`
+and explains that qd acts on it when no ship is named. Existing keep/update runs
+leave the default mark alone. Setup itself never selects the existing default
+as its target; a rerun names its folder explicitly.
 
 Before any write, the whole proposed ship is shown: operator and office names,
 a blank line, ship name and project path, a blank line, then five plain columns:
@@ -1148,8 +1155,11 @@ check and start still require their own answers. No unknown home, URL, model,
 operator or key variable is silently invented.
 
 Acceptance precedes declaration writes and real readiness checks. Paid `check`
-and crew `start` are separate consents, each suggested no and labelled as spending
-turns. Declining either stops with the saved declaration and a concrete next step.
+and crew `start` are separate consents, each suggested yes interactively and
+labelled as spending turns on each program's subscription. An answers file never
+opens a dialogue, even in a terminal; it requires explicit `check` and `start`
+answers, including with `use_defaults=yes`. Declining either stops with the saved
+declaration and a concrete next step.
 Readiness refusals give the doctor's reason and exact setup rerun. Sign-in hints
 are informational, unknown unless documented, and never executed; installed
 version/home/account uncertainty remains visible. Native account questions stay

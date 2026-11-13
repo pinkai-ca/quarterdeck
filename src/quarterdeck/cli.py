@@ -49,7 +49,7 @@ HANDED = "QD_DEFAULT_SHIP"  # the folder the typed qd chose as the default, pass
 
 def needs_ship(args: argparse.Namespace) -> bool:
     """Verbs that act on no ship, or on the practice ship when none is named, never take the default."""
-    return (args.run not in (cmd_laws, cmd_drill, cmd_default)
+    return (args.run not in (cmd_laws, cmd_drill, cmd_default, cmd_setup)
             and not (args.run is cmd_controls and getattr(args, 'harness', None)))
 
 

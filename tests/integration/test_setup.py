@@ -67,7 +67,8 @@ def test_setup_cli_prepares_copy_only_after_check_and_start_consent(
     monkeypatch.setattr(install, "prepare_up", prepare)
     monkeypatch.setattr(install, "delegate_up", delegate)
     monkeypatch.setattr(cli, "handoff", lambda *_: pytest.fail("setup must keep its explicit target"))
-    folder = tmp_path / "crew"
+    (tmp_path / "ships").mkdir()
+    folder = tmp_path / "ships" / "crew"
     answers = tmp_path / "answers.json"
     answers.write_text(json.dumps(dict(
         folder=str(folder), workspace=str(tmp_path), name="example", programs="codex",
@@ -91,3 +92,47 @@ def test_setup_cli_prepares_copy_only_after_check_and_start_consent(
     elif start == "yes" and check == "yes":
         assert "Desk access: synthetic desk access" in output.out
         assert "synthetic copy proved" in output.out
+
+
+@pytest.mark.parametrize("missing", ["check", "start"])
+def test_answers_file_requires_explicit_consent_even_in_terminal(tmp_path, monkeypatch, capsys, missing):
+    calls = []
+    for name, value in {"GIT_AUTHOR_NAME": "Setup Example", "GIT_AUTHOR_EMAIL": "setup@example.invalid",
+                        "GIT_COMMITTER_NAME": "Setup Example", "GIT_COMMITTER_EMAIL": "setup@example.invalid",
+                        "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("GIT_DIR", raising=False)
+    monkeypatch.delenv("GIT_WORK_TREE", raising=False)
+    monkeypatch.delenv("QD_SHIP", raising=False)
+    monkeypatch.delenv("QD_SEAT", raising=False)
+    monkeypatch.setattr("sys.stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr(ship, "choose", lambda *_: pytest.fail("setup must not select an existing default ship"))
+
+    class SyntheticOperations(setup.Operations):
+        def project_folder(self):
+            return tmp_path
+
+        def discover(self, defaults):
+            return {"codex": (Check("codex", True, "synthetic PATH"), "sign-in unknown")}
+
+        def readiness(self, current, selected):
+            return [Check("readiness", True, "synthetic")]
+
+        def check(self, current, program):
+            calls.append("check")
+            return [Check("check", True, "synthetic")]
+
+        def up(self, current):
+            pytest.fail("missing consent must stop before starting")
+
+    monkeypatch.setattr(setup, "Operations", SyntheticOperations)
+    (tmp_path / "ships").mkdir()
+    data = dict(folder=str(tmp_path / "ships" / "crew"), workspace=str(tmp_path), name="example", programs="codex",
+                payment={"codex": "subscription"}, subscription_home={"codex": str(tmp_path / "native-home")},
+                use_defaults="yes", accept="yes", check="yes", start="yes")
+    del data[missing]
+    answers = tmp_path / "answers.json"
+    answers.write_text(json.dumps(data))
+    assert cli.main(["setup", "--answers", str(answers)]) == 2
+    assert f"missing answer {missing}" in capsys.readouterr().err
+    assert calls == ([] if missing == "check" else ["check"])
