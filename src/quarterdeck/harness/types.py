@@ -259,12 +259,25 @@ class Interruption:
 
     ``click`` names the one choice the framework answers it with, by the choice's text on the screen: a
     question the program puts to its account holder whose answer the ship's orders fix.
+
+    ``by_label``: the program takes no mouse; the choice is pressed by the one key its own text names in
+    brackets (``[0] Skip`` is ``0``), and the question stands in place of the input box. ``recurs``: the program
+    may ask it again in one launch; after a press that cleared it, it is answered again, after one that did not,
+    never.
     """
 
     name: str
     pattern: str
     key: str | None = None
     click: str | None = None
+    by_label: bool = False
+    recurs: bool = False
+
+    @property
+    def label_key(self) -> str | None:
+        """The key a ``by_label`` choice names in its own text: ``[0] Skip`` names ``0``; any other form names none."""
+        found = re.fullmatch(r"\[([0-9A-Za-z])\] \S.*", self.click or "") if self.by_label else None
+        return found.group(1) if found else None
 
     def seen_in(self, screen: str) -> bool:
         return re.search(self.pattern, screen) is not None

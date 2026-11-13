@@ -29,6 +29,17 @@ STATE_DIR = Path.home() / ".gemini" / "antigravity-cli"
 BEFORE = "conversations.before"  # written in the seat home at launch: the conversations that already existed
 
 RULE = re.compile(r"^─{20,}\s*$")
+# 1.5.5, measured: after a turn the program may draw a survey about itself in place of the input box, the footer kept.
+# The ship gives no rating: the door presses the program's own "[0] Skip", chosen by its text. The program asks for no
+# mouse reports and ignores a click, so the choice is pressed by the key its own label names. Measured: one press
+# draws the empty box. The program may ask again later in the same launch.
+FEEDBACK_SURVEY = (r"(?m)^ How's the CLI experience so far\? Help us improve:\s*\n"
+                   r" \[1\] Good +\[2\] Fine +\[3\] Bad +\[0\] Skip\s*$")
+SURVEY = Interruption("feedback survey about the program (How's the CLI experience so far?)", FEEDBACK_SURVEY,
+                      click="[0] Skip", by_label=True, recurs=True)
+# The survey in any other form: named for a person, and nothing is pressed.
+SURVEY_ALTERED = Interruption("feedback survey about the program, not as measured; nothing pressed",
+                              r"How's the CLI experience")
 BG_TASK = re.compile(r"^\s*● \[\d{2}:\d{2}:\d{2}\] .+$")  # a background task's line, drawn in a box of its own
 STATUS_LINE = re.compile(r"(?:^|\s{2,})([A-Z]\w*(?: [\w().-]+)*) · (low|medium|high|xhigh|max)(?: · \d+ task\(s\) · /tasks)?\s*$")
 WORKING = re.compile(r"esc to cancel|^[⠁-⣿]\s+\w+ing", re.M)
@@ -48,6 +59,7 @@ class AntigravityHarness(Harness):
     setup = SetupMetadata(seat_limit=1)
     native_provider = "google"
     opening_prompt_turn = True
+    answers_questions = True  # its feedback survey, skipped by the ship's orders: no rating is given
     program = "agy"
     sign_in_command = ("agy",)
     sign_in_note = ("Current docs describe browser sign-in on launch with shared OS-keyring storage. "
@@ -235,4 +247,6 @@ class AntigravityHarness(Harness):
         return (
             Interruption("trust dialog", r"Do you trust the contents of this project\?", key="Enter"),
             Interruption("login", r"Sign in|Log in to|Authenticate", key=None),
+            SURVEY,
+            SURVEY_ALTERED,
         )

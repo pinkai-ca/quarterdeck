@@ -1,0 +1,24 @@
+  - Synthetic standing order line 1 of the brief, wrapped at eighty columns.
+  - Synthetic standing order line 2 of the brief, wrapped at eighty columns.
+  - Synthetic standing order line 3 of the brief, wrapped at eighty columns.
+  - Synthetic standing order line 4 of the brief, wrapped at eighty columns.
+  - Synthetic standing order line 5 of the brief, wrapped at eighty columns.
+  - Synthetic standing order line 6 of the brief, wrapped at eighty columns.
+  - Synthetic standing order line 7 of the brief, wrapped at eighty columns.
+  - Synthetic standing order line 8 of the brief, wrapped at eighty columns.
+  - Synthetic standing order line 9 of the brief, wrapped at eighty columns.
+  - Synthetic standing order line 10 of the brief, wrapped at eighty columns.
+> Synthetic opening brief: standing orders for a synthetic seat.
+  - Ask through the post, never an interactive question tool.
+  - Where these orders and an instruction file disagree, these orders win.
+  - The workspace's own notes are files you read when the work needs them.
+
+● Ran 15 commands (+12 · sed -n '1,50p' /synthetic/...) (ctrl+o to expand)
+
+  Standing orders received. Ready for check orders.
+
+ How's the CLI experience so far? Help us improve:              
+ [1] Good  [2] Fine  [3] Bad  [0] Skip                                          
+
+? for shortcuts                                           Gemini 3.8 Flash · low
+

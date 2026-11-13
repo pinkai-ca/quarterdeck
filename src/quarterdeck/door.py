@@ -236,8 +236,8 @@ class Door:
         after that a screen still showing it needs a human."""
         question = screen.interruption
         launched = self.seat.launched()
-        done = next((item for item in (launched.answered or []) if item.get("question") == question.name), None) if launched else None
-        if done is not None:
+        done = self.last_answer(launched, question)
+        if done is not None and not (question.recurs and done.get("outcome") == "cleared"):
             return (f"{question.name}: {done.get('choice')} was pressed at {done.get('at')} and the question did not clear; "
                     "nothing more is pressed", "needs a human")
         if screen.unknown is not None:
@@ -246,34 +246,50 @@ class Door:
             return f"{question.name}; answered {question.click} once the turn under it ends", "time"
         return f"{question.name}; the framework answers it {question.click}", "dismissable"
 
+    @staticmethod
+    def last_answer(launched, question) -> dict | None:
+        """This launch's latest recorded answer to ``question``, if any."""
+        found = [item for item in ((launched.answered or []) if launched else []) if item.get("question") == question.name]
+        return found[-1] if found else None
+
     def answer(self, screen: Screen) -> Screen | None:
         """Press the one choice the orders fix for this question, by its text, once in this launch (law: one-door).
 
         Only on an empty box, only where the program has asked for SGR mouse reports, and only on the frame
         read just before the press. The press is recorded in the launch before it is sent, then its outcome.
+        A ``by_label`` question stands where the box was: it is pressed by the key its choice's own text names,
+        found once on the screen. A ``recurs`` question is answered again only after a press that cleared it.
         """
         question = screen.interruption
         launched = self.seat.launched()
-        if launched is None or any(item.get("question") == question.name for item in launched.answered or ()):
-            return screen  # once per launch: never pressed again
+        done = self.last_answer(launched, question)
+        if launched is None or (done is not None and not (question.recurs and done.get("outcome") == "cleared")):
+            return screen  # once per launch, or once per showing: never pressed again over a press that did not clear
         found = self.seat.read_pane()
         if found is None:
             return screen
         pane, raw = found
         current = self.harness.screen(raw)
-        if (current.interruption is not question or current.text != screen.text or current.working
-                or current.box is None or current.box.strip()):
+        box_read = current.box is None if question.by_label else current.box is not None and not current.box.strip()
+        if current.interruption is not question or current.text != screen.text or current.working or not box_read:
             return current  # changed under us, or a turn still running (unmeasured there): nothing is pressed
         cell = choice_cell(current.text, question.click)
-        modes = self.tmux.mouse_modes(pane.id, pane.pid)
-        if cell is None or not modes or not modes["sgr"] or not (modes["button"] or modes["all"] or modes["standard"]):
-            return current
+        if question.by_label:
+            if cell is None or question.label_key is None:
+                return current  # the choice not found once by its own text: nothing is pressed
+        else:
+            modes = self.tmux.mouse_modes(pane.id, pane.pid)
+            if cell is None or not modes or not modes["sgr"] or not (modes["button"] or modes["all"] or modes["standard"]):
+                return current
         at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         entry = dict(question=question.name, choice=question.click, at=at, outcome="pressed")
         recorded = self.seat.record_answer(launched, entry)
         if recorded is None:
             return current
-        self.tmux.click(pane.id, *cell)
+        if question.by_label:
+            self.tmux.keys(pane.id, question.label_key)
+        else:
+            self.tmux.click(pane.id, *cell)
         after, cleared = current, False
         deadline = time.monotonic() + ANSWER_SECONDS
         while time.monotonic() < deadline and not cleared:
@@ -295,7 +311,8 @@ class Door:
         if self.seat.session.human:
             return screen  # no key of ours is ever pressed in a human's session; the person answers there
         if (not pending.held(self.seat, screen, self.proof) and screen and screen.interruption
-                and screen.interruption.click is not None and screen.box is not None and not screen.box.strip()):
+                and screen.interruption.click is not None
+                and (screen.box is None if screen.interruption.by_label else screen.box is not None and not screen.box.strip())):
             return self.answer(screen)
         if not pending.held(self.seat, screen, self.proof) and screen and screen.interruption and screen.interruption.dismissable and not (screen.box or "").strip():
             self.tmux.keys(self.seat.pane().id, screen.interruption.key)

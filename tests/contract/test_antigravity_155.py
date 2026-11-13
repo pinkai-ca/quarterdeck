@@ -12,12 +12,15 @@ def test_current_version_fixture_set_and_known_footer_forms():
     reader = AntigravityHarness()
     assert {p.stem for p in ROOT.glob('*.txt')} == {
         'idle', 'working', 'working-queued', 'paste-shown', 'paste-check-folded',
-        'idle-notice-80', 'idle-argon-medium-200'}
+        'idle-notice-80', 'idle-argon-medium-200', 'feedback-survey'}
     shown = {'idle-notice-80': dict(model='Gemini 3.8 Flash', effort='low'),
-             'idle-argon-medium-200': dict(model='Gemini 4 Argon', effort='medium')}
+             'idle-argon-medium-200': dict(model='Gemini 4 Argon', effort='medium'),
+             'feedback-survey': dict(model='Gemini 3.8 Flash', effort='low')}
     for path in ROOT.glob('*.txt'):
         screen = reader.screen(path.read_text())
-        assert screen.unknown is None and screen.interruption is None
+        assert screen.unknown is None
+        assert (screen.interruption.name if screen.interruption else None) == (
+            'feedback survey about the program (How\'s the CLI experience so far?)' if path.stem == 'feedback-survey' else None)
         assert screen.shows == shown.get(path.stem, dict(model='Gemini 3.8 Flash', effort='medium'))
     assert reader.screen((ROOT/'idle.txt').read_text()).box == ''
     assert reader.screen((ROOT/'working.txt').read_text()).working
