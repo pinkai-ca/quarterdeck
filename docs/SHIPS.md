@@ -82,7 +82,7 @@ git -C ships/mine commit -am "My crew"
 - `qd up` gives each agent one first turn, to read its brief. After that an agent takes a turn only when the agent has something to do.
 - `attach` opens the tmux session `Office`, where the desk is. The captain and the engineer are in a session named for the ship, such as `Endeavour Bridge`: `.venv/bin/qd --ship ships/mine attach bridge` opens that one. Both sessions are on a tmux server of the ship's own, apart from any tmux you use yourself.
 
-**6. Give the first order.** Speak to the desk first, in the desk's pane: until the desk has taken one turn, the desk cannot hear the crew, and an order given by hand waits for the desk.
+**6. Give the first order.** A desk on Claude Code or Codex is woken by the ship with the desk's first waiting message. A desk on another harness cannot hear the crew until the desk has taken one turn: speak to that desk first, in the desk's pane, or an order given by hand waits for the desk.
 
 Type what you want in plain words, as you would to any coding agent. The desk asks what you meant where it is unclear, gives the crew its orders, and tells you when the work is done, on any supported harness.
 
