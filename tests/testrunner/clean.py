@@ -263,8 +263,7 @@ def retire_within(root: Root, run: str) -> int:
                 raise Refused(f'{where}: run lock is held; nothing removed')
         require_gone(state, where)
         record(root, run, state)
-        if scratch is not None:
-            finish_abandoned(root, run, state, scratch_fd=scratch)
+        finish_abandoned(root, run, state, scratch_fd=scratch)
         cleanup = retire_run(root, runs, run, state)
         retirement_result(root, run, cleanup)  # durable completion before the last recovery record goes
         cleanup = discard_records(root, run, state, cleanup)
