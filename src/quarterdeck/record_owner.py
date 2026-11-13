@@ -111,6 +111,11 @@ def _registry_rows(path: Path) -> _RegistryRows:
     return rows
 
 
+def registry_events(folder: Path) -> list[dict[str, Any]]:
+    """Read registry rows without modifying them; share only within an account pass."""
+    return _registry_rows(registry(folder)).rows
+
+
 def register(folder: Path, record: Path, name: str | None) -> None:
     row = {"record": str(record), "harness": name}
     path = registry(folder)
@@ -130,7 +135,7 @@ def register(folder: Path, record: Path, name: str | None) -> None:
 def bindings(seat: Seat) -> dict[Path, set[str]]:
     folder = seat.home.parent
     found: dict[Path, set[str]] = {}
-    saved = _registry_rows(registry(folder)).rows
+    saved = registry_events(folder)
     registered = {Path(row["record"]) for row in saved}
     for row in [*saved, *events(folder / "record-launches.jsonl")]:
         names = found.setdefault(Path(row["record"]), set())

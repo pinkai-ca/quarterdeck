@@ -78,7 +78,8 @@ class Attribution:
             for folder in (Path(runtime)/'seats').glob('*'):
                 for name in (record_owner.REGISTRY, 'record-launches.jsonl'):
                     try:
-                        events = record_owner.events(folder/name)
+                        events = (record_owner.registry_events(folder) if name == record_owner.REGISTRY
+                                  else record_owner.events(folder/name))
                     except OSError:
                         continue
                     for event in events:
