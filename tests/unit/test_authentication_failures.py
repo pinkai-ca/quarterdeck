@@ -110,6 +110,26 @@ def test_failed_resume_call_stays_consumed(tmp_path, monkeypatch):
     assert 'sign-in recovery held' in service.log.call_args.kwargs['proof']
 
 
+def test_attempt_directory_and_consumed_record_are_durable_before_resume(tmp_path, monkeypatch):
+    _, _, seat, _, service = environment(tmp_path, monkeypatch)
+    synced = []
+    original = auth_failure.durable.sync_folder
+    def observe_sync(path):
+        original(path)
+        synced.append(path)
+    monkeypatch.setattr(auth_failure.durable, 'sync_folder', observe_sync)
+    def resume(subject, resume):
+        path = auth_failure._path(subject)
+        assert resume is True
+        assert path.parent.parent in synced  # new directory entry is durable
+        assert path.parent in synced  # consumed record replacement is durable
+        assert auth_failure._attempt(subject) is not None
+        return 'synthetic durable resume proof'
+    service.relaunch.side_effect = resume
+    auth_failure.run(service)
+    service.relaunch.assert_called_once_with(seat, True)
+
+
 def test_opening_another_turn_does_not_clear_attempt_but_completed_success_does(tmp_path, monkeypatch):
     now, _, seat, state, service = environment(tmp_path, monkeypatch)
     auth_failure.run(service)

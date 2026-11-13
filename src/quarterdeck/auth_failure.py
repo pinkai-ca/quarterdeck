@@ -128,6 +128,7 @@ def run(service):
                 continue
             path = _path(seat)
             path.parent.mkdir(parents=True, exist_ok=True)
+            durable.sync_folder(path.parent.parent)  # retain the new attempt-directory entry across a power cut
             durable.replace_file(path, json.dumps(dict(format=1, at=now.isoformat(),
                                  pool=seat.launched().pool, credential=stamp)) + '\n')
             # Consume before the existing lifecycle path, including across process failure.
