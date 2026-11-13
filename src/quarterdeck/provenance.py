@@ -37,9 +37,11 @@ class Provenance:
             db.execute("""CREATE TABLE IF NOT EXISTS launch_prices (
                 record TEXT NOT NULL, at TEXT NOT NULL, seat TEXT NOT NULL, pool TEXT NOT NULL, price TEXT,
                 PRIMARY KEY (record, at, seat, pool))""")
+            from .program_use import schema
+            schema(db)
 
     def remember(self, record: Path, seat: str, pool: str, at: datetime, price: dict | None = None,
-                 *, commit: bool = True) -> bool:
+                 *, commit: bool = True, harness: str | None = None) -> bool:
         stamp = at.astimezone(timezone.utc).isoformat()
         key = (str(record), stamp, seat, pool)
         saved = json.dumps(price, sort_keys=True) if price is not None else None
@@ -58,15 +60,19 @@ class Provenance:
                 if previous != saved:
                     changed = True
                     self.db.execute("UPDATE launch_prices SET price=? WHERE record=? AND at=? AND seat=? AND pool=?", (saved, *key))
+        from .program_use import remember
+        program_changed = remember(self.db, key, harness)
         if commit and self.db.in_transaction:
             self.db.commit()
-        return bool(changed or inserted)
+        return bool(changed or inserted or program_changed)
 
     def prepare(self, seat, current: Path | None, launched):
         """Read launch evidence before the record transaction; cache the pre-read stamp."""
         path = seat.home.parent / "record-launches.jsonl"
+        from .record_owner import launch_reader
         active = ({"record": str(current), "at": launched.at, "pool": launched.pool,
-                   "price": getattr(launched, "price", None)} if current is not None and launched is not None else None)
+                   "harness": launch_reader(launched), "price": getattr(launched, "price", None)}
+                  if current is not None and launched is not None else None)
         stamp = (record_fingerprint(path), json.dumps(active, sort_keys=True))
         if self.sources.get(path) == stamp:
             return path, stamp, None
@@ -83,7 +89,8 @@ class Provenance:
             return changed
         for event in events:
             record = Path(event["record"])
-            if self.remember(record, seat.name, event["pool"], datetime.fromisoformat(event["at"]), event.get("price"), commit=False):
+            if self.remember(record, seat.name, event["pool"], datetime.fromisoformat(event["at"]), event.get("price"),
+                             commit=False, harness=event.get("harness")):
                 changed.add(record)
         if commit and self.db.in_transaction:
             self.db.commit()

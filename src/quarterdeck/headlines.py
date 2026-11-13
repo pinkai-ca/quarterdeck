@@ -37,5 +37,8 @@ def status_line(facts, alerts: list[str]) -> str:
     # A ship still on tmux's default server can be stopped by any bare kill-server: kept in short.
     if getattr(facts, 'cutover', ''):
         parts.append("tmux: default server, qd down then qd up")
+    # Check failures keep their program, time and safe reason even in the overflow form.
+    parts += facts.check_failed
+    parts += facts.check_unknown
     parts.append("details: qd status")
     return SEPARATOR.join(parts)

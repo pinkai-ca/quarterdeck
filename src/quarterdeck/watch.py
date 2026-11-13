@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from . import accounting_health, credential, idle, ledger, move_hold, server_recovery, pending as pending_delivery, post, providers, quota, record_owner, recovery, request_queue, servicectl as service
+from . import accounting_health, check_outcome, credential, idle, ledger, move_hold, server_recovery, pending as pending_delivery, post, program_use, providers, quota, record_owner, recovery, request_queue, servicectl as service
 from .door import Door, Reading
 from .harness.base import same_name
 from .harness.capabilities import selection_label
@@ -245,9 +245,14 @@ def service_state(runtime: Path) -> str:
 def status_reading(ship: Ship, tmux: Tmux) -> dict:
     store = post.Store(ship.runtime)
     requests = request_queue.pending(ship.runtime)
-    return {"service": service_state(ship.runtime), "seats": [reading(seat, store) for seat in seats(ship, tmux, False)],
+    selected = seats(ship, tmux, False)
+    programs, program_error = program_use.collect(ship, selected)
+    outcomes = check_outcome.collect(ship.runtime)
+    return {"service": service_state(ship.runtime), "seats": [reading(seat, store) for seat in selected],
+            "programs": programs, "programs_error": program_error,
+            "check_outcomes": outcomes[0], "check_outcome_errors": outcomes[1],
             "open_orders": [m for m in store.all() if m.kind == "order" and store.is_open(m)],
-            "requests": requests, "facts": facts(ship, tmux),
+            "requests": requests, "facts": facts(ship, tmux, check_reading=outcomes),
             "usage": headline_readings(ship), **providers.identities(ship)}
 
 
@@ -268,6 +273,18 @@ def render_table(data: dict) -> list[str]:
     for m in data["open_orders"]:
         rows.append(f"  {m.short} {m.sender} → {m.to} · {m.at.strftime('%m-%d %H:%M')}" + (f" · {m.subject}" if m.subject else ""))
     rows += ['  ' + request_queue.describe(row) for row in data.get('requests', ())]
+    for program in data.get('programs', []):
+        working = program['working_now']
+        activity = 'working' if working is True else 'inactive' if working is False else 'unknown'
+        rows.append(f"program {program['harness']}: {activity} · last turn ended {program['last_turn_ended'] or 'unknown'}")
+    if data.get('programs_error'):
+        rows.append(data['programs_error'])
+    rows += check_outcome.alarms(data.get('check_outcomes', []))
+    rows += data.get('check_outcome_errors', [])
+    for outcome in data.get('check_outcomes', []):
+        latest = outcome['latest_attempt']
+        if latest['outcome'] == 'unknown':
+            rows.append(f"{outcome['harness']}: {check_outcome.REASONS[latest['reason']][1]}")
     return rows + render_headlines(data["usage"])
 
 
@@ -401,6 +418,8 @@ class Facts:
     cutover: str = ""  # the ship still runs on tmux's default server, until one qd down and qd up
     server_recovery: list[str] = field(default_factory=list)  # a gone ship server: stopped or unknown
     accounting: str | None = None
+    check_failed: list[str] = field(default_factory=list)
+    check_unknown: list[str] = field(default_factory=list)
 
     def line(self) -> str:  # law: nothing-waits-silently
         parts = ["SERVICE DOWN" if self.service == "down" else f"service {self.service}"]
@@ -423,6 +442,8 @@ class Facts:
         parts += self.group_held
         parts += self.cascade_held
         parts += self.structure_waiting
+        parts += self.check_failed
+        parts += self.check_unknown
         parts += [f"{name} needs a human" for name in self.needs_human]
         parts += [f"{name}: no watch armed" for name in self.unarmed]
         parts += [f"{name} held at limit" for name in self.held]
@@ -592,7 +613,7 @@ def limit_state(ship: Ship, selected: list[Seat | UnresolvedSeat]):
 
 
 def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tuple[str, str]] | None = None,
-          *, store=None, attempts=None, request_rows: list[dict] | None = None) -> Facts:
+          *, store=None, attempts=None, request_rows: list[dict] | None = None, check_reading=None) -> Facts:
     """Everything the status line says; cheap enough for tmux to ask every few seconds."""
     store = post.Store(ship.runtime) if store is None else store
     attempts = post.Attempts(ship.runtime) if attempts is None else attempts
@@ -665,6 +686,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
     from . import cascade_runtime, compaction_alert, group_post, structure_outcome
     oldest = int(max(((now - m.at).total_seconds() for m in waiting), default=0) // 60)
     queued = [a for a in records if a.result == "queued" and latest.get(a.message) == 'queued']
+    outcomes, outcome_errors = check_reading if check_reading is not None else check_outcome.collect(ship.runtime)
     return Facts(
         service=(state := service_state(ship.runtime)),
         waiting=len(waiting),
@@ -693,6 +715,8 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         cascade_held=cascade_runtime.holds(ship.runtime),
         structure_waiting=structure_outcome.waits(ship, selected),
         accounting=accounting_reading(ship.runtime, state),
+        check_failed=check_outcome.alarms(outcomes),
+        check_unknown=outcome_errors,
         unarmed=unarmed,
         walls=walls if walls is not None else ledger_walls(ship),
         usage=headline_readings(ship),

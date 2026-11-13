@@ -14,8 +14,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import secrets
+from dataclasses import dataclass
 
-from . import harness as harnesses, durable, human_wake, pending, post, providers, record_owner, standing
+from . import check_outcome, harness as harnesses, durable, human_wake, pending, post, providers, record_owner, standing
 from .door import Delivery, Door
 from .drill import Check, wait_for
 from .harness.base import _version_in_runtime, program_where, record_fingerprint
@@ -24,6 +25,17 @@ from .ship import SeatSpec, Ship, ShipError
 from .tmux import Tmux, TmuxError
 
 PATIENCE = 180.0
+
+
+@dataclass(frozen=True)
+class ProbeCheck(Check):
+    reason: str | None = None
+
+
+def account_question(door: Door) -> str | None:
+    """Only a recognized, named native prompt supplies a question classification."""
+    screen = door.screen()
+    return check_outcome.QUESTIONS.get(screen.interruption.name) if screen and screen.interruption else None
 
 
 def ready_for_probe(seat: Seat, door: Door) -> bool:
@@ -50,17 +62,38 @@ def check(ship: Ship, name: str, tmux: Tmux, *, model: str | None = None) -> lis
     if model is not None and not model.strip():
         raise ShipError("check --model requires a nonempty model identifier")
     harness = harnesses.get(name)
+    check_outcome.publish(ship.runtime, name, check_outcome.event('unknown', reason='incomplete'))
+    version = None
+    try:
+        checks, version = _check(ship, name, tmux, harness)
+    except BaseException as error:
+        reason = 'interrupted' if isinstance(error, (KeyboardInterrupt, SystemExit)) else 'unclassified'
+        check_outcome.publish(ship.runtime, name, check_outcome.event('unknown', version, reason))
+        raise
+    failures = [c for c in checks if not c.passed]
+    question = next((c.reason for c in failures if isinstance(c, ProbeCheck)
+                     and c.reason in check_outcome.QUESTIONS.values()), None)
+    reason = question or (getattr(failures[0], 'reason', None) if failures else 'passed')
+    if reason is None or not checks:
+        observed = check_outcome.event('unknown', version, 'unclassified')
+    else:
+        observed = check_outcome.event('failed' if failures else 'passed', version, reason)
+    check_outcome.publish(ship.runtime, name, observed)
+    return checks
+
+
+def _check(ship: Ship, name: str, tmux: Tmux, harness) -> tuple[list[Check], str | None]:
     pool = next((p for p in ship.pools.values() if harness.accepts(p) is None), None)
     if pool is None:
-        raise ShipError(f"no pool in {ship.file} that {name} runs on; declare one to check it against")
+        return [ProbeCheck('pool', False, f'no compatible declared pool for {name}', 'pool')], None
     version = _version_in_runtime(harness, ship.runtime)
     where = program_where(harness)
     selected = harness.selected_program() if where is not None else None
-    checks = [Check("installed", version is not None,
+    checks = [ProbeCheck("installed", version is not None,
                     f"{name} {version or 'not found on the PATH'} · provider {providers.display(pool.provider)} · pool {pool.name}"
-                    + (f" · runs {where}" if where else ""))]
+                    + (f" · runs {where}" if where else ""), 'installed')]
     if version is None:
-        return checks
+        return checks, version
     like = next((s.for_pool(pool.name) for s in ship.seats.values()
                  if pool.name in s.pools and s.for_pool(pool.name).harness == name), None)
     run = secrets.token_hex(2)
@@ -109,7 +142,7 @@ def check(ship: Ship, name: str, tmux: Tmux, *, model: str | None = None) -> lis
             label += ", human-session wake and inbox answer"
         checks.append(Check(label, True,
                             f"{proven / f'{name}-{version}'}"))
-    return checks
+    return checks, version
 
 
 def model_confirmation(seat: Seat, requested: str, *, require_record: bool = False) -> Check:
@@ -138,20 +171,22 @@ def probe(ship: Ship, seat: Seat, orders: list[post.Message] | None = None, *, r
     proof_file = ship.runtime / "check" / f"{seat.name}.txt"
     proof_file.parent.mkdir(parents=True, exist_ok=True)
     launched = seat.up(resume=False)
-    checks.append(Check("launch", seat.is_up, launched))
+    checks.append(ProbeCheck("launch", seat.is_up, launched, 'launch'))
     door = Door(seat)
     opened = wait_for(lambda: ready_for_probe(seat, door), PATIENCE if seat.harness.opening_prompt_turn else PATIENCE / 3)
     for done in getattr(seat.launched(), "answered", None) or []:
         checks.append(Check(f"answered for the account holder: {done.get('question')}", done.get("outcome") == "cleared",
                             f"{done.get('choice')} pressed at {done.get('at')} · {done.get('outcome')}"))
-    checks.append(Check("door open at start", bool(opened), str(door.reading()) +
-                        (" · opening brief turn ended in the record" if opened and seat.harness.opening_prompt_turn else "")))
+    checks.append(ProbeCheck("door open at start", bool(opened), str(door.reading()) +
+                             (" · opening brief turn ended in the record" if opened and seat.harness.opening_prompt_turn else ""), 'door'))
     if requested_model is not None:
         confirmed = model_confirmation(seat, requested_model)
         checks.append(confirmed)
         if not confirmed.passed:
             return checks
     if not opened:
+        if reason := account_question(door):
+            checks.append(ProbeCheck('account-holder question', False, check_outcome.REASONS[reason][1], reason))
         return checks
     try:
         initial = seat.harness.state(record) if (record := seat.record()) else None
@@ -190,15 +225,17 @@ def probe(ship: Ship, seat: Seat, orders: list[post.Message] | None = None, *, r
             attempts.close(attempt, delivery.result, delivery.detail)
             route += " → " + str(delivery)
     taken = delivery.result == "delivered"
-    checks.append(Check(f"a {len(text)}-character paste matched the box as the program shows it, submitted, confirmed",
-                        taken, route))
+    checks.append(ProbeCheck(f"a {len(text)}-character paste matched the box as the program shows it, submitted, confirmed",
+                             taken, route, 'paste'))
     if not taken:
+        if reason := account_question(door):
+            checks.append(ProbeCheck('account-holder question', False, check_outcome.REASONS[reason][1], reason))
         return checks
     closed = wait_for(lambda: store.closing_report(order), PATIENCE)
-    checks.append(Check("task: the report closed the order", closed is not None,
-                        f"report {closed.short}: {closed.body[:40]!r}" if closed else "no report within the patience"))  # law: can-post
+    checks.append(ProbeCheck("task: the report closed the order", closed is not None,
+                             f"report {closed.short}: {closed.body[:40]!r}" if closed else "no report within the patience", 'report'))  # law: can-post
     content = proof_file.read_text().strip() if proof_file.exists() else None
-    checks.append(Check("task: the named file holds the given line", content == proof_line, f"{proof_file}: {content!r}"))
+    checks.append(ProbeCheck("task: the named file holds the given line", content == proof_line, f"{proof_file}: {content!r}", 'file'))
     def _turn_ended() -> bool:
         if (r := seat.record()) is None:
             return False
@@ -215,10 +252,10 @@ def probe(ship: Ship, seat: Seat, orders: list[post.Message] | None = None, *, r
     except OSError:
         state = None
     turns_shown = state.turns if state and state.turns is not None else "?"
-    checks.append(Check("record joined, the turn ended and read", bool(ended),
-                        f"{record.name if record else 'no record'} · {turns_shown} turns · "
-                        f"requested {requested_model or 'native default'} · launched {getattr(getattr(seat, 'spec', None), 'model', None) or 'native default'} · "
-                        f"record-observed {state.model if state and state.model else '?'}"))
+    checks.append(ProbeCheck("record joined, the turn ended and read", bool(ended),
+                             f"{record.name if record else 'no record'} · {turns_shown} turns · "
+                             f"requested {requested_model or 'native default'} · launched {getattr(getattr(seat, 'spec', None), 'model', None) or 'native default'} · "
+                             f"record-observed {state.model if state and state.model else '?'}", 'record'))
     if requested_model is not None:
         checks.append(model_confirmation(seat, requested_model, require_record=True))
     return checks
