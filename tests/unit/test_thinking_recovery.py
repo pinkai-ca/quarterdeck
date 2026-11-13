@@ -338,13 +338,13 @@ def from_status(seat):
 
 def wake_pass_reads_only(world, guard):
     """Under the waking law, only the wake pass of an up, unarmed, unheld human seat with a waiting message
-    reads its record state and screen. Nothing reads its inputs or types into it, and status, alarms and
-    refusals stay metadata-only. Returns the names the wake pass read."""
+    reads its record (state, and the prior-receipt inputs read, by the captain's ruling) and its screen. Nothing
+    types into it, and status, alarms and refusals stay metadata-only. Returns the names the wake pass read."""
     from quarterdeck import human_wake
     inside, reads = [False], []
 
     def forbidden(*args, **kwargs):
-        pytest.fail('nothing reads a human seat\'s inputs or types into it here')
+        pytest.fail('nothing types into a human seat here')
 
     def allowed(name, real):
         def read(*args, **kwargs):
@@ -353,10 +353,10 @@ def wake_pass_reads_only(world, guard):
             reads.append(name)
             return real(*args, **kwargs)
         return read
-    for obj, name in ((world.seat, 'record'), (world.seat.harness, 'state'), (world.seat.harness, 'screen'),
-                      (world.native, 'capture')):
+    for obj, name in ((world.seat, 'record'), (world.seat.harness, 'state'), (world.seat.harness, 'inputs'),
+                      (world.seat.harness, 'screen'), (world.native, 'capture')):
         guard.setattr(obj, name, allowed(name, getattr(obj, name)))
-    for obj, name in ((world.seat.harness, 'inputs'), (world.native, 'paste'), (world.native, 'keys')):
+    for obj, name in ((world.native, 'paste'), (world.native, 'keys')):
         guard.setattr(obj, name, forbidden)
     real_run = human_wake.run
 

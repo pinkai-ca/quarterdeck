@@ -393,6 +393,45 @@ def test_a_foreground_watch_running_during_the_woken_turn_is_armed_and_releases(
     assert desk.pastes() == [EXACT, EXACT]
 
 
+@pytest.mark.parametrize('case', ['known-then-missing', 'known-then-new', 'none-then-new', 'none-then-legacy'])
+def test_only_a_known_new_watch_generation_releases_a_confirmed_wake(desk, monkeypatch, case):
+    """A confirmed wake is released only by an actual known generation that differs from the one it saved. A missing
+    marker where one was saved is unknown: no release, no new wake, no native read. A wake saved before markers
+    existed (none) is still released by a real new registration, and an old-style registration proves nothing."""
+    if case.startswith('known'):
+        desk.watch(dead_pid(), 'b' * 32)
+    confirmed_wake(desk)
+    assert reservation(desk)['generation'] == ('b' * 32 if case.startswith('known') else None)
+    desk.record.end('synthetic answer')
+    human_wake.run(desk.seat)  # the turn is seen ended before the watch changes
+    folder = post.watch_file(desk.runtime, 'desk').parent
+    if case == 'known-then-missing':
+        (folder / 'watch-generation').unlink()
+    elif case.endswith('new'):
+        arrived = post.wait(desk.runtime, 'desk', interval=0.01, stop_after=0.05)  # a real registration, then it exits
+        if arrived:
+            post.printed(desk.runtime, arrived[1])
+    else:
+        desk.watch(os.getpid())  # an old-style registration: pid and time only, no generation marker
+        post.watch_file(desk.runtime, 'desk').unlink()
+    desk.order('A later synthetic order')
+    released = case.endswith('new')
+    if not released:
+        def forbidden(*args, **kwargs):
+            pytest.fail('an unproved rearm reads nothing native')
+        for obj, name in ((desk.tmux, 'read_pane'), (desk.tmux, 'capture'), (desk.tmux, 'paste'), (desk.tmux, 'keys'),
+                          (desk.seat.harness, 'screen'), (desk.seat.harness, 'inputs'), (desk.seat.harness, 'state')):
+            monkeypatch.setattr(obj, name, forbidden)
+    for _ in range(2):
+        human_wake.run(desk.seat)
+    if released:
+        assert desk.pastes() == [EXACT, EXACT] and desk.keys() == [('Enter',), ('Enter',)], 'exactly one new wake'
+    else:
+        assert desk.pastes() == [EXACT] and desk.keys() == [('Enter',)], 'no new wake without a proved rearm'
+        assert reservation(desk)['phase'] == 'delivered', 'the episode is not released'
+        assert human_wake.status(desk.seat), 'and the hold is visible'
+
+
 def test_a_relaunch_after_a_confirmed_wake_releases_it_for_exactly_one_new_wake(desk):
     """Ruling: the old wake belonged to the old launch; the new launch's episode is new."""
     confirmed_wake(desk)
@@ -562,22 +601,26 @@ def test_a_standing_reservation_reads_only_its_own_receipt_or_ended_state_and_a_
     assert human_wake.status(desk.seat), 'the standing state is visible'
 
 
-def test_one_human_seats_wake_failure_is_isolated_and_logged_once(alarms, monkeypatch):
-    """The captain's ruling: an exception from one human seat's wake pass holds that seat, never the whole pass."""
-    ship, svc = alarms.desk.ship, alarms.svc
+def test_one_human_seats_wake_failure_is_isolated_detailed_only_and_logged_once(alarms, monkeypatch):
+    """The captain's ruling: an exception from one human seat's wake pass holds that seat, never the whole pass.
+    Only a fixed category is logged, once; the seat's own wake state shows it in the detailed readings, and it
+    neither reaches the status line nor posts a report."""
+    from quarterdeck import watch
+    ship, svc, d = alarms.desk.ship, alarms.svc, alarms.desk
     ship.seats['counsel'] = replace(ship.seat('desk'), name='counsel', role='counsel', persona=None)
     counsel_pane = Pane('%9', 'Office', 'counsel', 4747, 400, 40, False, False, None)
-    alarms.desk.tmux.panes[counsel_pane.id] = counsel_pane
-    counsel = Seat(ship, ship.seat('counsel'), alarms.desk.tmux)
+    d.tmux.panes[counsel_pane.id] = counsel_pane
+    counsel = Seat(ship, ship.seat('counsel'), d.tmux)
     counsel.folder.mkdir(parents=True, exist_ok=True)
     launch(counsel, counsel_pane)  # both human seats are up, so each gets its own wake pass
+    secret = 'synthetic unreadable desk pointer'
     ran, alarmed, logged = [], [], []
     real_needs_human = svc.needs_human
 
     def wake(seat):
         ran.append(seat.name)
         if seat.name == 'desk':
-            raise OSError('synthetic unreadable desk pointer')
+            raise OSError(secret)
         return None
 
     def needs_human(seat):
@@ -590,9 +633,22 @@ def test_one_human_seats_wake_failure_is_isolated_and_logged_once(alarms, monkey
         svc.deliveries()
     assert ran.count('desk') == 2 and ran.count('counsel') == 2, 'the pass continued past the failing seat'
     assert alarmed.count('desk') == 2 and alarmed.count('counsel') == 2, 'every seat still reaches its alarm check'
-    about = [entry for entry in logged if 'desk' in json.dumps(entry, default=str)
-             and 'synthetic unreadable desk pointer' in json.dumps(entry, default=str)]
-    assert len(about) == 1, 'logged once by reason'
+    reason = 'human wake service failure (pass: I/O)'
+    about = [fields for _, fields in logged if fields.get('seat') == 'desk']
+    assert len(about) == 1 and about[0].get('reason') == reason, 'one fixed category, logged once'
+    assert secret not in json.dumps(logged, default=str), 'no exception text is logged'
+    assert secret not in (d.seat.folder / 'human-wake-status.json').read_text()
+    # The public per-seat hold: the seat's wake state, the declared field qd status detail and qd watch render.
+    assert human_wake.status(d.seat) == reason
+    assert watch.reading(d.seat).wake == reason
+    assert human_wake.status(counsel) != reason
+    # Detailed only: never on the status line, and no new report.
+    monkeypatch.setattr(watch, 'service_state', lambda _: 'ok')
+    monkeypatch.setattr(watch, 'disks', lambda _: [])
+    monkeypatch.setattr(watch.credential, 'login_needed', lambda _: [])
+    facts = watch.facts(ship, d.tmux, walls=[], login=[])
+    assert 'desk' not in facts.needs_human and 'service failure' not in facts.line()
+    assert not [m for m in svc.store.all() if m.sender == 'ship' and m.body.startswith('desk ')]
 
 
 # -- the door: nothing else ever enters a human session ----------------------------------------
