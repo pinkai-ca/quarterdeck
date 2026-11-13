@@ -478,6 +478,18 @@ class Harness(ABC):
         state = self.state(record)
         return self.model_identity(state.model)
 
+    def model_control_origin(self, seat, record: Path, value: str) -> dict | None:
+        """Request-specific record boundary and display binding, or unsupported."""
+        return None
+
+    def model_control_result(self, seat, record: Path, value: str, origin: dict) -> str | None:
+        """A new result linked to this request's exact command, never an old model reading."""
+        return None
+
+    def model_control_current(self, record: Path, origin: dict) -> bool | None:
+        """Whether native input since the command boundary still permits its confirmation key."""
+        return None
+
     def control_answer(self, control: Control, value: str, screen: Screen,
                        *, version: str | None = None, context: ControlContext | None = None) -> ControlAnswer | None:
         """A value-matched option and proved keys, or no authority to answer this frame."""

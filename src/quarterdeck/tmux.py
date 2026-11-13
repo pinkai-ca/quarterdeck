@@ -668,7 +668,7 @@ class Tmux:
             return None
         format_ = _FORMAT + '\t#{cursor_flag}'
         output = self.run('display-message', '-p', '-t', pane_id, format_, ';',
-                          'capture-pane', '-p', '-J', '-e', '-t', pane_id, '-S', '0', ';',
+                          'capture-pane', '-p', '-e', '-t', pane_id, '-S', '0', ';',
                           'display-message', '-p', '-t', pane_id, format_)
         before, separator, rest = output.partition('\n')
         text, closing, after = rest.rstrip('\n').rpartition('\n')

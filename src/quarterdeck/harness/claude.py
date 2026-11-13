@@ -14,6 +14,7 @@ from .capabilities import DefaultMetadata, EffortCapability, SuggestedValue
 
 import copy
 import email.utils
+import hashlib
 import json
 import re
 import shlex
@@ -649,6 +650,126 @@ def catalog_display(data: dict, target: str, *, launched: datetime, now: datetim
         return None
 
 
+def model_display(seat, target):
+    """A per-seat fresh catalog precondition, never a global display-name alias."""
+    try:
+        launched = seat.launched()
+        if launched is None or launched.version != '2.1.317':
+            return None
+        argv = launched.argv
+        if ('--settings' in argv or '--setting-sources' not in argv
+                or argv[argv.index('--setting-sources') + 1] != 'user'):
+            return None
+        settings_path = seat.home / 'settings.json'
+        settings_raw = settings_path.read_bytes()
+        settings = json.loads(settings_raw)
+        if not isinstance(settings, dict) or 'modelPicker' in settings:
+            return None
+        # Managed settings may override a user's complete model-picker table. Their presence is
+        # unsupported here; a missing or ambiguous catalog never falls back to the bundled table.
+        if Path('/etc/claude-code').exists():
+            return None
+        candidates = []
+        for path in (seat.home / 'cache' / 'model-catalog').glob('*.json'):
+            raw = path.read_bytes()
+            data = json.loads(raw)
+            bound = catalog_display(data, target, launched=launched.when, now=datetime.now(timezone.utc))
+            if bound is not None:
+                display, fetched, stale = bound
+                candidates.append(dict(display=display, catalog=str(path), fetched=fetched, stale=stale,
+                                       digest=hashlib.sha256(raw).hexdigest(),
+                                       settings=hashlib.sha256(settings_raw).hexdigest()))
+        if settings_path.read_bytes() != settings_raw:
+            return None
+        return candidates[0] if len(candidates) == 1 else None
+    except (OSError, ValueError, TypeError, AttributeError, IndexError):
+        return None
+
+
+def control_suffix(record, origin):
+    """Bounded complete rows after one unchanged native prefix, with no raw persistence."""
+    try:
+        if str(record) != origin['path']:
+            return None
+        before = record.stat()
+        offset = origin['offset']
+        if (type(offset) is not int or offset < 0 or before.st_size < offset
+                or (before.st_dev, before.st_ino) != (origin['device'], origin['inode'])):
+            return None
+        with record.open('rb') as stream:
+            digest, left = hashlib.sha256(), offset
+            while left:
+                chunk = stream.read(min(left, 65536))
+                if not chunk:
+                    return None
+                digest.update(chunk)
+                left -= len(chunk)
+            if digest.hexdigest() != origin['prefix']:
+                return None
+            # A large or partial suffix is unknown, not truncated into an apparent result.
+            suffix = stream.read(2 * 1024 * 1024 + 1)
+        if len(suffix) > 2 * 1024 * 1024 or suffix and not suffix.endswith(b'\n'):
+            return None
+        rows = [json.loads(line) for line in suffix.splitlines()]
+        if any(not isinstance(row, dict) for row in rows):
+            return None
+        after = record.stat()
+        if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) !=
+                (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
+            return None
+        return rows
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return None
+
+
+def styled_rows(text):
+    """Decode SGR foreground cells; any other terminal escape leaves the frame unknown."""
+    rows, letters, colors, foreground = [], [], [], None
+    position = 0
+    while position < len(text):
+        char = text[position]
+        if char == '\x1b':
+            match = re.match(r'\x1b\[([0-9;]*)m', text[position:])
+            if match is None:
+                return None
+            codes = [int(code or '0') for code in match[1].split(';')]
+            index = 0
+            while index < len(codes):
+                code = codes[index]
+                if code in (0, 39):
+                    foreground = None
+                elif 30 <= code <= 37 or 90 <= code <= 97:
+                    foreground = ('ansi', code)
+                elif code in (38, 48):
+                    if index + 2 < len(codes) and codes[index + 1] == 5:
+                        if code == 38:
+                            foreground = ('indexed', codes[index + 2])
+                        index += 2
+                    elif index + 4 < len(codes) and codes[index + 1] == 2:
+                        if code == 38:
+                            foreground = ('rgb', *codes[index + 2:index + 5])
+                        index += 4
+                    else:
+                        return None
+                elif code not in (1, 2, 3, 4, 7, 9, 22, 23, 24, 27, 29, 49, *range(40, 48), *range(100, 108)):
+                    return None
+                index += 1
+            position += len(match[0])
+            continue
+        if char == '\n':
+            rows.append((''.join(letters), tuple(colors)))
+            letters, colors = [], []
+        elif char.isprintable() or char == '\u00a0':
+            letters.append(char)
+            colors.append(foreground)
+        else:
+            return None
+        position += 1
+    if letters:
+        rows.append((''.join(letters), tuple(colors)))
+    return rows
+
+
 SETTINGS = {
     "env": {"DISABLE_AUTOUPDATER": "1"},
     "promptSuggestionEnabled": False,
@@ -766,6 +887,139 @@ class ClaudeHarness(Harness):
                 if isinstance(content, str) and content.startswith('<local-command-stdout>') and SET_MODEL.search(content):
                     model = None
         return model if record_fingerprint(record) == before else None
+
+    def model_control_origin(self, seat, record: Path, value: str) -> dict | None:
+        if self.model_identity(value) is None:
+            return None
+        display = model_display(seat, value)
+        if display is None:
+            return None
+        try:
+            before = record.stat()
+            digest = hashlib.sha256()
+            tail = b''
+            with record.open('rb') as stream:
+                for chunk in iter(lambda: stream.read(65536), b''):
+                    digest.update(chunk)
+                    tail = chunk[-1:]
+            after = record.stat()
+            stamp = lambda stat: (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+            if stamp(before) != stamp(after) or after.st_size and tail != b'\n':
+                return None  # never begin inside a partial native row
+            return dict(path=str(record), device=after.st_dev, inode=after.st_ino, offset=after.st_size,
+                        prefix=digest.hexdigest(), display=display)
+        except OSError:
+            return None
+
+    def model_control_result(self, seat, record: Path, value: str, origin: dict) -> str | None:
+        """One new command envelope linked by native parents, not by timestamp or old display."""
+        try:
+            current_display = model_display(seat, value)
+            if current_display is None or current_display != origin['display'] or str(record) != origin['path']:
+                return None
+            before = record.stat()
+            rows = control_suffix(record, origin)
+            if rows is None:
+                return None
+            triples = []
+            for index, row in enumerate(rows):
+                content = row.get('message', {}).get('content')
+                if row.get('type') != 'user' or not isinstance(content, str) or '<command-name>' not in content:
+                    continue
+                # Any second local model command makes ownership ambiguous, even if its target
+                # happens to agree. A missing caveat/result cannot be filled from older history.
+                if '<command-name>/model</command-name>' not in content:
+                    continue
+                if index == 0 or index + 1 >= len(rows):
+                    return None
+                caveat, stdout = rows[index - 1], rows[index + 1]
+                group = (caveat, row, stdout)
+                prompt = row.get('promptId')
+                identities = [item.get('uuid') for item in group]
+                if (not isinstance(prompt, str) or not prompt
+                        or any(not isinstance(identity, str) or not identity for identity in identities)
+                        or len(set(identities)) != 3
+                        or any(item.get('type') != 'user' or item.get('promptId') != prompt
+                               or item.get('isSidechain') or item.get('isCompactSummary') for item in group)
+                        or row.get('parentUuid') != identities[0] or stdout.get('parentUuid') != identities[1]
+                        or caveat.get('isMeta') is not True):
+                    return None
+                introduction = caveat.get('message', {}).get('content')
+                output = stdout.get('message', {}).get('content')
+                arguments = re.findall(r'<command-args>(.*?)</command-args>', content, re.S)
+                matches = SET_MODEL.findall(output) if isinstance(output, str) else []
+                if (not isinstance(introduction, str) or not introduction.startswith('<local-command-caveat>')
+                        or arguments != [value] or not isinstance(output, str)
+                        or not output.startswith('<local-command-stdout>')
+                        or matches != [current_display['display']]):
+                    return None
+                triples.append(group)
+            after = record.stat()
+            if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) !=
+                    (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
+                return None
+            return value if len(triples) == 1 else None
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            return None
+
+    def model_control_current(self, record: Path, origin: dict) -> bool | None:
+        rows = control_suffix(record, origin)
+        if rows is None:
+            return None
+        # Local commands are deliberately excluded from the ordinary prompt reader. They still
+        # revoke answer currentness. No question-side native command envelope was measured, so a
+        # newly written user/queue row here is unknown rather than assumed to be our own command.
+        if any(row.get('type') in ('user', 'queue-operation') for row in rows):
+            return None
+        return True
+
+    def control_context(self, seat, control: Control, value: str, screen: Screen,
+                        *, version: str | None = None, question: str | None = None) -> ControlContext | None:
+        if control.name != 'model' or version != '2.1.317' or question is None:
+            return None
+        display = model_display(seat, value)
+        if display is None:
+            return None
+        frame = seat.read_control_frame()
+        if (frame is None or frame.cursor_visible is not False
+                or (frame.pane.width, frame.pane.height) != (120, 40)):
+            return None  # only this complete native geometry/style was measured
+        rows = styled_rows(frame.text)
+        if rows is None:
+            return None
+        plain = '\n'.join(row[0] for row in rows) + '\n'
+        if (plain.rstrip('\n') != screen.text.rstrip('\n')
+                or hashlib.sha256(screen.text.encode()).hexdigest() != question
+                or len(rows) != 40 or self.screen(plain).box is not None):
+            return None  # physical/joined disagreement (including wrapped frames) stays unknown
+        label = f'Yes, switch to {display["display"]}'
+        yes, no = rows[37], rows[38]
+        if yes[0].rstrip(' ') != f'   ❯ 1. {label}' or no[0].rstrip(' ') != '     2. No, go back':
+            return None
+        if (yes[1][3] != ('indexed', 153)
+                or any(color != ('indexed', 246) for color in yes[1][5:8])
+                or any(color != ('indexed', 153) for color in yes[1][8:8 + len(label)])
+                or any(color != ('indexed', 246) for color in no[1][5:8])
+                or any(color is not None for color in no[1][8:8 + len('No, go back')])):
+            return None
+        titles = [index for index, row in enumerate(rows) if row[0].strip() == 'Switch model?']
+        if len(titles) != 1 or titles[0] >= 37:
+            return None
+        body = [row[0].strip() for row in rows[titles[0] + 1:37]]
+        if body.count('Your next response will be slower and use more tokens') != 1:
+            return None  # hook-replaced or otherwise unmeasured question bodies remain unknown
+        # Positive measured selection/composer/cursor shape, not an absence-of-warning guess.
+        if any('❯\u00a0' in row[0] or row[0].strip() == '─' * 120 for row in rows[36:39]):
+            return None
+        option_rows = [index for index, row in enumerate(rows)
+                       if re.match(r'^\s*(?:❯\s*)?[0-9]+\. ', row[0])]
+        if option_rows != [37, 38] or sum('❯' in row[0] for row in rows[titles[0]:]) != 1:
+            return None
+        scope = (frame.pane.id, frame.pane.pid, frame.pane.width, frame.pane.height,
+                 display['catalog'], display['digest'], display['settings'], question,
+                 hashlib.sha256(frame.text.encode()).hexdigest())
+        return ControlContext(version, value, display['display'], screen_reader_off=True, focused=True,
+                              composer_hidden=True, cursor_visible=False, yes_highlighted=True, scope=scope)
 
     def control_answer(self, control: Control, value: str, screen: Screen,
                        *, version: str | None = None, context: ControlContext | None = None) -> ControlAnswer | None:

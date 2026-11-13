@@ -166,6 +166,14 @@ def proof(state: Continuation) -> str:
     return 'record confirmed'
 
 
+def unconfirmed_proof(state: Continuation) -> str:
+    if state.asked and state.answered:
+        return 'program asked; ship answered yes; record unconfirmed'
+    if state.asked:
+        return 'program asked; ship answer unconfirmed; record unconfirmed'
+    return 'record unconfirmed'
+
+
 def observe_control(seat, control, state: Continuation, now: datetime, *, persist, verify,
                     answer_current=None, confirmed_model=None) -> Decision:
     """Advance a consumed request through its existing owner's persistence/identity callbacks.

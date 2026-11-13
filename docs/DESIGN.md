@@ -769,8 +769,8 @@ spock   off                   exited 1 at 21:12                 -          0
 Titles are display, never identity. The door dismisses only a notice the adapter recognizes, types once into an empty box, checks the display, and only then submits. An unverified paste is never cleared automatically. No key goes into an unknown dialog, a menu or a human's text.
 
 A control-owned question is an obstruction to ordinary delivery. Only the pending request that submitted
-the control may answer it, using an adapter-declared option matched to the requested value by its text,
-with a proved selection gesture independent of the cursor. The same request owner retains its consumed
+the control may answer it, using an adapter-declared option matched to the requested value by its text.
+An answer also needs the adapter's proved selection and focus conditions. The same request owner retains its consumed
 claim and bounded continuation/deadline metadata; a later tick observes or answers, never types the
 command again. Unknown continuation or transport holds without replay. Record confirmation closes a
 model change; expiry names it unconfirmed. Where the program asked and the ship sent the value-matched
@@ -785,6 +785,20 @@ table. Confirmation uses the successful local-command record result bound to the
 command envelope and requested model. A current model observation that may predate that request is
 insufficient; absent request-specific binding remains unknown. The first question is retained by
 digest only; changed or incomplete focus evidence holds by name.
+
+The service resumes that continuation before its generic consumed-claim hold, only when the original
+payload and claim still agree. It keeps the original thirty-second deadline and one command reservation;
+other requests continue on each pass. A failed or uncertain answer gesture is reserved before the key,
+so a later pass can only observe its result or expire. A current matching continuation suppresses its
+model difference through the same request owner's read-only query, including in the status reader.
+The current Claude answer reader admits only the measured 2.1.317 frame at 120 by 40, with its two
+option rows, indexed foreground styles, hidden cursor and absent composer. Other versions, geometry,
+styles or wrapped/partial frame disagreement remain unknown. The expected display is one fresh exact
+catalog row in the seat's own home, with no model-picker override or bundled-name fallback. This is
+an option precondition, not native identity. The record result must follow the saved complete-row byte
+boundary in the same unchanged-prefix record, with the caveat, exact command and successful output
+linked in one prompt by their parent chain. No old result, timestamp ordering or display-only model
+reading can supply that request-specific proof. A suffix beyond the bounded reader remains unknown.
 
 An observed model is read from the current owned record first and an adapter-proved screen reading
 second. Comparison uses the effective selected pool/seat declaration and the adapter's exact model

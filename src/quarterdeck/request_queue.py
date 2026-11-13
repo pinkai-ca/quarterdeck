@@ -137,6 +137,54 @@ def claimed(path):
         return None
 
 
+def control_continuation(path, data=None, meta=None):
+    """Only the original immutable payload/claim can resume its own consumed control."""
+    from .control_confirmation import Continuation
+    data = load(path) if data is None else data
+    meta = metadata(path) if meta is None else meta
+    if 'control_confirmation' not in meta:
+        return None
+    state = Continuation.from_metadata(meta['control_confirmation'])
+    origin = state.origin
+    launch, inputs, record = (origin.get(key) for key in ('launch', 'inputs', 'record'))
+    digest = lambda value: (isinstance(value, str) and len(value) == 64
+                            and all(char in '0123456789abcdef' for char in value))
+    if (state.control != 'model' or not isinstance(launch, dict) or not isinstance(inputs, dict)
+            or not isinstance(record, dict) or not isinstance(origin.get('declaration'), list)
+            or len(origin['declaration']) != 3
+            or any(not isinstance(launch.get(key), str) or not launch[key] for key in ('pane', 'at', 'harness'))
+            or type(launch.get('pid')) is not int or launch['pid'] <= 0
+            or not isinstance(inputs.get('record'), str) or not inputs['record']
+            or any(type(inputs.get(key)) is not int or inputs[key] < 0 for key in ('device', 'inode', 'input_count'))
+            or not digest(inputs.get('inputs_digest'))
+            or record.get('path') != inputs['record']
+            or any(record.get(key) != inputs[key] for key in ('device', 'inode'))
+            or type(record.get('offset')) is not int or record['offset'] < 0
+            or not digest(record.get('prefix')) or not isinstance(record.get('display'), dict)):
+        raise ShipError('control continuation provenance unknown; retained without retyping')
+    if (data.get('kind') != 'control' or data.get('name') != state.control
+            or str(data.get('value')) != state.value or data.get('seat') != state.origin.get('seat')
+            or claimed(path) is not True or path.read_bytes() != path.with_suffix('.claimed').read_bytes()):
+        raise ShipError('control continuation owner unknown; retained without retyping')
+    return state
+
+
+def pending_model(seat, expected):
+    """Read-only suppression, exclusively from a well-formed current request-owner continuation."""
+    from . import post
+    for path in sorted((seat.ship.runtime / 'requests').glob('*.json')):
+        try:
+            state = control_continuation(path)
+            if (state is not None and state.control == 'model' and state.value == expected
+                    and state.origin.get('launch') == launch_binding(seat)
+                    and state.origin.get('declaration') == [seat.harness.name, seat.spec.model_mode, seat.spec.model]
+                    and datetime.fromisoformat(state.started) <= post.now() < datetime.fromisoformat(state.deadline)):
+                return True
+        except (OSError, ValueError, TypeError, ShipError):
+            continue  # unknown state never suppresses a difference
+    return False
+
+
 def view(path, data=None):
     """Operational metadata only, never control arguments or a conversation."""
     data = load(path) if data is None else data
@@ -150,7 +198,7 @@ def view(path, data=None):
         kind = 'restart' if data.get('resume') is True else 'fresh' if data.get('resume') is False else 'relaunch'
     return dict(id=path.stem, seat=data.get('seat'), kind=kind, since=created(path, meta),
                 reason=reason, dimension=waiting.get('dimension', 'unknown') if isinstance(waiting, dict) else 'unknown',
-                claimed=claimed(path))
+                claimed=claimed(path), continuation=control_continuation(path, data, meta) is not None)
 
 
 def pending(runtime, name=None):
@@ -181,7 +229,8 @@ def pending(runtime, name=None):
 
 
 def describe(row):
-    claim = ('; outcome unknown, already claimed' if row['claimed'] is True else
+    claim = ('; owned control awaiting confirmation' if row.get('continuation') else
+             '; outcome unknown, already claimed' if row['claimed'] is True else
              '; claim state unknown' if row['claimed'] is None else '')
     target = row['seat'] or 'unknown seat'
     cancel = f'; cancel: qd restart {target} --cancel {row["id"]}' if row['seat'] and row['claimed'] is not True else ''

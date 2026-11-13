@@ -160,7 +160,7 @@ class Service:
         self.rebind()
         self.structure_passes.begin()
         for step in (self.server_recovery, self.reconcile, self.account, self.groups, self.cascades, self.inboxes, self.recoveries, self.refusals, self.answers, self.deliveries, self.follow, self.requests, self.compactions, self.person_quiet, self.fresh_after_order,
-                     self.rebrief, self.credentials, self.authentications, self.failover):  # accounting before anything relaunches a seat
+                     self.rebrief, self.credentials, self.authentications, self.model_differences, self.failover):  # accounting before anything relaunches a seat
             self.heartbeat()  # before every step: a slow delivery or usage read reads as busy, never as dead
             try:
                 step()
@@ -413,6 +413,14 @@ class Service:
         return [spec.name for spec in self.ship.seats.values()
                 if spec.role == 'systems' and spec.name != seat.name and self._up(spec.name)]
 
+    def model_differences(self) -> None:
+        from . import model_mismatch, request_queue
+        for seat in self.resolved_seats():
+            try:
+                model_mismatch.step(self, seat, request_queue.pending_model)
+            except Exception as error:
+                self.log('error', step='model-mismatch', seat=seat.name, error=repr(error))
+
     def _up(self, name: str) -> bool:
         try:
             return self.seat(name).is_up
@@ -516,14 +524,19 @@ class Service:
                             raise ShipError('request retirement intent unknown; retained')
                         request_queue.settle(path, meta['terminal'], clear_claim=True)
                         continue  # recover cancellation/supersession without ever dispatching it
-                    if claim.exists() or claim.is_symlink():
+                    data = request_queue.load(path)
+                    try:
+                        continuation = request_queue.control_continuation(path, data, meta)
+                    except (OSError, ValueError, TypeError, ShipError):
+                        raise request_queue.RequestHold('control-confirmation',
+                                                       'control continuation unknown; retained without retyping') from None
+                    if (claim.exists() or claim.is_symlink()) and continuation is None:
                         continue  # an earlier action may have run; never replay an ambiguous claim
                     raw = path.read_text()
-                    data = json.loads(raw)
-                    if isinstance(data, dict) and not request_queue.supersede(self.runtime, path, data):
+                    if continuation is None and not request_queue.supersede(self.runtime, path, data):
                         continue
                     meta = request_queue.metadata(path)  # supersession may add retired identities
-                    if not isinstance(data, dict) or data.get("kind") != "rebrief":
+                    if continuation is None and data.get("kind") != "rebrief":
                         durable.replace_file(claim, raw)  # before dispatch: failed archival cannot requeue an executed action
                     # The durable claim excludes cancellation/supersession while dispatch runs.
                     # A seat transition must never hold the global request coordination lock.
@@ -531,11 +544,15 @@ class Service:
                     try:
                         self.request_wait = None
                         self.request_metadata = meta
+                        self.request_path = path
                         answer = self.answer(data)
+                    except request_queue.RequestHold:
+                        raise
                     except SelectionError as error:
                         self.hold_selection(error)
                         request_queue.hold(path, meta, 'selection', 'seat selection unknown or held')
-                        self.clear_request_claim(claim)
+                        if 'control_confirmation' not in meta:
+                            self.clear_request_claim(claim)
                         continue  # this request stays held; later healthy-seat requests still run
                     except ShipError as error:
                         if isinstance(data, dict) and data.get("kind") == "rebrief":
@@ -545,7 +562,8 @@ class Service:
                         if isinstance(data, dict) and data.get('kind') in request_queue.SEAT_KINDS:
                             dimension, reason = self.request_wait or ('unknown', 'service decision unknown')
                             request_queue.hold(path, meta, dimension, reason)
-                        self.clear_request_claim(claim)
+                        if 'control_confirmation' not in meta:
+                            self.clear_request_claim(claim)
                         continue  # not yet: the request waits for the seat's turn to end
                     # The final name is the client's completion signal, never an open writer.
                     retired = meta.get('retired')
@@ -736,6 +754,10 @@ class Service:
 
     def control(self, seat: Seat, name: str, value: str) -> str | None:
         """Apply a control by its in-session form, through the door, when the seat is idle."""
+        from . import request_queue
+        meta = getattr(self, 'request_metadata', {})
+        if 'control_confirmation' in meta:
+            return self.continue_model_control(seat, name, value)
         if reason := recovery.held(seat):
             return f'{name} held: {reason}'
         if seat.spec.pool_choices and (name in {"harness", "model", "effort", "model_mode", "effort_mode"} or name not in shipmod.SEAT_KEYS):
@@ -758,6 +780,20 @@ class Service:
             return f"{name} written; qd restart {seat.name} applies it{unchecked}"
         if not seat.is_up:
             return f"{name} written; {seat.name} is down, so qd up {seat.name} applies it{unchecked}"
+        if self is not None:
+            # A different consumed control owns the seat until its record settles or its deadline
+            # expires. It must not be interleaved with a second transport.
+            for path in (seat.ship.runtime / 'requests').glob('*.json'):
+                if path == getattr(self, 'request_path', None):
+                    continue
+                try:
+                    other = request_queue.load(path)
+                    if other.get('seat') == seat.name and request_queue.claimed(path) is not False:
+                        self.request_wait = ('control-confirmation', 'another consumed request owns the seat')
+                        return None
+                except (OSError, ValueError, ShipError):
+                    self.request_wait = ('control-confirmation', 'request ownership unknown')
+                    return None
         if seat.is_working():
             if self is not None:
                 self.request_wait = ('turn-open', 'a turn is open')
@@ -771,6 +807,10 @@ class Service:
             return None  # controls do not inherit the move's timed/queue predicate
         door = Door(seat)
         command = control.command(value)
+        if name == 'model':
+            if self is None:
+                return 'model held: durable request owner unavailable; command not typed'
+            return self.begin_model_control(seat, control, value, door)
         delivery = door.deliver(command, confirm=False)
         if delivery.result != "typed":
             return f"{name}: {delivery}{unchecked}"
@@ -788,6 +828,86 @@ class Service:
                 return f"{name} = {value} · applied by {command} in {seat.pane().id} · confirmed by {control.confirmed_by}{unchecked}"
             time.sleep(0.2)
         return f"{name} = {value} · typed {command} in {seat.pane().id} · not confirmed by the {control.confirmed_by} yet{unchecked}"
+
+    def begin_model_control(self, seat, control, value, door):
+        from . import control_confirmation as confirmation, request_queue
+        path = getattr(self, 'request_path', None)
+        if path is None:
+            return 'model held: durable request owner unavailable; command not typed'
+        record = seat.record()
+        inputs = confirmation.input_scope(seat, record)
+        bound = seat.harness.model_control_origin(seat, record, value) if record is not None else None
+        launch = request_queue.launch_binding(seat)
+        if inputs is None or bound is None or launch is None:
+            self.request_wait = ('control-confirmation', 'request-bound model record/display evidence unknown')
+            return None
+        origin = dict(seat=seat.name, launch=launch, inputs=inputs, record=bound,
+                      declaration=[seat.harness.name, seat.spec.model_mode, seat.spec.model])
+        state = confirmation.Continuation.begin(control.name, value, origin, post.now())
+        meta = self.request_metadata
+
+        def persist(state):
+            meta['control_confirmation'] = state.metadata()
+            request_queue.save_metadata(path, meta)
+
+        persist(state)  # consumed reservation survives a crash BEFORE the sole command transport
+        if (request_queue.launch_binding(seat) != launch
+                or confirmation.input_scope(seat, record) != inputs):
+            return 'model unconfirmed: source changed before command; not retyped'
+        delivery = door.deliver(control.command(value), confirm=False)
+        if delivery.result == 'typed':
+            state = confirmation.submitted(state)
+            persist(state)
+        else:
+            # A withheld or ambiguous transport is never permission to send this command again.
+            self.request_wait = ('control-confirmation', f'control transport {delivery.result}; record confirmation pending')
+            return None
+        return self.continue_model_control(seat, control.name, value)
+
+    def continue_model_control(self, seat, name, value):
+        from . import control_confirmation as confirmation, request_queue
+        path, meta = self.request_path, self.request_metadata
+        state = request_queue.control_continuation(path, meta=meta)
+        control = seat.harness.control(name)
+        if state is None or control is None or state.control != 'model' or state.value != value:
+            raise request_queue.RequestHold('control-confirmation', 'control continuation unsupported; retained')
+
+        def verify():
+            current = request_queue.control_continuation(path)
+            return (current == state and state.origin.get('launch') == request_queue.launch_binding(seat)
+                    and state.origin.get('declaration') == [seat.harness.name, seat.spec.model_mode, seat.spec.model])
+
+        def persist(updated):
+            nonlocal state
+            meta['control_confirmation'] = updated.metadata()
+            request_queue.save_metadata(path, meta)
+            state = updated
+
+        def answer_current():
+            record = seat.record()
+            if not verify() or confirmation.input_scope(seat, record) != state.origin.get('inputs'):
+                return False
+            return (seat.harness.model_control_current(record, state.origin.get('record', {}))
+                    if record is not None else None)
+
+        try:
+            decision = confirmation.observe_control(
+                seat, control, state, post.now(), persist=persist, verify=verify, answer_current=answer_current,
+                confirmed_model=lambda record, current: seat.harness.model_control_result(
+                    seat, record, current.value, current.origin.get('record', {})))
+        except (OSError, ShipError, TmuxError):
+            # A failed observation/gesture keeps the durable reservation. Its next pass observes
+            # the record or original deadline, never the command or an uncertain key a second time.
+            decision = confirmation.advance(state, post.now(), confirmed=None)
+            if decision.action == 'wait':
+                self.request_wait = ('control-confirmation', 'control observation unavailable; not retyped')
+                return None
+        if decision.action == 'confirmed':
+            return f'model = {value} · {confirmation.proof(decision.state)}'
+        if decision.action == 'unconfirmed':
+            return f'model = {value} · {confirmation.unconfirmed_proof(decision.state)}: {decision.reason}'
+        self.request_wait = ('control-confirmation', decision.reason)
+        return None
 
 
     def follow(self) -> None:
