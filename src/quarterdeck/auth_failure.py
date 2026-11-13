@@ -1,7 +1,7 @@
-"""Recorded sign-in failures: visible readings and one guarded resume per failed episode.
+"""Recorded sign-in failures: visible readings and bounded guarded resumes per failed episode.
 
 Native syntax belongs to the adapter. Credential values never enter this module's
-journal: it retains only a stable file generation and the consumed attempt's time.
+journal: it retains only stable file generations and consumed attempts' times.
 """
 from __future__ import annotations
 
@@ -13,6 +13,11 @@ import stat
 from . import credential, durable, turn_failure
 from .harness.types import AUTHENTICATION
 from .ship import ShipError
+
+MAX_ATTEMPTS = 3
+RETRY_SECONDS = 60
+WINDOW_SECONDS = 15 * 60
+WAITING = 'sign-in: waiting for the renewed pass'
 
 
 def current(seat):
@@ -51,8 +56,36 @@ def pool_observation(seat, now=None):
         return 'unknown', None, False
 
 
+def _decision(seat, failure, attempt, observation, now):
+    validity, stamp, newer = observation
+    if not seat.is_up:
+        return 'attention'
+    if attempt is None:
+        if validity == 'valid' and newer:
+            return 'retry'
+        # Before the first attempt, give a recorded failure one bounded renewal wait.
+        at = failure.at if failure is not None else None
+        return ('wait' if at is not None and at.tzinfo is not None
+                and 0 <= (now - at).total_seconds() < WINDOW_SECONDS else 'attention')
+    attempts = attempt['attempts']
+    first, last = (datetime.fromisoformat(a['at']) for a in (attempts[0], attempts[-1]))
+    age, since = (now - first).total_seconds(), (now - last).total_seconds()
+    if (not 0 <= age < WINDOW_SECONDS or since < 0
+            or seat.launched() is None or seat.launched().pool != attempt['pool']):
+        return 'attention'
+    if len(attempts) >= MAX_ATTEMPTS:
+        # The old failure can remain visible while the last resume starts its next turn.
+        return ('wait' if failure is not None and failure.at is not None
+                and failure.at <= last else 'attention')
+    if validity == 'valid' and stamp != attempt['credential'] and since >= RETRY_SECONDS:
+        return 'retry'
+    return 'wait'
+
+
 def detail(seat, failure=None):
-    state, _, newer = pool_observation(seat)
+    now = datetime.now(timezone.utc)
+    observation = pool_observation(seat, now)
+    state, _, newer = observation
     pool_note = ('login needed; pool sign-in expired' if state == 'expired' else
                  'pool sign-in validity unknown; needs attention' if state == 'unknown' else
                  'pool sign-in valid')
@@ -60,16 +93,21 @@ def detail(seat, failure=None):
         return pool_note + '; human session needs attention; no automatic relaunch'
     try:
         attempt = _attempt(seat)
+        if _decision(seat, failure, attempt, observation, now) != 'attention':
+            return WAITING
         if attempt is not None:
-            note = ('relaunch did not cure it' if failure is not None and failure.at is not None
-                    and failure.at > datetime.fromisoformat(attempt['at']) else
-                    'resume already attempted; needs attention')
-            return note + ('; ' + pool_note if state != 'valid' else '')
-    except (OSError, ValueError, TypeError):
+            return 'relaunch did not cure it; needs attention' + ('; ' + pool_note if state != 'valid' else '')
+    except (OSError, ValueError, TypeError, AttributeError):
         return 'resume attempt unknown; needs attention'
     if state != 'valid':
         return pool_note
-    return pool_note + (' and newer than launch' if newer else '; renewal newer than launch not proved')
+    return pool_note + (' and newer than launch; needs attention' if newer else
+                        '; renewal newer than launch not proved; needs attention')
+
+
+def waiting(reason):
+    """A fixed operational reading, shared by status and alarm routing only."""
+    return reason == f'{AUTHENTICATION}; {WAITING}'
 
 
 def status(seat):
@@ -86,15 +124,25 @@ def _attempt(seat):
         data = json.loads(turn_failure.metadata(_path(seat)))
     except FileNotFoundError:
         return None
-    if (not isinstance(data, dict) or data.get('format') != 1
-            or not isinstance(data.get('pool'), str) or not isinstance(data.get('credential'), list)
-            or len(data['credential']) != 5 or any(type(v) is not int for v in data['credential'])
-            or not isinstance(data.get('at'), str)):
+    if not isinstance(data, dict) or data.get('format') != 1:
         raise ValueError('auth resume attempt unknown')
-    at = datetime.fromisoformat(data['at'])
-    if at.tzinfo is None:
-        raise ValueError('auth resume attempt time unknown')
-    return data
+    attempts = data.get('attempts', [dict(at=data.get('at'), pool=data.get('pool'),
+                                          credential=data.get('credential'))])
+    if not isinstance(attempts, list) or not 1 <= len(attempts) <= MAX_ATTEMPTS:
+        raise ValueError('auth resume attempts unknown')
+    previous = None
+    for item in attempts:
+        if (not isinstance(item, dict) or not isinstance(item.get('pool'), str)
+                or not isinstance(item.get('credential'), list) or len(item['credential']) != 5
+                or any(type(v) is not int for v in item['credential']) or not isinstance(item.get('at'), str)):
+            raise ValueError('auth resume attempt unknown')
+        at = datetime.fromisoformat(item['at'])
+        if at.tzinfo is None or previous is not None and at <= previous:
+            raise ValueError('auth resume attempt time unknown')
+        previous = at
+    if any(data.get(key) != attempts[-1][key] for key in ('at', 'pool', 'credential')):
+        raise ValueError('auth resume latest attempt unknown')
+    return dict(data, attempts=attempts)
 
 
 def run(service):
@@ -119,23 +167,25 @@ def run(service):
                         _path(seat).unlink()
                         durable.sync_folder(_path(seat).parent)
                 continue
-            if attempt is not None:
-                service.needs_human(seat)
-                continue
             now = datetime.now(timezone.utc)
-            validity, stamp, newer = pool_observation(seat, now)
-            if not seat.is_up or state.turn_open is not False or validity != 'valid' or not newer:
+            observation = pool_observation(seat, now)
+            decision = _decision(seat, failure, attempt, observation, now)
+            if decision == 'attention':
                 service.needs_human(seat)
                 continue
+            if decision == 'wait' or not seat.is_up or state.turn_open is not False:
+                continue
+            _, stamp, _ = observation
             path = _path(seat)
             path.parent.mkdir(parents=True, exist_ok=True)
             durable.sync_folder(path.parent.parent)  # retain the new attempt-directory entry across a power cut
-            durable.replace_file(path, json.dumps(dict(format=1, at=now.isoformat(),
-                                 pool=seat.launched().pool, credential=stamp)) + '\n')
+            latest = dict(at=now.isoformat(), pool=seat.launched().pool, credential=stamp)
+            attempts = (attempt['attempts'] if attempt else []) + [latest]
+            durable.replace_file(path, json.dumps(dict(format=1, **latest, attempts=attempts)) + '\n')
             # Consume before the existing lifecycle path, including across process failure.
             proof = service.relaunch(seat, True)
             service.log('authentication', seat=seat.name,
-                        proof=(f'{seat.name}: renewed pool sign-in; one relaunch with resume · {proof}'
+                        proof=(f'{seat.name}: renewed pool sign-in; relaunch with resume ({len(attempts)}/{MAX_ATTEMPTS}) · {proof}'
                                if proof is not None else f'{seat.name}: sign-in resume held by existing lifecycle checks'))
             if proof is None:
                 service.needs_human(seat)

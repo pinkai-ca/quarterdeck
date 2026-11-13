@@ -333,8 +333,10 @@ class Service:
         reason tells again, and a recipient added while the reason stands is told it then.
         """
         _, reason = Door(seat).human_obstruction()
-        from .auth_failure import status as authentication_status
-        reason = authentication_status(seat) or reason
+        from .auth_failure import status as authentication_status, waiting as authentication_waiting
+        authentication = authentication_status(seat)
+        # A pending renewal stays visible in status; call a person only after its bounded retries.
+        reason = None if authentication_waiting(authentication) else authentication or reason
         reason = reason or next(iter(pending_delivery.detached(seat)), None)
         if seat.session.human:
             from . import human_wake

@@ -50,7 +50,7 @@ def test_recorded_authentication_is_visible_and_only_eligible_crew_resumes(tmp_p
         seat.restart.assert_called_once_with()
         service.authentications()  # same failed episode cannot relaunch again
         seat.restart.assert_called_once_with()
-        assert 'one relaunch with resume' in service.log.call_args.kwargs['proof']
+        assert 'relaunch with resume (1/3)' in service.log.call_args.kwargs['proof']
     else:
         seat.restart.assert_not_called()
         assert not auth_failure._path(seat).exists()

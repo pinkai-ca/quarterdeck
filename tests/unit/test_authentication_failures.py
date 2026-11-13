@@ -4,6 +4,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import Mock
 import os
+import json
 
 import pytest
 
@@ -32,20 +33,38 @@ def environment(tmp_path, monkeypatch, *, human=False):
     return now, source, seat, state, service
 
 
-def test_valid_newer_file_consumes_one_resume_even_across_service_restart(tmp_path, monkeypatch):
-    _, source, seat, state, service = environment(tmp_path, monkeypatch)
+def clock(monkeypatch, now):
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now.astimezone(tz)
+    monkeypatch.setattr(auth_failure, 'datetime', Clock)
+
+
+def test_changed_generation_retries_after_spacing_across_service_restart(tmp_path, monkeypatch):
+    now, source, seat, state, service = environment(tmp_path, monkeypatch)
+    clock(monkeypatch, now)
     auth_failure.run(service)
     service.relaunch.assert_called_once_with(seat, True)
-    assert 'one relaunch with resume' in service.log.call_args.kwargs['proof']
-    # Recreated service and a rewritten pool file still cannot retry this failed episode.
+    assert 'relaunch with resume (1/3)' in service.log.call_args.kwargs['proof']
+    first = auth_failure._attempt(seat)['attempts'][0]
+    # A resume updates launch time. Later retries compare with the attempt, not that launch.
+    seat.launched().at = (now + timedelta(seconds=100)).isoformat()
     source.write_text('synthetic second generation')
     other = SimpleNamespace(**vars(service))
     other.relaunch = Mock()
+    clock(monkeypatch, now + timedelta(seconds=59))
     auth_failure.run(other)
     other.relaunch.assert_not_called()
-    other.needs_human.assert_called_with(seat)
+    clock(monkeypatch, now + timedelta(seconds=60))
+    auth_failure.run(other)
+    other.relaunch.assert_called_once_with(seat, True)
+    attempts = auth_failure._attempt(seat)['attempts']
+    assert len(attempts) == 2 and attempts[0] == first
+    assert attempts[0]['credential'] != attempts[1]['credential']
+    other.needs_human.assert_not_called()
     monkeypatch.setattr(auth_failure.turn_failure, 'current', Mock(return_value=state.failure))
-    assert 'resume already attempted' in auth_failure.status(seat)
+    assert auth_failure.waiting(auth_failure.status(seat))
 
 
 @pytest.mark.parametrize('case', ['expired-access', 'expired-grant', 'unknown', 'older', 'same-time', 'missing-launch', 'nonfinite', 'changing'])
@@ -71,11 +90,11 @@ def test_ineligible_local_evidence_holds_without_consuming_attempt(tmp_path, mon
         auth_failure.credential.freshness.return_value = (float('inf'), source.stat().st_mtime)
     auth_failure.run(service)
     service.relaunch.assert_not_called()
-    service.needs_human.assert_called_once_with(seat)
+    service.needs_human.assert_not_called()
     assert not auth_failure._path(seat).exists()
     monkeypatch.setattr(auth_failure.turn_failure, 'current', Mock(return_value=state.failure))
     if case.startswith('expired'):
-        assert 'login needed' in auth_failure.status(seat)
+        assert auth_failure.waiting(auth_failure.status(seat))
 
 
 def test_human_seat_is_only_named_and_has_no_recovery_mutation(tmp_path, monkeypatch):
@@ -146,8 +165,11 @@ def test_opening_another_turn_does_not_clear_attempt_but_completed_success_does(
     assert not auth_failure._path(seat).exists()
 
 
-def test_status_line_names_authentication_with_no_open_order(tmp_path, monkeypatch):
-    _, _, seat, state, _ = environment(tmp_path, monkeypatch, human=True)
+@pytest.mark.parametrize('human', [True, False])
+def test_status_line_names_authentication_with_no_open_order(tmp_path, monkeypatch, human):
+    _, _, seat, state, _ = environment(tmp_path, monkeypatch, human=human)
+    seat.harness.reads_queue_error = False
+    monkeypatch.setattr(watch, 'Door', lambda s: SimpleNamespace(human_obstruction=lambda: (watch.Reading(False, AUTHENTICATION, 'needs a human'), AUTHENTICATION)))
     ship = seat.ship
     ship.workspace = tmp_path
     seat.spec = SimpleNamespace(pools=['synthetic-pool'])
@@ -167,8 +189,11 @@ def test_status_line_names_authentication_with_no_open_order(tmp_path, monkeypat
     store = SimpleNamespace(open_for=lambda *a: [])
     attempts = SimpleNamespace(all=lambda: [], latest=lambda **k: {}, undelivered=lambda *a, **k: [])
     facts = watch.facts(ship, object(), store=store, attempts=attempts)
-    assert seat.name in facts.needs_human
+    assert (seat.name in facts.needs_human) is human
     assert AUTHENTICATION in facts.line()
+    if not human:
+        assert auth_failure.WAITING in facts.line()
+        assert f'{seat.name} needs a human' not in facts.line()
     assert facts.waiting == 0
 
 
@@ -177,7 +202,8 @@ def test_failed_turn_after_attempt_names_failed_cure_and_alarms_systems_once(tmp
     auth_failure.run(service)
     later = replace(state.failure, at=now + timedelta(minutes=1))
     monkeypatch.setattr(auth_failure.turn_failure, 'current', Mock(return_value=later))
-    expected = AUTHENTICATION + '; relaunch did not cure it'
+    clock(monkeypatch, now + timedelta(minutes=15, seconds=1))
+    expected = AUTHENTICATION + '; relaunch did not cure it; needs attention'
     assert auth_failure.status(seat) == expected
     from quarterdeck import service as service_module
     monkeypatch.setattr(service_module, 'Door', lambda s: SimpleNamespace(human_obstruction=lambda: (None, None)))
@@ -194,3 +220,156 @@ def test_failed_turn_after_attempt_names_failed_cure_and_alarms_systems_once(tmp
     alarm.store.new.assert_any_call('report', 'ship', systems.name, f'{seat.name} obstructed, {expected}')
     alarm.store.new.assert_any_call('report', 'ship', desk.name, f'{seat.name} obstructed, {expected}')
     assert alarm.store.new.call_count == 2
+
+
+@pytest.mark.parametrize('seconds', [60, 899, 900])
+def test_unchanged_generation_waits_until_window_ends(tmp_path, monkeypatch, seconds):
+    now, _, seat, state, service = environment(tmp_path, monkeypatch)
+    clock(monkeypatch, now)
+    auth_failure.run(service)
+    before = auth_failure._path(seat).read_bytes()
+    clock(monkeypatch, now + timedelta(seconds=seconds))
+    auth_failure.run(service)
+    service.relaunch.assert_called_once()
+    assert auth_failure._path(seat).read_bytes() == before
+    monkeypatch.setattr(auth_failure.turn_failure, 'current', lambda s: state.failure)
+    if seconds < 900:
+        service.needs_human.assert_not_called()
+        assert auth_failure.waiting(auth_failure.status(seat))
+    else:
+        service.needs_human.assert_called_once_with(seat)
+        assert 'needs attention' in auth_failure.status(seat)
+
+
+def test_three_attempts_then_attention_even_with_another_generation(tmp_path, monkeypatch):
+    now, source, seat, state, service = environment(tmp_path, monkeypatch)
+    for i in range(4):
+        clock(monkeypatch, now + timedelta(seconds=60 * i))
+        source.write_text('synthetic generation ' + str(i))
+        seat.harness.state.return_value = replace(state, failure=replace(state.failure, at=now + timedelta(seconds=60 * i - 1)))
+        auth_failure.run(service)
+    assert service.relaunch.call_count == 3
+    assert len(auth_failure._attempt(seat)['attempts']) == 3
+    service.needs_human.assert_called_once_with(seat)
+
+
+def test_old_journal_reads_and_gains_history_on_retry(tmp_path, monkeypatch):
+    now, source, seat, _, service = environment(tmp_path, monkeypatch)
+    clock(monkeypatch, now)
+    auth_failure.run(service)
+    path = auth_failure._path(seat)
+    data = json.loads(path.read_text())
+    old = data.pop('attempts')[0]
+    path.write_text(json.dumps(data))
+    assert auth_failure._attempt(seat)['attempts'] == [old]
+    source.write_text('synthetic renewed generation')
+    clock(monkeypatch, now + timedelta(seconds=60))
+    auth_failure.run(service)
+    assert service.relaunch.call_count == 2
+    assert auth_failure._attempt(seat)['attempts'][0] == old
+
+
+def test_success_must_follow_the_latest_attempt(tmp_path, monkeypatch):
+    now, source, seat, state, service = environment(tmp_path, monkeypatch)
+    clock(monkeypatch, now)
+    auth_failure.run(service)
+    source.write_text('synthetic renewed generation')
+    clock(monkeypatch, now + timedelta(seconds=60))
+    auth_failure.run(service)
+    completed = SimpleNamespace(timed=True, successful=True, failure=None, ended=now + timedelta(seconds=30))
+    seat.harness.state.return_value = replace(state, failure=None, completed_turns=(completed,))
+    auth_failure.run(service)
+    assert auth_failure._path(seat).exists()
+    completed.ended = now + timedelta(seconds=61)
+    auth_failure.run(service)
+    assert not auth_failure._path(seat).exists()
+
+
+def test_newer_comparison_uses_aware_launch_time(tmp_path, monkeypatch):
+    now, source, seat, _, _ = environment(tmp_path, monkeypatch)
+    # Invented date, incident's wall-clock times and equivalent timezone spellings.
+    seat.launched().at = '2025-01-02T09:43:57-07:00'
+    renewed = datetime.fromisoformat('2025-01-02T10:05:22-07:00').timestamp()
+    os.utime(source, (renewed, renewed))
+    assert auth_failure.pool_observation(seat, now)[2] is True
+    seat.launched().at = '2025-01-02T16:43:57+00:00'
+    assert auth_failure.pool_observation(seat, now)[2] is True
+
+
+def test_initial_wait_expires_without_attempting_an_unchanged_file(tmp_path, monkeypatch):
+    now, source, seat, state, service = environment(tmp_path, monkeypatch)
+    at = datetime.fromisoformat(seat.launched().at).timestamp()
+    os.utime(source, (at, at))
+    clock(monkeypatch, now + timedelta(seconds=899))
+    auth_failure.run(service)
+    service.needs_human.assert_not_called()
+    clock(monkeypatch, now + timedelta(seconds=900))
+    auth_failure.run(service)
+    service.needs_human.assert_called_once_with(seat)
+    service.relaunch.assert_not_called()
+
+
+def test_renewal_wait_does_not_alarm_then_window_end_does(tmp_path, monkeypatch):
+    now, _, seat, state, service = environment(tmp_path, monkeypatch)
+    clock(monkeypatch, now)
+    auth_failure.run(service)
+    monkeypatch.setattr(auth_failure.turn_failure, 'current', lambda s: state.failure)
+    from quarterdeck import service as service_module
+    monkeypatch.setattr(service_module, 'Door', lambda s: SimpleNamespace(human_obstruction=lambda: (None, AUTHENTICATION)))
+    alarm = service_module.Service.__new__(service_module.Service)
+    alarm.told, alarm.alarmed = {}, {}
+    alarm.alarm_recipients = Mock(return_value=['synthetic-systems'])
+    alarm.store = SimpleNamespace(new=Mock())
+    alarm.needs_human(seat)
+    alarm.store.new.assert_not_called()
+    clock(monkeypatch, now + timedelta(minutes=15))
+    alarm.needs_human(seat)
+    alarm.store.new.assert_called_once()
+
+
+def test_last_resume_waits_for_next_turn_before_exhaustion_alarm(tmp_path, monkeypatch):
+    now, source, seat, state, service = environment(tmp_path, monkeypatch)
+    for i in range(3):
+        clock(monkeypatch, now + timedelta(seconds=60 * i))
+        source.write_text('synthetic generation ' + str(i))
+        auth_failure.run(service)
+    monkeypatch.setattr(auth_failure.turn_failure, 'current', lambda s: state.failure)
+    assert auth_failure.waiting(auth_failure.status(seat))
+    service.needs_human.assert_not_called()
+    failed = replace(state.failure, at=now + timedelta(seconds=121))
+    monkeypatch.setattr(auth_failure.turn_failure, 'current', lambda s: failed)
+    assert 'needs attention' in auth_failure.status(seat)
+
+
+@pytest.mark.parametrize('validity', ['expired', 'unknown'])
+def test_changed_but_unproved_generation_waits_without_retry(tmp_path, monkeypatch, validity):
+    now, source, seat, state, service = environment(tmp_path, monkeypatch)
+    clock(monkeypatch, now)
+    auth_failure.run(service)
+    source.write_text('synthetic changed generation')
+    clock(monkeypatch, now + timedelta(seconds=60))
+    auth_failure.credential.freshness.return_value = None if validity == 'unknown' else (now.timestamp() - 1, source.stat().st_mtime)
+    auth_failure.run(service)
+    service.relaunch.assert_called_once()
+    service.needs_human.assert_not_called()
+
+
+def test_changed_generation_cannot_retry_at_window_end(tmp_path, monkeypatch):
+    now, source, seat, _, service = environment(tmp_path, monkeypatch)
+    clock(monkeypatch, now)
+    auth_failure.run(service)
+    source.write_text('synthetic changed generation')
+    clock(monkeypatch, now + timedelta(minutes=15))
+    auth_failure.run(service)
+    service.relaunch.assert_called_once()
+    service.needs_human.assert_called_once_with(seat)
+
+
+def test_down_seat_keeps_attention_instead_of_waiting_forever(tmp_path, monkeypatch):
+    _, _, seat, state, service = environment(tmp_path, monkeypatch)
+    seat.is_up = False
+    auth_failure.run(service)
+    service.relaunch.assert_not_called()
+    service.needs_human.assert_called_once_with(seat)
+    monkeypatch.setattr(auth_failure.turn_failure, 'current', lambda s: state.failure)
+    assert 'needs attention' in auth_failure.status(seat)

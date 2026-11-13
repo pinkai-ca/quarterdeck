@@ -571,10 +571,12 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
             continue
         launched = seat.launched()
         from .turn_failure import obstruction as failure_obstruction
-        from .auth_failure import status as authentication_status
-        if reason := authentication_status(seat):
+        from .auth_failure import status as authentication_status, waiting as authentication_waiting
+        authentication = authentication_status(seat)
+        if reason := authentication:
             sign_in_failures.append(f"{seat.name}: {reason}")  # law: nothing-waits-silently
-            needs_human.append(seat.name)
+            if not authentication_waiting(reason):
+                needs_human.append(seat.name)
         elif reason := failure_obstruction(seat, store):
             turn_errors.append(f"{seat.name}: {reason}")  # law: nothing-waits-silently
             needs_human.append(seat.name)
@@ -607,7 +609,8 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
                 if queue_error:
                     queue_unknown.append(f"{seat.name}: queue unknown: {queue_error}")
             door, obstruction = Door(seat).human_obstruction()
-            if obstruction and seat.name not in needs_human:
+            if (obstruction and not authentication_waiting(authentication)
+                    and seat.name not in needs_human):
                 needs_human.append(seat.name)
             if door.waiting or "pending" in door.reason:
                 pending_lines.append(f"{seat.name}: {door.reason}")
