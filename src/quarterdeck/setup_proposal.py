@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import harness, standing
+from . import harness, providers, standing
 from .ship import Ship, ShipError
 from .setup_answers import MISSING, ROLES, put
 
@@ -80,10 +80,15 @@ def keep_unchanged(c, ship: Ship) -> None:
             if effective.harness in seen:
                 continue
             seen.add(effective.harness)
-            same(f"payment.{effective.harness}", pool.kind)
-            same(f"provider.{effective.harness}", pool.provider)
+            paid = c.supplied(f"payment.{effective.harness}")
+            if paid is not MISSING and paid != pool.kind and not (paid == "key" and effective.harness in ("pi", "opencode") and pool.endpoint and pool.api_key):
+                raise ShipError(f"answer payment.{effective.harness} changes a kept ship; choose existing=update")
+            provider = c.supplied(f"provider.{effective.harness}")
+            if provider is not MISSING and providers.canonical(provider) != pool.provider:
+                raise ShipError(f"answer provider.{effective.harness} changes a kept ship; choose existing=update")
             same(f"endpoint.{effective.harness}", pool.endpoint)
-            same(f"key_env.{effective.harness}", pool.api_key.removeprefix("env:") if pool.api_key and pool.api_key.startswith("env:") else "none")
+            variable = pool.api_key.removeprefix("env:") if pool.api_key and pool.api_key.startswith("env:") else None if pool.api_key else "none"
+            same(f"key_env.{effective.harness}", variable)
             home = c.supplied(f"subscription_home.{effective.harness}")
             if home is not MISSING and (pool.config_dir is None or Path(home).expanduser().resolve() != pool.config_dir.resolve()):
                 raise ShipError(f"answer subscription_home.{effective.harness} changes a kept ship; choose existing=update")
@@ -102,11 +107,16 @@ def build(conversation, operations, text: str, orders: str, defaults: dict, avai
         path = Path(explicit_folder).expanduser().absolute()
         if path.exists():
             existing = ships.load(path)
+    operator = c.ask("operator", "What should the crew call you?", existing.operator if existing else "Admiral")
     c.say("Ship name suggestions: aurora, discovery, endeavour.")
     name = c.ask("name", "Ship name", existing.name if existing else "aurora")
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", name):
-        raise ShipError("answer name must use letters, numbers, underscores or hyphens")
-    operator = c.ask("operator", "What should the crew call you?", existing.operator if existing else "Admiral")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.: -]*", name):
+        raise ShipError("answer name must start with a letter or digit and contain a plain ship name")
+    saved_office = existing.session_of(existing.seat("desk")).title if existing and "desk" in existing.seats else "Office"
+    office = c.ask("office", "Office name", saved_office)
+    for char in (".", ":"):
+        if char in office:
+            raise ShipError(f"answer office contains {char!r}; choose a tmux session name without that character")
     workspace = Path(c.ask("workspace", "Project folder", str(existing.workspace) if existing else operations.workspace_default())).expanduser().resolve()
     if not workspace.is_dir():
         raise ShipError("answer workspace is not an existing project folder; choose an existing directory")
@@ -124,10 +134,17 @@ def build(conversation, operations, text: str, orders: str, defaults: dict, avai
             if (name, operator, workspace) != (existing.name, existing.operator, existing.workspace):
                 raise ShipError("answer existing=keep conflicts with name/operator/workspace changes; choose update to apply them")
             keep_unchanged(c, existing)
+            if office != saved_office:
+                raise ShipError("answer office changes a kept ship; choose existing=update")
             setup.validate_declaration(existing)
             if "desk" not in existing.seats:
                 raise ShipError("existing ship has no desk seat; add one before rerunning setup")
             return Proposal(existing, existing.file.read_text(), orders, [], existing, mode)
+        if office != saved_office:
+            raise ShipError("answer office changes an existing session title; edit the declaration and apply its session change explicitly before rerunning setup; nothing was written")
+        for key in ("office", "bridge"):
+            if key not in existing.sessions:
+                raise ShipError(f"existing ship has no {key} session; use its own arrangement rather than setup's default crew")
     else:
         mode = "new"
         if not folder.parent.is_dir():
@@ -176,6 +193,8 @@ def build(conversation, operations, text: str, orders: str, defaults: dict, avai
     selected = list(dict.fromkeys([fields["harness"] for fields in seats.values()] + (candidates if c.supplied("programs") is not MISSING else [])))
     pools, served = setup.pool_answers(c, selected, defaults, operations=operations, existing=existing)
     names, edits = {}, [("ship", "name", name), ("ship", "operator", operator), ("ship", "workspace", str(workspace))]
+    if not existing and office != "Office":
+        edits.append(("sessions.office", "title", office))
     pool_harnesses = {}
     if existing:
         for seat in existing.seats.values():
@@ -274,8 +293,6 @@ def build(conversation, operations, text: str, orders: str, defaults: dict, avai
     proposed = ships._from_text(proposed_text, folder)
     setup.validate_declaration(proposed)
     for pool in proposed.pools.values():
-        if pool.provider == "openrouter":
-            raise ShipError("setup does not use OpenRouter; choose your own subscription, key or endpoint")
         if pool.endpoint:
             setup.safe_endpoint(pool.endpoint)
     return Proposal(proposed, proposed_text, orders, edits, existing, mode)
@@ -349,12 +366,18 @@ def summary(ship: Ship, display_control) -> dict:
                 variable = pool.api_key.removeprefix("env:") if pool.api_key and pool.api_key.startswith("env:") else "variable unknown"
                 detail = f"an API key ({variable})"
             else:
-                detail = f"a local model at {pool.endpoint}" if local_endpoint(pool.endpoint) else f"a model at {pool.endpoint}"
+                if local_endpoint(pool.endpoint):
+                    detail = f"a local model at {pool.endpoint}"
+                elif pool.api_key and pool.api_key.startswith("env:"):
+                    detail = f"an API key ({pool.api_key.removeprefix('env:')}) at {pool.endpoint}"
+                else:
+                    detail = f"a model at {pool.endpoint}"
             if detail not in runs.setdefault(program, []):
                 runs[program].append(detail)
         if len(seat.pools) > 1:
             fallbacks[seat.name] = list(seat.pools)
-    result = {"ship_name": ship.name, "operator_name": ship.operator, "project_path": str(ship.workspace),
+    office = ship.session_of(ship.seat("desk")).title
+    result = {"operator_name": ship.operator, "office_name": office, "ship_name": ship.name, "project_path": str(ship.workspace),
               "seats": rows, "runs_on": {name: "; ".join(values) for name, values in runs.items()}}
     if unchecked:
         result["note"] = "The program's default is not checked against the account."
@@ -365,8 +388,8 @@ def summary(ship: Ship, display_control) -> dict:
 
 def render_summary(data: dict) -> list[str]:
     """The whole presentation lives here: five columns, then one Runs on line per harness."""
-    lines = [f"{label:<16}{data[key]}" for label, key in
-             (("Ship name:", "ship_name"), ("Operator name:", "operator_name"), ("Project path:", "project_path"))]
+    lines = [f"Operator name:  {data['operator_name']}", f"Office name:    {data['office_name']}", "",
+             f"Ship name:      {data['ship_name']}", f"Project path:   {data['project_path']}"]
     fields, headings = ("seat", "name", "harness", "model", "effort"), ("Seat", "Name", "Harness", "Model", "Effort")
     table = [headings] + [tuple(row[field] for field in fields) for row in data["seats"]]
     widths = [max(len(row[index]) for row in table) for index in range(len(fields))]

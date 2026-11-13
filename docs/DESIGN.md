@@ -141,6 +141,17 @@ sandbox = true                       # what a seat on an endpoint pool gets anyw
 
 Rules: nothing undeclared runs. Any declared seat can be up or down; `qd up` brings up every seat marked up and resumes what has a record, and `qd up <seat>` brings up one that was declared down. A seat without a persona is shown by its name. A pool is one way of paying, named for its place in the ship: a subscription, named by its credential directory; an API key, named by the environment variable or file that holds it; or an endpoint, a model served at an OpenAI-compatible URL, local or remote, with no credential and no quota wall, and a key named beside it where a remote service wants one. A provider may have any number of pools of any kind. Pools point at credentials and never contain them. A seat on an endpoint pool runs its program in a jail unless the ship says `sandbox = false`, and any seat does with `sandbox = true` (section 5). A seat's `pool` is one pool or a list in order of preference (section 6). Seats start in the ship's workspace unless they name their own. A session marked `human = true` is where the human types; its seats receive messages through their watch (section 7). Into a session the human owns it types only when a message waits there, no watch is armed and the box is empty. `remote_control = true` opens the seat's session from the operator's phone and claude.ai as well, where the program has that feature; Claude Code has it, and `qd up` refuses the key on a program that does not. A seat's `settings` are its program's own keys, passed verbatim as launch overrides; nothing is ever written into the program's configuration. `qd up` also starts the ship's one service: one plain process per ship, not a seat, which renders inboxes, delivers messages, writes attempts, applies deferred controls, fails seats over between pools, writes the heartbeat and samples the machine. It belongs to whoever ran `qd up`, outlives that shell, and is restarted by `qd up` when the status line says it is down; a ship may run it under a systemd user unit if it likes, and the framework neither requires nor installs one. `qd` works on the ship folder named by `--ship` or by `QD_SHIP` in the environment, which `qd up` puts in every seat's environment. With neither, a person's shell acts on the default ship: the folder named in `ships/.default`, which `qd default <ship>` writes and `qd default` prints with how it was chosen; with no mark, the one ship under `ships/` that is not a template or the practice ship. Several ships and no mark, or a mark naming a missing folder, are refused by name, never guessed. The choice is passed on as `--ship`, so a ship's own copy acts on the same folder, and every verb that acts on it says so: its first line ends `(default ship: <name>)`, its JSON carries `default_ship`. A seat never reads the mark. `qd doctor` warns of `QD_SHIP` set in a shell that is no seat. The ship file is written in the plain form shown here, one key per line, and `qd set` edits the one line a change needs and keeps everything else, comments included; a test round-trips this example. `tick` in `[ship]` is how many seconds the service waits after each pass: 1.0 when absent, and otherwise a number from 0.05 to 5 inclusive, refused by name as `ship.tick` outside those bounds or when it is not a finite number. The service reads the ship file afresh at the start of every pass, so a new tick takes effect from the wait after that pass. A ship file that no longer loads keeps the last valid ship, its tick included. Every duty and its heartbeat run once per pass whatever the tick, and the stale age the service is judged by stays 10 s, so the longest tick keeps a running service fresh. The tick is set only in the ship file: no environment variable changes it. The test ships and the drill's generated drydock declare a short tick.
 
+An untitled human session uses its key with the first letter capitalized (`office`
+becomes `Office`). An untitled nonhuman session uses the exact ship name, a space,
+and the capital-first key (`Endeavour Bridge`). Explicit titles win. A ship-name
+`.` or `:` is refused, naming the character, only when a derived title uses that
+name; human-only or explicitly titled sessions do not impose that ship-name rule.
+The default ship declares no titles. The drydock keeps explicit Bridge/Crew and
+uses `Drydock Office`. At launch the existing exact-title session guard reads its
+`QD_SHIP` environment: a different owner refuses with that actual folder, and an
+unproved owner stays unknown. This adds no registry or lifecycle path; it does not
+promise an earlier atomic refusal before runtime preparation.
+
 **One project folder.** The framework, every ship's declaration and every ship's state live in one folder, because the crew edits all three in the same place and sorting user-edited from crew-edited from source from state across folders is the mess to avoid. What keeps them apart is git, with three nested repositories: the project folder is the framework repository; a ship folder inside it, `ships/enterprise/`, is its own repository holding the declaration, ignored by the framework repository; and the runtime inside the ship folder, always `runtime/` beside the ship file, is a third repository with no commits, a fence and nothing more, ignored by the ship repository. Git will not enter a nested repository without a second force, so `git clean -fdx`, `git stash --all`, `git checkout .` and `git reset --hard` run in the project folder leave the declaration and the state untouched, and `git clean -fdx` run in the ship folder leaves the state untouched, each checked on git 2.53. `qd set` commits what it writes when the ship folder is a repository, so no live change sits uncommitted for a stash to take, and the ship repository's log is the ship's own history of rotations. The double force, `git clean -ffdx`, destroys everything, as `rm -rf` does; nothing short of another disk prevents that, and it is accepted. `qd up` creates the fence if it is missing and refuses a ship whose runtime git tracks. Two ships travel inside the framework repository as tracked files, the drydock on the fake harness and the default ship on real programs, so they are the ships that cannot be their own repositories, and `qd up` says so in a line when it runs one.
 
 A harness is the terminal program; a provider is the company whose models or plans the pool uses, or the declared operator of an endpoint. A model's brand does not establish the endpoint operator. A pool is one payment/access choice. Seats name harnesses; pools name providers.
@@ -1089,8 +1100,9 @@ Rebrief uses one request kind, with hashes and launch snapshots in the existing 
 
 ## Guided setup
 
-`qd setup` first builds a complete ship proposal in memory. Its questions are ship
-name (with suggestions), operator name (suggested `Admiral`), project, then desk,
+`qd setup` first builds a complete ship proposal in memory. Its questions are operator
+name (suggested `Admiral`), ship name (with suggestions), office name (suggested
+`Office`), project, then desk,
 captain and engineering: each seat's display name, harness, model and effort.
 Persona suggestions come from the packaged default ship data, including engineering;
 the stable handles remain `desk`, `captain`, `engineering`. Changing a display name
@@ -1099,6 +1111,11 @@ suggestion requires a non-framework Git project; the framework checkout and its
 linked worktrees get no such suggestion. An explicit workspace can be any existing
 project directory. The ship folder is asked alongside the project, with an existing
 parent; setup creates that one folder and never creates parent project directories.
+A fresh Office answer writes no title; a different answer writes an explicit office
+title. Office names refuse `.`/`:` by name. The bridge remains derived, not asked.
+Existing title reruns preserve the saved declaration; changing a live arrangement
+requires an explicit declaration/session change outside this setup update path,
+refused before any write.
 
 Harness choices come from registered non-synthetic programs found on the selected
 PATH. Credential-file presence can rank suggestions, but is never proof of valid
@@ -1130,15 +1147,24 @@ without being the first offered option. A documented home and a credential-file
 presence reading can be suggested; setup never reads a key value to suggest its
 variable NAME. Existing native key-variable facts provide suggestions where known;
 other variables and endpoint operators remain explicit answers. No model brand
-identifies an endpoint operator. OpenCode/pi remain endpoint-only; an unregistered
-program receives no speculative support.
+identifies an endpoint operator. OpenCode/pi remain endpoint programs; their API-key choice offers OpenRouter with
+its documented `https://openrouter.ai/api/v1` base URL and `OPENROUTER_API_KEY`
+variable NAME. Native programs keep their own company for a key. The ship still
+represents a keyed endpoint as an endpoint pool with an `api_key` reference, rather
+than inventing a subscription or changing pool kinds. A chosen provider and URL
+do not identify a model or its availability. An unregistered program receives no
+speculative support.
 
 For a local model, a URL suggestion exists only if the person's own loopback server
 answers the existing models-listing helper. That informational read supplies no
-key/cookies/auth, follows no redirects and uses no inherited proxies. It is the
-only pre-accept network read. `endpoint.models(..., allow_redirects=False)` uses
+key/cookies/auth, follows no redirects and uses no inherited proxies. This is one
+of the bounded pre-accept informational reads. `endpoint.models(..., allow_redirects=False)` uses
 that direct transport; the default `True` preserves existing callers' transport.
-An explicit non-loopback URL is never queried before acceptance. A unique served
+The only remote pre-accept exception is an explicitly selected OpenRouter provider
+at that documented base URL: the same helper reads its anonymous `/models` list
+without redirects/proxies/auth/key values. No completion, account, quota or other
+request is made; failed anonymous listing never causes a key read or auth fallback.
+Other non-loopback URLs are not queried before acceptance. A unique served
 model can be suggested; an unreachable, empty or multiple-model listing requires a
 named model answer. Endpoint-only model questions without an explicit answer are
 therefore completed after the URL question rather than guessed in the seat section.
@@ -1156,15 +1182,17 @@ pool names and unrelated seats/pools/orders are preserved. Explicit legacy
 `programs` still includes every selected program, adding a worker if unused by the
 three main roles; omitting it derives the used programs from seat choices.
 
-The complete proposal is shown before acceptance, using one renderer: `Ship name:`,
-`Operator name:`, `Project path:`, a blank line, then five aligned plain columns
+The complete proposal is shown before acceptance, using one renderer: `Operator
+name:`, `Office name:`, a blank line, `Ship name:`, `Project path:`, another blank
+line, then five aligned plain columns
 `Seat`, `Name`, `Harness`, `Model`, `Effort`. A separate `Runs on` block has one line
 per effective harness with the full subscription/home, key-variable NAME or local
-model/URL description. An explicit remote URL reads “a model at URL”. The target
+model/URL description. An explicit unkeyed remote URL reads “a model at URL”; a keyed remote endpoint
+shows the API key variable NAME and URL, never its value. The target
 ship folder remains a question/answer, not an extra summary row. A program-default
 column reads `program's default`, with one note that it is not checked against the
 account. Only applicable per-seat fallback orders follow. JSON preserves the same
-field order (`ship_name`, `operator_name`, `project_path`, `seats`, `runs_on`, optional
+field order (`operator_name`, `office_name`, `ship_name`, `project_path`, `seats`, `runs_on`, optional
 `note`/`fallback_order`, then operation `result`), and row field order follows the
 five columns. Key values are never summary data.
 
@@ -1188,8 +1216,9 @@ Native sign-in hints remain informational current-documentation syntax, unknown 
 default. Installed-version/home/storage unknowns stay explicit; hints are never
 executed. Doctor refusals retain their real reasons and exact rerun, including the
 new explicit acceptance/default flags. Native account questions stay with the
-person. Setup never signs in, installs, buys, changes native settings or uses
-OpenRouter. Enter-only is promised only for a supported program the person is
+person. Setup never signs in, installs, buys or changes native settings. Product users
+can choose OpenRouter for their own crew; a particular ship's spending rules are
+not product provider refusals. Enter-only is promised only for a supported program the person is
 already signed in to, with the Antigravity one-seat exception; it is not a promise
 for unknown endpoint/payment facts or a verified running crew.
 
@@ -1216,6 +1245,7 @@ Additive keys are:
 | File key | Flag | Meaning |
 | --- | --- | --- |
 | `operator` | `--operator TEXT` | What the crew calls the person |
+| `office` | `--office TEXT` | Office session title; suggested Office; different fresh answer writes an explicit title |
 | `seats.ROLE.name` | `--seat ROLE.name=TEXT` | Display persona; role handles remain stable |
 | `seats.ROLE.harness` | `--seat ROLE.harness=TEXT` | Primary program |
 | `seats.ROLE.model`, `effort` | `--seat ROLE.model=TEXT`, `ROLE.effort=TEXT` | Exact named values |
@@ -1259,8 +1289,9 @@ is:
 
 ```json
 {
-  "name": "aurora",
   "operator": "Admiral",
+  "name": "aurora",
+  "office": "Office",
   "workspace": "/path/to/project",
   "folder": "/path/to/project/aurora",
   "programs": "codex",
@@ -1287,6 +1318,12 @@ check or starts the crew without the separate consent. `setup.Operations` owns t
 PATH/account/local-listing/readiness/check/application/up/status/access seams;
 ordinary scripted gates replace these rather than use native programs or accounts.
 Independent gates also cover Enter-only one/two harnesses, summary edits, complete
-files, named non-TTY refusals, zero writes before acceptance, endpoint transport,
+files, named non-TTY refusals, zero writes before acceptance, local/OpenRouter anonymous listing transport, session
+title derivation/owner refusal/drydock coexistence,
 AGY bounds, reruns and paid-consent branches. Source-only work does not run those
 checks or claim that the feature is installed.
+
+OpenRouter suggestion facts are documented in its [developer reference](https://openrouter.ai/developers)
+and [models-listing reference](https://openrouter.ai/docs/api/api-reference/models/get-models).
+Those documentation facts do not prove anonymous listing success, account access,
+model compatibility or a native launch on the installed version.

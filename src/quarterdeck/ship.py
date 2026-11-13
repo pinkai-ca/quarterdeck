@@ -287,6 +287,22 @@ def load(folder: Path) -> Ship:
     return ship
 
 
+def _session(name: str, table: dict, ship_name: str) -> Session:
+    human = bool(table.get("human", False))
+    if "title" in table:
+        return Session(name, table["title"], human)
+    capital = name[:1].upper() + name[1:]
+    if not human:
+        for char in (".", ":"):
+            if char in str(ship_name):
+                raise ShipError(f"ship name contains {char!r}; cannot derive tmux session {name!r}; use another ship name or an explicit title")
+    title = capital if human else f"{ship_name} {capital}"
+    for char in (".", ":"):
+        if char in capital:
+            raise ShipError(f"session key {name!r} contains {char!r}; cannot derive its tmux title; use an explicit title")
+    return Session(name, title, human)
+
+
 def _from_text(text: str, folder: Path) -> Ship:
     try:
         data = tomllib.loads(text)
@@ -300,7 +316,7 @@ def _from_text(text: str, folder: Path) -> Ship:
         raise ShipError('ship.code must be absent, or "checkout"') from None
     pools = {name: _pool(name, table) for name, table in data.get("pools", {}).items()}
     sessions = {
-        name: Session(name, table.get("title", name), bool(table.get("human", False)))
+        name: _session(name, table, head.get("name", folder.name))
         for name, table in data.get("sessions", {}).items()
     }
     seats = {name: _seat(name, table, folder) for name, table in data.get("seats", {}).items()}

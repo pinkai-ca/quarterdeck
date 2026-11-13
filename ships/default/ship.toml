@@ -17,7 +17,6 @@ provider = "openai"
 home = "~/.codex"                # the Codex sign-in on this machine
 
 [sessions.bridge]
-title = "Bridge"
 
 [sessions.office]
 title = "Office"

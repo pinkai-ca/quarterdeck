@@ -43,6 +43,7 @@ def arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--start", choices=("yes", "no"), help="bring up the crew after successful checks (opening briefs may spend turns)")
     parser.add_argument("--wait-for-sign-in", choices=("yes", "no"), help="pause for the person on a readiness failure; never sign in automatically")
     parser.add_argument("--operator", help="what the crew calls you; suggested Admiral")
+    parser.add_argument("--office", help="office session name; suggested Office")
     parser.add_argument("--seat", action="append", metavar="ROLE.FIELD=ANSWER", help="per-seat name, harness, model, effort or pools (JSON list)")
     parser.add_argument("--edit", action="append", metavar="FIELD=VALUE", help="revise a proposal field; JSON for structured values")
     parser.add_argument("--use-defaults", choices=("yes", "no"), help="explicitly use established suggestions for missing declaration answers")
@@ -89,6 +90,19 @@ class Operations:
         url = safe_endpoint(url)
         if not setup_proposal.local_endpoint(url):
             return []
+        try:
+            return [model.id for model in endpoint.models(url, allow_redirects=False)]
+        except ShipError:
+            return []
+
+    def offered_models(self, url: str, provider: str) -> list[str]:
+        """The selected provider's anonymous listing only; no completion, account or key lookup."""
+        url = safe_endpoint(url)
+        if setup_proposal.local_endpoint(url):
+            return self.local_models(url)
+        if providers.canonical(provider) != "openrouter" or url != "https://openrouter.ai/api/v1":
+            return []
+        from . import endpoint
         try:
             return [model.id for model in endpoint.models(url, allow_redirects=False)]
         except ShipError:
@@ -158,8 +172,6 @@ def safe_endpoint(value: str) -> str:
         valid = False
     if not valid:
         raise ShipError("endpoint must be an http(s) URL without credentials, query or fragment; use key_env for a key's variable NAME")
-    if parsed.hostname.casefold() == "openrouter.ai" or parsed.hostname.casefold().endswith(".openrouter.ai"):
-        raise ShipError("setup does not use OpenRouter; choose your own subscription, key or endpoint")
     return value.rstrip("/")
 
 
@@ -172,17 +184,21 @@ def pool_answers(conversation: Conversation, selected: list[str], defaults: dict
         saved = next((existing.pools[pool] for seat in existing.seats.values() for pool in seat.pools
                       if seat.for_pool(pool).harness == name), None) if existing else None
         default_kind = saved.kind if saved else "subscription" if reader.native_provider else "endpoint"
+        if saved and name in ("opencode", "pi") and saved.provider == "openrouter" and saved.api_key:
+            default_kind = "key"
         prompt = (f"What does {setup_proposal.LABELS.get(name, name)} run on? "
                   "a subscription you are signed in to; an API key; a local model "
                   "(subscription, key, endpoint)")
         kind = conversation.choice(f"payment.{name}", prompt, ("subscription", "key", "endpoint"), default_kind)
-        provider = saved.provider if saved and saved.kind == kind else reader.native_provider
+        endpoint_key = kind == "key" and name in ("opencode", "pi")
+        compatible_saved = saved is not None and (saved.kind == kind or endpoint_key and saved.kind == "endpoint")
+        provider = saved.provider if compatible_saved else reader.native_provider
+        if endpoint_key and provider is None:
+            provider = "openrouter"
         if provider is None or kind in ("key", "endpoint"):
             provider = conversation.ask(f"provider.{name}", f"Who provides {name}'s key, or operates its model?", provider)
-        if providers.canonical(provider) == "openrouter":
-            raise ShipError("setup does not configure OpenRouter; choose your own subscription, key or endpoint operator")
         values = ({**tomllib.loads(existing.file.read_text())["pools"][saved.name]}
-                  if saved and saved.kind == kind else {})
+                  if compatible_saved and provider == saved.provider else {})
         values["provider"] = provider
         if kind == "subscription" and reader.credential_file:
             home = str(saved.config_dir) if saved and saved.config_dir else operations.subscription_home(name, defaults)
@@ -192,38 +208,42 @@ def pool_answers(conversation: Conversation, selected: list[str], defaults: dict
             present = operations.credential_present(values["config_dir"], reader.credential_file)
             conversation.say("Credential file present; sign-in not checked." if present else "Credential file not found; sign-in will need attention.")
         if kind == "key":
-            variable = saved.api_key.removeprefix("env:") if saved and saved.api_key and saved.api_key.startswith("env:") else key_names.get(name)
+            variable = saved.api_key.removeprefix("env:") if saved and saved.api_key and saved.api_key.startswith("env:") else "OPENROUTER_API_KEY" if endpoint_key and providers.canonical(provider) == "openrouter" else key_names.get(name)
             variable = conversation.ask(f"key_env.{name}", f"{name}'s API key variable NAME (never the key)", variable)
             values["api_key"] = key_reference(variable)
-        if kind == "endpoint":
+        if kind == "endpoint" or endpoint_key:
             given = conversation.supplied(f"endpoint.{name}")
-            candidate = given if given is not MISSING else saved.endpoint if saved else "http://127.0.0.1:8000/v1"
-            served = operations.local_models(candidate)
-            suggestion = candidate if served or saved and saved.endpoint == candidate else None
-            url = safe_endpoint(conversation.ask(f"endpoint.{name}", f"URL of {name}'s local model", suggestion))
+            documented = "https://openrouter.ai/api/v1" if providers.canonical(provider) == "openrouter" else None
+            candidate = given if given is not MISSING else saved.endpoint if saved and saved.endpoint else documented or "http://127.0.0.1:8000/v1"
+            served = operations.offered_models(candidate, provider)
+            suggestion = candidate if served or candidate == documented or saved and saved.endpoint == candidate else None
+            url = safe_endpoint(conversation.ask(f"endpoint.{name}", f"URL serving {name}'s model", suggestion))
             if url != candidate:
-                served = operations.local_models(url)
+                served = operations.offered_models(url, provider)
             if setup_proposal.local_endpoint(url) and not served:
                 conversation.say("No model listing from your local server; check its URL/server or supply the model by name.")
+            elif documented == url and not served:
+                conversation.say("No model suggestion from the anonymous listing; enter a model name.")
             elif len(served) > 1:
-                conversation.say("Your local server lists several models; choose one by name.")
+                conversation.say("The listing has several models; choose one by name.")
             values["endpoint"] = url
             declared_model = conversation.supplied(f"model.{name}")
             if declared_model is not MISSING:
                 models[name] = conversation.ask(f"model.{name}", f"Model served for {name}")
             elif len(served) == 1:
                 models[name] = served[0]
-            variable = None
-            if saved:
-                if not saved.api_key:
-                    variable = "none"
-                elif saved.api_key.startswith("env:"):
-                    variable = saved.api_key.removeprefix("env:")
-            variable = conversation.ask(f"key_env.{name}", f"{name}'s key variable NAME, or none if no key is needed", variable)
-            if variable != "none":
-                values["api_key"] = key_reference(variable)
-            else:
-                values.pop("api_key", None)
+            if not endpoint_key:
+                variable = None
+                if saved:
+                    if not saved.api_key:
+                        variable = "none"
+                    elif saved.api_key.startswith("env:"):
+                        variable = saved.api_key.removeprefix("env:")
+                variable = conversation.ask(f"key_env.{name}", f"{name}'s key variable NAME, or none if no key is needed", variable)
+                if variable != "none":
+                    values["api_key"] = key_reference(variable)
+                else:
+                    values.pop("api_key", None)
         pool = ships._pool(name, values)
         if reason := reader.accepts(pool):
             raise ShipError(f"{reason}; choose a payment method supported by {name} and rerun qd setup")
@@ -325,6 +345,14 @@ def preview_update(ship: Ship, edits: list) -> tuple[dict, list]:
             existing_edits.setdefault(name, []).append(f"{key}={value}")
         else:
             whole.append((table, key, value))
+    text = ship.file.read_text()
+    for table, key, value in edits:
+        text = ships.edit(text, table, key, value)
+    proposed = ships._from_text(text, ship.folder)
+    for key, session in ship.sessions.items():
+        if key in proposed.sessions and proposed.sessions[key].title != session.title:
+            raise ShipError(f"answer name/session {key}: changing title {session.title!r} to {proposed.sessions[key].title!r} "
+                            "needs an explicit declaration/session transition; qd set does not apply it; nothing was written")
     return existing_edits, whole
 
 

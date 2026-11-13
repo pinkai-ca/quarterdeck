@@ -10,7 +10,7 @@ from .ship import ShipError
 
 MAPS = ("payment", "subscription_home", "provider", "key_env", "endpoint", "model")
 SCALARS = ("programs", "desk", "captain", "engineer", "workspace", "name", "folder",
-           "existing", "check", "start", "wait_for_sign_in", "operator", "accept", "use_defaults")
+           "existing", "check", "start", "wait_for_sign_in", "operator", "office", "accept", "use_defaults")
 ROLES = ("desk", "captain", "engineering")
 SEAT_FIELDS = ("name", "harness", "model", "effort", "model_mode", "effort_mode", "pools")
 MISSING = object()
