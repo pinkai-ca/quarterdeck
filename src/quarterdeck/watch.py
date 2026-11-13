@@ -340,6 +340,7 @@ class Facts:
     group_held: list[str] = field(default_factory=list)
     cascade_held: list[str] = field(default_factory=list)
     structure_waiting: list[str] = field(default_factory=list)
+    manual_fresh: list[str] = field(default_factory=list)  # no systems recipient: retain names on overflow
 
     def line(self) -> str:  # law: nothing-waits-silently
         parts = ["SERVICE DOWN" if self.service == "down" else f"service {self.service}"]
@@ -352,7 +353,9 @@ class Facts:
             parts.append(f"{self.unsettled} unsettled after an error")  # law: nothing-waits-silently
         parts += self.unknown
         parts += self.queue_unknown
-        parts += self.compactions
+        parts += [detail for detail in self.compactions
+                  if not any(fallback.startswith(detail + ';') for fallback in self.manual_fresh)]
+        parts += self.manual_fresh
         parts += self.turn_errors
         parts += self.group_held
         parts += self.cascade_held
@@ -540,7 +543,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
     pending_lines += [f"request claimed: {path.name}; inspect requests/ before retrying"
                       for path in sorted((ship.runtime / "requests").glob("*.claimed"))]
     now = post.now()
-    from . import cascade_runtime, group_post, structure_outcome
+    from . import cascade_runtime, compaction_alert, group_post, structure_outcome
     oldest = int(max(((now - m.at).total_seconds() for m in waiting), default=0) // 60)
     queued = [a for a in records if a.result == "queued" and latest.get(a.message) == 'queued']
     return Facts(
@@ -557,6 +560,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         unknown=unknown,
         queue_unknown=queue_unknown,
         compactions=compactions,
+        manual_fresh=compaction_alert.unrouted(ship, [seat for seat in selected if not isinstance(seat, UnresolvedSeat)]),
         held=held,
         turn_errors=turn_errors,
         group_held=group_post.holds(ship.runtime),

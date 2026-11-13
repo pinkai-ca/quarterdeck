@@ -20,5 +20,8 @@ def status_line(facts, alerts: list[str]) -> str:
               (len(facts.group_held), "groups held"), (len(facts.cascade_held), "cascades held"),
               (len(facts.structure_waiting), "structure waits")]
     parts += [f"{count} {label}" for count, label in counts if count]
+    # A manual-fresh reading with nobody to wake must keep its seat/readiness,
+    # even when that operational detail takes the line beyond the normal budget.
+    parts += getattr(facts, 'manual_fresh', ())
     parts.append("details: qd status")
     return SEPARATOR.join(parts)

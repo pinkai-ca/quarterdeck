@@ -273,13 +273,17 @@ class Service:
         The obstructed seat is never its own recipient: its door is the one that cannot take the report.
         """
         desks = [spec.name for spec in self.ship.seats.values() if spec.role == "desk"]
-        systems = [spec.name for spec in self.ship.seats.values()
-                   if spec.role == "systems" and spec.name != seat.name and self._up(spec.name)]
+        systems = self.systems_recipients(seat)
         if not systems:
             return desks
         from .turn_failure import KINDS
         mine = seat.session.human and reason.startswith(KINDS)  # the desk keeps the human's own seats
         return (systems + [name for name in desks if name not in systems]) if person_only(reason) or mine else systems
+
+    def systems_recipients(self, seat: Seat) -> list[str]:
+        """Every up systems seat, excluding the subject of its own alarm."""
+        return [spec.name for spec in self.ship.seats.values()
+                if spec.role == 'systems' and spec.name != seat.name and self._up(spec.name)]
 
     def _up(self, name: str) -> bool:
         try:
@@ -617,9 +621,10 @@ class Service:
         return None
 
     def compactions(self) -> None:
-        from . import compaction
+        from . import compaction, compaction_alert
         selected = {spec.name for spec in self.ship.seats.values()
-                    if spec.fresh_after_compactions or compaction.path(self.runtime, spec.name).exists()}
+                    if spec.fresh_after_compactions or compaction.path(self.runtime, spec.name).exists()
+                    or compaction_alert.path(self.runtime, spec.name).exists()}
         if not selected:
             return
         for seat in self.resolved_seats():
@@ -627,6 +632,7 @@ class Service:
                 continue
             try:
                 compaction.tick(seat)
+                compaction_alert.step(self, seat)
             except (OSError, ShipError) as error:
                 self.log('error', step='compactions', seat=seat.name, error=repr(error))
 
