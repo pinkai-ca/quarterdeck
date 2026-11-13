@@ -403,6 +403,8 @@ class Seat:
         selected = spec or self.spec
         self._accept_pool(selected, pool)
         reader = harnesses.get(selected.harness)
+        if reader.private_version_home:
+            shipmod.fence(self.ship)
         if self._prepared_observation is not None and spec is None:
             observation, self._prepared_observation = self._prepared_observation, None
             return observation
