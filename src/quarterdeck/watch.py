@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from . import credential, idle, ledger, move_hold, pending as pending_delivery, post, providers, quota, record_owner, recovery, servicectl as service
+from . import credential, idle, ledger, move_hold, pending as pending_delivery, post, providers, quota, record_owner, recovery, request_queue, servicectl as service
 from .door import Door, Reading
 from .harness.base import same_name
 from .harness.capabilities import selection_label
@@ -237,9 +237,11 @@ def service_state(runtime: Path) -> str:
 
 def status_reading(ship: Ship, tmux: Tmux) -> dict:
     store = post.Store(ship.runtime)
+    requests = request_queue.pending(ship.runtime)
     return {"service": service_state(ship.runtime), "seats": [reading(seat, store) for seat in seats(ship, tmux, False)],
             "open_orders": [m for m in store.all() if m.kind == "order" and store.is_open(m)],
-            "facts": facts(ship, tmux), "usage": headline_readings(ship), **providers.identities(ship)}
+            "requests": requests, "facts": facts(ship, tmux, request_rows=requests),
+            "usage": headline_readings(ship), **providers.identities(ship)}
 
 
 def render_table(data: dict) -> list[str]:
@@ -253,6 +255,7 @@ def render_table(data: dict) -> list[str]:
     rows.append(f"open orders: {len(data['open_orders'])}")
     for m in data["open_orders"]:
         rows.append(f"  {m.short} {m.sender} → {m.to} · {m.at.strftime('%m-%d %H:%M')}" + (f" · {m.subject}" if m.subject else ""))
+    rows += ['  ' + request_queue.describe(row) for row in data.get('requests', ())]
     return rows + render_headlines(data["usage"])
 
 
@@ -264,6 +267,7 @@ def seat_reading(seat: Seat | UnresolvedSeat) -> dict:
     r = reading(seat)
     if isinstance(seat, UnresolvedSeat):
         return dict(seat=r, record=None, state=None, record_error=str(seat.error),
+                    requests=request_queue.pending(seat.ship.runtime, seat.name),
                     receipt_skips=dict(total=0, counts=[], examples=[], omitted=0),
                     receipt_error=str(seat.error), record_absent=str(seat.error),
                     record_limits=None, screen=None, answered=[], usage=headline_readings(seat.ship),
@@ -283,6 +287,7 @@ def seat_reading(seat: Seat | UnresolvedSeat) -> dict:
         except OSError as failure:
             receipt_error = str(failure)
     return {"seat": r, "record": record, "state": state, "record_error": error,
+            "requests": request_queue.pending(seat.ship.runtime, seat.name),
             "receipt_skips": skips, "receipt_error": receipt_error,
             "record_absent": seat.join().reason if record is None else None,
             "record_limits": getattr(seat.harness, "record_limits", None),
@@ -297,6 +302,7 @@ def render_full(data: dict) -> list[str]:
              f"  {r.harness_text} · provider {r.provider_name or 'unknown'} · pool {r.pool} · model {r.model_text} · effort {r.effort_text}"]
     if r.compaction:
         lines.append(f"  {r.compaction}")
+    lines += ['  ' + request_queue.describe(row) for row in data.get('requests', ())]
     record, state = data["record"], data["state"]
     if record:
         if data["record_error"] is not None:
@@ -375,6 +381,7 @@ class Facts:
     manual_fresh: list[str] = field(default_factory=list)  # no systems recipient: retain names on overflow
     move_holds: list[str] = field(default_factory=list)
     sign_in_failures: list[str] = field(default_factory=list)  # retain seat and fixed failure on overflow
+    request_waits: list[str] = field(default_factory=list)
 
     def line(self) -> str:  # law: nothing-waits-silently
         parts = ["SERVICE DOWN" if self.service == "down" else f"service {self.service}"]
@@ -399,6 +406,7 @@ class Facts:
         parts += [f"{name}: no watch armed" for name in self.unarmed]
         parts += [f"{name} held at limit" for name in self.held]
         parts += self.move_holds
+        parts += self.request_waits
         parts += self.routes
         parts += self.pending
         parts += [f"disk: {name} {pct}%" for name, pct in self.disks]
@@ -533,7 +541,7 @@ def limit_state(ship: Ship, selected: list[Seat | UnresolvedSeat]):
 
 
 def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tuple[str, str]] | None = None,
-          *, store=None, attempts=None) -> Facts:
+          *, store=None, attempts=None, request_rows: list[dict] | None = None) -> Facts:
     """Everything the status line says; cheap enough for tmux to ask every few seconds."""
     store = post.Store(ship.runtime) if store is None else store
     attempts = post.Attempts(ship.runtime) if attempts is None else attempts
@@ -613,6 +621,8 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         manual_fresh=compaction_alert.unrouted(ship, [seat for seat in selected if not isinstance(seat, UnresolvedSeat)]),
         held=held,
         move_holds=move_reasons,
+        request_waits=[request_queue.describe(row) for row in
+                       (request_queue.pending(ship.runtime) if request_rows is None else request_rows)],
         turn_errors=turn_errors,
         sign_in_failures=sign_in_failures,
         group_held=group_post.holds(ship.runtime),

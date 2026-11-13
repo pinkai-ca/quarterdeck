@@ -141,17 +141,9 @@ def request(runtime: Path, kind: str, **data) -> str:
     """File a request and wait for the service's answer; refuse when no service owns the ship."""
     if not alive(runtime):
         raise ShipError("service down; qd up restarts it")
-    folder = runtime / "requests"
-    folder.mkdir(parents=True, exist_ok=True)
-    name = f"{datetime.now().strftime('%H%M%S')}-{kind}-{os.getpid()}"
-    path = folder / f"{name}.json"
-    payload = json.dumps({"kind": kind, **data}) + "\n"
-    if kind in LIFECYCLE_REQUESTS and isinstance(data.get('seat'), str):
-        from .post import admission
-        with admission(runtime, data['seat']):
-            durable.replace_file(path, payload)
-    else:
-        durable.replace_file(path, payload)
+    from . import request_queue
+    path = request_queue.enqueue(runtime, kind, data)
+    folder, name = path.parent, path.stem
     answer = folder / f"{name}.done"
     deadline = time.monotonic() + ANSWER_SECONDS
     while time.monotonic() < deadline:
@@ -161,5 +153,13 @@ def request(runtime: Path, kind: str, **data) -> str:
             return proof
         time.sleep(0.1)
     late = stale(runtime)
+    if answer.exists():
+        proof = answer.read_text().strip()
+        answer.unlink()
+        return proof
+    try:
+        detail = request_queue.describe(request_queue.view(path))
+    except (OSError, ValueError, TypeError, ShipError):
+        detail = 'request decision unknown; inspect qd status'
     return (f"pending: the service has not answered within {ANSWER_SECONDS:.0f}s (request {name})"
-            + (f"; it last ticked {int(late)}s ago" if late else "") + "; it applies when it can")
+            + (f"; it last ticked {int(late)}s ago" if late else "") + f'; {detail}')

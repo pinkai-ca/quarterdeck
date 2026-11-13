@@ -396,47 +396,63 @@ class Service:
         folder = self.runtime / "requests"
         retry = []
         for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
-            data = None
-            try:
-                claim = path.with_suffix(".claimed")
-                if claim.exists() or claim.is_symlink():
-                    continue  # an earlier action may have run; its raw durable claim needs inspection, never replay
-                raw = path.read_text()
-                data = json.loads(raw)
-                if not isinstance(data, dict) or data.get("kind") != "rebrief":
-                    durable.replace_file(claim, raw)  # before dispatch: failed archival cannot requeue an executed action
+            from . import request_queue
+            with request_queue.coordination(self.runtime):
+                if not path.exists():
+                    continue
+                data = None
                 try:
-                    answer = self.answer(data)
-                except SelectionError as error:
-                    self.hold_selection(error)
-                    self.clear_request_claim(claim)
-                    continue  # this request stays held; later healthy-seat requests still run
-                except ShipError as error:
-                    if isinstance(data, dict) and data.get("kind") == "rebrief":
-                        raise  # an immutable notice conflict must retain the rebrief's durable baseline/notices
-                    answer = f"refused: {error}"  # a refusal is an answer: its asker reads why
-                if answer is None:
-                    self.clear_request_claim(claim)
-                    continue  # not yet: the request waits for the seat's turn to end
-                # The final name is the client's completion signal, never an open writer.
-                durable.replace_file(path.with_suffix(".done"), answer + "\n")
-                self.log("request", **data, answer=answer)
-                path.unlink()
-                durable.sync_folder(folder)  # retire the active name durably before removing its replay guard
-                self.clear_request_claim(claim)
-            except Exception as error:
-                if isinstance(data, dict) and data.get("kind") == "rebrief":
-                    retry.append(error)
-                else:
+                    claim = path.with_suffix(".claimed")
+                    raw = path.read_text()
+                    data = json.loads(raw)
+                    if isinstance(data, dict) and 'terminal' in data:
+                        if not isinstance(data['terminal'], str) or data.get('kind') not in request_queue.SEAT_KINDS:
+                            raise ShipError('request retirement intent unknown; retained')
+                        request_queue.settle(path, data['terminal'], clear_claim=True)
+                        continue  # recover cancellation/supersession without ever dispatching it
+                    if claim.exists() or claim.is_symlink():
+                        continue  # an earlier action may have run; never replay an ambiguous claim
+                    if isinstance(data, dict) and data.get('kind') in request_queue.SEAT_KINDS:
+                        data.setdefault('created_at', request_queue.created(path, data))
+                    if not isinstance(data, dict) or data.get("kind") != "rebrief":
+                        durable.replace_file(claim, raw)  # before dispatch: failed archival cannot requeue an executed action
                     try:
-                        self.failed_request(path, error)
-                    except Exception as failure:
+                        self.request_wait = None
+                        answer = self.answer(data)
+                    except SelectionError as error:
+                        self.hold_selection(error)
+                        request_queue.hold(path, data, 'selection', 'seat selection unknown or held')
+                        self.clear_request_claim(claim)
+                        continue  # this request stays held; later healthy-seat requests still run
+                    except ShipError as error:
+                        if isinstance(data, dict) and data.get("kind") == "rebrief":
+                            raise  # an immutable notice conflict must retain the rebrief's durable baseline/notices
+                        answer = f"refused: {error}"  # a refusal is an answer: its asker reads why
+                    if answer is None:
+                        if isinstance(data, dict) and data.get('kind') in request_queue.SEAT_KINDS:
+                            dimension, reason = self.request_wait or ('unknown', 'service decision unknown')
+                            request_queue.hold(path, data, dimension, reason)
+                        self.clear_request_claim(claim)
+                        continue  # not yet: the request waits for the seat's turn to end
+                    # The final name is the client's completion signal, never an open writer.
+                    retired = data.get('retired') if isinstance(data, dict) else None
+                    if retired:
+                        answer += f'; retired pending relaunch request(s): {", ".join(retired)}'
+                    self.log("request", **data, answer=answer)
+                    request_queue.settle(path, answer, clear_claim=True)
+                except Exception as error:
+                    if isinstance(data, dict) and data.get("kind") == "rebrief":
+                        retry.append(error)
+                    else:
                         try:
-                            self.log("error", step="requests", request=path.name, failure_handling=True,
-                                     error=repr(failure), trace=traceback.format_exc())
-                        except Exception:
-                            pass  # the surviving claim stays visible in status even when the log cannot be written
-                continue
+                            self.failed_request(path, error)
+                        except Exception as failure:
+                            try:
+                                self.log("error", step="requests", request=path.name, failure_handling=True,
+                                         error=repr(failure), trace=traceback.format_exc())
+                            except Exception:
+                                pass  # the surviving claim stays visible in status even when the log cannot be written
+                    continue
         if retry:
             raise retry[0]
 
@@ -513,7 +529,7 @@ class Service:
         if kind == "control":
             return self.control(self.seat(data["seat"]), data["name"], str(data["value"]))
         if kind == "relaunch":
-            return self.relaunch(self.seat(data["seat"]), bool(data["resume"]))
+            return self.relaunch_request(data)
         if kind == "select":  # the seats failover acts on: a seat whose selection is unknown is held, not guessed
             seat = next((s for s in self.resolved_seats() if s.name == data["seat"]), None)
             if seat is None:
@@ -521,15 +537,73 @@ class Service:
             return self.select(seat, str(data["pool"]))
         return f"unknown request {kind!r}"
 
-    def relaunch(self, seat: Seat, resume: bool) -> str | None:
+    def relaunch_request(self, data):
+        """A human's own asking turn is its only deferred break; later speech retires it."""
+        from . import request_queue
+        seat = self.seat(data['seat'])
+        origin = request_queue.launch_binding(seat)
+        if data.get('origin') is not None and data['origin'] != origin:
+            return f'refused: {seat.name} launch changed; request retired without applying'
+        if not seat.session.human:
+            return self.relaunch(seat, bool(data['resume']))
+        pane = seat.pane()
+        if pane is None or pane.dead:
+            return self.relaunch(seat, bool(data['resume']))
+        state, hold = idle.reading(seat, explicit=True)
+        try:
+            asked = datetime.fromisoformat(data['created_at'])
+        except (KeyError, TypeError, ValueError):
+            return f'refused: {seat.name} asking turn unknown; no request will apply later'
+        if (state is None or state.last_input_at is None or asked.tzinfo is None
+                or state.last_input_at.tzinfo is None or state.last_input_at > asked or asked > post.now()):
+            return f'refused: {seat.name} asking turn unknown or superseded by later input; no deferred restart'
+        own = data.get('caller') == seat.name
+        if not own:
+            from .servicectl import ANSWER_SECONDS
+            ending = state.completed_turns[-1] if state.completed_turns else None
+            question = seat.harness.waiting_for_human(state)
+            if ((post.now() - asked).total_seconds() > ANSWER_SECONDS
+                    or not question and (ending is None or ending.ended is None or ending.ended > asked)):
+                return f'refused: {seat.name} was not proved at an immediate break when requested; no deferred restart'
+            answer = self.relaunch(seat, bool(data['resume']), reading=(state, hold))
+            return answer if answer is not None else f'refused: {seat.name} waits for {(self.request_wait or (None, "idle proof unknown"))[1]}; human request not deferred'
+        scope = dict(origin=origin, input_at=state.last_input_at.isoformat(),
+                     input_id=state.input_id, work_id=state.work_id,
+                     conversation=state.conversation)
+        bound = data.get('asking_turn')
+        if bound is not None and (not isinstance(bound, dict) or any(bound.get(key) != value for key, value in scope.items())):
+            return f'refused: {seat.name} asking turn changed; no deferred restart'
+        if state.turn_open is True:
+            if type(state.turns) is not int or state.turns < 0:
+                return f'refused: {seat.name} asking turn identity unknown; no deferred restart'
+            if bound is not None and bound.get('index') != state.turns:
+                return f'refused: {seat.name} asking turn already ended; no deferred restart'
+            data['asking_turn'] = dict(scope, index=state.turns)
+            self.request_wait = ('turn-open', 'own asking turn has not ended')
+            return None
+        if state.turn_open is not False:
+            return f'refused: {seat.name} asking turn state unknown; no deferred restart'
+        ending = state.completed_turns[-1] if state.completed_turns else None
+        if (ending is None or not ending.timed or ending.started is None or ending.ended is None
+                or not ending.started <= asked <= ending.ended
+                or bound is not None and ending.index != bound.get('index')):
+            return f'refused: {seat.name} exact asking-turn end not proved; no deferred restart'
+        answer = self.relaunch(seat, bool(data['resume']), reading=(state, hold))
+        return answer if answer is not None else f'refused: {seat.name} asking turn ended with {(self.request_wait or (None, "idle proof unknown"))[1]}; request retired, never applied at a later turn'
+
+    def relaunch(self, seat: Seat, resume: bool, *, reading=None) -> str | None:
         """Explicit recovery alone may interrupt a proven question-only wait."""
-        if recovery.held(seat):
+        if reason := recovery.held(seat):
+            if self is not None:
+                self.request_wait = ('recovery', reason)
             return None
         pane = seat.pane()
         if pane is not None and not pane.dead:
-            state, hold = idle.reading(seat, explicit=True)
+            state, hold = reading if reading is not None else idle.reading(seat, explicit=True)
             if state is None or not seat.harness.waiting_for_human(state):
                 if hold is not None:
+                    if self is not None:
+                        self.request_wait = (hold.dimension, hold.reason)
                     return None  # deferred-request answers/lifetime are separate; the reason is shared
         return seat.restart() if resume else seat.fresh()
 
@@ -558,10 +632,16 @@ class Service:
         if not seat.is_up:
             return f"{name} written; {seat.name} is down, so qd up {seat.name} applies it{unchecked}"
         if seat.is_working():
-            return None  # retain the control's existing working-turn admission
+            if self is not None:
+                self.request_wait = ('turn-open', 'a turn is open')
+            return None  # retain the existing control admission
         state, hold = idle.reading(seat)
         if (state is None and hold is not None) or (state is not None and state.pending_tools != ()):
-            return None  # only the same registered own watch can be excluded from tool work
+            if self is not None:
+                self.request_wait = (('record', hold.reason) if state is None else
+                                     ('tools-unknown' if state.pending_tools is None else 'tools-pending',
+                                      idle.tool_reason(state)))
+            return None  # controls do not inherit the move's timed/queue predicate
         door = Door(seat)
         command = control.command(value)
         delivery = door.deliver(command, confirm=False)

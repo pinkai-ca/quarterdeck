@@ -73,8 +73,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("seat", nargs="?")
     p = verb("restart", cmd_restart, "relaunch a seat with resume: the conversation continues")
     p.add_argument("seat", nargs="?", help="default: this seat (QD_SEAT)")
+    p.add_argument('--cancel', nargs='?', const='*', metavar='REQUEST', help='cancel this request id, or all pending relaunches of the seat')
     p = verb("fresh", cmd_fresh, "relaunch a seat without resume: a new conversation, briefed, with its open messages")
     p.add_argument("seat", nargs="?", help="default: this seat (QD_SEAT)")
+    p.add_argument('--cancel', nargs='?', const='*', metavar='REQUEST', help='cancel this request id, or all pending relaunches of the seat')
     p = verb('fresh-ready', cmd_fresh_ready, 'attest a natural break with an open handoff, or cancel prepared readiness')
     p.add_argument('seat', nargs='?', help='default: this seat; outside-seat cancellation is supported')
     p.add_argument('--request')
@@ -201,11 +203,11 @@ def cmd_down(args: argparse.Namespace) -> list[str] | str:
 
 
 def cmd_restart(args: argparse.Namespace) -> str:
-    return relaunch(load_ship(args), args.seat, resume=True)
+    return relaunch(load_ship(args), args.seat, resume=True, cancel=getattr(args, 'cancel', None))
 
 
 def cmd_fresh(args: argparse.Namespace) -> str:
-    return relaunch(load_ship(args), args.seat, resume=False)
+    return relaunch(load_ship(args), args.seat, resume=False, cancel=getattr(args, 'cancel', None))
 
 
 def cmd_fresh_ready(args: argparse.Namespace) -> str:
@@ -223,12 +225,22 @@ def cmd_fresh_ready(args: argparse.Namespace) -> str:
     return service.request(ship.runtime, 'fresh-ready', seat=seat.name, **act)
 
 
-def relaunch(ship: shipmod.Ship, name: str | None, resume: bool) -> str:
-    """Relaunch now when the seat is idle; when it is working, the service does it at the turn's end."""
-    seat = seat_of(ship, this_seat(ship, name))
+def relaunch(ship: shipmod.Ship, name: str | None, resume: bool, cancel=None) -> str:
+    """The service owns live decisions; explicit direct recovery retires old pending work."""
+    from . import request_queue
+    target = this_seat(ship, name)
+    if cancel is not None:
+        return request_queue.cancel(ship.runtime, target, None if cancel == '*' else cancel)
+    seat = seat_of(ship, target)
+    if service.alive(ship.runtime):
+        return service.request(ship.runtime, 'relaunch', seat=seat.name, resume=resume,
+                               caller=os.environ.get('QD_SEAT'), origin=request_queue.launch_binding(seat))
+    kind = 'restart' if resume else 'fresh'
+    retired = request_queue.supersede(ship.runtime, seat.name, kind)
     if seat.is_working():
         return service.request(ship.runtime, "relaunch", seat=seat.name, resume=resume)
-    return seat.restart() if resume else seat.fresh()
+    proof = seat.restart() if resume else seat.fresh()
+    return proof + (f'; retired pending relaunch request(s): {", ".join(retired)}' if retired else '')
 
 
 def cmd_stop(args: argparse.Namespace) -> str:
