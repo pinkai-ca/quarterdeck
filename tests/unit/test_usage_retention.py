@@ -224,7 +224,9 @@ def test_service_retention_partial_cadence_selection_presentation_and_observed_w
     # Selection and status cannot make provider calls, even for a reader without usage support.
     # Membership is synthetic: the seat's model is placed in the Argon group, and in no other.
     from quarterdeck.harness import antigravity_models as models
-    monkeypatch.setattr(models, "MEMBERSHIP", {("Gemini 4 Argon", "synthetic-argon-model"): True})
+    monkeypatch.setattr(models, "MEMBERSHIP", {("Gemini 4 Argon", "synthetic-argon-model"): True,
+                                               ("Gemini Models", "synthetic-argon-model"): False,
+                                               ("Claude and GPT models", "synthetic-argon-model"): False})
     unplaced = SimpleNamespace(harness=SimpleNamespace(reads_usage=False),
                                spec=SimpleNamespace(for_pool=lambda name: SimpleNamespace(harness="antigravity", model=None)))
     assert not svc.known_open(unplaced, "google"), "a seat whose model no group is proved for proves no room"
@@ -295,8 +297,9 @@ def test_inactive_non_google_fallback_recovers_at_attempt_cadence_across_restart
     monkeypatch.setattr(ClaudeHarness, 'usage_interval', 60)
     def wrong_program(*args):
         pytest.fail('fallback usage was read by the source program')
+    # A Claude pool's destination runs Claude Code; antigravity accepts no Claude pool.
     seat = SimpleNamespace(name="worker", harness=SimpleNamespace(reads_usage=False, usage=wrong_program),
-                           spec=SimpleNamespace(for_pool=lambda name: SimpleNamespace(harness="antigravity", model=None)))
+                           spec=SimpleNamespace(for_pool=lambda name: SimpleNamespace(harness="claude", model=None)))
     # The old good timestamp is only ten minutes old; retry must not wait an hour.
     assert not svc.known_open(seat, "fallback") and calls == [now]
     assert svc.ledger.pool_windows("fallback") == original
