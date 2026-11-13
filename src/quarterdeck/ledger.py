@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS turns (
 CREATE TABLE IF NOT EXISTS tool_calls (
     record TEXT NOT NULL, turn INTEGER NOT NULL, name TEXT NOT NULL, seconds REAL, failed INTEGER
 );
+CREATE INDEX IF NOT EXISTS tool_calls_turn ON tool_calls(record, turn);
 CREATE TABLE IF NOT EXISTS pools (
     pool TEXT NOT NULL, window TEXT NOT NULL, used REAL, resets_at TEXT, read_at TEXT,
     blocks INTEGER NOT NULL DEFAULT 1, group_name TEXT, bucket TEXT, bucket_name TEXT, exhausted TEXT NOT NULL DEFAULT '',
