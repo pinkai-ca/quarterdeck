@@ -52,7 +52,7 @@ def frame(program, content, height):
 
 
 def seat_for(adapter, height=16):
-    pane = SimpleNamespace(id='invented-pane', width=100, height=height, dead=False)
+    pane = SimpleNamespace(id='invented-pane', width=100, height=height, dead=False, pid=7)
     return SimpleNamespace(harness=adapter, tmux=SimpleNamespace(), pane=lambda: pane,
                            session=SimpleNamespace(human=False)), pane
 
@@ -91,12 +91,16 @@ def test_known_fold_contract_still_fits_one_row_at_either_height(adapter, marker
 def diagnostic(tmp_path, monkeypatch):
     seat, pane = seat_for(CodexHarness())
     seat.ship = SimpleNamespace(runtime=tmp_path)
-    data = dict(phase='pasting', payload=TEXT, paste_geometry=[100, 16], attempts=['synthetic-attempt'])
+    seat.launched = lambda: SimpleNamespace(pane=pane.id, pid=pane.pid, at='invented-launch')
+    data = dict(phase='pasting', payload=TEXT, paste_geometry=[100, 16], attempts=['synthetic-attempt'],
+                identity=dict(pane=pane.id, pid=pane.pid, launch='invented-launch', harness='codex'))
     proof = SimpleNamespace(data=data, same_launch=lambda seat: True)
     attempt = SimpleNamespace(message='synthetic-message', path=tmp_path / 'synthetic-attempt')
     monkeypatch.setattr(pending, 'journals', lambda seat: ([proof], []))
     monkeypatch.setattr(post.Attempts, 'all', lambda self: [attempt])
-    return Door(seat), pane, proof, attempt
+    door = Door(seat)
+    door.captured_pane = pane
+    return door, pane, proof, attempt
 
 
 def test_displayed_geometry_is_read_only_and_does_not_change_the_outcome(diagnostic):
@@ -105,7 +109,7 @@ def test_displayed_geometry_is_read_only_and_does_not_change_the_outcome(diagnos
     assert door.pane_obstruction() == REASON
     assert proof.data == before
     pane.height = 50
-    assert door.pane_obstruction() == ''
+    assert door.pane_obstruction() is None
     assert proof.data == before and proof.data['phase'] == 'pasting'
 
 
@@ -113,33 +117,33 @@ def test_displayed_geometry_is_read_only_and_does_not_change_the_outcome(diagnos
 def test_other_outcomes_acquire_no_failed_unfolded_paste_label(diagnostic, phase):
     door, _, proof, _ = diagnostic
     proof.data['phase'] = phase
-    assert door.pane_obstruction() == ''
+    assert door.pane_obstruction() is None
     assert proof.data['phase'] == phase
 
 
 def test_diagnostic_stays_with_its_launch_width_and_latest_attempt(diagnostic):
     door, pane, proof, attempt = diagnostic
     pane.width = 101
-    assert door.pane_obstruction() == ''
+    assert door.pane_obstruction() is None
     pane.width = 100
-    proof.same_launch = lambda seat: False
-    assert door.pane_obstruction() == ''
-    proof.same_launch = lambda seat: True
+    proof.data['identity']['launch'] = 'earlier-launch'
+    assert door.pane_obstruction() is None
+    proof.data['identity']['launch'] = 'invented-launch'
     attempt.path = attempt.path.with_name('later-attempt')
-    assert door.pane_obstruction() == ''
+    assert door.pane_obstruction() is None
 
 
 @pytest.mark.parametrize('geometry', [None, [], [True, 16], [100, -1], '100x16'])
 def test_unknown_geometry_keeps_the_existing_generic_reading(diagnostic, geometry):
     door, _, proof, _ = diagnostic
     proof.data['paste_geometry'] = geometry
-    assert door.pane_obstruction() == ''
+    assert door.pane_obstruction() is None
 
 
 def test_human_readings_get_no_geometry_annotation(diagnostic):
     door, pane, _, _ = diagnostic
     door.seat.session.human = True
-    assert door.pane_obstruction() == ''
+    assert door.pane_obstruction() is None
     assert door.short_pane_reason(TEXT, pane) == ''
 
 
@@ -170,7 +174,8 @@ def test_delivery_path_adds_only_reason_metadata_to_the_synthetic_failed_paste(p
     seat.name = 'invented-seat'
     seat.ship = SimpleNamespace(runtime=tmp_path)
     seat.pool = SimpleNamespace(name='invented-pool')
-    seat.launched = lambda: None
+    seat.launched = lambda: SimpleNamespace(pane=pane.id, pid=pane.pid, at='invented-launch',
+                                             pool='invented-pool', version='invented-version')
     seat.record = lambda: None
 
     class Terminal:
@@ -193,7 +198,8 @@ def test_delivery_path_adds_only_reason_metadata_to_the_synthetic_failed_paste(p
 
     class Journal:
         path = tmp_path / 'synthetic-journal'
-        data = dict(phase='prepared', payload=TEXT)
+        data = dict(phase='prepared', payload=TEXT,
+                    identity=dict(pane=pane.id, pid=pane.pid, launch='invented-launch', harness=adapter.name))
 
         def same_launch(self, seat):
             return True
@@ -215,3 +221,28 @@ def test_delivery_path_adds_only_reason_metadata_to_the_synthetic_failed_paste(p
         assert result.result == 'typed' and proof.data['phase'] == 'submitted'
         assert 'paste_geometry' not in proof.data
         assert terminal.submits == [adapter.keys.submit]
+
+
+def test_no_short_pane_journal_needs_no_liveness_or_attempt_query(diagnostic, monkeypatch):
+    door, _, _, _ = diagnostic
+    monkeypatch.setattr(pending, 'journals', lambda seat: ([], []))
+    def unnecessary(*args):
+        raise AssertionError('the diagnostic must not query a pane, launch, or attempts without its journal')
+    door.seat.pane = unnecessary
+    door.seat.launched = unnecessary
+    monkeypatch.setattr(post.Attempts, 'all', unnecessary)
+    assert door.pane_obstruction() is None
+
+
+@pytest.mark.parametrize('captured', [False, True])
+def test_journal_diagnostic_uses_only_the_owned_frame_or_its_saved_geometry(diagnostic, captured):
+    door, _, proof, _ = diagnostic
+    before = deepcopy(proof.data)
+    if not captured:
+        door.captured_pane = None
+    def redundant(*args):
+        raise AssertionError('no second pane query, including through Proof.same_launch')
+    door.seat.pane = redundant
+    proof.same_launch = redundant
+    assert door.pane_obstruction() == (REASON if captured else 'last failed paste: ' + REASON)
+    assert proof.data == before

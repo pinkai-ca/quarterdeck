@@ -157,7 +157,7 @@ class Door:
 
     def _reading(self, screen: Screen | None) -> Reading:
         """Read this captured frame, including absence, without taking another capture."""
-        return replace(self._base_reading(screen), diagnostic=self.pane_obstruction())
+        return replace(self._base_reading(screen), diagnostic=self.pane_obstruction() or "")
 
     def _base_reading(self, screen: Screen | None) -> Reading:
         """The existing admission reading; geometry diagnostics confer no authority."""
@@ -208,46 +208,61 @@ class Door:
         return 0 <= (datetime.now(timezone.utc) - at).total_seconds() < self.harness.start_seconds
 
     def short_pane_reason(self, text, pane) -> str:
-        if self.seat.session.human or pane is None:
-            return ""
-        measure = getattr(self.harness, "minimum_box_rows", None)
-        if (measure is None or type(pane.width) is not int or type(pane.height) is not int
-                or pane.width < 1 or pane.height < 1):
-            return ""
-        rows = measure(text, pane.width)
-        if type(rows) is not int or rows <= pane.height:
-            return ""
-        return (f"pane too short: at least {rows} rows needed for the unfolded message "
-                f"({pane.height} available); enlarge the pane")
+        return self._short_pane_geometry(text, pane.width, pane.height) if pane is not None else ""
 
-    def pane_obstruction(self) -> str:
-        """Display a failed paste's scoped geometry, without settling or modifying any evidence."""
+    def _short_pane_geometry(self, text, width, height) -> str:
         if self.seat.session.human:
             return ""
+        measure = getattr(self.harness, "minimum_box_rows", None)
+        if (measure is None or type(width) is not int or type(height) is not int
+                or width < 1 or height < 1):
+            return ""
+        rows = measure(text, width)
+        if type(rows) is not int or rows <= height:
+            return ""
+        return (f"pane too short: at least {rows} rows needed for the unfolded message "
+                f"({height} available); enlarge the pane")
+
+    def _diagnostic_identity(self):
+        launched = self.seat.launched()
+        return (dict(pane=launched.pane, pid=launched.pid, launch=launched.at,
+                     harness=self.harness.name) if launched is not None else None)
+
+    def pane_obstruction(self) -> str | None:
+        """Read reason metadata without another pane query, capture, or evidence transition."""
+        if self.seat.session.human:
+            return None
         try:
-            pane = self.seat.pane()
-            if pane is None or pane.dead:
-                return ""
             proofs, errors = pending.journals(self.seat)
             if errors:
-                return ""
-            from . import post
-            attempts = post.Attempts(self.seat.ship.runtime).all()
-            latest = {attempt.message: attempt.path.name for attempt in attempts}
-            current = set(latest.values())
+                return None
+            candidates = []
             for proof in proofs:
                 geometry = proof.data.get('paste_geometry')
-                if (proof.data['phase'] not in ('pasting', 'withheld') or not proof.same_launch(self.seat)
-                        or not isinstance(geometry, list) or len(geometry) != 2
-                        or any(type(value) is not int or value < 1 for value in geometry)
-                        or geometry != [pane.width, pane.height]
-                        or not current.intersection(proof.data['attempts'])):
+                if (proof.data['phase'] in ('pasting', 'withheld')
+                        and isinstance(geometry, list) and len(geometry) == 2
+                        and all(type(value) is int and value > 0 for value in geometry)):
+                    candidates.append((proof, geometry))
+            if not candidates:
+                return None  # the ordinary path needs no launch, attempt, or pane lookup
+            identity = self._diagnostic_identity()
+            if identity is None:
+                return None
+            pane = self.captured_pane  # the fresh owned frame the reading already holds
+            if pane is not None and (pane.dead or pane.id != identity['pane'] or pane.pid != identity['pid']):
+                return None
+            from . import post
+            attempts = post.Attempts(self.seat.ship.runtime).all()
+            current = set({attempt.message: attempt.path.name for attempt in attempts}.values())
+            for proof, geometry in candidates:
+                if (proof.data['identity'] != identity or not current.intersection(proof.data['attempts'])
+                        or pane is not None and geometry != [pane.width, pane.height]):
                     continue
-                if reason := self.short_pane_reason(proof.data['payload'], pane):
-                    return reason
+                if reason := self._short_pane_geometry(proof.data['payload'], *geometry):
+                    return reason if pane is not None else f"last failed paste: {reason}"
         except (OSError, ValueError, KeyError, TypeError, AttributeError, TmuxError):
             pass  # optional diagnostic unknown; the ordinary admission reading is unchanged
-        return ""
+        return None
 
     def human_obstruction(self) -> tuple[Reading, str | None]:
         """Alarm evidence only: confirm an unknown frame twice, never grant Door authority."""
@@ -451,14 +466,15 @@ class Door:
         shown = self.box_shows(self.harness.box(text))
         self.after_paste = shown
         if shown is None or not self.matches(self.harness.box(text), shown):  # law: one-door
-            diagnostic = self.short_pane_reason(text, self.seat.pane())
-            if diagnostic and proof and proof.same_launch(self.seat):
-                current = self.seat.pane()
-                if current and current.id == pane.id and (current.width, current.height) == (pane.width, pane.height):
-                    try:
-                        proof.save(paste_geometry=[pane.width, pane.height])
-                    except OSError:
-                        pass  # optional reason metadata; never alter paste/clear/submit decisions
+            current = self.captured_pane
+            diagnostic = self.short_pane_reason(text, current)
+            if (diagnostic and proof and current and current.id == pane.id and current.pid == pane.pid
+                    and (current.width, current.height) == (pane.width, pane.height)
+                    and proof.data.get('identity') == self._diagnostic_identity()):
+                try:
+                    proof.save(paste_geometry=[current.width, current.height])
+                except OSError:
+                    pass  # optional reason metadata; never alter paste/clear/submit decisions
             if verify is None or verify():
                 if reason:=paste_refusal.clear(self,text,owned,shown,BOX_SECONDS):
                     return Delivery('withheld', f'{diagnostic}; {reason}' if diagnostic else reason)

@@ -1069,8 +1069,12 @@ are unchanged. Accepted folded placeholders never acquire the diagnostic.
 
 The existing failed-paste journal can retain the width/height where the mismatch
 was observed. The read-only diagnostic uses its original payload and launch, only
-while that attempt remains latest, in pasting/withheld phase and at that same
-geometry. A changed pane removes this geometry label; it never settles uncertain
+while that attempt remains latest and in pasting/withheld phase. With no such
+journal the diagnostic returns before any pane or launch lookup. With one, saved
+launch metadata and the reading's existing owned frame bind the diagnostic without
+another pane liveness query. A changed frame geometry removes the label. Without
+an already captured frame, the journal's own geometry is explicitly labelled as
+`last failed paste`, never as a new observation. None of this settles uncertain
 evidence or authorizes resending. Status retains the seat and reason even when
 other alerts overflow. An open door can display a previous failed delivery's
 geometry without changing its admission decision. Human seats acquire no such
