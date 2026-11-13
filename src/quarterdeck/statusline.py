@@ -163,7 +163,8 @@ def allowances(cache: dict, ship: dict, own_pool: str | None) -> list[dict]:
                      "resets": seconds_until(top.get("resets_at")) if top else None,
                      "wall": any(w.get("wall") for w in windows),
                      "unknown": len(known) < len(windows),
-                     "stale": bool(top) and (not top.get("current") or bool(cache.get("ledger_unavailable"))
+                     "stale": bool(top) and (not top.get("current") or seconds_until(top.get("resets_at")) <= 0
+                                             or bool(cache.get("ledger_unavailable"))
                                              or time.time() - cache.get("ledger_at", 0) > OLD)})
     return rows
 

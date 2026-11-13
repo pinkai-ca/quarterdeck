@@ -83,7 +83,7 @@ def test_blocking_window_and_provider_wall_lead_without_name_guessing():
 
 def test_stale_reading_is_named_and_expired_reset_is_not_a_new_zero():
     w = window("sample", .6)
-    w.update(current=False, resets_at=(datetime.now(timezone.utc) - timedelta(hours=1)).isoformat())
+    w.update(resets_at=(datetime.now(timezone.utc) - timedelta(hours=1)).isoformat())
     row = line.allowances(cache([w]), {"pools": {"sample": {}}}, None)[0]
     text = plain(line.cell(row, 3))
     assert "60%" in text and "last known" in text and "reset passed" in text
