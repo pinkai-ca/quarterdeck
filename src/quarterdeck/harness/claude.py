@@ -232,7 +232,7 @@ def usage_tokens(usage: dict) -> Tokens:
 
 
 class _Reader(JsonLinesReader):
-    kinds = ('assistant', 'queue-operation', 'system', 'user', 'attachment')
+    kinds = ('assistant', 'queue-operation', 'system', 'user')
     label = "Claude Code"
 
     def __init__(self, record: Path, snapshot=None):

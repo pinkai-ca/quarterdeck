@@ -523,7 +523,7 @@ class Service:
             return None
         pane = seat.pane()
         if pane is not None and not pane.dead:
-            state, hold = self.idle_reading(seat)
+            state, hold = idle.reading(seat)
             if state is None or not seat.harness.waiting_for_human(state):
                 if hold is not None:
                     return None  # deferred-request answers/lifetime are separate; the reason is shared
@@ -553,9 +553,11 @@ class Service:
             return f"{name} written; qd restart {seat.name} applies it{unchecked}"
         if not seat.is_up:
             return f"{name} written; {seat.name} is down, so qd up {seat.name} applies it{unchecked}"
-        _, hold = self.idle_reading(seat)
-        if hold is not None:
-            return None  # ordinary work, including other background tasks, still waits
+        if seat.is_working():
+            return None  # retain the control's existing working-turn admission
+        state, _ = idle.reading(seat)
+        if state is None or state.pending_tools != ():
+            return None  # only the same registered own watch can be excluded from tool work
         door = Door(seat)
         command = control.command(value)
         delivery = door.deliver(command, confirm=False)
@@ -809,27 +811,12 @@ class Service:
 
     def not_idle(self, seat: Seat) -> str | None:
         """The ordinary live proof shared by failover, select and relaunch."""
-        _, hold = self.idle_reading(seat)
+        _, hold = idle.reading(seat)
         return hold.reason if hold is not None else None
 
     def idle_reading(self, seat: Seat):
-        """Read once and publish only an operational category, bound to launch/watch generation."""
-        binding = move_hold.generation(seat)
-        state = None
-        try:
-            record = seat.record()
-            state = seat.harness.state(record) if record is not None else None
-        except OSError:
-            hold = idle.Hold('record', 'its record is unreadable')
-        else:
-            if state is not None:
-                state = idle.execution(seat, state)
-            hold = idle.check(state) if state is not None else idle.Hold('record', 'it has no joined record')
-        if move_hold.generation(seat) != binding:
-            state = None
-            hold = idle.Hold('identity', idle.REASONS['identity'])
-        move_hold.publish(seat, binding, hold)
-        return state, hold
+        """Compatibility wrapper for callers that already hold the service."""
+        return idle.reading(seat)
 
     def select(self, seat: Seat, pool: str) -> str:
         """An explicit move to one of a seat's declared choices, by failover's path and refusals.

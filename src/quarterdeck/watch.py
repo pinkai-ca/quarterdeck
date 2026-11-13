@@ -503,23 +503,29 @@ def _mount(path: Path) -> str:
 
 
 def limit_holds(ship: Ship, selected: list[Seat | UnresolvedSeat]) -> tuple[list[str], list[str]]:
+    """Keep wall outcomes and uncertainty separate from operational move-hold reasons."""
+    held, unknown, _ = limit_state(ship, selected)
+    return held, unknown
+
+
+def limit_state(ship: Ship, selected: list[Seat | UnresolvedSeat]):
     """Up seats at a limit with no eligible destination in the recorded evidence."""
     up = [seat for seat in selected if not isinstance(seat, UnresolvedSeat) and seat.is_up]
     if not up:
-        return [], []
+        return [], [], []
     try:
         book = ledger.Ledger.reading(ship.runtime / "ledger.sqlite")
         if book is None:
-            return [], []
+            return [], [], []
         with book:
             walled = [seat for seat in up if quota.current_walled(seat, book)]
             held = [seat.name for seat in walled
                     if not any(quota.cached_open(ship, book, pool, seat) for pool in quota.candidate_pools(seat))]
             reasons = [f'{seat.name}: move held: {reason}' for seat in walled
                        if len(seat.spec.pools) > 1 and (reason := move_hold.reading(seat))]
-        return held, reasons  # law: nothing-waits-silently -- including tools held with a usable destination
+        return held, [], reasons  # law: nothing-waits-silently -- tool holds with a usable destination
     except (OSError, sqlite3.Error):
-        return [], ["held seats unknown; ledger unreadable"]
+        return [], ["held seats unknown; ledger unreadable"], []
 
 
 def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tuple[str, str]] | None = None,
@@ -531,7 +537,8 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
     latest = attempts.latest(attempts=records)
     waiting, needs_human, unarmed, pending_lines, routes, unknown, queue_unknown, compactions, turn_errors = [], [], [], [], [], [], [], [], []
     selected = seats(ship, tmux, False)
-    held, limit_unknown = limit_holds(ship, selected)
+    held, limit_unknown, move_reasons = limit_state(ship, selected)
+    pending_lines += limit_unknown
     for seat in selected:
         pending = attempts.undelivered(store, seat.name, results=latest)
         waiting += pending
@@ -596,7 +603,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         compactions=compactions,
         manual_fresh=compaction_alert.unrouted(ship, [seat for seat in selected if not isinstance(seat, UnresolvedSeat)]),
         held=held,
-        move_holds=limit_unknown,
+        move_holds=move_reasons,
         turn_errors=turn_errors,
         group_held=group_post.holds(ship.runtime),
         cascade_held=cascade_runtime.holds(ship.runtime),

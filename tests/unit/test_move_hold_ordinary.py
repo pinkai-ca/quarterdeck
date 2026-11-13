@@ -136,8 +136,9 @@ def test_walled_human_with_available_destination_shows_tools_hold_without_record
     monkeypatch.setattr(quota, 'current_walled', lambda *args: True)
     monkeypatch.setattr(quota, 'candidate_pools', lambda target: ['pool-oak'])
     monkeypatch.setattr(quota, 'cached_open', lambda *args: True)
-    held, reasons = watch.limit_holds(seat.ship, [seat])
+    held, unknown, reasons = watch.limit_state(seat.ship, [seat])
     assert held == []
+    assert unknown == []
     assert reasons == ['seat-maple: move held: tool state unknown']
 
 

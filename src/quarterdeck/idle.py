@@ -71,7 +71,9 @@ def check(state: State, seat=None) -> Hold | None:
     if state.turn_open is not False:
         key = 'turn-open' if state.turn_open is True else 'turn-unknown'
         return Hold(key, REASONS[key])
-    if state.queue_error or state.queued is None:
+    if state.queue_error:
+        return Hold('queue-unknown', f'queue unknown: {state.queue_error}')
+    if state.queued is None:
         return Hold('queue-unknown', REASONS['queue-unknown'])
     if state.queued:
         return Hold('queue-pending', REASONS['queue-pending'])
@@ -84,3 +86,24 @@ def check(state: State, seat=None) -> Hold | None:
                for turn in state.completed_turns):
         return Hold('completion', REASONS['completion'])
     return None
+
+
+def reading(seat):
+    """Read and publish the seat-aware proof without requiring a service object."""
+    from . import move_hold
+    binding = move_hold.generation(seat)
+    state = None
+    try:
+        record = seat.record()
+        state = seat.harness.state(record) if record is not None else None
+    except OSError:
+        hold = Hold('record', 'its record is unreadable')
+    else:
+        if state is not None:
+            state = execution(seat, state)
+        hold = check(state) if state is not None else Hold('record', 'it has no joined record')
+    if move_hold.generation(seat) != binding:
+        state = None
+        hold = Hold('identity', REASONS['identity'])
+    move_hold.publish(seat, binding, hold)
+    return state, hold
