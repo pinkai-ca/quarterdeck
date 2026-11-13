@@ -1,0 +1,55 @@
+"""Synthetic screen text in the forms measured on installed pi 0.79.0.
+
+Private native captures cover 120, 256 and 425 columns; the last case also
+measures the renderer's provider-prefix fallback at 52 columns. Paths, model,
+transcript and statistics below are invented rather than copied from a session.
+"""
+
+from pathlib import Path
+
+import pytest
+
+from quarterdeck.harness.pi import PiHarness
+
+
+FIXTURES = Path(__file__).parents[1] / 'fixtures' / 'pi' / '0.79.0'
+SHORT = 'sample line one\nsample line two\nsample line three\nsample line four'
+WRAPPED = '\n'.join([' '.join(['sample words'] * 9)] * 7 + [' '.join(['sample words'] * 7)])
+
+
+@pytest.mark.parametrize('name,box,working,effort', [
+    ('fresh-120', '', False, 'medium'),
+    ('idle-256', '', False, 'medium'),
+    ('working-425', '', True, 'medium'),
+    ('paste-short-120', SHORT, False, 'medium'),
+    ('paste-wrapped-120', WRAPPED, False, 'medium'),
+    ('paste-folded-lines-256', '[paste #1 +44 lines]', False, 'medium'),
+    ('paste-folded-chars-425', '[paste #2 1200 chars]', False, 'medium'),
+    ('single-provider-120', '', False, 'off'),
+    ('thinking-off-425', '', False, 'off'),
+    ('no-reasoning-425', '', False, None),
+    ('prefix-does-not-fit-52', '', False, 'off'),
+])
+def test_measured_pi_screen(name, box, working, effort):
+    screen = PiHarness().screen((FIXTURES / f'{name}.txt').read_text())
+
+    assert screen.box == box
+    assert screen.working is working
+    assert screen.shows == {'model': 'sample-model', **({'effort': effort} if effort else {})}
+    assert screen.unknown is None
+    assert screen.interruption is None
+    assert screen.queued == 0
+    assert screen.echoes == ()
+
+
+@pytest.mark.parametrize('name,payload,width', [
+    ('paste-short-120', SHORT, 120),
+    ('paste-wrapped-120', ' '.join(['sample words'] * 70), 120),
+    ('paste-folded-lines-256', '\n'.join(f'sample line {i}' for i in range(44)), 256),
+    ('paste-folded-chars-425', 'x' * 1200, 425),
+], ids=['short', 'wrapped', 'folded-lines', 'folded-chars'])
+def test_measured_pi_paste_display(name, payload, width):
+    harness = PiHarness()
+    screen = harness.screen((FIXTURES / f'{name}.txt').read_text())
+
+    assert harness.box(payload).matches(screen.box, harness.box_columns(width))

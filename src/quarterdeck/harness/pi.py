@@ -286,8 +286,9 @@ def inputs(record: Path) -> list[Input]:
 # -- the adapter --------------------------------------------------------------------------------
 
 RULE = re.compile(r"^─{20,}\s*$")
-# "↑1.6k ↓19 1.6%/98k (auto)    qwen3.8-27b • medium"; a model declared without reasoning shows no thinking level
-FOOTER = re.compile(r"^(?P<stats>\S.*?)\s{2,}(?P<model>\S+)(?: • (?P<level>thinking off|\w+))?\s*$")
+# 0.79.0 also draws "(provider) model • medium" when multiple providers are
+# available and the prefix fits. A model without reasoning has no thinking level.
+FOOTER = re.compile(r"^(?P<stats>\S.*?)\s{2,}(?:\([^()\s]+\) )?(?P<model>\S+)(?: • (?P<level>thinking off|\w+))?\s*$")
 WORKING = re.compile(r"^\s*[⠁-⣿] Working\.\.\.", re.M)
 QUEUED_HINT = "Alt+Up to edit all queued messages"
 STEERING = re.compile(r"^\s*Steering: (.*?)\s*$", re.M)
@@ -429,7 +430,7 @@ class PiHarness(EndpointHarness):
     reader = staticmethod(read)
 
     def screen(self, text: str) -> Screen:
-        """The box is between two rules above the working directory and the footer with the model and thinking level."""
+        """0.74.2/0.79.0: two box rules above the directory and model/optional-provider footer."""
         if not text.strip():
             return Screen(text, box=None, starting=True)
         lines = text.rstrip("\n").split("\n")
