@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.testrunner import layout, resources
+from tests.testrunner import layout, resources, sessions
 
 OPENBLAS_AT_IMPORT = os.environ.get('OPENBLAS_NUM_THREADS')
 ROOT = Path(__file__).resolve().parent.parent
@@ -95,7 +95,9 @@ def socket_container(parent, prefix):
     folder = Path(tempfile.mkdtemp(prefix=prefix, dir=parent))
     descriptor = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     failure = None
+    token = None
     try:
+        token = sessions.register(parent, folder, descriptor)
         yield folder
     except BaseException as error:
         failure = error
@@ -105,6 +107,8 @@ def socket_container(parent, prefix):
             actual, original = folder.lstat(), os.fstat(descriptor)
             if (actual.st_dev, actual.st_ino) != (original.st_dev, original.st_ino):
                 raise OSError('container identity changed')
+            if token is not None:
+                sessions.unmark_empty(descriptor, token)
             folder.rmdir()
         except OSError as error:
             detail = f'test socket container retained: {folder}: {error}'

@@ -8,18 +8,53 @@ recorded collection is taken as complete. Versions that differ or are missing le
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import stat
+
+from .layout import DIRECTORY, Refused
 
 CATEGORIES = ('passed', 'failed', 'error', 'skipped', 'xfailed', 'xpassed')
 
 
-def load(folder: Path) -> tuple[dict[str, list[dict]], list[str]]:
+def load(folder: Path, *, parent_fd=None) -> tuple[dict[str, list[dict]], list[str]]:
     """Events by role; a torn last line (a process killed mid-write) is noted, never guessed at."""
     events, problems = {}, []
-    if not folder.is_dir():
+    if parent_fd is None:
+        if not folder.is_dir():
+            return events, ['no evidence folder: the evidence plugin never started']
+        sources = [(path, None) for path in sorted(folder.glob('*.jsonl'))]
+        return _load_sources(sources, events, problems)
+    try:
+        fd = os.open(folder.name, DIRECTORY, dir_fd=parent_fd)
+    except FileNotFoundError:
         return events, ['no evidence folder: the evidence plugin never started']
-    for path in sorted(folder.glob('*.jsonl')):
-        lines = path.read_text(encoding='utf-8', errors='replace').split('\n')
+    try:
+        if os.fstat(fd).st_uid != os.getuid() or os.fstat(fd).st_dev != os.fstat(parent_fd).st_dev:
+            raise Refused(f'{folder}: evidence ownership/filesystem differs; retained')
+        sources = [(folder / name, fd) for name in sorted(os.listdir(fd)) if name.endswith('.jsonl')]
+        return _load_sources(sources, events, problems)
+    finally:
+        os.close(fd)
+
+
+def read_owned(parent_fd, name, where):
+    """Read one regular evidence file through its verified directory, without following a link."""
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_dev != os.fstat(parent_fd).st_dev:
+            raise Refused(f'{where}: not this run\'s regular evidence file; retained')
+        with os.fdopen(os.dup(fd), 'r', encoding='utf-8', errors='replace') as handle:
+            return handle.read()
+    finally:
+        os.close(fd)
+
+
+def _load_sources(sources, events, problems):
+    for path, fd in sources:
+        text = path.read_text(encoding='utf-8', errors='replace') if fd is None else read_owned(fd, path.name, path)
+        lines = text.split('\n')
         role = path.stem
         events[role] = []
         for number, line in enumerate(lines, 1):
@@ -49,8 +84,8 @@ def marked_complete(events: list[dict]) -> bool:
     return any(event['kind'] == 'collected' and event.get('complete') is True for event in events)
 
 
-def analyse(folder: Path, pytest_exit: int | None) -> dict:
-    events, problems = load(folder)
+def analyse(folder: Path, pytest_exit: int | None, *, parent_fd=None) -> dict:
+    events, problems = load(folder, parent_fd=parent_fd)
     main = events.get('main', [])
     starts = [event for role in events.values() for event in role if event['kind'] == 'start']
     finish = next((event for event in main if event['kind'] == 'finish'), None)

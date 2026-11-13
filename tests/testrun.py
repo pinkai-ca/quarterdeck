@@ -1,4 +1,4 @@
-"""The repository's test tool. Run it as ``python3 -I tests/testrun.py run|clean|keep``; see ``--help``.
+"""The repository's test tool. Run it as ``python3 -I tests/testrun.py run|clean|keep|retire``; see ``--help``.
 
 Standard library only; it imports nothing from ``src/`` and writes no bytecode beside itself. The worktree it
 tests is found by Git (``--target`` or the current directory), never from where this file lives, so a

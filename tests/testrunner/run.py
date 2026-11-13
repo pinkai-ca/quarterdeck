@@ -20,7 +20,7 @@ import subprocess
 import sys
 import time
 
-from . import clean, environment, evidence, gitops, owned, procs, report, resources, usersite
+from . import clean, environment, evidence, gitops, owned, procs, report, resources, sessions, usersite
 from .layout import RESULTS, RUNS, SOCKETS, Refused, Root, Slot, git_environment, identity, new_run_id, write_json
 
 GRACE = 15.0
@@ -153,6 +153,7 @@ class Runner:
         try:
             self.state.setdefault('groups', []).append([process.pid, procs.start_time(process.pid)])
             write_json(self.scratch_fd, 'state.json', self.state)
+            clean.record(self.root, self.run, self.state)
             while process.poll() is None:
                 self.check()
                 time.sleep(0.2)
@@ -207,6 +208,7 @@ class Runner:
 
     def within(self, root: Root, target, targets, change) -> int:
         args, run = self.args, self.run
+        self.root = root
         runs_fd = root.child(RUNS)
         results_fd = root.child(RESULTS, run)
         self.scratch_fd = root.child(RUNS, run)
@@ -219,6 +221,8 @@ class Runner:
                       'pid': os.getpid(), 'pid_start': procs.start_time(os.getpid()), 'boot': procs.boot_id(),
                       'scratch': identity(os.fstat(self.scratch_fd)), 'owner': owner, 'stage': 'setup'}
         write_json(self.scratch_fd, 'state.json', self.state)
+        clean.record(root, run, self.state)
+        os.close(root.child(RESULTS, run, 'sessions'))
         result = {'run': run, 'change': change, 'started': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
                   'target': {'top': str(target.top), 'project': str(target.project), 'head': target.head,
                              'tree': target.tree, 'branch': target.branch},
@@ -232,12 +236,12 @@ class Runner:
         try:  # from here every failure, the runner's own included, reaches the same fixed ending
             with self.time_limit():
                 result['runner'].update(gitops.runner_identity(self.runner_files))
-                sockets_before = socket_entries(root)
                 self.python = shutil.which('python3')
                 if self.python is None:
                     raise Refused('no python3 on the ordinary PATH')
                 self.user = usersite.resolve(self.python)  # before HOME is replaced
                 env, settings = environment.build(scratch, run, self.user['base'] if self.user['exists'] else None)
+                env[sessions.RECORD_ENV] = str(root.path / RESULTS / run / 'sessions')
                 env[resources.MEMORY_ENV] = str(args.memory_mib)
                 result['environment'] = {**settings, 'workers': args.workers, 'timeout': args.timeout,
                                          'memory_mib': args.memory_mib, 'memory_resource': 'RLIMIT_AS',
@@ -290,10 +294,8 @@ class Runner:
             if moved:  # the operator's user site must only be read: held, and reported, never repaired
                 cleanup['outcome'] = 'held'
                 cleanup['user_site_changed'] = moved
-        left = sorted(set(socket_entries(root)) - set(sockets_before))
-        cleanup['socket_entries_left'] = left  # attributed to no one with certainty: reported, never removed
-        if left and cleanup['outcome'] == 'complete':
-            cleanup['outcome'] = 'held'
+        cleanup['socket_entries_left'] = [entry['path'] for entry in cleanup.get('sessions', {}).get('entries', [])
+                                          if entry['outcome'] == 'held']
         result['cleanup'] = cleanup
         if cleanup['outcome'] == 'held' and status == 'passed':
             result['outcome']['wrapper_exit'] = CLEANUP_HELD
@@ -345,6 +347,7 @@ class Runner:
             raise Refused(f'run checkout admin {admin} is not under the project\'s .git/worktrees')
         self.state.update(checkout=str(checkout), checkout_identity=identity(os.lstat(checkout)), admin=admin)
         write_json(self.scratch_fd, 'state.json', self.state)
+        clean.record(self.root, self.run, self.state)
         tree = gitops.git(checkout, 'rev-parse', 'HEAD^{tree}').strip()
         result['checkout'] = {'path': str(checkout), 'tree': tree, 'admin': admin}
         if tree != target.tree:

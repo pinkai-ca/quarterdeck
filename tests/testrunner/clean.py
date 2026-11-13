@@ -6,9 +6,10 @@ from __future__ import annotations
 import fcntl
 import os
 from pathlib import Path
+import sys
 import time
 
-from . import evidence, gitops, owned, procs, report
+from . import evidence, gitops, owned, procs, report, sessions
 from .layout import (CHANGES, DIRECTORY, KEEPS, RESULTS, RUNS, Refused, Root, Slot, change_file,
                      identity, read_json, run_name, write_json)
 
@@ -50,6 +51,16 @@ def kept(root: Root, run: str) -> dict | None:
 
 
 def retire_run(root: Root, runs_fd: int, run: str, state: dict) -> dict:
+    """Cleanup is reported separately from the first test outcome, including ordinary cleanup errors."""
+    try:
+        return _retire_run(root, runs_fd, run, state)
+    except Exception as error:
+        # The finalization alarm is a BaseException: its emergency ending still owns that deadline.
+        return {'outcome': 'held', 'scratch': str(root.path / RUNS / run),
+                'reason': f'{type(error).__name__}: {error}; exact remainder retained'}
+
+
+def _retire_run(root: Root, runs_fd: int, run: str, state: dict) -> dict:
     """Remove a finished run's scratch by its recorded identity, and its checkout's Git admin entry."""
     note = kept(root, run)
     if note:
@@ -65,12 +76,13 @@ def retire_run(root: Root, runs_fd: int, run: str, state: dict) -> dict:
             return {'outcome': 'held', 'scratch': str(root.path / RUNS / run),
                     'reason': f'state.json names checkout {checkout} and Git admin {admin}, not this run\'s own '
                               f'{own} under {root.project / ".git" / "worktrees"}; nothing removed'}
-    try:
-        tally = owned.remove(runs_fd, run, state['scratch'], root.path / RUNS / run, state.get('owner'))
-    except Refused as refused:
-        return {'outcome': 'held', 'reason': str(refused)}
-    cleanup = {'outcome': 'complete', 'removed': tally.as_dict(), 'scratch': str(root.path / RUNS / run)}
-    if admin:
+    budget = owned.Budget()
+    cleanup = owned.retire(runs_fd, run, state.get('scratch'), root.path / RUNS / run,
+                           state.get('owner'), budget=budget)
+    cleanup['sessions'] = sessions.retire(root, run, budget=budget)
+    if cleanup['sessions']['outcome'] == 'held':
+        cleanup['outcome'] = 'held'
+    if admin and cleanup['outcome'] == 'complete':
         checkout = state['checkout']
         done = gitops.ok(root.project, 'worktree', 'remove', '--force', checkout)
         cleanup['git_admin'] = {'path': admin, 'removed': not Path(admin).exists(), 'command_ok': done}
@@ -78,6 +90,103 @@ def retire_run(root: Root, runs_fd: int, run: str, state: dict) -> dict:
             cleanup['outcome'] = 'held'
             cleanup['reason'] = f'git worktree admin {admin} remains; `git worktree remove --force {checkout}` clears it'
     return cleanup
+
+
+def record(root: Root, run: str, state: dict) -> None:
+    """Keep exact ownership evidence outside scratch before it can be partially retired."""
+    fd = root.child(RESULTS, run)
+    try:
+        write_json(fd, 'ownership.json', state)
+    finally:
+        os.close(fd)
+
+
+def retire(args) -> int:
+    """Retry exactly one recorded crashed run, retaining its first result and every other run."""
+    # Reuse the landed finalization policy; the local import avoids the runner/cleanup import cycle.
+    from .run import Runner, FinalizationTimeout, FINALIZATION_SECONDS, EMERGENCY_SECONDS, FINALIZATION_EXIT
+
+    run = run_name(args.run)
+    project = gitops.resolve(Path.cwd()).project
+    root = Root(project, create=False)
+    slot = Slot(root)
+    acquired = False
+    timer = Runner(args, [])
+    try:
+        slot.acquire({'verb': 'retire', 'run': run, 'seat': os.environ.get('QD_SEAT')}, args.wait)
+        acquired = True
+        with timer.alarm(FINALIZATION_SECONDS, timer.on_finalization_timeout):
+            return retire_within(root, run)
+    except FinalizationTimeout:
+        where = root.path / RESULTS / run
+        try:
+            with timer.alarm(EMERGENCY_SECONDS, timer.on_finalization_timeout):
+                fd = root.child(RESULTS, run, create=False)
+                try:
+                    write_json(fd, 'retirement-timeout.json', {'run': run, 'outcome': 'retirement-timeout',
+                               'scratch': str(root.path / RUNS / run), 'first_result_preserved': True,
+                               'finalization_seconds': FINALIZATION_SECONDS, 'emergency_seconds': EMERGENCY_SECONDS})
+                finally:
+                    os.close(fd)
+        except (FinalizationTimeout, OSError, Refused):
+            pass
+        print(f'run {run}: retirement timed out; first result and exact remaining paths retained · {where}',
+              file=sys.stderr)
+        return FINALIZATION_EXIT
+    finally:
+        if acquired:
+            slot.release()
+        else:
+            os.close(slot.fd)
+        root.close()
+
+
+def retire_within(root: Root, run: str) -> int:
+    where = root.path / RUNS / run
+    results = runs = scratch = lock = None
+    try:
+        results = root.child(RESULTS, run, create=False)
+        runs = root.child(RUNS, create=False)
+        state = read_json(results, 'ownership.json', root.path / RESULTS / run / 'ownership.json')
+        try:
+            scratch = root.child(RUNS, run, create=False)
+        except FileNotFoundError:
+            pass
+        if state is None and scratch is not None:
+            state = read_json(scratch, 'state.json', where / 'state.json')
+        if not state or state.get('run') != run or not state.get('scratch') or not state.get('owner'):
+            raise Refused(f'{where}: no exact recorded run identity and owner; nothing inferred or removed')
+        if scratch is not None:
+            if identity(os.fstat(scratch)) != state['scratch']:
+                raise Refused(f'{where}: run directory identity changed; nothing removed')
+            lock = try_lock(scratch)
+            if lock is None:
+                raise Refused(f'{where}: run lock is held; nothing removed')
+        if state.get('boot') == procs.boot_id():
+            pid, start = state.get('pid'), state.get('pid_start')
+            actual_start = procs.start_time(pid) if pid else None
+            if pid and (actual_start is not None and actual_start == start or actual_start is None
+                        and Path(f'/proc/{pid}').exists()):
+                raise Refused(f'{where}: recorded runner is live or uninspectable; nothing removed')
+            if any(procs.group_members(pgid) for pgid, _ in state.get('groups', [])):
+                raise Refused(f'{where}: recorded group still has live processes; held, never signalled')
+        record(root, run, state)
+        if scratch is not None:
+            finish_abandoned(root, run, state, scratch_fd=scratch)
+        cleanup = retire_run(root, runs, run, state)
+        write_json(results, 'retirement.json', {'run': run, 'at': now(), 'cleanup': cleanup,
+                                              'first_result_preserved': True})
+        print(f'run {run}: retirement {cleanup["outcome"]} · {where} · '
+              f'{root.path / RESULTS / run / "retirement.json"}')
+        if cleanup.get('reason'):
+            print(cleanup['reason'])
+        return 0 if cleanup['outcome'] == 'complete' else 2
+    except OSError as error:
+        raise Refused(f'{where}: retirement held ({error}); remaining paths and first result retained') from None
+    finally:
+        for fd in (lock, scratch, runs, results):
+            if fd not in (None, -1):
+                os.close(fd)
 
 
 def try_lock(fd: int) -> int | None:
@@ -128,6 +237,7 @@ def recover(root: Root, change: str | None) -> list[str]:
                     lines.append(f'recovering abandoned run {name} of change {change}: removing '
                                  f'{root.path / RUNS / name} {state["scratch"]} and Git admin {state.get("admin")}')
                     finish_abandoned(root, name, state)
+                    record(root, name, state)
                     cleanup = retire_run(root, runs_fd, name, state)
                     lines.append(f'run {name}: abandoned · cleanup {cleanup["outcome"]} '
                                  f'{cleanup.get("removed", {})} {cleanup.get("reason", "")}'.rstrip())
@@ -141,7 +251,7 @@ def recover(root: Root, change: str | None) -> list[str]:
     return lines
 
 
-def finish_abandoned(root: Root, run: str, state: dict) -> None:
+def finish_abandoned(root: Root, run: str, state: dict, *, scratch_fd=None) -> None:
     results_fd = root.child(RESULTS, run)
     try:
         result = read_json(results_fd, 'result.json', root.path / RESULTS / run / 'result.json') or {'run': run}
@@ -149,8 +259,14 @@ def finish_abandoned(root: Root, run: str, state: dict) -> None:
             return  # its own ending was written; only the scratch removal was interrupted
         scratch = root.path / RUNS / run
         console_path = scratch / 'console.txt'
-        console = console_path.read_text(encoding='utf-8', errors='replace') if console_path.is_file() else ''
-        found = evidence.analyse(scratch / 'evidence', None)
+        if scratch_fd is None:
+            console = console_path.read_text(encoding='utf-8', errors='replace') if console_path.is_file() else ''
+        else:
+            try:
+                console = evidence.read_owned(scratch_fd, 'console.txt', console_path)
+            except FileNotFoundError:
+                console = ''
+        found = evidence.analyse(scratch / 'evidence', None, parent_fd=scratch_fd)
         found.update(complete=False, counts=dict.fromkeys(evidence.CATEGORIES),
                      causes=['abandoned: the runner ended without writing its ending', *found['causes']])
         result.setdefault('target', {'top': state.get('target'), 'head': state.get('head'), 'tree': None})

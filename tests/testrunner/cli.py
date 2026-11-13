@@ -1,4 +1,4 @@
-"""The three verbs. Every verb prints what it did and how it knows; a refusal prints its reason and exits 2."""
+"""The test tool's verbs. A refusal prints its reason and exits 2."""
 from __future__ import annotations
 
 import argparse
@@ -29,6 +29,9 @@ def parser() -> argparse.ArgumentParser:
     p = verbs.add_parser('keep', help='keep one run\'s scratch past its end and its change\'s clean')
     p.add_argument('run', help='the run id')
     p.add_argument('--reason', required=True, help='why it is kept')
+    p = verbs.add_parser('retire', help='retire exactly one recorded crashed run, preserving its first result')
+    p.add_argument('run', help='the exact recorded run id; never a path, branch, or age filter')
+    p.add_argument('--wait', type=float, default=0.0, help='seconds to wait for a busy slot')
     return top
 
 
@@ -43,6 +46,10 @@ def main(argv: list[str] | None, runner_files: list[Path]) -> int:
             return run.Runner(args, runner_files).main()
         if args.verb == 'clean':
             return clean.clean(args)
+        if args.verb == 'retire':
+            if not math.isfinite(args.wait) or args.wait < 0:
+                raise Refused('--wait must be finite and nonnegative')
+            return clean.retire(args)
         return clean.keep(args)
     except Refused as refused:
         print(f'testrun: refused: {refused}', file=sys.stderr)
