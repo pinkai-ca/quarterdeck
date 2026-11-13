@@ -64,6 +64,9 @@ def pytest_configure(config):
         config._qd_memory_limit = resources.apply_from_environment()
     except (ValueError, RuntimeError) as error:
         raise pytest.UsageError(str(error)) from error
+    # Native tmux must not infer the caller's live server or pane.
+    os.environ.pop('TMUX', None)
+    os.environ.pop('TMUX_PANE', None)
     if os.environ.get('TESTRUNS_RUN'):
         return
     os.environ['TMPDIR'] = str(plain_temp())
