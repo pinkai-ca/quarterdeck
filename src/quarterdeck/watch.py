@@ -269,10 +269,7 @@ def render_table(data: dict) -> list[str]:
             rows.append(f"  {r.compaction}")
         if r.wake:
             rows.append(f"  {r.wake}")
-    rows.append(f"open orders: {len(data['open_orders'])}")
-    for m in data["open_orders"]:
-        rows.append(f"  {m.short} {m.sender} → {m.to} · {m.at.strftime('%m-%d %H:%M')}" + (f" · {m.subject}" if m.subject else ""))
-    rows += ['  ' + request_queue.describe(row) for row in data.get('requests', ())]
+    # Each program's last use and its check outcome: detail, before the open orders.
     for program in data.get('programs', []):
         working = program['working_now']
         activity = 'working' if working is True else 'inactive' if working is False else 'unknown'
@@ -285,6 +282,10 @@ def render_table(data: dict) -> list[str]:
         latest = outcome['latest_attempt']
         if latest['outcome'] == 'unknown':
             rows.append(f"{outcome['harness']}: {check_outcome.REASONS[latest['reason']][1]}")
+    rows.append(f"open orders: {len(data['open_orders'])}")
+    for m in data["open_orders"]:
+        rows.append(f"  {m.short} {m.sender} → {m.to} · {m.at.strftime('%m-%d %H:%M')}" + (f" · {m.subject}" if m.subject else ""))
+    rows += ['  ' + request_queue.describe(row) for row in data.get('requests', ())]
     return rows + render_headlines(data["usage"])
 
 

@@ -295,7 +295,7 @@ def test_crowded_codex_cli_keeps_both_windows_in_full_text_and_json(tmp_path, mo
     facts = watch.Facts('ok', 0, 0, 0,
                         walls=['synthetic quota wall with reset 2032-01-01 05:00 UTC padding long padding'],
                         usage=watch.headline_readings(ship))
-    monkeypatch.setattr(watch, 'facts', lambda *args: facts)
+    monkeypatch.setattr(watch, 'facts', lambda *args, **kwargs: facts)
     for verb in (['status'], ['status', '--line']):
         assert cli.main(['--ship', str(tmp_path), *verb]) == 0
         text = capsys.readouterr().out
