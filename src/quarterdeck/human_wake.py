@@ -415,7 +415,7 @@ def authorized(seat, proof, text) -> bool:
             and proof.data['phase'] == 'prepared' and proof.same_launch(seat))
 
 
-def run(seat) -> str | None:
+def run(seat, *, observe_delivery=None) -> str | None:
     """Called by the serialized service (or its throwaway check), never by a sender."""
     if not seat.session.human:
         raise ShipError('human wake requires a human-owned session')
@@ -425,7 +425,8 @@ def run(seat) -> str | None:
         if not seat.is_up:
             return None
         before, identity = record_stamp(seat), pending.identity(seat)
-        reason = _run(seat)
+        reason = (_run(seat) if observe_delivery is None
+                  else _run(seat, observe_delivery=observe_delivery))
         after, current = record_stamp(seat), pending.identity(seat)
         fresh = before == after and identity == current
         if not fresh:
@@ -435,7 +436,7 @@ def run(seat) -> str | None:
         return reason
 
 
-def _run(seat) -> str | None:
+def _run(seat, *, observe_delivery=None) -> str | None:
     from pathlib import Path
     from .door import Door
 
@@ -505,12 +506,9 @@ def _run(seat) -> str | None:
     # Keep admission through submission: watch registration and ordinary post
     # transitions cannot race this reservation. Door still verifies each input.
     delivered = door.deliver(LINE, proof=proof, human_wake=True)
-    shown = door.after_paste.box if door.after_paste is not None else None
-    proof.save(first_delivery=dict(result=delivered.result, detail=delivered.detail[:256],
-                                   detail_truncated=len(delivered.detail) > 256,
-                                   shown=shown[:256] if isinstance(shown, str) else None,
-                                   shown_truncated=isinstance(shown, str) and len(shown) > 256))
     proof.finish(delivered.result)
+    if observe_delivery is not None:
+        observe_delivery(delivered, door.after_paste.box if door.after_paste is not None else None)
     if proof.data['phase'] == 'prepared':
         proof.save(phase='cancelled', resolution='pre-paste wake outcome was provably unsent')
     if proof.data['phase'] == 'cancelled':

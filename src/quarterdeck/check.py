@@ -253,12 +253,17 @@ def _probe_wake(seat: Seat, orders: list[post.Message], observed: dict) -> list[
     orders.append(order)
     post.render_inbox(seat.ship.runtime, store, seat.name)
 
+    def first_delivery(delivery, shown):
+        if observed['first_delivery'] is None:
+            observed['first_delivery'] = dict(result=delivery.result, detail=delivery.detail[:256],
+                detail_truncated=len(delivery.detail) > 256,
+                shown=shown[:256] if isinstance(shown, str) else None,
+                shown_truncated=isinstance(shown, str) and len(shown) > 256)
+
     def taken():
-        reason = human_wake.run(seat)
+        reason = human_wake.run(seat, observe_delivery=first_delivery)
         observed['reason'] = reason or ''
         proof = human_wake.load(seat)
-        if proof is not None and observed['first_delivery'] is None:
-            observed['first_delivery'] = proof.data.get('first_delivery')
         observed['phase'] = proof.data['phase'] if proof is not None else None
         return proof is not None and proof.data['phase'] == 'delivered'
 
@@ -320,8 +325,6 @@ def retain_wake_evidence(seat: Seat, observed: dict) -> None:
     final = dict(observed)
     try:
         proof = human_wake.load(seat)
-        if final.get('first_delivery') is None and proof is not None:
-            final['first_delivery'] = proof.data.get('first_delivery')
         watch = post.watch_reading(seat.ship.runtime, seat.name)
         final.update(phase=proof.data['phase'] if proof is not None else None,
                      watch_armed=watch.armed, watch_generation=watch.generation,
