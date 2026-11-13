@@ -45,7 +45,7 @@ PHASE_CAUSES = {
     'backing_up': 'previous copy could not be saved', 'backup_ready': 'previous copy could not be saved',
     'swapping': 'copy swap failed', 'resources': 'resource synchronization failed',
     'proving': 'proof command failed', 'target_ready': 'copy activation failed',
-    'activated': 'copy cleanup failed',
+    'activated': 'copy cleanup failed', 'cleanup': 'copy cleanup failed',
 }
 LOADED_COPY = copy_state.loaded_identity(__file__, sys.prefix)
 
