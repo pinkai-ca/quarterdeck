@@ -115,8 +115,7 @@ def window(data: dict, moment: datetime) -> tuple[int, bool]:
     count, backwards = 0, False
     for item in data['attempts']:
         if item.get('outcome') == CLEARED:
-            count = 0  # a person brought the ship up: the hour starts again from there
-            continue
+            continue  # a person's clear lifts STOPPED; the automatic attempts of the hour still count
         try:
             at = datetime.fromisoformat(item['at'])
         except ValueError:
@@ -158,10 +157,10 @@ def pass_once(service) -> str | None:
             continue  # taken down between the reads: a deliberate down wins
         if not pid_dead(launched.pid):
             return _settle_unknown(runtime, data, f'{seat.name} old launch process is not proved gone')
-        launches.append(seat)
+        launches.append((seat, launched))
     if not launches:
         return _settle_unknown(runtime, data, None)
-    for seat in launches:
+    for seat, _ in launches:
         try:
             with seat._lifecycle(automatic=True):
                 pass
@@ -176,7 +175,7 @@ def pass_once(service) -> str | None:
         save(runtime, data)
         _report(service, f'ship tmux server gone; recovery stopped ({data["stopped"]}); needs a human: qd up')
         return 'stopped'
-    attempt = dict(at=moment.isoformat(), outcome='started', seats=[seat.name for seat in launches])
+    attempt = dict(at=moment.isoformat(), outcome='started', seats=[seat.name for seat, _ in launches])
     data['attempts'].append(attempt)
     data['unknown'] = None
     save(runtime, data)  # consumed before any effect: a crash after this line still counts
@@ -186,14 +185,22 @@ def pass_once(service) -> str | None:
         shipmod.fence(ship)
     except (OSError, ShipError) as error:
         failures.append(f'fence: {error}')
-    for seat in launches:
+    brought, downed = [], []
+    for seat, proved in launches:
         try:
-            seat.up(resume=True)
+            # Membership is re-read under the same lifecycle lock as the effect, which a qd down also takes:
+            # a deliberate down that finished first wins, and one that comes later waits or is refused.
+            with seat._lifecycle(automatic=True):
+                if seat.launched() != proved:
+                    downed.append(seat.name)
+                    continue
+                seat._up(True)  # qd up's own resume path, without taking the lock this already holds
+            brought.append(seat)
         except Exception as error:  # every seat gets its one try; the outcome names each failure
             failures.append(f'{seat.name}: {str(error)[:200]}')
-    for seat in launches:
+    for seat in brought:
         try:
-            if not seat.is_up and not any(item.startswith(f'{seat.name}:') for item in failures):
+            if not seat.is_up:
                 failures.append(f'{seat.name}: not up after bring-up')
         except Exception as error:
             failures.append(f'{seat.name}: up state unknown: {str(error)[:120]}')
@@ -207,8 +214,9 @@ def pass_once(service) -> str | None:
                          f'({"; ".join(failures)[:300]}); needs a human: qd up')
         return 'failed'
     note = f'; not declared, left alone: {", ".join(stray)}' if stray else ''
-    _report(service, f'ship tmux server was gone; recovered {len(launches)} seat(s) '
-                     f'({", ".join(seat.name for seat in launches)}), attempt {k} of {LIMIT} this hour{note}')
+    note += f'; taken down meanwhile, left down: {", ".join(downed)}' if downed else ''
+    _report(service, f'ship tmux server was gone; recovered {len(brought)} seat(s) '
+                     f'({", ".join(seat.name for seat in brought)}), attempt {k} of {LIMIT} this hour{note}')
     return 'recovered'
 
 

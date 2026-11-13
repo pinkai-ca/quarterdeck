@@ -254,7 +254,8 @@ def status_reading(ship: Ship, tmux: Tmux) -> dict:
 def render_table(data: dict) -> list[str]:
     state = data["service"]
     head = f"service {state}" + ("; qd up restarts it" if state == "down" else "")
-    rows = [head, f"{'seat':<10} {'activity':<24} {'door':<40} {'order':<10} {'today':>8}  harness · provider · pool · model · effort"]
+    recovery_lines = list(getattr(data.get("facts"), "server_recovery", None) or [])  # law: nothing-waits-silently
+    rows = [head, *recovery_lines, f"{'seat':<10} {'activity':<24} {'door':<40} {'order':<10} {'today':>8}  harness · provider · pool · model · effort"]
     for r in data["seats"]:
         rows.append(f"{r.name:<10} {str(r.activity):<24} {str(r.door):<40} {r.order_text:<10} {str(r.today):>8}  {r.harness_text} · {r.provider_name or 'unknown'} · {r.pool} · {r.model_text} · {r.effort_text}")
         if r.compaction:

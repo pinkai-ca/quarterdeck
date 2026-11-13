@@ -56,20 +56,25 @@ def ship(drydock, tmp_path, monkeypatch):
     upped, calls = set(), []
 
     def up(self, resume=True, **kwargs):
+        try:  # recovery holds this seat's lifecycle lock for the whole effect: a concurrent act is refused
+            with self._lifecycle(automatic=True):
+                held.append(False)
+        except shipmod.ShipError:
+            held.append(True)
         calls.append((self.name, resume, [a['outcome'] for a in recovery.read(self.ship.runtime)['attempts']]))
         if self.name in fail:
             raise shipmod.ShipError(f'synthetic launch failure for {self.name}')
         if self.name not in silent:
             upped.add(self.name)
         return f'{self.name} up (synthetic)'
-    fail, silent = set(), set()
-    monkeypatch.setattr(seatmod.Seat, 'up', up)
+    fail, silent, held = set(), set(), []
+    monkeypatch.setattr(seatmod.Seat, '_up', up)
     monkeypatch.setattr(seatmod.Seat, 'is_up', property(lambda self: self.name in upped))
     server = Server(Path(os.environ.get('TMUX_TMPDIR', str(tmp_path))) / f'w3-{os.getpid()}-{id(loaded)}.sock')
     store = post.Store(loaded.runtime)
     service = SimpleNamespace(ship=loaded, tmux=server, store=store, _up=lambda name: name in upped)
     yield SimpleNamespace(ship=loaded, server=server, service=service, calls=calls, upped=upped, fail=fail,
-                          silent=silent, store=store, runtime=loaded.runtime)
+                          silent=silent, store=store, runtime=loaded.runtime, held=held)
     server.close()
     Path(server.socket).unlink(missing_ok=True)
 
@@ -160,7 +165,10 @@ def test_two_attempts_an_hour_then_stopped_until_a_person_runs_qd_up(ship):
     assert any('recovery stopped' in body for body in reports(ship))
     assert recovery.clear_by_person(ship.runtime) == 'ship server recovery cleared by qd up'
     assert recovery.status(ship.runtime) == []
-    assert recovery.pass_once(ship.service) == 'recovered', 'a person cleared it: the hour starts again'
+    outcomes = [a['outcome'] for a in recovery.read(ship.runtime)['attempts']]
+    assert outcomes == ['recovered', 'recovered', 'cleared by qd up'], 'the clear keeps the attempts of the hour'
+    assert recovery.pass_once(ship.service) == 'stopped' and len(ship.calls) == calls, \
+        'the two automatic attempts of the hour still count after a person cleared STOPPED'
 
 
 def test_attempts_older_than_an_hour_no_longer_count(ship, monkeypatch):
@@ -226,3 +234,56 @@ def test_a_live_formerly_up_seat_proves_the_server_alive_and_nothing_is_probed(s
     ship.upped.add('captain')  # its pane answers: the server lives; worker-1's missing pane is the per-seat path
     ship.service.tmux = SimpleNamespace(socket=None)  # nothing to probe, and nothing is
     assert recovery.pass_once(ship.service) is None and ship.calls == [] and recovery.status(ship.runtime) == []
+
+
+def test_a_clear_after_the_hour_lets_a_new_attempt_run(ship):
+    old = datetime.now(timezone.utc) - timedelta(hours=1, minutes=5)
+    recovery.save(ship.runtime, dict(format=1, stopped='2 attempts in the last hour', unknown=None, attempts=[
+        dict(at=old.isoformat(), outcome='recovered', seats=['captain'])] * 2))
+    recovery.clear_by_person(ship.runtime)
+    launch(ship.ship, 'captain')
+    assert recovery.pass_once(ship.service) == 'recovered'
+
+
+@pytest.mark.parametrize('outcome', ['started', 'failed: synthetic'])
+def test_started_and_failed_attempts_count_like_recovered_ones(ship, outcome):
+    recent = datetime.now(timezone.utc) - timedelta(minutes=5)
+    recovery.save(ship.runtime, dict(format=1, stopped=None, unknown=None, attempts=[
+        dict(at=recent.isoformat(), outcome=outcome, seats=['captain'])] * 2))
+    launch(ship.ship, 'captain')
+    assert recovery.pass_once(ship.service) == 'stopped' and ship.calls == []
+
+
+def test_the_effect_holds_each_seats_lifecycle_lock_and_never_takes_it_twice(ship):
+    launch(ship.ship, 'captain')
+    assert recovery.pass_once(ship.service) == 'recovered'
+    assert ship.held == [True], 'a concurrent qd act is refused while the effect runs; no deadlock'
+
+
+def test_a_deliberate_down_between_the_proof_and_the_effect_wins(ship, monkeypatch):
+    launch(ship.ship, 'captain')
+    launch(ship.ship, 'worker-1')
+    real_now = recovery.now
+
+    def now():  # read after every proof, before any effect: a qd down of worker-1 lands here
+        (ship.runtime / 'seats' / 'worker-1' / 'launch.json').unlink()
+        return real_now()
+    monkeypatch.setattr(recovery, 'now', now)
+    assert recovery.pass_once(ship.service) == 'recovered'
+    assert [name for name, _, _ in ship.calls] == ['captain'], 'worker-1 stays down'
+    assert any('taken down meanwhile, left down: worker-1' in body for body in reports(ship))
+
+
+def test_stopped_and_unknown_show_in_qd_status_with_no_server_and_none_is_started(ship, capsys, monkeypatch):
+    from quarterdeck import cli
+    absent = Path(ship.server.socket)
+    monkeypatch.setenv('QD_SHIP', str(ship.ship.folder))
+    monkeypatch.setenv('QD_TMUX_SOCKET', str(absent))
+    recovery.save(ship.runtime, dict(format=1, stopped='2 attempts in the last hour', unknown=None, attempts=[]))
+    assert cli.main(['status', '--line']) == 0
+    line = capsys.readouterr().out
+    assert 'ship server gone: recovery stopped (2 attempts in the last hour); needs a human: qd up' in line, line
+    recovery.save(ship.runtime, dict(format=1, stopped=None, unknown='the ship server socket refuses connections', attempts=[]))
+    assert cli.main(['status']) == 0
+    assert 'ship server unknown: the ship server socket refuses connections' in capsys.readouterr().out
+    assert not absent.exists(), 'no server was started merely to display it'
