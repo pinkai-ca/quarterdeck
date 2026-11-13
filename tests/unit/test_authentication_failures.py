@@ -90,11 +90,14 @@ def test_ineligible_local_evidence_holds_without_consuming_attempt(tmp_path, mon
         auth_failure.credential.freshness.return_value = (float('inf'), source.stat().st_mtime)
     auth_failure.run(service)
     service.relaunch.assert_not_called()
-    service.needs_human.assert_not_called()
     assert not auth_failure._path(seat).exists()
     monkeypatch.setattr(auth_failure.turn_failure, 'current', Mock(return_value=state.failure))
-    if case.startswith('expired'):
+    if case in ('older', 'same-time'):
+        service.needs_human.assert_not_called()
         assert auth_failure.waiting(auth_failure.status(seat))
+    else:
+        service.needs_human.assert_called_once_with(seat)
+        assert not auth_failure.waiting(auth_failure.status(seat))
 
 
 def test_human_seat_is_only_named_and_has_no_recovery_mutation(tmp_path, monkeypatch):
@@ -342,7 +345,7 @@ def test_last_resume_waits_for_next_turn_before_exhaustion_alarm(tmp_path, monke
 
 
 @pytest.mark.parametrize('validity', ['expired', 'unknown'])
-def test_changed_but_unproved_generation_waits_without_retry(tmp_path, monkeypatch, validity):
+def test_changed_but_unproved_generation_needs_attention_without_retry(tmp_path, monkeypatch, validity):
     now, source, seat, state, service = environment(tmp_path, monkeypatch)
     clock(monkeypatch, now)
     auth_failure.run(service)
@@ -351,7 +354,7 @@ def test_changed_but_unproved_generation_waits_without_retry(tmp_path, monkeypat
     auth_failure.credential.freshness.return_value = None if validity == 'unknown' else (now.timestamp() - 1, source.stat().st_mtime)
     auth_failure.run(service)
     service.relaunch.assert_called_once()
-    service.needs_human.assert_not_called()
+    service.needs_human.assert_called_once_with(seat)
 
 
 def test_changed_generation_cannot_retry_at_window_end(tmp_path, monkeypatch):
@@ -373,3 +376,32 @@ def test_down_seat_keeps_attention_instead_of_waiting_forever(tmp_path, monkeypa
     service.needs_human.assert_called_once_with(seat)
     monkeypatch.setattr(auth_failure.turn_failure, 'current', lambda s: state.failure)
     assert 'needs attention' in auth_failure.status(seat)
+
+
+def test_expired_before_first_attempt_calls_person_immediately(tmp_path, monkeypatch):
+    now, source, seat, state, service = environment(tmp_path, monkeypatch)
+    clock(monkeypatch, now)
+    auth_failure.credential.freshness.return_value = (now.timestamp() - 1, source.stat().st_mtime)
+    auth_failure.run(service)
+    service.needs_human.assert_called_once_with(seat)
+    service.relaunch.assert_not_called()
+    assert not auth_failure._path(seat).exists()
+    monkeypatch.setattr(auth_failure.turn_failure, 'current', lambda _: state.failure)
+    assert 'pool sign-in expired' in auth_failure.status(seat)
+    assert not auth_failure.waiting(auth_failure.status(seat))
+
+
+def test_unknown_between_attempts_calls_person_immediately(tmp_path, monkeypatch):
+    now, _, seat, state, service = environment(tmp_path, monkeypatch)
+    clock(monkeypatch, now)
+    auth_failure.run(service)
+    before = auth_failure._path(seat).read_bytes()
+    auth_failure.credential.freshness.return_value = None
+    clock(monkeypatch, now + timedelta(seconds=1))
+    auth_failure.run(service)
+    service.relaunch.assert_called_once_with(seat, True)
+    service.needs_human.assert_called_once_with(seat)
+    assert auth_failure._path(seat).read_bytes() == before
+    monkeypatch.setattr(auth_failure.turn_failure, 'current', lambda _: state.failure)
+    assert 'validity unknown' in auth_failure.status(seat)
+    assert not auth_failure.waiting(auth_failure.status(seat))

@@ -58,7 +58,7 @@ def pool_observation(seat, now=None):
 
 def _decision(seat, failure, attempt, observation, now):
     validity, stamp, newer = observation
-    if not seat.is_up:
+    if not seat.is_up or validity != 'valid':
         return 'attention'
     if attempt is None:
         if validity == 'valid' and newer:
