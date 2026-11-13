@@ -6,11 +6,15 @@ from dataclasses import replace
 from .. import endpoint
 from ..ship import Pool, SeatSpec
 from ..pricing import Price
-from .base import Credential, Harness
+from .base import Credential, Harness, SetupMetadata
 from .costs import costed
 
 
 class EndpointHarness(Harness):
+    setup = SetupMetadata(key_env="OPENROUTER_API_KEY", key_provider="openrouter",
+                          key_endpoint="https://openrouter.ai/api/v1",
+                          anonymous_models_endpoint="https://openrouter.ai/api/v1")
+
     def accepts(self, pool: Pool) -> str | None:
         if pool.kind == "subscription":
             from . import native_name

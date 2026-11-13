@@ -1357,3 +1357,12 @@ its version. `program_check` retains its row-only interface. Readiness receives
 that same version for effort compatibility, without parsing display text or
 probing the program again. Pre-accept setup discovery still reads PATH and
 metadata only; version/readiness operations remain after acceptance.
+
+Setup-specific native facts live in the adapters' immutable `SetupMetadata`, exposed
+through the pure `setup_metadata()` method. It holds display names, documented home
+and key-variable hints, an explicitly offered keyed endpoint and anonymous listing,
+a declared seat limit and a compaction default where supported. Shared endpoint
+facts live in `harness/endpoint.py`; program declarations own their own labels,
+limits and defaults. Generic setup modules contain no program-name table and use
+these declarations for suggestions, validation and presentation. No new account
+or native observation is introduced by reading this metadata.

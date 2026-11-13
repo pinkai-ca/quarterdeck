@@ -9,6 +9,7 @@ same message) and the stop reason that ends a turn. Queued messages appear as
 
 from __future__ import annotations
 
+from .base import SetupMetadata
 from .capabilities import DefaultMetadata, EffortCapability, SuggestedValue
 
 import copy
@@ -674,6 +675,8 @@ class ClaudeHarness(Harness):
                                effort=SuggestedValue("max", "named"))
 
     name = "claude"
+    display_name = 'Claude Code'
+    setup = SetupMetadata(key_env="ANTHROPIC_API_KEY", fresh_after_compactions=2)
     native_provider = "anthropic"
     program = "claude"
     sign_in_command = ("claude", "auth", "login")

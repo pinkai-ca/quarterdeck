@@ -159,6 +159,7 @@ class OpenCodeHarness(EndpointHarness):
     selection_templates = ()  # model-default is refused; there is no native seat effort selector
 
     name = "opencode"
+    display_name = 'OpenCode'
     program = "opencode"
     home_variable = "XDG_DATA_HOME"
     keys = Keys(submit="Enter", send_now=None, interrupt="Escape Escape")  # Escape once opens nothing; twice, quickly, interrupts

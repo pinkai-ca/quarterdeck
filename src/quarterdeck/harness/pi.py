@@ -307,6 +307,7 @@ class PiHarness(EndpointHarness):
     defaults = DefaultMetadata(model_default=False, effort=SuggestedValue(None, "program-default"))
 
     name = "pi"
+    display_name = 'pi'
     program = "pi"
     home_variable = "PI_CODING_AGENT_DIR"
     keys = Keys(submit="Enter", send_now=None, interrupt="Escape")

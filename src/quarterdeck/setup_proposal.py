@@ -13,8 +13,6 @@ from . import harness, providers, standing
 from .ship import Ship, ShipError
 from .setup_answers import MISSING, ROLES, put
 
-LABELS = {"claude": "Claude Code", "codex": "Codex", "grok": "Grok Build",
-          "antigravity": "Antigravity", "opencode": "OpenCode", "pi": "pi"}
 ROLE_LABELS = {"desk": "Desk", "captain": "Captain", "engineering": "Engineer"}
 
 
@@ -81,7 +79,7 @@ def keep_unchanged(c, ship: Ship) -> None:
                 continue
             seen.add(effective.harness)
             paid = c.supplied(f"payment.{effective.harness}")
-            if paid is not MISSING and paid != pool.kind and not (paid == "key" and effective.harness in ("pi", "opencode") and pool.endpoint and pool.api_key):
+            if paid is not MISSING and paid != pool.kind and not (paid == "key" and harness.get(effective.harness).setup_metadata().key_endpoint is not None and pool.endpoint and pool.api_key):
                 raise ShipError(f"answer payment.{effective.harness} changes a kept ship; choose existing=update")
             provider = c.supplied(f"provider.{effective.harness}")
             if provider is not MISSING and providers.canonical(provider) != pool.provider:
@@ -153,8 +151,11 @@ def build(conversation, operations, text: str, orders: str, defaults: dict, avai
                   else sorted(name for name, row in available.items() if row[0].passed))
     if not candidates:
         raise ShipError("no registered program found on PATH; install a supported program before rerunning setup")
-    if candidates == ["antigravity"]:
-        raise ShipError("Antigravity is limited to one declared seat in setup; choose other programs for the remaining roles")
+    if len(candidates) == 1:
+        hints = harness.get(candidates[0]).setup_metadata()
+        if hints.seat_limit is not None and hints.seat_limit < len(ROLES):
+            count = "one" if hints.seat_limit == 1 else str(hints.seat_limit)
+            raise ShipError(f"{hints.display_name} is limited to {count} declared seat in setup; choose other programs for the remaining roles")
     preferred = sorted(candidates, key=lambda program: ("credential present" not in available[program][1], program))[0]
     c.say("Model and effort suggestions have not been checked against your account.")
     seats = {}
@@ -166,8 +167,14 @@ def build(conversation, operations, text: str, orders: str, defaults: dict, avai
         if legacy is not MISSING and c.supplied(f"seats.{role}.harness") is MISSING:
             put(c.answers, f"seats.{role}.harness", legacy)
         role_default = preferred
-        if preferred == "antigravity" and any(fields["harness"] == "antigravity" for fields in seats.values()):
-            role_default = next(program for program in candidates if program != "antigravity")
+        limit = harness.get(preferred).setup_metadata().seat_limit
+        if limit is not None and sum(fields["harness"] == preferred for fields in seats.values()) >= limit:
+            role_default = next((program for program in candidates
+                                 if harness.get(program).setup_metadata().seat_limit is None
+                                 or sum(fields["harness"] == program for fields in seats.values())
+                                 < harness.get(program).setup_metadata().seat_limit), None)
+            if role_default is None:
+                raise ShipError("selected programs' declared seat limits cannot supply the crew; choose another program")
         program = c.choice(f"seats.{role}.harness", f"{ROLE_LABELS[role]} harness ({', '.join(candidates)})", candidates,
                            legacy if legacy is not MISSING else saved.harness if saved and saved.harness in candidates else role_default)
         fields["harness"] = program
@@ -279,8 +286,9 @@ def build(conversation, operations, text: str, orders: str, defaults: dict, avai
                     raise ShipError(f"answer seats.{role}.pools.0.{field} disagrees with seats.{role}.{field}; edit the primary choice together")
         fields["pool"] = choices[0] if len(choices) == 1 and isinstance(choices[0], str) else choices
         saved = existing.seats.get(role) if existing else None
-        if program in ("claude", "codex") and (saved is None or saved.harness not in ("claude", "codex")):
-            fields["fresh_after_compactions"] = 2
+        fresh_default = harness.get(program).setup_metadata().fresh_after_compactions
+        if fresh_default is not None and (saved is None or harness.get(saved.harness).setup_metadata().fresh_after_compactions is None):
+            fields["fresh_after_compactions"] = fresh_default
         # The shared writer cannot remove a key. A move to another harness keeps
         # the saved threshold and the proposal explicitly names its lack of effect.
         table = f"seats.{role}"
@@ -358,22 +366,22 @@ def summary(ship: Ship, display_control, *, existing: Ship | None = None) -> dic
         unchecked |= "program's default" in (model, effort)
         label = ROLE_LABELS.get(seat.role, seat.name)
         row = {"seat": label, "name": seat.display,
-               "harness": LABELS.get(selected.harness, selected.harness), "model": model, "effort": effort}
+               "harness": harness.get(selected.harness).setup_metadata().display_name, "model": model, "effort": effort}
         threshold = seat.fresh_after_compactions
         if threshold is not None:
             row["fresh_after_compactions"] = threshold
-            if seat.harness not in ("claude", "codex"):
+            if harness.get(seat.harness).setup_metadata().fresh_after_compactions is None:
                 detail = f"no effect, {seat.harness} does not count them (retained value: {threshold})"
             else:
                 detail = str(threshold) if threshold else "disabled"
                 saved = existing.seats.get(seat.name) if existing else None
-                if saved and saved.harness not in ("claude", "codex"):
+                if saved and harness.get(saved.harness).setup_metadata().fresh_after_compactions is None:
                     detail += f" (default added for {seat.harness})"
             row["fresh_start_note"] = "fresh after compactions: " + detail
         rows.append(row)
         for pool_name in seat.pools:
             effective, pool = seat.for_pool(pool_name), ship.pools[pool_name]
-            program = LABELS.get(effective.harness, effective.harness)
+            program = harness.get(effective.harness).setup_metadata().display_name
             if pool.kind == "subscription":
                 detail = "a subscription you are signed in to"
                 if pool.config_dir is not None:

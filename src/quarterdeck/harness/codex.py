@@ -9,6 +9,7 @@ follows each model response with the usage of that response and the running tota
 
 from __future__ import annotations
 
+from .base import SetupMetadata
 from .capabilities import DefaultMetadata, EffortCapability, SuggestedValue
 
 import copy
@@ -649,6 +650,8 @@ class CodexHarness(Harness):
     selection_templates = ("config.toml",)
 
     name = "codex"
+    display_name = 'Codex'
+    setup = SetupMetadata(key_env="OPENAI_API_KEY", fresh_after_compactions=2)
     native_provider = "openai"
     program = "codex"
     sign_in_command = ("codex", "login")

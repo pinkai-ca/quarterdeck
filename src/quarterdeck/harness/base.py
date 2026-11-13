@@ -16,7 +16,7 @@ import tempfile
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from datetime import datetime
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from .limits import Usage, Wall, Window
 
@@ -117,12 +117,27 @@ def _version_in_runtime(harness, runtime: Path) -> str | None:
         return version(home=Path(home))  # never retry a version call that has executed
 
 
+@dataclass(frozen=True)
+class SetupMetadata:
+    """Informational setup facts declared by an adapter; no machine/account lookup."""
+    display_name: str = ""
+    subscription_home: str | None = None
+    key_env: str | None = None
+    key_provider: str | None = None
+    key_endpoint: str | None = None
+    anonymous_models_endpoint: str | None = None
+    seat_limit: int | None = None
+    fresh_after_compactions: int | None = None
+
+
 class Harness(ABC):
     """One agent program, as the framework knows it."""
 
     name: str
     program: str
     native_provider: str | None = None
+    display_name: str | None = None
+    setup = SetupMetadata()
     opening_prompt_turn: bool = False  # a fresh brief is itself a model turn
     waking_inapplicability: str | None = None  # explicit reason to omit only the added live waking step
     synthetic: bool = False
@@ -169,6 +184,9 @@ class Harness(ABC):
 
     def default_metadata(self) -> DefaultMetadata:
         return self.defaults
+
+    def setup_metadata(self) -> SetupMetadata:
+        return replace(self.setup, display_name=self.display_name or self.name)
 
     def check_defaults(self, seat: SeatSpec, ship_home: Path | None = None) -> None:
         """Read selector conflicts before changing a running seat or its home."""

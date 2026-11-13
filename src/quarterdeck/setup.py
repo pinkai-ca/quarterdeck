@@ -22,7 +22,7 @@ from . import setup_proposal
 
 def arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--answers", help="JSON object with the same answer names as flags (hyphens become underscores)")
-    parser.add_argument("--programs", help="comma-separated registered programs, for example claude,codex")
+    parser.add_argument("--programs", help="comma-separated registered program names")
     for name, help_text in (
         ("payment", "subscription, key or endpoint"),
         ("subscription-home", "existing native sign-in directory; never copied"),
@@ -72,8 +72,8 @@ class Operations:
 
     def subscription_home(self, program: str, defaults: dict) -> str | None:
         table = defaults.get("pools", {}).get(program, {})
-        # Official Grok config docs name this location, not an installed-version auth guarantee.
-        return table.get("config_dir", table.get("home", "~/.grok" if program == "grok" else None))
+        # A documented adapter hint is not an installed-version sign-in guarantee.
+        return table.get("config_dir", table.get("home", harness.get(program).setup_metadata().subscription_home))
 
     def credential_present(self, home: str, filename: str) -> bool:
         return (Path(home).expanduser() / filename).is_file()
@@ -100,7 +100,9 @@ class Operations:
         url = safe_endpoint(url)
         if setup_proposal.local_endpoint(url):
             return self.local_models(url)
-        if providers.canonical(provider) != "openrouter" or url != "https://openrouter.ai/api/v1":
+        facts = [harness.get(name).setup_metadata() for name in harness.NAMES]
+        if not any(item.key_provider == providers.canonical(provider)
+                   and item.anonymous_models_endpoint == url for item in facts):
             return []
         from . import endpoint
         try:
@@ -180,23 +182,23 @@ def safe_endpoint(value: str) -> str:
 def pool_answers(conversation: Conversation, selected: list[str], defaults: dict,
                  *, operations: Operations, existing: Ship | None = None) -> tuple[dict, dict]:
     pools, models = {}, {}
-    key_names = {"claude": "ANTHROPIC_API_KEY", "codex": "OPENAI_API_KEY", "grok": "XAI_API_KEY"}
     for name in selected:
         reader = harness.get(name)
+        hints = reader.setup_metadata()
         saved = next((existing.pools[pool] for seat in existing.seats.values() for pool in seat.pools
                       if seat.for_pool(pool).harness == name), None) if existing else None
         default_kind = saved.kind if saved else "subscription" if reader.native_provider else "endpoint"
-        if saved and name in ("opencode", "pi") and saved.provider == "openrouter" and saved.api_key:
+        if saved and hints.key_endpoint and saved.provider == hints.key_provider and saved.api_key:
             default_kind = "key"
-        prompt = (f"What does {setup_proposal.LABELS.get(name, name)} run on? "
+        prompt = (f"What does {hints.display_name} run on? "
                   "a subscription you are signed in to; an API key; a local model "
                   "(subscription, key, endpoint)")
         kind = conversation.choice(f"payment.{name}", prompt, ("subscription", "key", "endpoint"), default_kind)
-        endpoint_key = kind == "key" and name in ("opencode", "pi")
+        endpoint_key = kind == "key" and hints.key_endpoint is not None
         compatible_saved = saved is not None and (saved.kind == kind or endpoint_key and saved.kind == "endpoint")
         provider = saved.provider if compatible_saved else reader.native_provider
         if endpoint_key and provider is None:
-            provider = "openrouter"
+            provider = hints.key_provider
         if provider is None or kind in ("key", "endpoint"):
             provider = conversation.ask(f"provider.{name}", f"Who provides {name}'s key, or operates its model?", provider)
         values = ({**tomllib.loads(existing.file.read_text())["pools"][saved.name]}
@@ -210,12 +212,13 @@ def pool_answers(conversation: Conversation, selected: list[str], defaults: dict
             present = operations.credential_present(values["config_dir"], reader.credential_file)
             conversation.say("Credential file present; sign-in not checked." if present else "Credential file not found; sign-in will need attention.")
         if kind == "key":
-            variable = saved.api_key.removeprefix("env:") if saved and saved.api_key and saved.api_key.startswith("env:") else "OPENROUTER_API_KEY" if endpoint_key and providers.canonical(provider) == "openrouter" else key_names.get(name)
+            suggested_key = hints.key_env if not endpoint_key or providers.canonical(provider) == hints.key_provider else None
+            variable = saved.api_key.removeprefix("env:") if saved and saved.api_key and saved.api_key.startswith("env:") else suggested_key
             variable = conversation.ask(f"key_env.{name}", f"{name}'s API key variable NAME (never the key)", variable)
             values["api_key"] = key_reference(variable)
         if kind == "endpoint" or endpoint_key:
             given = conversation.supplied(f"endpoint.{name}")
-            documented = "https://openrouter.ai/api/v1" if providers.canonical(provider) == "openrouter" else None
+            documented = hints.key_endpoint if providers.canonical(provider) == hints.key_provider else None
             candidate = given if given is not MISSING else saved.endpoint if saved and saved.endpoint else documented or "http://127.0.0.1:8000/v1"
             served = operations.offered_models(candidate, provider)
             suggestion = candidate if served or candidate == documented or saved and saved.endpoint == candidate else None
@@ -288,12 +291,18 @@ def validate_declaration(ship: Ship) -> list[str]:
             note = validate_selection(selected, harness.get(selected.harness))
             if note:
                 notes.append(f"{seat.name}, pool {pool}: {note}")
-    antigravity = [seat.name for seat in ship.seats.values()
-                   if any(seat.for_pool(pool).harness == "antigravity" for pool in seat.pools)]
-    if len(antigravity) > 1:
-        raise ShipError("Antigravity is limited to one declared seat in setup; proposed seats: "
-                        + ", ".join(antigravity)
-                        + ". Choose other programs for the remaining roles and rerun qd setup.")
+    programs = {seat.for_pool(pool).harness for seat in ship.seats.values() for pool in seat.pools}
+    for program in sorted(programs):
+        hints = harness.get(program).setup_metadata()
+        if hints.seat_limit is None:
+            continue
+        selected = [seat.name for seat in ship.seats.values()
+                    if any(seat.for_pool(pool).harness == program for pool in seat.pools)]
+        if len(selected) > hints.seat_limit:
+            count = "one" if hints.seat_limit == 1 else str(hints.seat_limit)
+            raise ShipError(f"{hints.display_name} is limited to {count} declared seat"
+                            + ("" if hints.seat_limit == 1 else "s") + " in setup; proposed seats: "
+                            + ", ".join(selected) + ". Choose other programs for the remaining roles and rerun qd setup.")
     return notes
 
 

@@ -10,6 +10,7 @@ listed in docs/ANTIGRAVITY.md.
 
 from __future__ import annotations
 
+from .base import SetupMetadata
 from .capabilities import DefaultMetadata, EffortCapability, SuggestedValue
 
 from dataclasses import replace
@@ -43,6 +44,8 @@ class AntigravityHarness(Harness):
                                effort=SuggestedValue(None, "program-default"))
 
     name = "antigravity"
+    display_name = 'Antigravity'
+    setup = SetupMetadata(seat_limit=1)
     native_provider = "google"
     opening_prompt_turn = True
     program = "agy"

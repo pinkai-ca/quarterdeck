@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .base import SetupMetadata
 from .capabilities import DefaultMetadata, EffortCapability, SuggestedValue
 
 import copy
@@ -195,6 +196,8 @@ class GrokHarness(Harness):
     selection_templates = ("config.toml",)
 
     name = "grok"
+    display_name = 'Grok Build'
+    setup = SetupMetadata(subscription_home="~/.grok", key_env="XAI_API_KEY")
     program = "grok"
     sign_in_command = ("grok", "login")
     sign_in_note = ("Current docs document GROK_HOME for configuration, but do not establish credential-home "
