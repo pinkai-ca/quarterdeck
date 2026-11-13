@@ -67,8 +67,9 @@ def reset_text(at: str | None, from_screen: bool = False) -> str:
 
 
 class Quotas:
-    def __init__(self, db, create: bool = True):
+    def __init__(self, db, create: bool = True, *, commit_attempt=None):
         self.db = db
+        self.commit_attempt = commit_attempt
         if create:  # a reading opens the book read-only and makes no table
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS wall_events (
@@ -155,9 +156,16 @@ class Quotas:
         row = self.db.execute("SELECT at FROM usage_reads WHERE pool=?", (pool,)).fetchone()
         return datetime.fromisoformat(row[0]) if row else None
 
-    def usage_read(self, pool: str, at: datetime, error: str | None) -> None:
-        self.db.execute("INSERT OR REPLACE INTO usage_reads VALUES (?,?,?)", (pool, stamp(at), error))
-        self.db.commit()
+    def usage_read(self, pool: str, at: datetime, error: str | None, *, commit: bool = True) -> None:
+        def write():
+            self.db.execute("INSERT OR REPLACE INTO usage_reads VALUES (?,?,?)", (pool, stamp(at), error))
+
+        if self.commit_attempt is not None:
+            self.commit_attempt(write, commit=commit)
+        else:
+            write()
+            if commit:
+                self.db.commit()
 
     def usage_notes(self) -> list[str]:
         return [f"{pool} latest usage read: {error}" for pool, error in
@@ -227,6 +235,7 @@ def last_read(service, pool: str) -> float:
 
 def read_usage(service, pool, reader) -> Usage | None:
     """One context for background, live and destination reads; only native clients create it."""
+    service.ledger.prepare_usage()  # settle prior intended pacing before another provider attempt
     if not getattr(reader, "private_usage_home", False):
         return reader.usage(pool)
     from . import credential

@@ -24,7 +24,7 @@ from pathlib import Path
 from . import harness as harnesses
 from . import shutdown
 from . import pending as pending_delivery, delivery_record
-from . import credential, durable, idle, install, machine, move_hold, post, presentation, quota, record_owner, recovery, servicectl, ship as shipmod, standing
+from . import accounting_health, credential, durable, idle, install, machine, move_hold, post, presentation, quota, record_owner, recovery, servicectl, ship as shipmod, standing
 from .door import CONFIRM_SECONDS, Door
 from .harness.base import record_fingerprint
 from .harness.capabilities import validate_effort, validate_mode
@@ -104,6 +104,9 @@ class Service:
         self.usage_logged: dict[str, str] = {}  # each pool's last logged usage failure
         self.read_marks: dict[Path, tuple] = {}  # record -> the fingerprint it was last read at
         self.account_errors: dict[Path, tuple] = {}  # evidence, error, next transient read time
+        self.accounting_health = accounting_health.Health()  # a new process starts unchecked
+        self.accounting_health_error = None
+        self.accounting_health_due = 0.0
         self.working: dict[str, bool] = {}  # seat -> whether its record last showed a turn open
         self.work_marks: dict[str, tuple] = {}  # seat -> (record, fingerprint) its working state was read at
         self.blind_checked = -BLIND_INTERVAL  # when the blind attempts were last read against the records
@@ -186,6 +189,24 @@ class Service:
 
     def heartbeat(self) -> None:
         write_heartbeat(self.runtime)
+        self.publish_accounting_health()
+
+    def publish_accounting_health(self, *, force=False) -> None:
+        now = time.monotonic()
+        if not force and now < self.accounting_health_due:
+            return
+        self.accounting_health_due = now + TICK
+        try:
+            accounting_health.publish(self.runtime, self.accounting_health)
+        except OSError as error:
+            reason = accounting_health.cause(error)
+            if self.accounting_health_error is None:
+                self.log('accounting-health-unavailable', cause=reason)
+            self.accounting_health_error = reason
+        else:
+            if self.accounting_health_error is not None:
+                self.log('accounting-health-available')
+            self.accounting_health_error = None
 
     def log(self, event: str, **data) -> None:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -924,6 +945,34 @@ class Service:
         Program/screen/provider calls never run under the record write lock.
         Checkpoints and machine/source caches describe only committed accounting.
         """
+        try:
+            observations, notices, human_readings = self.account_records()
+        except Exception as error:
+            if self.accounting_health.failed(accounting_health.cause(error), post.now()):
+                self.log('accounting-failing', since=self.accounting_health.since,
+                         cause=self.accounting_health.current, failures=self.accounting_health.failures,
+                         causes=dict(self.accounting_health.causes))
+            self.publish_accounting_health(force=True)
+            return  # no per-pass raw exception log; the bounded operational alarm owns this failure
+        previous = self.accounting_health.since
+        failures = self.accounting_health.failures
+        causes = dict(self.accounting_health.causes)
+        if self.accounting_health.committed():
+            self.log('accounting-recovered', since=previous, failures=failures, causes=causes)
+        self.publish_accounting_health(force=True)
+        # These duties happen after commit. Their failures retain tick's existing
+        # error visibility and cannot be misreported as rolled-back accounting.
+        for event, data in notices:
+            self.log(event, **data)
+        for seat, record, state, turns, stamp in human_readings:
+            from . import turn_failure
+            turn_failure.publish(seat, record, state, turns, stamp)
+        for seat, _, launched, live, _, _, _, _ in observations:
+            quota.refresh(self, seat, live, launched)
+        quota.refresh_declared(self)
+
+    def account_records(self):
+        """Prepare and commit the pass; callers handle only its accounting outcome."""
         table = machine.processes()
         observations, notices, human_readings = [], [], []
         marks, errors = dict(self.read_marks), dict(self.account_errors)
@@ -1015,14 +1064,7 @@ class Service:
             book.attributions.replay(self.store, self.runtime, commit=False, retry_interval=ACCOUNT_RETRY)
 
         self.read_marks, self.account_errors, self.meters = marks, errors, meters
-        for event, data in notices:
-            self.log(event, **data)
-        for seat, record, state, turns, stamp in human_readings:
-            from . import turn_failure
-            turn_failure.publish(seat, record, state, turns, stamp)
-        for seat, _, launched, live, _, _, _, _ in observations:
-            quota.refresh(self, seat, live, launched)
-        quota.refresh_declared(self)
+        return observations, notices, human_readings
 
     def failover(self) -> None:
         """At a wall, try eligible later choices first, then earlier choices in declared order."""

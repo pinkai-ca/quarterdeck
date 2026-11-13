@@ -156,6 +156,9 @@ class Ledger:
 
     def __init__(self, path: Path, readonly: bool = False):
         self.path = path
+        self._record_active = False
+        self._usage_staging = False
+        self._usage_commit_pending = False
         if readonly:
             self.db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
             self.attributions = Attribution(self.db, create=False)
@@ -179,7 +182,7 @@ class Ledger:
         self.attributions = Attribution(self.db)
         self.costs = CostEvidence(self.db)
         self.provenance = Provenance(self.db)
-        self.quota = Quotas(self.db)
+        self.quota = Quotas(self.db, commit_attempt=self._commit_usage_attempt)
         self.usage = UsageCache(self.db)
         self.db.commit()
 
@@ -197,27 +200,63 @@ class Ledger:
     def __exit__(self, *exc) -> None:
         self.close()
 
+    def prepare_usage(self):
+        """Only a completed standalone usage writer authorizes an entry commit."""
+        if self._record_active or self._usage_staging:
+            raise RuntimeError("ledger writer already active")
+        if self._usage_commit_pending:
+            if not self.db.in_transaction:
+                raise RuntimeError("standalone usage commit outcome unknown")
+            self.db.commit()  # failure retains both the intended transaction and its owner
+            self._usage_commit_pending = False
+        if self.db.in_transaction:
+            raise RuntimeError("unclassified ledger transaction remains open")
+
+    def _commit_usage_attempt(self, write, *, commit=True):
+        if not commit:
+            if self._record_active or not self._usage_staging:
+                raise RuntimeError("usage staging requires its standalone owner")
+            return write()
+        self.prepare_usage()
+        self._usage_staging = True
+        try:
+            try:
+                write()  # all cache and pacing DML must succeed before completion is marked
+            except BaseException:
+                self.db.rollback()  # incomplete DML, never a completed writer's failed commit
+                raise
+        finally:
+            self._usage_staging = False
+        self._usage_commit_pending = True
+        self.db.commit()  # deliberately outside the incomplete-DML rollback handler
+        self._usage_commit_pending = False
+
     @contextmanager
     def record_pass(self):
         """One lazy transaction; speculative reader caches become public only after commit.
 
         Record writers inside this boundary explicitly use commit=False. Usage
         attempts own separate transactions and must run outside this boundary.
+        A standalone writer whose commit failed keeps its intended transaction:
+        finish that commit before starting record accounting, never roll it back.
         """
-        if self.db.in_transaction:
-            raise RuntimeError("record accounting requires its own transaction")
+        self.prepare_usage()
         staged = copy(self)
         staged.provenance = copy(self.provenance)
         staged.provenance.sources = dict(self.provenance.sources)
         staged.attributions = copy(self.attributions)
         staged.attributions.sources = dict(self.attributions.sources)
         staged.attributions.retries = dict(self.attributions.retries)
-        with self.db:
-            yield staged
-        self.provenance.sources = staged.provenance.sources
-        self.attributions.sources = staged.attributions.sources
-        self.attributions.retries = staged.attributions.retries
-        self.attributions.last = staged.attributions.last
+        self._record_active = staged._record_active = True
+        try:
+            with self.db:
+                yield staged
+            self.provenance.sources = staged.provenance.sources
+            self.attributions.sources = staged.attributions.sources
+            self.attributions.retries = staged.attributions.retries
+            self.attributions.last = staged.attributions.last
+        finally:
+            self._record_active = staged._record_active = False
 
     # -- turns -----------------------------------------------------------------------------
 
@@ -375,8 +414,11 @@ class Ledger:
 
     def record_usage(self, pool: str, usage: Usage, attempted_at: datetime | None = None) -> None:
         attempted_at = attempted_at or (usage.read_at if aware(usage.read_at) else datetime.now().astimezone())
-        error = self.usage.record(pool, usage, attempted_at)
-        self.quota.usage_read(pool, attempted_at, error)
+        def write():
+            error = self.usage.record(pool, usage, attempted_at)
+            self.quota.usage_read(pool, attempted_at, error, commit=False)
+
+        self._commit_usage_attempt(write)
 
     def pool_windows(self, pool: str | None = None) -> list[tuple[str, str, float | None, str | None, str | None]]:
         query = "SELECT pool, window, used, resets_at, read_at FROM pools" + (" WHERE pool = ?" if pool else "") + " ORDER BY pool, window"

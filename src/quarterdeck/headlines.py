@@ -10,6 +10,8 @@ def status_line(facts, alerts: list[str]) -> str:
     if len(text) <= WIDTH:
         return text
     parts = ["SERVICE DOWN" if facts.service == "down" else f"service {facts.service}"]
+    if accounting := getattr(facts, 'accounting', None):
+        parts.append(accounting)  # keep its time and safe cause even when other alerts overflow
     counts = [(facts.waiting, "waiting"), (facts.queued, "queued"), (facts.blind, "blind"),
               (len(facts.needs_human), "need human"), (len(facts.unarmed), "unarmed"),
               (len(facts.held), "held"), (len(facts.pending), "pending"),

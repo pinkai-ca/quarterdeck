@@ -68,6 +68,11 @@ def cached_line(folder):
                 or not servicectl.alive(runtime)  # law: nothing-waits-silently
                 or process_start(beat[0]) != data['process_start']):
             return None
+        from . import accounting_health
+        current = accounting_health.reading(runtime)
+        if ('accounting' not in data or current == accounting_health.UNKNOWN
+                or data['accounting'] != current):
+            return None  # derived text cannot outrank changed or unavailable accounting evidence
         return line if fresh(data['wall'], data['monotonic']) else None
     except (OSError, ValueError, TypeError, KeyError, UnicodeError):
         return None
@@ -100,7 +105,7 @@ def _publish(ship, tmux, framework, store, attempts):
             or not fresh(wall, monotonic)):
         return False
     data = dict(format=1, wall=wall, monotonic=monotonic, pid=os.getpid(), process_start=start,
-                ship=stamp, framework=framework, line=line)
+                ship=stamp, framework=framework, line=line, accounting=getattr(facts, 'accounting', None))
     path = ship.runtime / NAME
     temporary = path.with_suffix('.tmp')
     temporary.write_text(json.dumps(data, allow_nan=False) + '\n')

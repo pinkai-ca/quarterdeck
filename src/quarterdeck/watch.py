@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from . import credential, idle, ledger, move_hold, server_recovery, pending as pending_delivery, post, providers, quota, record_owner, recovery, request_queue, servicectl as service
+from . import accounting_health, credential, idle, ledger, move_hold, server_recovery, pending as pending_delivery, post, providers, quota, record_owner, recovery, request_queue, servicectl as service
 from .door import Door, Reading
 from .harness.base import same_name
 from .harness.capabilities import selection_label
@@ -256,6 +256,8 @@ def render_table(data: dict) -> list[str]:
     head = f"service {state}" + ("; qd up restarts it" if state == "down" else "")
     recovery_lines = list(getattr(data.get("facts"), "server_recovery", None) or [])  # law: nothing-waits-silently
     rows = [head, *recovery_lines, f"{'seat':<10} {'activity':<24} {'door':<40} {'order':<10} {'today':>8}  harness · provider · pool · model · effort"]
+    if accounting := getattr(data.get('facts'), 'accounting', None):
+        rows.insert(1, accounting)
     for r in data["seats"]:
         rows.append(f"{r.name:<10} {str(r.activity):<24} {str(r.door):<40} {r.order_text:<10} {str(r.today):>8}  {r.harness_text} · {r.provider_name or 'unknown'} · {r.pool} · {r.model_text} · {r.effort_text}")
         if r.compaction:
@@ -398,9 +400,12 @@ class Facts:
     request_waits: list[str] = field(default_factory=list)
     cutover: str = ""  # the ship still runs on tmux's default server, until one qd down and qd up
     server_recovery: list[str] = field(default_factory=list)  # a gone ship server: stopped or unknown
+    accounting: str | None = None
 
     def line(self) -> str:  # law: nothing-waits-silently
         parts = ["SERVICE DOWN" if self.service == "down" else f"service {self.service}"]
+        if self.accounting:
+            parts.append(self.accounting)
         parts.append(f"{self.waiting} waiting" + (f", oldest {self.oldest}m" if self.waiting else ""))
         if self.queued:
             parts.append(f"{self.queued} queued behind a turn, oldest {self.oldest_queued}m")
@@ -659,6 +664,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         group_held=group_post.holds(ship.runtime),
         cascade_held=cascade_runtime.holds(ship.runtime),
         structure_waiting=structure_outcome.waits(ship, selected),
+        accounting=accounting_health.reading(ship.runtime),
         unarmed=unarmed,
         walls=walls if walls is not None else ledger_walls(ship),
         usage=headline_readings(ship),
