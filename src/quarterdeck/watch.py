@@ -426,6 +426,7 @@ class Facts:
     structure_waiting: list[str] = field(default_factory=list)
     manual_fresh: list[str] = field(default_factory=list)  # no systems recipient: retain names on overflow
     move_holds: list[str] = field(default_factory=list)
+    ending: list[str] = field(default_factory=list)  # a seat down because its program is still ending: names kept
     sign_in_failures: list[str] = field(default_factory=list)  # retain seat and fixed failure on overflow
     request_waits: list[str] = field(default_factory=list)
     cutover: str = ""  # the ship still runs on tmux's default server, until one qd down and qd up
@@ -461,6 +462,7 @@ class Facts:
         parts += [f"{name}: no watch armed" for name in self.unarmed]
         parts += [f"{name} held at limit" for name in self.held]
         parts += self.move_holds
+        parts += self.ending
         parts += self.request_waits
         parts += self.server_recovery
         parts += self.routes
@@ -633,7 +635,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
     records = attempts.all()
     latest = attempts.latest(attempts=records)
     waiting, needs_human, unarmed, pending_lines, routes, unknown, queue_unknown, compactions, turn_errors = [], [], [], [], [], [], [], [], []
-    sign_in_failures = []
+    sign_in_failures, ending = [], []
     selected = seats(ship, tmux, False)
     held, limit_unknown, move_reasons = limit_state(ship, selected)
     pending_lines += limit_unknown
@@ -644,6 +646,8 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
             needs_human.append(seat.name)
             unknown.append(str(seat.error).partition(';')[0])
             continue
+        if words := seat.relaunch_refused():
+            ending.append(words)  # law: nothing-waits-silently
         launched = seat.launched()
         from .turn_failure import obstruction as failure_obstruction
         from .auth_failure import status as authentication_status, waiting as authentication_waiting
@@ -718,6 +722,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         server_recovery=server_recovery.status(ship.runtime),
         held=held,
         move_holds=move_reasons,
+        ending=ending,
         request_waits=[request_queue.headline(row) for row in
                        (request_queue.pending(ship.runtime) if request_rows is None else request_rows)],
         cutover=(f"tmux: still on the default server {tmux.socket}; qd down, then qd up, moves it"

@@ -71,3 +71,47 @@ def test_a_program_already_gone_reads_ended_at_once(lingering):
     started = time.monotonic()
     assert w.seat.down().endswith("closed · process ended")
     assert time.monotonic() - started < seatmod.PROCESS_END_SECONDS
+
+
+def test_a_restart_whose_program_ends_past_the_first_bound_comes_back_up(lingering, monkeypatch):
+    monkeypatch.setattr(seatmod, "PROCESS_END_SECONDS", 0.3)
+    monkeypatch.setattr(seatmod, "RELAUNCH_END_SECONDS", 6.0)
+    w = lingering(1.5)
+    w.seat.up(resume=False)
+    old = w.seat.launched()
+    proof = w.seat.restart()
+    assert "still ending after 0.3s, ended after" in proof and "the relaunch follows" in proof, proof
+    assert w.seat.is_up and w.seat.launched().pid != old.pid and w.seat.retiring() is None
+    assert w.seat.relaunch_refused() is None
+
+
+def test_a_restart_whose_program_outlasts_the_longer_bound_is_refused_and_named_until_up(lingering, monkeypatch):
+    from quarterdeck import watch
+    monkeypatch.setattr(seatmod, "PROCESS_END_SECONDS", 0.2)
+    monkeypatch.setattr(seatmod, "RELAUNCH_END_SECONDS", 0.6)
+    w = lingering(3)
+    w.seat.up(resume=False)
+    old = w.seat.launched()
+    with pytest.raises(shipmod.ShipError, match="still ending"):
+        w.seat.restart()
+    assert not w.seat.is_up and w.reseeded == []
+    line = watch.facts(w.ship, w.seat.tmux).line()
+    assert "captain: its program is still ending; its relaunch was refused" in line, line
+    monkeypatch.setattr(service, "seats", lambda *args: [w.seat])
+    svc = service.Service(w.ship, w.seat.tmux)
+    assert wait_for(lambda: seatmod.process_start(old.pid) is None, 10)
+    svc.credentials()  # the tick retires the ended program; it never relaunches the seat
+    assert w.seat.retiring() is None and not w.seat.is_up
+    line = watch.facts(w.ship, w.seat.tmux).line()
+    assert "captain: its relaunch was refused while its program was ending; qd up captain" in line, line
+    w.seat.up(resume=False)
+    assert w.seat.relaunch_refused() is None and "relaunch was refused" not in watch.facts(w.ship, w.seat.tmux).line()
+    svc.ledger.close()
+
+
+def test_an_unreadable_retiring_marker_counts_as_still_ending(lingering):
+    w = lingering(0)
+    w.seat.up(resume=False)
+    (w.seat.folder / seatmod.RETIRING).write_text("{not json")
+    assert w.seat.relaunch_refused().startswith("captain: its program is still ending")
+    assert w.seat.finish_retirement() is None

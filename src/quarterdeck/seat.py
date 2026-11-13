@@ -33,7 +33,9 @@ from .tmux import Pane, Tmux, check_private_folder
 
 
 PROCESS_END_SECONDS = 10.0  # how long down watches a closed pane's program end before it leaves the rest to the tick
+RELAUNCH_END_SECONDS = 60.0  # a relaunch (restart, fresh, a pool move) watches a program end this long in all
 RETIRING = "retiring.json"
+REFUSED_RELAUNCH = "relaunch-refused.json"  # a relaunch refused while the old program was ending, until up succeeds
 
 
 def process_start(pid: int) -> str | None:
@@ -275,7 +277,7 @@ class Seat:
             self.harness.preflight_resume(selected, self.home, self._resume_id)
         self.record()
         credential.reseed(self.ship, [self])
-        stopped = self._down()
+        stopped = self._down(relaunch=True)
         self.move_to(pool)
         self.spec = selected
         if not same_program:
@@ -524,7 +526,7 @@ class Seat:
             if same_program and resume:
                 self.harness.preflight_resume(selected, self.home, self._resume_id)
             if self.launched() is not None:
-                self._down()  # retain the old record and reseed its source pool before changing selection
+                self._down(relaunch=True)  # retain the old record and reseed its source pool before changing selection
             self.move_to(target)
             self.spec = selected
             if not same_program:
@@ -642,6 +644,7 @@ class Seat:
                             sorted(map(str, prior)), launch.price, launch.recovery, notice=launch.notice,
                             start=process_start(pane.pid))
         launched.write(self.folder / "launch.json")
+        (self.folder / REFUSED_RELAUNCH).unlink(missing_ok=True)  # up again: a refused relaunch is over
         if self.spec.pool_choices:
             self.move_to(pool.name)
         if resume_id:
@@ -833,7 +836,12 @@ class Seat:
         with self._lifecycle():
             return self._down()
 
-    def _down(self) -> str:
+    def _down(self, relaunch: bool = False) -> str:
+        """Close the pane, observe the program end, then reseed and remove the launch.
+
+        ``relaunch``: an up follows in this lifecycle (restart, fresh, a pool move), so past the first bound
+        down keeps observing the same process up to RELAUNCH_END_SECONDS before the relaunch is refused.
+        """
         launched = self.launched()
         pane = self._lifecycle_pane(launched)
         if launched is not None:
@@ -847,16 +855,25 @@ class Seat:
         self._retire_window(launched)
         if self.launched() != launched:
             raise ShipError(f"{self.name}: launch identity changed during retirement; launch retained")
+        waited = ""
         if program is not None and not wait_for_end(*program, PROCESS_END_SECONDS):
-            # The pane is closed but the program still runs: it may still write its credential or record.
-            # Nothing is reseeded and the launch stays, for the service's tick to finish once it has ended.
-            durable.replace_file(self.folder / RETIRING, json.dumps(dict(pid=program[0], start=program[1])) + "\n")
-            return (f"{self.name} down · pane {pane.id} closed · process still ending after {PROCESS_END_SECONDS:g}s; "
-                    "credential and launch left for the next tick")
+            started = time.monotonic() - PROCESS_END_SECONDS
+            if not (relaunch and wait_for_end(*program, RELAUNCH_END_SECONDS - PROCESS_END_SECONDS)):
+                # The pane is closed but the program still runs: it may still write its credential or record.
+                # Nothing is reseeded and the launch stays, for the service's tick to finish once it has ended.
+                durable.replace_file(self.folder / RETIRING, json.dumps(dict(pid=program[0], start=program[1])) + "\n")
+                bound = RELAUNCH_END_SECONDS if relaunch else PROCESS_END_SECONDS
+                if relaunch:
+                    durable.replace_file(self.folder / REFUSED_RELAUNCH, json.dumps(dict(
+                        at=datetime.now(timezone.utc).isoformat(), pid=program[0])) + "\n")
+                return (f"{self.name} down · pane {pane.id} closed · process still ending after {bound:g}s; "
+                        + ("relaunch refused; " if relaunch else "") + "credential and launch left for the next tick")
+            waited = (f" · still ending after {PROCESS_END_SECONDS:g}s, ended after "
+                      f"{time.monotonic() - started:.0f}s; the relaunch follows")
         self._finish_retirement(launched)
         if pane is None:
             return f"{self.name} was not up" + (f" · pane {launched.pane} is gone" if launched else "")
-        return f"{self.name} down · pane {pane.id} closed · process ended"
+        return f"{self.name} down · pane {pane.id} closed · process ended" + waited
 
     def _finish_retirement(self, launched: Launched | None) -> None:
         if launched is not None:
@@ -865,6 +882,16 @@ class Seat:
             credential.reseed(self.ship, [self])  # the program has ended: a refresh it left reseeds the pool its launch names, while it is named
         (self.folder / "launch.json").unlink(missing_ok=True)
         (self.folder / RETIRING).unlink(missing_ok=True)
+
+    def relaunch_refused(self) -> str | None:
+        """Plain words for the status line while the seat is down because its relaunch met a program still ending."""
+        held = self.retiring()
+        if held is not None:
+            return f"{self.name}: its program is still ending; " + (
+                "its relaunch was refused" if (self.folder / REFUSED_RELAUNCH).exists() else "it is not retired yet")
+        if (self.folder / REFUSED_RELAUNCH).exists():
+            return f"{self.name}: its relaunch was refused while its program was ending; qd up {self.name}"
+        return None
 
     def retiring(self) -> dict | None:
         """The program a closed pane left still running at down: its pid and start, until it has ended."""
@@ -895,7 +922,7 @@ class Seat:
             require_clear(self)
             self.harness.preflight_resume(self.spec, self.home, self._resume_id)
             observation = self._observe_selection()
-            return self._down() + "\n" + self._up(resume=True, observation=observation)
+            return self._down(relaunch=True) + "\n" + self._up(resume=True, observation=observation)
 
     def fresh(self) -> str:
         """Relaunch without resume: a new conversation that begins with the brief and the open messages."""
@@ -904,7 +931,7 @@ class Seat:
             from .recovery import require_clear
             require_clear(self)
             observation = self._observe_selection()
-            return self._down() + "\n" + self._up(resume=False, observation=observation)
+            return self._down(relaunch=True) + "\n" + self._up(resume=False, observation=observation)
 
 
 @contextmanager

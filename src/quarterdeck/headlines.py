@@ -27,6 +27,8 @@ def status_line(facts, alerts: list[str]) -> str:
     parts += getattr(facts, 'manual_fresh', ())
     # A held move must keep its seat and missing dimension visible even on overflow.
     parts += getattr(facts, 'move_holds', ())
+    # A seat down because its program is still ending, or its relaunch was refused for that, keeps its name.
+    parts += getattr(facts, 'ending', ())
     # A sign-in failure must still name its seat and failed cure when categories overflow.
     parts += getattr(facts, 'sign_in_failures', ())
     parts += getattr(facts, 'request_waits', ())
