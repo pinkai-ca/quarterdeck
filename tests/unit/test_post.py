@@ -172,3 +172,22 @@ def test_claimed_order_for_attribution(tmp_path: Path):
     assert store.claimed("scott", report.at - timedelta(microseconds=1)) == b.id, "but it was, back when the turn ran"
     store.new("report", "scott", "desk", "a is done too", re=a.id)
     assert store.claimed("scott", post.now()) is None
+
+
+def test_an_acked_question_is_claimed_until_it_is_answered_and_no_longer(tmp_path: Path):
+    store = Store(tmp_path)
+    question = store.new("question", "pike", "desk", "which branch?")
+    ack = store.new("ack", "desk", "pike", "looking", re=question.id)
+    assert store.claimed("desk", ack.at) == question.id
+    answer = store.new("answer", "desk", "pike", "main", re=question.id)
+    assert store.claimed("desk", answer.at - timedelta(microseconds=1)) == question.id, "claimed before its answer"
+    assert store.claimed("desk", answer.at) is None, "an answered question claims nothing, by is_open's own rule"
+    assert store.claimed("desk", post.now()) is None and not store.is_open(question)
+    assert store.closing(question) == answer
+
+
+def test_a_claim_on_a_message_that_is_never_open_is_no_claim(tmp_path: Path):
+    store = Store(tmp_path)
+    report = store.new("report", "desk", "scott", "done")
+    store.new("ack", "scott", "desk", "seen", re=report.id)
+    assert store.claimed("scott", post.now()) is None and store.closing(report) == report

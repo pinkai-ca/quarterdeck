@@ -267,3 +267,28 @@ def test_input_overlapping_turn_intervals_is_unresolved(tmp_path,monkeypatch):
     book.attributions.replay(store,tmp_path,{str(path):{'fake'}})
     assert all(row['status']=='unresolved' and 'overlaps' in row['reason'] for row in book.attributions.details())
     book.close()
+
+
+def test_an_answered_question_no_longer_claims_the_seats_later_turns(tmp_path):
+    from quarterdeck.ledger import attribution
+    store = post.Store(tmp_path)
+    question = message(store, 'que-asked', 'question', 'issuer', 'worker', 1)
+    message(store, 'ack-asked', 'ack', 'worker', 'issuer', 2, question.id)
+    before = turn(0, 3, 5)
+    assert attribution(store, 'worker', before) == question.id, 'the turn before the answer was spent on the question'
+    message(store, 'ans-asked', 'answer', 'worker', 'issuer', 6, question.id)
+    assert attribution(store, 'worker', before) == question.id, 'a later answer does not rewrite an earlier turn'
+    later = turn(1, 10, 20)
+    assert attribution(store, 'worker', later) != question.id, 'a closed question claims no later turn'
+
+
+def test_an_order_claim_still_ends_only_with_its_addressees_report(tmp_path):
+    from quarterdeck.ledger import attribution
+    store = post.Store(tmp_path)
+    order = message(store, 'ord-claimed', 'order', 'issuer', 'worker', 1)
+    message(store, 'ack-claimed', 'ack', 'worker', 'issuer', 2, order.id)
+    message(store, 'ans-other', 'answer', 'issuer', 'worker', 3, order.id)
+    message(store, 'rep-stranger', 'report', 'issuer', 'worker', 4, order.id)
+    assert attribution(store, 'worker', turn(0, 5, 6)) == order.id, 'only the addressee closes an order'
+    message(store, 'rep-claimed', 'report', 'worker', 'issuer', 7, order.id)
+    assert store.claimed('worker', AT + timedelta(seconds=8)) is None

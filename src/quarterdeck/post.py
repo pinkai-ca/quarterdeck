@@ -229,25 +229,38 @@ class Store:
         """The report from the addressee that closes the order, if any."""
         return next((m for m in self.replies(order) if m.kind == "report" and m.sender == order.to), None)  # law: open-until-closed
 
-    def is_open(self, message: Message) -> bool:
+    def closing(self, message: Message) -> Message | None:
+        """What closed a message, by the one rule of its kind (law: open-until-closed).
+
+        An order is closed by its addressee's report, a question by an answer, the first in time.
+        Any other kind is never open: it stands closed by itself.
+        """
         if message.kind == "order":
-            return self.closing_report(message) is None
+            return self.closing_report(message)
         if message.kind == "question":
-            return not any(m.kind == "answer" for m in self.replies(message))
-        return False
+            return min((m for m in self.replies(message) if m.kind == "answer"), key=lambda m: m.at, default=None)
+        return message
+
+    def is_open(self, message: Message) -> bool:
+        return self.closing(message) is None
 
     def open_for(self, seat: str) -> list[Message]:
         return [m for m in self.for_seat(seat) if self.is_open(m)]
 
     def claimed(self, seat: str, before: datetime) -> str | None:
-        """The order the seat last claimed with an ack and still had open at ``before``, for the Ledger."""
+        """The message the seat last claimed with an ack and still had open at ``before``, for the Ledger.
+
+        A claim ends when its message closes, by the same rule as ``is_open``, read at ``before``:
+        an order by its addressee's report, a question by an answer. A message closed later was
+        still claimed at an earlier ``before``.
+        """
         messages = self.all()
         by_id = {m.id: m for m in messages}
         for ack in reversed([m for m in messages if m.kind == "ack" and m.sender == seat and m.re and m.at <= before]):
-            order = by_id.get(ack.re)
-            closed = self.closing_report(order) if order else None
-            if order and (closed is None or closed.at > before):
-                return order.id
+            claim = by_id.get(ack.re)
+            closed = self.closing(claim) if claim else None
+            if claim and (closed is None or closed.at > before):
+                return claim.id
         return None
 
 
