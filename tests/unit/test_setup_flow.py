@@ -67,6 +67,7 @@ class ScriptedOperations(setup.Operations):
 
 @pytest.fixture
 def answers(tmp_path, monkeypatch):
+    monkeypatch.setattr(setup.Operations, "project_folder", lambda _: tmp_path)
     # A synthetic git identity for a disposable repository, never the operator's config.
     for name, value in {"GIT_AUTHOR_NAME": "Setup Example", "GIT_AUTHOR_EMAIL": "setup@example.invalid",
                         "GIT_COMMITTER_NAME": "Setup Example", "GIT_COMMITTER_EMAIL": "setup@example.invalid",
@@ -152,9 +153,10 @@ def test_key_payment_stores_only_variable_reference(answers):
 
 
 @pytest.mark.parametrize("program", ["pi", "opencode"])
-def test_explicit_endpoint_operator_model_and_no_key(answers, program):
+@pytest.mark.parametrize("payment", ["local", "endpoint"])
+def test_explicit_endpoint_operator_model_and_no_key(answers, program, payment):
     answers.update(programs=program, desk=program, captain=program, engineer=program,
-                   payment={program: "endpoint"}, provider={program: "example-operator"},
+                   payment={program: payment}, provider={program: "example-operator"},
                    endpoint={program: "http://127.0.0.1:8181/v1"}, model={program: "example-model"},
                    key_env={program: "none"})
     execute(answers)
@@ -436,3 +438,16 @@ def test_unfinished_first_commit_requires_person_to_resolve_git(answers, monkeyp
     assert (Path(answers["folder"]) / "ship.toml").exists()
     with pytest.raises(ship.ShipError, match="has no first commit"):
         execute(dict(folder=answers["folder"], existing="keep", check="yes", start="yes", use_defaults="yes", accept="yes"))
+
+
+def test_default_ship_folder_is_in_quarterdeck_not_the_workspace(answers, tmp_path):
+    (tmp_path / "ships").mkdir()
+    workspace = tmp_path / "person-project"
+    workspace.mkdir()
+    answers.pop("folder")
+    answers["workspace"] = str(workspace)
+    answers["check"] = "no"
+    execute(answers)
+    current = ship.load(tmp_path / "ships" / answers["name"])
+    assert current.workspace == workspace
+    assert list(workspace.iterdir()) == []

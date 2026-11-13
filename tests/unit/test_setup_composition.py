@@ -30,6 +30,7 @@ def proposal(tmp_path, programs, **extra):
     answers = dict(name="aurora", workspace=str(tmp_path), folder=str(tmp_path / "crew"),
                    programs=programs, use_defaults="yes", **extra)
     operations = ProposalOperations()
+    operations.project_folder = lambda: tmp_path
     text, orders, defaults = setup.template()
     conversation = setup.Conversation(answers, interactive=False,
                                       read=lambda _: pytest.fail("scripted setup must not prompt"),
@@ -79,15 +80,16 @@ def test_default_template_keeps_geordi_and_handoff_line(tmp_path):
     assert orders.count(line) == 1
 
 
-def test_summary_keeps_five_columns_and_shows_fresh_defaults(tmp_path):
+def test_summary_keeps_five_columns_without_new_seat_annotations(tmp_path):
     current = proposal(tmp_path, "codex").ship
     data = setup_proposal.summary(current, setup_proposal.display_control)
     assert all(row["fresh_after_compactions"] == 2 for row in data["seats"])
     assert all(list(row) == ["seat", "name", "harness", "model", "effort",
-                             "fresh_after_compactions", "fresh_start_note"] for row in data["seats"])
+                             "fresh_after_compactions"] for row in data["seats"])
     assert data["seats"][2]["name"] == "Geordi"
     rendered = setup_proposal.render_summary(data)
-    assert any("Geordi" in line and "fresh after compactions: 2" in line for line in rendered)
+    assert any("Geordi" in line for line in rendered)
+    assert not any("fresh after compactions:" in line for line in rendered)
     other = setup_proposal.summary(proposal(tmp_path, "grok").ship, setup_proposal.display_control)
     assert all("fresh_after_compactions" not in row for row in other["seats"])
 
@@ -200,3 +202,11 @@ def test_switch_to_counting_harness_adds_default_with_harness_edit(tmp_path, mon
                for _, changes in operations.calls)
     assert all(seat.fresh_after_compactions == 2 for seat in current.seats.values())
     assert len(pending) == 3
+
+
+def test_project_display_abbreviates_home_without_changing_json(tmp_path, monkeypatch):
+    current = proposal(tmp_path, "codex").ship
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path.parent)
+    data = setup_proposal.summary(current, setup_proposal.display_control)
+    assert data["project_path"] == str(tmp_path)
+    assert "Project path:   ~/" + tmp_path.name in setup_proposal.render_summary(data)

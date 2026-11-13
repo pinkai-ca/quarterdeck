@@ -79,6 +79,7 @@ def keep_unchanged(c, ship: Ship) -> None:
                 continue
             seen.add(effective.harness)
             paid = c.supplied(f"payment.{effective.harness}")
+            paid = "endpoint" if paid == "local" else paid
             if paid is not MISSING and paid != pool.kind and not (paid == "key" and harness.get(effective.harness).setup_metadata().key_endpoint is not None and pool.endpoint and pool.api_key):
                 raise ShipError(f"answer payment.{effective.harness} changes a kept ship; choose existing=update")
             provider = c.supplied(f"provider.{effective.harness}")
@@ -99,10 +100,20 @@ def build(conversation, operations, text: str, orders: str, defaults: dict, avai
     """Build/validate in memory. No create, update, readiness or native-version operation is allowed here."""
     from . import setup, ship as ships
     c = conversation
+    project = operations.project_folder().resolve()
+
+    def ship_folder(value):
+        folder = Path(value).expanduser().resolve()
+        if not folder.is_relative_to(project):
+            raise ShipError(f"answer folder must be inside the Quarterdeck project folder {project}; "
+                            "the one-folder law keeps ship declarations and runtime there; "
+                            f"choose {project / 'ships' / 'NAME'} or another folder inside it")
+        return folder
+
     explicit_folder = c.supplied("folder")
     existing = None
     if explicit_folder is not MISSING:
-        path = Path(explicit_folder).expanduser().absolute()
+        path = ship_folder(explicit_folder)
         if path.exists():
             existing = ships.load(path)
     operator = c.ask("operator", "What should the crew call you?", existing.operator if existing else "Admiral")
@@ -118,7 +129,7 @@ def build(conversation, operations, text: str, orders: str, defaults: dict, avai
     workspace = Path(c.ask("workspace", "Project folder", str(existing.workspace) if existing else operations.workspace_default())).expanduser().resolve()
     if not workspace.is_dir():
         raise ShipError("answer workspace is not an existing project folder; choose an existing directory")
-    folder = Path(c.ask("folder", "Folder for this ship", str(workspace / name))).expanduser().absolute()
+    folder = ship_folder(c.ask("folder", "Folder for this ship", str(project / "ships" / name)))
     if folder.exists():
         existing = ships.load(folder)
         if not existing.is_repository:
@@ -377,7 +388,8 @@ def summary(ship: Ship, display_control, *, existing: Ship | None = None) -> dic
                 saved = existing.seats.get(seat.name) if existing else None
                 if saved and harness.get(saved.harness).setup_metadata().fresh_after_compactions is None:
                     detail += f" (default added for {seat.harness})"
-            row["fresh_start_note"] = "fresh after compactions: " + detail
+            if existing is not None:
+                row["fresh_start_note"] = "fresh after compactions: " + detail
         rows.append(row)
         for pool_name in seat.pools:
             effective, pool = seat.for_pool(pool_name), ship.pools[pool_name]
@@ -413,22 +425,26 @@ def summary(ship: Ship, display_control, *, existing: Ship | None = None) -> dic
 
 def render_summary(data: dict) -> list[str]:
     """The whole presentation lives here: five columns, then one Runs on line per harness."""
+    project_path = Path(data["project_path"])
+    home = Path.home()
+    shown_project = str(Path("~") / project_path.relative_to(home)) if project_path.is_relative_to(home) else str(project_path)
     lines = [f"Operator name:  {data['operator_name']}", f"Office name:    {data['office_name']}", "",
-             f"Ship name:      {data['ship_name']}", f"Project path:   {data['project_path']}"]
+             f"Ship name:      {data['ship_name']}", f"Project path:   {shown_project}"]
     fields, headings = ("seat", "name", "harness", "model", "effort"), ("Seat", "Name", "Harness", "Model", "Effort")
     table = [headings] + [tuple(row[field] for field in fields) for row in data["seats"]]
     widths = [max(len(row[index]) for row in table) for index in range(len(fields))]
     lines.append("")
-    for index, row in enumerate(table):
+    for row in table:
         line = "  ".join(value.ljust(width) for value, width in zip(row, widths)).rstrip()
-        if index and (note := data["seats"][index - 1].get("fresh_start_note")):
-            line += f"  ({note})"
         lines.append(line)
     lines += ["", "Runs on"]
     width = max((len(name) for name in data["runs_on"]), default=0)
     lines += [f"  {name:<{width}}  {value}" for name, value in data["runs_on"].items()]
     if "note" in data:
         lines += ["", data["note"]]
+    for row in data["seats"]:
+        if note := row.get("fresh_start_note"):
+            lines.append(f"  {row['name']} {note}")
     for name, pools in data.get("fallback_order", {}).items():
         lines.append(f"  {name} fallback order: " + " -> ".join(pools))
     return lines

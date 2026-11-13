@@ -24,7 +24,7 @@ def arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--answers", help="JSON object with the same answer names as flags (hyphens become underscores)")
     parser.add_argument("--programs", help="comma-separated registered program names")
     for name, help_text in (
-        ("payment", "subscription, key or endpoint"),
+        ("payment", "subscription, key or local (endpoint is also accepted)"),
         ("subscription-home", "existing native sign-in directory; never copied"),
         ("provider", "company for a key, or declared endpoint operator"),
         ("key-env", "environment variable NAME holding a key; never its value"),
@@ -37,7 +37,7 @@ def arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--engineer", help="program for engineering; interactive proposes a choice")
     parser.add_argument("--workspace", help="existing folder the crew works on")
     parser.add_argument("--name", help="ship name")
-    parser.add_argument("--folder", help="new ship folder with an existing parent; or use global --ship")
+    parser.add_argument("--folder", help="ship folder inside the Quarterdeck project (default: ships/NAME); or use global --ship")
     parser.add_argument("--existing", choices=("keep", "update"), help="explicit rerun choice; never overwrite an existing ship")
     parser.add_argument("--check", choices=("yes", "no"), help="consent to qd check for EVERY chosen program; spends turns")
     parser.add_argument("--start", choices=("yes", "no"), help="bring up the crew after successful checks (opening briefs may spend turns)")
@@ -77,6 +77,13 @@ class Operations:
 
     def credential_present(self, home: str, filename: str) -> bool:
         return (Path(home).expanduser() / filename).is_file()
+
+    def project_folder(self) -> Path:
+        project = standing.project_dir().resolve()
+        if not ((project / ".git").exists() and (project / "pyproject.toml").is_file()
+                and (project / "src/quarterdeck/install.py").is_file()):
+            raise ShipError("cannot identify the Quarterdeck project folder; run setup from the Quarterdeck checkout")
+        return project
 
     def workspace_default(self) -> str | None:
         return setup_proposal.workspace_default()
@@ -190,10 +197,13 @@ def pool_answers(conversation: Conversation, selected: list[str], defaults: dict
         default_kind = saved.kind if saved else "subscription" if reader.native_provider else "endpoint"
         if saved and hints.key_endpoint and saved.provider == hints.key_provider and saved.api_key:
             default_kind = "key"
+        if default_kind == "endpoint":
+            default_kind = "local"
         prompt = (f"What does {hints.display_name} run on? "
                   "a subscription you are signed in to; an API key; a local model "
-                  "(subscription, key, endpoint)")
-        kind = conversation.choice(f"payment.{name}", prompt, ("subscription", "key", "endpoint"), default_kind)
+                  "(subscription, key, local)")
+        kind = conversation.choice(f"payment.{name}", prompt, ("subscription", "key", "local", "endpoint"), default_kind)
+        kind = "endpoint" if kind == "local" else kind
         endpoint_key = kind == "key" and hints.key_endpoint is not None
         compatible_saved = saved is not None and (saved.kind == kind or endpoint_key and saved.kind == "endpoint")
         provider = saved.provider if compatible_saved else reader.native_provider
