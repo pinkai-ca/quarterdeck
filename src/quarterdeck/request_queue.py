@@ -139,12 +139,14 @@ def terminal(path, data, proof):
 
 def _retire(runtime, name, reason, identifier=None):
     paths = []
+    uncertain = False
     for path in sorted((runtime / 'requests').glob('*.json')):
         try:
             data = load(path)
         except (OSError, ValueError, ShipError):
             if identifier == path.stem:
                 raise ShipError(f'request {identifier} metadata unknown; retained') from None
+            uncertain = True
             continue
         if data.get('seat') != name or data['kind'] not in SEAT_KINDS:
             continue
@@ -155,6 +157,8 @@ def _retire(runtime, name, reason, identifier=None):
         if path.with_suffix('.claimed').exists() and not isinstance(data.get('terminal'), str):
             raise ShipError(f'request {path.stem} already claimed; outcome unknown; retained')
         paths.append((path, data))
+    if identifier is None and uncertain:
+        raise ShipError('request inventory unreadable; no retirement proved; retained')
     if identifier is not None and not paths:
         raise ShipError(f'no pending request {identifier} for {name}; nothing cancelled')
     for path, data in paths:

@@ -406,7 +406,7 @@ class Service:
                     raw = path.read_text()
                     data = json.loads(raw)
                     if isinstance(data, dict) and 'terminal' in data:
-                        if not isinstance(data['terminal'], str) or data.get('kind') not in request_queue.SEAT_KINDS:
+                        if not isinstance(data['terminal'], str) or not data['terminal'] or data.get('kind') not in request_queue.SEAT_KINDS:
                             raise ShipError('request retirement intent unknown; retained')
                         request_queue.settle(path, data['terminal'], clear_claim=True)
                         continue  # recover cancellation/supersession without ever dispatching it
