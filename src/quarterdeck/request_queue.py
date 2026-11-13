@@ -176,6 +176,7 @@ def pending_model(seat, expected):
         try:
             state = control_continuation(path)
             if (state is not None and state.control == 'model' and state.value == expected
+                    and state.origin.get('seat') == seat.name
                     and state.origin.get('launch') == launch_binding(seat)
                     and state.origin.get('declaration') == [seat.harness.name, seat.spec.model_mode, seat.spec.model]
                     and datetime.fromisoformat(state.started) <= post.now() < datetime.fromisoformat(state.deadline)):
