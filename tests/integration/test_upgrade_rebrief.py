@@ -28,7 +28,7 @@ def test_changed_upgrade_brief_uses_door_and_human_watch_and_down_seat_launch(dr
         snapshot=install.brief_snapshot(ship)
         (framework/'laws.md').write_text((framework/'laws.md').read_text()+'\nChanged synthetic instruction.\n')
         commit='c'*40
-        (ship.runtime/'installed.json').write_text(json.dumps(dict(commit=commit)))
+        (ship.runtime/'installed.json').write_text(json.dumps(dict(commit=commit,ref='synthetic-current',at='2025-01-01T00:00:00+00:00',previous=None)))
         monkeypatch.setattr(install,'running_from',lambda path:True)
         path,data=install.queue_rebrief(ship,commit,None,snapshot)
         svc=Service(ship,tmux)

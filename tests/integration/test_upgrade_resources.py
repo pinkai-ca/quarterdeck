@@ -300,7 +300,7 @@ def test_failed_unknown_direction_keeps_original_code_without_inventing_proof(re
     assert result.returncode != 0 and python.exists()
     assert (python.parent / 'qd').is_file()
     if prior_record == 'corrupt-test':
-        assert 'installed state is unreadable' in result.stderr
+        assert 'installed state unreadable' in result.stderr
         assert record_path.read_text() == '{not valid JSON'
     else:
         assert 'proof command failed' in result.stderr and 'recovery completed' in result.stderr
@@ -330,6 +330,7 @@ def test_genuine_first_install_proof_failure_removes_half_made_venv(revisions, m
     from quarterdeck import install as current
     from quarterdeck.ship import ShipError, load
 
+    monkeypatch.setattr(current, 'source_repo', lambda ship: revisions.repo)
     original_run = current._run
 
     def with_owned_build_tools(argv, doing, timeout=None, **kwargs):
