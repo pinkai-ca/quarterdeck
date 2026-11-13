@@ -601,6 +601,12 @@ Claude's watch route is separate from transport receipts: a recorded `qd inbox -
 
 ## 8. Watch
 
+**Recorded sign-in failure.** Claude Code 2.1.317's measured assistant API-error envelope (`isApiErrorMessage = true`, `error = "authentication_failed"`, assistant text content and `stop_sequence`) becomes the generic `sign-in failed in the program` failure kind. Its following `system/turn_duration` remains completion evidence; no screen, quoted login text, child error or unmeasured adapter form grants that classification. A later native turn clears the current ended-turn reading. A standalone measured error is visible without manufacturing an input or completed turn. Watch and status name this failure even without an open order. Automatic status uses the existing service-published failure metadata for human sessions, never their conversation bytes.
+
+After credential reseeding, the service may request one resume through its existing guarded relaunch path for a live crew seat with this failure. The saved launch names its pool; the adapter's local metadata must prove a currently valid sign-in, a stable file generation, and a file modification strictly later than launch. Expired evidence says login needed; unknown or older evidence holds. An attempt is consumed durably under `runtime/post/auth-relaunch/` before lifecycle work and survives service restart. Continuing failure, a held lifecycle check or a failed relaunch never loops, even if the file changes again. Only a later genuinely completed successful turn ends that attempted episode. The proof states the resume attempt and its outcome, not a promised cure. Human-session seats are only named and alarmed; this duty performs no recovery mutation for them. Credential contents, door checks, receipts, provider pacing and lifecycle policy are unchanged.
+
+If a subsequent recorded authentication failure is later than the consumed attempt, status and the systems alarm say `sign-in failed in the program; relaunch did not cure it`. The initial failure still visible while a resume is starting is not a second failed turn. Existing systems/desk recipient routing and once-per-reason alarms carry this fixed operational detail; no native error body is posted.
+
 Two readings, taken together, because they answer two different questions.
 
 **Activity**, from the record, answers "what is it doing":
@@ -887,6 +893,7 @@ quarterdeck/                       the project folder: the framework repository
                    the usage refresh, and the latest real reading of each usage window
     headlines.py   operational status-line text, with category counts when alert names exceed the budget
     credential.py  the one link a seat shares with its pool, reseeded and relinked on the tick
+    auth_failure.py recorded sign-in failure readings and one guarded resume after a renewed pool file
     machine.py     a seat's process tree, sampled for the Ledger
     standing.py    standing orders: laws, the ship's orders, cards, the brief
     drill.py       the all-hands drill
@@ -906,6 +913,7 @@ quarterdeck/                       the project folder: the framework repository
   work/            worktrees for work on the framework itself, ignored; the checkout above is what a running ship uses
   .testruns/       ignored: the test tool's registrations, run scratch, results and reports, and the native test sockets
   tests/           unit/ contract/ fixtures/ integration/; testrun.py and testrunner/, the test tool (standard library only)
+    authentication_shapes.py   invented Claude authentication-error envelopes, using measured structural keys only
     integration/waiting.py   an attached terminal client retires its verified owned command group and wrapper,
                    bounded by explicit patience, without waiting for other clients; attach failures keep the whole output
     unit/test_attached_client_retirement.py   real-process cases for prompt retirement, independent clients and owned descendants

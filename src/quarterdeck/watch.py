@@ -67,6 +67,10 @@ def activity(seat: Seat | UnresolvedSeat, now: datetime | None = None) -> Activi
         return Activity("unknown", f"record unreadable: {error}")
     queue_detail = f"queue unknown: {state.queue_error}" if state.queue_error else ""
     if state.failure is not None and state.turn_open is False:  # law: record-first -- an error is never plain idle
+        from .harness.types import AUTHENTICATION
+        if state.failure.kind == AUTHENTICATION:
+            from .auth_failure import detail
+            return Activity(AUTHENTICATION, detail(seat, state.failure))
         from .turn_failure import REFUSAL, describe
         queued = f"{len(state.queued)} queued" if state.queued else ""
         return Activity("refused" if state.failure.kind == REFUSAL else "failed",
@@ -546,7 +550,8 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
             continue
         launched = seat.launched()
         from .turn_failure import obstruction as failure_obstruction
-        if reason := failure_obstruction(seat, store):
+        from .auth_failure import status as authentication_status
+        if reason := authentication_status(seat) or failure_obstruction(seat, store):
             turn_errors.append(f"{seat.name}: {reason}")  # law: nothing-waits-silently
             needs_human.append(seat.name)
         from .compaction import status as compaction_status

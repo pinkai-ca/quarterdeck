@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 from . import durable, input_receipt, pending, post
 from .harness.base import record_fingerprint
 from .harness.failures import words
-from .harness.types import TurnFailure
+from .harness.types import AUTHENTICATION, TurnFailure
 
 if TYPE_CHECKING:
     from .seat import Seat
@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
 FILE = 'turn-failure.json'
 MAX_BYTES = 8192
-KINDS = ('provider refusal', 'provider error', 'program error')
+KINDS = ('provider refusal', 'provider error', 'program error', AUTHENTICATION)
 REFUSAL = 'provider refusal'
 
 
@@ -121,6 +121,8 @@ def current(seat: Seat) -> TurnFailure | None:
 
 
 def describe(failure: TurnFailure) -> str:
+    if failure.kind == AUTHENTICATION:
+        return AUTHENTICATION
     return f"{failure.kind}{f' ({failure.code})' if failure.code else ''}: {words(failure.message)}"
 
 

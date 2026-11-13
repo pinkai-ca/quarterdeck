@@ -55,7 +55,8 @@ PERSON_ONLY = (
 
 
 def person_only(reason: str) -> bool:
-    return reason.startswith(PERSON_ONLY)
+    from .harness.types import AUTHENTICATION
+    return reason.startswith((*PERSON_ONLY, AUTHENTICATION))
 BLIND_INTERVAL = 60.0  # how often the blind attempts are read against the records
 
 
@@ -109,7 +110,7 @@ class Service:
             self.log("error", step="load", error=str(error))
         self.structure_passes.begin()
         for step in (self.reconcile, self.account, self.groups, self.cascades, self.inboxes, self.recoveries, self.refusals, self.answers, self.deliveries, self.follow, self.requests, self.compactions, self.fresh_after_order,
-                     self.rebrief, self.credentials, self.failover):  # accounting before anything relaunches a seat
+                     self.rebrief, self.credentials, self.authentications, self.failover):  # accounting before anything relaunches a seat
             self.heartbeat()  # before every step: a slow delivery or usage read reads as busy, never as dead
             try:
                 step()
@@ -225,7 +226,8 @@ class Service:
         for seat in self.resolved_seats():
             if seat.session.human:
                 from . import turn_failure
-                if recovery.held(seat) or turn_failure.obstruction(seat, self.store):
+                from .auth_failure import status as authentication_status
+                if recovery.held(seat) or authentication_status(seat) or turn_failure.obstruction(seat, self.store):
                     self.needs_human(seat)
                 continue
             pending = [m for m in self.attempts.undelivered(self.store, seat.name, results=results) if self._due(m, seat)]
@@ -273,6 +275,8 @@ class Service:
         reason tells again, and a recipient added while the reason stands is told it then.
         """
         _, reason = Door(seat).human_obstruction()
+        from .auth_failure import status as authentication_status
+        reason = authentication_status(seat) or reason
         reason = reason or next(iter(pending_delivery.detached(seat)), None)
         if reason != self.told.get(seat.name):
             self.told[seat.name] = reason
@@ -710,6 +714,10 @@ class Service:
         """A seat whose credential link became a file has refreshed the token: reseed the pool and relink."""
         for line in credential.reseed(self.ship, self.resolved_seats()):
             self.log("credential", proof=line)
+
+    def authentications(self) -> None:
+        from . import auth_failure
+        auth_failure.run(self)
 
 
     @record_owner.reader_pass()

@@ -18,10 +18,11 @@ import re
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
+from dataclasses import replace
 from pathlib import Path
 
 from .json_record import JsonLinesReader, input_reader, input_rows, records_matching
-from .types import Inputs
+from .types import AUTHENTICATION, Inputs, TurnFailure
 from .claude_background import BackgroundBash
 
 from ..ship import Pool, SeatSpec
@@ -236,6 +237,7 @@ class _Reader(JsonLinesReader):
     label = "Claude Code"
 
     def __init__(self, record: Path, snapshot=None):
+        self.orphan_auth = None
         self.sidechain_ends = set()
         self.subagent_turns = 0
         self.queue_slots = []  # text/phase FIFO, including returned drafts and consumed echo identities
@@ -243,7 +245,8 @@ class _Reader(JsonLinesReader):
         super().__init__(record, snapshot)
 
     def state(self):
-        return self.background.state(super().state())
+        state = self.background.state(super().state())
+        return replace(state, failure=self.orphan_auth) if self.open is None and self.orphan_auth else state
 
     def take(self, entry: dict) -> None:
         kind = entry.get("type")
@@ -359,6 +362,7 @@ class _Reader(JsonLinesReader):
                 self.end(when(entry.get("timestamp")))
             return
         if text is not None:
+            self.orphan_auth = None
             self.last_input, self.last_input_at = text, when(entry.get("timestamp"))
             matching = next((i for i, (item, _) in enumerate(self.queue_slots) if item.strip() == text.strip()), None)
             if matching is not None:
@@ -383,6 +387,20 @@ class _Reader(JsonLinesReader):
         next prompt does.
         """
         message = entry.get("message", {})
+        # Claude Code 2.1.317: a synthetic assistant API error, then turn_duration.
+        # Classify the native code, never login words quoted in a user's text.
+        content = message.get('content')
+        if (entry.get('isApiErrorMessage') is True and entry.get('error') == 'authentication_failed'
+                and message.get('role') == 'assistant' and message.get('stop_reason') == 'stop_sequence'
+                and isinstance(content, list) and content
+                and all(isinstance(b, dict) and b.get('type') == 'text' and isinstance(b.get('text'), str)
+                        for b in content)):
+            failure = TurnFailure(AUTHENTICATION, when(entry.get('timestamp')),
+                                  kind=AUTHENTICATION, code='authentication_failed')
+            if self.open is None:
+                self.orphan_auth = failure
+            else:
+                self.open['auth_failure'] = failure
         if message.get('role', 'assistant') != 'assistant' or not self.content_known(message.get('content'), 'assistant'):
             self.tools_known = False
         self.model = message.get("model") or self.model
@@ -423,6 +441,7 @@ class _Reader(JsonLinesReader):
                 tokens=tokens,
                 tools=tuple(turn["tools"]),
                 subagent_turns=self.subagent_turns - turn["subagents"],
+                failure=turn.get('auth_failure'),
             ), at if completed else None
         )
 

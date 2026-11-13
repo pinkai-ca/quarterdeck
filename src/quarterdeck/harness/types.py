@@ -115,12 +115,16 @@ class ToolCall:
     failed: bool | None = False
 
 
+AUTHENTICATION = 'sign-in failed in the program'
+
+
 @dataclass(frozen=True)
 class TurnFailure:
     """An ended turn's recorded error and its input/output evidence; absent output certainty is unknown.
 
     ``kind`` is ``provider refusal`` only for a native form the adapter positively classifies as the
-    provider refusing the conversation; any other recorded error is ``provider error`` or ``program error``.
+    provider refusing the conversation. A measured native authentication failure is
+    ``sign-in failed in the program``; other errors are ``provider error`` or ``program error``.
     """
 
     message: str
