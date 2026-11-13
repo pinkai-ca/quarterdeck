@@ -33,6 +33,9 @@ class FakeHarness(Harness):
     model_selectors = effort_selectors = ()
     selection_templates = ()  # the simulator never reads a ship template
 
+    def human_wake_box_margin(self, pane_width: int) -> int:
+        return 2  # synthetic one-row prompt; the simulator does not emulate wrap
+
     name = "fake"
     native_provider = "synthetic"
     program = sys.executable

@@ -574,21 +574,46 @@ def delivery_note(ship: shipmod.Ship, to: str) -> str:
     return f"the service types it into {to}'s pane"
 
 
+def _inbox_target(ship: shipmod.Ship, name: str | None):
+    """Only inbox may admit a live check's otherwise undeclared temporary seat."""
+    chosen = name or os.environ.get('QD_SEAT')
+    if not chosen or chosen.lower() == ship.operator.lower():
+        return ship.operator.lower(), True, None
+    if chosen in ship.seats:
+        return chosen, ship.session_of(ship.seat(chosen)).human, None
+    from .pending import check_inbox_owner
+    owner = check_inbox_owner(ship.runtime, chosen)
+
+    def validate():
+        if check_inbox_owner(ship.runtime, chosen) != owner:
+            raise ShipError(f'{chosen}: temporary check inbox ownership changed')
+
+    return chosen, owner['human'], validate
+
+
 def cmd_inbox(args: argparse.Namespace) -> Reading | None:
     ship = load_ship(args)
-    seat = this_seat(ship, args.seat, operator_too=True)
+    seat, human, validate = _inbox_target(ship, args.seat)
     if not args.wait:
-        return Reading(post.inbox_reading(post.Store(ship.runtime), seat),
+        data = post.inbox_reading(post.Store(ship.runtime), seat)
+        if validate is not None:
+            validate()
+        return Reading(data,
                        lambda data: post.render_inbox_reading(data).rstrip("\n"))
-    if seat in ship.seats and not ship.session_of(ship.seat(seat)).human:
+    if not human:
         raise ShipError(f"{seat} is reached through its door; --wait is for seats in a human's session")
     shipmod.fence(ship)
-    arrived = post.wait_batch(ship.runtime, seat)
+    arrived = (post.wait_batch(ship.runtime, seat, validate=validate) if validate is not None
+               else post.wait_batch(ship.runtime, seat))
     if arrived is None:
         return None
     messages, opened = arrived
+    if validate is not None:
+        validate()
     batch = Reading({"seat": seat, "messages": messages}, lambda data: post.typed(data["messages"]).rstrip("\n"))
     emit(args, batch)  # serialization, output and flush must all succeed before the receipt
+    if validate is not None:
+        validate()
     post.printed(ship.runtime, opened)
     return None
 

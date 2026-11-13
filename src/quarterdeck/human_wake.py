@@ -16,8 +16,7 @@ from .turn_failure import metadata
 from .ship import ShipError
 from .tmux import TmuxError
 
-LINE = ('qd > ship: messages are waiting for you. Run `qd inbox --wait` now and follow what it prints; '
-        'if your program can keep a command running in the background, keep it running there.')
+LINE = 'qd > ship: messages are waiting. Run qd inbox --wait now to read them.'
 WAITING = 'human wake confirmed; waiting for watch registration or ended turn'
 BOX = 'human wake box not empty; untouched'
 GENERATION_UNKNOWN = 'human wake held: watch rearm generation unknown'
@@ -354,6 +353,21 @@ def screen_hold(screen) -> str | None:
     return None
 
 
+def width_hold(harness, pane) -> str | None:
+    """Use only the adapter's declared margin and this captured pane's width."""
+    width = getattr(pane, 'width', None)
+    if type(width) is not int or width <= 0:
+        return 'human wake held: pane width unknown for the waking line'
+    declaration = getattr(harness, 'human_wake_box_margin', None)
+    margin = declaration(width) if callable(declaration) else None
+    if type(margin) is not int or margin < 0:
+        return 'human wake held: adapter box margin unknown for the waking line'
+    needed = len(LINE) + margin
+    if width < needed:
+        return f'human wake held: pane too narrow for the waking line ({needed} columns needed)'
+    return None
+
+
 def eligible(seat, screen=NO_SCREEN, proof=None) -> str | None:
     """Metadata holds, owned identity, record proof, then the supplied screen last."""
     if reason := candidate_hold(seat, proof):
@@ -481,6 +495,8 @@ def _run(seat) -> str | None:
     reading = door._reading(screen)
     if not reading.open:
         return 'human wake ordinary door obstructed; no waking input'
+    if reason := width_hold(seat.harness, door.captured_pane):
+        return reason
     at = since.isoformat()
     proof = pending.Proof(seat.folder / 'human-wake.json', {})
     proof.save(format=1, seat=seat.name, identity=identity, at=at, since=at,
@@ -489,9 +505,16 @@ def _run(seat) -> str | None:
     # Keep admission through submission: watch registration and ordinary post
     # transitions cannot race this reservation. Door still verifies each input.
     delivered = door.deliver(LINE, proof=proof, human_wake=True)
+    shown = door.after_paste.box if door.after_paste is not None else None
+    proof.save(first_delivery=dict(result=delivered.result, detail=delivered.detail[:256],
+                                   detail_truncated=len(delivered.detail) > 256,
+                                   shown=shown[:256] if isinstance(shown, str) else None,
+                                   shown_truncated=isinstance(shown, str) and len(shown) > 256))
     proof.finish(delivered.result)
     if proof.data['phase'] == 'prepared':
         proof.save(phase='cancelled', resolution='pre-paste wake outcome was provably unsent')
     if proof.data['phase'] == 'cancelled':
+        if delivered.detail.startswith(('human wake held: pane ', 'human wake held: adapter box margin ')):
+            return delivered.detail
         return 'human wake unsent; waiting for fresh eligibility'
     return None if delivered.result == 'delivered' else f'human wake {delivered.result}; inspect retained reservation'

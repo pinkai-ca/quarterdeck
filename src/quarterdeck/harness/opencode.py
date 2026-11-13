@@ -339,6 +339,13 @@ class OpenCodeHarness(EndpointHarness):
         box = "" if len(body) == 1 and PLACEHOLDER.match(body[0]) else "\n".join(body)
         return Screen(text, box=box, working=working, queued=queued)
 
+    def human_wake_box_margin(self, pane_width: int) -> int:
+        return 7  # declared composer insets, corroborated by the native paste
+
+    def check_tool_evidence(self, record: Path) -> dict:
+        from .check_evidence import opencode_tools
+        return opencode_tools(record)
+
     def box_columns(self, pane_width: int) -> int | None:
         return pane_width - 7  # two cells of margin, the bar, two more cells, and a margin at the right
 

@@ -355,6 +355,9 @@ class GrokHarness(Harness):
     def question_cleared(self, text: str, question: Interruption) -> bool:
         return question is grok_screen.TRAINING_QUESTION and grok_screen.question_cleared(text)
 
+    def human_wake_box_margin(self, pane_width: int) -> int | None:
+        return 10 if pane_width >= 14 else None
+
     def box_columns(self, pane_width: int) -> int | None:
         # 1.0.77 fullscreen: margins, borders, prompt and one reserved cursor cell.
         # Native 80-column probes wrap 70/71/140 characters as 70, 70+1, 70+70.

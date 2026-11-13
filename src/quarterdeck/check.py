@@ -11,12 +11,14 @@ real tokens and runs only when asked.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 import secrets
 
-from . import harness as harnesses, durable, human_wake, pending, post, providers, standing
+from . import harness as harnesses, durable, human_wake, pending, post, providers, record_owner, standing
 from .door import Delivery, Door
 from .drill import Check, wait_for
-from .harness.base import _version_in_runtime, program_where
+from .harness.base import _version_in_runtime, program_where, record_fingerprint
 from .seat import Seat, temporary_seat
 from .ship import SeatSpec, Ship, ShipError
 from .tmux import Tmux, TmuxError
@@ -65,7 +67,7 @@ def check(ship: Ship, name: str, tmux: Tmux) -> list[Check]:
                     effort=like.effort if like else None, cwd=ship.workspace, sandbox=like.sandbox if like else None,
                     model_mode=like.model_mode if like else None, effort_mode=like.effort_mode if like else None)
     orders: list[post.Message] = []
-    with temporary_seat(ship, tmux, spec, orders, "qd check", installed_version=version) as seat:
+    with temporary_seat(ship, tmux, spec, orders, "qd check", installed_version=version, check_inbox=True) as seat:
         checks += probe(seat.ship, seat, orders)
         if selected is not None:
             launched = seat.launched()
@@ -84,7 +86,7 @@ def check(ship: Ship, name: str, tmux: Tmux) -> list[Check]:
                               sandbox=like.sandbox if like else None)
         human_orders: list[post.Message] = []
         try:
-            with temporary_seat(ship, tmux, human_spec, human_orders, "qd check human wake", human=True) as human_seat:
+            with temporary_seat(ship, tmux, human_spec, human_orders, "qd check human wake", human=True, check_inbox=True) as human_seat:
                 try:
                     checks += probe_wake(human_seat, human_orders)
                 finally:
@@ -192,6 +194,29 @@ def probe(ship: Ship, seat: Seat, orders: list[post.Message] | None = None) -> l
 
 
 def probe_wake(seat: Seat, orders: list[post.Message]) -> list[Check]:
+    """Retain private observations before the check's temporary home is retired."""
+    observed = dict(reason='human composer not ready', first_delivery=None)
+    checks = []
+    try:
+        checks = _probe_wake(seat, orders, observed)
+        observed['checks'] = [dict(name=item.name, passed=item.passed) for item in checks]
+        if checks:
+            observed['reason'] = checks[-1].detail[:512]
+            observed['reason_truncated'] = len(checks[-1].detail) > 512
+        return checks
+    except BaseException:
+        observed['probe_outcome_unknown'] = True
+        raise
+    finally:
+        try:
+            retain_wake_evidence(seat, observed)
+        except Exception:
+            # An evidence failure never replaces an earlier probe error/interrupt.
+            checks.append(Check('human-session waking line: runtime evidence retained', False,
+                                'private waking evidence could not be retained; outcome unknown'))
+
+
+def _probe_wake(seat: Seat, orders: list[post.Message], observed: dict) -> list[Check]:
     """The real service wake path, with its own human-owned throwaway session.
 
     No message is carried at launch. The order is published only after an empty
@@ -203,7 +228,6 @@ def probe_wake(seat: Seat, orders: list[post.Message]) -> list[Check]:
     if not seat.is_up:
         return [Check('human-session waking line', False, f'human launch failed: {launched}')]
     door = Door(seat)
-    observed = {'reason': 'human composer not ready'}
 
     def empty():
         watch = post.watch_reading(seat.ship.runtime, seat.name)
@@ -233,6 +257,9 @@ def probe_wake(seat: Seat, orders: list[post.Message]) -> list[Check]:
         reason = human_wake.run(seat)
         observed['reason'] = reason or ''
         proof = human_wake.load(seat)
+        if proof is not None and observed['first_delivery'] is None:
+            observed['first_delivery'] = proof.data.get('first_delivery')
+        observed['phase'] = proof.data['phase'] if proof is not None else None
         return proof is not None and proof.data['phase'] == 'delivered'
 
     received = wait_for(taken, PATIENCE)
@@ -254,3 +281,62 @@ def probe_wake(seat: Seat, orders: list[post.Message]) -> list[Check]:
                         'answer closed the waiting order' if report and report.body.strip() == token else
                         'matching answer not received'))
     return checks
+
+
+def retain_wake_evidence(seat: Seat, observed: dict) -> None:
+    """No second native call or cross-record search; public Check text has no content."""
+    from .harness.check_evidence import MAX_BYTES, MAX_PAIRS, unknown
+    from .turn_failure import metadata
+
+    tools = unknown('temporary seat pinned record unavailable')
+    try:
+        launch = seat.launched()
+        pane = seat.pane()
+        named = metadata(seat.folder / 'record').strip()
+        record = Path(named)
+        if (not named or not record.is_absolute() or seat.home not in record.parents
+                or record.resolve() != record or launch is None or pane is None or pane.dead
+                or (pane.id, pane.pid) != (launch.pane, launch.pid)
+                or record_owner.launch_reader(launch) != seat.harness.name
+                or record_owner.pinned_reader(seat, record) != seat.harness.name):
+            raise ValueError('unproved temporary record ownership')
+        stamp = record_fingerprint(record)
+        tools = seat.harness.check_tool_evidence(record)
+        if (seat.launched() != launch or metadata(seat.folder / 'record').strip() != named
+                or record_fingerprint(record) != stamp):
+            tools = unknown('temporary record changed during tool evidence reading')
+    except Exception:
+        tools = unknown('temporary seat tool evidence unreadable or unsupported')
+    if (not isinstance(tools, dict) or not isinstance(tools.get('pairs'), list)
+            or len(tools['pairs']) > MAX_PAIRS):
+        tools = unknown('adapter tool evidence exceeded its shape bound')
+    try:
+        raw = json.dumps(tools, ensure_ascii=True, sort_keys=True) + '\n'
+        if len(raw.encode('utf-8')) > MAX_BYTES:
+            tools = unknown('adapter tool evidence exceeded 32 KiB bound')
+    except (ValueError, TypeError, RecursionError):
+        tools = unknown('adapter tool evidence shape unreadable')
+    raw = json.dumps(tools, ensure_ascii=True, sort_keys=True) + '\n'
+    final = dict(observed)
+    try:
+        proof = human_wake.load(seat)
+        if final.get('first_delivery') is None and proof is not None:
+            final['first_delivery'] = proof.data.get('first_delivery')
+        watch = post.watch_reading(seat.ship.runtime, seat.name)
+        final.update(phase=proof.data['phase'] if proof is not None else None,
+                     watch_armed=watch.armed, watch_generation=watch.generation,
+                     watch_reason=watch.reason)
+    except Exception:
+        final['observation_unknown'] = True
+    evidence = dict(format=1, seat=seat.name, first_delivery=final.pop('first_delivery', None),
+                    final_observation=final,
+                    first_delivery_field_limit=256, tool_pair_limit=MAX_PAIRS, tool_byte_limit=MAX_BYTES)
+    text = json.dumps(evidence, ensure_ascii=True, sort_keys=True) + '\n'
+    if len(text.encode('utf-8')) > 8192:
+        evidence = dict(format=1, seat=seat.name, first_delivery=None,
+                        final_observation=dict(reason='waking observation exceeded 8 KiB bound; unknown'))
+        text = json.dumps(evidence, sort_keys=True) + '\n'
+    folder = seat.ship.runtime / 'check'
+    folder.mkdir(parents=True, exist_ok=True)
+    durable.replace_file(folder / f'{seat.name}-wake-observation.json', text)
+    durable.replace_file(folder / f'{seat.name}-tool-evidence.json', raw)

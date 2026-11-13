@@ -562,6 +562,10 @@ def config_text(config: dict) -> str:
 
 
 class CodexHarness(Harness):
+    def check_tool_evidence(self, record: Path) -> dict:
+        from .check_evidence import json_tools, codex_tools
+        return json_tools(record, codex_tools)
+
     """Codex, proven on 0.166.0. Model and effort change only at launch: ``/model`` opens a picker."""
 
     compactions = staticmethod(compactions)
@@ -684,6 +688,9 @@ class CodexHarness(Harness):
             else:
                 block = None
         return tuple("\n".join(b).strip("\n") for b in found)
+
+    def human_wake_box_margin(self, pane_width: int) -> int:
+        return 3  # ordinary prefix plus measured right inset/cursor reserve
 
     def box_columns(self, pane_width: int) -> int:
         # 0.166.0 ordinary composer: LIVE_PREFIX_COLS=2, right inset=1.

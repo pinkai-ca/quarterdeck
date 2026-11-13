@@ -11,7 +11,10 @@ from contextlib import contextmanager
 import fcntl
 import json
 import locale
+import os
 import re
+import secrets
+import stat
 from pathlib import Path
 from typing import Any, Iterator, Sequence, TYPE_CHECKING
 
@@ -273,6 +276,122 @@ def transient_lock(runtime: Path, name: str) -> Iterator[bool]:
             yield False
         else:
             yield True
+
+
+def _check_paths(runtime: Path, name: str) -> tuple[Path, Path]:
+    if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}', name):
+        raise ValueError('invalid temporary seat name')
+    folder = runtime / 'post' / 'transient'
+    return folder / f'{name}.lock', folder / f'{name}.check.json'
+
+
+def _owner_start(pid: int) -> str | None:
+    """Optional host diagnostic only; registration-lease authority needs no PID view."""
+    try:
+        fields = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
+        return fields[19] if len(fields) > 19 and fields[19].isdigit() else None
+    except (OSError, ValueError, IndexError, UnicodeError):
+        return None
+
+
+@contextmanager
+def check_inbox_registration(runtime: Path, name: str, human: bool, *, enabled=False):
+    """Hold an exclusive registration lease inside the existing temporary lifetime."""
+    if not enabled:
+        yield
+        return
+    from .turn_failure import metadata
+    lock, marker = _check_paths(runtime, name)
+    if type(human) is not bool:
+        raise ValueError('unknown temporary human ownership')
+    info = lock.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise ValueError('temporary check lock unknown')
+    descriptor = os.open(marker, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    published = False
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        registration = os.fstat(descriptor)
+        data = dict(format=1, operation='check', runtime=str(runtime.resolve()), seat=name,
+                    human=human, pid=os.getpid(), start=_owner_start(os.getpid()),
+                    lock=[info.st_dev, info.st_ino],
+                    registration=[registration.st_dev, registration.st_ino], token=secrets.token_hex(16))
+        raw = json.dumps(data, sort_keys=True) + '\n'
+        remaining = raw.encode('utf-8')
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written <= 0:
+                raise OSError('temporary check registration write incomplete')
+            remaining = remaining[written:]
+        os.fsync(descriptor)
+        durable.sync_folder(marker.parent)
+        published = True
+        yield
+    finally:
+        try:
+            if published:
+                with post.admission(runtime, name):
+                    current = marker.lstat()
+                    if ([current.st_dev, current.st_ino] != data['registration'] or metadata(marker) != raw):
+                        raise ValueError('temporary check registration changed; retained')
+                    marker.unlink()
+                    durable.sync_folder(marker.parent)
+        finally:
+            os.close(descriptor)  # death or normal exit releases this lifetime's lease
+
+
+def check_inbox_owner(runtime: Path, name: str) -> dict:
+    """Read-only inbox admission by live kernel leases, independent of PID namespaces."""
+    from .turn_failure import metadata
+    from .ship import ShipError
+    descriptors = []
+    try:
+        lock, marker = _check_paths(runtime, name)
+        raw = metadata(marker)
+        data = json.loads(raw)
+        if (not isinstance(data, dict) or set(data) != {
+                'format', 'operation', 'runtime', 'seat', 'human', 'pid', 'start', 'lock', 'registration', 'token'}
+                or type(data['format']) is not int or data['format'] != 1
+                or data['operation'] != 'check' or data['runtime'] != str(runtime.resolve())
+                or data['seat'] != name or type(data['human']) is not bool
+                or type(data['pid']) is not int or data['pid'] <= 0
+                or data['start'] is not None and (not isinstance(data['start'], str) or not data['start'].isdigit())
+                or not isinstance(data['token'], str) or not re.fullmatch(r'[0-9a-f]{32}', data['token'])
+                or not isinstance(data['lock'], list) or len(data['lock']) != 2
+                or any(type(item) is not int for item in data['lock'])
+                or not isinstance(data['registration'], list) or len(data['registration']) != 2
+                or any(type(item) is not int for item in data['registration'])):
+            raise ValueError('invalid check registration')
+        for path, key in ((marker, 'registration'), (lock, 'lock')):
+            descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
+            descriptors.append(descriptor)
+            info = os.fstat(descriptor)
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                    or [info.st_dev, info.st_ino] != data[key]):
+                raise ShipError(f'{name}: temporary check registration or transient-lock inode replaced; inbox refused')
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                pass  # busy is live lease evidence; no lock is retained by this reader
+            else:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+                raise ShipError(f'{name}: stale temporary check registration; inbox refused')
+            current = path.lstat()
+            if [current.st_dev, current.st_ino] != data[key]:
+                raise ValueError('check lease inode changed during admission')
+        for path, key in ((marker, 'registration'), (lock, 'lock')):
+            current = path.lstat()
+            if (not stat.S_ISREG(current.st_mode) or current.st_nlink != 1
+                    or [current.st_dev, current.st_ino] != data[key]):
+                raise ShipError(f'{name}: temporary check registration or transient-lock inode replaced; inbox refused')
+        if metadata(marker) != raw:
+            raise ValueError('check ownership changed during admission')
+        return data
+    except (OSError, ValueError, TypeError, KeyError, IndexError, UnicodeError):
+        raise ShipError(f"{name}: no live check-owned temporary inbox; missing, stale or unknown ownership") from None
+    finally:
+        for descriptor in descriptors:
+            os.close(descriptor)
 
 
 def abandon(runtime: Path, name: str, reason: str) -> None:

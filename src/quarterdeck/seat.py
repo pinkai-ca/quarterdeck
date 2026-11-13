@@ -688,7 +688,7 @@ class Seat:
 
 @contextmanager
 def temporary_seat(ship: Ship, tmux: Tmux, spec: SeatSpec, orders: list[post.Message], purpose: str,
-                   *, installed_version: str | None = None, human: bool = False) -> Iterator[Seat]:
+                   *, installed_version: str | None = None, human: bool = False, check_inbox: bool = False) -> Iterator[Seat]:
     """Own a fresh temporary seat through transport retirement and every teardown stage.
 
     Callers register only orders this operation opened. Posts and receipts remain;
@@ -732,12 +732,16 @@ def temporary_seat(ship: Ship, tmux: Tmux, spec: SeatSpec, orders: list[post.Mes
                 credential.reseed(treated, [seat])  # its one pool: a refresh left in the home is not deleted with it
                 shutil.rmtree(seat.folder)
 
-        with ExitStack() as cleanup:
+        # Cleanup is registered before publication can fail, and runs before the
+        # outer lease retires. The transient lock remains held around both.
+        with ExitStack() as lifetime, ExitStack() as cleanup:
             cleanup.callback(remove_home)
             cleanup.callback(close_orders)
             cleanup.callback(lambda: tmux.kill_session_id(session_id) if session_id is not None else None)
             cleanup.callback(seat.down)
             cleanup.callback(retire)
+            lifetime.enter_context(pending.check_inbox_registration(
+                ship.runtime, seat.name, human, enabled=check_inbox))
             session_id = tmux.new_session(session.title, env={"QD_SHIP": str(ship.folder)})
             status = shlex.join([str(qd_bin() / "qd"), "--ship", str(ship.folder), "status", "--line"])
             tmux.status_line(session.title, status)

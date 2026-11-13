@@ -294,6 +294,10 @@ STEERING = re.compile(r"^\s*Steering: (.*?)\s*$", re.M)
 
 
 class PiHarness(EndpointHarness):
+    def check_tool_evidence(self, record: Path) -> dict:
+        from .check_evidence import json_tools, pi_tools
+        return json_tools(record, pi_tools)
+
     """pi, proven on 0.74.2. Runs on an endpoint pool; model and thinking level change only at launch."""
 
     human_tool_policy = "The enumerated core tools have no question tool; launch disables extensions. Custom tools are not classified."
@@ -451,6 +455,9 @@ class PiHarness(EndpointHarness):
         body = lines[top + 1:bottom]
         body = trimmed(body)
         return Screen(text, box="\n".join(body), working=working, queued=queued, shows=shows, echoes=echoes)
+
+    def human_wake_box_margin(self, pane_width: int) -> int:
+        return 1  # measured final column kept clear
 
     def box_columns(self, pane_width: int) -> int | None:
         return pane_width - 1  # the box spans the pane from the first column; the last column stays clear

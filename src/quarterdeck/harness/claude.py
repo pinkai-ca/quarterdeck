@@ -524,6 +524,17 @@ def pool_account(pool: Pool) -> dict | None:
 
 
 class ClaudeHarness(Harness):
+    def human_wake_box_margin(self, pane_width: int) -> int:
+        # 2.1.317: fixture non-text width 4, plus the conservative allowance 4.
+        return 8
+
+    def box_columns(self, pane_width: int) -> int:
+        return pane_width - 4  # Claude Code 2.1.317: 76 text columns at pane width 80
+
+    def check_tool_evidence(self, record: Path) -> dict:
+        from .check_evidence import json_tools, claude_tools
+        return json_tools(record, claude_tools)
+
     reads_queue_error = True
     compactions = staticmethod(compactions)
     """Claude Code, proven on 2.1.317."""

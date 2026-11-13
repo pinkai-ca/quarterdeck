@@ -608,7 +608,7 @@ def watch_retirement_warning(path: Path, generation: str) -> None:
         pass  # preserving the primary return/error takes precedence if stderr also fails
 
 
-def wait_batch(runtime: Path, seat: str, interval: float = 1.0, stop_after: float | None = None) -> tuple[list[Message], list[Attempt]] | None:
+def wait_batch(runtime: Path, seat: str, interval: float = 1.0, stop_after: float | None = None, *, validate=None) -> tuple[list[Message], list[Attempt]] | None:
     """Block until something new is addressed to ``seat``; return it in full, with its open attempts.
 
     The caller prints the text and then closes the attempts with ``printed``, so a wait
@@ -617,12 +617,16 @@ def wait_batch(runtime: Path, seat: str, interval: float = 1.0, stop_after: floa
     is armed. Nothing is typed into the seat's pane: this is the Office's one path.
     """
     store, attempts = Store(runtime), Attempts(runtime)
+    if validate is not None:
+        validate()
     from . import inbox_watch
-    registration = inbox_watch.register(runtime, seat)
+    registration = inbox_watch.register(runtime, seat, validate=validate)
     deadline = None if stop_after is None else datetime.now().timestamp() + stop_after
     try:
         while True:
             with admission(runtime, seat):
+                if validate is not None:
+                    validate()
                 waiting = attempts.undelivered(store, seat)
                 if waiting:
                     opened = [attempts.open(message, seat, None, None, None) for message in waiting]

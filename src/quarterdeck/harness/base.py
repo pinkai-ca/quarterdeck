@@ -388,6 +388,14 @@ class Harness(ABC):
         """Text-area columns for a recognized ordinary box, never a guessed width."""
         return pane_width - 2
 
+    def human_wake_box_margin(self, pane_width: int) -> int | None:
+        """Proved non-input columns for one waking row; unknown refuses waking."""
+        return None
+
+    def check_tool_evidence(self, record: Path) -> dict:
+        """Private check-only call/results; adapters opt in to a bounded decoder."""
+        return dict(status='unknown', reason='adapter tool call/results unsupported', pairs=[])
+
     @abstractmethod
     def box(self, text: str) -> Box:
         pass

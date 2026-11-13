@@ -65,9 +65,11 @@ def generation(runtime, name):
     return value
 
 
-def register(runtime, name):
+def register(runtime, name, *, validate=None):
     path = post.watch_file(runtime, name)
     with post.admission(runtime, name):
+        if validate is not None:
+            validate()
         own = process(os.getpid())
         source = launch(runtime, name)
         text = f'{os.getpid()} {post.now().isoformat(timespec="microseconds")}\n'

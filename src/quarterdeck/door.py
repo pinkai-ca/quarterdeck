@@ -69,16 +69,21 @@ class Door:
         self.tmux = seat.tmux
         self.proof = None
         self.before_submit = None
+        self.after_paste = None
+        self.captured_pane = None
         self.human_wake = False
         self.since = datetime.now(timezone.utc)
 
     def screen(self) -> Screen | None:
+        self.captured_pane = None
         if hasattr(self.seat, 'read_pane'):
             found = self.seat.read_pane()
+            self.captured_pane = found[0] if found else None
             return self.harness.screen(found[1]) if found else None
         pane = self.seat.pane()
         if pane is None or pane.dead:
             return None
+        self.captured_pane = pane
         return self.harness.screen(self.tmux.capture(pane.id))
 
     def echoes(self) -> tuple[str, ...]:
@@ -295,6 +300,7 @@ class Door:
         elif human_wake:
             return Delivery("withheld", "human wake requires a human-owned session")
         self.before_submit = None
+        self.after_paste = None
         self.since = datetime.now(timezone.utc)
         from .turn_failure import obstruction
         if reason := obstruction(self.seat):
@@ -328,12 +334,14 @@ class Door:
         if verify is not None and not verify():
             return Delivery('withheld', 'bound source changed before paste; no keys sent')
         if self.human_wake:
-            from .human_wake import eligible, screen_hold
+            from .human_wake import eligible, screen_hold, width_hold
             # Exclude metadata holds and prove the record before the last capture.
             if reason := eligible(self.seat, proof=proof):
                 return Delivery('withheld', reason)
             screen = self.screen()
             if reason := screen_hold(screen):
+                return Delivery('withheld', reason)
+            if reason := width_hold(self.harness, self.captured_pane):
                 return Delivery('withheld', reason)
             if not proof.same_launch(self.seat):
                 return Delivery('blind', 'human wake launch changed before paste; no keys sent')
@@ -342,6 +350,7 @@ class Door:
             proof.save(phase="pasting")
         self.tmux.paste(pane.id, text)
         shown = self.box_shows(self.harness.box(text))
+        self.after_paste = shown
         if shown is None or not self.matches(self.harness.box(text), shown):  # law: one-door
             if verify is None or verify():
                 if reason:=paste_refusal.clear(self,text,owned,shown,BOX_SECONDS):
