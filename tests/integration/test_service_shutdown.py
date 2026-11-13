@@ -84,11 +84,11 @@ def wait_for(predicate, seconds=10):
 
 
 @pytest.fixture
-def world(tmp_path, monkeypatch):
+def world(tmp_path, monkeypatch, request):
     folder = tmp_path / "ship"
     (folder / "roles").mkdir(parents=True)
     (folder / "roles/captain.md").write_text("Synthetic shutdown exercise.\n")
-    (folder / "ship.toml").write_text('''[ship]
+    declaration = '''[ship]
 name = "synthetic-stop-zzzz"
 operator = "synthetic-operator-zzzz"
 [pools.synthetic]
@@ -105,7 +105,12 @@ effort = "medium"
 [seats.synthetic-seat-zzzz.settings]
 steps = 0
 step_seconds = 0
-''')
+'''
+    # Ordinary phase restarts follow the checkout; the upgrade proof opts into a real own copy.
+    code = getattr(request, 'param', 'checkout')
+    if code is not None:
+        declaration = shipmod.edit(declaration, 'ship', 'code', code)
+    (folder / 'ship.toml').write_text(declaration)
     ship = shipmod.load(folder)
     shipmod.fence(ship)
     tmux = Tmux.private(tmp_path / "socket")
@@ -214,6 +219,7 @@ def test_forced_cut_is_named_and_remains_unsubmitted(world, monkeypatch):
     assert world.submitted() == 0
 
 
+@pytest.mark.parametrize('world', [None], indirect=True)
 def test_upgrade_stop_waits_midpaste_and_new_service_does_not_repeat(world):
     world.start("pasted")
     original = world.post()
