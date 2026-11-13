@@ -1076,3 +1076,97 @@ def test_a_space_only_inset_is_padding_but_never_supplies_a_text_difference():
     door = claude_door(claude_rows(payload, 80))
     for edited in ('keep both spaces\nlast line', 'keep  both spaces\nlast lin', 'keep  both spaces\nlast line  x'):
         assert not door.matches(ClaudeHarness().box(edited + '\n'), door.screen()), edited
+
+
+# Captain 400c (3) and dfe6 (7): the check keeps, under runtime/check and before teardown, the Door's first delivery
+# result and the box as shown beside the final observation, and the woken seat's own last tool calls, bounded.
+
+def test_the_first_door_result_and_the_box_as_shown_are_observed_once(desk):
+    desk.order()
+    seen = []
+    human_wake.run(desk.seat, observe_delivery=lambda delivery, shown: seen.append((delivery.result, shown)))
+    assert seen == [('delivered', EXACT)], 'the first delivery and the box as the program showed it'
+    human_wake.run(desk.seat, observe_delivery=lambda delivery, shown: seen.append((delivery.result, shown)))
+    assert len(seen) == 1, 'a standing wake is not delivered again'
+
+
+def evidence(d) -> tuple[dict, dict]:
+    folder = d.runtime / 'check'
+    return (json.loads((folder / 'desk-wake-observation.json').read_text()),
+            json.loads((folder / 'desk-tool-evidence.json').read_text()))
+
+
+def test_wake_evidence_keeps_the_first_delivery_beside_the_final_observation_in_the_runtime(desk):
+    desk.order()
+    human_wake.run(desk.seat)
+    first = dict(result='blind', detail='d' * 256, shown='s' * 256, shown_truncated=True)
+    checkmod.retain_wake_evidence(desk.seat, dict(reason='synthetic final reason', first_delivery=first))
+    observation, tools = evidence(desk)
+    assert observation['first_delivery'] == first and observation['seat'] == 'desk'
+    final = observation['final_observation']
+    assert final['reason'] == 'synthetic final reason' and final['phase'] == reservation(desk)['phase'] == 'delivered'
+    assert final['watch_armed'] is False and 'first_delivery' not in final
+    assert tools == dict(status='unknown', reason='adapter tool call/results unsupported', pairs=[]), \
+        'an adapter with no decoder says unknown; nothing is invented'
+    for path in (desk.runtime / 'check').iterdir():
+        assert path.resolve().is_relative_to(desk.runtime.resolve()), 'runtime only, never the repository'
+        assert MARKER not in path.read_text(), 'no waiting order body or subject'
+
+
+def test_an_oversized_observation_is_replaced_by_a_named_unknown(desk):
+    checkmod.retain_wake_evidence(desk.seat, dict(reason='x' * 9000, first_delivery=None))
+    observation, _ = evidence(desk)
+    assert observation['first_delivery'] is None
+    assert observation['final_observation'] == dict(reason='waking observation exceeded 8 KiB bound; unknown')
+
+
+def test_tool_evidence_is_read_only_from_the_seats_own_pinned_record(desk, tmp_path):
+    from quarterdeck.harness.claude import ClaudeHarness
+    read = []
+    desk.seat.harness.check_tool_evidence = lambda record: read.append(record) or dict(status='known', reason='r', pairs=[])
+    elsewhere = ClaudeShape(tmp_path / 'elsewhere', desk.ship.workspace, 'synthetic-foreign-record', 'fake-1')
+    elsewhere.begin('Synthetic foreign request', 'fake-1', 'medium')
+    (desk.seat.folder / 'record').write_text(f'{elsewhere.path}\n')
+    checkmod.retain_wake_evidence(desk.seat, dict(reason='synthetic', first_delivery=None))
+    assert read == [] and evidence(desk)[1]['status'] == 'unknown', 'a record outside the seat home is never read'
+    (desk.seat.folder / 'record').write_text(f'{desk.record.path}\n')
+    checkmod.retain_wake_evidence(desk.seat, dict(reason='synthetic', first_delivery=None))
+    assert read == [desk.record.path] and evidence(desk)[1]['status'] == 'known', 'its own pinned record, once'
+    desk.tmux.panes[DESK.id] = replace(DESK, pid=DESK.pid + 1)  # the pane no longer belongs to the launch
+    checkmod.retain_wake_evidence(desk.seat, dict(reason='synthetic', first_delivery=None))
+    assert read == [desk.record.path] and evidence(desk)[1]['status'] == 'unknown'
+
+
+def test_claude_tool_evidence_keeps_only_the_last_eight_pairs_and_names_its_truncation(tmp_path):
+    from quarterdeck.harness.claude import ClaudeHarness
+    record, rows = tmp_path / 'record-tamarack.jsonl', []
+    for i in range(10):
+        command = ('y' * 2000) if i == 9 else f'synthetic step {i}'
+        rows.append(dict(type='assistant', message=dict(role='assistant', content=[dict(
+            type='tool_use', id=f'call-tamarack-{i}', name='Bash', input=dict(command=command))])))
+        rows.append(dict(type='user', message=dict(role='user', content=[dict(
+            type='tool_result', tool_use_id=f'call-tamarack-{i}', content=f'synthetic result {i}', is_error=False)])))
+    record.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+    found = ClaudeHarness().check_tool_evidence(record)
+    assert [pair['id'] for pair in found['pairs']] == [f'call-tamarack-{i}' for i in range(2, 10)]
+    last = found['pairs'][-1]
+    assert last['call_truncated'] is True and len(last['call']) == 1024 and found['status'] == 'partial'
+    assert len(json.dumps(found, ensure_ascii=True).encode()) <= 32768
+
+
+def test_the_probe_keeps_its_evidence_when_it_raises_and_an_evidence_failure_fails_the_check(desk, monkeypatch):
+    def raising(seat, orders, observed):
+        observed['first_delivery'] = dict(result='withheld', detail='synthetic', shown=None, shown_truncated=False)
+        raise RuntimeError('synthetic probe failure')
+    monkeypatch.setattr(checkmod, '_probe_wake', raising)
+    with pytest.raises(RuntimeError):
+        checkmod.probe_wake(desk.seat, [])
+    observation, _ = evidence(desk)
+    assert observation['final_observation']['probe_outcome_unknown'] is True
+    assert observation['first_delivery']['result'] == 'withheld', 'kept beside the unknown outcome'
+
+    monkeypatch.setattr(checkmod, '_probe_wake', lambda seat, orders, observed: [checkmod.Check('synthetic step', True, '')])
+    monkeypatch.setattr(checkmod, 'retain_wake_evidence', lambda seat, observed: (_ for _ in ()).throw(OSError('full')))
+    checks = checkmod.probe_wake(desk.seat, [])
+    assert [(c.name, c.passed) for c in checks] == [('synthetic step', True),
+                                                   ('human-session waking line: runtime evidence retained', False)]
