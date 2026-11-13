@@ -921,6 +921,8 @@ class ClaudeBox(Box):
 
 
 class ClaudeHarness(Harness):
+    box_geometry_known = True  # box_columns below declares the established text area
+
     def state_for_relaunch(self, record, launched_at):
         # This rare lifecycle read uses a fresh reader, never changes the cached record state.
         return _Reader(record).state(launched_at=launched_at)

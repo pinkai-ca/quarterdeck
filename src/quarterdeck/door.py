@@ -19,6 +19,7 @@ from .harness.base import Screen
 from .harness.types import _cells
 from .quota import reset_text, stamp
 from .seat import Seat
+from .tmux import TmuxError
 
 CONFIRM_SECONDS = 5.0
 BOX_SECONDS = 2.0
@@ -37,13 +38,16 @@ class Reading:
     clears: str = ""
     working: bool = False
     waiting: bool = False
+    diagnostic: str = ""  # reason metadata only; never changes whether the door is open
 
     def __str__(self) -> str:
         if self.open:
-            return "open, queues" if self.working else "open"
-        if self.waiting:
-            return self.reason
-        return f"obstructed: {self.reason}, {self.clears}"
+            text = "open, queues" if self.working else "open"
+        elif self.waiting:
+            text = self.reason
+        else:
+            text = f"obstructed: {self.reason}, {self.clears}"
+        return f"{text}; {self.diagnostic}" if self.diagnostic else text
 
 
 def echoed(echo: str, wanted: str) -> bool:
@@ -153,6 +157,10 @@ class Door:
 
     def _reading(self, screen: Screen | None) -> Reading:
         """Read this captured frame, including absence, without taking another capture."""
+        return replace(self._base_reading(screen), diagnostic=self.pane_obstruction())
+
+    def _base_reading(self, screen: Screen | None) -> Reading:
+        """The existing admission reading; geometry diagnostics confer no authority."""
         from .turn_failure import obstruction
         if reason := obstruction(self.seat):
             return Reading(False, reason, "needs a human")  # law: record-first
@@ -198,6 +206,48 @@ class Door:
         if at is None or at.tzinfo is None:
             return False
         return 0 <= (datetime.now(timezone.utc) - at).total_seconds() < self.harness.start_seconds
+
+    def short_pane_reason(self, text, pane) -> str:
+        if self.seat.session.human or pane is None:
+            return ""
+        measure = getattr(self.harness, "minimum_box_rows", None)
+        if (measure is None or type(pane.width) is not int or type(pane.height) is not int
+                or pane.width < 1 or pane.height < 1):
+            return ""
+        rows = measure(text, pane.width)
+        if type(rows) is not int or rows <= pane.height:
+            return ""
+        return (f"pane too short: at least {rows} rows needed for the unfolded message "
+                f"({pane.height} available); enlarge the pane")
+
+    def pane_obstruction(self) -> str:
+        """Display a failed paste's scoped geometry, without settling or modifying any evidence."""
+        if self.seat.session.human:
+            return ""
+        try:
+            pane = self.seat.pane()
+            if pane is None or pane.dead:
+                return ""
+            proofs, errors = pending.journals(self.seat)
+            if errors:
+                return ""
+            from . import post
+            attempts = post.Attempts(self.seat.ship.runtime).all()
+            latest = {attempt.message: attempt.path.name for attempt in attempts}
+            current = set(latest.values())
+            for proof in proofs:
+                geometry = proof.data.get('paste_geometry')
+                if (proof.data['phase'] not in ('pasting', 'withheld') or not proof.same_launch(self.seat)
+                        or not isinstance(geometry, list) or len(geometry) != 2
+                        or any(type(value) is not int or value < 1 for value in geometry)
+                        or geometry != [pane.width, pane.height]
+                        or not current.intersection(proof.data['attempts'])):
+                    continue
+                if reason := self.short_pane_reason(proof.data['payload'], pane):
+                    return reason
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, TmuxError):
+            pass  # optional diagnostic unknown; the ordinary admission reading is unchanged
+        return ""
 
     def human_obstruction(self) -> tuple[Reading, str | None]:
         """Alarm evidence only: confirm an unknown frame twice, never grant Door authority."""
@@ -401,13 +451,23 @@ class Door:
         shown = self.box_shows(self.harness.box(text))
         self.after_paste = shown
         if shown is None or not self.matches(self.harness.box(text), shown):  # law: one-door
+            diagnostic = self.short_pane_reason(text, self.seat.pane())
+            if diagnostic and proof and proof.same_launch(self.seat):
+                current = self.seat.pane()
+                if current and current.id == pane.id and (current.width, current.height) == (pane.width, pane.height):
+                    try:
+                        proof.save(paste_geometry=[pane.width, pane.height])
+                    except OSError:
+                        pass  # optional reason metadata; never alter paste/clear/submit decisions
             if verify is None or verify():
                 if reason:=paste_refusal.clear(self,text,owned,shown,BOX_SECONDS):
-                    return Delivery('withheld',reason)
+                    return Delivery('withheld', f'{diagnostic}; {reason}' if diagnostic else reason)
             seen = shown.box if shown else None
             if proof and proof.data.get('paste_clear'):
-                return Delivery('blind','paste check failed; owned clear/empty outcome unconfirmed; inspect retained journal; never resent')
-            return Delivery("blind", f"box showed {seen!r}, not the message; not submitted or cleared; needs a human")
+                reason = 'paste check failed; owned clear/empty outcome unconfirmed; inspect retained journal; never resent'
+                return Delivery('blind', f'{diagnostic}; {reason}' if diagnostic else reason)
+            reason = f"box showed {seen!r}, not the message; not submitted or cleared; needs a human"
+            return Delivery("blind", f'{diagnostic}; {reason}' if diagnostic else reason)
         if proof and not proof.same_launch(self.seat):
             return Delivery("blind", "launch changed after paste; not submitted or cleared")
         if verify is not None and not verify():

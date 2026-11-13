@@ -626,6 +626,8 @@ def config_text(config: dict) -> str:
 
 
 class CodexHarness(Harness):
+    box_geometry_known = True  # box_columns below declares the established text area
+
     def check_tool_evidence(self, record: Path) -> dict:
         from .check_evidence import json_tools, codex_tools
         return json_tools(record, codex_tools)

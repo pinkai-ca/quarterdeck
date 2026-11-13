@@ -443,6 +443,7 @@ class Facts:
     check_failed: list[str] = field(default_factory=list)
     check_unknown: list[str] = field(default_factory=list)
     model_mismatches: list[str] = field(default_factory=list)
+    pane_obstructions: list[str] = field(default_factory=list)  # preserve named geometry diagnostics on overflow
 
     def line(self) -> str:  # law: nothing-waits-silently
         parts = ["SERVICE DOWN" if self.service == "down" else f"service {self.service}"]
@@ -463,6 +464,7 @@ class Facts:
         parts += self.model_mismatches
         parts += self.turn_errors
         parts += self.sign_in_failures
+        parts += self.pane_obstructions
         parts += self.group_held
         parts += self.cascade_held
         parts += self.structure_waiting
@@ -646,6 +648,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
     latest = attempts.latest(attempts=records)
     waiting, needs_human, unarmed, pending_lines, routes, unknown, queue_unknown, compactions, turn_errors = [], [], [], [], [], [], [], [], []
     sign_in_failures, ending = [], []
+    pane_obstructions = []
     selected = seats(ship, tmux, False)
     held, limit_unknown, move_reasons = limit_state(ship, selected)
     pending_lines += limit_unknown
@@ -698,6 +701,8 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
                 if queue_error:
                     queue_unknown.append(f"{seat.name}: queue unknown: {queue_error}")
             door, obstruction = Door(seat).human_obstruction()
+            if diagnostic := getattr(door, "diagnostic", ""):
+                pane_obstructions.append(f"{seat.name}: {diagnostic}")
             if (obstruction and not authentication_waiting(authentication)
                     and seat.name not in needs_human):
                 needs_human.append(seat.name)
@@ -741,6 +746,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
                  if getattr(tmux, "legacy", False) else ""),
         turn_errors=turn_errors,
         sign_in_failures=sign_in_failures,
+        pane_obstructions=pane_obstructions,
         group_held=group_post.holds(ship.runtime),
         cascade_held=cascade_runtime.holds(ship.runtime),
         structure_waiting=structure_outcome.waits(ship, selected),

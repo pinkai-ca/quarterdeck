@@ -152,6 +152,8 @@ def guard_question_configuration(home: Path) -> None:
 class OpenCodeHarness(EndpointHarness):
     """OpenCode, proven on 1.19.5. Runs on an endpoint pool; the model changes only at launch."""
 
+    box_geometry_known = True  # box_columns below declares the established text area
+
     efforts = EffortCapability("none", measured_versions=("1.19.5",), complete=True)
     defaults = DefaultMetadata(model_default=False, effort=SuggestedValue(None, "program-default"))
     effort_selectors = ()  # native variants are not the seat effort interface

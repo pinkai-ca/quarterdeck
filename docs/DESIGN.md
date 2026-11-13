@@ -1057,6 +1057,28 @@ Two tests guard the repository itself: no runtime content, seat id or credential
 
 Hosted CI gives only its pytest step a fresh private `TMUX_TMPDIR`, created by `mktemp -d` with owner-only permissions as `$RUNNER_TEMP/qs.XXXXXXXX`. This keeps socket length independent of the checkout path. The session fixture still budgets the effective anchor in filesystem bytes, with the same 107-byte limit and 12-byte margin; an overly long runner temporary path still refuses. The step retains a directory descriptor, compares device/inode identity and rejects a link before empty-only `rmdir` on exit. A failed test command keeps its nonzero status even if cleanup fails; cleanup failure after success fails the step and reports the retained path. No recursive removal or peer cleanup is allowed. Uncatchable process death may leave this invocation's directory for the disposable runner to retire. The separate fake-harness drill and the unset-variable project fallback are unchanged.
 
+**Short panes.** A failed whole-paste comparison can carry a reason-only geometry
+reading: `pane too short: at least N rows needed for the unfolded message
+(H available); enlarge the pane`. Only adapters with an established text-column
+declaration opt in. Printable ASCII/LF supplies a conservative lower bound: spaces
+and empty lines are ignored because rendering can discard separators; unsupported
+layout or undeclared columns stays unknown and keeps the generic mismatch. The
+bound makes no assumption about UI chrome or a program's folding threshold. All
+whole/folded comparators and clear, submit, receipt, retry and human-session rules
+are unchanged. Accepted folded placeholders never acquire the diagnostic.
+
+The existing failed-paste journal can retain the width/height where the mismatch
+was observed. The read-only diagnostic uses its original payload and launch, only
+while that attempt remains latest, in pasting/withheld phase and at that same
+geometry. A changed pane removes this geometry label; it never settles uncertain
+evidence or authorizes resending. Status retains the seat and reason even when
+other alerts overflow. An open door can display a previous failed delivery's
+geometry without changing its admission decision. Human seats acquire no such
+annotation. **Native renderer behavior at short heights is unmeasured**; acceptance
+here uses invented 100x16 and 100x50 frames and existing measured fold contracts,
+not a live native renderer or provider. No independently established clipped-boundary
+form is available, so no unnumbered height diagnosis is inferred from an unknown box.
+
 ## 13. Repository layout
 
 ```

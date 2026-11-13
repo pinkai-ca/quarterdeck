@@ -295,6 +295,8 @@ STEERING = re.compile(r"^\s*Steering: (.*?)\s*$", re.M)
 
 
 class PiHarness(EndpointHarness):
+    box_geometry_known = True  # box_columns below declares the established text area
+
     def check_tool_evidence(self, record: Path) -> dict:
         from .check_evidence import json_tools, pi_tools
         return json_tools(record, pi_tools)

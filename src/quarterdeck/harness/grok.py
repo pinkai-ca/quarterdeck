@@ -190,6 +190,8 @@ def program_privacy(path: Path) -> dict | None:
 
 
 class GrokHarness(Harness):
+    box_geometry_known = True  # box_columns below declares the established text area
+
     efforts = EffortCapability()  # CLI vocabulary is not measured
     defaults = DefaultMetadata(model_default=True, model=SuggestedValue(None, "program-default"),
                                effort=SuggestedValue(None, "program-default"))

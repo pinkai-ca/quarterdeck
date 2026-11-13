@@ -557,6 +557,20 @@ class Box:
     textwrap_ascii: bool = False
     pi_word_wrap: bool = False
 
+    def minimum_rows(self, columns: int | None) -> int | None:
+        """A lower bound, not a renderer or a whole-message comparison.
+
+        Only printable ASCII/LF is established. Ignore spaces and empty lines:
+        native word wrapping may discard separators, but not the remaining
+        characters or the line breaks between nonempty logical lines.
+        """
+        if type(columns) is not int or columns < 1:
+            return None
+        if any(char != '\n' and not 32 <= ord(char) <= 126 for char in self.text):
+            return None
+        return sum((len(line.replace(' ', '')) + columns - 1) // columns
+                   for line in self.text.split('\n'))
+
     def matches(self, shown: str | None, columns: int | None = None, slack: int = 0) -> bool:
         if shown is None:
             return False

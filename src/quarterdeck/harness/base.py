@@ -444,6 +444,14 @@ class Harness(ABC):
     def screen(self, text: str) -> Screen:
         pass
 
+    box_geometry_known = False  # adapters opt in only with an established text-column declaration
+
+    def minimum_box_rows(self, text: str, pane_width: int) -> int | None:
+        """Diagnostic only; the ordinary Box comparator still decides whether the whole paste is shown."""
+        if not self.box_geometry_known:
+            return None
+        return self.box(text).minimum_rows(self.box_columns(pane_width))
+
     def box_columns(self, pane_width: int) -> int | None:
         """Text-area columns for a recognized ordinary box, never a guessed width."""
         return pane_width - 2

@@ -31,6 +31,8 @@ def status_line(facts, alerts: list[str]) -> str:
     parts += getattr(facts, 'ending', ())
     # A sign-in failure must still name its seat and failed cure when categories overflow.
     parts += getattr(facts, 'sign_in_failures', ())
+    # A short pane's delivery obstruction must retain its seat and remedy on overflow.
+    parts += getattr(facts, 'pane_obstructions', ())
     parts += getattr(facts, 'request_waits', ())
     if getattr(facts, 'request_waits', ()):
         # New request details must not push the original operational words out.
