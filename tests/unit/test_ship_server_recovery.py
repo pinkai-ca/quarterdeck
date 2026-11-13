@@ -274,7 +274,7 @@ def test_a_deliberate_down_between_the_proof_and_the_effect_wins(ship, monkeypat
     assert any('taken down meanwhile, left down: worker-1' in body for body in reports(ship))
 
 
-def test_stopped_and_unknown_show_in_qd_status_with_no_server_and_none_is_started(ship, capsys, monkeypatch):
+def test_stopped_and_unknown_show_in_qd_status_with_no_server_and_none_is_started(ship, capsys, monkeypatch, synthetic_disk_room):
     from quarterdeck import cli
     from quarterdeck.tmux import ship_socket
     absent = ship_socket(ship.ship)  # the ship's own server, which qd now names; nothing has started it
