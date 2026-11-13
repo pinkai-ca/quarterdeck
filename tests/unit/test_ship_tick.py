@@ -88,14 +88,21 @@ def scheduled(monkeypatch, ship, passes, reload=None):
     def sleep(seconds):
         clock.now += seconds
 
+    def acquire_lock(runtime):
+        runtime.mkdir(parents=True, exist_ok=True)
+        return servicectl.acquire_lock(runtime)
+
     service.tick = tick
-    monkeypatch.setattr(servicemod, 'acquire_lock', lambda runtime: None)
+    monkeypatch.setattr(servicemod, 'acquire_lock', acquire_lock)
     monkeypatch.setattr(servicemod.servicectl, 'acknowledge', lambda *args: acknowledgements.append(args))
     monkeypatch.setattr(servicemod.signal, 'signal', lambda *args: None)
     monkeypatch.setattr(servicemod.time, 'monotonic', lambda: clock.now)
     monkeypatch.setattr(servicemod.time, 'sleep', sleep)
-    with pytest.raises(Stop):
-        service.run()
+    try:
+        with pytest.raises(Stop):
+            service.run()
+    finally:
+        service.lock.close()
     return [round(b - a, 9) for a, b in zip(starts, starts[1:])]
 
 
