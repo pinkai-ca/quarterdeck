@@ -70,9 +70,20 @@ def test_startup_waits_without_a_human_alarm_and_ready_releases_the_door(startin
     assert w.svc.store.is_open(order), "drawing or readiness never closes an order"
 
 
-def test_unknown_nonblank_screen_still_requires_a_human(starting):
+def test_unknown_nonblank_screen_still_requires_a_human(starting, monkeypatch):
     w = starting
     w.shown[0] = "An unfamiliar loading dialog\n⠋ ⠙ ⠹\n"
+    within = Door(w.seat).reading()
+    if w.seat.harness.screen(w.shown[0]).unknown is None:
+        # A boxless frame the adapter cannot name, inside the launch's start-up bound, is the program still drawing.
+        assert not within.open and within.clears == "time" and "starting" in within.reason
+    else:
+        assert not within.open and within.clears == "needs a human"
+    # Past the bound, the same frame calls a person, as before.
+    launched = w.seat.launched()
+    old = replace(launched, at=datetime.fromtimestamp(datetime.now(timezone.utc).timestamp()
+                                                      - w.seat.harness.start_seconds - 1, timezone.utc).isoformat())
+    monkeypatch.setattr(w.seat, "launched", lambda: old)
     read = Door(w.seat).reading()
     assert not read.open and read.clears == "needs a human"
     assert Door(w.seat).deliver("Do the work").result == "withheld"
