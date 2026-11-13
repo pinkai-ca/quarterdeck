@@ -37,7 +37,8 @@ def env(tmp_path, monkeypatch):
                            (SECOND, 'systems', False), ('desk-fern', 'desk', True)):
         spec = SimpleNamespace(name=name, role=role, up=True, fresh_after_compactions=2, harness='codex')
         ship.seats[name] = spec
-        seats[name] = SimpleNamespace(name=name, spec=spec, ship=ship, is_up=up)
+        seats[name] = SimpleNamespace(name=name, spec=spec, ship=ship, is_up=up,
+                                      launched=lambda: None)
     store = post.Store(ship.runtime)
     request = post.Message('ord-synthetic-request-orchid', 'order', post.SHIP, SUBJECT,
                            datetime(2025, 1, 1, tzinfo=timezone.utc), 'Synthetic threshold request')
