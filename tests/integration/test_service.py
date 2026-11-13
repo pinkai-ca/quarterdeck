@@ -382,6 +382,9 @@ def test_an_ack_wakes_nobody_and_a_resend_to_the_office_goes_to_its_watch(ship: 
     assert attempts.undelivered(store, "desk") == [message], "offered to the watch again"
     desk = seatmod.Seat(ship, ship.seat("desk"), tmux)
     assert desk.harness.screen(tmux.capture(desk.pane().id)).box == "", "and no key was pressed in the human's session"  # law: one-door
+    printed = qd(capsys, "inbox", "--wait", "desk")
+    assert printed.startswith(f"qd > second delivery of {message.id}; you may have it already: act on it once\n")
+    assert post.typed([message]).strip() in printed, "the watch printed it once more, saying it is a second delivery"
 
 
 def test_status_shows_what_the_seat_runs_and_never_the_ship_file_as_a_fact(ship: shipmod.Ship, tmux: Tmux, capsys):
