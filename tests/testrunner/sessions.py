@@ -23,7 +23,7 @@ def register(parent: Path, folder: Path, descriptor: int) -> str | None:
     # A child pytest may use its own project or nest below an outer fixture. It
     # owns that container locally; it must not register it as a direct child of
     # this run's anchor. A nonempty outer container still holds retirement.
-    if parent.name not in (SOCKETS, RUN_SOCKETS) or parent.parent.name != ROOT_NAME:
+    if parent.name != RUN_SOCKETS or parent.parent.name != ROOT_NAME:
         return None
     if Path(registry) != parent.parent / RESULTS / run / 'sessions':
         return None

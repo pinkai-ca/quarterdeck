@@ -7,7 +7,7 @@ import subprocess
 import pytest
 
 from tests.testrunner import owned, sessions
-from tests.testrunner.layout import RESULTS, RUN_SOCKETS, SOCKETS, Refused, Root, git_environment, write_json
+from tests.testrunner.layout import RESULTS, RUN_SOCKETS, SOCKETS, Refused, Root, git_environment, identity, write_json
 
 
 RUN = '20000101-000000-0000'  # invented schema-valid run, never a captured runtime identity
@@ -35,7 +35,18 @@ def register(root, anchor, monkeypatch):
     monkeypatch.setenv('TESTRUNS_RUN', RUN)
     monkeypatch.setenv(sessions.RECORD_ENV, str(root.path / RESULTS / RUN / 'sessions'))
     try:
-        assert sessions.register(parent, folder, descriptor)
+        if anchor == SOCKETS:
+            # Construct an old record rather than asking a new runner to use
+            # direct pytest's anchor for its own fixture.
+            token = owned.mark(descriptor)
+            records = root.child(RESULTS, RUN, 'sessions', create=False)
+            try:
+                write_json(records, 'u-sample.json', {'name': folder.name,
+                    'identity': identity(os.fstat(descriptor)), 'owner': token})
+            finally:
+                os.close(records)
+        else:
+            assert sessions.register(parent, folder, descriptor)
     finally:
         os.close(descriptor)
     return folder
@@ -56,13 +67,6 @@ def test_run_container_is_separate_from_the_direct_pytest_anchor(root, monkeypat
 
 def test_legacy_session_record_keeps_its_original_anchor(root, monkeypatch):
     folder = register(root, SOCKETS, monkeypatch)
-    directory = root.child(RESULTS, RUN, 'sessions', create=False)
-    try:
-        record = json.loads((root.path / RESULTS / RUN / 'sessions/u-sample.json').read_text())
-        record.pop('anchor')
-        write_json(directory, 'u-sample.json', record)
-    finally:
-        os.close(directory)
 
     assert sessions.retire(root, RUN)['outcome'] == 'complete'
     assert not folder.exists()
@@ -81,6 +85,23 @@ def test_nested_child_pytest_uses_its_ordinary_fixture_cleanup(root, monkeypatch
         os.close(descriptor)
         child.rmdir()
 
+    assert sessions.retire(root, RUN)['outcome'] == 'complete'
+
+
+def test_child_pytest_using_the_direct_anchor_keeps_local_cleanup(root, monkeypatch):
+    register(root, RUN_SOCKETS, monkeypatch)
+    os.close(root.child(SOCKETS))
+    parent = root.path / SOCKETS
+    child = parent / 'u-child'
+    child.mkdir()
+    descriptor = os.open(child, owned.DIRECTORY)
+    try:
+        assert sessions.register(parent, child, descriptor) is None
+        assert not any(child.iterdir())
+    finally:
+        os.close(descriptor)
+        child.rmdir()
+    assert not any(parent.iterdir())
     assert sessions.retire(root, RUN)['outcome'] == 'complete'
 
 
