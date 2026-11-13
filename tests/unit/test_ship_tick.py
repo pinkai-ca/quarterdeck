@@ -68,9 +68,12 @@ def scheduled(monkeypatch, ship, passes, reload=None):
     """Service.run with its passes stood in: returns how long it waited after each pass, by a fake clock."""
     clock = SimpleNamespace(now=0.0)
     starts = []
+    acknowledgements = []
     service = servicemod.Service.__new__(servicemod.Service)
     service.ship = ship
     service.runtime = ship.runtime
+    service.copy_identity = None
+    service.copy_start_token = None
     service.next_status = 0.0
     service.log = lambda *args, **kwargs: None
     service.status_due = lambda: None
@@ -87,6 +90,7 @@ def scheduled(monkeypatch, ship, passes, reload=None):
 
     service.tick = tick
     monkeypatch.setattr(servicemod, 'acquire_lock', lambda runtime: None)
+    monkeypatch.setattr(servicemod.servicectl, 'acknowledge', lambda *args: acknowledgements.append(args))
     monkeypatch.setattr(servicemod.signal, 'signal', lambda *args: None)
     monkeypatch.setattr(servicemod.time, 'monotonic', lambda: clock.now)
     monkeypatch.setattr(servicemod.time, 'sleep', sleep)
