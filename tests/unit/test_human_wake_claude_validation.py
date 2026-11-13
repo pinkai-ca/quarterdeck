@@ -517,28 +517,49 @@ def test_every_input_hold_is_checked_before_any_record_or_screen_read(desk, monk
 
 
 @pytest.mark.parametrize('held', [False, True])
-def test_an_uncertain_reservation_reads_only_its_own_receipt_and_a_hold_stops_even_that(desk, monkeypatch, held):
-    """The captain's ruling: metadata holds stop everything; else only the reservation's own receipt is looked for,
-    and while it stands there is no new wake, no screen read and no new candidate."""
+@pytest.mark.parametrize('phase', ['submitted', 'queued', 'delivered-open'])
+def test_a_standing_reservation_reads_only_its_own_receipt_or_ended_state_and_a_hold_stops_even_that(
+        desk, monkeypatch, phase, held):
+    """The captain's ruling: after every metadata hold, a standing reservation may read only its own receipt from its
+    pinned record at its original time (submitted, queued), or its own pinned record's ended state (delivered, turn
+    not ended). There is no screen read, no new candidate and no input; a metadata hold stops even those reads."""
     desk.order()
-    desk.tmux.record = None  # the program never takes it, so no receipt will be found
-    human_wake.run(desk.seat)
-    assert reservation(desk)['phase'] == 'submitted'
+    if phase == 'delivered-open':
+        human_wake.run(desk.seat)
+        assert received(desk) and desk.seat.harness.state(desk.record.path).turn_open is True
+    else:
+        desk.tmux.record = None  # the program never takes it, so no receipt will be found
+        human_wake.run(desk.seat)
+        assert reservation(desk)['phase'] == 'submitted'
+        if phase == 'queued':
+            data = reservation(desk)
+            data['phase'] = 'queued'
+            (desk.seat.folder / 'human-wake.json').write_text(json.dumps(data))
     desk.order('A later synthetic order')
-    sent = list(desk.tmux.sent)
+    sent, before, states = list(desk.tmux.sent), reservation(desk)['phase'], []
 
     def forbidden(*args, **kwargs):
-        pytest.fail('an uncertain reservation reads nothing but its own receipt')
+        pytest.fail('a standing reservation reads nothing but its own receipt or its own ended state')
     for obj, name in ((desk.tmux, 'read_pane'), (desk.tmux, 'capture'), (desk.tmux, 'paste'), (desk.tmux, 'keys'),
-                      (desk.seat.harness, 'state'), (desk.seat.harness, 'screen')):
+                      (desk.seat.harness, 'screen'), (desk.seat.harness, 'inputs')):
         monkeypatch.setattr(obj, name, forbidden)
+    real_state = desk.seat.harness.state
+
+    def state(record):
+        states.append(Path(record))
+        return real_state(record)
+    monkeypatch.setattr(desk.seat.harness, 'state', state)
     if held:
         monkeypatch.setattr(human_wake.recovery, 'held', lambda seat: 'synthetic mode unresolved')
         monkeypatch.setattr(human_wake.pending.Proof, 'confirmed', forbidden)
+        monkeypatch.setattr(desk.seat.harness, 'state', forbidden)
     for _ in range(2):
-        assert human_wake.run(desk.seat)
-    assert desk.tmux.sent == sent and reservation(desk)['phase'] == 'submitted'
-    assert human_wake.status(desk.seat)
+        human_wake.run(desk.seat)
+    assert desk.tmux.sent == sent and reservation(desk)['phase'] == before, 'no input, no new candidate'
+    assert all(path == desk.record.path for path in states), 'only its own pinned record'
+    if held or phase != 'delivered-open':
+        assert states == [], 'no state read for a receipt-only or held reservation'
+    assert human_wake.status(desk.seat), 'the standing state is visible'
 
 
 def test_one_human_seats_wake_failure_is_isolated_and_logged_once(alarms, monkeypatch):
