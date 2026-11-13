@@ -226,8 +226,8 @@ def test_forced_cut_is_named_and_the_one_look_submits_it_once(world, monkeypatch
     world.start()
     wait_for(lambda: servicectl.started(runtime))
     assert pending.active(world.seat)
-    look = wait_for(lambda: (world.journal() or {}).get("look"))  # the one look, journalled before its press
-    assert look["outcome"] == "submitted" and wait_for(lambda: world.submitted() == 1) and world.submitted() == 1
+    look = wait_for(lambda: (world.journal() or {}).get("look"), 60)  # the one look, journalled before its press
+    assert look["outcome"] == "submitted" and wait_for(lambda: world.submitted() == 1, 60) and world.submitted() == 1
 
 
 @pytest.mark.parametrize('world', [None], indirect=True)

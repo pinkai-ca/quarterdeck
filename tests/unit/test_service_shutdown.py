@@ -105,3 +105,24 @@ def test_stop_keeps_a_heartbeat_that_now_names_another_pid(tmp_path, monkeypatch
     monkeypatch.setattr(servicectl.os, "kill", lambda *_: heartbeat.write_text(f"{next_pid} {stamp}\n"))
     assert "service stopped" in servicectl.stop(tmp_path)
     assert servicectl.read_heartbeat(tmp_path)[0] == next_pid
+
+
+def test_stop_waits_for_the_process_to_be_gone_after_its_lock_frees(tmp_path, monkeypatch):
+    """The lock frees as the process closes its files, before the kernel marks it gone; stop waits for that event."""
+    from quarterdeck import servicectl
+
+    pid, stamp = 999999997, datetime.now(timezone.utc).isoformat()
+    servicectl.heartbeat_path(tmp_path).write_text(f"{pid} {stamp}\n")
+    expected = {"pid": pid, "start": "synthetic-start-zzzz"}
+    gone = iter([False, False, True])
+    seen = []
+    monkeypatch.setattr(servicectl, "alive", lambda _: True)
+    monkeypatch.setattr(servicectl, "locked", lambda _: False)
+    monkeypatch.setattr(servicectl.os, "kill", lambda *_: None)
+    monkeypatch.setattr(shutdown, "owner", lambda runtime, found=None: expected)
+    monkeypatch.setattr(shutdown, "process_start", lambda found: expected["start"])
+    monkeypatch.setattr(shutdown, "inflight", lambda runtime, owner: None)
+    monkeypatch.setattr(shutdown, "process_gone", lambda owner: (seen.append("look") or next(gone, True)))
+    monkeypatch.setattr(shutdown, "annotate", lambda runtime, owner, forced: seen.append("annotate") or "synthetic annotation")
+    assert "synthetic annotation" in servicectl.stop(tmp_path)
+    assert seen == ["look", "look", "look", "annotate"], "annotated only once the process reads gone"

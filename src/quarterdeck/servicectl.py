@@ -23,6 +23,7 @@ from .ship import Ship, ShipError
 
 STALE_SECONDS = 10.0  # a tick longer than this reads as busy
 ANSWER_SECONDS = 8.0
+EXIT_SETTLE = 2.0  # after the lock frees, how long stop waits for the kernel to mark the process gone
 START_SECONDS = 30.0
 LIFECYCLE_REQUESTS = frozenset({'relaunch', 'stop', 'select', 'control'})
 
@@ -214,6 +215,11 @@ def stop(runtime: Path) -> str:
                 deadline = max(deadline, term_started + shutdown.DELIVERY_GRACE)
             time.sleep(0.05)
         if not locked(runtime):
+            # The lock frees as the process closes its files, a moment before the kernel marks it gone: wait for
+            # that event itself, within the same bound, so a slow machine is not read as an owner still alive.
+            gone_by = time.monotonic() + EXIT_SETTLE
+            while owner is not None and time.monotonic() < gone_by and not shutdown.process_gone(owner):
+                time.sleep(0.05)
             extended = extended or shutdown.inflight(runtime, owner) is not None
             detail = shutdown.annotate(runtime, owner, forced=how == "killed")
             stopped_beat = read_heartbeat(runtime)

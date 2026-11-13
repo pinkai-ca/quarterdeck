@@ -566,8 +566,10 @@ The rest of the tick is not run. Stop keeps its ordinary 3-second grace; an exac
 extends the total grace to 30 seconds from SIGTERM, then at most 2 seconds for SIGKILL release. Its proof names
 the delivery wait and elapsed time. The stopper annotates only the matching journal after the old process is
 gone and one nonblocking claim proves the original lock inode, PID/start/generation and transaction token.
+The lock frees as the old process closes its files, a moment before the kernel marks it gone, so after the
+lock frees the stopper waits up to 2 seconds more for that event before it reads the owner as gone.
 Unknown identity, a replaced/nonregular/symlink path or an unreadable boundary leaves the journal unchanged.
-Forced `pasting`/`submitting` cuts remain uncertain for explicit resend. Stop annotations read at most 8 MiB
+Forced `pasting`/`submitting` cuts remain uncertain until the door's one look settles them. Stop annotations read at most 8 MiB
 of one journal and never wait for a new lock owner or scan the pending directory.
 
 The same stop boundary recognizes the fixed waking line's existing `seats/<seat>/human-wake.json`
