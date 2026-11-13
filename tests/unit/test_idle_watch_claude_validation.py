@@ -1,4 +1,4 @@
-"""Independent gates for the seat's own inbox watch at idle decisions (captain ord-23da, on ord-3d12).
+"""Independent gates for the seat's own inbox watch at idle decisions, as the captain ruled for the idle proof.
 
 Where the only work a turn left running is the seat's own inbox watch, the turn's work counts as ended for a
 relaunch, for a move, for a control and for readiness after compactions. Both proofs are required together: the
@@ -351,3 +351,17 @@ def test_the_registration_keeps_its_two_field_watch_and_shares_the_canonical_gen
     following = case.watch()
     assert inbox_watch.generation(case.runtime, SEAT) != token, 'each watch registers a new generation'
     case.stop(following)
+
+
+@pytest.mark.parametrize('form', ['other work pending', 'tools unknown'])
+def test_the_plain_activity_column_says_idle_while_the_reason_stays_with_the_hold_and_the_full_reading(case, form):
+    """The captain's display ruling: a record that never proves its tools would otherwise read as tool state unknown on
+    nearly every seat. The plain column says idle; the reason is where it causes a wait, and in the full reading."""
+    from quarterdeck import watch
+    if form == 'other work pending':
+        case.write([('call-rowan', 'synthetic other command', True, 'task-rowan')])
+    else:
+        case.write([('call-hazel', WATCH, True, 'task-hazel')], unresolved_delegation=True)
+    assert watch.activity(case.seat) == watch.Activity('idle')
+    reason = idle.tool_reason(case.harness.state(case.record))
+    assert reason and held(case).reason == reason, 'the hold and the full reading still name it'

@@ -66,7 +66,6 @@ def activity(seat: Seat | UnresolvedSeat, now: datetime | None = None) -> Activi
     except OSError as error:
         return Activity("unknown", f"record unreadable: {error}")
     queue_detail = f"queue unknown: {state.queue_error}" if state.queue_error else ""
-    tools = idle.tool_reason(state)
     if state.failure is not None and state.turn_open is False:  # law: record-first -- an error is never plain idle
         from .turn_failure import REFUSAL, describe
         queued = f"{len(state.queued)} queued" if state.queued else ""
@@ -78,13 +77,12 @@ def activity(seat: Seat | UnresolvedSeat, now: datetime | None = None) -> Activi
         return Activity('needs a human', 'native question tool; ask through qd post question' +
                         (f" · {queue_detail}" if queue_detail else ""))
     if not state.turn_open:
-        return Activity("idle", " · ".join(filter(None, (
-            queue_detail or (f"{len(state.queued)} queued" if state.queued else ""), tools))))
+        return Activity("idle", queue_detail or (f"{len(state.queued)} queued" if state.queued else ""))
     where = f"in {state.open_tool} {_ago(state.open_tool_since, now)}".rstrip() if state.open_tool else ""
     quiet = (now - state.last_write).total_seconds() if state.last_write else 0
     if quiet >= STALL_SECONDS:
-        return Activity("stalled", " · ".join(filter(None, (where or f"{int(quiet // 60)}m without a step", queue_detail, tools))))
-    return Activity("working", " · ".join(filter(None, (where, queue_detail, tools))))
+        return Activity("stalled", " · ".join(filter(None, (where or f"{int(quiet // 60)}m without a step", queue_detail))))
+    return Activity("working", " · ".join(filter(None, (where, queue_detail))))
 
 
 @dataclass(frozen=True)
