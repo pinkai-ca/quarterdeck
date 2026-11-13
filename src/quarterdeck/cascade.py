@@ -439,12 +439,17 @@ def associated_failure(service, name: str, order: post.Message) -> Stop | None:
             if failure is None or state.turn_open is not False:
                 return None
 
-            def has_order(items):
-                return order.id in thread_context.consumed_ids(
-                    service.store, name, seat.spec.role, items)
+            def named(items):
+                return thread_context.consumed_ids(service.store, name, seat.spec.role, items)
 
-            associated = has_order(failure.inputs)
-            if not associated:
+            def has_order(items):
+                return order.id in named(items)
+
+            in_failure = named(failure.inputs)
+            associated = order.id in in_failure
+            # Time decides only where the failed turn's inputs say nothing either way: inputs that name
+            # another message make the failure that message's, never this order's.
+            if not associated and not in_failure:
                 # Accepted inputs are direct takings; consumed queue entries retain
                 # their acceptance time, so their later consumed_at is the taking.
                 taken = [item.at if item.kind == 'accepted' else item.consumed_at

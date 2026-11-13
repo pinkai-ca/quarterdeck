@@ -531,3 +531,43 @@ def test_the_ring_never_writes_outside_its_own_question_folder(tmp_path):
     assert {p.name for p in ring.path.iterdir() if not p.name.startswith(".")} == {"state.json", "responses.md"}
     assert snapshot(ring.outside) == {}
     assert oct((ring.path / "responses.md").stat().st_mode & 0o777) == oct(0o600)
+
+
+def take_and_report(world):
+    """The current step taken in a turn that ends normally, and its report filed."""
+    world.launch("worker")
+    world.runner.advance(world.path)
+    order = step_order(world.svc.store, world.path)
+    world.turn("worker", order, last="Invented reply.")
+    report = reply(world.svc.store, order)
+    return order, report
+
+
+def test_a_later_refusal_of_another_message_after_the_report_never_stops_the_ring(world):
+    """The failed turn's inputs name another message: it is that message's failure, not this step's, whatever the time."""
+    order, report = take_and_report(world)
+    later = world.order("worker", "An invented later order on other work.", sender="tester")
+    world.turn("worker", later, error=REFUSED)
+    assert cascade.known_refusal(world.svc, "worker", order) is None
+    assert cascade.run(world.svc) == []
+    data = cascade.load(world.path)
+    assert data["status"] == "running" and data["steps"][0]["report"] == report.id
+    assert step_order(world.svc.store, world.path).to == "tester", "the completed answer is relayed"
+    assert finals(world.svc.store, "conductor") == []
+
+
+def test_a_refusal_naming_the_step_after_the_report_still_stops_the_ring(world):
+    order, report = take_and_report(world)
+    world.turn("worker", order, error=REFUSED)
+    assert cascade.known_refusal(world.svc, "worker", order) is not None
+    assert cascade.run(world.svc) == []
+    assert cascade.load(world.path)["status"] == "stopped" and cascade.load(world.path)["stop_category"] == "provider-refusal"
+
+
+def test_a_refusal_with_no_recorded_inputs_after_the_taking_still_stops_the_ring(world):
+    """Inputs that say nothing either way: the turn that began after the taking is still this step's, by time."""
+    order, report = take_and_report(world)
+    world.turn("worker", error=REFUSED)
+    assert cascade.known_refusal(world.svc, "worker", order) is not None
+    assert cascade.run(world.svc) == []
+    assert cascade.load(world.path)["status"] == "stopped"
