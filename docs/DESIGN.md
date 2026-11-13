@@ -1023,6 +1023,7 @@ quarterdeck/                       the project folder: the framework repository
     harness/capabilities.py   immutable effort/default metadata, pure declaration admission, override conflicts and shared default labels
     harness/codex_usage.py   Codex usage windows from the newest eligible snapshot in current launch records
     harness/claude_limits.py  native Claude model allowances, family scope, reset-period inference and safe shape diagnostics
+    harness/antigravity_models.py  explicit Google model/group relations and native identity equalities; unmeasured facts remain unknown
     harness/claude_watch.py  structured watch-output consumption for attribution, never delivery receipts
     harness/claude_background.py   measured root Bash background-task evidence, separate from turn accounting
     harness/compactions.py   the complete native compaction count and work snapshot from the current owned record
