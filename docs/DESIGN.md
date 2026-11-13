@@ -780,7 +780,9 @@ cursor, only with screen-reader mode off and the dialog focused. This is source 
 digit press. Its different effort renderer has no such permission; Home/Up/Down remain unknown. The
 expected option display comes from the current seat/account context, never a global name alias table.
 A display-only command result does not establish model identity: the next assistant's canonical model
-ID is the confirmation. The first question is retained by digest only; changed or incomplete focus
+ID, bound to the pending request's command envelope, is the confirmation. A current model observation
+that may predate that request is insufficient; absent request-specific binding remains unknown.
+The first question is retained by digest only; changed or incomplete focus
 evidence holds by name. A complete focused-surface predicate still requires independent native evidence.
 
 An observed model is read from the current owned record first and an adapter-proved screen reading

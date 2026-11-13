@@ -167,13 +167,15 @@ def proof(state: Continuation) -> str:
 
 
 def observe_control(seat, control, state: Continuation, now: datetime, *, persist, verify,
-                    answer_current=None) -> Decision:
+                    answer_current=None, confirmed_model=None) -> Decision:
     """Advance a consumed request through its existing owner's persistence/identity callbacks.
 
     There is deliberately no command-delivery operation here. A resumed reservation can only observe
     the record or expire; only a positively submitted control can own its subsequent question. verify
     checks the immutable request/launch/declaration; answer_current additionally checks the input scope,
-    not the continuation's mutable phase. Neither callback is supplied by a second queue.
+    not the continuation's mutable phase. confirmed_model must bind the canonical assistant model to
+    this request's command envelope; a current model reading may predate the request and is insufficient.
+    A missing request-specific binding remains unknown. No callback is supplied by a second queue.
     """
     from .door import Door
 
@@ -182,7 +184,8 @@ def observe_control(seat, control, state: Continuation, now: datetime, *, persis
     record = seat.record()
     try:
         reported = seat.harness.state(record) if record is not None and control.name != 'model' else None
-        model_id = seat.harness.record_model(record) if record is not None and control.name == 'model' else None
+        model_id = (confirmed_model(record, state)
+                    if record is not None and control.name == 'model' and confirmed_model is not None else None)
     except (OSError, ValueError, TypeError):
         reported, model_id = None, None
     launched = seat.launched()
