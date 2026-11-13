@@ -205,7 +205,10 @@ Unlike the forum, which gives filed reports priority because they return only to
 the cascade checks exact current-order exclusion and the existing positively associated
 reader refusal before accepting a report because it would relay it onward.
 One `associated_failure` helper retains the existing native match and lifecycle/launch
-rechecks; the service's pre-report callback and ordinary health share that proof. The
+rechecks; the service's pre-report callback and ordinary health share that proof. A failure
+belongs to the current step when its recorded inputs name the step's order; when they name another
+message it is that message's, never this step's; only inputs that name no message at all fall back
+on time, the failed turn having begun at or after the step's taking. The
 callback promotes only the existing provider-refusal category, so dead/limit and generic
 errors remain report-first and cannot mask a positive associated reader refusal. Unknown
 native evidence supplies no positive refusal; an unreadable exclusion journal still holds.
