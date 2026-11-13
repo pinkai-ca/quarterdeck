@@ -127,13 +127,22 @@ step_seconds = 0
 
     class World:
         def start(self, phase=None):
+            # Finish the preceding owner's release before starting another driver.
+            wait_for(lambda: not servicectl.locked(ship.runtime))
             if phase is None:
                 return servicectl.start(ship, qd=Path(sys.executable).parent / "qd")
             with (folder / "driver-output.txt").open("w") as output:
                 child = subprocess.Popen([sys.executable, "-c", DRIVER, str(folder), phase],
                     stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
             children.append(child)
-            wait_for(lambda: servicectl.started(ship.runtime))
+            # locked() briefly claims the lock when it is free. Do not race that
+            # probe against the child's initial acquire_lock; its own heartbeat
+            # proves that this child has acquired it and reached a service tick.
+            def ready():
+                beat = servicectl.read_heartbeat(ship.runtime)
+                return beat is not None and beat[0] == child.pid
+            wait_for(ready)
+            assert servicectl.started(ship.runtime)
 
         def post(self, body=MARKER):
             return Store(ship.runtime).new("order", "ship", seat.name, body)
