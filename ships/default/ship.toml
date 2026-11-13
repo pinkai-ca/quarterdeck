@@ -44,7 +44,7 @@ effort = "xhigh"
 [seats.engineering]
 session = "bridge"
 role = "engineering"
-persona = "Scott"
+persona = "Geordi"
 harness = "codex"
 pool = "codex"
 model = "gpt-6-astra"

@@ -49,7 +49,7 @@ def test_the_default_ship_is_the_smallest_crew_on_real_programs():
     ship = shipmod.load(folder)
     assert ship.workspace == folder.parent.parent, "the crew works on the project folder the ship sits in"
     assert [(s.name, s.role, s.harness, s.persona) for s in ship.seats.values()] == [
-        ("desk", "desk", "claude", "Maeve"), ("captain", "captain", "codex", "Picard"), ("engineering", "engineering", "codex", "Scott")]
+        ("desk", "desk", "claude", "Maeve"), ("captain", "captain", "codex", "Picard"), ("engineering", "engineering", "codex", "Geordi")]
     assert {p.provider for p in ship.pools.values()} == {"anthropic", "openai"}
     assert ship.session_of(ship.seat("desk")).human and not ship.session_of(ship.seat("captain")).human
     assert "the desk lands it" in (folder / "orders.md").read_text()
