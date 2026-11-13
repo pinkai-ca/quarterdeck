@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import argparse
+import math
 from pathlib import Path
 import sys
 
-from . import clean, run
+from . import clean, resources, run
 from .layout import Refused
 
 
@@ -17,6 +18,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--target', help='the worktree to test (default: the one the current directory is in)')
     p.add_argument('-n', dest='workers', type=int, default=8, help='xdist workers, 8 at most (0: none)')
     p.add_argument('--timeout', type=float, default=3600.0, help='seconds before the run is stopped (default 3600)')
+    p.add_argument('--memory-mib', type=resources.memory_mib, default=resources.DEFAULT_MEMORY_MIB,
+                   help=f'per-process address-space cap, at most {resources.DEFAULT_MEMORY_MIB} MiB (default)')
     p.add_argument('--wait', type=float, default=0.0, help='seconds to wait for a busy slot (default: refuse at once)')
     p = verbs.add_parser('clean', help='retire a registered change that is merged, or deliberately dropped')
     p.add_argument('--change', required=True, help='the change: its branch name')
@@ -33,6 +36,8 @@ def main(argv: list[str] | None, runner_files: list[Path]) -> int:
     args = parser().parse_args(argv)
     try:
         if args.verb == 'run':
+            if not math.isfinite(args.timeout) or args.timeout <= 0:
+                raise Refused('--timeout must be finite and greater than zero')
             if not 0 <= args.workers <= 8:
                 raise Refused('-n takes 0 to 8 workers')
             return run.Runner(args, runner_files).main()

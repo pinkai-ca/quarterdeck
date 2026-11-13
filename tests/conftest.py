@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.testrunner import layout
+from tests.testrunner import layout, resources
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -59,10 +59,26 @@ def pytest_configure(config):
     """Pytest run directly puts its temporary products, basetemp included, under .testruns/t, where
     pyproject's tmp_path_retention_count keeps only the last three sessions. A run of tests/testrun.py has
     already given the run its own TMPDIR, HOME and caches in its scratch, and is left as it is."""
+    try:
+        config._qd_memory_limit = resources.apply_from_environment()
+    except (ValueError, RuntimeError) as error:
+        raise pytest.UsageError(str(error)) from error
     if os.environ.get('TESTRUNS_RUN'):
         return
     os.environ['TMPDIR'] = str(plain_temp())
     tempfile.tempdir = None  # gettempdir() reads TMPDIR again
+
+
+def pytest_report_header(config):
+    return f'test memory limit: RLIMIT_AS soft=hard={config._qd_memory_limit} bytes (children inherit)'
+
+
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_runtest_makereport(item, call):
+    if call.excinfo is not None and call.excinfo.errisinstance(MemoryError):
+        call.excinfo.value.add_note(f'test memory limit: RLIMIT_AS {item.config._qd_memory_limit} bytes; '
+                                  'allocation refused within this test process')
+    yield
 
 
 @contextmanager

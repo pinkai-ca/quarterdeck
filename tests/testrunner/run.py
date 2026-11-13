@@ -9,6 +9,8 @@ analyse, write the result, the report and every failure, and remove everything e
 from __future__ import annotations
 
 import fcntl
+from contextlib import contextmanager
+from functools import partial
 import json
 import os
 from pathlib import Path
@@ -18,7 +20,7 @@ import subprocess
 import sys
 import time
 
-from . import clean, environment, evidence, gitops, owned, procs, report, usersite
+from . import clean, environment, evidence, gitops, owned, procs, report, resources, usersite
 from .layout import RESULTS, RUNS, SOCKETS, Refused, Root, Slot, git_environment, identity, new_run_id, write_json
 
 GRACE = 15.0
@@ -59,6 +61,32 @@ class Runner:
     # -- signals and process groups -------------------------------------------------------------------------
     def on_signal(self, number, frame):
         self.signal = number
+
+    def on_timeout(self, number, frame):
+        self.timed_out = True
+        raise Stop(f'time limit of {self.args.timeout} s')
+
+    @contextmanager
+    def time_limit(self):
+        """One wall deadline for setup AND pytest, including synchronous setup helpers.
+
+        The alarm ends before evidence/cleanup, which keep their existing termination grace.
+        subprocess.run kills/waits for its child on this exception; execute stops its own group.
+        """
+        old_handler = signal.getsignal(signal.SIGALRM)
+        old_timer = signal.getitimer(signal.ITIMER_REAL)
+        started = time.monotonic()
+        self.deadline = started + self.args.timeout
+        signal.signal(signal.SIGALRM, self.on_timeout)
+        try:
+            signal.setitimer(signal.ITIMER_REAL, self.args.timeout)
+            yield
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, old_handler)
+            if old_timer[0]:
+                signal.setitimer(signal.ITIMER_REAL, max(0.000001, old_timer[0] - (time.monotonic() - started)),
+                                 old_timer[1])
 
     def check(self):
         if self.signal is not None:
@@ -103,17 +131,18 @@ class Runner:
         self.console.flush()
         process = subprocess.Popen([str(part) for part in argv], cwd=cwd, env=env, stdin=subprocess.DEVNULL,
                                    stdout=self.console, stderr=subprocess.STDOUT, start_new_session=True,
-                                   pass_fds=(self.lock,))
-        self.state.setdefault('groups', []).append([process.pid, procs.start_time(process.pid)])
-        write_json(self.scratch_fd, 'state.json', self.state)
+                                   pass_fds=(self.lock,),
+                                   preexec_fn=partial(resources.apply_memory, self.args.memory_mib)
+                                   if title == 'pytest' else None)
         try:
+            self.state.setdefault('groups', []).append([process.pid, procs.start_time(process.pid)])
+            write_json(self.scratch_fd, 'state.json', self.state)
             while process.poll() is None:
-                try:
-                    self.check()
-                except Stop:
-                    self.stop_group(process)
-                    raise
+                self.check()
                 time.sleep(0.2)
+        except Stop:
+            self.stop_group(process)
+            raise
         finally:
             self.last_exit = process.returncode
             self.survivors += self.sweep(process.pid)
@@ -170,23 +199,24 @@ class Runner:
                   'outcome': {'status': 'running', 'wrapper_exit': None}}
         write_json(results_fd, 'result.json', result)
         self.console = open(scratch / 'console.txt', 'a', encoding='utf-8', errors='replace')
-        if args.timeout:
-            self.deadline = time.monotonic() + args.timeout
         sockets_before, target_before = socket_entries(root), None
         pytest_exit, note = None, None
         checkout = scratch / 'checkout'
         try:  # from here every failure, the runner's own included, reaches the same fixed ending
-            self.python = shutil.which('python3')
-            if self.python is None:
-                raise Refused('no python3 on the ordinary PATH')
-            self.user = usersite.resolve(self.python)  # before HOME is replaced
-            env, settings = environment.build(scratch, run, self.user['base'] if self.user['exists'] else None)
-            result['environment'] = {**settings, 'workers': args.workers, 'timeout': args.timeout,
-                                     'uid': os.getuid(), 'cpus': os.cpu_count()}
-            result['tools'] = environment.tool_versions(env)
-            target_before = {'tracked': gitops.tracked_manifest(target.top, target.head),
-                             'extra': gitops.extra_manifest(target.top)}
-            pytest_exit = self.setup_and_test(target, targets, scratch, checkout, env, result)
+            with self.time_limit():
+                self.python = shutil.which('python3')
+                if self.python is None:
+                    raise Refused('no python3 on the ordinary PATH')
+                self.user = usersite.resolve(self.python)  # before HOME is replaced
+                env, settings = environment.build(scratch, run, self.user['base'] if self.user['exists'] else None)
+                env[resources.MEMORY_ENV] = str(args.memory_mib)
+                result['environment'] = {**settings, 'workers': args.workers, 'timeout': args.timeout,
+                                         'memory_mib': args.memory_mib, 'memory_resource': 'RLIMIT_AS',
+                                         'memory_soft_and_hard': True, 'uid': os.getuid(), 'cpus': os.cpu_count()}
+                result['tools'] = environment.tool_versions(env)
+                target_before = {'tracked': gitops.tracked_manifest(target.top, target.head),
+                                 'extra': gitops.extra_manifest(target.top)}
+                pytest_exit = self.setup_and_test(target, targets, scratch, checkout, env, result)
         except Stop as stop:
             note = str(stop)
             pytest_exit = self.last_exit if self.state['stage'] == 'pytest' else None
