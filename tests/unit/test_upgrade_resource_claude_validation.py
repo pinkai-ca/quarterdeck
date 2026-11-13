@@ -343,8 +343,17 @@ def test_claude_synchronize_never_writes_through_a_link(tmp_path, linked):
 
 @pytest.fixture
 def harness(drydock, tmp_path, monkeypatch):
-    """install.upgrade with a staged synthetic target, fake pip, a controllable proof and a fake service."""
+    """install.upgrade with a staged synthetic target, fake pip, a controllable proof and a fake service.
+
+    The ship is a test-owned copy of the drydock that installs its own copy: only this copy drops
+    code = "checkout"; the tracked drydock keeps it.
+    """
+    declaration = drydock / 'ship.toml'
+    text = declaration.read_text()
+    assert 'code = "checkout"\n' in text
+    declaration.write_text(text.replace('code = "checkout"\n', ''))
     ship = load(drydock)
+    assert ship.code is None
     runtime = ship.runtime
     runtime.mkdir(parents=True, exist_ok=True)
     h = SimpleNamespace(ship=ship, runtime=runtime, venv=runtime / 'venv', record=runtime / install.RECORD,
@@ -365,11 +374,19 @@ def harness(drydock, tmp_path, monkeypatch):
     def git(repo, *args):
         if args[0] == 'rev-parse':
             return (TARGET + '\n').encode()
+        if args[0] == 'status':
+            return b''
         assert args[0] == 'archive'
         return archive()
 
-    def run(argv, doing, timeout=None):
-        if argv[1:3] == ['-m', 'venv']:
+    def executable(path):
+        return path.is_file() and os.access(path, os.X_OK)
+
+    def run(argv, doing, timeout=None, **kwargs):
+        if argv[0] == 'cp':
+            h.calls.append('cp')
+            shutil.copytree(argv[-2], argv[-1], symlinks=True)
+        elif argv[1:3] == ['-m', 'venv']:
             h.calls.append('venv')
             write(Path(argv[-1]) / 'bin/python', '')
         elif argv[1:3] == ['-m', 'pip']:
@@ -377,23 +394,34 @@ def harness(drydock, tmp_path, monkeypatch):
             if h.pip_writes_qd:
                 qd = write(h.venv / 'bin/qd', '#!/bin/sh\necho "qd synthetic-test"\n')
                 qd.chmod(0o755)
+        elif doing == 'checking live package, prefix and resources':
+            h.calls.append(('origin', argv[-1]))
+            package = h.venv / 'lib/synthetic-test/quarterdeck'
+            return SimpleNamespace(stdout=json.dumps(dict(package=str(package), package_digest='f' * 64)), returncode=0)
         else:
             h.calls.append(('proof', argv[-1]))
-            if h.proof_error is not None:
+            if not executable(Path(argv[0])):
+                raise ShipError(f'{doing} failed (exit 126)')  # what _run says when the program cannot run
+            if argv[-1] != '--version' and h.proof_error is not None:
                 raise h.proof_error
+        return SimpleNamespace(stdout='qd synthetic-test\n', returncode=0)
 
     def stop(runtime):
         h.calls.append('stop')
         h.running = False
         return 'service stopped · synthetic'
 
-    def start(ship, qd=None):
+    def start(ship, qd=None, **kwargs):
+        if h.running:  # as servicectl.start: a live service is left alone and named
+            return 'service alive · synthetic'
         h.calls.append('start')
+        h.running = True
         return 'service started · synthetic'
 
     monkeypatch.setattr(install, 'source_repo', lambda ship: tmp_path / 'no-repository-test')
     monkeypatch.setattr(install, 'git', git)
     monkeypatch.setattr(install, '_run', run)
+    monkeypatch.setattr(install, 'rebrief_result', lambda path, data, timeout=None: 'rebrief synthetic')
     monkeypatch.setattr(install.servicectl, 'alive', lambda runtime: h.running)
     monkeypatch.setattr(install.servicectl, 'stop', stop)
     monkeypatch.setattr(install.servicectl, 'start', start)
@@ -408,93 +436,122 @@ def existing_venv(h, python=True):
         (h.venv / 'bin/python').touch()
 
 
-def assert_failed_marker(h, previous=None, command='laws'):
-    record = json.loads(h.record.read_text())
-    assert record['commit'] == TARGET and record['ref'] == 'HEAD' and record['previous'] == previous
-    assert record['proof'] == 'failed' and record['proof_command'] == command
-    assert isinstance(record['at'], str) and record['at']
-    assert 'start' not in h.calls and h.statuses == []
-    assert not (h.runtime / 'requests').exists()
+def earlier_copy(h, commit=PRIOR, *, proven=True):
+    """A copy installed by an earlier framework: interpreter, qd and laws, with its historical record."""
+    write(h.venv / 'bin/python', '').chmod(0o755)
+    write(h.venv / 'bin/qd', '#!/bin/sh\necho "qd synthetic-earlier"\n').chmod(0o755 if proven else 0o644)
+    write(h.share / 'standing-orders/laws.md', 'earlier laws\n')
+    h.record.write_text(json.dumps(dict(commit=commit, ref='old', at='2026-01-01T00:00:00+00:00', previous=None)))
+
+
+PROOF_SEQUENCE = [('origin', 'laws'), ('proof', '--version'), ('proof', 'laws')]
+
+
+def assert_failed(h, phase='proving', step='laws', current=None):
+    """The failure is recorded by phase and named step from the fixed vocabulary; no target is selected."""
+    data = json.loads(h.record.read_text())
+    failure = data['last_failure']
+    assert failure['phase'] == phase and isinstance(failure['at'], str) and failure['at']
+    if step is not None:
+        # The category is from the fixed list; the step that actually failed is named as well, in any field.
+        assert step in json.dumps(failure, sort_keys=True), 'the record names the step that actually failed'
+    assert data['pending'] is None
+    assert (data['current'] or {}).get('commit') == current and data.get('commit') == current
+    assert h.statuses == [] and not (h.runtime / 'requests').exists()
 
 
 def test_claude_invalid_target_declaration_changes_nothing_before_install(harness):
     h = harness
-    existing_venv(h)
-    write(h.share / 'standing-orders/laws.md', 'incumbent laws\n')
-    h.record.write_text(json.dumps(dict(commit=PRIOR, ref='old', at='2026-01-01T00:00:00+00:00', previous=None)))
-    record = h.record.read_bytes()
+    earlier_copy(h)
     h.running = True
     write(h.target / 'pyproject.toml', toml_table({'share/quarterdeck/standing-orders': ['../outside-test/laws.md']}))
-    with pytest.raises(ShipError, match='invalid target resource declaration'):
+    with pytest.raises(ShipError, match='resource declaration invalid') as raised:
         install.upgrade(h.ship, 'HEAD', h.tmux)
+    assert 'outside-test' not in str(raised.value), 'a fixed cause, never the declaration text'
     assert h.calls == [] and h.running
-    assert h.record.read_bytes() == record
-    assert files_under(h.share) == {'standing-orders/laws.md': b'incumbent laws\n'}
+    assert files_under(h.share) == {'standing-orders/laws.md': b'earlier laws\n'}
+    assert_failed(h, phase='preparing', step='resource declaration invalid', current=PRIOR)
 
 
-def test_claude_failed_proof_keeps_a_half_made_preexisting_venv(harness):
+def test_claude_failed_proof_restores_a_half_made_preexisting_venv(harness):
+    """Changed by design: a failed proof restores the environment that existed, never keeps the target."""
     h = harness
     existing_venv(h, python=False)  # an environment existed, even without an interpreter
     h.proof_error = ShipError('proving the installed copy answers failed: synthetic')
-    with pytest.raises(ShipError, match=r'retained \(unknown\).*service not restarted'):
+    with pytest.raises(ShipError, match='proving: .*earlier copy restored') as raised:
         install.upgrade(h.ship, 'HEAD', h.tmux)
-    assert h.venv.is_dir() and (h.venv / 'bin/qd').exists()
-    assert h.calls == ['venv', 'pip', ('proof', 'laws')]
-    assert_failed_marker(h)
+    assert 'synthetic' not in str(raised.value)
+    assert h.venv.is_dir() and files_under(h.venv) == {}, 'the half-made environment is back as it was'
+    assert not os.path.lexists(h.runtime / 'venv.prev')
+    assert h.calls == ['cp', 'venv', 'pip', *PROOF_SEQUENCE] and 'start' not in h.calls
+    assert_failed(h)
 
 
-def test_claude_failed_proof_leaves_a_running_service_down_and_status_lines_unpointed(harness):
+def test_claude_failed_proof_restarts_a_running_service_on_the_restored_copy(harness):
+    """Changed by design: the earlier copy is restored and its service restarted; status lines untouched."""
     h = harness
-    existing_venv(h)
-    h.record.write_text(json.dumps(dict(commit=PRIOR, ref='old', at='2026-01-01T00:00:00+00:00', previous=None)))
+    earlier_copy(h)
     h.running = True
     h.proof_error = ShipError('proving the installed copy answers failed: synthetic')
-    with pytest.raises(ShipError, match='service not restarted'):
+    with pytest.raises(ShipError, match='earlier copy restored.*service started'):
         install.upgrade(h.ship, 'HEAD', h.tmux)
-    assert h.calls.count('stop') == 1 and not h.running
-    assert_failed_marker(h, previous=PRIOR)
+    assert h.calls.count('stop') == 1 and h.calls[-1] == 'start' and h.running
+    assert (h.venv / 'bin/qd').read_text() == '#!/bin/sh\necho "qd synthetic-earlier"\n'
+    assert files_under(h.share) == {'standing-orders/laws.md': b'earlier laws\n'}
+    assert_failed(h, current=PRIOR)
 
 
-def test_claude_proof_timeout_retains_code_with_marker(harness):
+def test_claude_failed_proof_leaves_the_service_down_when_the_restored_copy_is_unproven(harness):
+    """The old guarantee where it still applies: nothing is started on a copy that cannot be proven."""
+    h = harness
+    earlier_copy(h, proven=False)
+    h.running = True
+    h.proof_error = ShipError('proving the installed copy answers failed: synthetic')
+    with pytest.raises(ShipError, match='restoration/restart incomplete'):
+        install.upgrade(h.ship, 'HEAD', h.tmux)
+    assert h.calls.count('stop') == 1 and 'start' not in h.calls and not h.running
+    assert h.statuses == []
+
+
+def test_claude_proof_timeout_restores_the_earlier_environment(harness):
+    """Changed by design: a timeout is a failed proof like any other; the earlier environment returns."""
     h = harness
     existing_venv(h)
     h.proof_error = ShipError('proving the installed copy answers failed: no answer within 60s')
-    with pytest.raises(ShipError, match='retained'):
+    with pytest.raises(ShipError, match='earlier copy restored') as raised:
         install.upgrade(h.ship, 'HEAD', h.tmux)
-    assert (h.venv / 'bin/python').exists()
-    assert_failed_marker(h)
+    assert '60s' not in str(raised.value)
+    assert files_under(h.venv) == {'bin/python': b''}
+    assert_failed(h)
 
 
 @pytest.mark.parametrize('command', ('missing', 'not-executable'))
 def test_claude_installed_version_failure_is_marked_as_the_version_step(harness, command):
-    """The marker names the step that actually failed: the version query, never a proof that did not run."""
+    """The record names the step that actually failed: the version query, never a proof that did not run."""
     h = harness
     existing_venv(h)
     h.pip_writes_qd = False
     if command == 'not-executable':
         write(h.venv / 'bin/qd', '#!/bin/sh\necho "qd synthetic-test"\n').chmod(0o644)
-    with pytest.raises(ShipError, match=r'retained.*--version proof failed'):
+    with pytest.raises(ShipError, match='proving'):
         install.upgrade(h.ship, 'HEAD', h.tmux)
     assert (h.venv / 'bin/python').exists()
-    assert not any(isinstance(call, tuple) and call[0] == 'proof' for call in h.calls)
-    assert_failed_marker(h, command='--version')
+    assert ('proof', '--version') in h.calls and ('proof', 'laws') not in h.calls
+    assert_failed(h, step='--version')
 
 
-def test_claude_unwritable_failure_record_is_a_plain_retained_error(harness):
-    """When even the failed marker cannot be written, the error says so and nothing restarts."""
+def test_claude_unreadable_record_refuses_before_any_mutation(harness):
+    """Changed by design: an unreadable record is refused before stop, pip or any write, not retained after."""
     h = harness
     existing_venv(h)
     h.record.mkdir()  # a directory where the record belongs: unreadable as evidence and unwritable
     h.running = True
-    h.proof_error = ShipError('proving the installed copy answers failed: synthetic')
-    with pytest.raises(ShipError) as raised:
+    with pytest.raises(ShipError, match='installed state unreadable') as raised:
         install.upgrade(h.ship, 'HEAD', h.tmux)
-    message = str(raised.value).lower()
-    assert TARGET[:7] in message and 'retained' in message
-    assert 'not written' in message and 'restart' in message
+    assert TARGET[:7] not in str(raised.value)
     assert h.record.is_dir() and not any(h.record.iterdir())
-    assert (h.venv / 'bin/python').exists() and (h.venv / 'bin/qd').exists()
-    assert h.calls.count('stop') == 1 and 'start' not in h.calls and not h.running
+    assert files_under(h.venv) == {'bin/python': b''}
+    assert h.calls == [] and h.running
     assert h.statuses == [] and not (h.runtime / 'requests').exists()
 
 
@@ -512,54 +569,60 @@ CORRUPT_RECORDS = {
 
 @pytest.mark.parametrize('case', sorted(CORRUPT_RECORDS))
 def test_claude_corrupt_prior_record_is_unknown_and_never_echoed(harness, case):
-    """Failure path: unknown direction, nothing of the old record in the error or the new record."""
+    """Unknown evidence: never a previous copy, nothing of the old record in an error or a new record."""
     h = harness
     existing_venv(h)
     h.record.write_bytes(CORRUPT_RECORDS[case])
     assert install.previous_install(h.runtime) is None
     h.proof_error = ShipError('proving the installed copy answers failed: synthetic')
-    with pytest.raises(ShipError, match=r'retained \(unknown\)') as raised:
+    with pytest.raises(ShipError) as raised:
         install.upgrade(h.ship, 'HEAD', h.tmux)
     assert SENTINEL not in str(raised.value)
-    assert SENTINEL not in h.record.read_text()
-    assert_failed_marker(h)
+    if h.record.read_bytes() != CORRUPT_RECORDS[case]:
+        assert SENTINEL not in h.record.read_text()
+        assert_failed(h)
+    else:
+        assert h.calls == [], 'a record left as it was means nothing was attempted'
+    assert files_under(h.venv) == {'bin/python': b''}
 
 
 @pytest.mark.parametrize('case', ('invalid-json', 'deeply-nested'))
-def test_claude_corrupt_prior_record_never_gates_a_successful_install(harness, case):
+def test_claude_unreadable_prior_record_gates_install_and_is_never_echoed(harness, case):
+    """Changed by design: an unreadable record now stops a sync before anything; it is still never echoed."""
     h = harness
     existing_venv(h)
     h.record.write_bytes(CORRUPT_RECORDS[case])
-    proofs = install.upgrade(h.ship, 'HEAD', h.tmux)
-    assert 'previous installed commit unknown' in proofs[0]
-    assert not any(SENTINEL in line for line in proofs)
-    record = json.loads(h.record.read_text())
-    assert record['commit'] == TARGET and record['previous'] is None and 'proof' not in record
-    assert files_under(h.share) == {'ships/drydock/ship.toml': b'target drydock\n',
-                                    'standing-orders/laws.md': b'target laws\n'}
+    with pytest.raises(ShipError, match='unreadable') as raised:
+        install.upgrade(h.ship, 'HEAD', h.tmux)
+    assert SENTINEL not in str(raised.value)
+    assert h.record.read_bytes() == CORRUPT_RECORDS[case] and h.calls == []
+    assert files_under(h.venv) == {'bin/python': b''}
 
 
 def test_claude_existing_venv_without_record_is_unknown_not_initial(harness):
     h = harness
     existing_venv(h)
     proofs = install.upgrade(h.ship, 'HEAD', h.tmux)
-    assert 'previous installed commit unknown' in proofs[0]
-    assert 'the ship ran the checkout before' not in proofs[0]
-    assert h.calls == ['pip', ('proof', 'laws')]
-    assert json.loads(h.record.read_text())['previous'] is None
+    installed = next(line for line in proofs if line.startswith('installed '))
+    assert 'was unknown' in installed and 'no proven previous copy' in installed
+    assert not any('checkout' in line or 'first' in line for line in proofs)
+    assert h.calls == ['cp', 'pip', *PROOF_SEQUENCE]
+    data = json.loads(h.record.read_text())
+    assert data['previous'] is None and data['current']['commit'] == TARGET
     assert (h.runtime / f'requests/upgrade-rebrief-{TARGET}.json').exists()
 
 
 def test_claude_successful_upgrade_clears_a_prior_failed_marker(harness):
+    """A failed historical marker is never a previous copy (changed by design: it was 'was PRIOR')."""
     h = harness
-    existing_venv(h)
+    earlier_copy(h)
     h.record.write_text(json.dumps(dict(commit=PRIOR, ref='old', at='2026-01-01T00:00:00+00:00',
                                         previous=None, proof='failed', proof_command='laws')))
     proofs = install.upgrade(h.ship, 'HEAD', h.tmux)
-    assert f'was {PRIOR[:7]}' in proofs[0]
-    record = json.loads(h.record.read_text())
-    assert set(record) == {'commit', 'ref', 'at', 'previous'}
-    assert record['commit'] == TARGET and record['previous'] == PRIOR
+    assert any(line.startswith(f'installed {TARGET[:7]} ') and 'was unknown' in line for line in proofs)
+    data = json.loads(h.record.read_text())
+    assert data['commit'] == TARGET and data['proof'] == 'good' and 'proof_command' not in data
+    assert data['previous'] is None and data['last_failure'] is None and data['pending'] is None
     assert framework_check(h.ship).passed
 
 
@@ -567,12 +630,14 @@ def test_claude_first_install_failure_removes_only_its_own_environment(harness):
     h = harness
     keep = write(h.runtime / 'keep-test/state.md', 'other runtime state\n')
     h.proof_error = ShipError('proving the installed copy answers failed: synthetic')
-    with pytest.raises(ShipError, match='synthetic') as raised:
+    with pytest.raises(ShipError, match='incomplete first install removed') as raised:
         install.upgrade(h.ship, 'HEAD', h.tmux)
-    assert 'retained' not in str(raised.value)
-    assert not os.path.lexists(h.venv) and not h.record.exists()
+    assert 'retained' not in str(raised.value) and 'synthetic' not in str(raised.value)
+    assert not os.path.lexists(h.venv) and not os.path.lexists(h.runtime / 'venv.prev')
     assert keep.read_text() == 'other runtime state\n'
-    assert 'start' not in h.calls and not (h.runtime / 'requests').exists()
+    assert 'start' not in h.calls
+    # Changed by design: the record now keeps the failure's category, and selects no copy.
+    assert_failed(h)
 
 
 def test_claude_unsupported_legacy_target_uses_target_baseline_and_ignores_listed_traversal(harness):
@@ -600,30 +665,29 @@ def test_claude_target_without_standing_orders_fails_help_proof_with_marker(harn
     shutil.rmtree(h.target)
     legacy_target(h.target, None, names={'ships/drydock/ship.toml': 'target drydock\n'})
     h.proof_error = ShipError('proving the installed copy answers failed: synthetic')
-    with pytest.raises(ShipError, match=r'--help proof failed'):
+    with pytest.raises(ShipError, match='proving'):
         install.upgrade(h.ship, 'HEAD', h.tmux)
-    assert ('proof', '--help') in h.calls
-    assert_failed_marker(h, command='--help')
+    assert ('proof', '--help') in h.calls and ('proof', 'laws') not in h.calls
+    assert_failed(h, step='--help')
 
 
-
-def test_claude_resource_failure_after_pip_is_a_retained_failure(harness, monkeypatch):
-    """After the first mutation nothing escapes past the record: a resource step failure is marked too."""
+def test_claude_resource_failure_after_pip_restores_the_earlier_copy(harness, monkeypatch):
+    """Changed by design: a resource step failure after pip restores the earlier copy and its service."""
     h = harness
-    existing_venv(h)
-    h.record.write_text(json.dumps(dict(commit=PRIOR, ref='old', at='2026-01-01T00:00:00+00:00', previous=None)))
+    earlier_copy(h)
     h.running = True
 
     def failing(source, share, files):
         raise ShipError('synthetic resource step failure')
 
     monkeypatch.setattr(install.resources, 'synchronize', failing)
-    with pytest.raises(ShipError, match='retained'):
+    with pytest.raises(ShipError, match='resource synchronization failed') as raised:
         install.upgrade(h.ship, 'HEAD', h.tmux)
-    assert (h.venv / 'bin/python').exists() and 'pip' in h.calls
-    assert not any(isinstance(call, tuple) and call[0] == 'proof' for call in h.calls)
-    assert not h.running
-    assert_failed_marker(h, previous=PRIOR, command='resources')
+    assert 'resource step failure' not in str(raised.value)
+    assert 'pip' in h.calls and not any(isinstance(call, tuple) for call in h.calls), 'no proof ran'
+    assert h.calls[-1] == 'start' and h.running
+    assert files_under(h.share) == {'standing-orders/laws.md': b'earlier laws\n'}
+    assert_failed(h, phase='resources', step='resource synchronization failed', current=PRIOR)
 
 
 @pytest.mark.parametrize('linked', ('venv', 'venv-share', 'managed-tree'))
@@ -690,30 +754,39 @@ def test_claude_direction_reads_history_without_deciding_anything(history):
 
 @pytest.mark.parametrize('commit', ('a' * 40, 'b' * 64))
 def test_claude_previous_install_accepts_full_hex_commits(tmp_path, commit):
-    (tmp_path / install.RECORD).write_text(json.dumps(dict(commit=commit, at='2026-01-01T00:00:00+00:00')))
+    (tmp_path / install.RECORD).write_text(json.dumps(dict(commit=commit, ref='old', at='2026-01-01T00:00:00+00:00')))
     assert install.previous_install(tmp_path)['commit'] == commit
 
 
 # Doctor reads, never repairs -------------------------------------------------------------------
 
 def test_claude_doctor_fails_only_the_failed_marker_and_writes_nothing(drydock):
+    declaration = drydock / 'ship.toml'
+    declaration.write_text(declaration.read_text().replace('code = "checkout"\n', ''))  # a test-owned copy
     ship = load(drydock)
-    ship.runtime.mkdir(parents=True, exist_ok=True)
+    assert ship.code is None
+    venv = ship.runtime / 'venv'
+    write(venv / 'bin/python', '').chmod(0o755)
+    write(venv / 'bin/qd', '#!/bin/sh\necho "qd synthetic-earlier"\n').chmod(0o755)
+    write(venv / 'share/quarterdeck/standing-orders/laws.md', 'earlier laws\n')
     record = ship.runtime / install.RECORD
     base = dict(commit=TARGET, ref='HEAD', at='2026-01-01T00:00:00+00:00', previous=PRIOR)
     record.write_text(json.dumps(dict(base, proof='failed', proof_command='--help')))
     before = files_under(ship.runtime)
     check = framework_check(ship)
-    assert not check.passed
-    assert TARGET[:7] in check.detail and '--help proof failed' in check.detail
+    # Changed by design: a historical failed marker is no selected copy, so its commit and step are not
+    # repeated as if current; it still fails, and doctor still writes nothing.
+    assert not check.passed and 'copy has no good recorded proof' in check.detail
     assert files_under(ship.runtime) == before
     record.write_text(json.dumps(dict(base, proof='failed')))
-    check = framework_check(ship)
-    assert not check.passed and 'installed proof failed' in check.detail
+    assert not framework_check(ship).passed
+    # Changed by design: an unrecognized proof value is unknown evidence, never a pass.
     record.write_text(json.dumps(dict(base, proof='unrecognized-test')))
-    assert framework_check(ship).passed
+    assert not framework_check(ship).passed
     record.write_text(json.dumps(base))
-    assert framework_check(ship).passed
+    check = framework_check(ship)
+    assert check.passed and f'selected copy {TARGET[:7]}' in check.detail
+    assert files_under(ship.runtime) == {**before, install.RECORD: record.read_bytes()}
 
 
 def test_claude_only_upgrade_writes_the_share_tree():
