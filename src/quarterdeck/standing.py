@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 import locale
+import shlex
 import tokenize
 import sys
 from dataclasses import dataclass
@@ -94,24 +95,28 @@ def brief(ship: Ship, seat: SeatSpec) -> Brief:
 
 def seat_section(ship: Ship, seat: SeatSpec, human_session: bool) -> str:
     inbox = f"runtime/post/inbox/{seat.name}.md"
+    qd = shlex.quote(str(ship.runtime / 'bin/qd'))
     lines = [
         "# Your seat",
         "",
         f"You are seat `{seat.name}`, role {seat.role}, on the ship `{ship.name}`; the human is its {ship.operator}. "
         f"The ship folder is `{ship.folder}` and `qd` already knows it (QD_SHIP) and you (QD_SEAT).",
         "",
+        f"- Your qd command is `{qd}`. Use this absolute command for every `qd` invocation in these orders, "
+        "cards and messages, including replies and inbox watches. Shell startup files can put another `qd` "
+        "on PATH; this command always names this ship's copy.",
         f"- Messages addressed to you are in `{inbox}`, open obligations first. "
-        "Only your report closes an order addressed to you: `qd post report --re <id> \"what was done\"`. "
-        "Say you have started one with `qd post ack --re <id>`; an ack claims, it never closes.",
-        "- To give an order, ask or answer: `qd post order --to <seat> \"...\"`, `qd post question --to <seat> \"...\"`, "
-        "`qd post answer --re <id> \"...\"`. Long bodies may come from a file: `qd post order --to <seat> --body-file notes.md`.",
-        "- Read a seat with `qd watch <seat>`, the ship with `qd status`; your own brief is `qd brief " + seat.name + "`.",
+        f"Only your report closes an order addressed to you: `{qd} post report --re <id> \"what was done\"`. "
+        f"Say you have started one with `{qd} post ack --re <id>`; an ack claims, it never closes.",
+        f"- To give an order, ask or answer: `{qd} post order --to <seat> \"...\"`, `{qd} post question --to <seat> \"...\"`, "
+        f"`{qd} post answer --re <id> \"...\"`. Long bodies may come from a file: `{qd} post order --to <seat> --body-file notes.md`.",
+        f"- Read a seat with `{qd} watch <seat>`, the ship with `{qd} status`; your own brief is `{qd} brief " + seat.name + "`.",
         "- A message that reaches you twice with the same id is one message: read it once and act on it once.",
     ]
     if human_session:
         lines.append(
             "- Your session belongs to the human. The ship types only its fixed waking line when a message waits, no watch is armed and your box is known empty. "
-            "Messages reach you through your watch: run `qd inbox --wait` in the background as the last act of every turn; "
+            f"Messages reach you through your watch: run `{qd} inbox --wait` in the background as the last act of every turn; "
             "it prints new messages in full when they arrive and exits, and you arm it again."
         )
     else:
@@ -121,7 +126,7 @@ def seat_section(ship: Ship, seat: SeatSpec, human_session: bool) -> str:
             "- Messages reach you typed into your pane in full, under a `qd >` header; one typed while you work is queued "
             "and read when your turn ends."
         )
-        lines.append("- Ask through `qd post question`, never an interactive question tool. "
+        lines.append(f"- Ask through `{qd} post question`, never an interactive question tool. "
                      + get(seat.harness).human_tool_policy)
     lines.append(
         "- Where these orders and an instruction file your program loaded disagree about the ship, these orders win. "
