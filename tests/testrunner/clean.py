@@ -10,7 +10,7 @@ import sys
 import time
 
 from . import evidence, gitops, owned, procs, report, sessions
-from .layout import (CHANGES, DIRECTORY, KEEPS, RESULTS, RETIREMENTS, RUNS, SOCKETS, Refused, Root, Slot, change_file,
+from .layout import (CHANGES, DIRECTORY, KEEPS, RESULTS, RETIREMENTS, RUNS, RUN_SOCKETS, SOCKETS, Refused, Root, Slot, change_file,
                      identity, read_json, run_name, write_json)
 
 
@@ -202,14 +202,17 @@ def retire_within(root: Root, run: str) -> int:
                     done = None
                 completed = done.get('cleanup', {}) if done and done.get('run') == run else {}
                 if completed.get('outcome') == 'complete':
-                    try:
-                        anchor = root.child(SOCKETS, create=False)
-                    except FileNotFoundError:
-                        pass
                     for entry in completed.get('sessions', {}).get('entries', []):
                         path = Path(entry['path'])
-                        if path.parent != root.path / SOCKETS:
+                        if path.parent not in (root.path / SOCKETS, root.path / RUN_SOCKETS):
                             raise Refused(f'{path}: not a recorded session path in this project; held')
+                        if anchor is not None:
+                            os.close(anchor)
+                            anchor = None
+                        try:
+                            anchor = root.child(path.parent.name, create=False)
+                        except FileNotFoundError:
+                            pass
                         if anchor is not None:
                             try:
                                 os.stat(path.name, dir_fd=anchor, follow_symlinks=False)

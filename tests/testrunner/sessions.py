@@ -10,7 +10,7 @@ from pathlib import Path
 import stat
 
 from . import owned
-from .layout import RESULTS, SOCKETS, Root, Refused, identity, read_json, run_name, write_json
+from .layout import RESULTS, ROOT_NAME, RUN_SOCKETS, SOCKETS, Root, Refused, identity, read_json, run_name, write_json
 
 RECORD_ENV = 'TESTRUN_SESSION_RECORDS'
 
@@ -20,15 +20,23 @@ def register(parent: Path, folder: Path, descriptor: int) -> str | None:
     if not registry:
         return None  # ordinary direct pytest owns its container through its fixture, as before
     run = run_name(os.environ.get('TESTRUNS_RUN', ''))
+    # A child pytest may use its own project or nest below an outer fixture. It
+    # owns that container locally; it must not register it as a direct child of
+    # this run's anchor. A nonempty outer container still holds retirement.
+    if parent.name not in (SOCKETS, RUN_SOCKETS) or parent.parent.name != ROOT_NAME:
+        return None
+    if Path(registry) != parent.parent / RESULTS / run / 'sessions':
+        return None
     root = Root(parent.parent.parent, create=False)
     try:
-        if parent != root.path / SOCKETS or Path(registry) != root.path / RESULTS / run / 'sessions':
+        if parent != root.path / parent.name or Path(registry) != root.path / RESULTS / run / 'sessions':
             raise Refused('session registry does not match this run and project socket anchor')
         fd = root.child(RESULTS, run, 'sessions', create=False)
         try:
             token = owned.mark(descriptor)
             try:
-                write_json(fd, folder.name + '.json', {'name': folder.name, 'identity': identity(os.fstat(descriptor)),
+                write_json(fd, folder.name + '.json', {'name': folder.name, 'anchor': parent.name,
+                                                     'identity': identity(os.fstat(descriptor)),
                                                      'owner': token})
             except BaseException as error:
                 try:
@@ -59,6 +67,14 @@ def unmark_empty(descriptor: int, token: str) -> None:
     os.unlink(owned.MARKER, dir_fd=descriptor)
 
 
+def anchor_name(record: dict) -> str:
+    """Old records predate the separate tool-run anchor."""
+    name = record.get('anchor', SOCKETS)
+    if name not in (SOCKETS, RUN_SOCKETS):
+        raise Refused('unrecognized recorded session anchor; retained')
+    return name
+
+
 def retire(root: Root, run: str, *, budget=None) -> dict:
     """Use this run's records only; even reporting never walks a foreign session folder."""
     entries = []
@@ -67,7 +83,7 @@ def retire(root: Root, run: str, *, budget=None) -> dict:
         records = root.child(RESULTS, run, 'sessions', create=False)
     except FileNotFoundError:
         return {'outcome': 'unrecorded', 'scope': 'recorded session folders only', 'entries': []}
-    anchor = None
+    anchor = current_anchor = None
     try:
         with os.scandir(records) as iterator:
             filenames = []
@@ -82,12 +98,17 @@ def retire(root: Root, run: str, *, budget=None) -> dict:
             name = record.get('name')
             if not isinstance(name, str) or name in ('', '.', '..') or '/' in name or filename != name + '.json':
                 raise Refused(f'invalid session record {filename}; nothing inferred')
-            where = root.path / SOCKETS / name
+            selected_anchor = anchor_name(record)
+            where = root.path / selected_anchor / name
             if not record.get('identity') or not record.get('owner'):
                 raise Refused(f'{where}: session identity/owner unrecorded; left alone')
+            if current_anchor != selected_anchor:
+                if anchor is not None:
+                    os.close(anchor)
+                anchor, current_anchor = None, selected_anchor
             if anchor is None:
                 try:
-                    anchor = root.child(SOCKETS, create=False)
+                    anchor = root.child(selected_anchor, create=False)
                 except FileNotFoundError:
                     entries.append({'path': str(where), 'outcome': 'complete'})
                     continue
@@ -167,10 +188,7 @@ def discard_records(root: Root, run: str, budget) -> None:
             for item in iterator:
                 budget.check(root.path / RESULTS / run / 'sessions' / item.name)
                 names.append(item.name)
-        try:
-            anchor = root.child(SOCKETS, create=False)
-        except FileNotFoundError:
-            pass
+        current_anchor = None
         for filename in names:
             budget.check(root.path / RESULTS / run / 'sessions' / filename)
             record = read_json(records, filename, root.path / RESULTS / run / 'sessions' / filename)
@@ -179,13 +197,22 @@ def discard_records(root: Root, run: str, budget) -> None:
                 raise Refused(f'invalid session record {filename}; metadata retained')
             if not record.get('identity') or not record.get('owner'):
                 raise Refused(f'{filename}: session identity/owner unrecorded; metadata retained')
+            selected_anchor = anchor_name(record)
+            if current_anchor != selected_anchor:
+                if anchor is not None:
+                    os.close(anchor)
+                anchor, current_anchor = None, selected_anchor
+                try:
+                    anchor = root.child(selected_anchor, create=False)
+                except FileNotFoundError:
+                    pass
             if anchor is not None:
                 try:
                     os.stat(name, dir_fd=anchor, follow_symlinks=False)
                 except FileNotFoundError:
                     pass
                 else:
-                    raise Refused(f'{root.path / SOCKETS / name}: session still exists; metadata retained')
+                    raise Refused(f'{root.path / selected_anchor / name}: session still exists; metadata retained')
             owned.unlink_file(records, filename, root.path / RESULTS / run / 'sessions' / filename)
         if identity(os.stat('sessions', dir_fd=results, follow_symlinks=False)) != original:
             raise Refused('session metadata directory replaced; replacement retained')

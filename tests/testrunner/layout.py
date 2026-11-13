@@ -22,6 +22,7 @@ from . import FORMAT
 
 ROOT_NAME = '.testruns'
 SOCKETS = 's'      # the fixed short anchor for native test sockets, shared with tests/conftest.py
+RUN_SOCKETS = 'r'  # tool-run containers do not appear among direct pytest's shared socket containers
 PLAIN_TEMP = 't'   # TMPDIR of a plain pytest run (tests/conftest.py)
 RUNS = 'runs'      # scratch, always removed
 RESULTS = 'results'  # retained evidence: result.json, report.md, failures/

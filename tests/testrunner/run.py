@@ -21,7 +21,7 @@ import sys
 import time
 
 from . import clean, environment, evidence, gitops, owned, procs, report, resources, sessions, usersite
-from .layout import RESULTS, RUNS, SOCKETS, Refused, Root, Slot, git_environment, identity, new_run_id, write_json
+from .layout import RESULTS, RUNS, RUN_SOCKETS, SOCKETS, Refused, Root, Slot, git_environment, identity, new_run_id, write_json
 
 GRACE = 15.0
 FINALIZATION_SECONDS = 60.0
@@ -242,6 +242,9 @@ class Runner:
                 self.user = usersite.resolve(self.python)  # before HOME is replaced
                 env, settings = environment.build(scratch, run, self.user['base'] if self.user['exists'] else None)
                 env[sessions.RECORD_ENV] = str(root.path / RESULTS / run / 'sessions')
+                os.close(root.child(RUN_SOCKETS))
+                env['TMUX_TMPDIR'] = str(root.path / RUN_SOCKETS)
+                settings['fixed']['TMUX_TMPDIR'] = env['TMUX_TMPDIR']
                 env[resources.MEMORY_ENV] = str(args.memory_mib)
                 result['environment'] = {**settings, 'workers': args.workers, 'timeout': args.timeout,
                                          'memory_mib': args.memory_mib, 'memory_resource': 'RLIMIT_AS',

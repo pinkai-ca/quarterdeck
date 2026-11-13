@@ -125,7 +125,7 @@ def remove(parent_fd: int, name: str, expected, where, token=None) -> Tally:
 class Budget:
     """One budget for validation, traversal and retries, rather than one per new file."""
 
-    def __init__(self, seconds=5.0, entries=250_000):
+    def __init__(self, seconds=45.0, entries=2_000_000):
         self.deadline = time.monotonic() + seconds
         self.remaining = entries
 
