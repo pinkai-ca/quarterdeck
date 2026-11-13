@@ -134,7 +134,7 @@ def test_older_snapshot_cannot_overwrite_retained_newer_observation(tmp_path):
 def make_service(tmp_path):
     pools = {name: Pool(name, 'openai') for name in ('one', 'two')}
     specs = {name: SeatSpec(name, 'crew', name, 'codex', ('one', 'two'), up=False) for name in ('alpha', 'beta')}
-    ship = Ship(tmp_path, 'synthetic', 'operator', tmp_path, pools, {'crew': Session('crew', 'crew')}, specs)
+    ship = Ship(tmp_path, 'synthetic', 'operator', tmp_path, pools, {'crew': Session('crew', 'crew')}, specs, code='checkout')
     return Service(ship, SimpleNamespace())
 
 
@@ -237,7 +237,7 @@ def test_service_newest_seat_snapshot_wins_and_old_unjoined_records_do_not(tmp_p
 def test_cli_status_and_line_json_are_cache_only_and_include_both_windows(tmp_path, monkeypatch, capsys, kind):
     from quarterdeck import cli
     from quarterdeck.ship import load
-    (tmp_path/'ship.toml').write_text('[ship]\nname="synthetic"\n[pools.one]\nprovider="openai"\n')
+    (tmp_path/'ship.toml').write_text('[ship]\ncode="checkout"\nname="synthetic"\n[pools.one]\nprovider="openai"\n')
     ship = load(tmp_path)
     monkeypatch.delenv('QD_SHIP', raising=False)
     monkeypatch.delenv('QD_SEAT', raising=False)
@@ -284,7 +284,7 @@ def test_equal_retained_snapshot_cannot_clear_a_newer_failed_observation(tmp_pat
 def test_crowded_codex_cli_keeps_both_windows_in_full_text_and_json(tmp_path, monkeypatch, capsys):
     from quarterdeck import cli
     from quarterdeck.ship import load
-    (tmp_path/'ship.toml').write_text('[ship]\nname="synthetic"\n[pools.one]\nprovider="openai"\n')
+    (tmp_path/'ship.toml').write_text('[ship]\ncode="checkout"\nname="synthetic"\n[pools.one]\nprovider="openai"\n')
     ship = load(tmp_path)
     with Ledger(ship.runtime/'ledger.sqlite') as book:
         book.record_usage('one', read([(FIXTURE, AT)]), attempted_at=AT)

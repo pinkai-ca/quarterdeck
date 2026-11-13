@@ -14,6 +14,7 @@ from quarterdeck.ship import load
 from .test_cross_program_failover import running, usage  # noqa: F401  (the fixture and its helper)
 
 SINGLE = '''[ship]
+code="checkout"
 name="synthetic"
 [pools.codex]
 provider="codex"

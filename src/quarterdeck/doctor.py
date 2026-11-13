@@ -160,11 +160,9 @@ def framework_check(ship: Ship) -> Check:
             reasons = {'copy operation did not complete', 'status-line update pending', 'rebrief confirmation pending',
                        'origin proof did not complete', '--version proof did not complete',
                        'laws proof did not complete', '--help proof did not complete'}
-            cause = failure.get('cause')
-            if isinstance(cause, str) and cause in install.FAILURE_CAUSES and cause != reason:
-                lines.append(cause)
+            step = failure.get('step')
             if isinstance(reason, str) and reason in reasons | install.FAILURE_CAUSES:
-                lines.append(reason)
+                lines.append(reason + (f' at {step}' if isinstance(step, str) and step in install.FAILURE_STEPS else ''))
         else:
             lines.append('last copy failure unknown')
     identity = servicectl.service_identity(ship.runtime)

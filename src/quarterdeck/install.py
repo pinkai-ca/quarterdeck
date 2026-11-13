@@ -47,6 +47,7 @@ PHASE_CAUSES = {
     'proving': 'proof command failed', 'target_ready': 'copy activation failed',
     'activated': 'copy cleanup failed', 'cleanup': 'copy cleanup failed',
 }
+FAILURE_STEPS = frozenset(PHASE_CAUSES) | {'preparing', 'installing', 'origin', '--version', 'laws', '--help'}
 LOADED_COPY = copy_state.loaded_identity(__file__, sys.prefix)
 
 
@@ -338,14 +339,12 @@ def _failure(data: dict, phase: str, *, cause: str | None = None) -> None:
         return
     command = pending.get('target', {}).get('proof_command') if pending else None
     proof_step = phase == 'proving' and command in ('origin', '--version', 'laws', '--help')
-    reason = (f'{command} proof did not complete' if proof_step else
-              cause if cause in FAILURE_CAUSES else 'copy operation did not complete')
+    reason = cause if cause in FAILURE_CAUSES else 'copy operation did not complete'
     data['last_failure'] = dict(phase=phase, reason=reason,
                                 at=datetime.now(timezone.utc).isoformat(timespec='seconds'))
-    if cause in FAILURE_CAUSES:
-        data['last_failure']['cause'] = cause
-    if proof_step:
-        data['last_failure']['proof_command'] = command
+    step = command if proof_step else phase if phase != 'proving' and phase in FAILURE_STEPS else None
+    if step is not None:
+        data['last_failure']['step'] = step
     if pending:
         pending['failure'] = dict(data['last_failure'])
 
@@ -708,6 +707,8 @@ def upgrade(ship: Ship, ref: str = 'HEAD', tmux: Tmux | None = None, *,
         except Exception:
             phase = pending.get('phase', 'unknown')
             cause = PHASE_CAUSES.get(phase, cause)
+            step = fact.get('proof_command') if phase == 'proving' else phase
+            detail = cause + (f' at {step}' if step in FAILURE_STEPS and step != 'proving' else '')
             if pending.get('activated'):
                 # A post-activation reporting write can fail after cleanup cleared
                 # the journal. Reattach its cleanup-only intent before saying it is kept.
@@ -715,15 +716,15 @@ def upgrade(ship: Ship, ref: str = 'HEAD', tmux: Tmux | None = None, *,
                     data['pending'] = pending
                 _failure(data, phase, cause=cause)
                 _save(ship.runtime, data)
-                raise ShipError(f'copy active but {phase} incomplete: {cause}; journal kept; qd up or qd sync retries cleanup') from None
+                raise ShipError(f'copy active but {phase} incomplete: {detail}; journal kept; qd up or qd sync retries cleanup') from None
             _failure(data, phase, cause=cause)
             try:
                 _save(ship.runtime, data)
                 restoration = _recover(ship, data)
             except Exception:
-                raise ShipError(f'copy operation failed during {phase}: {cause}; restoration/restart incomplete; '
+                raise ShipError(f'copy operation failed during {phase}: {detail}; restoration/restart incomplete; '
                                 'journal kept; inspect qd doctor, then qd up or qd sync') from None
-            raise ShipError(f'copy operation failed during {phase}: {cause}; recovery completed; '
+            raise ShipError(f'copy operation failed during {phase}: {detail}; recovery completed; '
                             + '; '.join(restoration)) from None
         before = old['commit'][:7] if old else 'unknown'
         action = 'returned' if back else 'installed'

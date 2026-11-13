@@ -12,7 +12,7 @@ from quarterdeck.ledger import Ledger
 
 @pytest.mark.parametrize("state", ["current", "stale", "failed", "unknown", "never"])
 def test_cli_hints_are_contextual_and_readings_stay_read_only(tmp_path, monkeypatch, capsys, state):
-    (tmp_path / "ship.toml").write_text('[ship]\nname="synthetic"\n[pools.pool]\nprovider="claude"\n')
+    (tmp_path / "ship.toml").write_text('[ship]\ncode="checkout"\nname="synthetic"\n[pools.pool]\nprovider="claude"\n')
     monkeypatch.delenv("QD_SHIP", raising=False)
     monkeypatch.delenv("QD_SEAT", raising=False)
     monkeypatch.setenv("QD_TMUX_SOCKET", "qd-usage-hint-no-server")

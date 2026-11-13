@@ -50,7 +50,7 @@ def test_crowded_cli_json_retains_all_wall_and_usage_facts(tmp_path, monkeypatch
     import json
     from quarterdeck import cli
 
-    (tmp_path / "ship.toml").write_text('[ship]\nname="synthetic"\n')
+    (tmp_path / "ship.toml").write_text('[ship]\ncode="checkout"\nname="synthetic"\n')
     monkeypatch.delenv("QD_SHIP", raising=False)
     monkeypatch.delenv("QD_SEAT", raising=False)
     facts = watch.Facts("ok", 0, 0, 0, held=["worker"], walls=[WALL],

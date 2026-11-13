@@ -282,7 +282,7 @@ def test_failed_rollback_proof_restores_previous_copy_and_truthful_record(revisi
     assert (python.parent / 'qd').is_file()
     record = json.loads((ship / 'runtime/installed.json').read_text())
     assert record['commit'] == revisions.target and record['previous'] is None
-    assert record['last_failure']['phase'] == 'proving' and record['last_failure']['cause'] == 'proof command failed'
+    assert record['last_failure']['phase'] == 'proving' and record['last_failure']['reason'] == 'proof command failed'
     assert not (ship / 'runtime/requests').exists()
 
 
@@ -306,7 +306,7 @@ def test_failed_unknown_direction_keeps_original_code_without_inventing_proof(re
         assert 'proof command failed' in result.stderr and 'recovery completed' in result.stderr
         record = json.loads(record_path.read_text())
         assert record['current'] is None and record['previous'] is None
-        assert record['last_failure']['cause'] == 'proof command failed'
+        assert record['last_failure']['reason'] == 'proof command failed'
     assert not (ship / 'runtime/requests').exists()
 
 
@@ -322,7 +322,7 @@ def test_failed_forward_proof_retains_code(revisions):
     assert 'recovery completed' in result.stderr and python.exists()
     record = json.loads((ship / 'runtime/installed.json').read_text())
     assert record['commit'] == revisions.target and record['previous'] is None
-    assert record['last_failure']['phase'] == 'proving' and record['last_failure']['cause'] == 'proof command failed'
+    assert record['last_failure']['phase'] == 'proving' and record['last_failure']['reason'] == 'proof command failed'
     assert not (ship / 'runtime/requests').exists()
 
 
@@ -348,9 +348,8 @@ def test_genuine_first_install_proof_failure_removes_half_made_venv(revisions, m
     assert not (revisions.ship / 'runtime/venv').exists()
     failed=json.loads((revisions.ship/'runtime/installed.json').read_text())
     assert failed['current'] is None and failed['pending'] is None
-    assert failed['last_failure']['cause']=='proof command failed'
-    assert failed['last_failure']['reason']=='laws proof did not complete'
-    assert failed['last_failure']['proof_command']=='laws'
+    assert failed['last_failure']['reason']=='proof command failed'
+    assert failed['last_failure']['step']=='laws'
     assert not (revisions.ship / 'runtime/requests').exists()
 
 

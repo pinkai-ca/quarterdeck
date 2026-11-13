@@ -16,7 +16,7 @@ from quarterdeck.service import Service
 
 @pytest.fixture
 def live(tmp_path):
-    (tmp_path/'ship.toml').write_text('[ship]\nname="synthetic"\n')
+    (tmp_path/'ship.toml').write_text('[ship]\ncode="checkout"\nname="synthetic"\n')
     ship=shipmod.load(tmp_path);ship.runtime.mkdir(parents=True)
     lock=servicectl.acquire_lock(ship.runtime);svc=Service(ship,SimpleNamespace())
     svc.tick()

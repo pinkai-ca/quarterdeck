@@ -37,7 +37,7 @@ def test_status_watch_and_ledger_distinguish_running_program_company_and_pool(ru
 
 
 def test_doctor_json_adds_declared_identities_and_keeps_its_check_shape(tmp_path, monkeypatch, capsys):
-    (tmp_path / "ship.toml").write_text('[ship]\nname="synthetic"\n[pools.paid]\nprovider="claude"\n')
+    (tmp_path / "ship.toml").write_text('[ship]\ncode="checkout"\nname="synthetic"\n[pools.paid]\nprovider="claude"\n')
     monkeypatch.setattr(cli.doctor, "program_version", lambda a: "synthetic")
     code = cli.main(["--ship", str(tmp_path), "--json", "doctor"])
     data = json.loads(capsys.readouterr().out)
@@ -49,6 +49,7 @@ def test_doctor_json_adds_declared_identities_and_keeps_its_check_shape(tmp_path
 
 def test_open_program_metadata_does_not_claim_the_model_brand_is_the_provider(tmp_path):
     (tmp_path / "ship.toml").write_text('''[ship]
+code="checkout"
 name="synthetic"
 [pools.remote]
 provider="private-operator"

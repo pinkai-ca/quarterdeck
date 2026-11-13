@@ -35,7 +35,7 @@ def test_pane_identity_queries_are_targeted_and_never_reuse_pid_or_width(monkeyp
 
 
 def test_door_reads_one_fresh_identity_and_capture_packet(tmp_path,monkeypatch):
-    (tmp_path/'ship.toml').write_text('[pools.p]\nprovider="fake"\n[sessions.crew]\n[seats.worker]\nsession="crew"\nharness="fake"\npool="p"\n')
+    (tmp_path/'ship.toml').write_text('[ship]\ncode="checkout"\n[pools.p]\nprovider="fake"\n[sessions.crew]\n[seats.worker]\nsession="crew"\nharness="fake"\npool="p"\n')
     ship=shipmod.load(tmp_path);tmux=Tmux(socket='synthetic');calls=[]
     seat=Seat(ship,ship.seat('worker'),tmux);seat.folder.mkdir(parents=True)
     Launched('%1',101,datetime.now(timezone.utc).isoformat(),'p',None,['synthetic'],'synthetic','fake').write(seat.folder/'launch.json')
@@ -51,7 +51,7 @@ def test_door_reads_one_fresh_identity_and_capture_packet(tmp_path,monkeypatch):
 
 
 def empty_service(tmp_path,monkeypatch,clients):
-    (tmp_path/'ship.toml').write_text('[ship]\nname="synthetic"\n[sessions.synthetic]\n')
+    (tmp_path/'ship.toml').write_text('[ship]\ncode="checkout"\nname="synthetic"\n[sessions.synthetic]\n')
     monkeypatch.setattr(servicemod.machine,'processes',lambda:{})
     return Service(shipmod.load(tmp_path),SimpleNamespace(clients_attached=lambda sessions:clients[0]))
 
@@ -123,7 +123,7 @@ def test_presentation_demand_requires_complete_native_client_evidence(monkeypatc
 def test_combined_screen_refuses_replaced_identity(tmp_path,monkeypatch,changed):
     from dataclasses import replace
     from quarterdeck.tmux import Pane
-    (tmp_path/'ship.toml').write_text('[pools.p]\nprovider="fake"\n[sessions.crew]\n[seats.worker]\nsession="crew"\nharness="fake"\npool="p"\n')
+    (tmp_path/'ship.toml').write_text('[ship]\ncode="checkout"\n[pools.p]\nprovider="fake"\n[sessions.crew]\n[seats.worker]\nsession="crew"\nharness="fake"\npool="p"\n')
     seat=Seat(shipmod.load(tmp_path),shipmod.load(tmp_path).seat('worker'),Tmux(socket='synthetic'))
     seat.folder.mkdir(parents=True)
     launch=Launched('%1',101,datetime.now(timezone.utc).isoformat(),'p',None,['synthetic'],'synthetic','fake')
@@ -169,7 +169,7 @@ def test_cold_text_failure_cannot_reuse_health_or_omit_the_native_failure_path(l
 
 def test_idle_delivery_uses_its_fresh_owned_frame_without_a_second_liveness_query(tmp_path,monkeypatch):
     from quarterdeck.tmux import Pane
-    (tmp_path/'ship.toml').write_text('[pools.p]\nprovider="fake"\n[sessions.crew]\n[seats.worker]\nsession="crew"\nharness="fake"\npool="p"\n')
+    (tmp_path/'ship.toml').write_text('[ship]\ncode="checkout"\n[pools.p]\nprovider="fake"\n[sessions.crew]\n[seats.worker]\nsession="crew"\nharness="fake"\npool="p"\n')
     tmux=Tmux(socket='synthetic');svc=Service(shipmod.load(tmp_path),tmux)
     seat=svc.seat('worker');seat.folder.mkdir(parents=True)
     Launched('%1',101,datetime.now(timezone.utc).isoformat(),'p',None,['synthetic'],'synthetic','fake').write(seat.folder/'launch.json')
@@ -210,7 +210,7 @@ def test_unreadable_native_client_query_collects_unknown_demand(tmp_path,monkeyp
     def failed(*args,**kwargs):raise error('synthetic unreadable client query')
     monkeypatch.setattr(tmux,'run',failed)
     assert tmux.clients_attached(['crew']) is None
-    (tmp_path/'ship.toml').write_text('[ship]\nname="synthetic"\n[sessions.crew]\n')
+    (tmp_path/'ship.toml').write_text('[ship]\ncode="checkout"\nname="synthetic"\n[sessions.crew]\n')
     svc=Service(shipmod.load(tmp_path),tmux);collected=[]
     monkeypatch.setattr(svc,'publish_status',lambda:collected.append(True))
     try:
