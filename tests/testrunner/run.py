@@ -311,15 +311,21 @@ class Runner:
         result['checkout']['readonly_package_dirs'] = readonly
         self.checkout_before = {'tracked': gitops.tracked_manifest(checkout, target.head),
                                 'extra': gitops.extra_manifest(checkout)}
-        argv = [vpython, '-m', 'pytest', '-q', '-rs', '-p', 'qd_testrun_evidence', '-p', 'no:cacheprovider',
-                f'--basetemp={scratch / "tmp" / "b"}']
-        if self.args.workers:
-            argv += ['-n', str(self.args.workers)]
-        result['argv'] = [str(part) for part in argv + targets]
+        argv = pytest_argv(vpython, scratch, self.args.workers, targets)
+        result['argv'] = [str(part) for part in argv]
         self.state['stage'] = 'pytest'
         write_json(self.scratch_fd, 'state.json', self.state)
         self.user_before = usersite.stamps(user['site']) if user['exists'] else None
-        return self.execute(argv + targets, env=env, cwd=checkout, title='pytest')
+        return self.execute(argv, env=env, cwd=checkout, title='pytest')
+
+
+def pytest_argv(vpython: Path, scratch: Path, workers: int, targets: list[str]) -> list:
+    """The runner owns pytest's scheduling and forwards each selected target unchanged."""
+    argv = [vpython, '-m', 'pytest', '-q', '-rs', '-p', 'qd_testrun_evidence', '-p', 'no:cacheprovider',
+            f'--basetemp={scratch / "tmp" / "b"}']
+    if workers:
+        argv += ['-n', str(workers), '--dist', 'worksteal']
+    return argv + targets
 
 
 def origin(file: str, venv: Path, user: dict) -> str:
