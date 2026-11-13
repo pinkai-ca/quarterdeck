@@ -118,3 +118,5 @@ In two cases the ship does not restart the agent itself:
 
 - When the agent's record does not show that the agent's work has ended, the status line names the agent as ready, and you run `qd fresh`.
 - In `Office`, the session you work in, the ship never restarts an agent: the session is yours. For an agent on Claude Code or Codex, the ship still asks for the handoff and says when the agent is ready. Your desk then starts itself fresh, once you have been quiet for twenty minutes. Any other agent you keep in `Office` waits for you to run `qd fresh`.
+
+Where a seat's `role` is `systems`, the ship also tells that seat once, when an agent is idle and has become ready for a fresh start that the ship does not make itself. While no seat with that role is up, the status line keeps naming the agent even when the line is full.
