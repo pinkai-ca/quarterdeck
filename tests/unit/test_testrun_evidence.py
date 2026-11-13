@@ -2,6 +2,8 @@
 report and the session finished in agreement; otherwise unknown, with known failures kept."""
 import json
 
+import pytest
+
 from tests.testrunner import evidence, report
 
 
@@ -25,6 +27,36 @@ def phases(nodeid, call='passed', setup='passed', teardown='passed', xfail=False
 
 
 START = {'kind': 'start', 'plugin': 1, 'pytest': '9.0.2', 'xdist': '3.8.0', 'python': '3.14.4'}
+
+
+@pytest.mark.parametrize('field', ['pytest', 'xdist', 'python'])
+@pytest.mark.parametrize('value', [[], {}, 3, True])
+def test_malformed_tool_metadata_is_a_named_cause_not_an_exception(tmp_path, field, value):
+    write(tmp_path / 'e', 'main', {**START, field: value},
+          {'kind': 'collected', 'nodeids': ['t::a']}, *phases('t::a'), {'kind': 'finish', 'exitstatus': 0})
+    found = evidence.analyse(tmp_path / 'e', 0)
+    assert not found['complete'] and found['tools'] == []
+    assert any(cause.startswith('malformed tools in start event') for cause in found['causes'])
+    assert found['observed_at_least']['passed'] == 1 and set(found['counts'].values()) == {None}
+
+
+@pytest.mark.parametrize('value', [None, 'plugin', {}, [[], 'plugin'], ['plugin', 3]])
+def test_malformed_plugin_metadata_is_a_named_cause_not_an_exception(tmp_path, value):
+    write(tmp_path / 'e', 'main', {**START, 'plugins': value},
+          {'kind': 'collected', 'nodeids': ['t::a']}, *phases('t::a'), {'kind': 'finish', 'exitstatus': 0})
+    found = evidence.analyse(tmp_path / 'e', 0)
+    assert not found['complete'] and found['plugins'] == []
+    assert any(cause.startswith('malformed plugins in start event') for cause in found['causes'])
+    assert found['observed_at_least']['passed'] == 1 and set(found['counts'].values()) == {None}
+
+
+def test_optional_tool_versions_and_valid_plugin_names_are_still_summarized(tmp_path):
+    write(tmp_path / 'e', 'main', {**START, 'xdist': None, 'plugins': ['beta', 'alpha']},
+          {**START, 'plugins': ['alpha']}, {'kind': 'collected', 'nodeids': ['t::a']},
+          *phases('t::a'), {'kind': 'finish', 'exitstatus': 0})
+    found = evidence.analyse(tmp_path / 'e', 0)
+    assert found['complete'] and found['plugins'] == ['alpha', 'beta']
+    assert found['tools'] == [('9.0.2', None, '3.14.4'), ('9.0.2', '3.8.0', '3.14.4')]
 
 
 def test_every_category_is_counted_as_pytest_counts_it(tmp_path):

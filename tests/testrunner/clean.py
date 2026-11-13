@@ -70,12 +70,20 @@ def _retire_run(root: Root, runs_fd: int, run: str, state: dict) -> dict:
         # The forced removal below must reach this run's own checkout only. state.json is read back from disk
         # on recovery, so before anything goes it must name what run.py made: the run's own checkout path and
         # an admin entry directly under the project's .git/worktrees. Otherwise nothing is touched.
-        own = storage.path(root, run) / 'checkout'
+        own = storage.path(root, run) / (f'checkout-{run}' if state.get('checkout_intent') == 1 else 'checkout')
         checkout = state.get('checkout')
-        if checkout != str(own) or Path(admin).parent != root.project / '.git' / 'worktrees':
+        if (checkout != str(own) or Path(admin).parent != root.project / '.git' / 'worktrees'
+                or (state.get('checkout_intent') == 1 and Path(admin).name != own.name)
+                or state.get('checkout_admin_mismatch')):
             return {'outcome': 'held', 'scratch': str(storage.path(root, run)),
                     'reason': f'state.json names checkout {checkout} and Git admin {admin}, not this run\'s own '
                               f'{own} under {root.project / ".git" / "worktrees"}; nothing removed'}
+        if os.path.lexists(admin):
+            path = Path(admin)
+            backlink = path / 'gitdir'
+            if path.is_symlink() or backlink.is_symlink() or backlink.read_text().strip() != str(own / '.git'):
+                return {'outcome': 'held', 'scratch': str(storage.path(root, run)),
+                        'reason': f'Git admin {admin} does not point to this run\'s checkout {own}; retained'}
     budget = owned.Budget()
     parent = None
     try:
@@ -94,8 +102,8 @@ def _retire_run(root: Root, runs_fd: int, run: str, state: dict) -> dict:
     if admin and cleanup['outcome'] == 'complete':
         checkout = state['checkout']
         done = gitops.ok(root.project, 'worktree', 'remove', '--force', checkout)
-        cleanup['git_admin'] = {'path': admin, 'removed': not Path(admin).exists(), 'command_ok': done}
-        if Path(admin).exists():
+        cleanup['git_admin'] = {'path': admin, 'removed': not os.path.lexists(admin), 'command_ok': done}
+        if os.path.lexists(admin):
             cleanup['outcome'] = 'held'
             cleanup['reason'] = f'git worktree admin {admin} remains; `git worktree remove --force {checkout}` clears it'
     return cleanup

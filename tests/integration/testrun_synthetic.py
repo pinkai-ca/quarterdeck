@@ -94,12 +94,13 @@ sys.exit(cli.main(sys.argv[4:], [tool, *sorted((tool.parent / "testrunner").glob
 '''
 
 
-def tool_at_phase(gate: str, *args: str, cwd: Path, timeout: float = 300) -> tuple[subprocess.CompletedProcess, float]:
+def tool_at_phase(gate: str, *args: str, cwd: Path, timeout: float = 300,
+                  driver: str = LEAP) -> tuple[subprocess.CompletedProcess, float]:
     """The tool, its time-limit clock alone leaping a day ahead when ``gate`` (a glob inside the run's working
     storage, such as ``tmp/started``, wherever the run recorded it) first exists, so the limit ends the run in the
     phase the gate marks, however fast setup is. The real time of the leap is returned, on the system-wide
     monotonic clock."""
-    done = subprocess.run([sys.executable, '-I', '-c', LEAP, str(TOOL), gate, str(LEAP_SECONDS), *args], cwd=cwd,
+    done = subprocess.run([sys.executable, '-I', '-c', driver, str(TOOL), gate, str(LEAP_SECONDS), *args], cwd=cwd,
                           env=dict(os.environ), capture_output=True, text=True, timeout=timeout)
     leapt = re.search(r'^leapt at (\S+)$', done.stderr, re.M)
     assert leapt, 'the gate never opened, so no limit was forced:\n' + done.stdout + done.stderr

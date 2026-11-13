@@ -84,10 +84,30 @@ def marked_complete(events: list[dict]) -> bool:
     return any(event['kind'] == 'collected' and event.get('complete') is True for event in events)
 
 
+def start_summaries(starts: list[dict]) -> tuple[list, list, list[str]]:
+    """Validate optional start metadata before hashing or comparing any of its values."""
+    tools, plugins, problems = set(), set(), []
+    for event in starts:
+        versions = tuple(event.get(name) for name in ('pytest', 'xdist', 'python'))
+        if all(value is None or isinstance(value, str) for value in versions):
+            tools.add(versions)
+        else:
+            problems.append('malformed tools in start event: versions must be strings or null')
+        names = event.get('plugins', [])
+        if isinstance(names, list) and all(isinstance(name, str) for name in names):
+            plugins.update(names)
+        else:
+            problems.append('malformed plugins in start event: expected a list of strings')
+    # Missing optional tools remain null; a null and a measured version can both occur across processes.
+    ordered_tools = sorted(tools, key=lambda row: tuple((value is not None, value or '') for value in row))
+    return ordered_tools, sorted(plugins), list(dict.fromkeys(problems))
+
+
 def analyse(folder: Path, pytest_exit: int | None, *, parent_fd=None) -> dict:
     events, problems = load(folder, parent_fd=parent_fd)
     main = events.get('main', [])
     starts = [event for role in events.values() for event in role if event['kind'] == 'start']
+    tools, plugins, metadata_problems = start_summaries(starts)
     finish = next((event for event in main if event['kind'] == 'finish'), None)
     node_sets = {}
     for event in main:
@@ -147,7 +167,7 @@ def analyse(folder: Path, pytest_exit: int | None, *, parent_fd=None) -> dict:
     texts = [{'kind': event['kind'], 'role': event['role'], 'text': event.get('text', '')}
              for role in events.values() for event in role if event['kind'] in ('internalerror', 'interrupt')]
     missing = sorted(set(expected) - terminal)
-    causes = []
+    causes = list(metadata_problems)
     if not starts:
         causes.append('the evidence plugin never started')
     if finish is None:
@@ -186,8 +206,8 @@ def analyse(folder: Path, pytest_exit: int | None, *, parent_fd=None) -> dict:
         'causes': causes,
         'xdist': xdist,
         'plugin': sorted({version for version in versions if type(version) is int}),
-        'tools': sorted({(event.get('pytest'), event.get('xdist'), event.get('python')) for event in starts}),
-        'plugins': sorted({name for event in starts for name in event.get('plugins', [])}),
+        'tools': tools,
+        'plugins': plugins,
         'collection': collection,
         'expected': len(expected) if collection_known else None,
         'deselected': len(deselected),

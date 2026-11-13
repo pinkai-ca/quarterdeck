@@ -3,6 +3,7 @@ change that is merged or deliberately dropped goes; anything unrecorded, live or
 reports and failure output survive; recovery touches its own change's runs only."""
 import json
 import os
+from pathlib import Path
 import signal
 import subprocess
 
@@ -203,7 +204,7 @@ def test_recovery_refuses_a_state_that_names_another_checkout_and_loses_nothing(
         assert f'run {run}: abandoned · cleanup held' in again.stdout and 'nothing removed' in again.stdout
         assert (decoy / 'uncommitted.txt').read_text() == 'synthetic work in progress'
         assert str(decoy) in git_worktrees(project)
-        assert run in scratch(project) and (marker.parent.parent / 'checkout').is_dir()
+        assert run in scratch(project) and Path(state['checkout']).is_dir()
         assert os.path.isdir(own_admin) and json.loads(state_file.read_text()) == bad
     state_file.write_text(json.dumps(state))
     restored = tool('run', '--target', str(worktree), '-n', '0', cwd=project)

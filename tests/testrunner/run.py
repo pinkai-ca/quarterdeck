@@ -269,7 +269,7 @@ class Runner:
         self.console = open(scratch / 'console.txt', 'a', encoding='utf-8', errors='replace')
         sockets_before, target_before = [], None
         pytest_exit, note = None, None
-        checkout = scratch / 'checkout'
+        checkout = scratch / f'checkout-{run}'
         try:  # from here every failure, the runner's own included, reaches the same fixed ending
             with self.time_limit():
                 result['runner'].update(gitops.runner_identity(self.runner_files))
@@ -395,17 +395,28 @@ class Runner:
 
     def setup_and_test(self, target, targets, scratch, checkout, env, result):
         hooks = ['-c', 'core.hooksPath=/dev/null'] if getattr(self.args, 'jail', False) else []
+        # Git derives the admin name from the checkout's basename. A run-specific basename avoids its
+        # checkout/checkout1 suffix allocation, so recovery knows the intended entry even if add is stopped.
+        admin = target.project / '.git' / 'worktrees' / checkout.name
+        if os.path.lexists(admin):
+            raise Refused(f'run checkout admin {admin} already exists; nothing started')
+        self.state.update(checkout=str(checkout), admin=str(admin), checkout_intent=1)
+        write_json(self.scratch_fd, 'state.json', self.state)
+        clean.record(self.root, self.run, self.state)
         if self.execute(['git', *hooks, '-C', target.project, 'worktree', 'add', '--detach', checkout, target.head],
                         env=git_environment(), cwd=scratch, title='checkout') != 0:
             raise Refused('git worktree add failed; see the console')
-        admin = gitops.git(checkout, 'rev-parse', '--absolute-git-dir').strip()
-        if Path(admin).parent != target.project / '.git' / 'worktrees':
-            raise Refused(f'run checkout admin {admin} is not under the project\'s .git/worktrees')
-        self.state.update(checkout=str(checkout), checkout_identity=identity(os.lstat(checkout)), admin=admin)
+        actual = gitops.git(checkout, 'rev-parse', '--absolute-git-dir').strip()
+        if actual != str(admin):
+            self.state['checkout_admin_mismatch'] = actual
+            write_json(self.scratch_fd, 'state.json', self.state)
+            clean.record(self.root, self.run, self.state)
+            raise Refused(f'run checkout admin {actual} differs from intended {admin}; retained')
+        self.state.update(checkout_identity=identity(os.lstat(checkout)))
         write_json(self.scratch_fd, 'state.json', self.state)
         clean.record(self.root, self.run, self.state)
         tree = gitops.git(checkout, 'rev-parse', 'HEAD^{tree}').strip()
-        result['checkout'] = {'path': str(checkout), 'tree': tree, 'admin': admin}
+        result['checkout'] = {'path': str(checkout), 'tree': tree, 'admin': str(admin)}
         if getattr(self.args, 'jail', False):
             self.listed = jail.binds(scratch, user_site=self.user['site'] if self.user['exists'] else None,
                                      git_dir=target.project / '.git', admin=Path(admin))
