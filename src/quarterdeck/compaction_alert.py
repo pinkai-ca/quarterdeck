@@ -125,7 +125,10 @@ def step(service, seat):
                 f'Open compaction handoff(s) at observation: {open_handoffs}. '
                 'Notification only; execution may remain unknown. The outside controller '
                 "must choose the idle break under the ship's orders.")
-    alarms.notify(service, seat.name, seat.session.human, key, body, channel='manual-fresh')
+    active = key is not None and key is not alarms.UNKNOWN
+    human = seat.ship.session_of(seat.spec).human if active else None
+    up = service.systems_recipients(seat) if active else None
+    alarms.notify(service, seat.name, human, key, body, channel='manual-fresh', ship=seat.ship, up=up)
 
 
 def unrouted(ship, selected):

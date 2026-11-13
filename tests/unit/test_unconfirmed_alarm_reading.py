@@ -47,6 +47,7 @@ def alarm(tmp_path, monkeypatch):
         return actor
 
     state.seat, state.ship, state.restart = seat, ship, restart
+    ship.session_of = lambda spec: seat.session
     state.actor = restart()
     return state
 
@@ -372,3 +373,14 @@ def test_selection_alarm_keeps_same_clock_and_clears_on_resolution(alarm):
     assert {message.to for message in alarm.actor.store.all()} == {'systems', 'desk'}
     alarms.notify(alarm.actor, 'worker', False, None, None, channel='selection')
     assert alarms.load(alarm.ship.runtime, 'worker', 'selection')['key'] is None
+
+
+def test_manual_alert_keeps_existing_injected_recipient_interface(alarm, monkeypatch):
+    key = dict(generation='generationg', source={}, reading='ready for manual fresh')
+    monkeypatch.setattr(compaction_alert, 'observation', lambda seat: (key, dict(protocol_requests=[])))
+    owner = SimpleNamespace(store=alarm.actor.store, systems_recipients=lambda seat: ['systems'])
+    compaction_alert.step(owner, alarm.seat)
+    assert [message.to for message in owner.store.all()] == ['systems']
+    alarm.when += timedelta(minutes=10)
+    compaction_alert.step(owner, alarm.seat)
+    assert {message.to for message in owner.store.all()} == {'systems', 'desk'}

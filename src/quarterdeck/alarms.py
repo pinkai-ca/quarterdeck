@@ -60,28 +60,31 @@ def save(runtime, name, channel, data):
     durable.replace_file(target, text)
 
 
-def systems(service, name):
-    return [spec.name for spec in service.ship.seats.values()
+def systems(service, name, *, ship=None):
+    ship = service.ship if ship is None else ship
+    return [spec.name for spec in ship.seats.values()
             if spec.role == 'systems' and spec.name != name and service._up(spec.name)]
 
 
-def recipients(service, name, human, *, elapsed=0, taken=False):
-    desks = [spec.name for spec in service.ship.seats.values() if spec.role == 'desk']
+def recipients(service, name, human, *, elapsed=0, taken=False, ship=None, up=None):
+    ship = service.ship if ship is None else ship
+    desks = [spec.name for spec in ship.seats.values() if spec.role == 'desk']
     if human:
         return desks
-    up = systems(service, name)
+    up = systems(service, name, ship=ship) if up is None else up
     if not up:
         return desks
     return up + [desk for desk in desks if desk not in up] if elapsed >= ESCALATE_SECONDS and not taken else up
 
 
-def taking(service, reports):
+def taking(service, reports, *, ship=None):
     """Only routing metadata: a systems sender anywhere below an alarm report.
 
     An acknowledgment takes the alarm without closing a human's order. Other
     kinds of reply count too; activity, launches and unrelated posts do not.
     """
-    senders = {spec.name for spec in service.ship.seats.values() if spec.role == 'systems'}
+    ship = service.ship if ship is None else ship
+    senders = {spec.name for spec in ship.seats.values() if spec.role == 'systems'}
     pending = [compaction.decode(intent) for intent in reports]
     visited = {message.id for message in pending}
     while pending:
@@ -95,7 +98,7 @@ def taking(service, reports):
     return None
 
 
-def notify(service, name, human, key, body, *, channel='human'):
+def notify(service, name, human, key, body, *, channel='human', ship=None, up=None):
     """Observe once on the existing pass, saving identities before publication.
 
     Clear/changed readings retire unpublished old notifications. Unknown or
@@ -115,11 +118,13 @@ def notify(service, name, human, key, body, *, channel='human'):
                      reports=[], first_at=observed.isoformat() if key is not None else None, taken=None)
     if key is not None and prior['first_at'] is None:
         prior['first_at'] = observed.isoformat()
-    prior['human'] = human
+    if human is not None:
+        prior['human'] = human
     if key is not None and not prior['taken'] and prior['reports']:
-        prior['taken'] = taking(service, prior['reports'])
+        prior['taken'] = taking(service, prior['reports'], ship=ship)
     elapsed = (observed - datetime.fromisoformat(prior['first_at'])).total_seconds() if key is not None else 0
-    eligible = recipients(service, name, human, elapsed=elapsed, taken=prior['taken'] is not None) if key is not None else []
+    eligible = (recipients(service, name, human, elapsed=elapsed, taken=prior['taken'] is not None,
+                           ship=ship, up=up) if key is not None else [])
     names = {name, *eligible, *(compaction.decode(intent).to for intent in prior['reports'])}
     with ExitStack() as held:
         for recipient in sorted(names):
