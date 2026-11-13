@@ -10,6 +10,8 @@ from pathlib import Path
 import pytest
 
 from quarterdeck import cli, post, seat as seatmod, service, ship as shipmod
+from quarterdeck.harness.synthetic_control import Rendezvous
+
 from .progress import service_progress
 from .waiting import wait_for
 from tests.conftest import TEST_TICK
@@ -88,28 +90,40 @@ def test_fake_ring_relays_whole_reports_grows_same_file_changes_effort_and_notif
     notes = ring.runtime / "ring" / question.id / "responses.md"
     assert str(notes) in started and "tail -f" in started
     previous, sizes, inode = question.body, [], None
-    for index in range(9):
-        order = wait_for(lambda: active_order(ring, store), seconds=15)
-        assert order.to == ("alpha", "beta", "gamma")[index % 3]
-        assert order.body.endswith(previous)
-        assert not [m for m in store.for_seat("conductor") if m.sender == "ship"]
-        wait_for(lambda: idle_after_delivery(ring, tmux, order), seconds=15)
-        seat = seatmod.Seat(ring, ring.seat(order.to), tmux)
-        expected = ("low", "medium", "high")[index // 3]
-        assert wait_for(lambda: seat.harness.screen(tmux.capture(seat.pane().id)).shows["effort"] == expected,
-                        seconds=15)
-        if index == 3:
-            assert "service stopped" in service.stop(ring.runtime)
-            assert "service started" in service.start(ring)
-            assert "running" in qd(capsys, "cascade", "--re", question.id)
-            assert current_id(store) == order.id, "restart keeps the same pending order"
-        previous = f"## Cascade note\nRevision {index + 1}.\n## Answer\nWhole plan {index + 1}."
-        # The fake has consumed this exact order. File its ordinary synthetic closing report.
-        qd(capsys, "post", "report", "--from", order.to, "--re", order.id, previous)
-        wait_for(lambda: notes.exists() and f"Revision {index + 1}." in notes.read_text(), seconds=15)
-        sizes.append(notes.stat().st_size)
-        inode = inode or notes.stat().st_ino
-        assert notes.stat().st_ino == inode, "tail -f follows the same append-only file"
+    alpha = seatmod.Seat(ring, ring.seat("alpha"), tmux)
+    # Lap 4 (alpha's second) is held inside its turn: only its order carries "Revision 3.".
+    held = Rendezvous(alpha.home, "step", "Revision 3.")
+    with held:
+        for index in range(9):
+            order = wait_for(lambda: active_order(ring, store), seconds=15)
+            assert order.to == ("alpha", "beta", "gamma")[index % 3]
+            assert order.body.endswith(previous)
+            assert not [m for m in store.for_seat("conductor") if m.sender == "ship"]
+            report = f"## Cascade note\nRevision {index + 1}.\n## Answer\nWhole plan {index + 1}."
+            if index == 3:
+                # A restart in the middle of a lap: alpha is mid-turn on this lap's order throughout.
+                assert wait_for(held.reached, seconds=15)
+                assert alpha.harness.state(alpha.record()).turn_open is True
+                assert "service stopped" in service.stop(ring.runtime)
+                assert "service started" in service.start(ring)
+                assert "running" in qd(capsys, "cascade", "--re", question.id)
+                assert current_id(store) == order.id, "restart keeps the same pending order"
+                # The ring seat files its report before its turn ends, as a ring seat does.
+                qd(capsys, "post", "report", "--from", order.to, "--re", order.id, report)
+                held.release()
+            wait_for(lambda: idle_after_delivery(ring, tmux, order), seconds=15)
+            seat = seatmod.Seat(ring, ring.seat(order.to), tmux)
+            expected = ("low", "medium", "high")[index // 3]
+            assert wait_for(lambda: seat.harness.screen(tmux.capture(seat.pane().id)).shows["effort"] == expected,
+                            seconds=15)
+            previous = report
+            if index != 3:
+                # The fake has consumed this exact order. File its ordinary synthetic closing report.
+                qd(capsys, "post", "report", "--from", order.to, "--re", order.id, previous)
+            wait_for(lambda: notes.exists() and f"Revision {index + 1}." in notes.read_text(), seconds=15)
+            sizes.append(notes.stat().st_size)
+            inode = inode or notes.stat().st_ino
+            assert notes.stat().st_ino == inode, "tail -f follows the same append-only file"
     final = wait_for(lambda: [m for m in store.for_seat("conductor") if m.sender == "ship"], seconds=15)
     assert len(final) == 1 and final[0].body.endswith(previous)
     assert str(notes) in final[0].body
