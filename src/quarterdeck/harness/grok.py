@@ -221,6 +221,7 @@ class GrokHarness(Harness):
     # the adapter knows by name, so neither is read.
     grant_kind = "self-renewing"
     answers_questions = True  # its first-run training question, answered opt out by the ship's orders
+    answer_seconds = 5.0  # measured: the training question was gone within one second of the press
     fresh_versions = frozenset({"1.0.77", "1.0.70"})  # M1 to M3 and M5: the composer after the press, before any turn
     keys = Keys(submit="Enter", interrupt="C-c")
     reads_usage = True

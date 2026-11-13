@@ -24,7 +24,7 @@ from .tmux import TmuxError
 CONFIRM_SECONDS = 5.0
 BOX_SECONDS = 2.0
 SETTLE_SECONDS = 0.1
-ANSWER_SECONDS = 5.0  # measured: Grok's training question was gone within one second of the press
+ANSWER_SECONDS = 5.0
 TRANSCRIPT_LINES = 2000  # scrollback read for an echo: a long message's echo climbs above the screen
 UNCAPTURED = object()
 
@@ -343,7 +343,8 @@ class Door:
         else:
             self.tmux.click(pane.id, *cell)
         after, cleared = current, False
-        deadline = time.monotonic() + ANSWER_SECONDS
+        answer_seconds = getattr(self.harness, "answer_seconds", None)
+        deadline = time.monotonic() + (ANSWER_SECONDS if answer_seconds is None else answer_seconds)
         while time.monotonic() < deadline and not cleared:
             time.sleep(SETTLE_SECONDS)
             found = self.seat.read_pane()

@@ -301,6 +301,7 @@ class Harness(ABC):
         return None
 
     answers_questions: bool = False  # declares a question with a fixed answer (Interruption.click) to watch for
+    answer_seconds: float | None = None  # measured clearance bound; None uses the Door's default
     # Versions whose composer drawn just after that question is answered has been measured (see Screen.fresh).
     fresh_versions: frozenset[str] = frozenset()
     # How long after its launch a program may take to draw its input box. Within it a frame with no box,
