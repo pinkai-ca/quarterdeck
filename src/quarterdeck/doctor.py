@@ -156,7 +156,7 @@ def framework_check(ship: Ship) -> Check:
         lines.append(f"selected copy {fact['commit'][:7]} since {fact['at'][:16]}")
         if fact.get('safety') != install.COPY_SAFETY:
             lines.append('historical copy evidence; its own handler has old in-place management')
-    else:
+    elif not selected.first_copy:
         lines.append('current installed commit unknown')
     if selected.warning:
         lines.append(selected.warning)
@@ -206,7 +206,7 @@ def framework_check(ship: Ship) -> Check:
         identity_ok = observed == {key: fact.get(key) for key in ('commit', 'instance', 'package_digest')}
         if not identity_ok:
             lines.append('observed service copy instance is unknown or mismatched')
-    return Check('framework', selected.qd is not None and identity_ok,
+    return Check('framework', (selected.qd is not None or selected.first_copy) and identity_ok,
                  ' · '.join(lines))
 
 

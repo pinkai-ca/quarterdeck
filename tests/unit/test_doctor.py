@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import json
 
 from pathlib import Path
 
@@ -36,6 +37,37 @@ def test_the_drydock_passes_every_check_on_a_machine_that_runs_the_tests(drydock
     assert "service" not in [c.name for c in found], "no runtime yet, so nothing to say about its service"
     code, out = run(capsys, "--ship", str(drydock), "doctor")
     assert code == 0 and out.startswith("PASS  ship file · ship.toml: 3 seats, 1 pools, 3 sessions") and "FAIL" not in out
+
+
+def test_a_ship_before_its_first_copy_passes_with_a_note(drydock: Path, capsys):
+    declaration = drydock / 'ship.toml'
+    declaration.write_text(declaration.read_text().replace('code = "checkout"\n', ''))
+    check = doctor.framework_check(load(drydock))
+    assert check.passed and 'no copy yet; qd up makes one' in check.detail
+    assert 'current installed commit unknown' not in check.detail
+    code, out = run(capsys, '--ship', str(drydock), 'doctor')
+    assert code == 0 and 'PASS  framework · no copy yet; qd up makes one' in out
+    assert not (drydock / 'runtime').exists(), 'doctor does not create the first copy'
+
+
+@pytest.mark.parametrize('copy_present', [False, True], ids=['missing-copy', 'broken-copy'])
+def test_a_recorded_copy_that_is_missing_or_broken_still_fails(drydock: Path, capsys, copy_present):
+    declaration = drydock / 'ship.toml'
+    declaration.write_text(declaration.read_text().replace('code = "checkout"\n', ''))
+    ship = load(drydock)
+    ship.runtime.mkdir()
+    (ship.runtime / 'installed.json').write_text(json.dumps({
+        'format': 1,
+        'current': {'commit': 'a' * 40, 'ref': 'HEAD', 'at': '2026-01-01T00:00:00+00:00', 'proof': 'good'},
+    }))
+    if copy_present:
+        (ship.runtime / 'venv').mkdir()
+    check = doctor.framework_check(ship)
+    expected = 'copy executable is missing or not executable' if copy_present else 'copy directory is missing'
+    assert not check.passed and expected in check.detail
+    assert 'no copy yet' not in check.detail
+    code, out = run(capsys, '--ship', str(drydock), 'doctor')
+    assert code == 1 and 'FAIL  framework ·' in out and expected in out
 
 
 def test_a_missing_working_directory_and_a_missing_program_fail_by_name(drydock: Path, tmp_path: Path, monkeypatch, capsys):
