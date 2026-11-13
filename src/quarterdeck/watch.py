@@ -576,13 +576,12 @@ def limit_state(ship: Ship, selected: list[Seat | UnresolvedSeat]):
         with book:
             held, walled = [], []
             for seat in up:
-                reasons = quota.current_walls(seat, book)
-                if not reasons:
+                if not quota.current_walled(seat, book):
                     continue
                 walled.append(seat)
                 if not any(quota.cached_open(ship, book, pool, seat) for pool in quota.candidate_pools(seat)):
                     label = seat.name
-                    if seat.harness.model_scoped_quota:
+                    if seat.harness.model_scoped_quota and (reasons := quota.current_walls(seat, book)):
                         label += " (" + "; ".join(dict.fromkeys(held_scope(r, seat.pool.name) for r in reasons)) + ")"
                     held.append(label)
             reasons = [f'{seat.name}: move held: {reason}' for seat in walled
