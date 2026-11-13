@@ -74,7 +74,7 @@ def systems(service, name, *, ship=None):
 
 def recipients(service, name, human, *, elapsed=0, taken=False, ship=None, up=None, desk_now=False):
     ship = service.ship if ship is None else ship
-    desks = [spec.name for spec in ship.seats.values() if spec.role == 'desk']
+    desks = [spec.name for spec in ship.seats.values() if spec.role == 'desk' and spec.name != name]
     up = systems(service, name, ship=ship) if up is None else up
     if not up:
         return desks
@@ -165,7 +165,7 @@ def notify(service, name, human, key, body, *, channel='human', ship=None, up=No
               if recipient in {spec.name for spec in ship.seats.values() if spec.role == 'systems'}]
         if up and elapsed >= ESCALATE_SECONDS and not prior['taken']:
             eligible += [spec.name for spec in ship.seats.values()
-                         if spec.role == 'desk' and spec.name not in eligible]
+                         if spec.role == 'desk' and spec.name != name and spec.name not in eligible]
     else:
         eligible = (list(up) if human is None and up is not None else
                     recipients(service, name, human, elapsed=elapsed, taken=prior['taken'] is not None,

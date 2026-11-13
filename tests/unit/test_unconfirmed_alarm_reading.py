@@ -23,7 +23,8 @@ def alarm(tmp_path, monkeypatch):
                                                      ('systems', 'systems')]})
     seat = SimpleNamespace(name='worker', ship=ship, session=SimpleNamespace(human=False),
                            spec=SimpleNamespace(pools=('pool',)),
-                           harness=SimpleNamespace(reads_queue_error=False), launched=lambda: None)
+                           harness=SimpleNamespace(reads_queue_error=False), launched=lambda: None,
+                           pane=lambda: None)
     state = SimpleNamespace(detached=[OLD], door=None, up={'systems'}, counter=0,
                             when=datetime(2030, 1, 1, tzinfo=timezone.utc))
     monkeypatch.setattr(alarms, 'now', lambda: state.when)
@@ -304,10 +305,11 @@ def test_human_owned_alarm_goes_to_desk_immediately(alarm):
     assert len(notice(alarm)) == 2
 
 
-def test_desk_can_receive_its_own_alarm_through_post(alarm):
+def test_desk_subject_is_excluded_from_its_own_alarm_recipients(alarm):
     alarms.notify(alarm.actor, 'desk', True, 'synthetic desk hold', 'desk needs attention')
     reports = alarm.actor.store.all()
-    assert {message.to for message in reports} == {'systems', 'desk'}
+    assert {message.to for message in reports} == {'systems'}
+    assert all(message.to != 'desk' for message in reports)
 
 
 @pytest.mark.parametrize('cleared', [False, True])
