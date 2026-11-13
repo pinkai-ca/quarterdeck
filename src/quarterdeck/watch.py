@@ -18,10 +18,9 @@ from pathlib import Path
 
 from . import accounting_health, check_outcome, credential, idle, ledger, move_hold, server_recovery, pending as pending_delivery, post, program_use, providers, quota, record_owner, recovery, request_queue, servicectl as service
 from .door import Door, Reading
-from .harness.base import same_name
 from .harness.capabilities import selection_label
 from .seat import Seat, UnresolvedSeat, seats
-from .ship import Ship
+from .ship import Ship, ShipError
 from .servicectl import STALE_SECONDS
 from .tmux import Tmux
 from .usage_cache import MISSING
@@ -119,8 +118,17 @@ class SeatReading:
             return f"{self.model} (ship file: {declared})" if self.model else declared
         if self.model is None:
             return f"- (ship file: {self.declared_model})" if self.declared_model else "-"
-        if self.declared_model is None or same_name(self.model, self.declared_model):
+        if self.declared_model is None:
             return self.model
+        from .harness import get
+        try:
+            adapter = get(self.harness)
+            actual = adapter.model_identity(self.model, version=self.version)
+            expected = adapter.model_identity(self.declared_model, version=self.version)
+            if actual is not None and actual == expected:
+                return self.model
+        except (ShipError, ValueError, TypeError):
+            pass
         return f"{self.model} (ship file: {self.declared_model})"
 
     @property
@@ -434,6 +442,7 @@ class Facts:
     accounting: str | None = None
     check_failed: list[str] = field(default_factory=list)
     check_unknown: list[str] = field(default_factory=list)
+    model_mismatches: list[str] = field(default_factory=list)
 
     def line(self) -> str:  # law: nothing-waits-silently
         parts = ["SERVICE DOWN" if self.service == "down" else f"service {self.service}"]
@@ -451,6 +460,7 @@ class Facts:
         parts += [detail for detail in self.compactions
                   if not any(fallback.startswith(detail + ';') for fallback in self.manual_fresh)]
         parts += self.manual_fresh
+        parts += self.model_mismatches
         parts += self.turn_errors
         parts += self.sign_in_failures
         parts += self.group_held
@@ -700,7 +710,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
     pending_lines += [f"request claimed: {path.name}; inspect requests/ before retrying"
                       for path in sorted((ship.runtime / "requests").glob("*.claimed"))]
     now = post.now()
-    from . import cascade_runtime, compaction_alert, group_post, structure_outcome
+    from . import cascade_runtime, compaction_alert, group_post, model_mismatch, structure_outcome
     oldest = int(max(((now - m.at).total_seconds() for m in waiting), default=0) // 60)
     queued = [a for a in records if a.result == "queued" and latest.get(a.message) == 'queued']
     outcomes, outcome_errors = check_reading if check_reading is not None else check_outcome.collect(ship.runtime)
@@ -720,6 +730,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         compactions=compactions,
         manual_fresh=compaction_alert.unrouted(ship, [seat for seat in selected if not isinstance(seat, UnresolvedSeat)]),
         server_recovery=server_recovery.status(ship.runtime),
+        model_mismatches=model_mismatch.unrouted(ship, [seat for seat in selected if not isinstance(seat, UnresolvedSeat)]),
         held=held,
         move_holds=move_reasons,
         ending=ending,

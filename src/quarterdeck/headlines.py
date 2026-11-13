@@ -42,5 +42,6 @@ def status_line(facts, alerts: list[str]) -> str:
     # Check failures keep their program, time and safe reason even in the overflow form.
     parts += facts.check_failed
     parts += facts.check_unknown
+    parts += getattr(facts, 'model_mismatches', ())  # a no-systems mismatch must retain its seat and difference
     parts.append("details: qd status")
     return SEPARATOR.join(parts)

@@ -433,6 +433,34 @@ class Door:
         self.tmux.keys(pane.id, *keys)
         return Delivery('typed', 'one native mode-control queue sent')
 
+    def answer_control(self, control, value, answer, verify) -> Delivery:
+        """Answer only this request's adapter-proved option in a fresh, owned control question."""
+        from .harness.types import ControlInterruption
+
+        self.proof = None
+        if answer is None or self.seat.session.human or not verify():
+            return Delivery('withheld', 'control confirmation ownership is not current')
+        launched, pane = self.seat.launched(), self.seat.pane()
+        if launched is None or pane is None or pane.dead:
+            return Delivery('withheld', 'control confirmation launch is not current')
+        screen = self.screen()
+        if (screen is None or not isinstance(screen.interruption, ControlInterruption)
+                or screen.interruption.control != control.name):
+            return Delivery('withheld', 'the owned control question is not shown')
+        expected = self.harness.control_answer(control, value, screen, version=launched.version)
+        if expected != answer or not answer.keys or answer.control != control.name or answer.value != value:
+            return Delivery('withheld', 'control confirmation option/value is not proved')
+        reading = self.reading(screen)
+        if (reading.reason != screen.interruption.name or reading.open or screen.working or screen.queued
+                or (screen.box or '').strip()):
+            return Delivery('withheld', str(reading))
+        current = self.seat.pane()
+        if (self.seat.launched() != launched or current is None or current.dead
+                or (current.id, current.pid) != (pane.id, pane.pid) or not verify()):
+            return Delivery('withheld', 'control confirmation source changed; no answer sent')
+        self.tmux.keys(pane.id, *answer.keys)
+        return Delivery('typed', 'program asked; ship answered yes')
+
     def settled(self, seconds: float = BOX_SECONDS) -> Screen | None:
         """The screen once the program has stopped working, or the last screen seen."""
         deadline = time.monotonic() + seconds

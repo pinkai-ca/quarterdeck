@@ -768,6 +768,23 @@ spock   off                   exited 1 at 21:12                 -          0
 
 Titles are display, never identity. The door dismisses only a notice the adapter recognizes, types once into an empty box, checks the display, and only then submits. An unverified paste is never cleared automatically. No key goes into an unknown dialog, a menu or a human's text.
 
+A control-owned question is an obstruction to ordinary delivery. Only the pending request that submitted
+the control may answer it, using an adapter-declared option matched to the requested value by its text,
+with a proved selection gesture independent of the cursor. The same request owner retains its consumed
+claim and bounded continuation/deadline metadata; a later tick observes or answers, never types the
+command again. Unknown continuation or transport holds without replay. Record confirmation closes a
+model change; expiry names it unconfirmed. Where the program asked and the ship sent the value-matched
+yes, the proof says both explicitly. The existing effort validation and declared control modes remain.
+
+An observed model is read from the current owned record first and an adapter-proved screen reading
+second. Comparison uses the effective selected pool/seat declaration and the adapter's exact model
+identity rule, with no generic prefix or punctuation aliases. Program-default model selection has no
+invented expected model. Only a current matching pending model control suppresses a proved difference.
+The service prepares a fixed operational report intent for each up systems recipient before publishing
+it and keeps its identity for deduplication across restarts. With no systems recipient up, the status
+line retains the seat and difference, including on overflow. The journal holds canonical model names
+and operational report intents, never raw native records or captures.
+
 **The box check.** Terminal soft rows are joined using tmux's `capture-pane -J` wrap flags before adapter parsing. For rows drawn by the program itself, the expected transport and the adapter's text-area width establish which breaks are forced: a full row may break at any character; a word or hyphen break is allowed only when the following piece cannot fit. Interior spaces, indentation, hard newlines and punctuation remain significant. Without layout evidence a plain string must match exactly; unknown control or grapheme layouts fail closed. The adapter may also recognize the placeholder of a folded paste during initial verification, with its changing paste counter ignored. That visual check permits submission, not a delivered receipt.
 
 Codex 0.166.0 uses textwrap 0.16.2 and unicode-linebreak 0.1.5. Beside the established ASCII and Latin letters, its box comparison knows three specific ship-authored symbols: U+00B7 and U+2192 resolve from the ambiguous class to alphabetic; U+2026 uses the distinct inseparable class. Ellipsis permits only its source-established following breaks, never an arbitrary break before it or between consecutive ellipses. A preceding space can supply a boundary, subject to the existing opening/quotation context and overflow checks. This does not classify other punctuation or establish unknown grapheme/control layouts. The pinned sources are [Codex's composer wrapper](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/tui/src/bottom_pane/textarea/wrapping.rs), [textwrap's word separator](https://github.com/mgeisler/textwrap/blob/0.16.2/src/word_separators.rs), and [unicode-linebreak 0.1.5](https://docs.rs/crate/unicode-linebreak/0.1.5/source/src/lib.rs).
@@ -1034,6 +1051,8 @@ quarterdeck/                       the project folder: the framework repository
     servicectl.py  the service's lock, heartbeat, start, stop and requests
     request_queue.py   one queued-request owner: visible holds, terminal cancellation/supersession and writer coordination
     shutdown.py    service-local SIGTERM deferral, runtime owner/boundary facts and bounded stop annotation
+    control_confirmation.py   pure value choice and bounded consumed-control continuation in the one request owner
+    model_mismatch.py   record-first canonical model differences, fixed systems report intents and named fallback alarms
     presentation.py   disposable status text rendering and freshness checks; the console bootstrap's optional fast path,
                    never lifecycle, receipt or usage evidence
     harness/       base.py types.py home.py claude.py codex.py antigravity.py opencode.py pi.py grok.py fake.py; json_record.py limits.py sqlite_snapshot.py costs.py

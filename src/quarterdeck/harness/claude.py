@@ -25,7 +25,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from .json_record import JsonLinesReader, input_reader, input_rows, records_matching
-from .types import AUTHENTICATION, Inputs, TurnFailure
+from .types import AUTHENTICATION, Inputs, TurnFailure, ControlInterruption
 from .claude_background import BackgroundBash, user_notice
 
 from ..ship import Pool, SeatSpec
@@ -604,6 +604,10 @@ WORKING = re.compile(r"esc to interrupt|^[*✻✶✳✢·⠂⠄⠆] \S+… \(\d+
 SET_MODEL = re.compile(r"Set model to `?([^`]+?)`? and saved")
 SET_EFFORT = re.compile(r"Set effort level to `?(\w+)`?")
 QUEUED_PLACEHOLDER = "Press up to edit queued messages"
+# 2.1.317: the model-set record establishes Haiku; the control contract establishes Sonnet.
+# No prefix/suffix normalization, date suffix removal, or unproved Opus display alias.
+MODEL_DISPLAY_IDENTITIES = {'Haiku 5.5': 'claude-haiku-5-5', 'Sonnet 5.5': 'claude-sonnet-5-5'}
+MODEL_IDENTITIES = frozenset({'claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5'})
 SETTINGS = {
     "env": {"DISABLE_AUTOUPDATER": "1"},
     "promptSuggestionEnabled": False,
@@ -695,6 +699,12 @@ class ClaudeHarness(Harness):
     def check_tool_evidence(self, record: Path) -> dict:
         from .check_evidence import json_tools, claude_tools
         return json_tools(record, claude_tools)
+    def model_identity(self, value: str | None, *, version: str | None = None) -> str | None:
+        if not isinstance(value, str):
+            return None
+        if value in MODEL_IDENTITIES:
+            return value
+        return MODEL_DISPLAY_IDENTITIES.get(value) if version == '2.1.317' else None
 
     reads_queue_error = True
     compactions = staticmethod(compactions)
@@ -892,7 +902,7 @@ class ClaudeHarness(Harness):
 
     def interruptions(self) -> tuple[Interruption, ...]:
         return (
-            Interruption("switch-model confirmation", r"Switch model\?", key="Enter"),
+            ControlInterruption("switch-model confirmation", r"Switch model\?", control="model"),
             Interruption("login", r"Select login method|Paste code here if prompted|Browser didn't open", key=None),
             Interruption("trust dialog", r"Do you trust the files in this folder\?", key=None),
             Interruption("permission prompt", r"Do you want to proceed\?|Allow once|Allow always", key=None),

@@ -275,6 +275,27 @@ class Interruption:
 
 
 @dataclass(frozen=True)
+class ControlInterruption(Interruption):
+    """A question that only the request for this control may answer."""
+
+    control: str = ''
+
+    @property
+    def dismissable(self) -> bool:
+        return False
+
+
+@dataclass(frozen=True)
+class ControlAnswer:
+    """An adapter-proved option and gesture for one exact requested value."""
+
+    control: str
+    value: str
+    option: str
+    keys: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class Control:
     """A setting of the program: its launch form, its in-session form, and what confirms it."""
 

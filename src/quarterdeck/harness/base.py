@@ -24,7 +24,7 @@ from ..ship import Pool, SeatSpec
 
 from .json_record import RecordError, entries, when
 from .home import credential, key_environment, merged, ship_template
-from .types import Box, Control, Credential, Input, Interruption, Join, Keys, Launch, PasteClearRule, Screen, State, Tokens, ToolCall, Turn
+from .types import Box, Control, ControlAnswer, Credential, Input, Interruption, Join, Keys, Launch, PasteClearRule, Screen, State, Tokens, ToolCall, Turn
 from .capabilities import (DefaultMetadata, EffortCapability, reject_default_overrides,
                            reject_unclassified_overrides, validate_selection)
 
@@ -460,6 +460,18 @@ class Harness(ABC):
 
     def control(self, name: str) -> Control | None:
         return next((c for c in self.controls() if c.name == name), None)
+
+    def model_identity(self, value: str | None, *, version: str | None = None) -> str | None:
+        """Literal identifiers by default; only an adapter may declare proved display aliases."""
+        if (not isinstance(value, str) or not value or len(value) > 200
+                or value != value.strip() or not all(char.isprintable() for char in value)):
+            return None
+        return value
+
+    def control_answer(self, control: Control, value: str, screen: Screen,
+                       *, version: str | None = None) -> ControlAnswer | None:
+        """A value-matched option and proved keys, or no authority to answer this frame."""
+        return None
 
     def recognize(self, screen: str) -> Interruption | None:
         return next((i for i in self.interruptions() if i.seen_in(screen)), None)
