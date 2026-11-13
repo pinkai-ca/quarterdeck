@@ -23,6 +23,18 @@ from tests.testrunner import jail
 
 pytestmark = pytest.mark.skipif(shutil.which('bwrap', path=jail.PATH) is None, reason='bubblewrap is not installed')
 
+
+def namespaces_allowed() -> bool:
+    """A jail can be made here: not when this suite itself runs inside one, where AppArmor's unpriv_bwrap
+    profile denies the capabilities a second bubblewrap needs."""
+    try:
+        return subprocess.run(['bwrap', '--ro-bind', '/', '/', 'true'], capture_output=True, timeout=20).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+needs_a_jail = pytest.mark.skipif(not namespaces_allowed(), reason='cannot make a namespace here (inside a jail)')
+
 UID = os.getuid()
 SECRETS = {name: f'synthetic-{name.lower()}' for name in jail.FORBIDDEN}
 SECRETS.update(SYNTH_API_TOKEN='synthetic-token-value', GH_TOKEN='synthetic-gh-token', QD_SHIP='/synthetic/ship',
@@ -100,6 +112,7 @@ def test_the_allowlist_never_names_a_forbidden_variable():
     assert inside['PATH'] == jail.PATH and inside['HOME'] == '/synthetic/home'
 
 
+@needs_a_jail
 def test_from_inside_the_jail_the_agent_the_bus_tmux_the_home_and_the_network_are_out_of_reach(tmp_path, canary):
     scratch = tmp_path / 'scratch'
     scratch.mkdir()
@@ -161,6 +174,7 @@ def test_the_tool_refuses_to_jail_the_target_it_lies_in(tmp_path):
     assert not (project / '.testruns' / 'results').exists() or not os.listdir(project / '.testruns' / 'results')
 
 
+@needs_a_jail
 def test_a_targets_own_copy_of_the_tool_never_builds_the_jail(tmp_path, canary):
     """A target whose own copy of the tool opens the jail: main's tool, the one invoked, builds the jail, and
     the target's module is never even imported."""
