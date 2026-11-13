@@ -1116,8 +1116,9 @@ explicit facts; a model name never identifies its operator or subscription.
 The ship defaults to `<Quarterdeck project>/ships/<name>`, independently of its
 workspace. Any explicit folder must resolve inside the Quarterdeck project; an
 outside folder refuses with the one-folder reason and an inside-folder remedy.
-An installed copy without an identifiable checkout refuses and asks for setup from
-the Quarterdeck checkout. Its parent must exist. Setup creates only the ship folder,
+The same `install.source_repo` resolver owns the checkout identity for installation
+and setup. An installed copy without an identifiable checkout refuses and asks for
+setup from the Quarterdeck checkout. Its parent must exist. Setup creates only the ship folder,
 with validated
 `ship.toml`, `orders.md`, runtime `.gitignore`, and a scoped first Git commit;
 it never overwrites an existing directory or creates the person's project.
@@ -1164,7 +1165,8 @@ use `qd set`'s validation, application, deferral and refusal path, preserving
 unrelated seats, pools and orders. Unsupported inline edits, named-to-default
 changes requiring key removal, and session-title changes refuse before writing,
 with the explicit declaration-edit remedy. Failed first commits require the
-person to resolve Git identity and commit before rerunning. Successful starts
+person to resolve Git identity and commit before rerunning. After start consent, the existing `cmd_up` path prepares the installed copy and
+delegates launch to its proven executable before starting any seat. Successful starts
 show status, desk access and a first-order example; only actual readiness/proofs
 can establish a running crew.
 

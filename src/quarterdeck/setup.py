@@ -79,11 +79,12 @@ class Operations:
         return (Path(home).expanduser() / filename).is_file()
 
     def project_folder(self) -> Path:
-        project = standing.project_dir().resolve()
-        if not ((project / ".git").exists() and (project / "pyproject.toml").is_file()
-                and (project / "src/quarterdeck/install.py").is_file()):
-            raise ShipError("cannot identify the Quarterdeck project folder; run setup from the Quarterdeck checkout")
-        return project
+        from . import install
+        try:
+            return install.source_repo()
+        except ShipError:
+            raise ShipError("cannot identify the Quarterdeck project folder; run setup from the Quarterdeck checkout") from None
+
 
     def workspace_default(self) -> str | None:
         return setup_proposal.workspace_default()

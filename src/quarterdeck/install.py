@@ -144,7 +144,7 @@ def installed(runtime: Path) -> dict | None:
             'last_failure': data.get('last_failure')}
 
 
-def source_repo(ship: Ship) -> Path:
+def source_repo(ship: Ship | None = None) -> Path:
     """Prefer the executing checkout; otherwise require one unambiguous local candidate."""
     executing = Path(__file__).resolve().parents[2]
     def framework(path):
@@ -152,7 +152,7 @@ def source_repo(ship: Ship) -> Path:
                 and (path / 'src/quarterdeck/install.py').is_file())
     if framework(executing):
         return executing
-    candidates = {p.resolve() for p in (ship.folder.parent.parent,) if framework(p)}
+    candidates = {p.resolve() for p in (ship.folder.parent.parent,) if framework(p)} if ship is not None else set()
     if len(candidates) == 1:
         return candidates.pop()
     raise ShipError('no unambiguous local framework checkout; run qd sync from the checkout')
