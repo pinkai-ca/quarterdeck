@@ -31,7 +31,8 @@ def test_all_open_messages_survive_count_and_age_limits(tmp_path, monkeypatch):
     assert opened.body in text
     assert "whole message new199" in text
     assert "whole message new200" not in text
-    assert text.endswith("Older received messages: 6. Read the whole history with `qd inbox --all`.\n")
+    assert text.endswith("Older received messages: 6. Read the whole history with `qd inbox --all`. "
+                         "`qd thread <id>` prints a thread whole, as far as the seat sent or received it.\n")
     assert len(store.for_seat("worker")) == 207
 
 
