@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from quarterdeck import harness, standing
+from quarterdeck.harness.fake import FakeHarness
 from quarterdeck.seat import Seat
 from quarterdeck.service import Service
 from quarterdeck.ship import Pool, SeatSpec, Session, Ship
@@ -28,8 +29,15 @@ def case(tmp_path, monkeypatch):
     (framework / 'harnesses' / 'other-synthetic.md').write_text('Other synthetic card\n')
     monkeypatch.setattr(standing, 'FRAMEWORK_DIR', framework)
     policies = {'fake': 'Synthetic question policy.', 'other-synthetic': 'Other question policy.'}
-    monkeypatch.setattr(harness, 'get', lambda name: SimpleNamespace(
-        human_tool_policy=policies[name], accepts=lambda pool: None))
+
+    def reader(name):
+        adapter = FakeHarness()
+        adapter.name = name
+        adapter.human_tool_policy = policies[name]
+        adapter.accepts = lambda pool: None
+        return adapter
+
+    monkeypatch.setattr(harness, 'get', reader)
     spec = SeatSpec('worker-synthetic', 'crew-synthetic', 'worker-synthetic', 'fake',
                     ('alpha-synthetic',))
     ship = Ship(folder, 'ship-synthetic', 'operator-synthetic', tmp_path,
@@ -94,6 +102,7 @@ def test_next_tick_follows_session_in_ship_file_both_ways_once(case, running):
     template = '''[ship]
 name = "ship-synthetic"
 operator = "operator-synthetic"
+code = "checkout"
 [pools.alpha-synthetic]
 provider = "synthetic"
 endpoint = "http://synthetic.invalid"
