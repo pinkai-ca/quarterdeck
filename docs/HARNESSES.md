@@ -45,6 +45,7 @@ A harness runs on a pool, one way of paying:
 
 - **A local model or other endpoint.** The agent runs in a bubblewrap jail unless the ship's file says otherwise: your home folder hidden, the agent's working folder writable, and `qd post`, the agents' message command, working.
 - **Antigravity** cannot keep state in another folder, so the agent runs in the Antigravity state you use yourself. [The Antigravity record](ANTIGRAVITY.md) says how Quarterdeck tells the agent's conversation from yours.
+- **Antigravity's survey about itself**, which Antigravity shows after some turns in place of the input box, gets no rating. Quarterdeck skips the survey by Antigravity's own choice for that, on every ship; `qd watch` shows the press. For an agent in your own session Quarterdeck presses nothing.
 - **Grok Build** trusts the whole repository that holds the agent's working folder, as xAI's trusted folders do, so that repository's instructions, hooks, MCP servers and LSP processes load or start. [The Grok Build contract](GROK.md) says what is measured and what is not.
 - **A brand-new Grok Build home** opens on xAI's question about training data. Quarterdeck answers by opting out, on every ship, and never opts in; `qd watch` shows the answer. For an agent in your own session, such as your desk, Quarterdeck presses nothing: answer the question there yourself.
 
