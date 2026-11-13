@@ -156,6 +156,8 @@ def test_account_keeps_sparse_ids_and_missing_owned_records_visible(tmp_path: Pa
     from quarterdeck.harness.antigravity import AntigravityHarness
     from quarterdeck.harness.base import State, Tokens, Turn
     from quarterdeck.ledger import table
+    from quarterdeck.seat import Seat
+    from quarterdeck.ship import Pool, SeatSpec, Session, Ship
 
     record = tmp_path / "synthetic.db"
     record.write_bytes(b"placeholder")
@@ -169,13 +171,20 @@ def test_account_keeps_sparse_ids_and_missing_owned_records_visible(tmp_path: Pa
     harness = AntigravityHarness()
     monkeypatch.setattr(harness, "read", lambda r: (data["state"], data["turns"]) if r.exists() else
                         (_ for _ in ()).throw(OSError("record missing")))
-    seat = SimpleNamespace(name="worker", home=home, harness=harness, pane=lambda: None, launched=lambda: None,
-                           pool=SimpleNamespace(name="pool-a"), record=lambda: None, spec=SimpleNamespace(harness="antigravity"))
+    pool = Pool("pool-a", "antigravity")
+    spec = SeatSpec("worker", "crew-synthetic", "worker", "antigravity", (pool.name,))
+    ship = Ship(tmp_path, "ship-synthetic", "operator-synthetic", tmp_path, {pool.name: pool},
+                {"crew-synthetic": Session("crew-synthetic", "Synthetic Crew")}, {spec.name: spec})
+    seat = Seat(ship, spec, None)
+    seat.home, seat.harness = home, harness
+    monkeypatch.setattr(seat, "pane", lambda: None)
+    monkeypatch.setattr(seat, "launched", lambda: None)
+    monkeypatch.setattr(seat, "record", lambda: None)
     from quarterdeck import service
     monkeypatch.setattr(service, "seats", lambda *a: [seat])
+    monkeypatch.setattr(service.quota, "refresh_declared", lambda service: None)
     from quarterdeck.record_owner import register
     register(home.parent, record, "antigravity")
-    ship = SimpleNamespace(runtime=tmp_path / "runtime", folder=tmp_path, pools={})
     svc = Service(ship, None)
     svc.account()
     assert svc.ledger.ingested(record) == 1
