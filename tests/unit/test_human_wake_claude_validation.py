@@ -933,3 +933,108 @@ def test_the_wake_steps_own_human_seat_retires_its_transport_and_cleans_up(tmp_p
     assert not post.Store(ship.runtime).is_open(seen['order']), 'its own order is closed by teardown'
     kept = ship.runtime / 'check' / f'{seat.name}-human-wake.json'
     assert kept.read_text() == '{"synthetic": "wake reservation"}\n', 'the reservation is kept before teardown'
+
+
+# Captain 400c (2) and ans-0d86: the waking line must fit on one row of the program's box at the pane's present
+# width, by an adapter-declared margin, before the reservation and again at the last pre-paste capture.
+
+NEEDED = {'claude': 78, 'codex': 73, 'pi': 71, 'opencode': 77, 'grok': 80, 'fake': 72}  # len(LINE) + declared margin
+
+
+@pytest.mark.parametrize('name', sorted(NEEDED))
+def test_every_adapter_with_a_box_fixture_holds_one_column_narrow_and_admits_its_one_row(name):
+    from quarterdeck.harness import get
+    harness, needed = get(name), NEEDED[name]
+    assert human_wake.width_hold(harness, SimpleNamespace(width=needed)) is None
+    assert human_wake.width_hold(harness, SimpleNamespace(width=400)) is None
+    assert human_wake.width_hold(harness, SimpleNamespace(width=needed - 1)) == \
+        f'human wake held: pane too narrow for the waking line ({needed} columns needed)'
+
+
+def test_an_adapter_that_declares_no_margin_holds_and_unknown_widths_hold():
+    from quarterdeck.harness import get
+    assert human_wake.width_hold(get('antigravity'), SimpleNamespace(width=400)) == \
+        'human wake held: adapter box margin unknown for the waking line'
+    for pane in (None, SimpleNamespace(width=None), SimpleNamespace(width=0), SimpleNamespace(width='80')):
+        assert human_wake.width_hold(get('fake'), pane) == 'human wake held: pane width unknown for the waking line'
+
+
+def narrowed(d, width, after_reservation=False):
+    """The desk's pane at another width: at once, or only once the wake has been reserved."""
+    real = d.tmux.read_pane
+
+    def read_pane(ident, history=0, **options):
+        found = real(ident, history, **options)
+        if found and (not after_reservation or (d.seat.folder / 'human-wake.json').exists()):
+            return replace(found[0], width=width), found[1]
+        return found
+    d.tmux.read_pane = read_pane
+
+
+def test_a_pane_one_column_too_narrow_is_never_typed_into_and_says_why(desk):
+    desk.order()
+    narrowed(desk, NEEDED['fake'] - 1)
+    for _ in range(2):
+        said = human_wake.run(desk.seat)
+        assert said == f"human wake held: pane too narrow for the waking line ({NEEDED['fake']} columns needed)"
+    assert desk.tmux.typed() == [] and not (desk.seat.folder / 'human-wake.json').exists(), 'no reservation'
+    assert human_wake.status(desk.seat) == said, 'the hold is named in the detailed reading'
+
+
+def test_a_pane_exactly_wide_enough_takes_the_one_row_line(desk):
+    desk.order()
+    narrowed(desk, NEEDED['fake'])
+    human_wake.run(desk.seat)
+    assert desk.pastes() == [EXACT] and received(desk)
+
+
+def test_a_pane_narrowed_after_the_reservation_is_caught_at_the_last_capture_and_provably_unsent(desk):
+    desk.order()
+    narrowed(desk, NEEDED['fake'] - 1, after_reservation=True)
+    said = human_wake.run(desk.seat)
+    assert said == f"human wake held: pane too narrow for the waking line ({NEEDED['fake']} columns needed)"
+    assert desk.tmux.typed() == [], 'nothing pasted, nothing pressed'
+    data = reservation(desk)
+    assert data['phase'] == 'cancelled' and data['attempts'] == [] and data['shown'] is None, 'reserved, never pasted'
+
+
+# Ans-0d86 (3): Claude Code 2.1.317 wraps a pasted line at width - 4. Two retained captures: a wrapped paste that
+# matches at 76 and not at the inherited 78, and folded pastes that match exactly as before.
+
+def claude_door(text, width=80):
+    from quarterdeck.harness.claude import ClaudeHarness
+    seat = SimpleNamespace(harness=ClaudeHarness(), tmux=SimpleNamespace(capture=lambda *a, **k: text),
+                           pane=lambda: SimpleNamespace(id='%1', width=width, dead=False),
+                           session=SimpleNamespace(human=False), spec=SimpleNamespace(), home=None)
+    return Door(seat)
+
+
+def claude_capture(name):
+    from tests.conftest import FIXTURES
+    return (FIXTURES / 'claude' / '2.1.317' / f'{name}.txt').read_text()
+
+
+def test_claude_wraps_a_shown_paste_at_width_less_four_not_less_two(monkeypatch):
+    from quarterdeck.harness.claude import ClaudeHarness
+    three = ("qd > order from desk · ord-7f3a · Spike\nAnswer MARKER-LOADED if you read a CLAUDE.md marker, else NO-MARKER. "
+             "Then run exactly: qd --version\nqd > reply: qd post report --re ord-7f3a · inbox: post/inbox/captain.md")
+    door = claude_door(claude_capture('paste-3-lines-shown'))
+    shown = door.screen()
+    assert ClaudeHarness().box_columns(80) == 76
+    assert door.matches(ClaudeHarness().box(three), shown), 'matched at the measured 76'
+    monkeypatch.setattr(ClaudeHarness, 'box_columns', lambda self, width: width - 2)
+    assert not door.matches(ClaudeHarness().box(three), shown), 'unmatched at the inherited 78'
+
+
+@pytest.mark.parametrize('capture,text', [
+    ('paste-4-lines-folded', "qd > order from desk · ord-9abc · Four\na\nb\nqd > reply: qd post report --re ord-9abc"),
+    ('paste-long-one-line-folded', "qd probe A: " + " ".join(f"word{i}" for i in range(260))),
+])
+@pytest.mark.parametrize('columns', [76, 78])
+def test_claude_folded_pastes_match_unchanged_at_either_width(capture, text, columns, monkeypatch):
+    from quarterdeck.harness.claude import ClaudeHarness
+    monkeypatch.setattr(ClaudeHarness, 'box_columns', lambda self, width: columns)
+    door = claude_door(claude_capture(capture))
+    assert door.matches(ClaudeHarness().box(text), door.screen())
+    if capture == 'paste-4-lines-folded':  # a placeholder carries its line count, and only that
+        assert not door.matches(ClaudeHarness().box(text + '\nadded'), door.screen())
