@@ -69,7 +69,8 @@ def confirming(self, *args, **kwargs):
         (runtime / 'confirmation-after-stop').touch()
     return confirm(self, *args, **kwargs)
 door.Door.confirm = confirming
-service.Service(ship.load(folder), Tmux.default()).run()
+loaded = ship.load(folder)
+service.Service(loaded, Tmux.for_ship(loaded)).run()
 '''
 
 
