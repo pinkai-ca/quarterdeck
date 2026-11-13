@@ -700,6 +700,8 @@ def upgrade(ship: Ship, ref: str = 'HEAD', tmux: Tmux | None = None, *,
                     fact.update(have_laws=resources.fallback(staging, share), fallback=True)
                 durable.replace_file(live / copy_state.MARKER,
                                      json.dumps(dict(commit=commit, instance=fact['instance'])) + '\n')
+            # A previous copy's last proof does not establish a command in this attempt.
+            fact.pop('proof_command', None)
             _phase(ship, data, 'proving')
             version, warnings = _proof(ship, fact)
             proofs += warnings

@@ -1,5 +1,7 @@
 """Synthetic functional transactions; proof and process internals are separate gates."""
 
+import json
+
 import pytest
 
 from quarterdeck import install
@@ -210,16 +212,22 @@ def test_bad_resource_declaration_names_its_fixed_cause(transaction, monkeypatch
     assert tx.read()['last_failure']['reason'] == 'resource declaration invalid'
 
 
+@pytest.mark.parametrize('back', [False, True])
 @pytest.mark.parametrize('command', ['origin', '--version', 'laws', '--help', None])
-def test_proof_failure_keeps_both_fixed_category_and_proved_command(transaction, monkeypatch, command):
+def test_proof_failure_keeps_both_fixed_category_and_proved_command(transaction, monkeypatch, command, back):
     tx = transaction
+    if back:
+        tx.seed(previous=True)
+        previous = tx.read()
+        previous['previous_copy']['proof_command'] = '--help'
+        (tx.ship.runtime / 'installed.json').write_text(json.dumps(previous))
     def failed(ship, selected):
         if command is not None:
             selected['proof_command'] = command
         raise ShipError('synthetic proof step failed')
     monkeypatch.setattr(install, '_proof', failed)
     with pytest.raises(ShipError, match='proof command failed' + (f' at {command}' if command else ';')):
-        install.upgrade(tx.ship)
+        install.upgrade(tx.ship, back=back)
     failure = tx.read()['last_failure']
     assert failure['reason'] == 'proof command failed'
     assert failure.get('step') == command
