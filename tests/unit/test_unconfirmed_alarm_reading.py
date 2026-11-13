@@ -436,3 +436,70 @@ def test_needs_human_uses_only_existing_alarm_recipient_callback(alarm):
     service.Service.needs_human(owner, alarm.seat)
     assert {message.to for message in owner.store.all()} == {'systems', 'desk'}
     assert asked == [('worker', MENDABLE)] * 2
+
+
+def test_waiting_signin_raises_no_alarm_and_clears_the_old_human_reason(alarm, monkeypatch):
+    waiting = f'{auth_failure.AUTHENTICATION}; {auth_failure.WAITING}'
+    expired = f'{auth_failure.AUTHENTICATION}; login needed; pool sign-in expired'
+    authentication = [waiting]
+    alarm.detached = []
+    alarm.door = waiting
+    monkeypatch.setattr(auth_failure, 'status', lambda seat: authentication[0])
+    alarm.actor.needs_human(alarm.seat)
+    assert alarm.actor.store.all() == []
+    assert alarm.actor.told.get('worker') is None
+    assert alarms.load(alarm.ship.runtime, 'worker', 'human')['key'] is None
+
+    # Renewal must not publish a stale sign-in notice interrupted before posting.
+    publish = compaction_alert.publish
+    monkeypatch.setattr(compaction_alert, 'publish', lambda *args: (_ for _ in ()).throw(
+        OSError('synthetic sign-in notification interruption')))
+    authentication[0] = expired
+    with pytest.raises(OSError, match='synthetic sign-in notification interruption'):
+        alarm.actor.needs_human(alarm.seat)
+    assert alarm.actor.store.all() == []
+    monkeypatch.setattr(compaction_alert, 'publish', publish)
+    authentication[0] = waiting
+    alarm.actor.needs_human(alarm.seat)
+    assert alarm.actor.store.all() == []
+    assert alarms.load(alarm.ship.runtime, 'worker', 'human')['key'] is None
+
+    authentication[0] = expired
+    alarm.actor.needs_human(alarm.seat)
+    assert {message.to for message in alarm.actor.store.all()} == {'systems', 'desk'}
+    prior = alarm.actor.store.all()
+    authentication[0] = waiting
+    alarm.actor.needs_human(alarm.seat)
+    assert alarm.actor.store.all() == prior
+    assert alarm.actor.told.get('worker') is None
+    assert alarms.load(alarm.ship.runtime, 'worker', 'human')['key'] is None
+
+    authentication[0] = expired
+    alarm.actor.needs_human(alarm.seat)
+    assert len(alarm.actor.store.all()) == 4
+
+
+def test_expired_signin_notifies_systems_and_desk_immediately_once(alarm, monkeypatch):
+    expired = f'{auth_failure.AUTHENTICATION}; login needed; pool sign-in expired'
+    alarm.detached = []
+    alarm.door = expired
+    monkeypatch.setattr(auth_failure, 'status', lambda seat: expired)
+    alarm.actor.needs_human(alarm.seat)
+    reports = alarm.actor.store.all()
+    assert {message.to for message in reports} == {'systems', 'desk'}
+    assert all(expired in message.body for message in reports)
+    alarm.actor.needs_human(alarm.seat)
+    assert alarm.actor.store.all() == reports
+
+
+def test_unknown_signin_notifies_systems_and_desk_immediately_once(alarm, monkeypatch):
+    unknown = f'{auth_failure.AUTHENTICATION}; pool sign-in validity unknown; needs attention'
+    alarm.detached = []
+    alarm.door = unknown
+    monkeypatch.setattr(auth_failure, 'status', lambda seat: unknown)
+    alarm.actor.needs_human(alarm.seat)
+    reports = alarm.actor.store.all()
+    assert {message.to for message in reports} == {'systems', 'desk'}
+    assert all(unknown in message.body for message in reports)
+    alarm.actor.needs_human(alarm.seat)
+    assert alarm.actor.store.all() == reports

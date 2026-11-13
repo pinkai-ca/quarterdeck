@@ -114,12 +114,13 @@ def publish(service, runtime, name, channel, data, intent):
 
 
 def notify(service, name, human, key, body, *, channel='human', ship=None, up=None, desk_now=False,
-           initial=None):
+           initial=None, recover_initial=True):
     """Observe once on the existing pass, saving identities before publication.
 
     Committed initial notifications survive a changed reading. A cleared or
     unknown reading cannot authorize a pending escalation. Published posts stay
     immutable, and unchanged readings reuse their saved notification identities.
+    A bounded renewal wait may retire its obsolete unpublished attention notice.
     """
     ship = service.ship if ship is None else ship
     runtime = ship.runtime
@@ -135,7 +136,7 @@ def notify(service, name, human, key, body, *, channel='human', ship=None, up=No
             held.enter_context(post.admission(runtime, recipient))
         for intent in prior['reports']:
             identity = compaction.decode(intent).id
-            if identity not in prior['published'] and identity not in prior['escalations']:
+            if recover_initial and identity not in prior['published'] and identity not in prior['escalations']:
                 publish(service, runtime, name, channel, prior, intent)
     if key is UNKNOWN:
         return

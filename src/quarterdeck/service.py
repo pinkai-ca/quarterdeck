@@ -342,7 +342,8 @@ class Service:
         from .auth_failure import status as authentication_status, waiting as authentication_waiting
         authentication = authentication_status(seat)
         # A pending renewal stays visible in status; call a person only after its bounded retries.
-        reason = None if authentication_waiting(authentication) else authentication or reason
+        renewing = authentication_waiting(authentication)
+        reason = None if renewing else authentication or reason
         from . import alarms, unconfirmed_alert
         if not reason:
             detached = pending_delivery.detached(seat)
@@ -360,7 +361,8 @@ class Service:
         alarms.notify(self, seat.name, seat.session.human, door_reason,
                       f'{seat.name} obstructed, {door_reason}' if door_reason else None,
                       desk_now=person_only(door_reason) if door_reason else False,
-                      initial=self.alarm_recipients(seat, door_reason) if door_reason else [])
+                      initial=self.alarm_recipients(seat, door_reason) if door_reason else [],
+                      recover_initial=not renewing)
 
     def alarm_recipients(self, seat: Seat, reason: str) -> list[str]:
         """Immediate recipients; a standing untaken alarm may reach the desk later."""
