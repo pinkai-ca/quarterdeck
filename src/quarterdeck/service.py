@@ -78,6 +78,7 @@ def person_only(reason: str) -> bool:
     from .harness.types import AUTHENTICATION
     return reason.startswith((*PERSON_ONLY, AUTHENTICATION))
 BLIND_INTERVAL = 60.0  # how often the blind attempts are read against the records
+OWN_TURN_RULE = object()  # handoff_fresh does not decide: the asking turn's own rule does
 
 
 class Service:
@@ -682,7 +683,8 @@ class Service:
         return f"unknown request {kind!r}"
 
     def relaunch_request(self, data):
-        """A human's own asking turn is its only deferred break; later speech retires it."""
+        """A human's own asking turn is its only deferred break and later speech retires it, but for a fresh start
+        asked with an open handoff, which waits for any quiet moment and is retired by the person alone."""
         from . import request_queue
         meta = getattr(self, 'request_metadata', {})
         data = {**data, **meta}
@@ -705,6 +707,10 @@ class Service:
             if asked.tzinfo is None or not 0 <= (post.now() - asked).total_seconds() <= ANSWER_SECONDS:
                 return f'refused: {seat.name} no-record request expired; no deferred restart'
             return self.relaunch(seat, bool(data['resume']), reading=(state, hold))
+        if data.get('caller') == seat.name and not data['resume'] and asked.tzinfo is not None:
+            handed = self.handoff_fresh(seat, asked, (state, hold))
+            if handed is not OWN_TURN_RULE:
+                return handed
         if (state is None or state.last_input_at is None or asked.tzinfo is None
                 or state.last_input_at.tzinfo is None or state.last_input_at > asked or asked > post.now()):
             return f'refused: {seat.name} asking turn unknown or superseded by later input; no deferred restart'
@@ -740,6 +746,62 @@ class Service:
             return f'refused: {seat.name} exact asking-turn end not proved; no deferred restart'
         answer = self.relaunch(seat, bool(data['resume']), reading=(state, hold))
         return answer if answer is not None else f'refused: {seat.name} asking turn ended with {(self.request_wait or (None, "idle proof unknown"))[1]}; request retired, never applied at a later turn'
+
+    def handoff_fresh(self, seat: Seat, asked: datetime, reading):
+        """A human seat's own fresh start, asked once it has an open handoff to itself, applies at its next quiet
+        moment. What reaches it later, a delivery or the program's own notice, is carried into the fresh start as
+        an open message and never retires the request; the person's own input does. Where no such handoff was
+        posted before the request, or the person's input cannot be told from the program's notices, the asking
+        turn's own rule decides (OWN_TURN_RULE)."""
+        from . import person_quiet
+        meta = getattr(self, 'request_metadata', {})
+        store = Store(self.runtime)
+        bound = meta.get('handoff')
+        if bound is None:
+            posted = [m for m in store.open_for(seat.name)
+                      if m.kind == 'order' and m.sender == seat.name and m.at <= asked]
+            if not posted:
+                return OWN_TURN_RULE
+            handoff = max(posted, key=lambda m: m.at)
+        else:
+            handoff = store.get(bound)
+            if not store.is_open(handoff):
+                return f'refused: {seat.name} handoff {handoff.short} closed before its fresh start applied; no deferred restart'
+        person = person_quiet.read(seat, post.now())
+        if person['at'] is None:
+            if bound is None:
+                return OWN_TURN_RULE
+            return f"refused: {seat.name} person's input unknown ({person['reason']}); no deferred restart"
+        if datetime.fromisoformat(person['at']) > asked:
+            return f"refused: {seat.name} superseded by the person's later input; no deferred restart"
+        meta['handoff'] = handoff.id
+        state, hold = reading
+        self.request_wait = self.handoff_quiet(seat, state, hold)
+        if self.request_wait is not None:
+            return None  # a turn, a queued input, an unconfirmed delivery or the box: the next quiet moment
+        return self.relaunch(seat, False, reading=reading)  # its own hold, if any, also waits
+
+    def handoff_quiet(self, seat: Seat, state, hold) -> tuple[str, str] | None:
+        """Why this is not yet a quiet moment for a fresh start that carries every delivery, or None."""
+        if state is None:
+            return (hold.dimension, hold.reason) if hold is not None else ('record', 'turn state unknown')
+        if state.turn_open is not False:
+            return ('turn-open', 'own fresh start after its handoff waits for the turn in progress')
+        ending = state.completed_turns[-1] if state.completed_turns else None
+        # A turn the program gave its own notice may hold no input: the proof is no input after the last proved end.
+        if (state.last_input_at is None or ending is None or not ending.timed or ending.ended is None
+                or state.last_input_at > ending.ended):
+            return ('turn-end', 'no proved turn end after the latest input')
+        if state.queue_error or state.queued:
+            return ('queued', 'an input is queued in the seat')
+        if any(result in (None, 'pending', 'blind', 'queued')
+               for result in Attempts(self.runtime).latest(seat.name).values()):
+            return ('delivery', 'a delivery to the seat is not confirmed')
+        screen = Door(seat).screen()
+        if (screen is None or screen.box != '' or screen.working is not False or screen.queued
+                or screen.unknown or screen.interruption or screen.starting):
+            return ('box', 'the box is not proved empty and idle')
+        return None
 
     def relaunch(self, seat: Seat, resume: bool, *, reading=None) -> str | None:
         """Explicit recovery alone may interrupt a proven question-only wait."""
