@@ -193,3 +193,33 @@ def test_a_wake_wait_shows_in_detailed_status_and_watch_but_not_on_the_line(ship
     assert wait in qd(capsys, 'status'), 'qd status detail shows every wake state'
     assert wait in qd(capsys, 'watch', 'desk'), 'qd watch shows every wake state'
     assert box(desk, tmux) == 'operator draft, still typing' and inputs(desk) == []
+
+
+def test_a_seat_proved_down_has_no_wake_state_and_an_unreadable_launch_is_not_silenced(ship, tmux, capsys):
+    """With the service down, an up desk with a waiting question truly awaits observation, in detail;
+    taken down, it has no wake state at all and shows only that no watch is armed; and launch evidence
+    that cannot be read is not taken for down."""
+    seatmod.bring_up(ship, tmux)
+    desk = seatmod.Seat(ship, ship.seat('desk'), tmux)
+    wait_for(lambda: box(desk, tmux) == '', seconds=30)
+    qd(capsys, 'post', 'question', '--to', 'desk', 'Synthetic question while the service is down?')
+    observing = 'human wake awaiting service observation'
+    assert desk.is_up and human_wake.status(desk) == observing
+    assert observing in qd(capsys, 'status') and observing in qd(capsys, 'watch', 'desk')
+    assert 'human wake' not in qd(capsys, 'status', '--line')
+
+    qd(capsys, 'down', 'desk')
+    wait_for(lambda: not desk.is_up, seconds=30)
+    assert post.Attempts(ship.runtime).undelivered(post.Store(ship.runtime), 'desk'), 'the question still waits'
+    assert human_wake.status(desk) is None, 'a seat proved down has no wake state'
+    assert 'human wake' not in qd(capsys, 'status'), 'no wake row for a seat proved down'
+    assert 'human wake' not in qd(capsys, 'watch', 'desk')
+    assert 'desk: no watch armed' in qd(capsys, 'status', '--line'), 'its waiting message still shows'
+    assert not (desk.folder / 'human-wake-status.json').exists() and inputs(desk) == []
+
+    (desk.folder / 'launch.json').write_text('{ unreadable synthetic launch')
+    try:
+        said = human_wake.status(desk)
+    except (OSError, ValueError, shipmod.ShipError) as error:
+        said = f'raised: {error}'
+    assert said, 'unknown ownership evidence is never read as down'

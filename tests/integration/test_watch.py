@@ -69,11 +69,14 @@ def test_the_table_and_the_line(ship: shipmod.Ship, tmux: Tmux, capsys):
     store.new("question", "operator", "desk", "no watch armed")
     rows = qd(capsys, "status").splitlines()
     assert rows[0].startswith("service down")
-    table = {row.split()[0]: row for row in rows[2:5]}
+    listed = rows.index("open orders: 1")
+    seated = [row for row in rows[2:listed] if not row.startswith(" ")]  # seat rows by name; indented rows are a seat's detail
+    table = {row.split()[0]: row for row in seated}
+    assert len(seated) == 3 and sorted(table) == ["captain", "desk", "worker-1"]
     assert "idle" in table["captain"] and "open" in table["captain"]
     assert "obstructed: unknown dialog: Something else, needs a human" in table["worker-1"] and order.short in table["worker-1"]
     assert "obstructed: a human's session, its watch delivers" in table["desk"]
-    assert rows[5] == "open orders: 1" and rows[6].startswith(f"  {order.short} desk → worker-1")
+    assert rows[listed] == "open orders: 1" and rows[listed + 1].startswith(f"  {order.short} desk → worker-1")
     line = qd(capsys, "status", "--line")
     assert line.startswith("SERVICE DOWN · 2 waiting, oldest 0m · worker-1 needs a human · desk: no watch armed")  # law: nothing-waits-silently
     facts = watch.facts(ship, tmux)
