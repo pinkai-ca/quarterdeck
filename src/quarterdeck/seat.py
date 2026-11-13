@@ -37,7 +37,13 @@ RETIRING = "retiring.json"
 
 
 def process_start(pid: int) -> str | None:
+    """A process of this user's, by its start time; any other process, or none, is None."""
     from .servicectl import process_start as start
+    try:
+        if os.stat(f"/proc/{pid}").st_uid != os.getuid():
+            return None  # never another user's process, a kernel thread among them, taken for a seat's program
+    except (OSError, ValueError):
+        return None
     return start(pid)
 
 
