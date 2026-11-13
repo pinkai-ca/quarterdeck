@@ -343,7 +343,8 @@ def inbox_reading(store: Store, seat: str, *, recent: bool = False) -> dict:
 
 
 def _older_line(count: int) -> str:
-    return f"Older received messages: {count}. Read the whole history with `qd inbox --all`."
+    return (f"Older received messages: {count}. Read the whole history with `qd inbox --all`. "
+            "`qd thread <id>` prints a thread whole, as far as the seat sent or received it.")
 
 
 def _withheld(store: Store, seat: str) -> frozenset[str] | None:
