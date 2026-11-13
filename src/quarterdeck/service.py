@@ -195,7 +195,7 @@ class Service:
         now = time.monotonic()
         if not force and now < self.accounting_health_due:
             return
-        self.accounting_health_due = now + TICK
+        self.accounting_health_due = now + self.ship.tick  # once a pass, alongside the heartbeat
         try:
             accounting_health.publish(self.runtime, self.accounting_health)
         except OSError as error:
