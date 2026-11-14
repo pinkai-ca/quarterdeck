@@ -30,7 +30,8 @@ TARGET = 'c' * 40
 PRIOR = 'd' * 40
 UNRESOLVED = 'e' * 40
 SENTINEL = 'PRIVATE-SENTINEL-test'
-DECLARED_ROOTS = ('standing-orders', 'ships/drydock', 'ships/default', 'ships/forum', 'ships/cascade', 'ships/shuttle')
+DECLARED_ROOTS = ('standing-orders', 'ships/drydock', 'ships/default', 'ships/forum', 'ships/cascade', 'ships/shuttle',
+                  'ships/office')
 HISTORICAL_ROOTS = ('standing-orders', 'ships/drydock', 'ships/forum', 'ships/cascade')
 DEFAULT_TEMPLATES = ['ships/default/orders.md', 'ships/default/ship.toml']
 
@@ -115,6 +116,25 @@ def test_claude_declaration_lists_exactly_the_tracked_framework_templates():
             assert not name.startswith('runtime/') and '/runtime/' not in name
     assert sorted(name for name in declared if name.startswith('ships/default/')) == DEFAULT_TEMPLATES
     assert resources.plan(ROOT) == tuple(sorted(Path(name) for name in declared))
+
+
+def test_claude_declared_office_template_is_an_office(tmp_path):
+    """The office template, as the declaration installs it: one desk, only the person's own sessions, no captain or crew."""
+    declaration = tomllib.loads((ROOT / 'pyproject.toml').read_text())['tool']['setuptools']['data-files']
+    office = sorted(name for names in declaration.values() for name in names if name.startswith('ships/office/'))
+    assert 'ships/office/ship.toml' in office
+    folder = tmp_path / 'office'
+    for name in office:
+        target = folder / Path(name).relative_to('ships/office')
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / name, target)
+    ship = load(folder)
+    assert ship.kind == 'office'
+    assert [name for name, seat in ship.seats.items() if seat.role == 'desk'] == ['desk']
+    assert ship.sessions and all(session.human for session in ship.sessions.values())
+    crew = {'captain', 'first-officer', 'engineering', 'engineer', 'worker', 'hand', 'operations', 'systems', 'security',
+            'lead', 'reviewer', 'orchestrator', 'ring'}
+    assert not any(seat.role in crew for seat in ship.seats.values()) and not ship.groups and not ship.cascade
 
 
 INVALID_DECLARATIONS = {
