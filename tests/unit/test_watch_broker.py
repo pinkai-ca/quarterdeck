@@ -166,3 +166,52 @@ def test_a_human_seat_without_a_brokered_watch_is_not_touched(tmp_path: Path):
     watch_broker.run(svc, SimpleNamespace(name='desk', ship=SimpleNamespace(runtime=runtime)))
     assert svc.logged == [] and not watch_broker.offer_path(runtime, 'desk').exists()
     assert svc.attempts.for_message(svc.store.all()[0].id) == []
+
+
+def test_a_receipted_offer_is_delivered_even_when_the_next_pass_starts_past_the_confirm_window(tmp_path: Path, monkeypatch):
+    """The attempt opens in one pass and is receipted before the next, which begins more than five seconds later:
+    reconcile, which runs first in a pass, must not judge it blind; the broker then closes it as a watch delivery."""
+    import shutil
+
+    from quarterdeck import door, service as servicemod, ship as shipmod
+    from quarterdeck.tmux import Tmux
+
+    folder = tmp_path / 'ships' / 'drydock'
+    shutil.copytree(Path(__file__).resolve().parents[2] / 'ships' / 'drydock', folder)
+    ship = shipmod.load(folder)
+    svc = servicemod.Service(ship, Tmux(socket=str(tmp_path / 'private.sock')))
+    armed(ship.runtime, 'desk')
+    message = svc.store.new('order', 'captain', 'desk', 'for the jailed desk')
+    svc.jailed_watches()  # pass N: the offer and its open attempt
+    offer = watch_broker.read_offer(ship.runtime, 'desk')
+    name, = offer['attempts']
+    receipts = post.watch_file(ship.runtime, 'desk').parent / watch_broker.RECEIPTS
+    receipts.mkdir()
+    (receipts / name).write_text(json.dumps(dict(format=1, attempt=name, message=message.id)))  # the wait printed
+    later = time.time() + door.CONFIRM_SECONDS + 5
+    monkeypatch.setattr(servicemod.time, 'time', lambda: later)  # pass N+1 starts past the confirm window
+    svc.reconcile()
+    svc.jailed_watches()
+    attempt, = svc.attempts.for_message(message.id)
+    assert (attempt.result, attempt.detail) == ('watch', 'printed by qd inbox --wait'), attempt
+
+
+def test_an_offered_attempt_never_receipted_is_still_judged_blind_after_its_bound(tmp_path: Path, monkeypatch):
+    """Silence still shows: past the offer's bound an open offered attempt is judged blind as any watch's is."""
+    import shutil
+
+    from quarterdeck import service as servicemod, ship as shipmod
+    from quarterdeck.tmux import Tmux
+
+    folder = tmp_path / 'ships' / 'drydock'
+    shutil.copytree(Path(__file__).resolve().parents[2] / 'ships' / 'drydock', folder)
+    ship = shipmod.load(folder)
+    svc = servicemod.Service(ship, Tmux(socket=str(tmp_path / 'private.sock')))
+    armed(ship.runtime, 'desk')
+    message = svc.store.new('order', 'captain', 'desk', 'never printed')
+    svc.jailed_watches()
+    later = time.time() + watch_broker.OFFER_SECONDS + 5
+    monkeypatch.setattr(servicemod.time, 'time', lambda: later)
+    svc.reconcile()
+    attempt, = svc.attempts.for_message(message.id)
+    assert attempt.result == 'blind'
