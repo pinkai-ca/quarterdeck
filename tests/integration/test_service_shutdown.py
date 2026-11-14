@@ -156,9 +156,16 @@ step_seconds = 0
             return sum(row["event"] == "submitted" and MARKER in row["text"] for row in events(seat.home))
 
         def progress(self, original):
-            wait_for(lambda: Attempts(ship.runtime).latest().get(original.id) == "delivered")
+            def delivered(message):
+                try:
+                    return Attempts(ship.runtime).latest().get(message.id) == "delivered"
+                except shipmod.ShipError as error:
+                    if str(error) != "post path changed during its read":
+                        raise
+                    return False  # retry a receipt rewritten during the validated read
+            wait_for(lambda: delivered(original))
             followup = self.post("synthetic-followup-zzzz")
-            wait_for(lambda: Attempts(ship.runtime).latest().get(followup.id) == "delivered")
+            wait_for(lambda: delivered(followup))
             assert self.submitted() == 1
 
     result = World()
