@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import datetime
+import hashlib
 
 from .post import Store, delivered_forms, typed
 
@@ -42,10 +43,59 @@ class Threads:
             if (message.kind == 'report' and order and order.kind == 'order'
                     and message.sender == order.to and message.at >= order.at):
                 self.closed.setdefault(order.id, message)
-        self.envelopes = {form.strip(): m for m in self.messages for form in delivered_forms(m)}
+        self.envelopes, self.message_headers = {}, {}
+        for message in self.messages:
+            forms = tuple(form.strip() for form in delivered_forms(message))
+            self.message_headers[id(message)] = tuple(form.partition('\n')[0] for form in forms)
+            for form in forms:
+                self.envelopes[form] = message
         self.by_header = {}
         for envelope, message in self.envelopes.items():
             self.by_header.setdefault(envelope.partition('\n')[0], []).append((envelope, message))
+
+    def scope(self, seat, ended):
+        """Fingerprint only posts that can affect this seat's historical verdicts.
+
+        Reply ancestors and closing reports affect claim validity and thread roots.
+        Identity variants and envelope-header candidates preserve ambiguity too.
+        The index and message digests live for this graph alone.
+        """
+        ended = moment(ended)
+        if ended is None:
+            return hashlib.sha256(b'').hexdigest()
+        if not hasattr(self, '_scope_index'):
+            by_seat, variants = {}, {}
+            positions = {id(message): i for i, message in enumerate(self.messages)}
+            digests = []
+            for i, message in enumerate(self.messages):
+                for name in {message.sender, message.to}:
+                    by_seat.setdefault(name, []).append(i)
+                variants.setdefault(message.id, []).append(i)
+                digests.append(hashlib.sha256(message.to_json().encode()).digest())
+            self._scope_index = by_seat, variants, positions, digests
+        by_seat, variants, positions, digests = self._scope_index
+        selected = {i for i in by_seat.get(seat, ()) if self.messages[i].at <= ended}
+        for i in tuple(selected):
+            message = self.messages[i]
+            if message.to == seat:
+                for header in self.message_headers[id(message)]:
+                    selected.update(positions[id(m)] for _, m in self.by_header.get(header, ()))
+        pending, visited = list(selected), set()
+        while pending:
+            i = pending.pop()
+            if i in visited:
+                continue
+            visited.add(i)
+            message = self.messages[i]
+            following = [*variants.get(message.id, ()), *variants.get(message.re, ())]
+            closed = self.closed.get(message.id) if message.kind == 'order' else None
+            if closed is not None and closed.at <= ended:
+                following.append(positions[id(closed)])
+            pending.extend(j for j in following if j not in visited)
+        digest = hashlib.sha256()
+        for i in sorted(visited):
+            digest.update(digests[i])
+        return digest.hexdigest()
 
     def valid(self, message):
         target = self.by_id.get(message.re)

@@ -1,6 +1,7 @@
 """Service-written attribution beside unchanged turn rows; all turn writes invalidate it."""
 
 from collections import defaultdict
+import hashlib
 import json
 import time
 from os.path import abspath
@@ -36,6 +37,14 @@ class Attribution:
             for event in ('INSERT', 'UPDATE'):
                 db.execute(f'''CREATE TRIGGER IF NOT EXISTS attribution_after_{event.lower()} AFTER {event} ON turns
                     BEGIN UPDATE turn_attribution SET valid=0 WHERE record=NEW.record AND turn=NEW.turn; END''')
+            db.execute('''CREATE TABLE IF NOT EXISTS attribution_records (
+                record TEXT PRIMARY KEY, evidence TEXT NOT NULL)''')
+            for event in ('INSERT', 'UPDATE', 'DELETE'):
+                source = 'OLD' if event == 'DELETE' else 'NEW'
+                previous = ' OR record=OLD.record' if event == 'UPDATE' else ''
+                db.execute(f'''CREATE TRIGGER IF NOT EXISTS replay_after_{event.lower()}
+                    AFTER {event} ON turn_attribution BEGIN
+                    DELETE FROM attribution_records WHERE record={source}.record{previous}; END''')
 
     def present(self):
         return self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='turn_attribution'").fetchone() is not None
@@ -65,7 +74,7 @@ class Attribution:
         self.db.execute('INSERT OR REPLACE INTO turn_attribution VALUES (?,?,?,?,?,?,?,?,?,?)', values)
         return 1
 
-    def replay(self, store, runtime, bindings=None, *, commit=True, retry_interval=0):
+    def replay(self, store, runtime, bindings=None, *, commit=True, retry_interval=0, framework=None):
         """All stored keys, including retired seats; called by the service, never a reading.
 
         Retained exact-envelope evidence survives a missing source if the stored
@@ -93,6 +102,13 @@ class Attribution:
             by_seat[row['seat']].append(row)
         excluded = {record for record in by_record
                     if not Path(abspath(record)).is_relative_to(Path(abspath(runtime)))}
+        graph = Threads(store) if framework is not None else None
+        invalid_records = {row[0] for row in self.db.execute('''SELECT DISTINCT t.record FROM turns t
+            LEFT JOIN turn_attribution a ON a.record=t.record AND a.turn=t.turn
+            WHERE a.valid IS NULL OR a.valid=0''')}
+        seat_bounds = {seat: hashlib.sha256(json.dumps(bounds, sort_keys=True).encode()).hexdigest()
+                       for seat, bounds in by_seat.items()} if framework is not None else {}
+        certificates, reused = {}, set()
         changed = False
         for record in by_record:
             prior = self.sources.get(record)
@@ -106,27 +122,47 @@ class Attribution:
             stamp = (reader, None)
             try:
                 stamp = (reader, record_fingerprint(Path(record))) if reader in harness.NAMES else (reader, None)
+                if framework is not None and reader in harness.NAMES and stamp[1][0][0]:
+                    ends = [moment(row['ended']) for row in by_record[record]]
+                    ended = max((end for end in ends if end is not None), default=None)
+                    # A record can contain several established seat identities.
+                    seats = sorted({row['seat'] for row in by_record[record]})
+                    scope = [(seat, seat_bounds[seat], graph.scope(seat, ended)) for seat in seats]
+                    evidence = hashlib.sha256(json.dumps([framework, stamp, sorted(names), scope]).encode()).hexdigest()
+                    old = self.db.execute('SELECT evidence FROM attribution_records WHERE record=?', (record,)).fetchone()
+                    if record not in invalid_records and old == (evidence,):
+                        reused.add(record)
+                        continue
+                    certificates[record] = evidence
                 if prior is not None and prior[0] == stamp:
                     if not prior[2] or reader not in harness.NAMES or time.monotonic() < self.retries.get(record, 0):
+                        if prior[2]:
+                            certificates.pop(record, None)
                         continue
                 if reader not in harness.NAMES:
                     raise OSError('record reader unavailable or ambiguous')
                 inputs = harness.get(reader).attribution_inputs(Path(record))
+                if record in certificates and stamp != (reader, record_fingerprint(Path(record))):
+                    certificates.pop(record)
                 error = None
             except (OSError, ValueError, KeyError, TypeError) as exc:
                 inputs, error = [], f'record attribution evidence unavailable: {type(exc).__name__}'
             self.sources[record] = stamp, inputs, error
+            if error:
+                certificates.pop(record, None)
             self.retries[record] = time.monotonic() + retry_interval if error else 0
             changed |= prior is None or source_evidence(prior) != source_evidence(self.sources[record])
-        stamp = tuple(store.all())
+        stamp = tuple(graph.messages) if graph is not None else tuple(store.all())
         invalid = self.db.execute('''SELECT count(*) FROM turns t LEFT JOIN turn_attribution a
             ON a.record=t.record AND a.turn=t.turn WHERE a.valid IS NULL OR a.valid=0''').fetchone()[0]
         if not changed and previous == stamp and not invalid:
             self.last = stamp
             return 0
-        graph = Threads(store)
+        graph = graph or Threads(store)
         written = 0
         for record, turns in by_record.items():
+            if record in reused:
+                continue
             if record in excluded:
                 for row in turns:
                     written += self.put(row, [], Verdict('unassociated', (), OUTSIDE_RUNTIME))
@@ -167,6 +203,9 @@ class Attribution:
                 if overlap:
                     verdict = Verdict('unresolved', verdict.orders, 'received message overlaps recorded turn intervals', verdict.evidence)
                 written += self.put(row, received, verdict)
+            if record in certificates:
+                self.db.execute('INSERT OR REPLACE INTO attribution_records VALUES (?,?)',
+                                (record, certificates[record]))
         if commit and self.db.in_transaction:
             self.db.commit()
         self.last = stamp

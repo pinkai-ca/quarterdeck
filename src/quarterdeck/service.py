@@ -1334,7 +1334,8 @@ class Service:
                     if record == current and seat.session.human:
                         human_readings.append((seat, record, state, turns, stamp[1]))
                 quota.observe_screen(book, seat, screen, launched, commit=False)
-            book.attributions.replay(self.store, self.runtime, commit=False, retry_interval=ACCOUNT_RETRY)
+            book.attributions.replay(self.store, self.runtime, commit=False, retry_interval=ACCOUNT_RETRY,
+                                     framework=getattr(self, 'status_framework', None))
 
         self.read_marks, self.account_errors, self.meters = marks, errors, meters
         return observations, notices, human_readings
