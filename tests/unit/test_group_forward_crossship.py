@@ -23,10 +23,11 @@ def fleet_pair(tmp_path, monkeypatch):
     agora_folder = tmp_path / 'ships' / 'agora'
     agora_folder.mkdir(parents=True)
     (agora_folder / 'ship.toml').write_text((ROOT / 'ships/forum/ship.toml').read_text())
-    office_folder = tmp_path / 'ships' / 'office'
+    office_folder = tmp_path / 'office'  # the project's office, beside its ships, as the films' fleet has it
     office_folder.mkdir(parents=True)
     (office_folder / 'ship.toml').write_text('''[ship]
 name="office"
+kind="office"
 operator="person"
 code="checkout"
 [pools.fake]
