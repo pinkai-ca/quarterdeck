@@ -7,6 +7,7 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 from tests.conftest import socket_container
+from tests import conftest
 from tests.testrunner import evidence_plugin, layout, owned, sessions
 
 
@@ -60,3 +61,22 @@ def test_ci_registration_finishes_after_the_fixture_removes_its_native_child(tmp
             errors.append(str(error))
     assert errors == []
     assert not folder.exists()
+
+
+def test_socket_entry_diagnostics_name_types_and_mtime_ages(tmp_path, monkeypatch):
+    folder = tmp_path / 'native'
+    folder.mkdir()
+    entry = tmp_path / 'empty-file'
+    entry.touch()
+    instant = 1893456000000000000
+    os.utime(folder, ns=(instant - 5_000_000_000, instant - 5_000_000_000))
+    os.utime(entry, ns=(instant - 7_000_000_000, instant - 7_000_000_000))
+    monkeypatch.setattr(conftest, 'time', SimpleNamespace(time_ns=lambda: instant))
+    descriptor = os.open(tmp_path, layout.DIRECTORY)
+    try:
+        assert conftest.socket_container_entries(descriptor) == [
+            dict(name='empty-file', lstat_type='regular', mtime_age_seconds=7.0),
+            dict(name='native', lstat_type='directory', mtime_age_seconds=5.0),
+        ]
+    finally:
+        os.close(descriptor)

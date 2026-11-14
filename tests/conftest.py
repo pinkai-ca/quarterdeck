@@ -7,6 +7,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -282,6 +283,24 @@ def pytest_runtest_makereport(item, call):
     yield
 
 
+def socket_container_entries(descriptor):
+    """Failure diagnostics from the held directory: names and lstat metadata, never contents."""
+    now = time.time_ns()
+    labels = {stat.S_IFDIR: 'directory', stat.S_IFREG: 'regular', stat.S_IFSOCK: 'socket',
+              stat.S_IFLNK: 'symlink', stat.S_IFIFO: 'fifo', stat.S_IFCHR: 'character', stat.S_IFBLK: 'block'}
+    remaining = []
+    with os.scandir(descriptor) as entries:
+        for entry in entries:
+            try:
+                info = entry.stat(follow_symlinks=False)
+                remaining.append(dict(name=entry.name, lstat_type=labels.get(stat.S_IFMT(info.st_mode), 'unknown'),
+                                      mtime_age_seconds=round((now - info.st_mtime_ns) / 1_000_000_000, 6)))
+            except OSError as error:
+                remaining.append(dict(name=entry.name, lstat_type='unavailable', mtime_age_seconds=None,
+                                      error=type(error).__name__))
+    return sorted(remaining, key=lambda entry: entry['name'])
+
+
 @contextmanager
 def socket_container(parent, prefix, *, record=False):
     """Own this exact empty container through setup failure; never erase a peer or replacement."""
@@ -305,6 +324,10 @@ def socket_container(parent, prefix, *, record=False):
             folder.rmdir()
         except OSError as error:
             detail = f'test socket container retained: {folder}: {error}'
+            try:
+                detail += f'; remaining entries: {socket_container_entries(descriptor)!r}'
+            except OSError as unavailable:
+                detail += f'; remaining entry metadata unavailable: {type(unavailable).__name__}'
             if failure is not None:
                 failure.add_note(detail)
             else:
