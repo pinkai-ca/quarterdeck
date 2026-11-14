@@ -91,7 +91,11 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
     if home.is_relative_to(workspace):
         raise ShipError(f"{seat_name}: sandboxed with its working directory at {workspace}, which contains the operator home and jails nothing; give the seat a cwd below the home or outside its ancestors")
     if workspace == ship.folder.resolve():
-        raise ShipError(f"{seat_name}: sandboxed with the ship folder as its working directory; a jailed seat reads the ship folder and cannot write it")
+        raise ShipError(f"{seat_name}: sandboxed with the ship folder as its working directory; "
+                        f"a jailed seat reads the ship folder and cannot write it. In {ship.file}, "
+                        'set workspace under [ship] to an existing project folder outside the ship folder, '
+                        'for example workspace = "/path/to/your/project". '
+                        'If this seat has its own cwd setting, change that to the project folder too.')
     programs = (program, *FRAMEWORK_TOOLS)
     folders = [f for f in (*program_folders(programs, path, home), *hidden_folders(programs, path, home))
                if f != workspace and workspace not in f.parents and ship.folder not in f.parents and f != ship.folder]
