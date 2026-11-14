@@ -325,6 +325,16 @@ def no_room(project):
     return [promise(project, device, base, free + storage.BOUND) for device, (base, free) in memory_devices().items()]
 
 
+def run_beside_promises(project, worktree):
+    """One tool run of ``worktree`` and its own result. The stand-in promises have results folders of their own,
+    named like runs and possibly in the same second, so the newest folder by name need not be this run's."""
+    before = set(results(project))
+    done = tool('run', '--target', str(worktree), '-n', '0', cwd=project)
+    made = [path for path in results(project) if path not in before]
+    assert len(made) == 1, (made, done.stdout + done.stderr)
+    return done, result(project, made[0])
+
+
 def test_two_runs_hold_memory_at_once_and_each_retires_only_its_own(tmp_path, cleanup_memory):
     first_hold, second_hold = tmp_path / 'hold-first', tmp_path / 'hold-second'
     project, worktree = make(tmp_path, {'test_wait.py': HOLDING.format(hold=str(first_hold))})
@@ -378,11 +388,11 @@ def test_a_third_run_falls_back_to_disk_with_its_one_line_when_the_room_is_gone(
                      second_hold)
     standing = no_room(project)
     third = add_worktree(project, 'third', {'test_writes.py': WRITES})
-    done = tool('run', '--target', str(third), '-n', '0', cwd=project)
+    done, ran = run_beside_promises(project, third)
     assert done.returncode == 0, done.stdout + done.stderr
     lines = [line for line in done.stdout.splitlines() if 'working files' in line]
     assert len(lines) == 1 and 'working files on disk' in lines[0] and NO_ROOM in lines[0], done.stdout
-    assert result(project)['working_storage']['kind'] == 'disk'
+    assert ran['working_storage']['kind'] == 'disk'
     untouched(first)
     untouched(second)
     for path in standing:
@@ -408,11 +418,11 @@ def test_a_disk_fallback_leaves_no_memory_root_under_any_candidate_base(tmp_path
         return sorted(str(base / name) for base in bases for name in names if os.path.lexists(base / name))
     assert roots() == [], 'a fresh synthetic project has no memory root yet'
     standing = no_room(project)
-    done = tool('run', '--target', str(worktree), '-n', '0', cwd=project)
+    done, ran = run_beside_promises(project, worktree)
     assert done.returncode == 0, done.stdout + done.stderr
     lines = [line for line in done.stdout.splitlines() if 'working files' in line]
     assert len(lines) == 1 and 'working files on disk' in lines[0] and NO_ROOM in lines[0], done.stdout
-    assert result(project)['working_storage']['kind'] == 'disk'
+    assert ran['working_storage']['kind'] == 'disk'
     assert roots() == [], 'the fallback left an empty memory root in a base it passed over'
     for path in standing:
         path.unlink()
