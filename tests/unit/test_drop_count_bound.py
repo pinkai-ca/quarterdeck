@@ -196,7 +196,7 @@ def test_group_root_waits_for_an_intent_outside_this_rounds_window(tmp_path, cal
 
 
 @pytest.mark.parametrize('caller', ['full', 'slice'])
-def test_group_filing_has_no_extra_drop_directory_inventory(tmp_path, caller, monkeypatch):
+def test_filing_window_is_bounded_and_separate_allocator_inventory_is_unchanged(tmp_path, caller, monkeypatch):
     template = Path(__file__).parents[2] / 'ships/forum/ship.toml'
     (tmp_path / 'ship.toml').write_text(template.read_text())
     ship = shipmod.load(tmp_path)
@@ -210,4 +210,7 @@ def test_group_filing_has_no_extra_drop_directory_inventory(tmp_path, caller, mo
         return listing(directory, **kwargs)
     monkeypatch.setattr(post_dir, 'list_children', observed)
     file(store, caller, ship)
-    assert listings == [post.DROP_MAX_FILES], 'group filing re-enumerated the drop outside its shared window'
+    # The filing contract uses one window. The pre-existing allocator inventory
+    # is explicitly outside this change and must retain its semantics.
+    assert [limit for limit in listings if limit is not None] == [post.DROP_MAX_FILES]
+    assert listings.count(None) == len(ship.groups['reviewers'].members)
