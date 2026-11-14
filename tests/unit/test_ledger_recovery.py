@@ -3,6 +3,8 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -169,3 +171,48 @@ def test_recovery_alarm_keeps_its_path_when_status_line_overflows(tmp_path):
     alarm, = ledger_recovery.alarms(tmp_path)
     facts = watch.Facts('ok', 1, 0, 0, pending=['synthetic long wait ' * 30], ledger_recovery=[alarm])
     assert alarm in facts.line()
+
+
+@pytest.mark.parametrize('damaged', [False, True], ids=['healthy-hot-journal', 'corrupt-hot-journal'])
+def test_hot_journal_rolls_back_and_keeps_original_bytes_only_when_corrupt(tmp_path, damaged):
+    path = tmp_path / 'ledger.sqlite'
+    with Ledger(path) as book:
+        book.db.execute('CREATE TABLE synthetic_payload (text TEXT)')
+        book.db.executemany('INSERT INTO synthetic_payload VALUES (?)', [('original-' + str(i) + 'x' * 9000,) for i in range(64)])
+        book.db.execute('CREATE TABLE synthetic_unrelated (text TEXT)')
+        book.db.execute("INSERT INTO synthetic_unrelated VALUES ('unmodified by the later transaction')")
+        book.db.commit()
+        page, = book.db.execute("SELECT rootpage FROM sqlite_master WHERE name='synthetic_unrelated'").fetchone()
+        size, = book.db.execute('PRAGMA page_size').fetchone()
+    code = """import os,sqlite3,sys
+book=sqlite3.connect(sys.argv[1])
+book.execute('PRAGMA synchronous=OFF')
+book.execute('PRAGMA cache_size=1')
+book.execute('BEGIN IMMEDIATE')
+book.execute('UPDATE synthetic_payload SET text=?', ('uncommitted-'+'y'*9000,))
+os._exit(0)
+"""
+    subprocess.run([sys.executable, '-I', '-c', code, str(path)], check=True)
+    assert Path(str(path) + '-journal').exists(), 'the process left a real spilled rollback journal'
+    if damaged:
+        data = bytearray(path.read_bytes())
+        data[(page - 1) * size] = 255  # outside the pages the hot journal can restore
+        path.write_bytes(data)
+    originals = {p.name: p.read_bytes() for p in [path, Path(str(path) + '-journal')]}
+    with pytest.raises(sqlite3.DatabaseError) as failure:
+        ledger_recovery.check(path)
+    assert failure.value.sqlite_errorcode == sqlite3.SQLITE_READONLY_ROLLBACK
+    with Ledger(path) as book:
+        if not damaged:
+            rows = book.db.execute('SELECT text FROM synthetic_payload').fetchall()
+            assert len(rows) == 64 and all(row[0].startswith('original-') for row in rows)
+        else:
+            assert book.catching_up() and book.rollup('seat') == []
+    if damaged:
+        folder, = ledger_recovery.pending(tmp_path)
+        assert {p.name: p.read_bytes() for p in (folder / 'pre-rollback').iterdir()} == originals
+        assert (folder / path.name).is_file()
+        assert ledger_recovery.alarms(tmp_path)
+    else:
+        assert ledger_recovery.pending(tmp_path) == []
+        assert list((tmp_path / 'evidence').iterdir()) == []

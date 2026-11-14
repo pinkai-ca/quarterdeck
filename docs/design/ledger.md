@@ -32,6 +32,16 @@ An unknown/ambiguous reader never gets guessed from filenames or content. A pres
 
 `launch_harnesses` records explicit program provenance beside stable `record_launches`. Missing/conflicting metadata stays unknown, never filled from pool provider or current seat preference. Table-change triggers invalidate it; read-only old books project unknown. Reader-registry observations are shared only within one account invocation, with metadata revalidation. Registration of a missing exact row rereads under its existing exclusive lock before appending. No cache or lock spans future passes or native reading.
 
+### Malformed database recovery
+
+Every writer open, including service construction, runs SQLite's read-only table-valued `quick_check` before schema setup, checking data pages as well as the header. Ordinary status, watch and ledger readers do not scan or move files; a `SQLITE_CORRUPT` or `SQLITE_NOTADB` they actually encounter reports the remedy to stop the service and run `qd ledger --recover`. Busy, locked, full, generic read-only and I/O errors are not corruption verdicts.
+
+A positively malformed ledger and its `-journal`, `-wal` and `-shm` sidecars move unchanged into a dated `runtime/evidence/ledger-corrupt-.../` folder. A directory flock serializes writer initialization; recovery also takes the service lifetime lock before any move. Sidecars move before the database. Each rename preserves a whole file, including across an interrupted archive. The replacement uses ordinary fresh-ledger schema and owned-record catch-up. A status-line alarm names the evidence folder until `qd ledger --clear-recovery` writes an acknowledgment; acknowledgment deletes no evidence. Explicit recovery refuses a running service.
+
+On the specific `SQLITE_READONLY_ROLLBACK` result, the writer first copies the database and all sidecars byte-identically into a fresh dated folder under those locks, then permits SQLite's normal rollback and runs `quick_check`. Healthy recovery removes only that provisional copy. Corrupt recovery keeps both the pre-rollback bytes and the files as they stand afterward, with the evidence alarm. Generic READONLY and I/O errors never enter this branch.
+
+The only persistent framework SQLite file is `runtime/ledger.sqlite`. The accounting planner uses `:memory:`. Native OpenCode and Antigravity databases are snapshotted read-only into memory; unreadable native records are reported without moving or repairing program-owned originals (`one-folder`).
+
 ### Usage transaction ownership
 
 Each actual usage attempt owns an independent atomic transaction containing cache, pacing attempt and any persisted hold. All service paths converge through `quota.record_read`/`Ledger.record_usage`; preparation checks ownership before credential/provider work. Record-derived usage uses that same owner without a provider request.

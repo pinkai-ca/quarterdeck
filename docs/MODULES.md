@@ -17,6 +17,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `headlines.py` | operational status-line formatting; provider allowances belong in detailed readings |
 | `input_receipt.py` | the one rule that matches a delivery to the record's evidence of its input |
 | `install.py` | `qd sync`: the framework at one commit installed as the ship's own copy, which every `qd` then hands off to |
+| `ledger_recovery.py` | preserves malformed accounting databases, starts fresh replay and keeps named recovery alarms until acknowledged |
 | `ledger_reading.py` | the Ledger's rows and usage windows as a reading takes them, and their tables |
 | `machine.py` | a seat's process tree, sampled for the Ledger |
 | `output.py` | one shape for every reading, rendered for a person or serialized as JSON |
