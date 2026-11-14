@@ -21,7 +21,7 @@ def malformed(error):
 
 
 def check(path, *, rollback=False):
-    """Read all pages without changing a pragma or repairing the original in place."""
+    """Check pages read-only; rollback is allowed only after saving the original bytes."""
     if not path.exists():
         return True
     db = sqlite3.connect(path) if rollback else sqlite3.connect(f'file:{path}?mode=ro', uri=True)
