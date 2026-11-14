@@ -8,7 +8,10 @@ import json
 import os
 from pathlib import Path
 
-from quarterdeck import compaction, fleet_post as fleet, post, post_threads, ship as shipmod, thread_context
+import pytest
+
+from quarterdeck import compaction, fleet_post as fleet, forward_post, post, post_threads, ship as shipmod, thread_context
+from quarterdeck.ship import ShipError
 from tests.unit.test_fleet_post import pair  # noqa: F401  (alpha and beta, each with captain and writer)
 
 
@@ -58,6 +61,25 @@ def test_messages_settled_at_the_old_address_before_the_forward_do_not_move_to_t
 
 # -- unsettled attempts and lifecycle hold the transfer ------------------------------------------------------------
 
+# Latest results that are not delivered, watch, launch, carried or abandoned. None is an
+# attempt the door opened and never closed; the last value is not a named result at all.
+HELD_RESULTS = (
+    'uncertain', 'unacted', 'unsettled', 'pending', 'typed', 'queued', 'blind',
+    'withheld', 'cancelled', 'not-in-closed-record', None, 'not-a-known-result',
+)
+RESOLVED_RESULTS = ('delivered', 'watch', 'launch', 'carried', 'abandoned')
+UNRESOLVED = 'old address has an unresolved delivery; forwarding held'
+RESERVED = 'old address has a reserved successor handoff or transition; forwarding held'
+
+
+def _latest(ship, message, result):
+    attempts = post.Attempts(ship.runtime)
+    attempt = attempts.open(message, 'captain', None, None, None)
+    if result is not None:
+        attempt = attempts.close(attempt, result)
+    return attempt
+
+
 def test_an_unsettled_delivery_at_the_old_address_holds_the_transfer_until_it_settles(pair):
     left, right, source, destination = pair
     order = source.new('order', 'writer', 'captain', 'Synthetic order mid-delivery at the old address.')
@@ -72,6 +94,67 @@ def test_an_unsettled_delivery_at_the_old_address_holds_the_transfer_until_it_se
     attempts.close(attempt, 'blind', 'synthetic: the door could not confirm it')
     assert any('outbound held' in e for e in fleet.run(left, source)), 'an uncertain delivery still holds'
     assert offered(left, order) == []
+
+
+@pytest.mark.parametrize('result', HELD_RESULTS)
+def test_an_unresolved_latest_attempt_holds_the_open_message(pair, result):
+    left, right, source, destination = pair
+    order = source.new('order', 'writer', 'captain', 'Synthetic open order with an unresolved old attempt.')
+    attempt = _latest(left, order, result)
+    receipt = attempt.path.read_bytes()
+    left = forward(left)
+
+    with pytest.raises(ShipError, match=UNRESOLVED):
+        forward_post.pin(left, source.get(order.id))
+    errors = fleet.run(left, source)
+    assert any('outbound held' in e for e in errors), errors
+    assert offered(left, order) == []
+    fleet.run(right, destination)
+    assert not (destination.dir / f'{order.id}.json').exists()
+    assert destination.all() == [] and destination.open_for('writer') == []
+    assert attempt.path.read_bytes() == receipt
+
+
+@pytest.mark.parametrize('result', RESOLVED_RESULTS)
+def test_a_resolved_latest_attempt_still_forwards_the_open_message_once(pair, result):
+    left, right, source, destination = pair
+    order = source.new('order', 'writer', 'captain', 'Synthetic open order with a resolved old attempt.')
+    attempt = _latest(left, order, result)
+    receipt = attempt.path.read_bytes()
+    left = forward(left)
+
+    assert fleet.run(left, source) == []
+    assert fleet.run(right, destination) == []
+    received, = destination.open_for('captain')
+    assert received.id == order.id and destination.for_seat('captain') == [received]
+    assert source.is_open(source.get(order.id))
+    fleet.run(left, source)
+    fleet.run(right, destination)
+    assert destination.for_seat('captain') == [received]
+    assert attempt.path.read_bytes() == receipt
+
+
+@pytest.mark.parametrize('hold', ['reserved', 'transition'])
+def test_a_reserved_handoff_or_transition_still_holds_even_when_the_attempt_is_resolved(pair, hold):
+    left, right, source, destination = pair
+    order = source.new('order', 'writer', 'captain', 'Synthetic open order behind a successor hold.')
+    _latest(left, order, 'delivered')
+    journal = compaction.new()
+    if hold == 'reserved':
+        journal['reserved'] = order.id
+    else:
+        journal['transition'] = {'generation': journal['generation']}
+    compaction.save(left.runtime, 'captain', journal)
+    left = forward(left)
+
+    with pytest.raises(ShipError, match=RESERVED):
+        forward_post.pin(left, source.get(order.id))
+    errors = fleet.run(left, source)
+    assert any('outbound held' in e for e in errors), errors
+    assert UNRESOLVED not in ' '.join(errors)
+    assert offered(left, order) == []
+    fleet.run(right, destination)
+    assert destination.all() == []
 
 
 def test_a_compaction_handoff_reserved_for_the_old_seats_successor_is_not_moved(pair):
