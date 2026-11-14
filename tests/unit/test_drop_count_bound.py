@@ -193,3 +193,21 @@ def test_group_root_waits_for_an_intent_outside_this_rounds_window(tmp_path, cal
     file(store, caller, ship)
     assert store.get(root.id) == root
     assert not list(folder.iterdir())
+
+
+@pytest.mark.parametrize('caller', ['full', 'slice'])
+def test_group_filing_has_no_extra_drop_directory_inventory(tmp_path, caller, monkeypatch):
+    template = Path(__file__).parents[2] / 'ships/forum/ship.toml'
+    (tmp_path / 'ship.toml').write_text(template.read_text())
+    ship = shipmod.load(tmp_path)
+    store = post.Store(ship.runtime)
+    group_post.stage(ship, store, 'reviewers', 'lead', 'ordinary group task')
+    listings = []
+    listing = post_dir.list_children
+    def observed(directory, **kwargs):
+        if Path(directory) == post.drop_dir(ship.runtime, 'lead'):
+            listings.append(kwargs.get('limit'))
+        return listing(directory, **kwargs)
+    monkeypatch.setattr(post_dir, 'list_children', observed)
+    file(store, caller, ship)
+    assert listings == [post.DROP_MAX_FILES], 'group filing re-enumerated the drop outside its shared window'
