@@ -74,8 +74,10 @@ def test_screen_keeps_warning_words_and_observed_model_effort():
     shown = screen()
     assert shown.shows == {'model': 'Grok 4.7', 'effort': 'low',
                            'selection_warning': MODEL_REFUSAL + '; ' + EFFORT_REFUSAL}
-    assert shown.box == '' and shown.working is False
-    assert 'selection_warning' not in screen(False).shows
+    plain = screen(False)
+    assert shown.box == plain.box and shown.working is plain.working is False
+    assert shown.unknown is plain.unknown is None
+    assert 'selection_warning' not in plain.shows
     unfamiliar = GrokHarness().screen('Unknown model error\nGrok 9 (medium)')
     assert unfamiliar.shows == {}
 
