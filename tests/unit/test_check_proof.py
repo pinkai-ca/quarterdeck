@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from quarterdeck import check
+from quarterdeck.ship import ShipError
 
 
 def test_a_link_at_the_proof_name_is_not_a_regular_file_and_its_target_stays_out_of_the_output(tmp_path: Path):
@@ -43,6 +47,41 @@ def test_a_regular_proof_reports_only_whether_it_matched(tmp_path: Path):
     proof.write_text(line + "\n" + planted)
     overflow = check.proof_check(proof, line)
     assert overflow.passed is False and overflow.detail == "did not match" and planted not in str(overflow)
+
+
+def test_a_link_at_the_check_folder_is_not_a_regular_file(tmp_path: Path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    marker = "outside-marker-must-stay-unprinted"
+    (outside / "kept.txt").write_text(marker)
+    folder = tmp_path / "check" / "seat"
+    folder.parent.mkdir(parents=True)
+    folder.symlink_to(outside, target_is_directory=True)
+    row = check.proof_check(folder / "seat.txt", "qd-check-0123abcd")
+    assert row.passed is False and row.detail == "not a regular file"
+    assert marker not in str(row) and str(outside) not in str(row)
+    assert (outside / "kept.txt").read_text() == marker
+    assert [path.name for path in outside.iterdir()] == ["kept.txt"]
+
+
+def test_a_link_at_the_check_folder_refuses_the_probe(tmp_path: Path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    marker = "outside-marker-must-stay-unprinted"
+    (outside / "kept.txt").write_text(marker)
+    runtime = tmp_path / "runtime"
+    link = runtime / "check" / "synthetic"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(outside, target_is_directory=True)
+
+    def up(**kwargs):
+        raise AssertionError("probe launched")
+
+    with pytest.raises(ShipError, match=str(link)) as caught:
+        check.probe(SimpleNamespace(runtime=runtime), SimpleNamespace(name="synthetic", up=up))
+    assert marker not in str(caught.value) and str(outside) not in str(caught.value)
+    assert link.is_symlink() and (outside / "kept.txt").read_text() == marker
+    assert [path.name for path in outside.iterdir()] == ["kept.txt"]
 
 
 def test_a_fifo_at_the_proof_name_is_not_read(tmp_path: Path):

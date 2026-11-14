@@ -133,6 +133,58 @@ def test_each_jail_binds_only_its_own_check_folder(tmp_path: Path, drydock: Path
         sandbox.check_proof_folder(ship.runtime, "..")
 
 
+def test_a_link_at_the_check_folder_is_refused_before_a_bind(tmp_path: Path, drydock: Path, monkeypatch):
+    ship = shipmod.load(drydock)
+    home = tmp_path / "home"
+    (home / "work").mkdir(parents=True)
+    monkeypatch.setattr(sandbox, "available", lambda: True)
+    started = []
+
+    def popen(argv, *args, **kwargs):
+        started.append(argv)
+        raise AssertionError("bwrap started")
+
+    def command(*args, **kwargs):
+        raise AssertionError("bwrap started")
+
+    monkeypatch.setattr(sandbox.subprocess, "Popen", popen)
+    monkeypatch.setattr(sandbox, "command", command)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    marker = "outside-marker-must-stay-unprinted"
+    (outside / "kept.txt").write_text(marker)
+    link = ship.runtime / "check" / "worker"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ShipError, match=str(link)) as caught:
+        sandbox.plan(ship, "worker", ship.runtime / "seats" / "worker",
+                     ship.runtime / "seats" / "worker" / "home", home / "work", "pi", "/usr/bin", home=home)
+    assert marker not in str(caught.value) and str(outside) not in str(caught.value)
+    assert started == []
+    assert link.is_symlink() and (outside / "kept.txt").read_text() == marker
+    assert [path.name for path in outside.iterdir()] == ["kept.txt"]
+
+
+def test_a_link_at_the_check_directory_is_not_followed(tmp_path: Path, drydock: Path, monkeypatch):
+    ship = shipmod.load(drydock)
+    home = tmp_path / "home"
+    (home / "work").mkdir(parents=True)
+    monkeypatch.setattr(sandbox, "available", lambda: True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    marker = "outside-marker-must-stay-unprinted"
+    (outside / "kept.txt").write_text(marker)
+    ship.runtime.mkdir(parents=True, exist_ok=True)
+    link = ship.runtime / "check"
+    link.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ShipError, match=str(link)) as caught:
+        sandbox.plan(ship, "worker", ship.runtime / "seats" / "worker",
+                     ship.runtime / "seats" / "worker" / "home", home / "work", "pi", "/usr/bin", home=home)
+    assert marker not in str(caught.value) and str(outside) not in str(caught.value)
+    assert link.is_symlink() and (outside / "kept.txt").read_text() == marker
+    assert [path.name for path in outside.iterdir()] == ["kept.txt"]
+
+
 @pytest.mark.parametrize('location', ['parent', 'home', 'root', 'alias', 'parent-through-link'])
 def test_ancestor_workspace_cannot_rebind_the_hidden_home(tmp_path, drydock, monkeypatch, location):
     home = tmp_path/'operator'/'home'

@@ -231,27 +231,36 @@ _PROOF_SLACK = 8  # a newline and light padding; anything longer is not the one 
 def proof_verdict(path: Path, expected: str) -> tuple[bool, str]:
     """Whether ``path`` is a regular file whose text, stripped, is ``expected``.
 
-    The open does not follow a link. The report is only ``matched``, ``did not match``
-    or ``not a regular file``: the file's bytes are never part of it.
+    The folder is opened with ``O_DIRECTORY|O_NOFOLLOW`` and the proof from that descriptor, so a link at
+    either name is not followed. A folder swapped after the check fails closed. The report is only
+    ``matched``, ``did not match`` or ``not a regular file``: the file's bytes are never part of it.
     """
     try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
-    except FileNotFoundError:
-        return False, "did not match"
-    except OSError as error:
-        if error.errno == errno.ELOOP:  # the final component is a symlink
-            return False, "not a regular file"
-        return False, "did not match"
+        folder = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        return False, "not a regular file"
     try:
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode):
-            return False, "not a regular file"
-        bound = len(expected.encode("utf-8")) + _PROOF_SLACK
-        if info.st_size > bound:
+        try:
+            descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                                 dir_fd=folder)
+        except FileNotFoundError:
             return False, "did not match"
-        raw = os.read(descriptor, bound + 1)
+        except OSError as error:
+            if error.errno == errno.ELOOP:  # the final component is a symlink
+                return False, "not a regular file"
+            return False, "did not match"
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode):
+                return False, "not a regular file"
+            bound = len(expected.encode("utf-8")) + _PROOF_SLACK
+            if info.st_size > bound:
+                return False, "did not match"
+            raw = os.read(descriptor, bound + 1)
+        finally:
+            os.close(descriptor)
     finally:
-        os.close(descriptor)
+        os.close(folder)
     if len(raw) > bound:
         return False, "did not match"
     try:
@@ -281,10 +290,10 @@ def _task_body(proof_file: Path, proof_line: str, *, minimal: bool = False) -> s
 
 def probe(ship: Ship, seat: Seat, orders: list[post.Message] | None = None, *, requested_model: str | None = None,
           minimal: bool = False) -> list[Check]:
+    sandbox.ensure_check_proof_folder(ship.runtime, seat.name)  # a link refuses the check before any launch
     checks: list[Check] = []
     proof_line = f"qd-check-{secrets.token_hex(4)}"
     proof_file = sandbox.check_proof_file(ship.runtime, seat.name)
-    proof_file.parent.mkdir(parents=True, exist_ok=True)
     launched = seat.up(resume=False)
     checks.append(ProbeCheck("launch", seat.is_up, launched, 'launch'))
     door = Door(seat)

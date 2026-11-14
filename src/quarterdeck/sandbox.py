@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -111,8 +112,7 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
     (ship.runtime / LOCKS).mkdir(mode=0o700, exist_ok=True)  # hidden inside: the service's own locks, out of every jail's reach
     from .fleet import declaration_files
     declarations = tuple(file for file in declaration_files(ship) if file.parent != ship.folder)
-    proof = check_proof_folder(ship.runtime, seat_name)
-    proof.mkdir(parents=True, exist_ok=True)  # bound writable, and only this seat's jail receives it
+    proof = ensure_check_proof_folder(ship.runtime, seat_name)  # a link is refused here, before any bind
     jail = Jail(home, seat_home, seat_folder, workspace, ship.folder, ship.runtime, tuple(folders),
                 (drop, proof), git_identity(workspace), declarations)
     if covered := covering(jail):
@@ -150,6 +150,52 @@ def check_proof_folder(runtime: Path, seat_name: str) -> Path:
 def check_proof_file(runtime: Path, seat_name: str) -> Path:
     """The regular file ``qd check`` asks this seat to write, inside its own proof folder."""
     return check_proof_folder(runtime, seat_name) / f"{seat_name}.txt"
+
+
+def ensure_check_proof_folder(runtime: Path, seat_name: str) -> Path:
+    """The seat's check folder: a real directory, created when absent.
+
+    ``runtime/check`` is examined first, then ``runtime/check/<seat>``. Each is used when ``lstat`` says it
+    is a directory, created when it is absent, and refused by path otherwise. A link is never followed and
+    never removed. The runtime itself is the ship's own, made when absent as before; no jail writes it.
+    """
+    folder = check_proof_folder(runtime, seat_name)
+    runtime.mkdir(parents=True, exist_ok=True)
+    _ensure_real_directory(runtime / "check", parent_checked=False)
+    _ensure_real_directory(folder, parent_checked=True)
+    return folder
+
+
+def _ensure_real_directory(path: Path, *, parent_checked: bool) -> None:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        _mkdir_nofollow(path, parent_checked)
+        return
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise ShipError(f"{path}: check folder must be a real directory")
+
+
+def _mkdir_nofollow(path: Path, parent_checked: bool) -> None:
+    """Create ``path`` under its opened parent, then refuse what is not a directory there.
+
+    A checked parent, ``runtime/check``, is opened with ``O_NOFOLLOW`` as well, so a link swapped in after
+    its ``lstat`` fails. The runtime above it is opened as the ship names it.
+    """
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | (os.O_NOFOLLOW if parent_checked else 0)
+    try:
+        directory = os.open(path.parent, flags)
+    except OSError as error:
+        raise ShipError(f"{path.parent}: check folder must be a real directory") from error
+    try:
+        try:
+            os.mkdir(path.name, dir_fd=directory)
+        except FileExistsError:
+            info = os.lstat(path.name, dir_fd=directory)
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+                raise ShipError(f"{path}: check folder must be a real directory") from None
+    finally:
+        os.close(directory)
 
 
 def covering(jail: Jail) -> tuple[str, Path] | None:
