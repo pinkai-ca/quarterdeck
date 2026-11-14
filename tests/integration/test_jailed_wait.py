@@ -215,3 +215,32 @@ def test_a_woken_jailed_wait_writes_and_locks_only_its_own_seat_folder(ship, tmu
     assert audit['locks'] and all(path.startswith(own) for path in audit['locks']), audit['locks']
     assert audit['writes'] and all(os.path.isabs(path) and path.startswith(own) for path in audit['writes']), audit['writes']
     assert not any(path.startswith(post_folder) for path in audit['writes'] + audit['locks'])
+
+
+def test_a_jailed_check_seat_held_by_a_live_check_lease_is_served(ship, capsys):
+    """qd check's human-wake seat is a temporary seat no ship file declares: only the check's live lease admits it.
+    Jailed, its wait must still be served by the service (worker7's pi check on 97f1055c: no watch receipt)."""
+    from .test_human_wake_inbox_lease_claude_validation import Lease, SEAT
+
+    qd(capsys, 'up')
+    lease = Lease(ship)
+    try:
+        message = post.Store(ship.runtime).new('order', 'ship', SEAT, 'Synthetic: for the jailed check seat.')
+        own = ship.runtime / 'seats' / SEAT
+        (own / 'home').mkdir(parents=True, exist_ok=True)
+        workspace = Path(ship.seat('desk').cwd)
+        jail = sandbox.plan(ship, SEAT, own, own / 'home', workspace, sys.executable, os.environ['PATH'])
+        env = {key: value for key, value in os.environ.items() if not key.startswith(('QD_', 'TMUX'))}
+        env.update(QD_SEAT=SEAT, QD_SHIP=str(ship.folder))
+        wait = subprocess.Popen(sandbox.command(jail, [str(QD), 'inbox', '--wait']), env=env, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True)
+        try:
+            out, err = wait.communicate(timeout=60)
+        finally:
+            if wait.poll() is None:
+                wait.kill()
+        assert wait.returncode == 0, err
+        assert 'Synthetic: for the jailed check seat.' in out
+        wait_for(lambda: [a.result for a in post.Attempts(ship.runtime).for_message(message.id)] == ['watch'], seconds=60)
+    finally:
+        lease.close()
