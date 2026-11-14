@@ -110,7 +110,7 @@ A refusal names its reason and what would lift it: report it to your person as s
 
 After a start, setup's last lines name the command that opens their desk, `Desk access: qd --ship <folder> attach office`, and a first order to type there. `qd attach` alone does the same from any folder, since the ship is their default.
 
-A desk on Claude Code or Codex is woken by the ship with the desk's first waiting message. A desk on another harness hears the crew only after the desk has taken a turn: your person starts by typing to it.
+A desk on Claude Code, Codex or pi is woken by the ship with the desk's first waiting message. A desk on another harness hears the crew only after the desk has taken a turn: your person starts by typing to it.
 
 ## Never decide for them
 
