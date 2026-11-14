@@ -223,10 +223,24 @@ class AntigravityHarness(Harness):
         return pane_width - 3
 
     def box(self, text: str) -> Box:
-        """A long paste folds two ways (1.5.2): one of few lines to ``[Pasted text #N M chars]``, M the length less
-        one trailing newline; one of many lines to ``[Pasted text #N +k lines]``, k the newlines. The box takes either."""
-        chars, newlines = len(text.removesuffix("\n")), text.count("\n")
-        return Box(text, folded=rf"\[Pasted text #\d+ (?:{chars} chars|\+{newlines} lines)\]")
+        """Keep the 1.5.2/1.5.5 counters and the measured 1.5.9 forms.
+
+        1.5.9 removes all terminal LF, folds 16 or more content lines to their
+        line count, or a single line over 1000 characters to its character count.
+        Only those exact additional counts are admitted; record receipts still
+        compare the original payload through the ordinary path.
+        """
+        chars = {len(text.removesuffix('\n'))}
+        lines = {text.count('\n')}
+        content = text.rstrip('\n')
+        count = content.count('\n') + 1
+        if count >= 16:
+            lines.add(count)
+        elif count == 1 and len(content) > 1000:
+            chars.add(len(content))
+        char_counts = '|'.join(str(value) for value in sorted(chars))
+        line_counts = '|'.join(str(value) for value in sorted(lines))
+        return Box(text, folded=rf"\[Pasted text #\d+ (?:(?:{char_counts}) chars|\+(?:{line_counts}) lines)\]")
 
     def queued_input(self, text: str, before: Screen, after: Screen) -> str | None:
         """1.5.5 shows an envelope preview and edit hint before persisting the input.
