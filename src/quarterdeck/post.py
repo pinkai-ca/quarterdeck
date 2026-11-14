@@ -468,10 +468,19 @@ class Attempt:
         return self.when if "." in self.at else self.when + timedelta(seconds=1)
 
 
+def attempt_path(runtime: Path, name: str) -> Path:
+    """Resolve an original attempt filename, including a retired cited receipt."""
+    if Path(name).name != name or name in ('.', '..'):
+        raise ShipError('invalid attempt filename')
+    from .post_retirement import resolve
+    return resolve(runtime / 'post' / 'attempts' / name, runtime)
+
+
 class Attempts:
     def __init__(self, runtime: Path):
         self.dir = runtime / "post" / "attempts"
         self._cache = {}
+        self._retired_cache = {}
 
     @contextmanager
     def _locked(self):
@@ -483,7 +492,10 @@ class Attempts:
     def open(self, message: Message, seat: str, pane: str | None, pid: int | None, launched_at: str | None) -> Attempt:
         with self._locked():
             at = now()
-            number = len(list(self.dir.glob(f"{message.id}-*.json"))) + 1
+            history = [*self.dir.glob(f"{message.id}-*.json"),
+                       *(a.path for name, a in self._retired().items()
+                         if name.startswith(message.id + '-') and name.endswith('.json'))]
+            number = max((int(p.stem.rsplit('-', 1)[1]) for p in history), default=0) + 1
             attempt = Attempt(message.id, seat, at.isoformat(timespec="microseconds"), pane, pid, launched_at,
                               path=self.dir / f"{message.id}-{number}.json")
             self._write(attempt)
@@ -491,7 +503,10 @@ class Attempts:
 
     def close(self, attempt: Attempt, result: str, detail: str = "") -> Attempt:
         with self._locked():
-            current = Attempt(**json.loads(attempt.path.read_text()), path=attempt.path)
+            source = attempt_path(self.dir.parent.parent, attempt.path.name)
+            current = Attempt(**json.loads(source.read_text()), path=source)
+            if source.parent != self.dir:
+                return current  # retired finished evidence is immutable
             if current.result in ("abandoned", "not-in-closed-record", *UNSETTLED):
                 return current  # terminal even if an old door/watch finishes after cleanup or a receipt
             done = replace(attempt, result=result, detail=detail)
@@ -503,7 +518,10 @@ class Attempts:
     def judge(self, attempt: Attempt, result: str, detail: str = "") -> bool:
         """Judge only an unfinished attempt; an intervening door/watch verdict stands."""
         with self._locked():
-            current = Attempt(**json.loads(attempt.path.read_text()), path=attempt.path)
+            source = attempt_path(self.dir.parent.parent, attempt.path.name)
+            current = Attempt(**json.loads(source.read_text()), path=source)
+            if source.parent != self.dir:
+                return False
             if current.result is not None:
                 return False
             self._write(replace(current, result=result, detail=detail))
@@ -581,7 +599,7 @@ class Attempts:
         changed = []
         with self._locked():
             for attempt in self.all():
-                if attempt.seat != seat or attempt.result in ("delivered", "launch", "watch", "abandoned", "not-in-closed-record"):
+                if attempt.path.parent != self.dir or attempt.seat != seat or attempt.result in ("delivered", "launch", "watch", "abandoned", "not-in-closed-record"):
                     continue
                 done = replace(attempt, result="abandoned",
                                detail=f"{detail}; previous result: {attempt.result or 'unfinished'}")
@@ -593,17 +611,49 @@ class Attempts:
         data = {k: v for k, v in asdict(attempt).items() if k != "path"}
         durable.replace_file(attempt.path, json.dumps(data, indent=2) + "\n")
 
-    def all(self) -> list[Attempt]:
+    def _retired(self, progress=None) -> dict[str, Attempt]:
+        """Immutable batch metadata: stat batches, never every retained receipt."""
+        folder = self.dir.parent / 'retired' / 'index'
+        found, cache = {}, {}
+        for path in folder.glob('*.json'):
+            if progress is not None:
+                progress()
+            info = path.stat()
+            stamp = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+            cached = self._retired_cache.get(path.name)
+            if cached is None or cached[0] != stamp:
+                data = json.loads(path.read_text())
+                if (not isinstance(data, dict) or data.get('format') != 1
+                        or not isinstance(data.get('attempts'), dict)):
+                    raise ShipError('retired attempt index unreadable; delivery held')
+                rows = {}
+                for name, fields in data['attempts'].items():
+                    if Path(name).name != name or not name.endswith('.json'):
+                        raise ShipError('retired attempt index filename invalid; delivery held')
+                    rows[name] = Attempt(**fields, path=self.dir.parent / 'retired' / 'attempts' / name)
+                cached = stamp, rows
+            cache[path.name] = cached
+            for name, attempt in cached[1].items():
+                if name in found and found[name] != attempt:
+                    raise ShipError('retired attempt indices disagree; delivery held')
+                found[name] = attempt
+        self._retired_cache = cache
+        return found
+
+    def all(self, *, progress=None) -> list[Attempt]:
         # Attempts are mutable, including writes from another process. Directory
         # times alone miss same-path edits; stat every entry, parse only changes.
+        retired = self._retired(progress)
         try:
             entries = os.scandir(self.dir)
         except FileNotFoundError:
             self._cache = {}
-            return []
+            return sorted(retired.values(), key=lambda a: (a.at, a.path.name))
         current = {}
         with entries:
-            for entry in entries:
+            for index, entry in enumerate(entries):
+                if progress is not None and index % 200 == 0:
+                    progress()
                 if not entry.name.endswith('.json'):
                     continue
                 info = entry.stat()
@@ -615,8 +665,8 @@ class Attempts:
                 current[entry.name] = cached
         # A failed scan/read must propagate, never certify a partial snapshot.
         self._cache = current
-        found = [value[1] for value in current.values()]
-        return sorted(found, key=lambda a: (a.at, a.path.name))
+        retired.update((name, value[1]) for name, value in current.items())
+        return sorted(retired.values(), key=lambda a: (a.at, a.path.name))
 
     def for_message(self, message_id: str) -> list[Attempt]:
         return [a for a in self.all() if a.message == message_id]

@@ -234,15 +234,25 @@ def journals(seat: Seat) -> tuple[list[Proof], list[str]]:
     return _journals(runtime, seat.name) if runtime is not None else ([], [])
 
 
-def _journals(runtime: Path | None, name: str) -> tuple[list[Proof], list[str]]:
+def journal_path(runtime: Path, name: str, filename: str) -> Path:
+    """Resolve a journal named by saved evidence, without scanning the archive."""
+    if any(Path(part).name != part or part in ('.', '..') for part in (name, filename)):
+        raise ShipError('invalid pending journal filename')
+    from .post_retirement import resolve
+    return resolve(runtime / 'post' / 'pending' / name / filename, runtime)
+
+
+def _journals(runtime: Path | None, name: str, *, progress=None) -> tuple[list[Proof], list[str]]:
     found, errors = [], []
     if runtime is None:
         return found, errors
     for path in sorted((runtime / "post" / "pending" / name).glob("*.json")):
+        if progress is not None:
+            progress()
         try:
             data = json.loads(path.read_text())
             validate(data, name)
-            if any(not (runtime / "post" / "attempts" / n).is_file() for n in data["attempts"]):
+            if any(not post.attempt_path(runtime, n).is_file() for n in data["attempts"]):
                 raise ValueError("pending attempt receipt missing")
             found.append(Proof(path, data))
         except (OSError, ValueError, TypeError, KeyError):
@@ -655,7 +665,7 @@ def _named(seat: Seat, names: Sequence[str], known: dict[str, post.Attempt]) -> 
     """The journals these attempts name, and only those; one that is missing or unreadable is left to reconcile."""
     found = []
     for name in dict.fromkeys(names):
-        path = seat.ship.runtime / "post" / "pending" / seat.name / name
+        path = journal_path(seat.ship.runtime, seat.name, name)
         try:
             data = json.loads(path.read_text())
             validate(data, seat.name)
