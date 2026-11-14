@@ -633,6 +633,28 @@ evidence and malformed journals remain held. Readers and strict journal validati
 
 ## 7. Post
 
+For a ship declaring `una`, the service observes the framework checkout's local
+`refs/remotes/origin/main`. The first reading establishes a baseline; each later
+observed tip change starts a twenty-minute deadline. Further changes collect in
+one batch and move its deadline to twenty minutes after the newest observation.
+At that deadline the service files one order from `ship` to `una`, listing every
+observed tip in the batch. Una alone reads GitHub with the ship's key, reports a
+failed run to the captain at once with its logged cause, and uses blocking
+`gh run watch RUN_ID --exit-status` for a run still going. The service makes no
+network or provider call. Transitions entirely between service observations
+cannot be reconstructed; a restart observes the current ref against its saved
+baseline, with downtime pushes timed from that observation.
+
+The service alone writes `runtime/post/push-reminder.json`: version, last observed
+tip, pending tips, UTC due time, and an optional serialized immutable order intent.
+An unchanged ref causes no journal write. The fixed intent is saved durably before
+publication through ordinary post admission; recovery checks existing post bytes
+and reuses the same identity before clearing it. A restart on either side of the
+post write therefore neither loses nor duplicates a reminder. A missing or
+temporarily unreadable ref does not discard a pending batch; invalid journal
+state is retained and logged by the service's isolated duty. No new ship setting,
+polling seat, timer process or change to signing is involved.
+
 Saving a delivery proof compares its newly merged, serialized JSON against the
 current file bytes using the same locale encoding, indentation and trailing
 newline as its writer. Equal bytes leave the file alone; a missing file is a

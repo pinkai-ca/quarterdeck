@@ -163,7 +163,7 @@ class Service:
         self.rebind()
         self.structure_passes.begin()
         for step in (self.server_recovery, self.reconcile, self.account, self.groups, self.cascades, self.inboxes, self.recoveries, self.refusals, self.answers, self.looks, self.deliveries, self.follow, self.requests, self.compactions, self.person_quiet, self.fresh_after_order,
-                     self.rebrief, self.credentials, self.authentications, self.model_differences, self.failover):  # accounting before anything relaunches a seat
+                     self.rebrief, self.push_reminders, self.credentials, self.authentications, self.model_differences, self.failover):  # accounting before anything relaunches a seat
             self.heartbeat()  # before every step: a slow delivery or usage read reads as busy, never as dead
             try:
                 step()
@@ -189,6 +189,11 @@ class Service:
 
     def publish_status(self) -> None:
         presentation.publish(self.ship, self.tmux, self.status_framework, self.store, self.attempts)
+
+    def push_reminders(self) -> None:
+        """A local origin/main change starts a durable reminder, without reading GitHub."""
+        from . import push_reminder
+        push_reminder.run(self)
 
     def heartbeat(self) -> None:
         write_heartbeat(self.runtime)
