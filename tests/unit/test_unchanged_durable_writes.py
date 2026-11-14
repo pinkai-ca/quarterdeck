@@ -34,17 +34,18 @@ OLD_NS = 1_000_000_000_000_000_000  # a mark no write made today can carry
 
 
 class Writes:
-    """Every call to the shared replacement writer, which still does the writing."""
+    """Every call to either shared replacement writer, which still does the writing."""
 
     def __init__(self, monkeypatch):
         self.paths: list[Path] = []
-        real = durable.replace_file
+        def observe(writer):
+            def spy(path, text, **kwargs):
+                self.paths.append(Path(path))
+                return writer(path, text, **kwargs)
+            return spy
 
-        def spy(path, text, **kwargs):
-            self.paths.append(Path(path))
-            return real(path, text, **kwargs)
-
-        monkeypatch.setattr(durable, "replace_file", spy)
+        for name in ('replace_file', '_replace_law_record'):
+            monkeypatch.setattr(durable, name, observe(getattr(durable, name)))
 
     def under(self, folder: Path) -> list[Path]:
         return [path for path in self.paths if folder in path.parents]
