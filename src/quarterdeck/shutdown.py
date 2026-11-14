@@ -261,7 +261,6 @@ class Stop:
             self.lock.truncate()
             self.lock.write(json.dumps(self.owner) + "\n")
             self.lock.flush()
-            os.fsync(self.lock.fileno())
             _controller = self
             signal.signal(signal.SIGTERM, self.signal)
             yield

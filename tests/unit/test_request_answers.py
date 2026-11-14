@@ -130,23 +130,20 @@ def test_publication_failure_preserves_replay_guard_and_raw_evidence(svc,monkeyp
     bad.write_text(raw)
     if not archive:(folder/'failed').write_text('synthetic archival obstruction')
     monkeypatch.setattr(doormod.Door,'interrupt',lambda self:called.append(self.seat.name) or 'synthetic complete proof')
-    original_replace,original_sync=os.replace,durable.sync_folder
-    after_rename=[False]
+    original_replace=os.replace
 
     def replace(source,target,*args,**kwargs):
-        if Path(target)==bad.with_suffix('.done'):
-            if stage=='rename':raise OSError('synthetic answer rename refusal')
-            after_rename[0]=True
-        return original_replace(source,target,*args,**kwargs)
-
-    def sync(path):
-        if after_rename[0]:
-            after_rename[0]=False
-            raise OSError('synthetic answer folder-sync refusal')
-        return original_sync(path)
-
+        if Path(target)==bad.with_suffix('.done') and stage=='rename':
+            raise OSError('synthetic answer rename refusal')
+        result=original_replace(source,target,*args,**kwargs)
+        if Path(target)==bad.with_suffix('.done') and stage!='rename':
+            raise OSError('synthetic answer post-rename refusal')
+        return result
+    def forbidden_sync(_):
+        pytest.fail('ordinary request publication forced a sync')
     monkeypatch.setattr(os,'replace',replace)
-    monkeypatch.setattr(durable,'sync_folder',sync)
+    monkeypatch.setattr(os,'fsync',forbidden_sync)
+    monkeypatch.setattr(os,'fdatasync',forbidden_sync)
     service.requests()
     assert called==['survivor']
     assert bad.with_suffix('.claimed').read_text()==raw
@@ -154,7 +151,7 @@ def test_publication_failure_preserves_replay_guard_and_raw_evidence(svc,monkeyp
     answer=bad.with_suffix('.done')
     if stage=='rename':assert not answer.exists()
     else:
-        assert answer.read_text().startswith("failed: OSError('synthetic answer folder-sync refusal');")
+        assert answer.read_text().startswith("failed: OSError('synthetic answer post-rename refusal');")
         assert answer.read_text().endswith('and the service log has the trace\n')
     assert not list(folder.glob('*.tmp'))
     healthy=folder/'b-stop.json';healthy.write_text(raw)

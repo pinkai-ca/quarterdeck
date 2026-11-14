@@ -138,7 +138,7 @@ def initial_ignore(dir_fd: int, where: Path) -> None:
     """Coordinate initial writers on Linux's already verified root directory descriptor.
 
     Directory flock is Linux-specific, as is the test tool's /proc process evidence. The brief lock keeps
-    an equal peer's exclusive write and fsync complete before it is read; no control file is introduced.
+    an equal peer's exclusive write is complete before it is read; no control file is introduced.
     """
     name, data = '.gitignore', b'*\n'
     fcntl.flock(dir_fd, fcntl.LOCK_EX)
@@ -175,14 +175,15 @@ def git_environment() -> dict:
 def write_new(dir_fd: int, name: str, data: bytes) -> None:
     fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=dir_fd)
     try:
-        os.write(fd, data)
-        os.fsync(fd)
+        remaining = memoryview(data)
+        while remaining:
+            remaining = remaining[os.write(fd, remaining):]
     finally:
         os.close(fd)
 
 
 def write_atomic(dir_fd: int, name: str, data: bytes) -> None:
-    """Write beside, fsync, rename over, fsync the directory: a reader sees the old file or the new one."""
+    """Write beside, close, then rename over: readers see one whole file; no storage sync."""
     temporary = f'.{name}.{os.getpid()}.{secrets.token_hex(4)}.tmp'
     write_new(dir_fd, temporary, data)
     try:
@@ -190,7 +191,6 @@ def write_atomic(dir_fd: int, name: str, data: bytes) -> None:
     except BaseException:
         os.unlink(temporary, dir_fd=dir_fd)
         raise
-    os.fsync(dir_fd)
 
 
 def write_json(dir_fd: int, name: str, data: dict) -> None:

@@ -119,7 +119,6 @@ def retire(runtime, name, registration):
                 if companion.read_text() == registration['proof']:
                     companion.unlink()
                 # The canonical generation survives watch retirement.
-                durable.sync_folder(path.parent)
         except FileNotFoundError:
             pass
 

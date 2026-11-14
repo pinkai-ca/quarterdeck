@@ -71,7 +71,7 @@ During ordinary work, 1.5.5 shows a queued envelope preview above the composer, 
 | Stage | Reading and evidence |
 |---|---|
 | Working before input | Open, queues; native record activity and screen are reported separately |
-| Newly visible matching queue | `queued`, explicitly awaiting an exact record receipt; durable Proof stays `submitted` with optional `screen_queue: true` |
+| Newly visible matching queue | `queued`, explicitly awaiting an exact record receipt; saved Proof stays `submitted` with optional `screen_queue: true` |
 | Native record takes the original payload | Shared timestamped exact-input rule confirms delivery; the marker becomes false and the Proof/attempt becomes `delivered` |
 | Queue disappears without a receipt | Pending; no second paste/submit. Missing record evidence never becomes delivery |
 | Record stays unknown or the bound expires | The existing 600-second pending policy calls for inspection; launch/box uncertainty remains visible immediately |

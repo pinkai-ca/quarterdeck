@@ -1,13 +1,8 @@
-"""A power cut at any step of a durable write leaves a reader the old file or the complete new one.
+"""No-sync whole-file writers keep old or complete new data across process interruption.
 
-The cut is simulated in-process. ``Disk`` records the operations that order
-durability (a file's fsync, a rename, a folder's fsync) and raises ``PowerCut``
-before the k-th of them, for every k. What survives is then derived from the
-POSIX contract, as delayed allocation exercises it: data not yet fsynced may come
-back empty or partial, and a rename (or an in-place rewrite) not yet made durable
-by its folder's fsync may come back undone. Every such view is checked against
-the old state and the complete new one, and a view outside them is shown with
-what the program's own reader then sees.
+The same writer scenarios remain. Both sync APIs fail if called; cuts before
+and after each rename leave a named target old or equal to the complete staged
+bytes. Power-loss persistence is deliberately not promised by the new default.
 """
 
 from __future__ import annotations
@@ -26,60 +21,39 @@ from quarterdeck.seat import Launched, Seat
 from quarterdeck.ship import Pool, SeatSpec, Session, Ship
 
 
-class PowerCut(BaseException):
-    """Not an Exception: no writer may recover from losing power."""
+class ProcessCrash(BaseException):
+    """A process interrupted at a publication boundary."""
 
 
 class Disk:
     def __init__(self, monkeypatch, cut_at: int | None = None):
         self.ops: list[str] = []
-        self.cut_at = cut_at
-        self.synced: dict[int, bytes] = {}
-        self.renamed: dict[str, bool] = {}
-        real_fsync, real_replace, real_rename = os.fsync, os.replace, os.rename
-
+        self.intended = {}
+        real_replace, real_rename = os.replace, os.rename
         def step(name):
-            if self.cut_at is not None and len(self.ops) == self.cut_at:
-                raise PowerCut(f"cut before {name}")
+            if cut_at is not None and len(self.ops) == cut_at:
+                raise ProcessCrash(f'cut before {name}')
             self.ops.append(name)
-
-        def fsync(fd):
-            info = os.fstat(fd)
-            folder = stat.S_ISDIR(info.st_mode)
-            step("folder-fsync" if folder else "file-fsync")
-            real_fsync(fd)
-            if folder:
-                for name in self.renamed:
-                    parent = os.stat(Path(name).parent)
-                    if (parent.st_dev, parent.st_ino) == (info.st_dev, info.st_ino):
-                        self.renamed[name] = True
-            else:
-                with open(f"/proc/self/fd/{fd}", "rb") as stream:
-                    self.synced[info.st_ino] = stream.read()
-
+        def forbidden_sync(_):
+            pytest.fail('ordinary writer forced a storage sync')
         def renaming(real):
             def move(source, target, *args, **kwargs):
-                step("rename")
+                self.intended[os.fspath(target)] = Path(source).read_bytes()
+                step('before-rename')
                 result = real(source, target, *args, **kwargs)
-                self.renamed[os.fspath(target)] = False
+                step('after-rename')
                 return result
             return move
-
-        monkeypatch.setattr(os, "fsync", fsync)
-        monkeypatch.setattr(os, "replace", renaming(real_replace))
-        monkeypatch.setattr(os, "rename", renaming(real_rename))
+        monkeypatch.setattr(os, 'fsync', forbidden_sync)
+        monkeypatch.setattr(os, 'fdatasync', forbidden_sync)
+        monkeypatch.setattr(os, 'replace', renaming(real_replace))
+        monkeypatch.setattr(os, 'rename', renaming(real_rename))
 
     def views(self, path: Path, old: bytes | None) -> set[bytes | None]:
-        """What the name can hold after the power returns (None: absent)."""
-        try:
-            current = path.read_bytes()
-            inode = path.stat().st_ino
-        except FileNotFoundError:
-            return {old}
-        if current == old:
-            return {old}
-        data = {current} if self.synced.get(inode) == current else {b"", current[:len(current) // 2], current}
-        return data if self.renamed.get(os.fspath(path)) else data | {old}
+        return {path.read_bytes() if path.exists() else None}
+
+    def allowed(self, path, old):
+        return {old, self.intended.get(os.fspath(path), old)}
 
 
 def seat_at(base: Path) -> Seat:
@@ -189,7 +163,7 @@ SCENARIOS = [post_new, ack_new_beside_posts, attempt_open, attempt_close, journa
 
 
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=lambda s: s.__name__)
-def test_a_power_cut_at_any_step_leaves_the_old_or_the_complete_new_file(tmp_path, monkeypatch, scenario):
+def test_process_interruption_keeps_old_or_complete_new_files_without_sync(tmp_path, monkeypatch, scenario):
     def run(name, cut_at):
         base = tmp_path / name
         base.mkdir()
@@ -199,18 +173,19 @@ def test_a_power_cut_at_any_step_leaves_the_old_or_the_complete_new_file(tmp_pat
             disk = Disk(patch, cut_at)
             try:
                 write()
-            except PowerCut:
+            except ProcessCrash:
                 pass
             seen = {path: disk.views(path, old[path]) for path in targets}
             exposed = []
             for path, views in seen.items():
                 new = path.read_bytes() if path.exists() else None
-                for view in views - {old[path], new}:
+                for view in views - disk.allowed(path, old[path]):
                     path.write_bytes(view)
                     exposed.append(f"{path.name} shows {view[:40]!r}; reader: {outcome(read)}")
             return disk.ops, exposed
 
     steps, _ = run("uncut", None)
+    assert steps and len(steps) % 2 == 0  # every writer must publish by rename
     failures = []
     for cut in range(len(steps) + 1):
         _, exposed = run(f"cut-{cut}", cut)
@@ -219,22 +194,21 @@ def test_a_power_cut_at_any_step_leaves_the_old_or_the_complete_new_file(tmp_pat
     assert not failures, "\n".join(failures)
 
 
-def test_the_shared_writer_syncs_the_file_then_renames_then_syncs_the_folder(tmp_path, monkeypatch):
+def test_the_shared_writer_renames_whole_without_any_sync(tmp_path, monkeypatch):
     from quarterdeck import durable
-
-    path = tmp_path / "launch.json"
-    path.write_text("old\n")
+    path = tmp_path / 'launch.json'
+    path.write_text('old\n')
     before = {entry.name for entry in os.scandir(tmp_path)}
-    disk = Disk(monkeypatch)
-    durable.replace_file(path, "new Ω\n")
-    assert disk.ops == ["file-fsync", "rename", "folder-fsync"]
-    assert path.read_text() == "new Ω\n" and {entry.name for entry in os.scandir(tmp_path)} == before
-    monkeypatch.undo()  # each cut below gets the real os beneath one Disk, never a Disk beneath another
-    for cut in range(3):
-        with monkeypatch.context() as patch, pytest.raises(PowerCut):
+    with monkeypatch.context() as patch:
+        disk = Disk(patch)
+        durable.replace_file(path, 'new Ω\n')
+        assert disk.ops == ['before-rename', 'after-rename']
+    assert path.read_text() == 'new Ω\n' and {entry.name for entry in os.scandir(tmp_path)} == before
+    for cut in range(2):
+        with monkeypatch.context() as patch, pytest.raises(ProcessCrash):
             Disk(patch, cut)
-            durable.replace_file(path, f"cut {cut}\n")
-        live = "new Ω\n" if cut < 2 else "cut 2\n"  # the last cut falls after the rename
+            durable.replace_file(path, f'cut {cut}\n')
+        live = 'new Ω\n' if cut == 0 else 'cut 1\n'
         assert path.read_text() == live and {entry.name for entry in os.scandir(tmp_path)} == before
 
 
@@ -247,7 +221,11 @@ def test_the_shared_writer_removes_its_temporary_on_an_ordinary_failure(tmp_path
     def refuse(*args):
         raise OSError("synthetic full disk")
 
-    monkeypatch.setattr(os, "fsync", refuse)
+    def forbidden_sync(_):
+        pytest.fail('ordinary failed write forced a sync')
+    monkeypatch.setattr(os, 'fsync', forbidden_sync)
+    monkeypatch.setattr(os, 'fdatasync', forbidden_sync)
+    monkeypatch.setattr(os, "replace", refuse)
     with pytest.raises(OSError, match="synthetic full disk"):
         durable.replace_file(path, "pool-b\n")
     assert path.read_text() == "pool-a\n" and [entry.name for entry in os.scandir(tmp_path)] == ["pool"]

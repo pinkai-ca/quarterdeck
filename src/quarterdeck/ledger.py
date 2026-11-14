@@ -179,10 +179,11 @@ class Ledger:
             return
         path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path)
-        self.db.execute("PRAGMA synchronous=EXTRA")
-        if self.db.execute("PRAGMA synchronous").fetchone() != (3,):
+        self.db.execute("PRAGMA synchronous=OFF")
+        if self.db.execute("PRAGMA synchronous").fetchone() != (0,):
             self.db.close()
-            raise RuntimeError("ledger writer requires synchronous=EXTRA")
+            raise RuntimeError("ledger writer requires synchronous=OFF")
+        self.db.execute("PRAGMA journal_mode=DELETE")
         self.db.executescript(SCHEMA)
         for table, columns in ADDED_COLUMNS.items():
             present = {row[1] for row in self.db.execute(f"PRAGMA table_info({table})")}

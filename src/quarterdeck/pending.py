@@ -452,8 +452,6 @@ def check_inbox_registration(runtime: Path, name: str, human: bool, *, enabled=F
             if written <= 0:
                 raise OSError('temporary check registration write incomplete')
             remaining = remaining[written:]
-        os.fsync(descriptor)
-        durable.sync_folder(marker.parent)
         published = True
         yield
     finally:
@@ -464,7 +462,6 @@ def check_inbox_registration(runtime: Path, name: str, human: bool, *, enabled=F
                     if ([current.st_dev, current.st_ino] != data['registration'] or metadata(marker) != raw):
                         raise ValueError('temporary check registration changed; retained')
                     post_dir.remove(marker)
-                    durable.sync_folder(marker.parent)
         finally:
             os.close(descriptor)  # death or normal exit releases this lifetime's lease
 

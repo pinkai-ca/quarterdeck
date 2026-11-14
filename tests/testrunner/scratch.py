@@ -289,7 +289,6 @@ def discard(root, run):
         try:
             if record(root, run) is not None:
                 os.unlink(RECORD, dir_fd=fd)
-                os.fsync(fd)
         finally:
             os.close(fd)
 

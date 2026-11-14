@@ -119,9 +119,7 @@ def append_notes(path: Path, evidence: dict) -> dict:
         view = memoryview(addition[len(raw) - offset:])
         while view:
             view = view[os.write(descriptor, view):]
-        os.fsync(descriptor)
         verify()
-    durable.sync_folder(path)
     complete = raw[:offset] + addition
     return dict(size=len(complete), sha256=hashlib.sha256(complete).hexdigest(), pending=None)
 
@@ -147,11 +145,7 @@ def hold(runtime: Path, question: str, reason: str, signature: str) -> bool:
             return False
     except (OSError, ValueError, ShipError):
         pass
-    created = not post_dir.exists_dir(path.parent)
     post_dir.ensure_directory(path.parent)
-    if created:
-        durable.sync_folder(path.parent.parent)
-        durable.sync_folder(runtime)
     durable.replace_file(path, json.dumps(data) + '\n', encoding='utf-8')
     return True
 
@@ -162,7 +156,6 @@ def clear(runtime: Path, question: str) -> None:
         post_dir.remove(path)
     except FileNotFoundError:
         return
-    durable.sync_folder(path.parent)
 
 
 def holds(runtime: Path) -> list[str]:

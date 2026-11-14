@@ -120,4 +120,3 @@ def transitioned(path: Path, data) -> None:
             post_dir.remove(marker)
         except FileNotFoundError:
             return
-        durable.sync_folder(marker.parent)

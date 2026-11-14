@@ -1,10 +1,10 @@
-"""A service pass writes what changed and nothing else; what it does write stays atomic and durable.
+"""A service pass writes what changed and nothing else; replacements stay whole without sync.
 
 Every pass reconciles every pending journal, and a settled journal used to be
 rewritten each time, fsyncs included. These tests read the disk itself (calls to
-the durable writer, inode and mtime) rather than the objects in memory. Equal
+the shared writer, inode and mtime) rather than the objects in memory. Equal
 bytes mean only that there is nothing to write: never that an earlier failed
-write is now durable or repaired, and nothing reports it so.
+write is now saved or repaired, and nothing reports it so.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from quarterdeck import durable, install, pending, post, standing
 from quarterdeck.service import Service
 from quarterdeck.ship import load
 
-from .test_durable_writes import Disk, PowerCut, journal_data, message
+from .test_durable_writes import Disk, ProcessCrash, journal_data, message
 from .test_pending_delivery import setup, send, input_row  # noqa: F401
 from .test_status_presentation import live  # noqa: F401
 
@@ -34,7 +34,7 @@ OLD_NS = 1_000_000_000_000_000_000  # a mark no write made today can carry
 
 
 class Writes:
-    """Every call to the shared durable writer, which still does the writing."""
+    """Every call to the shared replacement writer, which still does the writing."""
 
     def __init__(self, monkeypatch):
         self.paths: list[Path] = []
@@ -88,7 +88,7 @@ def test_a_pass_over_settled_journals_writes_none_yet_still_settles_their_receip
         item = svc.store.new("order", "desk", seat.name, f"synthetic settled item {index}")
         attempt = svc.attempts.open(item, seat.name, launch.pane, launch.pid, launch.at)
         proof = pending.Proof.begin(seat, attempt, post.typed([item]))
-        proof.save(phase="delivered")  # the verdict is durable; its receipt may lag behind it
+        proof.save(phase="delivered")  # the verdict is saved; its receipt may lag behind it
         if index % 3 == 0:
             svc.attempts.close(attempt, "delivered", "exact payload found in owned record after paste")
         elif index % 3 == 2:
@@ -148,27 +148,29 @@ def test_a_journal_that_really_changes_is_written_once_and_then_left_alone(setup
     assert live["pasted"] == live["submitted"] == 1
 
 
-def test_a_failed_folder_sync_is_raised_with_its_path_and_never_reported_repaired(setup, monkeypatch):
-    """The rename survived but its folder sync failed: the next pass finds equal bytes and claims nothing."""
+def test_a_post_rename_failure_is_raised_with_its_path_and_never_reported_repaired(setup, monkeypatch):
+    """The replacement happened before a publication failure; retry does not invent a repair."""
     svc, seat, live, record = setup
     item, proof = send(svc, seat)
     input_row(record, proof.data["payload"], post.now())
     folder = proof.path.parent
-    real_fsync, armed = os.fsync, [True]
-
-    def fsync(descriptor):
-        info, target = os.fstat(descriptor), os.stat(folder)
-        if armed[0] and stat.S_ISDIR(info.st_mode) and (info.st_dev, info.st_ino) == (target.st_dev, target.st_ino):
+    real_replace, armed = os.replace, [True]
+    def replace(source, target):
+        result = real_replace(source, target)
+        if armed[0] and Path(target) == proof.path:
             armed[0] = False
-            raise OSError(errno.EIO, "synthetic folder sync failure")
-        return real_fsync(descriptor)
-
-    monkeypatch.setattr(os, "fsync", fsync)
+            raise OSError(errno.EIO, 'synthetic post-rename failure')
+        return result
+    def forbidden_sync(_):
+        pytest.fail('ordinary journal update forced a sync')
+    monkeypatch.setattr(os, 'fsync', forbidden_sync)
+    monkeypatch.setattr(os, 'fdatasync', forbidden_sync)
+    monkeypatch.setattr(os, 'replace', replace)
     with pytest.raises(OSError) as raised:
         svc.reconcile()
     assert raised.value.errno == errno.EIO and not armed[0]
     trace = "".join(traceback.format_exception(raised.value))  # what the service's pass trace records
-    assert str(proof.path) in trace and "synthetic folder sync failure" in trace
+    assert str(proof.path) in trace and "synthetic post-rename failure" in trace
     assert json.loads(proof.path.read_text())["phase"] == "delivered"  # renamed into place before the failure
     assert svc.attempts.latest()[item.id] == "pending"  # the pass stopped before its receipt
     before, logged = aged([proof.path]), log_lines(svc)
@@ -237,15 +239,17 @@ def test_a_differently_formatted_journal_is_normalised_once(journal, monkeypatch
 def test_a_failed_write_publishes_nothing_and_the_real_change_is_still_owed(journal, monkeypatch):
     old = journal.read_bytes()
     proof = pending.Proof(journal, json.loads(old))
-    real_fsync, armed = os.fsync, [True]
-
-    def fsync(descriptor):
-        if armed[0] and not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+    real_replace, armed = os.replace, [True]
+    def replace(source, target):
+        if armed[0] and Path(target) == journal:
             armed[0] = False
-            raise OSError(errno.ENOSPC, "synthetic full disk")
-        return real_fsync(descriptor)
-
-    monkeypatch.setattr(os, "fsync", fsync)
+            raise OSError(errno.ENOSPC, 'synthetic full disk')
+        return real_replace(source, target)
+    def forbidden_sync(_):
+        pytest.fail('ordinary journal update forced a sync')
+    monkeypatch.setattr(os, 'fsync', forbidden_sync)
+    monkeypatch.setattr(os, 'fdatasync', forbidden_sync)
+    monkeypatch.setattr(os, 'replace', replace)
     with pytest.raises(OSError) as raised:
         proof.save(phase="delivered")
     assert raised.value.errno == errno.ENOSPC and str(journal) in "".join(traceback.format_exception(raised.value))
@@ -267,19 +271,19 @@ def test_an_unreadable_journal_path_raises_with_its_path_and_publishes_nothing(t
     assert writes.paths == [] and proof.data["phase"] == "submitted" and path.is_dir()
 
 
-def test_a_changed_journal_is_still_synced_renamed_and_its_folder_synced_and_an_equal_one_touches_nothing(journal, monkeypatch):
+def test_a_changed_journal_is_replaced_without_sync_and_an_equal_one_touches_nothing(journal, monkeypatch):
     proof = pending._journals(journal.parents[3], "worker")[0][0]
     with monkeypatch.context() as patch:
         disk = Disk(patch)
         proof.finish("delivered")
-        assert disk.ops == ["file-fsync", "rename", "folder-fsync"]
+        assert disk.ops == ["before-rename", "after-rename"]
     with monkeypatch.context() as patch:
         disk = Disk(patch)
         pending._journals(journal.parents[3], "worker")[0][0].finish("delivered")
         assert disk.ops == []
 
 
-def test_a_reconstructed_journal_that_changes_survives_a_power_cut_at_every_step(tmp_path, monkeypatch):
+def test_a_reconstructed_journal_stays_whole_across_process_interruption_without_sync(tmp_path, monkeypatch):
     def run(name, cut):
         base = tmp_path / name
         base.mkdir()
@@ -293,13 +297,13 @@ def test_a_reconstructed_journal_that_changes_survives_a_power_cut_at_every_step
                 found, errors = pending._journals(base, "worker")
                 assert not errors and len(found) == 1
                 found[0].finish("delivered")
-            except PowerCut:
+            except ProcessCrash:
                 pass
             views = disk.views(path, old)
-        return disk.ops, views - {old, path.read_bytes()}, path
+        return disk.ops, views - disk.allowed(path, old), path
 
     steps, exposed, path = run("uncut", None)
-    assert steps == ["file-fsync", "rename", "folder-fsync"] and not exposed
+    assert steps == ["before-rename", "after-rename"] and not exposed
     assert json.loads(path.read_text())["phase"] == "delivered"
     for cut in range(len(steps) + 1):
         _, exposed, _ = run(f"cut-{cut}", cut)
@@ -337,13 +341,13 @@ def test_closing_a_receipt_writes_only_a_real_change_and_terminal_receipts_stay_
     assert len(writes.paths) == 5 and post.Attempts(tmp_path).all() == [abandoned]
 
 
-def test_a_changed_receipt_is_still_durable_and_an_equal_one_touches_nothing(tmp_path, monkeypatch):
+def test_a_changed_receipt_is_replaced_without_sync_and_an_equal_one_touches_nothing(tmp_path, monkeypatch):
     attempts = post.Attempts(tmp_path)
     opened = attempts.open(attempt_item(), "worker", "%1", 1001, None)
     with monkeypatch.context() as patch:
         disk = Disk(patch)
         closed = attempts.close(opened, "delivered", "synthetic confirmation")
-        assert disk.ops == ["file-fsync", "rename", "folder-fsync"]
+        assert disk.ops == ["before-rename", "after-rename"]
     with monkeypatch.context() as patch:
         disk = Disk(patch)
         assert attempts.close(opened, "delivered", "synthetic confirmation") == closed

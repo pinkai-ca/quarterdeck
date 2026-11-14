@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import stat
 
-from . import durable, pending, post, post_dir, record_owner
+from . import pending, post, post_dir, record_owner
 from .ship import ShipError
 
 UNKNOWN = 'delivery journal had no complete launch identity; outcome unknown; never resent'
@@ -50,8 +50,6 @@ def _retirement_log(runtime, name, filename):
         fcntl.flock(stream, fcntl.LOCK_EX)
         stream.write(json.dumps(row) + '\n')
         stream.flush()
-        os.fsync(stream.fileno())
-    durable.sync_folder(path.parent)
 
 
 def retire_missing_identity(runtime, name, errors, attempts):
@@ -120,8 +118,6 @@ def retire_missing_identity(runtime, name, errors, attempts):
                     post_dir.rename(path, saved)  # same inode and original bytes, outside journals()'s glob
                 else:
                     path.rename(saved)
-                durable.sync_folder(destination)
-                durable.sync_folder(folder)
                 _retirement_log(runtime, name, filename)
                 retired[filename] = updated
             except FileNotFoundError as error:

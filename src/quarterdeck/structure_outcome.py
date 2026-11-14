@@ -77,7 +77,6 @@ def clear_wait(runtime, request):
         post_dir.remove(path)
     except FileNotFoundError:
         return
-    durable.sync_folder(path.parent)
 
 
 def _wait_data(data):

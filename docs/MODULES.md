@@ -21,7 +21,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `machine.py` | a seat's process tree, sampled for the Ledger |
 | `output.py` | one shape for every reading, rendered for a person or serialized as JSON |
 | `paste_refusal.py` | proved owned-unsubmitted paste cleanup, and refusal evidence scoped by payload, version and geometry |
-| `pending.py`, `delivery_record.py` | durable paste evidence and historical receipts; the service schedules each message |
+| `pending.py`, `delivery_record.py` | saved paste evidence and historical receipts; the service schedules each message |
 | `pricing.py` | a pool's stated rates, and the price saved beside a launch or a model choice |
 | `provenance.py` | which launch a record belongs to |
 | `providers.py` | normalizes declared companies and builds public identity metadata |
@@ -76,7 +76,7 @@ quarterdeck/                       the project folder: the framework repository
     seat.py        seat identity, lifecycle and controls: up, down, restart, fresh, stop, set
     lifecycle.py   shared seat-transition claim for lifecycle and ordinary delivery
     door.py        the one typing path: clear, type, check, submit, confirm; three speeds; the wall it reads
-    pending.py delivery_record.py   durable paste evidence and historical receipts
+    pending.py delivery_record.py   saved paste evidence and historical receipts
     pending_lifecycle.py   service-only null-identity retirement and exact old-launch record links
     pane_obstruction.py   one bounded short-pane reason marker and its named journal, with writer-owned expiry
     receipt_refresh.py   service-owned framework-revision receipt-refresh progress

@@ -162,8 +162,6 @@ def start(service, reference: str, caller: str, efforts: list[str] | None = None
         if load(existing.parent)["status"] == "running":
             raise ShipError("cascade: another question is running; wait for its final notice")
     path.mkdir(parents=True, exist_ok=True)
-    durable.sync_folder(path.parent)
-    durable.sync_folder(ship.runtime)
     data = dict(format=1, question=question.id, declaration=asdict(ring), efforts=levels,
                 status="running", steps=[], intents={}, last=None, reason=None, stop_category=None,
                 stopped_report=None,

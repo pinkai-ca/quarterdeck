@@ -242,7 +242,6 @@ def run(service):
                             and turn.timed and turn.failure is None and turn.ended is not None
                             and turn.ended > datetime.fromisoformat(attempt['at'])):
                         post_dir.remove(_path(seat))
-                        durable.sync_folder(_path(seat).parent)
                 continue
             now = datetime.now(timezone.utc)
             step = "the pool's sign-in reading"
@@ -258,10 +257,7 @@ def run(service):
             _, stamp, _ = observation
             step = 'the resume journal write'
             path = _path(seat)
-            created = not post_dir.exists_dir(path.parent)
             post_dir.ensure_directory(path.parent)
-            if created:
-                durable.sync_folder(path.parent.parent)  # retain the new attempt-directory entry across a power cut
             latest = dict(at=now.isoformat(), pool=seat.launched().pool, credential=stamp)
             attempts = (attempt['attempts'] if attempt else []) + [latest]
             durable.replace_file(path, json.dumps(dict(format=1, **latest, attempts=attempts)) + '\n')

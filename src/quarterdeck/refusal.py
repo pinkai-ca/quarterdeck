@@ -71,7 +71,8 @@ def validate(event: dict) -> None:
 def save(runtime: Path, seat: str, events: list[dict]) -> None:
     target = path(runtime, seat)
     target.parent.mkdir(parents=True, exist_ok=True)
-    durable.replace_file(target, json.dumps({'format': FORMAT, 'seat': seat, 'events': events}, indent=2) + '\n')
+    # law: context-is-cache -- retain the quarantine/claim so refused text is not typed again.
+    durable._replace_law_record(target, json.dumps({'format': FORMAT, 'seat': seat, 'events': events}, indent=2) + '\n')
 
 
 def excluded(runtime: Path, seat: str) -> frozenset[str]:

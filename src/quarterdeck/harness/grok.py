@@ -249,7 +249,6 @@ def acknowledge_cached_opt_out(home: Path, pool: Pool) -> str | None:
                 config.pop("privacy")
             durable.replace_file(path, config_text(config))
         record.unlink()
-        durable.sync_folder(home)
         return None
     if seed is None:
         seed = {"format": 1, "writer": "quarterdeck",

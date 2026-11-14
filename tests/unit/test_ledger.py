@@ -354,7 +354,7 @@ def test_standalone_writers_skip_equal_rows_and_keep_committed_results_readable(
     path, record = tmp_path/'ledger.sqlite', tmp_path/'record-z'
     at = datetime(2026, 1, 1, tzinfo=timezone.utc)
     with Ledger(path) as book:
-        assert book.db.execute('PRAGMA synchronous').fetchone() == (3,)
+        assert book.db.execute('PRAGMA synchronous').fetchone() == (0,)
         assert book.db.execute('PRAGMA journal_mode').fetchone() == ('delete',)
         wall = Wall('synthetic-wall-z', at, at+timedelta(hours=1), signature='synthetic-z')
         assert book.provenance.remember(record, 'worker-z', 'pool-z', at)

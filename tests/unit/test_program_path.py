@@ -61,7 +61,6 @@ def test_synthetic_launches_also_get_the_fake_command(tmp_path, monkeypatch):
 def test_activation_prepares_the_command_folder_before_service_start(tmp_path, monkeypatch):
     ship = SimpleNamespace(runtime=tmp_path / 'ship/runtime', folder=tmp_path / 'ship')
     qd = executable(ship.runtime / 'venv/bin', 'qd', 'synthetic installed qd')
-    monkeypatch.setattr(install, '_flush_tree', lambda path: None)
     monkeypatch.setattr(install, '_phase', lambda ship, data, phase: data['pending'].update(phase=phase))
     monkeypatch.setattr(install, '_cleanup', lambda ship, data: None)
     monkeypatch.setattr(install, 'queue_rebrief', lambda *args: (None, None))

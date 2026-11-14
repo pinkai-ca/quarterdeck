@@ -282,27 +282,6 @@ def _plain(path: Path) -> bool:
 def _remove(path: Path) -> None:
     if _plain(path):
         shutil.rmtree(path)
-        durable.sync_folder(path.parent)
-
-
-def _flush_tree(root: Path) -> None:
-    """Sync the copied files and directories, never follow a venv's interpreter links."""
-    for folder, directories, files in os.walk(root, topdown=False, followlinks=False):
-        for name in files:
-            path = Path(folder) / name
-            if path.is_symlink():
-                continue
-            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-            try:
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
-        for name in directories:
-            path = Path(folder) / name
-            if not path.is_symlink():
-                durable.sync_folder(path)
-        durable.sync_folder(Path(folder))
-    durable.sync_folder(root.parent)
 
 
 def _settle_rename(ship: Ship, data: dict) -> None:
@@ -319,9 +298,8 @@ def _settle_rename(ship: Ship, data: dict) -> None:
     before, after = copy_state.root_id(source), copy_state.root_id(destination)
     if before == intent['identity'] and after is None:
         source.rename(destination)
-        durable.sync_folder(ship.runtime)
     elif before is None and after == intent['identity']:
-        durable.sync_folder(ship.runtime)
+        pass
     else:
         raise ShipError('copy journal directory identity mismatch; recovery remains pending')
     pending['moves'].append(intent)
@@ -370,7 +348,6 @@ def _cleanup(ship: Ship, data: dict) -> None:
     _remove(staging)
     if (ship.runtime / 'upgrade').is_dir() and not any((ship.runtime / 'upgrade').iterdir()):
         (ship.runtime / 'upgrade').rmdir()
-        durable.sync_folder(ship.runtime)
     if os.path.lexists(ship.runtime / 'venv.swap'):
         raise ShipError('copy swap still exists; cleanup remains pending')
     if os.path.lexists(ship.runtime / BACKUP):
@@ -607,7 +584,6 @@ def _stop_and_snapshot(ship: Ship, data: dict) -> list[str]:
 
 def _activate(ship: Ship, data: dict, fact: dict, tmux: Tmux | None) -> list[str]:
     pending = data['pending']
-    _flush_tree(ship.runtime / 'venv')
     fact['at'] = datetime.now(timezone.utc).isoformat(timespec='seconds')
     data['current'] = fact
     data['previous_copy'] = pending['old_current']
@@ -726,7 +702,6 @@ def upgrade(ship: Ship, ref: str = 'HEAD', tmux: Tmux | None = None, *,
                     raise ShipError('current directory changed before backup; no live install attempted')
                 if _plain(live):
                     _run(['cp', '-a', '--', str(live), str(backup)], 'copying current environment')
-                    _flush_tree(backup)
                     _phase(ship, data, 'backup_ready', backup_ready=True,
                            backup_identity=copy_state.root_id(backup))
                 cause = 'environment could not be made'

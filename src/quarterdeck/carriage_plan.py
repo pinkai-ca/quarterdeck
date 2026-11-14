@@ -160,12 +160,9 @@ def publish(plan: Plan) -> None:
             with os.fdopen(descriptor, 'wb') as stream:
                 stream.write(text.encode('utf-8'))
                 stream.flush()
-                os.fsync(stream.fileno())
-        durable.sync_folder(stage)
         if os.path.lexists(plan.directory):
             raise FileExistsError(plan.directory)
         os.rename(stage, plan.directory)
-        durable.sync_folder(plan.directory.parent)
     finally:
         if stage.exists():
             shutil.rmtree(stage)  # only the unpublished temporary made by this call

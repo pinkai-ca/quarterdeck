@@ -155,9 +155,9 @@ def test_publish_is_private_complete_and_never_rewrites(tmp_path):
 
 def test_failed_publication_exposes_no_partial_generation(tmp_path, monkeypatch):
     result = cp.build((row(),), handoff='h' * 5000, header='header', directory=tmp_path / 'generation', limit=1800)
-    def fail(_folder):
+    def fail(_source, _target):
         raise OSError('invented write interruption')
-    monkeypatch.setattr(cp.durable, 'sync_folder', fail)
+    monkeypatch.setattr(cp.os, 'rename', fail)
     with pytest.raises(OSError, match='invented write interruption'):
         cp.publish(result)
     assert list(tmp_path.iterdir()) == []

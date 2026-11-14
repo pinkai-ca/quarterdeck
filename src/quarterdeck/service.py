@@ -699,7 +699,6 @@ class Service:
 
     def clear_request_claim(self, claim: Path) -> None:
         claim.unlink(missing_ok=True)
-        durable.sync_folder(claim.parent)
 
     def failed_request(self, path: Path, error: Exception) -> None:
         """Keep the raw request and trace; an archival/answer failure leaves a visible claim, never a replay."""
@@ -713,8 +712,6 @@ class Service:
             if kept.exists():
                 raise FileExistsError(f"failed request evidence already exists: {kept.name}")
             os.replace(path, kept)
-            durable.sync_folder(kept.parent)
-            durable.sync_folder(path.parent)
         except OSError as archive_error:
             kept = claim
             self.log("error", step="requests", request=path.name, archive_unavailable=True,

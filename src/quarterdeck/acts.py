@@ -19,7 +19,6 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import durable
 from .ship import Ship
 from .tmux import TmuxError
 
@@ -193,7 +192,6 @@ def tell_desk(service, seat, launched, caller, act: str, reason: str, screen) ->
                 stream.write(json.dumps(dict(key=key, message=message.id, to=desk, at=_now(), act=act,
                                              caller=caller)) + "\n")
                 stream.flush()
-                os.fsync(stream.fileno())
         except OSError as error:
             return f"the desk is told ({', '.join(posted)}), but the notice could not be noted ({error})"
     return f"the desk is told ({', '.join(posted)})"
@@ -224,15 +222,13 @@ def bounded(text: str) -> str:
 
 
 def write(seat, entry: dict) -> None:
-    """One line appended and made durable; raises OSError when it cannot be, so nothing is sent."""
+    """Append one complete line; raises OSError when writing fails, so nothing is sent."""
     target = path(seat)
     target.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps(entry, ensure_ascii=False) + "\n"
     with target.open("a", encoding="utf-8") as stream:
         stream.write(line)
         stream.flush()
-        os.fsync(stream.fileno())
-    durable.sync_folder(target.parent)
 
 
 def last(seat) -> dict | None:

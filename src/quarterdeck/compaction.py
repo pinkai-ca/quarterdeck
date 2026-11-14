@@ -64,7 +64,8 @@ def save(runtime, name, data):
     except FileNotFoundError:
         pass
     target.parent.mkdir(parents=True, exist_ok=True)
-    durable.replace_file(target, text)
+    # law: context-is-cache -- retain the quarantine/claim so refused text is not typed again.
+    durable._replace_law_record(target, text)
 
 
 def new():

@@ -26,11 +26,7 @@ def _folder(ship: Ship) -> Path:
 
 
 def _save(path: Path, data: dict) -> None:
-    created = not post_dir.exists_dir(path.parent)
     post_dir.ensure_directory(path.parent)
-    if created:
-        durable.sync_folder(path.parent.parent)
-        durable.sync_folder(path.parent.parent.parent)
     durable.replace_file(path, json.dumps(data, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
 
 
@@ -153,7 +149,6 @@ def advance(ship: Ship, store: post.Store, failures=None, *, outcomes=None) -> l
                 hold = ship.runtime / 'post/group-holds' / path.name
                 if post_dir.exists(hold):
                     post_dir.remove(hold)
-                    durable.sync_folder(hold.parent)
             except Exception as error:  # one malformed journal cannot stall healthy groups
                 reason = _error_reason(error)
                 if _hold(ship.runtime, path, reason):

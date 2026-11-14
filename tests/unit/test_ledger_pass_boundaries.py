@@ -224,7 +224,7 @@ def test_a_reader_during_a_pass_sees_only_committed_passes_and_sets_nothing(tmp_
     with Ledger.reading(svc.ledger.path) as reading:
         assert counts(reading.db) == (2, 1, 1, 0, 2)
     assert opened and all(writes(trace) == [] for trace in opened), 'a reading sets no pragma and changes no schema'
-    assert svc.ledger.db.execute('PRAGMA synchronous').fetchone() == (3,)
+    assert svc.ledger.db.execute('PRAGMA synchronous').fetchone() == (0,)
     svc.ledger.close()
 
 
@@ -347,7 +347,7 @@ def test_an_older_writer_after_rollback_is_reconciled_through_the_existing_trigg
     # A newer writer reopening the book after it keeps the journal mode and needs no migration.
     with Ledger(svc.ledger.path) as book:
         assert book.db.execute('PRAGMA journal_mode').fetchone() == ('delete',)
-        assert book.db.execute('PRAGMA synchronous').fetchone() == (3,)
+        assert book.db.execute('PRAGMA synchronous').fetchone() == (0,)
         assert counts(book.db) == (1, 1, 0, 0, 1)
 
 

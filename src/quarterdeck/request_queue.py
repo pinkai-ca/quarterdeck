@@ -115,8 +115,6 @@ def save_metadata(path, data):
 def clear_metadata(path):
     target = state_path(path)
     target.unlink(missing_ok=True)
-    if target.parent.exists():
-        durable.sync_folder(target.parent)
 
 
 def acknowledged(path):
@@ -276,10 +274,8 @@ def answer(path, proof):
 
 def retire(path, *, clear_claim=False):
     path.unlink()
-    durable.sync_folder(path.parent)
     if clear_claim:
         path.with_suffix('.claimed').unlink(missing_ok=True)
-        durable.sync_folder(path.parent)
     clear_metadata(path)
 
 

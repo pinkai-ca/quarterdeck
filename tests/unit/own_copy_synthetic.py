@@ -115,7 +115,6 @@ class Transaction:
         monkeypatch.setattr(install.tarfile, 'open', archive)
         monkeypatch.setattr(install, '_run', self.run)
         monkeypatch.setattr(install, '_proof', self.proof)
-        monkeypatch.setattr(install, '_flush_tree', lambda path: self.calls.append(('flush', path.name)))
         monkeypatch.setattr(install.resources, 'plan', plan)
         monkeypatch.setattr(install.resources, 'synchronize', self.resources)
         monkeypatch.setattr(install.resources, 'fallback', unexpected)
