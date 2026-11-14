@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import signal
-import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -154,7 +153,9 @@ def test_a_worker_starts_fresh_after_its_order_closes(ship: shipmod.Ship, tmux: 
 
 def test_changed_orders_rebrief_every_seat_with_a_message_from_ship(ship: shipmod.Ship, tmux: Tmux, capsys):
     qd(capsys, "up", "captain")
-    time.sleep(1.2)
+    # The service captures its brief baseline before publishing its start event.
+    log = ship.runtime / "log" / "service.jsonl"
+    wait_for(lambda: log.exists() and '"event": "start"' in log.read_text(), seconds=1.2)
     (ship.folder / "orders.md").write_text("# Ship's orders: drydock\n\nNew orders.\n")
     wait_for(lambda: "New orders." in (ship.runtime / "brief" / "captain.md").read_text(), seconds=10)
     notice = wait_for(lambda: [m for m in post.Store(ship.runtime).all() if m.sender == "ship"], seconds=10)[0]
