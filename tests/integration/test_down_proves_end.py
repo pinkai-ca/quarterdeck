@@ -25,7 +25,7 @@ def lingering(drydock: Path, tmux, monkeypatch):
         ship = shipmod.load(drydock)
         seat = seatmod.Seat(ship, ship.seat("captain"), tmux)
         reseeded = []
-        monkeypatch.setattr(credential, "reseed", lambda ship, seats: reseeded.append([s.name for s in seats]) or [])
+        monkeypatch.setattr(credential, "reseed", lambda ship, seats, **bounds: reseeded.append([s.name for s in seats]) or [])
         return SimpleNamespace(ship=ship, seat=seat, reseeded=reseeded)
     return make
 

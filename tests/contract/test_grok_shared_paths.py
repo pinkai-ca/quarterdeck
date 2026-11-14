@@ -197,7 +197,7 @@ def usage_service(ship, logs):
 def events(monkeypatch):
     found = []
     real = credential.reseed
-    monkeypatch.setattr(credential, "reseed", lambda ship, seats: found.append("reseed") or real(ship, seats))
+    monkeypatch.setattr(credential, "reseed", lambda ship, seats, **bounds: found.append("reseed") or real(ship, seats, **bounds))
     return found
 
 

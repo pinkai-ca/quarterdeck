@@ -71,7 +71,7 @@ def service_for(runtime, *seats):
 
 @pytest.fixture
 def no_credentials(monkeypatch):
-    monkeypatch.setattr(credential, 'reseed', lambda *args: None)
+    monkeypatch.setattr(credential, 'reseed', lambda *args, **bounds: None)
 
 
 def open_attempt(service, seat, message):

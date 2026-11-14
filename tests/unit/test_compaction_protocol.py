@@ -676,7 +676,7 @@ def test_measured_fake_program_uses_real_lifecycle_and_carries_open_handoff(worl
             raise OSError('synthetic crash after durable successor launch')
         return proof
     monkeypatch.setattr(w.seat, '_up', up)
-    monkeypatch.setattr(credential, 'reseed', lambda *_: None)
+    monkeypatch.setattr(credential, 'reseed', lambda *_, **bounds: None)
     monkeypatch.setattr(w.seat.harness, 'build_home', lambda *_: None)
     monkeypatch.setattr(w.seat.harness, 'version', lambda: 'synthetic')
     monkeypatch.setattr(w.seat.tmux, 'pane', lambda key: live[0] if live[0] is not None and live[0].id == key else None)
