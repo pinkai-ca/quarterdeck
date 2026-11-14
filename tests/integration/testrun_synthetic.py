@@ -16,7 +16,7 @@ import time
 import pytest
 
 from tests.conftest import ROOT, git
-from tests.testrunner import scratch
+from tests.testrunner import scratch as storage
 
 TOOL = ROOT / 'tests' / 'testrun.py'
 
@@ -27,8 +27,8 @@ def skip_without_ci_memory() -> None:
     The measurement is ``prepare(..., memory_required=True)``: real tmpfs/ramfs with room
     for the reservation and the margin, ignoring the child disk model.
     """
-    if scratch.eligible_memory(None, physical=True) is None:
-        pytest.skip(scratch.NO_CI_MEMORY)
+    if storage.eligible_memory(None, physical=True) is None:
+        pytest.skip(storage.NO_CI_MEMORY)
 
 
 def needs_ci_memory(fn):
