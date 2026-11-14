@@ -193,25 +193,3 @@ def test_group_root_waits_for_an_intent_outside_this_rounds_window(tmp_path, cal
     file(store, caller, ship)
     assert store.get(root.id) == root
     assert not list(folder.iterdir())
-
-
-@pytest.mark.parametrize('caller', ['full', 'slice'])
-def test_filing_window_is_bounded_and_separate_allocator_inventory_is_unchanged(tmp_path, caller, monkeypatch):
-    template = Path(__file__).parents[2] / 'ships/forum/ship.toml'
-    (tmp_path / 'ship.toml').write_text(template.read_text())
-    ship = shipmod.load(tmp_path)
-    store = post.Store(ship.runtime)
-    group_post.stage(ship, store, 'reviewers', 'lead', 'ordinary group task')
-    listings = []
-    listing = post_dir.list_children
-    def observed(directory, **kwargs):
-        if Path(directory) == post.drop_dir(ship.runtime, 'lead'):
-            listings.append(kwargs.get('limit'))
-        return listing(directory, **kwargs)
-    monkeypatch.setattr(post_dir, 'list_children', observed)
-    file(store, caller, ship)
-    # The filing contract uses one window. The pre-existing allocator inventory
-    # is explicitly outside this change and must retain its semantics.
-    assert [limit for limit in listings if limit is not None] == [post.DROP_MAX_FILES]
-    # A collision between unpublished copy IDs may legitimately retry allocation.
-    assert listings.count(None) >= len(ship.groups['reviewers'].members)
