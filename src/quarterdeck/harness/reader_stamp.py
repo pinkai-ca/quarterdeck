@@ -115,6 +115,7 @@ CONTROL_ONLY = {
     ),
     'muse': _CONTROL_SHARED + (
         ('harness/muse_screen.py', 'styled composer and input obstruction for the door; records are read by muse_record'),
+        ('harness/muse_usage.py', 'explicit check allowance snapshots, separate from record interpretation'),
     ),
     'fake': _CONTROL_SHARED + _CHECK + (
         ('request_queue.py', 'synthetic control origin; the fake record reader delegates to the native parsers'),

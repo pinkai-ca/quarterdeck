@@ -3,9 +3,30 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import datetime, timezone
 
 from .limits import Usage, Window
+
+
+def read_native(program, home, environment, *, timeout: float = 20) -> Usage:
+    """The measured usage subcommand in a built check home; never starts a model turn.
+
+    Only decoded allowance buckets survive. Native stdout/stderr may contain account
+    data and are never returned in diagnostics, saved or logged.
+    """
+    at = datetime.now(timezone.utc)
+    try:
+        done = subprocess.run([str(program), 'usage', '--json'], cwd=home, env=environment,
+                              stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return Usage((), at, 'Muse check usage deadline reached')
+    except (OSError, UnicodeError):
+        return Usage((), at, 'Muse check usage process unavailable or unreadable')
+    if done.returncode != 0:
+        return Usage((), at, 'Muse check usage command refused')
+    return decode(done.stdout, at)
 
 
 def reset(value) -> datetime | None:

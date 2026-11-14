@@ -110,6 +110,9 @@ milliseconds. No short-window duration is guessed. Account/catalog labels are
 ignored. Absent or unreadable allowance stays unknown, never zero used.
 
 The decoder is pure; native periodic usage execution is not yet enabled.
+An explicitly requested minimal check reads `usage --json` before and after
+its one turn in its built private home. Only decoded native buckets are saved
+as private check evidence; raw responses and account labels are discarded.
 The shared usage owner preserves one pool reader, an absolute 1800-second
 minimum interval and persisted refusal pacing. No destination gate performs
 a demand read. A whole installed check has not been run. It requires separate
@@ -120,11 +123,15 @@ Still required: independent deferred-opening gates, current paste projection,
 migration of the old mask gates, auth-link review, the mechanical watch
 unit-test union check, the combined whole suite, review and exact-tip signature.
 
-The current launch opening carries the full brief and index, while the admitted
-input form remains a short single row. It therefore holds without typing. The
-minimal check also currently waits for an opening turn before sending its task.
-A one-turn minimal check needs an explicitly composed opening/task protocol and
-measured projection for that opening; neither is claimed by this checkpoint.
+The full brief and index remain unsupported by the measured single-row input
+form and hold without typing. A minimal check instead owns a fresh temporary
+seat with an empty brief and the exact opening `Write OK to proof.txt.`:
+22 printable ASCII characters, without a final LF. Its working directory is
+the private check task folder. The existing launch-opening journal and Door
+confirm that one paste by the record. The check then verifies `proof.txt`,
+exactly one ended root turn and the requested model, and sends no second
+order. This exception exists only for the owned temporary check lifetime;
+it changes no crew brief or ordinary launch. Its native proof remains pending.
 
 ## Shared interfaces
 

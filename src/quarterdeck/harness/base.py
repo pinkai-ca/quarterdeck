@@ -190,6 +190,7 @@ class Harness(ABC):
     refuses_planted_instructions: bool = False
     check_model: str | None = None  # an explicitly ordered check choice; no ordinary-seat default
     check_effort: str | None = None
+    minimal_check_task: str | None = None  # opt-in task-only opening in an owned throwaway check
     requires_deferred_opening: bool = False
     reads_usage: bool = False  # True where usage() reads the provider's windows; a pool of such a program is read before a move
     reads_queue_error: bool = False  # state() can report unresolved native queue identity to automatic status
@@ -681,3 +682,7 @@ class Harness(ABC):
     def usage_in_home(self, pool: Pool, home: Path) -> Usage | None:
         """A native usage client's owned context; ordinary readers keep their old call."""
         return self.usage(pool)
+
+    def check_usage_in_home(self, pool: Pool, home: Path) -> Usage | None:
+        """An explicitly requested check's paired readings, separate from periodic pacing."""
+        return None

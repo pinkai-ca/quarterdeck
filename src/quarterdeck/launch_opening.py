@@ -76,6 +76,22 @@ def hold(seat, owner=None):
         return 'launch opening journal unavailable or unreadable; no input'
 
 
+def delivered(seat, text):
+    """Read the existing owner's exact confirmation without typing or retrying."""
+    launched = seat.launched()
+    if launched is None:
+        return False
+    try:
+        path = path_for(seat, launched)
+        if path.is_symlink():
+            return False
+        data = json.loads(path.read_text())
+        return (data.get('identity') == binding(seat, launched)
+                and data.get('payload') == text and data.get('phase') == 'delivered')
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
+
+
 def deliver(seat, launched):
     from .door import Door
 

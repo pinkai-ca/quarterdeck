@@ -377,6 +377,7 @@ class Seat:
                 pass  # a runtime that cannot be written: nothing is written there either
         self.home = self.folder / "home"
         self._prepared_observation: tuple[str | None, str | None] | None = None
+        self._check_opening: str | None = None  # only temporary_seat's task-only check lifetime sets this
         try:
             try:
                 launched = self.launched() if spec.pool_choices or tmux is not None else None
@@ -1136,7 +1137,11 @@ class Seat:
                      if self.harness.home_variable is None or inside_home(path, self.home))
         for record in prior:
             record_owner.register(self.trusted, record, None)  # retain even untyped history before clearing a fresh pin
-        brief = standing.render(self.ship, self.spec)
+        if self._check_opening is None:
+            brief = standing.render(self.ship, self.spec)
+        else:
+            brief = self.folder / 'check-opening-brief.txt'
+            durable.replace_file(brief, '')  # a throwaway task-only check is not a crew conversation
         pool = self.pool
         ship_home = self.ship.folder / "homes" / self.harness.name
         spec = self.adapter_spec()  # the adapter sees the seat's real working directory, as every preflight does
@@ -1146,6 +1151,8 @@ class Seat:
             self.harness.preflight_resume(spec, self.home, lambda: None)
         carriage = self.carriage(resume_id=resume_id, brief_at=datetime.now(timezone.utc))
         # Plan after supplying the brief, while the last record is still pinned.
+        if self._check_opening is not None and (resume_id or carriage.rows or carriage.carried):
+            raise ShipError('task-only check needs a fresh empty carriage; no launch')
         carried = carriage.carried
         if not resume_id:
             (self.trusted / trusted_files.RECORD).unlink(missing_ok=True)
@@ -1153,6 +1160,8 @@ class Seat:
         jailed = self.ship.jailed(self.spec, pool)
 
         def command(opening: str | None) -> tuple[Launch, list[str]]:
+            if self._check_opening is not None:
+                opening = self._check_opening
             launch_with_record = getattr(self.harness, 'launch_with_record', None)
             if target is not None and launch_with_record is not None:
                 launch = launch_with_record(spec, pool, self.home, brief, target.id, opening, target.record)
@@ -1839,7 +1848,8 @@ class Seat:
 
 @contextmanager
 def temporary_seat(ship: Ship, tmux: Tmux, spec: SeatSpec, orders: list[post.Message], purpose: str,
-                   *, installed_version: str | None = None, human: bool = False, check_inbox: bool = False) -> Iterator[Seat]:
+                   *, installed_version: str | None = None, human: bool = False, check_inbox: bool = False,
+                   minimal_opening: str | None = None) -> Iterator[Seat]:
     """Own a fresh temporary seat through transport retirement and every teardown stage.
 
     Callers register only orders this operation opened. Posts and receipts remain;
@@ -1849,6 +1859,11 @@ def temporary_seat(ship: Ship, tmux: Tmux, spec: SeatSpec, orders: list[post.Mes
     session = shipmod.Session(spec.session, spec.session, human=human)
     treated = replace(ship, sessions={**ship.sessions, spec.session: session}, seats={**ship.seats, spec.name: spec})
     seat = Seat(treated, spec, tmux)
+    if minimal_opening is not None:
+        if (human or not check_inbox or not minimal_opening
+                or minimal_opening != seat.harness.minimal_check_task
+                or not seat.harness.requires_deferred_opening):
+            raise ShipError('task-only opening requires the adapter-declared temporary check; no launch')
     if installed_version is not None:
         note = validate_selection(seat.spec, seat.harness, version=installed_version, installed=True)
         seat._prepared_observation = installed_version, note
@@ -1880,7 +1895,11 @@ def temporary_seat(ship: Ship, tmux: Tmux, spec: SeatSpec, orders: list[post.Mes
             session_id = tmux.new_session(session.title, env={"QD_SHIP": str(ship.folder)})
             status = shlex.join([str(qd_bin() / "qd"), "--ship", str(ship.folder), "status", "--line"])
             tmux.status_line(session.title, status)
-            yield seat
+            seat._check_opening = minimal_opening
+            try:
+                yield seat
+            finally:
+                seat._check_opening = None
 
 
 def _teardown(cleanup: ExitStack, treated: Ship, seat: Seat, tmux: Tmux, orders: list[post.Message], purpose: str,

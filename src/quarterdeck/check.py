@@ -25,7 +25,7 @@ import secrets
 import signal
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 
 from . import trusted_files
 from . import check_outcome, harness as harnesses, durable, human_wake, pending, post, providers, record_owner, sandbox, standing
@@ -126,7 +126,9 @@ def check(ship: Ship, name: str, tmux: Tmux, *, model: str | None = None,
         observed = check_outcome.event('failed' if failures else 'passed', version, reason)
     check_outcome.publish(runtime, name, observed)
     if minimal:
-        checks.insert(0, Check('minimal check mode', True, 'one short write-line task and report'))
+        detail = ('one short task-only opening, no second order' if getattr(harness, 'minimal_check_task', None) is not None
+                  else 'one short write-line task and report')
+        checks.insert(0, Check('minimal check mode', True, detail))
     return checks
 
 
@@ -183,11 +185,19 @@ def _check(ship: Ship, name: str, tmux: Tmux, harness, model: str | None = None,
                     model_mode=None if check_model is not None else like.model_mode if like else None,
                     effort_mode=None if check_effort is not None else like.effort_mode if like else None)
     orders: list[post.Message] = []
-    with temporary_seat(ship, tmux, spec, orders, "qd check", installed_version=version, check_inbox=True) as seat:
+    opening = getattr(harness, 'minimal_check_task', None) if minimal else None
+    context = {'minimal_opening': opening} if opening is not None else {}
+    if opening is not None:
+        task_folder = ship.runtime / 'check' / seat_name / 'task'
+        task_folder.mkdir(parents=True, exist_ok=False)
+        spec = replace(spec, cwd=task_folder)
+    with temporary_seat(ship, tmux, spec, orders, "qd check", installed_version=version,
+                        check_inbox=True, **context) as seat:
         options = {'requested_model': model} if model is not None else {}
         if minimal:
             options['minimal'] = True
-        checks += probe(seat.ship, seat, orders, **options)
+        checks += (_probe_task_opening(seat, opening, requested_model=model) if opening is not None
+                   else probe(seat.ship, seat, orders, **options))
         if selected is not None:
             launched = seat.launched()
             ran = launched is not None and str(selected) in (launched.argv[:1] if pin is not None else launched.argv)
@@ -337,6 +347,71 @@ def closing_report(seat: Seat, store: post.Store, order: post.Message) -> post.M
     """
     post.file_drops(store, seat.ship, seats=frozenset({seat.name}), service_absent=True)
     return store.closing_report(order)
+
+
+def _check_usage(seat: Seat, stage: str) -> ProbeCheck:
+    """Retain decoded native buckets privately; never retain a native response."""
+    usage = seat.harness.check_usage_in_home(seat.pool, seat.home)
+    folder = seat.ship.runtime / 'check' / seat.name
+    folder.mkdir(parents=True, exist_ok=True)
+    data = asdict(usage) if usage is not None else {'error': 'native check usage unsupported'}
+    durable.replace_file(folder / f'usage-{stage}.json',
+                         json.dumps(data, default=lambda value: value.isoformat()) + '\n')
+    known = bool(usage is not None and usage.called and usage.error is None and usage.windows
+                 and all(window.used is not None and window.resets_at is not None for window in usage.windows))
+    return ProbeCheck(f'native usage read {stage} the turn', known,
+                      'decoded allowance retained in private check evidence' if known
+                      else (usage.error if usage is not None else 'native check usage unsupported'), 'usage')
+
+
+def _probe_task_opening(seat: Seat, opening: str, *, requested_model: str | None) -> list[Check]:
+    """One task-only throwaway opening, through its ordinary journal and Door.
+
+    Its working directory contains only the proof task. No crew brief, post
+    order, second delivery or second model turn is created by this path.
+    """
+    from . import launch_opening
+
+    checks: list[Check] = []
+    proof_file = seat.spec.cwd / 'proof.txt'
+    ship_home = seat.ship.folder / 'homes' / seat.harness.name
+    seat.harness.build_home(seat.home, seat.spec, seat.pool, ship_home if ship_home.is_dir() else None)
+    before = _check_usage(seat, 'before')
+    checks.append(before)
+    if not before.passed:
+        return checks  # no model turn without its before reading
+    try:
+        launched = seat.up(resume=False)
+        checks.append(ProbeCheck('launch', seat.is_up, launched, 'launch'))
+        confirmed = launch_opening.delivered(seat, opening)
+        checks.append(ProbeCheck(f'the {len(opening)}-character opening was confirmed once by its record',
+                                 confirmed, opening, 'paste'))
+        if not confirmed:
+            return checks
+
+        def one_turn_ended():
+            record = seat.record()
+            if record is None:
+                return False
+            try:
+                state = seat.harness.state(record)
+            except OSError:
+                return False
+            return state.turns == 1 and state.turn_open is False and not state.queued
+
+        ended = wait_for(one_turn_ended, PATIENCE)
+        checks.append(_probe_record_check(seat, requested_model, bool(ended)))
+        content = proof_file.read_text().strip() if proof_file.exists() else None
+        checks.append(ProbeCheck('task: proof.txt holds OK', content == 'OK',
+                                 'exact short task result' if content == 'OK' else 'task result absent or different', 'file'))
+        if requested_model is not None:
+            checks.append(model_confirmation(seat, requested_model, require_record=True))
+        return checks
+    except (ShipError, TmuxError, OSError) as error:
+        checks.append(ProbeCheck('task-only opening unconfirmed', False, str(error), 'paste'))
+        return checks
+    finally:
+        checks.append(_check_usage(seat, 'after'))
 
 
 def probe(ship: Ship, seat: Seat, orders: list[post.Message] | None = None, *, requested_model: str | None = None,

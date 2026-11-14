@@ -25,6 +25,7 @@ class MuseHarness(Harness):
     launch_unset = ("META_API_KEY", "MUSE_AUTH_PATH", "MUSE_LOGIN")
     check_model = "muse-wonder-1.0"
     check_effort = "minimal"
+    minimal_check_task = "Write OK to proof.txt."
     requires_deferred_opening = True
     effort_selectors = ("reasoning_effort",)
     efforts = EffortCapability("levels", ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"),
@@ -163,7 +164,7 @@ class MuseHarness(Harness):
             argv += ["--disable-request-user-input"]
         # No system-instruction switch was measured: the complete brief and
         # opening messages wait for the startup proof and the ordinary Door.
-        prompt = brief.read_text() + ("\n\n" + first if first else "")
+        prompt = "\n\n".join(part for part in (brief.read_text(), first) if part)
         environment = muse_home.environment(home)
         # Remove inherited operator sign-in redirects without assuming whether
         # this native version implements them. QD_* and transport env survive.
@@ -262,3 +263,12 @@ class MuseHarness(Harness):
     def usage(self, pool):
         return Usage((), datetime.now(timezone.utc),
                      'Muse native periodic usage client awaits auth-link review; no call made', called=False)
+
+    def check_usage_in_home(self, pool, home):
+        from . import muse_usage
+        from ..seat import program_path
+        self.preflight(home)
+        if muse_home.seeded_settings(home) is None:
+            return Usage((), datetime.now(timezone.utc), 'Muse check settings changed; no usage call', called=False)
+        return muse_usage.read_native(muse_program.binary(path=program_path()), home,
+                                      {"PATH": program_path(), **muse_home.environment(home)})
