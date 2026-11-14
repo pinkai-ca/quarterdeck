@@ -125,6 +125,7 @@ class Service:
         self.accounting_health_error = None
         self.accounting_health_due = 0.0
         self.heartbeat_lock = threading.Lock()
+        self.credential_watch: tuple[list, list[Path]] = ([], [])  # (seats, linked names), from the last pass
         self.working: dict[str, bool] = {}  # seat -> whether its record last showed a turn open
         self.work_marks: dict[str, tuple] = {}  # seat -> (record, fingerprint) its working state was read at
         self.blind_checked = -BLIND_INTERVAL  # when the blind attempts were last read against the records
@@ -149,6 +150,8 @@ class Service:
                     pass  # the main step reports storage failures through its usual path
         beat = threading.Thread(target=keep_heartbeat, name='service-heartbeat', daemon=True)
         beat.start()
+        watch = threading.Thread(target=self.watch_credentials, args=(beat_stop,), name='service-credentials', daemon=True)
+        watch.start()
         try:
             with Stop(self.runtime, self.lock).installed():
                 while True:
@@ -162,6 +165,7 @@ class Service:
         finally:
             beat_stop.set()
             beat.join(timeout=0.2)
+            watch.join(timeout=0.2)
             if driver := getattr(self, 'account_driver', None):
                 driver.close()
 
@@ -1310,6 +1314,32 @@ class Service:
                 self.log("error", step="retire", seat=seat.name, error=str(error))
         for line in credential.reseed(self.ship, ready):
             self.log("credential", proof=line)
+        try:
+            names = credential.linked_names(self.ship, ready)
+        except Exception as error:
+            names = []
+            self.log("error", step="credential-watch", error=repr(error))
+        self.credential_watch = (ready, names)
+
+    def watch_credentials(self, stop: threading.Event) -> None:
+        """Between passes: a linked credential name that became a file is a renewal; reseed the pool at once.
+
+        A renewal retires the token the other seats still hold, so they fail until the pool's file has it; the pass
+        alone left that gap for minutes. Only names are looked at, twice a second; a detached file already handled
+        is not handled again until it changes. The pass still reseeds as before.
+        """
+        handled: frozenset = frozenset()
+        while not stop.wait(credential.WATCH_SECONDS):
+            try:
+                seats, names = self.credential_watch
+                marks = credential.detached_marks(names)
+                if marks and not marks <= handled:
+                    for line in credential.reseed(self.ship, seats):
+                        self.log("credential", proof=line, by="watch")
+                    marks = credential.detached_marks(names)  # what is left detached after the reseed: retained ones
+                handled = marks
+            except Exception as error:  # the watch never stops the service; the pass still reseeds
+                self.log("error", step="credential-watch", error=repr(error))
 
     def authentications(self) -> None:
         from . import auth_failure

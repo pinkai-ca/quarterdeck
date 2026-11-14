@@ -14,13 +14,22 @@ the pool's own file, the account holder's sign-in, where two seats refreshing at
 seats hold a copy, never a link: each refresh lands in its own home, the newest live one is put
 in the pool's place as above, and every copy older than the pool's is brought up to it, swapped
 in one exchange so a refresh that lands meanwhile is never lost (law: one-folder).
+
+The service's pass is not fast enough alone: a renewal retires the token every other seat still
+holds, and they fail until the pool's file has it. So a dedicated watch in the service looks at
+each linked seat's credential name twice a second, and a name that stopped being a link reseeds
+at once. Every reseed, the watch's, the pass's and a seat's own at down, holds one lock file under
+the runtime, so two never install at once.
 """
 
 from __future__ import annotations
 
 import ctypes
 import errno
+import fcntl
 import os
+import stat
+from contextlib import contextmanager
 import shutil
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -32,6 +41,7 @@ from .seat import Seat
 from .ship import Pool, Ship
 
 WARN_AHEAD = timedelta(hours=48)
+WATCH_SECONDS = 0.5  # how often the service's watch looks at the linked credential names
 
 
 @dataclass(frozen=True)
@@ -78,8 +88,54 @@ def freshness(pool: Pool, path: Path) -> tuple[float, float] | None:
     return harnesses.native_for(pool.provider).freshness(path)
 
 
+@contextmanager
+def _reseeding(ship: Ship):
+    """One reseed at a time across the service's pass, its watch and any ``qd`` process: a lock file under the runtime."""
+    folder = ship.runtime / "credentials"
+    folder.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(folder / "reseed.lock", os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def linked_names(ship: Ship, seats: list[Seat]) -> list[Path]:
+    """The credential name in each home that shares its pool's file by a link: where a renewal by rename lands.
+
+    A program whose seats hold a copy is left to the pass, since its copy is never a link.
+    """
+    names = []
+    for seat in participants(ship, seats):
+        pool = ship.pools.get(seat.pool)
+        source = pool_file(pool) if pool is not None else None
+        if source is None or getattr(harnesses.native_for(pool.provider), "credential_copy", False):
+            continue
+        names.append(seat.home / source.name)
+    return names
+
+
+def detached_marks(names: list[Path]) -> frozenset[tuple[str, int, int, int]]:
+    """Each watched name that is a file rather than a link, by its identity; metadata only, nothing is read."""
+    found = set()
+    for name in names:
+        try:
+            info = name.lstat()
+        except OSError:
+            continue
+        if not stat.S_ISLNK(info.st_mode):
+            found.add((str(name), info.st_dev, info.st_ino, info.st_mtime_ns))
+    return frozenset(found)
+
+
 def reseed(ship: Ship, seats: list[Seat]) -> list[str]:
     """Reseed each pool from the newest seat that refreshed, then relink the detached seats; the proof lines."""
+    with _reseeding(ship):
+        return _reseed(ship, seats)
+
+
+def _reseed(ship: Ship, seats: list[Seat]) -> list[str]:
     detached: dict[str, list[tuple[Path, Participant]]] = {}
     for seat in participants(ship, seats):
         pool_name = seat.pool
