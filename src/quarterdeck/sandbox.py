@@ -114,17 +114,35 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
     return jail
 
 
+def fleet_roots(ship_folder: Path) -> tuple[Path, ...]:
+    """The project's ``ships/`` and ``office/`` when this ship sits in that layout, else nothing.
+
+    ``covering`` refuses a jail when one of these is the home or contains it.
+    """
+    folder = Path(ship_folder)
+    if folder.parent.name == 'ships':
+        project = folder.parent.parent
+    elif folder.name == 'office':
+        project = folder.parent
+    else:
+        return ()
+    return (project / 'ships', project / 'office')
+
+
 def covering(jail: Jail) -> tuple[str, Path] | None:
     """The first folder the jail would bind that is the operator home or contains it, named, or None.
 
     The home's empty tmpfs lies in depth order among the mounts, so an ancestor bound before it is covered again;
     a jail that binds one is refused all the same, since it would hold the home's own path open beside it. A
     folder inside the home that is bound back is allowed: that is how a program installed there runs.
+    The fleet folders ``ships/`` and ``office/`` are named with the other mounts. One that is the home or
+    contains it is refused the same way, including where the home's tmpfs would cover that path again.
     """
     named = [("the working directory", jail.workspace), ("the ship folder", jail.ship_folder),
              ("the seat's own folder", jail.seat_folder)]
     named += [("the bound-back folder", folder) for folder in jail.read_only]
     named += [("the writable folder", folder) for folder in jail.writable]
+    named += [("the fleet folder", folder) for folder in fleet_roots(jail.ship_folder)]
     return next(((what, folder) for what, folder in named if covers(folder, jail.home)), None)
 
 
@@ -194,9 +212,7 @@ def command(jail: Jail, argv: list[str]) -> list[str]:
     # contains it, which it then covers again, and before the folders inside it that are bound back.
     mounts: list[tuple[str, Path]] = [("--tmpfs", jail.home)]
     mounts += [("--ro-bind-try", folder) for folder in jail.read_only]
-    project = (jail.ship_folder.parent.parent if jail.ship_folder.parent.name == 'ships'
-               else jail.ship_folder.parent if jail.ship_folder.name == 'office' else None)
-    fleet_folders = (project / 'ships', project / 'office') if project is not None else ()
+    fleet_folders = fleet_roots(jail.ship_folder)
     # The ship's own tmux server is hidden like the other seats: its socket folder is an empty private
     # tmpfs inside, so nothing in the jail reaches the server, by its path or any other way.
     mounts += [("--workspace", jail.workspace)]

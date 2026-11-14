@@ -119,6 +119,27 @@ def test_ancestor_workspace_cannot_rebind_the_hidden_home(tmp_path, drydock, mon
                      workspace, '/usr/bin/python3', '/usr/bin', home=home)
 
 
+@pytest.mark.parametrize('place', ['ships', 'office', 'ships-root', 'office-root'])
+def test_covering_refuses_a_home_that_a_fleet_folder_is_or_contains(tmp_path, monkeypatch, place):
+    """ships/ and office/ are mounts. One that is the home, or contains it, is refused."""
+    project = tmp_path / 'project'
+    ship_folder = project / 'ships' / 'alpha'
+    work = project / 'work'
+    work.mkdir(parents=True)
+    fleet = project / 'ships' if place.startswith('ships') else project / 'office'
+    home = fleet if place.endswith('root') else fleet / 'beta' / 'operator-home'
+    home.mkdir(parents=True)
+    ship = shipmod.Ship(ship_folder, 'synthetic', 'operator', work, {}, {}, {})
+    own = ship.runtime / 'seats' / 'worker'
+    monkeypatch.setattr(sandbox, 'available', lambda: True)
+    with pytest.raises(ShipError, match='the fleet folder') as caught:
+        sandbox.plan(ship, 'worker', own, own / 'home', work, '/usr/bin/python3', '/usr/bin', home=home)
+    assert str(fleet.resolve()) in str(caught.value)
+    jail = sandbox.Jail(home=home.resolve(), seat_home=own / 'home', seat_folder=own, workspace=work,
+                        ship_folder=ship_folder, runtime=ship.runtime)
+    assert sandbox.covering(jail) == ('the fleet folder', fleet)
+
+
 @pytest.mark.parametrize('inside', ['ship folder', 'below the ship folder', 'post store', 'seat folder'])
 def test_a_home_at_or_inside_the_ship_folder_is_refused(tmp_path, inside, monkeypatch):
     """The ship folder and the stores inside it are bound after the home's tmpfs: one that holds the home shows it."""

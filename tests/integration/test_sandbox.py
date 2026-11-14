@@ -195,6 +195,57 @@ def test_an_ancestor_bound_into_the_jail_never_shows_or_reaches_the_home(kind):
         assert sorted(p.name for p in home.iterdir()) == ['operator-marker']
 
 
+@pytest.mark.parametrize('place', ['ships', 'office'])
+def test_a_home_inside_a_fleet_folder_is_refused_and_stays_hidden(place):
+    """Real bwrap: covering refuses a home inside ships/ or office/. Past that refusal the home's tmpfs
+    sorts with the fleet by depth, so it lands on that folder and the home stays hidden."""
+    import json
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix='qdj-', dir='/tmp') as temporary:
+        project = Path(temporary) / 'project'
+        ship_folder = project / 'ships' / 'alpha'
+        runtime = ship_folder / 'runtime'
+        seat = runtime / 'seats' / 'worker'
+        (seat / 'home').mkdir(parents=True)
+        (runtime / 'tmux').mkdir(mode=0o700)
+        (runtime / 'post').mkdir()
+        (project / 'office').mkdir(parents=True)
+        (project / 'work').mkdir()
+        fleet = project / 'ships' if place == 'ships' else project / 'office'
+        home = fleet / 'beta' / 'operator-home'
+        home.mkdir(parents=True)
+        (home / 'operator-marker').write_text('synthetic operator marker')
+        ship = shipmod.Ship(ship_folder, 'synthetic', 'operator', project / 'work', {}, {}, {})
+        with pytest.raises(shipmod.ShipError, match='the fleet folder') as caught:
+            sandbox.plan(ship, 'worker', seat, seat / 'home', project / 'work',
+                         '/usr/bin/python3', '/usr/bin', home=home)
+        assert str(fleet) in str(caught.value)
+        jail = sandbox.Jail(home=home, seat_home=seat / 'home', seat_folder=seat, workspace=project / 'work',
+                            ship_folder=ship_folder, runtime=runtime,
+                            writable=(runtime / 'post',))
+        assert sandbox.covering(jail) == ('the fleet folder', fleet)
+        probe = (
+            'import json, sys\nfrom pathlib import Path\nhome = Path(sys.argv[1])\n'
+            'def write(path):\n'
+            '    try:\n'
+            '        path.write_text("synthetic")\n'
+            '        return True\n'
+            '    except OSError:\n'
+            '        return False\n'
+            'marker = home / "operator-marker"\n'
+            'print(json.dumps(dict(operator_read=marker.is_file() and marker.read_text()=="synthetic operator marker",'
+            ' home_write=write(home / "escape"))))\n')
+        result = subprocess.run(sandbox.command(jail, ['/usr/bin/python3', '-c', probe, str(home)]),
+                                capture_output=True, text=True, timeout=60)
+        assert result.returncode == 0, result.stderr
+        values = json.loads(result.stdout)
+        assert values == dict(operator_read=False, home_write=True)
+        assert (home / 'operator-marker').read_text() == 'synthetic operator marker'
+        assert not (home / 'escape').exists()
+
+
 def test_a_jailed_post_to_an_up_recipient_does_not_call_hidden_state_down(drydock: Path, tmux: Tmux, tmp_path: Path):
     """Real bwrap + qd post + fake recipient: hidden metadata is not a down seat."""
     from quarterdeck.service import Service
