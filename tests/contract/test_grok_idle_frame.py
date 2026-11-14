@@ -1,4 +1,4 @@
-"""Ordinary Grok 1.0.77 idle frames, with and without its weekly footer field.
+"""Ordinary Grok 1.0.77 idle and working frames with its optional weekly field.
 
 Both full native frames retain their geometry and transcript scrollbar; all
 transcript text and the displayed percentage are synthetic.
@@ -20,19 +20,31 @@ def frame(name):
     return "\n".join(json.loads((FIXTURES / f"{name}.json").read_text())["lines"]) + "\n"
 
 
-@pytest.mark.parametrize("name", ["idle-478", "idle-weekly-478"])
-def test_native_idle_frame_reads_its_composer_below_the_transcript(name):
+@pytest.mark.parametrize("name,working", [
+    ("idle-478", False),
+    ("idle-weekly-478", False),
+    ("working-weekly-478", True),
+])
+def test_native_frame_reads_its_composer_below_the_transcript(name, working):
     text = frame(name)
     assert len(text.splitlines()) == 113
     assert all(len(row) == 478 for row in text.splitlines())
     screen = GrokHarness().screen(text)
     assert screen.unknown is None and screen.interruption is None
-    assert screen.working is False
+    assert screen.working is working
     assert screen.box == " " * 469
     assert screen.shows == {"model": "Grok 4.7", "effort": "high"}
     assert empty_cell(screen) == (6, 108)
     assert queue_entries(text) == () and screen.queued == 0
     assert screen.quota is None
+
+
+def test_working_weekly_frame_requires_its_measured_cancel_hint():
+    text = frame("working-weekly-478")
+    assert "Waiting for response…" in text
+    screen = GrokHarness().screen(text.replace("Ctrl+c:cancel", "Ctrl+c:other"))
+    assert screen.unknown == "unmeasured Grok composer hint"
+    assert screen.box is None
 
 
 def with_percentage(value):
