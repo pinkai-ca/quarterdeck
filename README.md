@@ -67,8 +67,10 @@ Then it checks the machine, and brings the crew up when you say so.
 
 **3. Move into your office.**
 
+Setup's last lines include its Desk access line, with your own folder in it. Run that line:
+
 ```sh
-qd --ship office attach  # opens your office, where the desk is
+qd --ship ~/quarterdeck/office attach office  # opens your office, where the desk is
 ```
 
 Your desk is there. Say what you want in plain words, and the desk gives the crew its orders and tells you when the work is done.
@@ -100,11 +102,13 @@ Or write the ship's file yourself: [A ship of your own](docs/SHIPS.md#a-project-
 
 **3. Move into your office.**
 
+From the `quarterdeck` folder:
+
 ```sh
 qd --ship office attach  # opens your office, where the desk is
 ```
 
-Your desk is there. [How to use it](#how-to-use-it) has what to say to it, and the commands you can use beside it.
+From any other folder, run setup's Desk access line, which names the office's full path. Your desk is there. [How to use it](#how-to-use-it) has what to say to it, and the commands you can use beside it.
 
 ## How to use it
 
