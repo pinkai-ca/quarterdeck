@@ -56,6 +56,11 @@ class MuseHarness(Harness):
         super().check_defaults(seat, ship_home)
         self._settings(seat, ship_template(ship_home, "settings.json"))
 
+    def check_model_reason(self, model: str | None) -> str | None:
+        if muse_home.contributor(model):
+            return "Muse contributor model is not allowed for a seat or check; no launch"
+        return None
+
     def preflight(self, home: Path | None = None, cwd: Path | None = None) -> None:
         from ..seat import program_path
         muse_program.binary(path=program_path())
@@ -79,6 +84,12 @@ class MuseHarness(Harness):
                 return None
         except (ShipError, OSError):
             return None
+        # A version observation gets the same native off setting as a seat;
+        # it never receives a model, credential or opening prompt.
+        muse_home.prepare(home)
+        from .. import durable
+        durable.replace_file(home / "config/muse/settings.json",
+                             json.dumps(dict(schema_version=1, contributor_mode_enabled=False)) + "\n")
         environment = muse_home.environment(home)
         # Independent help/version measurements found no writes or auth load.
         return program_version(("env", "-i", f"PATH={program_path()}",
@@ -150,8 +161,8 @@ class MuseHarness(Harness):
             argv += ["--reasoning-effort", effort]
         if not seat.human_session:
             argv += ["--disable-request-user-input"]
-        # No system-instruction switch was measured: carry the complete brief
-        # and opening messages as the fresh positional prompt, one native turn.
+        # No system-instruction switch was measured: the complete brief and
+        # opening messages wait for the startup proof and the ordinary Door.
         prompt = brief.read_text() + ("\n\n" + first if first else "")
         environment = muse_home.environment(home)
         # Remove inherited operator sign-in redirects without assuming whether

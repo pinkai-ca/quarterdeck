@@ -37,7 +37,8 @@ declared settings layer, even when another layer would override that choice.
 Checks select exactly `muse-wonder-1.0` with `minimal` effort; this supplies no
 ordinary-seat model default. A different explicit check selection refuses.
 
-Every home receives `schema_version: 1` and `contributor_mode_enabled: false`.
+Every home, including a private version-observation home, receives
+`schema_version: 1` and `contributor_mode_enabled: false` before execution.
 The launch also declares contributor mode off, approval judge off and native
 sandbox off. Wonder with this private setting showed contributor mode off on
 its first idle screen. Spark had shown contributor mode on despite the off
@@ -116,5 +117,24 @@ release after the observed material allowance cost is reviewed. Synthetic
 source/tests spend no allowance. Una owns the eventual live check.
 
 Still required: independent deferred-opening gates, current paste projection,
-Claude migration of the old mask gates, auth-link review, the mechanical watch
+migration of the old mask gates, auth-link review, the mechanical watch
 unit-test union check, the combined whole suite, review and exact-tip signature.
+
+The current launch opening carries the full brief and index, while the admitted
+input form remains a short single row. It therefore holds without typing. The
+minimal check also currently waits for an opening turn before sending its task.
+A one-turn minimal check needs an explicitly composed opening/task protocol and
+measured projection for that opening; neither is claimed by this checkpoint.
+
+## Shared interfaces
+
+The adapter's obstruction methods default to no action in every other harness.
+Unknown activity stays unknown through Door, watch, service and interrupt
+callers. Main's unread-screen journal evidence remains in front of the
+unknown-activity hold. Exact receipts retain the current launch's join
+provenance and every delivered form recognized by the shared receipt owner.
+
+Strict usage pacing is opt-in. Its persisted refusal deadline lives beside the
+existing attempt table, retains the absolute minimum interval, and bounds
+malformed native retry values. It introduces no provider request at a
+destination gate. The module inventory is in [Modules](MODULES.md).

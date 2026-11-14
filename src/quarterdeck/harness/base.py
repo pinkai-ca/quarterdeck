@@ -221,6 +221,10 @@ class Harness(ABC):
     def setup_metadata(self) -> SetupMetadata:
         return replace(self.setup, display_name=self.display_name or self.name)
 
+    def check_model_reason(self, model: str | None) -> str | None:
+        """An adapter's declared-model refusal, before a check selects its default."""
+        return None
+
     def check_defaults(self, seat: SeatSpec, ship_home: Path | None = None) -> None:
         """Read selector conflicts before changing a running seat or its home."""
         validate_selection(seat, self)

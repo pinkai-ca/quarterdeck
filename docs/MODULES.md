@@ -20,6 +20,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `headlines.py` | priority and display-column budgeting for live, cached and annotated status lines |
 | `input_receipt.py` | the one rule that matches a delivery to the record's evidence of its input |
 | `install.py` | `qd sync`: the framework at one commit installed as the ship's own copy, which every `qd` then hands off to |
+| `launch_opening.py` | a deferred opening bound to one published launch, its startup proof and one ordinary Door delivery; held openings are never resent |
 | `ledger_recovery.py` | preserves malformed accounting databases, starts fresh replay and keeps named recovery alarms until acknowledged |
 | `ledger_reading.py` | the Ledger's rows and usage windows as a reading takes them, and their tables |
 | `lock_holders.py` | who holds a file's exclusive flock, read from the kernel's lock table and, where the table shows no row, confirmed from the holders' own descriptors; never takes the lock. The one reader for the service's lock and the installer's |
@@ -72,6 +73,12 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `remote_session.py` | which seat a commit of the ship folder came from, by the session trailer its program writes and the session that seat's home records; the service's alone, in no reader's stamp set |
 | `record_file.py` | the one opener of a seat's program record: no link at its name or on the way from the seat folder, no fifo, socket or device, only this user's own regular file with one name; one read at most a bound (1 GiB for streamed Claude, 128 MiB for ordinary JSON lines, 512 MiB for SQLite with its log), refused past it; the status line's word on a record near or past its bound |
 | `limits.py` | usage windows and walls |
+| `muse.py` | Muse's native launch and adapter interfaces, measured at 1.4.20; [Muse contract facts](MUSE.md) |
+| `muse_home.py` | Muse's native HOME/XDG layout, contributor-off settings seed and same-home startup proof |
+| `muse_program.py` | the selected Muse installation's versioned executable, without running its updating launcher |
+| `muse_record.py` | Muse's typed session records, root turn boundaries and exact accepted/materialized input links |
+| `muse_screen.py` | Muse's measured styled composer and activity; unmeasured input forms stay unsupported |
+| `muse_usage.py` | Muse's native allowance decoded without a provider request |
 | `opencode_record.py` | the OpenCode database read session by session: the latest root session is the seat's, and a task's child sessions are accounted on their own |
 | `resume_target.py` | launch-only conversation identity from an already joined record, including bounded identity reads of oversized records |
 | `simulator.py` | the fake program the drill runs |

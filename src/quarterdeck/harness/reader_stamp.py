@@ -38,6 +38,7 @@ MODULES = {
                                 'harness/sqlite_snapshot.py', 'pricing.py'})),
     'grok': tuple(sorted({*COMMON, 'harness/grok.py', 'harness/grok_record.py',
                           'harness/grok_usage.py'})),
+    'muse': tuple(sorted({*COMMON, 'harness/muse.py', 'harness/muse_record.py'})),
     # The synthetic adapter delegates record formats to these three native readers.
     'fake': tuple(sorted({*COMMON, *CODEX, *CLAUDE, *PI, 'harness/fake.py'})),
 }
@@ -92,6 +93,10 @@ LAUNCH_ONLY = {
     'grok': _LAUNCH_SHARED + _DURABLE + (
         ('harness/grok_workspace.py', 'launch arguments and the workspace check before start'),
     ),
+    'muse': _LAUNCH_SHARED + _DURABLE + (
+        ('harness/muse_home.py', 'native home, contributor-off settings and startup proof; records are read by muse_record'),
+        ('harness/muse_program.py', 'selects the executable at launch; no record interpretation'),
+    ),
     'fake': _LAUNCH_SHARED + _ENDPOINT + _DURABLE + _SEAT_FILES + (
         ('harness/claude_statusline.py', 'status-line command written into the home at launch'),
         ('harness/pi_thinking.py', 'thinking level applied at launch and restored by a client'),
@@ -107,6 +112,9 @@ CONTROL_ONLY = {
         ('harness/grok_models.py', 'screen selection warnings and cached model availability; not record interpretation'),
         ('harness/grok_screen.py', 'screen, box and paste reading for the door'),
         ('harness/grok_notice.py', 'workspace inventory shown for the person; records are read by grok_record'),
+    ),
+    'muse': _CONTROL_SHARED + (
+        ('harness/muse_screen.py', 'styled composer and input obstruction for the door; records are read by muse_record'),
     ),
     'fake': _CONTROL_SHARED + _CHECK + (
         ('request_queue.py', 'synthetic control origin; the fake record reader delegates to the native parsers'),

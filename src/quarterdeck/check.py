@@ -143,6 +143,9 @@ def check_pool(ship: Ship, harness) -> tuple[object | None, str | None]:
 
 def _check(ship: Ship, name: str, tmux: Tmux, harness, model: str | None = None,
            *, minimal: bool = False) -> tuple[list[Check], str | None]:
+    model_reason = getattr(harness, 'check_model_reason', None)
+    if model_reason is not None and (reason := model_reason(model)):
+        return [ProbeCheck('check model', False, reason, 'model')], None
     check_model = getattr(harness, 'check_model', None)
     check_effort = getattr(harness, 'check_effort', None)
     if check_model is not None:
