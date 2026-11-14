@@ -168,12 +168,47 @@ class GrokBox(Box):
         return super().matches(shown, columns, slack)
 
 
-def program_privacy(path: Path) -> dict | None:
-    """The [privacy] table the program itself wrote in this seat's home when its training question was answered.
+PRIVACY_ACK_NOTICE = "Grok privacy banner acknowledged: the account's cached opt-out reads true"
 
-    Kept across the home's rebuilds, so the same seat is not asked again at every launch: the program's own
-    state in the ship's own home, never the account holder's file and never a setting. Only its measured key,
-    privacy_banner_acked, as the RFC 3339 timestamp the guide describes; anything else is not carried.
+
+def cached_coding_opt_out(home: Path, pool: Pool) -> bool:
+    """Read only the native opt-out boolean through this home's declared subscription link.
+
+    The cache is not a fresh account query. Ambiguous accounts and every value except true
+    leave the native question in place; no credential or account text is returned or logged.
+    """
+    if pool.api_key or pool.config_dir is None:
+        return False
+    link = home / "auth.json"
+    try:
+        if not link.is_symlink() or Path(os.readlink(link)) != pool.config_dir / "auth.json":
+            return False
+        data = json.loads(link.read_text())
+        if not isinstance(data, dict) or len(data) != 1:
+            return False
+        grant = next(iter(data.values()))
+        return isinstance(grant, dict) and grant.get("coding_data_retention_opt_out") is True
+    except (OSError, ValueError, UnicodeError):
+        return False
+
+
+def acknowledge_cached_opt_out(home: Path, pool: Pool) -> str | None:
+    """A dismissal follows a positive cached opt-out; it never changes the account's choice."""
+    if not cached_coding_opt_out(home, pool):
+        return None
+    path = home / "config.toml"
+    if program_privacy(path) is None:
+        config = tomllib.loads(path.read_text())
+        config["privacy"] = {"privacy_banner_acked": datetime.now(timezone.utc).isoformat()}
+        path.write_text(config_text(config))
+    return PRIVACY_ACK_NOTICE
+
+
+def program_privacy(path: Path) -> dict | None:
+    """The measured native acknowledgement, kept across rebuilds of this same home.
+
+    Only its RFC 3339 timestamp is carried. A fresh acknowledgement requires the separate
+    positive cached-opt-out reading above, never a template or seat setting.
     """
     try:
         table = tomllib.loads(path.read_text()).get("privacy")
@@ -318,7 +353,7 @@ class GrokHarness(Harness):
         skills["disabled"] = list(dict.fromkeys([*disabled, "resume-claude", "resume-codex", "resume-cursor"]))
         if not seat.human_session:
             settings.setdefault("features", {})["ask_user_question"] = False
-        settings.pop("privacy", None)  # never seeded: only the program writes that its question was answered
+        settings.pop("privacy", None)  # declarations never establish the account's opt-out
         if (kept := program_privacy(home / "config.toml")) is not None:
             settings["privacy"] = kept
         (home / "config.toml").write_text(config_text(settings))
@@ -328,6 +363,7 @@ class GrokHarness(Harness):
         workspace_args = grok_workspace.launch_args(seat.cwd)
         self.preflight(home, seat.cwd)
         launch_home(home, seat)
+        privacy_notice = acknowledge_cached_opt_out(home, pool)
         program = self.selected_program()
         if program is None:
             raise ShipError(f"{self.program} is not on the PATH qd runs with; install it, or put it on that PATH")
@@ -344,8 +380,9 @@ class GrokHarness(Harness):
             argv += ["--resume", resume]
         if first:
             argv.append(first)
+        notices = [self.workspace_notice(home, seat.cwd), privacy_notice]
         return Launch(tuple(argv), {**private_environment(home), **key_environment(pool, "XAI_API_KEY")},
-                      notice=self.workspace_notice(home, seat.cwd))
+                      notice="; ".join(filter(None, notices)) or None)
 
     def usage(self, pool: Pool) -> Usage:
         return Usage((), datetime.now(timezone.utc), "native billing requires a framework-owned home", called=False)
@@ -361,6 +398,7 @@ class GrokHarness(Harness):
         build_private_user_home(home)
         (home / "config.toml").write_text(config_text(SETTINGS))
         credential(pool, home / self.credential_file, "XAI_API_KEY")
+        acknowledge_cached_opt_out(home, pool)
         try:
             self.preflight(home, home)
         except ShipError as error:

@@ -344,6 +344,7 @@ def seat_reading(seat: Seat | UnresolvedSeat) -> dict:
             "record_limits": getattr(seat.harness, "record_limits", None),
             "screen": Door(seat).screen(), "answered": list((launched.answered or []) if (launched := seat.launched()) else []),
             "act": acts.last(seat),
+            "launch_notice": launched.notice if launched else None,
             "usage": headline_readings(seat.ship), **providers.identities(seat.ship)}
 
 
@@ -383,6 +384,8 @@ def render_full(data: dict) -> list[str]:
         groups = '; '.join(f"{item['count']} {item['kind']}: {item['reason']}" for item in skips['counts'])
         examples = ','.join(str(item['line']) for item in skips['examples'])
         lines.append(f"  receipt skipped {skips['total']} rows · {groups} · example lines {examples} · {skips['omitted']} omitted")
+    if data.get("launch_notice"):
+        lines.append(f"  launch notice: {data['launch_notice']}")
     for done in data.get("answered") or []:
         lines.append(f"  answered for the account holder: {done.get('question')} · {done.get('choice')} pressed at "
                      f"{done.get('at')} · {done.get('outcome')}")
