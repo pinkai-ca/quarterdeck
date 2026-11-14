@@ -118,3 +118,18 @@ def test_a_truncated_drill_report_names_failed_checks_first(tmp_path, monkeypatc
     passed, lines = drill.run(None)
     assert not passed
     assert lines == ['FAIL  fresh failed', 'FAIL  carriage failed', 'PASS  first pass', '2 failed of 3 checks']
+
+
+
+def test_generated_drydock_leaves_automatic_fresh_to_the_explicit_drill():
+    import shutil
+    from quarterdeck import ship
+    original = (drill.DRYDOCK / 'ship.toml').read_bytes()
+    assert ship.load(drill.DRYDOCK).seats['worker-1'].fresh == 'after-order'
+    generated, tmux, folder = drill.temporary_drydock()
+    try:
+        assert all(seat.fresh is None for seat in generated.seats.values())
+        assert (drill.DRYDOCK / 'ship.toml').read_bytes() == original
+    finally:
+        tmux.close()
+        shutil.rmtree(folder)

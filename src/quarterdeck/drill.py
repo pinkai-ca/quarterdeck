@@ -10,6 +10,7 @@ tmux server; on a real ship when one is named, with real programs and real token
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import signal
 import tempfile
@@ -303,6 +304,10 @@ def temporary_drydock() -> tuple[shipmod.Ship, Tmux, Path]:
     ship = shipmod.load(folder)
     slow = next(name for name, spec in ship.seats.items() if not ship.session_of(spec).human)
     text = shipmod.edit(ship.file.read_text(), "ship", "tick", DRILL_TICK)  # this generated copy only
+    # This exercise owns fresh/crash transitions. An automatic after-order
+    # fresh can instead carry new matrix orders as an index, which the simulator
+    # program does not interpret as executable report commands.
+    text = re.sub(r'(?m)^[ \t]*fresh[ \t]*=[ \t]*"after-order"[^\n]*(?:\n|$)', '', text)
     for name, spec in ship.seats.items():
         for key, value in harnesses.get(spec.harness).drill_settings(name == slow).items():
             text = shipmod.edit(text, f"seats.{name}.settings", key, value)
