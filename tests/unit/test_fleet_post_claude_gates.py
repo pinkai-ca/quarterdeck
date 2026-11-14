@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from quarterdeck import compaction, fleet_post as fleet, post, post_threads, refusal, seat as seatmod, thread_context
+from quarterdeck import compaction, fleet_post as fleet, post, post_threads, refusal, seat as seatmod, ship as shipmod, thread_context
 from tests.unit.test_fleet_post import pair  # noqa: F401  (two synthetic ships, alpha and beta, each with captain and writer)
 
 
@@ -197,3 +197,23 @@ def test_each_service_writes_only_its_own_ship_and_reads_the_other(pair):
     fleet.run(left, source)
     assert everything(right.folder) == before
     assert source.closing_report(source.get(order.id)).id == report.id
+
+
+# -- only its author offers a message as its own ----------------------------------------------------------------------
+
+def test_a_third_ship_cannot_offer_another_ships_message_as_that_ships_even_without_a_route(pair):
+    left, right, source, destination = pair
+    folder = left.folder.parent / 'gamma'
+    folder.mkdir()
+    (folder / 'ship.toml').write_text(left.file.read_text())
+    gamma = shipmod.load(folder)
+    order = source.new('order', 'writer', 'captain@beta', 'Synthetic order only alpha may offer.')
+    data = (left.runtime / 'post' / 'store' / f'{order.id}.json').read_bytes()
+    (gamma.runtime / 'post' / 'store').mkdir(parents=True)
+    (gamma.runtime / 'post' / 'store' / f'{order.id}.json').write_bytes(data)
+    value = dict(format=1, source='gamma', target='beta', message=order.id,
+                 files=[dict(id=order.id, origin='alpha', size=len(data), sha256=fleet.digest(data))])
+    fleet.publish(gamma.runtime / 'post' / 'outbound' / 'beta' / f'{order.id}.json', fleet.encoded(value))
+    fleet.run(right, destination)
+    assert not (right.runtime / 'post' / 'store' / f'{order.id}.json').exists(), \
+        "a third ship's offer was imported as alpha's own"
