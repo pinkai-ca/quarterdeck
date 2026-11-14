@@ -134,6 +134,15 @@ def seat_readiness(ship: Ship, *, versions: dict[str, str | None] | None = None)
                 reader.check_defaults(selected, folder / 'homes' / reader.name if folder is not None else None)
                 found.append(Check(f"seat {seat.name} pool {choice} effort", True,
                                    note or 'declared selection compatible; no model/account check'))
+                if selected.model and selected.model_mode != 'program-default':
+                    models = reader.listed_models(home, version=(versions or {}).get(reader.name))
+                    detail = (f'declared {selected.model}; program model list unknown (not measured or cache unavailable)'
+                              if models is None else
+                              f'declared {selected.model}; ' +
+                              ('listed by the program' if selected.model in models else
+                               'not listed by the program; listed ids: ' + ', '.join(sorted(models))))
+                    found.append(Check(f"seat {seat.name} pool {choice} model", models is None or selected.model in models,
+                                       detail))
                 reader.preflight(home, cwd)
             except (ShipError, OSError) as error:
                 found.append(Check(f"seat {seat.name} pool {choice} readiness", False, str(error)))

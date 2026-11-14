@@ -99,11 +99,11 @@ def test_opencode_measured_native_id_needs_no_display_alias(tmp_path):
     assert 'model' not in harness.screen((FIXTURES / 'opencode/1.19.5/idle.txt').read_text()).shows
 
 
-def test_grok_measured_native_id_is_literal():
+def test_grok_billing_key_does_not_establish_a_running_native_id():
     harness = GrokHarness()
     model = harness.record_model(FIXTURES / 'grok/1.0.77/lifecycle.jsonl')
-    assert model == 'grok-4.7-build'
-    assert model_mismatch.compare(harness, 'grok-4.7-build', model).status == 'match'
+    assert model is None
+    assert model_mismatch.compare(harness, 'grok-4.7-build', model).status == 'unknown'
 
 
 def test_grok_display_name_is_no_identity_reading_and_creates_no_alarm(tmp_path, monkeypatch):

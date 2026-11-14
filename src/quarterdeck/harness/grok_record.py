@@ -153,6 +153,9 @@ class Reader(JsonLinesReader):
             if self.open is not None:
                 self.end(None)  # retained accounting, never an invented completion
             self.last_input, self.last_input_at = text, at
+            metadata = event.get('_meta')
+            model = metadata.get('modelId') if isinstance(metadata, dict) else None
+            self.model = model if isinstance(model, str) and model.strip() else None
             self.start_turn(dict(input=text, started=at, reply="", tools=[]))
             self.execution_seen = True
         elif kind == "agent_message_chunk":
@@ -234,9 +237,10 @@ class Reader(JsonLinesReader):
         calls = [self.calls[call] for call in value["calls"]]
         for item in calls:
             item.turn = len(self.turns)
-        self.model = usage_model(event.get("usage"))
+        # Billing's modelUsage keys do not name the selected running model.
+        model = usage_model(event.get("usage"))
         self.record_turn(Turn(
-            len(self.turns), value["started"], at, value["input"], value["reply"], self.model,
+            len(self.turns), value["started"], at, value["input"], value["reply"], model,
             usage_tokens(event.get("usage")), tuple(item.result for item in calls), subagent_turns=None,
             timed=at is not None,
         ), at)

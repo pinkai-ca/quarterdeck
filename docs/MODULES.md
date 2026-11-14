@@ -102,7 +102,7 @@ quarterdeck/                       the project folder: the framework repository
                    never lifecycle, receipt or usage evidence
     harness/reader_stamp.py   explicit per-harness reader dependencies and attribution-engine files, hashed from their bytes for accounting certificates; a quarterdeck import outside a set is named beside it as launch-only or control-only, with the reason
     harness/       base.py types.py home.py claude.py codex.py antigravity.py opencode.py pi.py grok.py fake.py; json_record.py limits.py sqlite_snapshot.py costs.py
-                   grok_record.py grok_screen.py grok_usage.py grok_workspace.py grok_notice.py   native ACP updates, fullscreen composer, program-owned billing, exact native workspace trust and information-only project inventory
+                   grok_record.py grok_screen.py grok_usage.py grok_workspace.py grok_notice.py grok_models.py   native ACP updates, fullscreen composer, program-owned billing, exact native workspace trust, information-only project inventory and measured model-selection/cache readings
                    opencode_record.py antigravity_record.py antigravity_wire.py antigravity_quota.py; simulator.py synthetic_record.py synthetic_control.py,
                    the fake program the drill runs, its records in Claude Code's or Codex's shape, and the rendezvous a test holds it at
                    each fake launch acknowledges its own startup token after its first prompt; only a live synthetic

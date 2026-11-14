@@ -114,6 +114,15 @@ class SeatReading:
     effort_mode: str | None = None
     wake: str | None = None  # all wake states in detailed readings; the line filters actionable ones
     person_quiet: dict | None = None  # human sessions only, from the kept fact alone
+    selection_warning: str | None = None
+
+    @property
+    def selection_text(self) -> str | None:
+        if not self.selection_warning:
+            return None
+        return (f'program selection fallback: declared {self.declared_model or "program default"} / '
+                f'{self.declared_effort or "program default"}, running {self.model or "unknown"} / '
+                f'{self.effort or "unknown"}; program: {self.selection_warning}')
 
     @property
     def model_text(self) -> str:
@@ -190,6 +199,7 @@ def reading(seat: Seat | UnresolvedSeat, store: post.Store | None = None) -> Sea
                        seat.ship.pool(pool).provider, providers.display(seat.ship.pool(pool).provider), seat.harness.program,
                        effort=observed.get('effort'), declared_effort=seat.spec.effort,
                        model_mode=seat.spec.model_mode, effort_mode=seat.spec.effort_mode, wake=wake,
+                       selection_warning=observed.get('selection_warning'),
                        person_quiet=person_quiet(seat) if seat.session.human else None)
 
 
@@ -277,6 +287,8 @@ def running_settings(seat: Seat, *, screen=None) -> dict[str, str]:
         value = (getattr(state, key, None) if state else None) or (screen.shows.get(key) if screen else None)  # law: record-first
         if value:
             found[key] = value
+    if screen and (warning := screen.shows.get('selection_warning')):
+        found['selection_warning'] = warning
     return found
 
 
@@ -329,6 +341,8 @@ def render_table(data: dict) -> list[str]:
         rows.insert(1, data['accounting_note'])
     for r in data["seats"]:
         rows.append(f"{r.name:<10} {str(r.activity):<24} {str(r.door):<40} {r.order_text:<10} {str(r.today):>8}  {r.harness_text} · {r.provider_name or 'unknown'} · {r.pool} · {r.model_text} · {r.effort_text}")
+        if r.selection_text:
+            rows.append(f"  {r.selection_text}")
         if r.compaction:
             rows.append(f"  {r.compaction}")
         if r.wake:
@@ -406,6 +420,8 @@ def render_full(data: dict) -> list[str]:
     today = f"{r.today} tokens today" + (" (+: some turns were not measured)" if r.today.unmeasured else "")
     lines = [f"{r.name}: {r.activity} · door {r.door} · order {r.order_text} · {today}",
              f"  {r.harness_text} · provider {r.provider_name or 'unknown'} · pool {r.pool} · model {r.model_text} · effort {r.effort_text}"]
+    if r.selection_text:
+        lines.append(f"  {r.selection_text}")
     if r.compaction:
         lines.append(f"  {r.compaction}")
     lines += ['  ' + request_queue.describe(row) for row in data.get('requests', ())]

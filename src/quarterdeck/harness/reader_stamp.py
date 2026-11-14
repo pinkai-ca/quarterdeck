@@ -96,6 +96,7 @@ CONTROL_ONLY = {
     'opencode': _CONTROL_SHARED + _CHECK,
     'antigravity': _CONTROL_SHARED,
     'grok': _CONTROL_SHARED + (
+        ('harness/grok_models.py', 'screen selection warnings and cached model availability; not record interpretation'),
         ('harness/grok_screen.py', 'screen, box and paste reading for the door'),
         ('harness/grok_notice.py', 'workspace inventory shown for the person; records are read by grok_record'),
     ),

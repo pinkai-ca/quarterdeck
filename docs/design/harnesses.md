@@ -132,7 +132,23 @@ existing model-difference journal's active flag, including an older display-case
 Pi and OpenCode retain literal native model IDs; OpenCode's combined model/endpoint footer
 is not exposed as an identity. Antigravity's identity hook reuses its existing measured
 ID/display-name table, also used by its requested-model checks.
-Grok's measured `Grok 4.7` footer proves no unique native ID (the record may name
-`grok-4.7-build`), so its display-name grammar yields unknown identity while native
-record IDs stay literal. An unknown model observation creates neither an alarm nor a
+Grok's measured `Grok 4.7` footer proves no unique native ID, so its display-name grammar
+yields unknown identity while native record IDs stay literal. The running model comes
+from `user_message_chunk._meta.modelId` or a native model configuration update;
+`usage.modelUsage` keys stay on the accounted turns as billing identifiers and never
+overwrite the running model. A billing key alone leaves the running model unknown.
+The adapter exposes the complete measured startup model/effort refusal rows beside the
+screen's model and effort. Status and watch show those program words with the declared
+and observed selections as a fallback. No warning rewrites the declaration or triggers
+a model change. When a warning scrolls out of the visible screen it is no longer reported;
+record-first model evidence and the declared selection remain separate.
+
+Doctor asks adapters for a measured native model list. Grok reads only the id/model/name
+fields of its 1.0.77 `models_cache.json` shape, requiring agreement between each key and
+its native ids. A declared id absent from that complete cache fails its named model
+check. Missing, malformed, inconsistent or unmeasured cache/version shapes, and adapters
+without a measured list, pass with an explicit unknown-list notice. This is a cached
+availability observation, not a fresh account query. Display labels and billing keys
+are never accepted as aliases. These reads launch no program and spend no model turn.
+An unknown model observation creates neither an alarm nor a
 model-difference journal; it does not clear a previously observed difference.

@@ -521,6 +521,10 @@ class Harness(ABC):
         state = self.state(record)
         return self.model_identity(state.model)
 
+    def listed_models(self, home: Path, *, version: str | None = None) -> dict[str, str] | None:
+        """The program's measured native list; None means unknown, never an empty list."""
+        return None
+
     def model_control_origin(self, seat, record: Path | None, value: str) -> dict | None:
         """Request-specific record boundary and display binding, or unsupported."""
         return None

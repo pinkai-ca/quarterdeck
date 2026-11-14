@@ -28,7 +28,7 @@ def test_consumed_followup_and_cancelled_invocation_are_retained_once():
     assert [(tool.name, tool.seconds, tool.failed) for turn in turns for tool in turn.tools] == [
         ("run_terminal_command", 2, False), ("run_terminal_command", None, None)]
     assert all(turn.model == "grok-4.7-build" for turn in turns)
-    assert state.model == "grok-4.7-build"
+    assert state.model is None, 'billing keys alone do not establish the running model'
     assert all((turn.tokens.read_cached, turn.tokens.read_uncached, turn.tokens.written) == (20, 60, 12)
                for turn in turns)
     assert all(turn.subagent_turns is None for turn in turns)  # numTurns is not a child count

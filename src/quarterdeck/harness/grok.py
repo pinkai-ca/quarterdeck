@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import tomllib
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -21,7 +22,7 @@ from .home import credential, key_environment, merged, ship_template
 from .json_record import when
 from .limits import Usage
 from .types import Box, Control, Credential, Interruption, Keys, Launch, Screen
-from . import grok_notice, grok_record, grok_screen, grok_usage, grok_workspace
+from . import grok_models, grok_notice, grok_record, grok_screen, grok_usage, grok_workspace
 
 VENDORS = ("claude", "cursor", "codex")
 IMPORTS = ("rules", "hooks", "mcps", "skills", "agents", "sessions")
@@ -493,7 +494,12 @@ class GrokHarness(Harness):
         return grok_usage.billing(str(self.selected_program() or self.program), home, private_environment(home))
 
     def screen(self, text: str) -> Screen:
-        return grok_screen.read(text)
+        screen = grok_screen.read(text)
+        warning = grok_models.selection_warning(screen.text)
+        return replace(screen, shows={**screen.shows, 'selection_warning': warning}) if warning else screen
+
+    def listed_models(self, home: Path, *, version: str | None = None) -> dict[str, str] | None:
+        return grok_models.listed(home, version=version)
 
     def question_cleared(self, text: str, question: Interruption) -> bool:
         return question is grok_screen.TRAINING_QUESTION and grok_screen.question_cleared(text)
