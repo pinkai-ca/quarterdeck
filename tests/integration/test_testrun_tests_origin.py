@@ -47,7 +47,7 @@ def test_a_regular_tests_package_imports_from_the_checkouts_own_tests_folder(tmp
 ], ids=['regular-elsewhere', 'namespace-portion-elsewhere'])
 def test_tests_from_outside_the_checkouts_tests_folder_refuses_before_pytest(tmp_path, shadow):
     relative, text = shadow
-    project, worktree = make(tmp_path, {'conftest.py': CI_CONFTEST})
+    project, worktree = make(tmp_path, {'conftest.py': CI_CONFTEST}, socket_stub=True)
     # Control: the in-checkout venv may hold tracked content of its own without any refusal.
     track_in_venv(worktree, 'synthetic_unrelated/__init__.py', 'VALUE = "unrelated"\n')
     commit(worktree, 'synthetic unrelated venv content')

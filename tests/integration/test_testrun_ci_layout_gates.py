@@ -81,7 +81,8 @@ def only_the_fixed_ending(project):
 
 
 def test_a_ci_layout_run_tests_the_target_in_an_independent_repository_and_touches_no_project_git(tmp_path):
-    project, worktree = make(tmp_path, {'conftest.py': CI_CONFTEST, 'test_ci_session.py': CI_SESSION})
+    project, worktree = make(tmp_path, {'conftest.py': CI_CONFTEST, 'test_ci_session.py': CI_SESSION},
+                              socket_stub=True)
     before = project_git_state(project)
     done = tool('run', '--ci-layout', '--target', str(worktree), '-n', '2', cwd=project,
                 env=controller_environment())
@@ -115,7 +116,7 @@ def test_a_ci_layout_run_tests_the_target_in_an_independent_repository_and_touch
 def test_counts_are_withheld_when_the_measured_session_layout_is_not_cis(tmp_path):
     # Without the conftest's plain layout every session keeps the tool's own TMPDIR: an ordinary layout
     # cannot pass for a CI-layout run, however its tests end.
-    project, worktree = make(tmp_path, {'test_plain.py': 'def test_plain():\n    pass\n'})
+    project, worktree = make(tmp_path, {'test_plain.py': 'def test_plain():\n    pass\n'}, socket_stub=True)
     done = tool('run', '--ci-layout', '--target', str(worktree), '-n', '2', cwd=project,
                 env=controller_environment())
     assert done.returncode == 5, done.stdout + done.stderr
@@ -169,7 +170,7 @@ def test_an_abandoned_ci_layout_run_is_held_on_an_untrustworthy_state_and_recove
             (pathlib.Path(os.environ["TMPDIR"]) / "started").write_text(str(os.getpid()))
             while pathlib.Path({str(hold)!r}).exists():
                 time.sleep(0.1)
-        '''})
+        '''}, socket_stub=True)
     before = project_git_state(project)
     process = start('run', '--ci-layout', '--target', str(worktree), '-n', '0', cwd=project,
                     env=controller_environment())

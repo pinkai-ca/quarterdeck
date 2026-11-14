@@ -37,7 +37,21 @@ def commit(folder: Path, message: str) -> str:
     return git(folder, 'rev-parse', 'HEAD')
 
 
-def make(tmp_path: Path, tests: dict[str, str], *, branch: str = 'feature') -> tuple[Path, Path]:
+def write_socket_stub(project: Path) -> None:
+    """The CI session instrumentation patches ``OwnedSocket`` before it records a layout.
+
+    A synthetic target is not the Quarterdeck checkout, so that import has to exist in the target itself.
+    """
+    folder = project / 'src' / 'quarterdeck'
+    folder.mkdir()
+    (folder / '__init__.py').write_text('')
+    (folder / 'tmux_socket.py').write_text('class OwnedSocket:\n'
+                                           '    def record(self, held, query):\n'
+                                           '        return None\n')
+
+
+def make(tmp_path: Path, tests: dict[str, str], *, branch: str = 'feature',
+         socket_stub: bool = False) -> tuple[Path, Path]:
     project = tmp_path / 'p'
     (project / 'src' / 'synth').mkdir(parents=True)
     (project / 'tests').mkdir()
@@ -47,6 +61,8 @@ def make(tmp_path: Path, tests: dict[str, str], *, branch: str = 'feature') -> t
     (project / 'src' / 'synth' / '__init__.py').write_text('VALUE = 1\n')
     for name in 'abcdefgh':
         (project / 'src' / 'synth' / f'{name}.py').write_text(f'NAME = {name!r}\n')
+    if socket_stub:
+        write_socket_stub(project)
     (project / 'tests' / 'test_base.py').write_text('def test_base():\n    assert True\n')
     commit(project, 'synthetic base')
     worktree = add_worktree(project, branch, tests)
