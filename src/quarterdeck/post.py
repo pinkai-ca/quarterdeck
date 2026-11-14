@@ -17,7 +17,7 @@ import os
 import secrets
 import stat
 import time
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -30,19 +30,85 @@ SHIP = "ship"  # the sender of the ship's own notices, and an inbox a seat may a
 POST_TIMESTAMP_TICK_NS = 2_000_000_000  # conservative filesystem tick; see docs/design/post.md
 _FIXED_REPORT = ContextVar('quarterdeck_fixed_report', default=None)
 _READING = ContextVar('quarterdeck_post_reading', default=None)
+_READERS = ContextVar('quarterdeck_post_readers', default=None)
+
+
+@dataclass
+class _Reading:
+    stores: dict = field(default_factory=dict)
+    attempts: dict = field(default_factory=dict)
+    values: dict = field(default_factory=dict)
 
 
 @contextmanager
-def reading_pass():
-    """One immutable message/reply snapshot shared by a read-only presentation."""
+def reader_scope(*, store=None, attempts=None):
+    """Reuse validated readers, never their snapshots, across separate readings."""
+    if _READERS.get() is not None:
+        yield
+        return
+    readers = _Reading()
+    if store is not None and isinstance(getattr(store, 'dir', None), Path) and callable(getattr(store, '_load_current', None)):
+        readers.stores[store.dir.absolute()] = store
+    if attempts is not None and isinstance(getattr(attempts, 'dir', None), Path) and callable(getattr(attempts, '_all_current', None)):
+        readers.attempts[attempts.dir.absolute()] = attempts
+    token = _READERS.set(readers)
+    try:
+        yield
+    finally:
+        _READERS.reset(token)
+
+
+@contextmanager
+def reading_pass(*, store=None, attempts=None):
+    """One post/attempt view for a read-only presentation, discarded when it ends."""
     if _READING.get() is not None:
         yield
         return
-    token = _READING.set({})
+    reading = _Reading()
+    readers = _READERS.get()
+    if readers is not None:
+        reading.stores = readers.stores
+        reading.attempts = readers.attempts
+    if store is not None and isinstance(getattr(store, 'dir', None), Path) and callable(getattr(store, '_load_current', None)):
+        reading.stores[store.dir.absolute()] = store
+    if attempts is not None and isinstance(getattr(attempts, 'dir', None), Path) and callable(getattr(attempts, '_all_current', None)):
+        reading.attempts[attempts.dir.absolute()] = attempts
+    token = _READING.set(reading)
     try:
         yield
     finally:
         _READING.reset(token)
+
+
+def reading_value(kind, key, read):
+    """Share successful observations only inside the current presentation."""
+    reading = _READING.get()
+    if reading is None:
+        return read()
+    key = kind, key
+    if key not in reading.values:
+        reading.values[key] = read()
+    return reading.values[key]
+
+
+def reading_names(folder):
+    """A presentation's directory inventory; None outside a read-only view."""
+    if _READING.get() is None:
+        return None
+    def read():
+        try:
+            return frozenset(name for name, _ in post_dir.list_children(folder))
+        except FileNotFoundError:
+            return frozenset()
+    return reading_value('names', folder.absolute(), read)
+
+
+def reading_missing(folder, name):
+    """A valid absent leaf in this view; other names keep the ordinary reader."""
+    if not post_dir._plain_name(name):
+        return False
+    names = reading_names(folder)
+    return names is not None and name not in names
 
 
 @contextmanager
@@ -182,9 +248,8 @@ class Store:
         reading = _READING.get()
         if reading is not None:
             key = self.dir.absolute()
-            if key not in reading:
-                reading[key] = self._load_current()
-            return reading[key]
+            reader = reading.stores.setdefault(key, self)
+            return reading_value('store', key, reader._load_current)
         return self._load_current()
 
     def _load_current(self) -> tuple[list[Message], dict[str, list[Message]]]:
@@ -346,7 +411,10 @@ class Store:
 
     def for_seat(self, seat: str) -> list[Message]:
         from .fleet_post import context_only
-        return [m for m in self.all() if m.to == seat and not context_only(self.dir.parent.parent, m.id)]
+        runtime = self.dir.parent.parent
+        def read():
+            return [m for m in self.all() if m.to == seat and not context_only(runtime, m.id)]
+        return list(reading_value('seat', (self.dir.absolute(), seat), read))
 
     def replies(self, message: Message) -> list[Message]:
         return list(self._loaded()[1].get(message.id, []))
@@ -1045,6 +1113,14 @@ class Attempts:
         return found
 
     def all(self, *, progress=None) -> list[Attempt]:
+        reading = _READING.get()
+        if reading is not None:
+            key = self.dir.absolute()
+            reader = reading.attempts.setdefault(key, self)
+            return list(reading_value('attempts', key, lambda: reader._all_current(progress=progress)))
+        return self._all_current(progress=progress)
+
+    def _all_current(self, *, progress=None) -> list[Attempt]:
         # Attempts are mutable, including writes from another process. Directory
         # times alone miss same-path edits; stat every entry, parse only changes.
         retired = self._retired(progress)

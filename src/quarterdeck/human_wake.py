@@ -187,6 +187,7 @@ def observed_action(seat) -> str | None:
     return None
 
 
+@post.reading_pass()
 def status(seat) -> str | None:
     try:
         launch = seat.launched()
@@ -304,6 +305,7 @@ def prior_receipt(seat, record, since, proof=None) -> str | None:
     return None
 
 
+@post.reading_pass()
 def metadata_context(seat):
     """No native state/input/capture is allowed before every shared hold passes."""
     watch = post.watch_reading(seat.ship.runtime, seat.name)
@@ -422,6 +424,7 @@ def authorized(seat, proof, text) -> bool:
             and proof.data['phase'] == 'prepared' and proof.same_launch(seat))
 
 
+@post.reader_scope()
 def run(seat, *, observe_delivery=None) -> str | None:
     """Called by the serialized service (or its throwaway check), never by a sender."""
     if not seat.session.human:

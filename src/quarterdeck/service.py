@@ -200,6 +200,7 @@ class Service:
         except ShipError as error:
             self.log("error", step="load", error=str(error))
         self.rebind()
+        self.status_checked = None  # each pass checks presentation demand, even when shorter than the interval
         self.structure_passes.begin()
         self._accounting_tick = True
         try:
@@ -388,31 +389,32 @@ class Service:
         refusal.run(self)
 
     def deliveries(self) -> None:
-        results = self.attempts.latest()
-        for seat in self.resolved_seats():
-            if seat.name in getattr(self.ship, 'forward', {}):
-                continue  # declared forwarding disables dispatch at the old address
-            if seat.session.human:
-                from . import human_wake, turn_failure
-                from .auth_failure import status as authentication_status, waiting as authentication_waiting
-                phase = 'ownership'
-                try:
-                    signin = authentication_status(seat)  # a sign-in failure the waking line may cure reads as waiting
-                    if seat.is_up and not (recovery.held(seat) or signin and not authentication_waiting(signin)
-                                           or turn_failure.obstruction(seat, self.store)):
-                        phase = 'pass'
-                        human_wake.run(seat)
-                except Exception as error:
-                    self.human_wake_error(seat, phase, error)
-                try:
-                    self.needs_human(seat)  # genuine alarms survive a down seat or failed wake
-                except Exception as error:
-                    self.human_wake_error(seat, 'alarm', error)
-                continue
-            pending = [m for m in self.attempts.undelivered(self.store, seat.name, results=results) if self._due(m, seat)]
-            if pending and seat.is_up:
-                self.deliver(seat, pending)
-            self.needs_human(seat)
+        with post.reader_scope(store=self.store, attempts=self.attempts):
+            results = self.attempts.latest()
+            for seat in self.resolved_seats():
+                if seat.name in getattr(self.ship, 'forward', {}):
+                    continue  # declared forwarding disables dispatch at the old address
+                if seat.session.human:
+                    from . import human_wake, turn_failure
+                    from .auth_failure import status as authentication_status, waiting as authentication_waiting
+                    phase = 'ownership'
+                    try:
+                        signin = authentication_status(seat)  # a sign-in failure the waking line may cure reads as waiting
+                        if seat.is_up and not (recovery.held(seat) or signin and not authentication_waiting(signin)
+                                               or turn_failure.obstruction(seat, self.store)):
+                            phase = 'pass'
+                            human_wake.run(seat)
+                    except Exception as error:
+                        self.human_wake_error(seat, phase, error)
+                    try:
+                        self.needs_human(seat)  # genuine alarms survive a down seat or failed wake
+                    except Exception as error:
+                        self.human_wake_error(seat, 'alarm', error)
+                    continue
+                pending = [m for m in self.attempts.undelivered(self.store, seat.name, results=results) if self._due(m, seat)]
+                if pending and seat.is_up:
+                    self.deliver(seat, pending)
+                self.needs_human(seat)
 
     def human_wake_error(self, seat: Seat, phase: str, error: Exception, *, publish: bool = True) -> None:
         """One seat's failure cannot stop the crew; no arbitrary exception data escapes."""
@@ -479,7 +481,8 @@ class Service:
         # that standing reading or change the door alarm's ownership.
         if seat.session.human:
             from . import human_wake
-            wake = human_wake.status(seat)
+            with post.reading_pass(store=getattr(self, 'store', None), attempts=getattr(self, 'attempts', None)):
+                wake = human_wake.status(seat)
             reason = reason or (wake if human_wake.action_required(seat, wake) else None)
         if reason != self.told.get(seat.name):
             self.told[seat.name] = reason

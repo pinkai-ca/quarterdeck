@@ -208,10 +208,15 @@ def import_path(runtime, identifier):
 
 
 def provenance(runtime, identifier):
-    try:
-        return json.loads(stable_bytes(import_path(runtime, identifier)))
-    except FileNotFoundError:
-        return None
+    from . import post
+    def read():
+        if post.reading_missing(runtime / 'post' / 'imports', identifier + '.json'):
+            return None
+        try:
+            return json.loads(stable_bytes(import_path(runtime, identifier)))
+        except FileNotFoundError:
+            return None
+    return post.reading_value('import', (runtime.absolute(), identifier), read)
 
 
 def local_view(runtime, message, *, data=None):

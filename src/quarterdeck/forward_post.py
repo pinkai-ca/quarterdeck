@@ -30,14 +30,18 @@ def path(runtime, identifier):
 
 
 def recorded(runtime, identifier):
-    from . import fleet_post as transport
-    imported = transport.provenance(runtime, identifier)
-    if imported and imported.get('forward'):
-        return imported['forward']
-    try:
-        return json.loads(transport.stable_bytes(path(runtime, identifier)))
-    except FileNotFoundError:
-        return None
+    from . import fleet_post as transport, post
+    def read():
+        imported = transport.provenance(runtime, identifier)
+        if imported and imported.get('forward'):
+            return imported['forward']
+        if post.reading_missing(runtime / 'post' / 'forwarded', identifier + '.json'):
+            return None
+        try:
+            return json.loads(transport.stable_bytes(path(runtime, identifier)))
+        except FileNotFoundError:
+            return None
+    return post.reading_value('forward', (runtime.absolute(), identifier), read)
 
 
 def resolve(ship, value):
