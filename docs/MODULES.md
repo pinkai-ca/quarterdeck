@@ -167,7 +167,8 @@ quarterdeck/                       the project folder: the framework repository
     shared_install.py  worker-local session wheel/install fixtures; immutable seeds and writable relocated copies
 
                    CI layout: testrunner/run.py gitops.py environment.py scratch.py clean.py;
-                   evidence_plugin.py evidence.py report.py measure session layout and outcomes
+                   evidence_plugin.py evidence.py report.py measure session layout and outcomes;
+                   sessions.py servers.py accept the trusted CI plugin's explicit run context
     unit/test_ci_lane_options.py  ordinary CI/fast/whole command and declared disk-policy cases
     integration/ci_layout_ordinary_probe.py  explicitly selected ordinary real-mode Git/temp/environment observations
     integration/ci_layout_probe.py test_testrun_ci_layout_gates.py test_testrun_ci_layout_corrections.py

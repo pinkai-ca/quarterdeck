@@ -308,7 +308,7 @@ class Runner:
                 self.run_guard.acquire()
                 if change:
                     clean.register(root, target, self.run)  # a refusal here leaves nothing made
-            self.storage = (storage.prepare(root, self.run, disk_only=True) if self.ci_layout
+            self.storage = (storage.prepare(root, self.run, memory_required=True) if self.ci_layout
                             else storage.prepare(root, self.run))
             return self.within(root, target, targets, change)
         except Stop as stopped:
@@ -366,7 +366,11 @@ class Runner:
                 build_options = {'ci_layout': True} if self.ci_layout else {}
                 env, settings = environment.build(scratch, run, self.user['base'] if self.user['exists'] else None,
                                                   **build_options)
-                env[sessions.RECORD_ENV] = str(root.path / RESULTS / run / 'sessions')
+                registry = str(root.path / RESULTS / run / 'sessions')
+                if self.ci_layout:
+                    env['TESTRUN_CI_SESSION_CONTEXT'] = json.dumps({'registry': registry, 'run': run})
+                else:
+                    env[sessions.RECORD_ENV] = registry
                 os.close(root.child(RUN_SOCKETS))
                 env['TMUX_TMPDIR'] = str(root.path / RUN_SOCKETS)
                 settings['fixed']['TMUX_TMPDIR'] = env['TMUX_TMPDIR']
@@ -625,6 +629,14 @@ class Runner:
         plugin = Path(__file__).with_name('evidence_plugin.py')
         shutil.copyfile(plugin, purelib / 'qd_testrun_evidence.py')
         result['tools']['evidence_plugin'] = {'source': str(plugin), 'blob': gitops.blob_sha(plugin.read_bytes())}
+        if self.ci_layout:
+            support = purelib / '_qd_testrun_ci_support'
+            support.mkdir()
+            names = ('__init__.py', 'layout.py', 'owned.py', 'procs.py', 'sessions.py', 'servers.py')
+            for name in names:
+                shutil.copyfile(plugin.with_name(name), support / name)
+            result['tools']['ci_session_support'] = {name: gitops.blob_sha((support / name).read_bytes())
+                                                     for name in names}
         # The startup policy: the run's own code is complete, bytecode included, before its first reader, and
         # its package folders cannot change while readers run. Only run-owned folders are compiled.
         self.execute([vpython, '-I', '-m', 'compileall', '-q', checkout / 'src', checkout / 'tests', purelib],
@@ -640,11 +652,14 @@ class Runner:
         result['argv'] = [str(part) for part in argv]
         if self.ci_layout:
             result['ci_layout'] = {'pytest_cwd': str(checkout), 'testruns_run_present': 'TESTRUNS_RUN' in env,
+                                   'registry_present': sessions.RECORD_ENV in env,
+                                   'physical_storage': self.storage['kind'],
                                    'basetemp_override': False, 'expected_tmpdir': str(checkout / '.testruns' / 't'),
                                    'socket_root': env['TMUX_TMPDIR'], 'disk_only': env.get(storage.CI_DISK_ENV) == '1',
-                                   'instrumentation': ['-p qd_testrun_evidence', 'TESTRUN_EVIDENCE', storage.CI_DISK_ENV]}
-            if 'TESTRUNS_RUN' in env:
-                raise Refused('CI pytest must not inherit TESTRUNS_RUN')
+                                   'instrumentation': ['-p qd_testrun_evidence', 'TESTRUN_EVIDENCE', storage.CI_DISK_ENV,
+                                                       'TESTRUN_CI_SESSION_CONTEXT']}
+            if 'TESTRUNS_RUN' in env or sessions.RECORD_ENV in env:
+                raise Refused('CI pytest must not inherit normal run/registry variables')
         self.state['stage'] = 'pytest'
         write_json(self.scratch_fd, 'state.json', self.state)
         self.bound(self.args.timeout, f'time limit of {self.args.timeout} s')  # pytest's own, from its start
@@ -685,7 +700,7 @@ def ci_layout_problems(found: dict, checkout: Path, workers: int) -> list[str]:
     for item in layouts:
         if (item.get('cwd') != str(checkout) or item.get('TMPDIR') != str(checkout / '.testruns' / 't')
                 or item.get('tempdir') != item.get('TMPDIR') or item.get('testruns_run_present') is not False
-                or item.get('disk_only') is not True
+                or item.get('disk_only') is not True or item.get('registry_present') is not False
                 or (item['role'] == 'main' and item.get('basetemp') is not None)):
             problems.append(f'CI layout session {item["role"]} differs from the requested checkout/temp/environment')
     return problems

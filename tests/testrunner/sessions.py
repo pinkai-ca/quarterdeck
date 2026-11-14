@@ -22,11 +22,11 @@ def automatic(parent: Path) -> bool:
                 and Path(registry) == parent.parent / RESULTS / os.environ.get('TESTRUNS_RUN', '') / 'sessions')
 
 
-def register(parent: Path, folder: Path, descriptor: int) -> str | None:
-    registry = os.environ.get(RECORD_ENV)
+def register(parent: Path, folder: Path, descriptor: int, *, registry=None, run=None) -> str | None:
+    registry = os.environ.get(RECORD_ENV) if registry is None else registry
     if not registry:
         return None  # ordinary direct pytest owns its container through its fixture, as before
-    run = run_name(os.environ.get('TESTRUNS_RUN', ''))
+    run = run_name(os.environ.get('TESTRUNS_RUN', '') if run is None else run)
     # A child pytest may use its own project or nest below an outer fixture. It
     # owns that container locally; it must not register it as a direct child of
     # this run's anchor. A nonempty outer container still holds retirement.

@@ -32,12 +32,18 @@ class Recorder:
         self.role = workerinput['workerid'] if workerinput else 'main'
         self.file = open(os.path.join(folder, self.role + '.jsonl'), 'a', encoding='utf-8')
         self.collection_complete = False
+        self.ci_sessions = None
+        context = os.environ.get('TESTRUN_CI_SESSION_CONTEXT')
+        if context:
+            self.ci_sessions = CISessions(json.loads(context))
 
     def emit(self, kind, **fields):
         self.file.write(json.dumps({'kind': kind, 'role': self.role, 'at': time.time(), **fields}) + '\n')
         self.file.flush()
 
     def pytest_sessionstart(self, session):
+        if self.ci_sessions is not None:
+            self.ci_sessions.start()
         try:
             import xdist
             xdist_version = xdist.__version__
@@ -50,6 +56,7 @@ class Recorder:
                   layout={'cwd': os.getcwd(), 'TMPDIR': os.environ.get('TMPDIR'),
                           'tempdir': tempfile.gettempdir(), 'testruns_run_present': 'TESTRUNS_RUN' in os.environ,
                           'disk_only': os.environ.get('TESTRUNS_CI_DISK') == '1',
+                          'registry_present': 'TESTRUN_SESSION_RECORDS' in os.environ,
                           'basetemp': _text(session.config.option.basetemp) or None})
 
     def pytest_collectreport(self, report):
@@ -80,6 +87,8 @@ class Recorder:
         self.emit('interrupt', text=_text(excinfo.getrepr(style='short')))
 
     def pytest_sessionfinish(self, session, exitstatus):
+        if self.ci_sessions is not None:
+            self.ci_sessions.finish()
         self.emit('finish', exitstatus=int(exitstatus), testscollected=getattr(session, 'testscollected', None))
 
     @pytest.hookimpl(optionalhook=True)
@@ -93,6 +102,57 @@ class Recorder:
     @pytest.hookimpl(optionalhook=True)
     def pytest_handlecrashitem(self, crashitem, report, sched):
         self.emit('crash', nodeid=crashitem, node=_node(report), longrepr=_text(report.longrepr))
+
+
+    @pytest.hookimpl(hookwrapper=True, trylast=True)
+    def pytest_fixture_setup(self, fixturedef, request):
+        outcome = yield
+        if self.ci_sessions is not None and fixturedef.argname == 'private_socket_root':
+            self.ci_sessions.container(outcome.get_result(), request)
+
+
+class CISessions:
+    """Trusted instrumentation, separate from the target's ordinary conftest registry environment."""
+    def __init__(self, context):
+        self.context = context
+        self.patch = pytest.MonkeyPatch()
+
+    def start(self):
+        from _qd_testrun_ci_support import servers
+        from quarterdeck.tmux_socket import OwnedSocket
+        original = OwnedSocket.record
+
+        def record(owner, held, query):
+            original(owner, held, query)
+            servers.record(owner, **self.context)
+
+        self.patch.setattr(OwnedSocket, 'record', record)
+
+    def container(self, folder, request):
+        from pathlib import Path
+        from _qd_testrun_ci_support import sessions
+        from _qd_testrun_ci_support.layout import DIRECTORY
+        folder = Path(folder)
+        descriptor = os.open(folder, DIRECTORY)
+        try:
+            token = sessions.register(folder.parent, folder, descriptor, **self.context)
+        except BaseException:
+            os.close(descriptor)
+            raise
+        if token is None:
+            os.close(descriptor)
+            return
+
+        def release():
+            try:
+                sessions.unmark_empty(descriptor, token)
+            finally:
+                os.close(descriptor)
+
+        request.addfinalizer(release)
+
+    def finish(self):
+        self.patch.undo()
 
 
 def pytest_configure(config):

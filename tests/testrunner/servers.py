@@ -79,13 +79,13 @@ def legacy(container, where, data, run, budget):
     return births
 
 
-def record(server) -> None:
+def record(server, *, registry=None, run=None) -> None:
     """Called after the creator has verified a server's birth, while its namespace lock is held."""
-    registry = os.environ.get('TESTRUN_SESSION_RECORDS')
+    registry = os.environ.get('TESTRUN_SESSION_RECORDS') if registry is None else registry
     if not registry:
         return
     registry = Path(registry)
-    run = os.environ.get('TESTRUNS_RUN', '')
+    run = os.environ.get('TESTRUNS_RUN', '') if run is None else run
     if registry.name != 'sessions' or registry.parent.name != run or registry.parent.parent.name != RESULTS:
         raise Refused('server registry does not name this run')
     project = registry.parents[3]

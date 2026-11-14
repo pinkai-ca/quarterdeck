@@ -41,16 +41,26 @@ def project_name(project):
 
 def candidates(environ=None):
     environ = os.environ if environ is None else environ
-    return list(dict.fromkeys(Path(p).absolute() for p in (environ.get('TMPDIR'), '/dev/shm', '/tmp') if p))
+    # CI's inherited TMPDIR is the logical drive path, physically inside outer memory scratch.
+    # An explicitly supplied environment, or a patched candidates() provider, keeps its own candidates.
+    temporary = None if environ is os.environ and environ.get(CI_DISK_ENV) == '1' else environ.get('TMPDIR')
+    return list(dict.fromkeys(Path(p).absolute() for p in (temporary, '/dev/shm', '/tmp') if p))
 
 
 CI_DISK_ENV = 'TESTRUNS_CI_DISK'  # the CI runner reports no eligible memory filesystem
 
 
-def choices(bound=BOUND, *, disk_only=False):
-    if disk_only or os.environ.get(CI_DISK_ENV) == '1':
-        return
-    for path in candidates():
+def available_bytes(path, descriptor, *, physical=False):
+    space = os.fstatvfs(descriptor)
+    if (not physical and os.environ.get(CI_DISK_ENV) == '1'
+            and path in (Path('/dev/shm'), Path('/tmp')) and filesystem(descriptor)):
+        return 0  # the hosted runner's real memory bases cannot cover the reservation
+    return space.f_bavail * space.f_frsize
+
+
+def choices(bound=BOUND, *, physical=False):
+    bases = candidates({'TMPDIR': os.environ.get('TMPDIR', '')}) if physical else candidates()
+    for path in bases:
         try:
             if path.resolve() != path or not os.access(path, os.W_OK | os.X_OK):
                 continue
@@ -58,7 +68,7 @@ def choices(bound=BOUND, *, disk_only=False):
             try:
                 kind = filesystem(fd)
                 space = os.fstatvfs(fd)
-                if kind and not space.f_flag & getattr(os, 'ST_NOEXEC', 8) and space.f_bavail * space.f_frsize >= bound:
+                if kind and not space.f_flag & getattr(os, 'ST_NOEXEC', 8) and available_bytes(path, fd, physical=physical) >= bound:
                     yield path, kind
             finally:
                 os.close(fd)
@@ -222,12 +232,12 @@ def reserved(root, device):
     return total
 
 
-def prepare(root, run, *, disk_only=False):
+def prepare(root, run, *, memory_required=False):
     with reservation_lock(root):
         if record(root, run) is not None:
             raise Refused(f'run {run}: already has a memory reservation; retained')
         # Selection, the fresh free-space check, and publishing the promise share this lock.
-        available = choices(BOUND + MARGIN, disk_only=True) if disk_only else choices(BOUND + MARGIN)
+        available = choices(BOUND + MARGIN, physical=True) if memory_required else choices(BOUND + MARGIN)
         for base, kind in available:
             # Capacity fallback must not create an unused project root in this candidate.
             base_fd = os.open(base, DIRECTORY)
@@ -254,8 +264,8 @@ def prepare(root, run, *, disk_only=False):
             print(f'testrun: working files in {kind}: {where / RUNS / run} (4 GiB bound); results on disk', flush=True)
             return {**data, 'path': str(path(root, run)), 'sample_seconds': INTERVAL,
                     'metadata_allowance_per_entry': METADATA_ALLOWANCE}
-    if disk_only or os.environ.get(CI_DISK_ENV) == '1':
-        return disk_fallback(root, run, 'CI layout reports no memory filesystem with room for the reservation')
+    if memory_required:
+        raise Refused('CI layout needs real memory working storage; no eligible memory reservation is free; no drive fallback')
     return disk_fallback(root, run, 'no writable executable tmpfs/ramfs has room for a 4 GiB reservation '
                          'plus the 8 GiB margin and outstanding reservations')
 
@@ -372,11 +382,9 @@ def plain(project):
 
 
 def _plain(project):
-    if os.environ.get(CI_DISK_ENV) == '1':
-        print('pytest: CI disk layout reports no eligible memory storage', flush=True)
-        return None
     current = Path(os.environ.get('TMPDIR', '/'))
-    if current.name == 't' and current.parent.name == project_name(project):
+    if (os.environ.get(CI_DISK_ENV) != '1'
+            and current.name == 't' and current.parent.name == project_name(project)):
         where, fd = memory_root(project, current.parent.parent, create=False)
         try:
             space = os.fstatvfs(fd)

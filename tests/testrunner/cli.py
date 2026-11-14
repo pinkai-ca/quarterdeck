@@ -26,7 +26,7 @@ def parser() -> argparse.ArgumentParser:
                        help='every test, 8 workers by default; required for a signing run')
     p.add_argument('--target', help='the worktree to test (default: the one the current directory is in)')
     p.add_argument('--ci-layout', action='store_true',
-                   help='use an independent owned repository and CI pytest/disk layout (local tools only)')
+                   help='use an independent owned repository and CI pytest/disk layout inside required memory storage (local tools only)')
     p.add_argument('-n', dest='workers', type=int, default=None,
                    help='xdist workers: fast defaults to 16, at most 16; whole/named default to 8, at most 8 (0: none)')
     p.add_argument('--timeout', type=float, default=3600.0,
