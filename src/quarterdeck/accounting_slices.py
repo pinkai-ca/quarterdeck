@@ -320,10 +320,36 @@ class Driver:
                 self.invalid.add(name)
         return not self.invalid.intersection(names)
 
+    def callbacks(self, service, deadline):
+        while self.events and time.monotonic() < deadline:
+            packet, names = self.events.popleft()
+            if packet[0] != 'done' and not self.valid(service, names):
+                continue
+            if packet[0] == 'notice':
+                service.log(packet[1], **packet[2])
+            elif packet[0] == 'human':
+                from .turn_failure import publish
+                seat = next((s for s in service.resolved_seats() if s.name == packet[1]), None)
+                if seat is not None and str(seat.record()) == packet[2]:
+                    publish(seat, Path(packet[2]), SimpleNamespace(failure=packet[3]), (), packet[4])
+            elif packet[0] == 'done':
+                for name, identity in self.identities.items():
+                    if self.identity(service.runtime, name) != identity:
+                        self.invalid.add(name)
+                if self.invalid:
+                    service.ledger.begin_catchup(service.status_framework, force=True)
+                    self.reset_child = True
+                self.active = False
+                service.accounting_health.committed()
+                service.log('accounting-caught-up', seconds=time.monotonic() - self.started)
+        return not self.active
+
     def step(self, service):
         deadline = time.monotonic() + BUDGET
         before = service.accounting_health.shown()
         try:
+            if self.events and self.callbacks(service, deadline):
+                return
             if not self.active:
                 self.active = True
                 self.invalid = set()
@@ -357,13 +383,13 @@ class Driver:
                 self.start(service)
             with service.ledger.record_pass() as book:
                 while time.monotonic() < deadline:
-                    moved = self.pump()
+                    self.pump()
                     if not self.ready:
-                        if self.outgoing or moved and self.incoming:
-                            select.select([self.process.stdout], [self.process.stdin] if self.outgoing else [], [],
-                                          min(0.01, max(0, deadline - time.monotonic())))
-                            continue
-                        break
+                        # Keep draining within this slice. Returning after one pipeful
+                        # would stretch a cold replay over thousands of normal ticks.
+                        select.select([self.process.stdout], [self.process.stdin] if self.outgoing else [], [],
+                                      min(0.05, max(0, deadline - time.monotonic())))
+                        continue
                     packet = self.ready.popleft()
                     if packet[0] == 'context':
                         self.context = packet[1:]
@@ -377,32 +403,15 @@ class Driver:
                         service.heartbeat()
                     elif packet[0] == 'error':
                         raise RuntimeError(packet[1])
-                    elif packet[0] == 'done' or packet[0] in ('notice', 'human') and self.valid(service):
+                    elif packet[0] == 'done':
+                        self.events.append((packet, self.context[1]))
+                        break
+                    elif packet[0] in ('notice', 'human') and self.valid(service):
                         self.events.append((packet, self.context[1]))
                     self.progress += 1
                     if self.progress % 200 == 0:
                         service.heartbeat()
-            while self.events and time.monotonic() < deadline:
-                packet, names = self.events.popleft()
-                if packet[0] != 'done' and not self.valid(service, names):
-                    continue
-                if packet[0] == 'notice':
-                    service.log(packet[1], **packet[2])
-                elif packet[0] == 'human':
-                    from .turn_failure import publish
-                    seat = next((s for s in service.resolved_seats() if s.name == packet[1]), None)
-                    if seat is not None and str(seat.record()) == packet[2]:
-                        publish(seat, Path(packet[2]), SimpleNamespace(failure=packet[3]), (), packet[4])
-                elif packet[0] == 'done':
-                    for name, identity in self.identities.items():
-                        if self.identity(service.runtime, name) != identity:
-                            self.invalid.add(name)
-                    if self.invalid:
-                        service.ledger.begin_catchup(service.status_framework, force=True)
-                        self.reset_child = True
-                    self.active = False
-                    service.accounting_health.committed()
-                    service.log('accounting-caught-up', seconds=time.monotonic() - self.started)
+            self.callbacks(service, deadline)
         except Exception as error:
             self.close()
             self.active, self.inventory, self.observations = False, None, None

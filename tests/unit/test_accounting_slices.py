@@ -142,11 +142,14 @@ def test_deliveries_and_spent_pool_move_do_not_wait_for_backlog(tmp_path, monkey
 def test_changed_reader_identity_discards_old_plans_then_retries(tmp_path, monkeypatch):
     svc, seat, record, _ = world(tmp_path, monkeypatch, 20)
     driver = Driver()
+    monkeypatch.setattr(accounting_slices, 'BUDGET', 0.0005)
     try:
         driver.step(svc)
+        assert driver.active and svc.ledger.ingested(record) == 0
         # A new registration changes the source binding after the child snapshot.
         with record_owner.registry(seat.home.parent).open('a') as stream:
             stream.write('\n')
+        monkeypatch.setattr(accounting_slices, 'BUDGET', 0.02)
         finish(driver, svc)
         assert svc.ledger.catching_up()
         assert svc.ledger.ingested(record) == 0
