@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import deque
+from collections import Counter, deque
 from dataclasses import replace
 from datetime import datetime
 import os
@@ -28,6 +28,7 @@ from .harness.sqlite_snapshot import snapshot
 from .harness.json_record import release
 from .harness.base import record_fingerprint
 from .ledger import Ledger
+from .order_attribution import Threads
 from .provenance import Provenance
 from .usage_cache import UsageCache
 
@@ -141,6 +142,8 @@ def worker():
     service = Service.__new__(Service)
     service.read_marks, service.account_errors, service.meters = {}, {}, {}
     attribution_errors = {}
+    graph, graph_messages = None, None
+    store_runtime = None
     service.pane_died = lambda *args: None  # the parent already observed and logged dead panes
 
     def send(value):
@@ -151,12 +154,31 @@ def worker():
         book = None
         try:
             if job.get('reset'):
-                service.read_marks, service.account_errors = {}, {}
+                if job.get('scope') is None:
+                    service.read_marks, service.account_errors = {}, {}
+                    attribution_errors = {}
+                else:
+                    # Rejected plans must be read again, without losing other seats' progress.
+                    for item in job['seats']:
+                        for path, *_ in item['sources']:
+                            service.read_marks.pop(Path(path), None)
+                            service.account_errors.pop(Path(path), None)
+                            attribution_errors.pop(path, None)
             service.runtime = Path(job['runtime'])
-            service.store = post.Store(service.runtime)
+            if service.runtime != store_runtime:
+                service.store = post.Store(service.runtime)
+                store_runtime = service.runtime
+                graph, graph_messages = None, None
             service.accounting_epoch = job['epoch']
             book = planning_book(service.runtime / 'ledger.sqlite', send)
             service.ledger = book
+            if job.get('reset') and job.get('scope') is not None:
+                for name in job['scope']:
+                    service.meters.pop(name, None)
+                    for record, in book.db.execute('SELECT DISTINCT record FROM turns WHERE seat=?', (name,)):
+                        service.read_marks.pop(Path(record), None)
+                        service.account_errors.pop(Path(record), None)
+                        attribution_errors.pop(record, None)
             selected, sources = [], {}
             for item in job['seats']:
                 current = Path(item['record']) if item['record'] else None
@@ -201,9 +223,15 @@ def worker():
                     release(last_attribution[0])
                 last_attribution[0] = Path(record)
                 context(record, sorted(set(names) | ({owners[record]} if record in owners else set())))
+            messages = service.store._loaded()[0]
+            if messages is not graph_messages:
+                graph = Threads(service.store)
+                graph_messages = messages
             with book.record_pass() as staged:
                 staged.attributions.replay_stream(service.store, service.runtime, job['epoch'], attribution_context,
-                                                  lambda: send(('heartbeat',)), attribution_errors)
+                                                  lambda: send(('heartbeat',)), attribution_errors,
+                                                  seats=set(job['scope']) if job.get('scope') is not None else None,
+                                                  records=owners, graph=graph)
                 context(None, [])
                 staged.finish_catchup(job['epoch'])
             if last_attribution[0] is not None:
@@ -235,6 +263,12 @@ class Driver:
         self.progress = 0
         self.reset_child = False
         self.changed = False
+        self.retry_seats = set()
+        self.scope = None
+        self.watched = set()
+        self.completion = []
+        self.job = 0
+        self.counts, self.records = Counter(), set()
 
     def close(self):
         if self.process is not None:
@@ -251,6 +285,8 @@ class Driver:
 
     def collect(self, service):
         for seat in service.resolved_seats():
+            if self.scope is not None and seat.name not in self.scope:
+                continue
             pane, launch = seat.pane(), seat.launched()
             if pane is not None and pane.dead:
                 service.pane_died(seat, pane)
@@ -278,9 +314,14 @@ class Driver:
             os.set_blocking(self.process.stdin.fileno(), False)
             os.set_blocking(self.process.stdout.fileno(), False)
         self.outgoing.extend(frame(dict(runtime=str(service.runtime), epoch=service.accounting_epoch,
-                                        seats=self.seats, reset=self.reset_child)))
+                                        seats=self.seats, reset=self.reset_child,
+                                        scope=sorted(self.scope) if self.scope is not None else None)))
         self.reset_child = False
         self.started = time.monotonic()
+        self.job += 1
+        service.log('accounting-job-start', job=self.job, seats=len(self.seats),
+                    scope=sorted(self.scope) if self.scope is not None else None,
+                    sources=sum(len(item['sources']) for item in self.seats))
 
     def pump(self):
         moved = False
@@ -319,6 +360,7 @@ class Driver:
 
     def valid(self, service, names=None):
         names = self.context[1] if names is None else names
+        self.watched.update(names)
         for name in names:
             if name not in self.identities or self.identity(service.runtime, name) != self.identities[name]:
                 self.invalid.add(name)
@@ -337,14 +379,22 @@ class Driver:
                 if seat is not None and str(seat.record()) == packet[2]:
                     publish(seat, Path(packet[2]), SimpleNamespace(failure=packet[3]), (), packet[4])
             elif packet[0] == 'done':
-                for name, identity in self.identities.items():
-                    if self.identity(service.runtime, name) != identity:
-                        self.invalid.add(name)
+                self.valid(service, tuple(self.watched))
                 if self.invalid:
-                    service.ledger.begin_catchup(service.accounting_epoch, force=True)
+                    self.retry_seats = set(self.invalid)
                     self.reset_child = True
+                    service.log('accounting-job-reset', job=self.job, seats=sorted(self.invalid))
+                else:
+                    # Completion is global. Validate even identities changed after the last
+                    # record group before committing it; never finish and then reopen history.
+                    with service.ledger.record_pass() as book:
+                        for sql, parameters, many in self.completion:
+                            (book.db.executemany if many else book.db.execute)(sql, parameters)
                 self.active = False
                 service.accounting_health.committed()
+                service.log('accounting-job-end', job=self.job, seconds=time.monotonic() - self.started,
+                            records=len(self.records), counts=dict(self.counts),
+                            retry=sorted(self.invalid), pending=service.ledger.catching_up())
                 if self.changed and not self.invalid:
                     service.log('accounting-caught-up', seconds=time.monotonic() - self.started)
         return not self.active
@@ -357,8 +407,13 @@ class Driver:
                 return
             if not self.active:
                 self.active = True
+                self.started = None
                 self.changed = False
                 self.invalid = set()
+                self.scope = self.retry_seats or None
+                self.retry_seats = set()
+                self.completion = []
+                self.counts, self.records = Counter(), set()
                 self.seats, self.screens = [], []
                 self.inventory = iter(self.collect(service))
             if self.inventory is not None:
@@ -384,8 +439,9 @@ class Driver:
                     return
                 self.screens = []
                 names = {item['name'] for item in self.seats} | {
-                    row[0] for row in service.ledger.db.execute('SELECT DISTINCT seat FROM turns')}
+                    row[0] for row in service.ledger.db.execute('SELECT DISTINCT seat FROM turns')} | (self.scope or set())
                 self.identities = {name: self.identity(service.runtime, name) for name in names}
+                self.watched = set(names) if self.scope is None else set(self.scope)
                 self.start(service)
             with service.ledger.record_pass() as book:
                 while time.monotonic() < deadline:
@@ -397,15 +453,25 @@ class Driver:
                                       min(0.05, max(0, deadline - time.monotonic())))
                         continue
                     packet = self.ready.popleft()
+                    self.counts[packet[0]] += 1
                     if packet[0] == 'context':
                         self.context = packet[1:]
-                    elif packet[0] == 'sql' and self.valid(service):
+                        self.watched.update(self.context[1])
+                        if packet[1] is not None:
+                            self.records.add(packet[1])
+                    elif packet[0] == 'sql':
+                        valid = self.valid(service)
                         for sql, parameters, many in packet[1]:
-                            if 'accounting_progress' not in sql or not self.invalid:
+                            if 'accounting_progress' in sql:
+                                self.completion.append((sql, parameters, many))
+                            elif valid:
                                 changes = book.db.total_changes
                                 (book.db.executemany if many else book.db.execute)(sql, parameters)
-                                if 'accounting_progress' not in sql and book.db.total_changes != changes:
+                                self.counts['applied_statements'] += 1
+                                if book.db.total_changes != changes:
                                     self.changed = True
+                            else:
+                                self.counts['discarded_statements'] += 1
                     elif packet[0] == 'walls' and self.valid(service):
                         changes = book.db.total_changes
                         book.quota.record(Path(packet[1]), packet[2], packet[3], book.provenance, packet[4], commit=False)
@@ -424,6 +490,9 @@ class Driver:
                         service.heartbeat()
             self.callbacks(service, deadline)
         except Exception as error:
+            if self.started is not None and self.active:
+                service.log('accounting-job-end', job=self.job, seconds=time.monotonic() - self.started,
+                            records=len(self.records), counts=dict(self.counts), error=accounting_health.cause(error))
             self.close()
             self.active, self.inventory, self.observations = False, None, None
             self.incoming.clear()

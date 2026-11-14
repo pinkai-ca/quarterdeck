@@ -265,3 +265,97 @@ def test_completed_native_turn_precedes_commit_when_planning_child_is_paused(tmp
             os.kill(driver.process.pid, signal.SIGCONT)
         driver.close()
         svc.ledger.close()
+
+
+@pytest.mark.parametrize('when', ['start', 'completion'])
+def test_identity_retry_keeps_stable_seats_and_never_reopens_history(tmp_path, monkeypatch, when):
+    svc, changed, record, _ = world(tmp_path, monkeypatch, 10)
+    home = svc.runtime / 'seats' / 'synthetic-other' / 'home'
+    writer = ClaudeShape(home, tmp_path / 'workspace', 'other-session', 'synthetic-model')
+    for _ in range(10):
+        writer.begin('synthetic input', 'synthetic-model', 'high')
+        writer.end('synthetic output')
+    record_owner.register(home.parent, writer.path, 'fake')
+    other = SimpleNamespace(name='synthetic-other', home=home, harness=FakeHarness(),
+                            session=SimpleNamespace(human=False), pane=lambda: None,
+                            launched=lambda: None, record=lambda: writer.path)
+    svc.resolved_seats = lambda: [changed, other]
+    sources = {changed.name: record, other.name: writer.path}
+    monkeypatch.setattr(record_owner, 'records', lambda s: [
+        record_owner.Owned(sources[s.name], 'fake', s.harness)])
+    forced = []
+    begin = svc.ledger.begin_catchup
+    def begin_catchup(epoch, *, force=False):
+        forced.append(force)
+        return begin(epoch, force=force)
+    monkeypatch.setattr(svc.ledger, 'begin_catchup', begin_catchup)
+    notices = []
+    svc.log = lambda event, **fields: notices.append((event, fields))
+    starts, contexts = [], []
+    class Measured(Driver):
+        touched = False
+        def touch(self):
+            with record_owner.registry(changed.home.parent).open('a') as stream:
+                stream.write('\n')
+            self.touched = True
+        def start(self, service):
+            starts.append(([s['name'] for s in self.seats], self.scope))
+            contexts.append(set())
+            super().start(service)
+            if len(starts) == 1 and when == 'start':
+                self.touch()
+            elif len(starts) == 2:
+                # Unrelated churn must not invalidate the affected seat's retry.
+                with record_owner.registry(other.home.parent).open('a') as stream:
+                    stream.write('\n')
+        def pump(self):
+            before = len(self.ready)
+            result = super().pump()
+            for packet in list(self.ready)[before:]:
+                if packet[0] == 'context' and packet[1]:
+                    contexts[-1].add(Path(packet[1]))
+                if when == 'completion' and not self.touched and packet[0] == 'sql' and any(
+                        'accounting_progress' in sql for sql, *_ in packet[1]):
+                    self.touch()
+            return result
+    monkeypatch.setattr(accounting_slices, 'BUDGET', 0.02)
+    driver = Measured()
+    try:
+        finish(driver, svc)
+        assert driver.touched
+        assert svc.ledger.catching_up(), 'retirement stays held until the affected work is accepted'
+        assert svc.ledger.ingested(writer.path) == 10, 'stable-seat work remains committed'
+        if when == 'start':
+            assert svc.ledger.ingested(record) == 0, 'the stale plan is still rejected'
+        finish(driver, svc)
+        assert not svc.ledger.catching_up()
+        assert svc.ledger.ingested(record) == svc.ledger.ingested(writer.path) == 10
+        assert forced == [], 'identity churn must never force a global catch-up epoch'
+        assert starts == [([changed.name, other.name], None), ([changed.name], {changed.name})]
+        assert contexts == [{record, writer.path}, {record}], 'retry never replays the stable seat'
+        assert [e for e, _ in notices].count('accounting-job-start') == 2
+        ends = [data for event, data in notices if event == 'accounting-job-end']
+        assert len(ends) == 2 and ends[0]['pending'] and not ends[1]['pending']
+        assert ends[0]['records'] == 2 and ends[1]['records'] == 1
+        assert all(data['seconds'] >= 0 and data['counts']['done'] == 1 for data in ends)
+        resets = [data for event, data in notices if event == 'accounting-job-reset']
+        assert resets == [dict(job=1, seats=[changed.name])]
+    finally:
+        driver.close()
+        svc.ledger.close()
+
+
+def test_scoped_replay_includes_owned_records_with_another_recorded_seat(tmp_path, monkeypatch):
+    svc, seat, record, _ = world(tmp_path, monkeypatch)
+    driver = Driver()
+    try:
+        finish(driver, svc)
+        visited = []
+        with svc.ledger.record_pass() as book:
+            book.attributions.replay_stream(svc.store, svc.runtime, svc.accounting_epoch,
+                                            lambda path, names: visited.append((path, names)), lambda: None,
+                                            seats={'synthetic-new-owner'}, records={str(record)})
+        assert visited == [(str(record), [seat.name])]
+    finally:
+        driver.close()
+        svc.ledger.close()

@@ -180,7 +180,8 @@ class Attribution:
         self.last = stamp
         return written
 
-    def replay_stream(self, store, runtime, framework, on_record, progress, errors=None, retry_interval=60):
+    def replay_stream(self, store, runtime, framework, on_record, progress, errors=None, retry_interval=60,
+                      *, seats=None, records=(), graph=None):
         """The same verdicts, releasing each record's incoming text before the next.
 
         The child owns this context; only compact turn identities and the post graph
@@ -208,12 +209,14 @@ class Attribution:
         invalid = {row[0] for row in self.db.execute('''SELECT DISTINCT t.record FROM turns t
             LEFT JOIN turn_attribution a ON a.record=t.record AND a.turn=t.turn
             WHERE a.valid IS NULL OR a.valid=0''')}
-        graph = Threads(store)
+        graph = graph if graph is not None else Threads(store)
         written, count = 0, 0
         reader_keys = reader_stamp.attributions() if framework is not None else {}
         for record, turns in by_record.items():
-            seats = sorted({row['seat'] for row in turns})
-            on_record(record, seats)
+            owners = sorted({row['seat'] for row in turns})
+            if seats is not None and not seats.intersection(owners) and record not in records:
+                continue
+            on_record(record, owners)
             certificate, inputs, error = None, [], None
             if not Path(abspath(record)).is_relative_to(Path(abspath(runtime))):
                 for row in turns:
@@ -228,7 +231,7 @@ class Attribution:
                 stamp = (reader, record_fingerprint(Path(record)))
                 ends = [moment(row['ended']) for row in turns]
                 ended = max((end for end in ends if end is not None), default=None)
-                scope = [(seat, bounds[seat], graph.scope(seat, ended)) for seat in seats]
+                scope = [(seat, bounds[seat], graph.scope(seat, ended)) for seat in owners]
                 if reader_keys.get(reader) is not None and stamp[1][0][0]:
                     certificate = hashlib.sha256(json.dumps([reader_keys[reader], stamp, sorted(names), scope]).encode()).hexdigest()
                     old = self.db.execute('SELECT evidence FROM attribution_records WHERE record=?', (record,)).fetchone()
