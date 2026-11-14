@@ -103,6 +103,11 @@ def test_cancelled_terminal_ends_only_the_named_run(tmp_path):
     path = save(tmp_path, [run("started", 1, prompt="A fictional request."),
                           run("terminal", 2, terminal="cancelled", reason="A fictional cancellation.")])
     state, turns = Reader.read(path)
+    assert state.turn_open is False and turns[0].end_reason == "A fictional cancellation."
+    assert not turns[0].tokens.complete and turns[0].failure is None
+    bare = save(tmp_path, [run("started", 1, prompt="A fictional request."),
+                           run("terminal", 2, terminal="cancelled")])
+    state, turns = Reader.read(bare)
     assert state.turn_open is False and turns[0].end_reason == "cancelled"
     assert not turns[0].tokens.complete and turns[0].failure is None
 
