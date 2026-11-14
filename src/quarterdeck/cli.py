@@ -31,7 +31,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     argv = list(argv if argv is not None else sys.argv[1:])
     argv = choose_default(args, argv)
-    if (args.run not in (cmd_upgrade, cmd_service, cmd_setup, cmd_init)
+    if (args.run not in (cmd_upgrade, cmd_service, cmd_setup, cmd_init, cmd_raise)
             and not (args.run is cmd_controls and getattr(args, "harness", None))):
         handoff(args, argv)
     try:
@@ -51,7 +51,7 @@ def needs_ship(args: argparse.Namespace) -> bool:
     """Verbs that act on no ship, or on the practice ship when none is named, never take the default."""
     if args.run is cmd_upgrade and getattr(args, 'all_ships', False):
         return False
-    return (args.run not in (cmd_laws, cmd_drill, cmd_default, cmd_setup, cmd_init)
+    return (args.run not in (cmd_laws, cmd_drill, cmd_default, cmd_setup, cmd_init, cmd_raise)
             and not (args.run is cmd_controls and getattr(args, 'harness', None)))
 
 
@@ -112,6 +112,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     from . import setup
     p = verb("init", cmd_init, "create the project's office and bring up its desk alone")
+    from . import raise_ship
+    p = verb("raise", cmd_raise, "ask the person, declare a template ship and bring up its crew")
+    raise_ship.arguments(p)
     p = verb("setup", cmd_setup, "guide setup with installed programs; ask before live checks spend turns")
     setup.arguments(p)
 
@@ -267,6 +270,14 @@ def cmd_init(args: argparse.Namespace) -> list[str]:
         return setup.init_office(args)
     except OSError as error:
         raise ShipError(f"office initialization could not access its files: {error}; correct the path or permissions and rerun qd init") from None
+
+
+def cmd_raise(args: argparse.Namespace) -> list[str]:
+    from . import raise_ship
+    try:
+        return raise_ship.run(args)
+    except (OSError, ValueError) as error:
+        raise ShipError(f"raise could not read or save its proposal: {error}; retain the office records and resolve the files before retrying") from None
 
 
 def cmd_cascade(args: argparse.Namespace) -> str:
