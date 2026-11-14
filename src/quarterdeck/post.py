@@ -627,25 +627,41 @@ def already_posted(store: Store, message: Message, *, seat: str | None = None) -
     refused only while the identical one is still the seat's latest ack: the Ledger reads the latest
     claim, so acking A, then B, then A again moves the claim back and is posted.
 
-    The search reads only what the poster can see: its own drop folder, then the post store as it is
-    shown here (a jailed seat's view of it). The drop is read first, so a drop the service files
-    between the two readings is found in the store by the second. Nothing is written or widened.
+    The search reads only what the poster can see: its own drop folder, then the replies to that re
+    in the post store as it is shown here (a jailed seat's view of it), from the reply map the store's
+    load already builds, never a pass over every message. An ack also looks at the messages stored
+    after the one it matches, newest first, and stops there. The drop is read first, so a drop the
+    service files between the two readings is found in the store by the second. Nothing is written or
+    widened.
     """
     if message.kind not in REPEATS_REFUSED or not message.re:
         return None
     runtime = store.dir.parent.parent
     folder = seat or message.sender
     senders = _drop_senders(runtime, folder) | {message.sender}
-    mine: dict[str, Message] = {}
-    for found in (*_own_drops(runtime, folder), *store.all()):
-        if found.id != message.id and found.kind == message.kind and found.sender in senders:
-            mine.setdefault(found.id, found)
-    if not mine:
+
+    def mine(found: Message) -> bool:
+        return found.id != message.id and found.kind == message.kind and found.sender in senders
+
+    drops = [found for found in _own_drops(runtime, folder) if mine(found)]
+    stored, replies = store._loaded()
+    same = [found for found in (*drops, *replies.get(message.re, ()))
+            if mine(found) and found.re == message.re and found.body == message.body]
+    if not same:
         return None
-    ordered = sorted(mine.values(), key=lambda found: (found.at, found.id))
-    if message.kind == "ack":
-        ordered = ordered[-1:]  # only the latest claim can be repeated
-    return next((found for found in ordered if found.re == message.re and found.body == message.body), None)
+    order = lambda found: (found.at, found.id)
+    if message.kind != "ack":
+        return min(same, key=order)
+    latest = max(same, key=order)
+    if any(order(found) > order(latest) for found in drops):
+        return None  # a later claim waits in the drop
+    for index in range(len(stored) - 1, -1, -1):  # newest first, stopping at the matching ack
+        found = stored[index]
+        if order(found) <= order(latest):
+            break
+        if mine(found):
+            return None  # a later claim moved the seat on: this ack moves it back
+    return latest
 
 
 def _own_drops(runtime: Path, seat: str) -> list[Message]:

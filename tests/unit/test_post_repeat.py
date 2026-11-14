@@ -7,6 +7,7 @@ the same seat already posted, with the same re and a byte-identical body, is not
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -188,3 +189,63 @@ def test_the_help_says_the_words_and_both_edges_of_the_guard(capsys):
     assert "A post with no re is never refused" in text
     assert "An ack is refused only while the identical ack is still this seat's latest" in text
     assert "Orders and questions are never refused" in text
+
+
+class Untouchable(list):
+    """The store's loaded messages, where a whole pass fails the test and each message looked at is counted."""
+
+    looked: list[int]
+
+    def __iter__(self):
+        raise AssertionError('the repeat guard passed over the whole store')
+
+    def __getitem__(self, index):
+        self.looked.append(index)
+        return super().__getitem__(index)
+
+
+def guarded(store: post.Store) -> Untouchable:
+    """Load the store once, then serve its messages only as an Untouchable, with the same reply map."""
+    messages, replies = store._loaded()
+    shown = Untouchable(list.__iter__(messages))
+    shown.looked = []
+    store._loaded = lambda: (shown, replies)
+    return shown
+
+
+def a_busy_store(tmp_path: Path, count: int = 200) -> tuple[post.Store, post.Message]:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    store = post.Store(runtime)
+    order = store.new("order", "desk", "worker-1", "build")
+    for index in range(count):
+        store.new("report", "worker-2", "desk", f"other work {index}")
+    return store, order
+
+
+@pytest.mark.parametrize("kind", ["report", "answer"])
+def test_a_report_or_answer_reads_only_the_replies_to_its_re(tmp_path: Path, kind):
+    store, order = a_busy_store(tmp_path)
+    first = store.new(kind, "worker-1", "desk", "done", re=order.id)
+    for _ in range(50):
+        store.new("report", "worker-2", "desk", "later work")
+    shown = guarded(store)
+    again = post.Message("-".join([kind[:3], "20990101", "0000", "worker-1", "ffff"]), kind, "worker-1", "desk",
+                         post.now(), "done", re=order.id)
+    assert post.already_posted(store, again) == first
+    other = replace(again, body="done, and more")
+    assert post.already_posted(store, other) is None
+    assert shown.looked == [], "no stored message outside the replies map was looked at"
+
+
+def test_an_ack_looks_only_at_what_was_stored_after_the_ack_it_matches(tmp_path: Path):
+    store, order = a_busy_store(tmp_path)
+    first = store.new("ack", "worker-1", "desk", "claimed", re=order.id)
+    for index in range(3):
+        store.new("report", "worker-2", "desk", f"after the ack {index}")
+    shown = guarded(store)
+    again = post.Message("-".join(["ack", "20990101", "0000", "worker-1", "ffff"]), "ack", "worker-1", "desk",
+                         post.now(), "claimed", re=order.id)
+    assert post.already_posted(store, again) == first
+    total = len(shown)
+    assert len(shown.looked) == 4 and min(shown.looked) == total - 4, shown.looked  # three after it, and the ack itself
