@@ -42,6 +42,39 @@ UNSETTLED = {
 }
 
 
+# A paste whose box the reader could not find keeps the screen it read, for a person to see what was drawn.
+SCREEN_ROWS, SCREEN_COLUMNS, SCREEN_CHARS = 120, 320, 24_000
+SECRET_SHAPES = re.compile(
+    r"\b(?:sk|xai|ghp|gho|ghs|ghu|github_pat|glpat)[-_][A-Za-z0-9_\-]{16,}"  # provider and forge tokens
+    r"|\bAKIA[0-9A-Z]{16}\b"  # a cloud access key id
+    r"|\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}"  # a signed web token
+    r"|(?i:\b(?:bearer|authorization|api[_-]?key|token|password|secret)\b\s*[:=]?\s*)[^\s'\"]{12,}")
+
+
+def screen_evidence(screen: Screen | None) -> dict[str, Any]:
+    """The screen a paste's box was read from when the reader found no box, for diagnosis alone.
+
+    Bounded to its last rows, where the composer is drawn, each cut to a width and all to a total, with
+    anything shaped like a credential masked. Nothing reads it back to decide, clear or resend.
+    """
+    if screen is None:
+        return {"reading": "no pane captured", "rows": [], "cut": 0}
+    rows = screen.text.split("\n")
+    while rows and not rows[-1].strip():
+        rows.pop()
+    kept, total = [], 0
+    for row in reversed(rows[-SCREEN_ROWS:]):
+        row = SECRET_SHAPES.sub("[masked]", row)[:SCREEN_COLUMNS]
+        if total + len(row) > SCREEN_CHARS:
+            break
+        kept.append(row)
+        total += len(row)
+    kept.reverse()
+    reading = (screen.unknown or (screen.interruption.name if screen.interruption else None)
+               or ("starting" if screen.starting else "no box"))
+    return {"reading": reading, "rows": kept, "cut": len(rows) - len(kept)}
+
+
 def identity(seat: Seat) -> dict[str, str | int | None]:
     launch, pane = seat.launched(), seat.pane()
     return {"pane": pane.id if pane else None, "pid": pane.pid if pane else None,

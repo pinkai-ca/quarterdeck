@@ -489,6 +489,12 @@ class Door:
         shown = self.box_shows(self.harness.box(text))
         self.after_paste = shown
         if shown is None or not self.matches(self.harness.box(text), shown):  # law: one-door
+            unread = shown is None or shown.box is None
+            if unread and proof and not self.seat.session.human:
+                try:  # what the reader could not read stays visible; a person's own screen is never kept
+                    proof.save(paste_screen=pending.screen_evidence(shown))
+                except (OSError, ValueError, TypeError):
+                    pass  # optional diagnosis; never alters paste/clear/submit decisions
             current = self.captured_pane
             diagnostic = self.short_pane_reason(text, current)
             if (diagnostic and proof and current and current.id == pane.id and current.pid == pane.pid
@@ -507,6 +513,9 @@ class Door:
                 reason = 'paste check failed; owned clear/empty outcome unconfirmed; inspect retained journal; never resent'
                 return Delivery('blind', f'{diagnostic}; {reason}' if diagnostic else reason)
             reason = f"box showed {seen!r}, not the message; not submitted or cleared; needs a human"
+            if unread and proof and 'paste_screen' in proof.data:
+                reason = (f"box showed None ({proof.data['paste_screen']['reading']}), not the message; not "
+                          "submitted or cleared; the screen read is kept in its journal; needs a human")
             return Delivery("blind", f'{diagnostic}; {reason}' if diagnostic else reason)
         if proof and not proof.same_launch(self.seat):
             return Delivery("blind", "launch changed after paste; not submitted or cleared")

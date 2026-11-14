@@ -837,8 +837,10 @@ class Seat:
 
     def _launch_words(self, argv: list[str], env: dict[str, str], path: str) -> list[str]:
         """This launch's exec words: its fresh private TMUX_TMPDIR, the server it runs on, every adapter's
-        session marks removed but the ones the seat's own adapter sets in ``env``."""
+        session marks removed but the ones the seat's own adapter sets in ``env``, and the variables the seat's
+        own adapter removes from its launch."""
         markers = [name for name in harnesses.inherited_markers() if name not in env]
+        markers += [name for name in self.harness.launch_unset if name not in env and name not in markers]
         if getattr(self, "_launch_tmpdir", None) is None:
             self._launch_tmpdir = self._fresh_tmux_tmpdir()  # set afresh by every up; made here only for another path
         return launch_words(path, argv, socket=self._socket_for_seat(), tmux_tmpdir=self._launch_tmpdir, markers=markers,

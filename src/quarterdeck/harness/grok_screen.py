@@ -41,6 +41,10 @@ PASTE_FOLD_LINES = 4
 HINT_STATES = {
     ("Shift+Tab:mode", "Ctrl+x:shortcuts"): False,
     ("Enter:send", "Alt+Enter:newline", "Shift+Tab:mode", "Ctrl+x:shortcuts"): False,
+    # The same idle draft where the program's environment names a VTE terminal new enough for Shift+Enter
+    # (VTE_VERSION 8400, inherited from the operator's terminal), measured on 13 November at 80 x 24 after a
+    # folded paste: Shift+Enter joins the newline key and Ctrl+x is not drawn.
+    ("Enter:send", "Shift+Enter/Alt+Enter:newline", "Shift+Tab:mode"): False,
     ("Shift+Tab:mode", "Ctrl+c:cancel", "Ctrl+x:shortcuts"): True,
     ("Shift+Tab:mode", "Ctrl+c:cancel", "Ctrl+b:send to bg", "Ctrl+x:shortcuts"): True,
     # At 80 columns the working draft drops Ctrl+x, while retaining cancel.

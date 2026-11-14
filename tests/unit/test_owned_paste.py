@@ -256,3 +256,57 @@ def test_missing_or_different_version_capability_cannot_authorize_keys(editor,mo
     text='header\nbody\nreply';proof=editor.proof(text);door=Door(editor.seat);delayed(door,editor)
     assert door.deliver(text,proof=proof).result=='blind'
     assert not editor.terminal.clears and 'paste_clear' not in proof.data
+
+
+def unread(text):
+    """A synthetic screen the reader could not read: no box, its reason named."""
+    from quarterdeck.harness.types import Screen
+    return Screen(text, box=None, unknown='synthetic unmeasured hint')
+
+
+def test_a_paste_whose_box_reads_none_keeps_the_screen_and_names_the_reading(editor):
+    text='header\nbody\nreply';proof=editor.proof(text);door=Door(editor.seat)
+    screen='\n'.join(f'synthetic row {n}' for n in range(200))+'\nsynthetic shown sk-'+'a'*24+' end\n\n\n'
+    door.box_shows=lambda *a:unread(screen)
+    editor.terminal.session_view=lambda *a:None  # an owner unknown: nothing is cleared, the paste is blind
+    result=door.deliver(text,proof=proof)
+    assert result.result=='blind' and not editor.terminal.submitted  # law: one-door
+    kept=json.loads(proof.path.read_text())['paste_screen']
+    assert kept['reading']=='synthetic unmeasured hint'
+    assert 'synthetic unmeasured hint' in result.detail and 'kept in its journal' in result.detail
+    assert kept['rows'][-1]=='synthetic shown [masked] end' and 'sk-' not in json.dumps(kept)
+    assert len(kept['rows'])==pending.SCREEN_ROWS and kept['rows'][0]=='synthetic row 81'
+    assert kept['cut']==201-pending.SCREEN_ROWS
+
+
+def test_a_kept_screen_is_bounded_by_width_and_total():
+    from quarterdeck.harness.types import Screen
+    wide=pending.screen_evidence(Screen('x'*5000+'\n'+'y'*10,box=None,unknown='synthetic'))
+    assert wide['rows']==['x'*pending.SCREEN_COLUMNS,'y'*10]
+    many=pending.screen_evidence(Screen('\n'.join('z'*300 for _ in range(110)),box=None,starting=True))
+    assert sum(map(len,many['rows']))<=pending.SCREEN_CHARS and many['rows'] and many['reading']=='starting'
+    assert many['cut']==110-len(many['rows'])
+    assert pending.screen_evidence(None)=={'reading':'no pane captured','rows':[],'cut':0}
+
+
+@pytest.mark.parametrize('secret',['xai-'+'B'*30,'ghp_'+'c'*36,'AKIA'+'D'*16,'eyJ'+'e'*12+'.'+'f'*12+'.'+'g'*12,
+                                   'Bearer '+'h'*20,'api_key='+'i'*16,'password: '+'j'*14])
+def test_a_kept_screen_masks_credential_shapes(secret):
+    from quarterdeck.harness.types import Screen
+    kept=pending.screen_evidence(Screen(f'before {secret} after',box=None,unknown='synthetic'))
+    assert kept['rows'][0].startswith('before ') and kept['rows'][0].endswith(' after')
+    assert '[masked]' in kept['rows'][0] and secret[-8:] not in kept['rows'][0]
+
+
+def test_a_matched_box_or_a_human_session_keeps_no_screen(editor):
+    text='header\nbody\nreply';proof=editor.proof(text)
+    assert Door(editor.seat).deliver(text,proof=proof).result=='delivered'
+    assert 'paste_screen' not in json.loads(proof.path.read_text())
+    later='another message';other=editor.proof(later);door=Door(editor.seat)
+    def human(*a):
+        editor.seat.session.human=True
+        return unread('a person\'s own synthetic screen')
+    door.box_shows=human
+    editor.terminal.session_view=lambda *a:None
+    assert door.deliver(later,proof=other).result!='delivered' and editor.terminal.submitted==[('Enter',)]
+    assert 'paste_screen' not in json.loads(other.path.read_text())

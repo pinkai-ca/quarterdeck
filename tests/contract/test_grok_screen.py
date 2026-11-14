@@ -327,3 +327,28 @@ def test_measured_queued_footer_does_not_supply_a_record_receipt(name):
 def test_unmeasured_queued_control_stays_unknown():
     screen = GrokHarness().screen(fixture("queued-response").replace("Ctrl+;:queue", "Ctrl+;:steer"))
     assert screen.unknown == "unmeasured Grok composer hint" and screen.box is None
+
+
+def test_measured_shift_enter_draft_hint_reads_the_folded_paste_idle():
+    """Measured on 13 November at 80 x 24 under VTE_VERSION=8400: the idle draft's hint names Shift+Enter."""
+    adapter = GrokHarness()
+    screen = adapter.screen(fixture("folded-shift-enter-80"))
+    assert screen.unknown is None and screen.interruption is None
+    assert screen.working is False
+    assert screen.shows == {"model": "Grok 4.7", "effort": "high"}
+    wanted = "\n".join(f"Synthetic item {i}." for i in range(42))
+    assert adapter.box(wanted).matches(screen.box, adapter.box_columns(80))
+    assert not adapter.box("\n".join(f"Synthetic item {i}." for i in range(41))).matches(
+        screen.box, adapter.box_columns(80))
+
+
+@pytest.mark.parametrize("old,new", [
+    ("Shift+Enter", "Shift+Space"),  # another key named for the newline
+    (":send", ":queue"),  # a send that is not the idle one
+    ("Shift+Tab", "Shift+Esc"),  # a mode key not measured
+])
+def test_unmeasured_shift_enter_hint_stays_blind(old, new):
+    native = fixture("folded-shift-enter-80")
+    assert native.count(old) == 1
+    screen = GrokHarness().screen(native.replace(old, new))
+    assert screen.unknown == "unmeasured Grok composer hint" and screen.box is None

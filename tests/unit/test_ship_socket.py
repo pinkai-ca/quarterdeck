@@ -325,6 +325,24 @@ def test_the_launch_script_leaves_the_program_no_tmux_server_and_no_inherited_se
         assert kept in seen  # an adapter's own setting, and every preference, stay
 
 
+@pytest.mark.parametrize("program,kept", [("grok", False), ("claude", True), ("codex", True), ("opencode", True)])
+def test_only_grok_launches_without_the_operators_vte_version(tmp_path, program, kept):
+    """Grok 1.0.77 draws another hint row under a VTE it reads as telling Shift+Enter apart (measured 13 November);
+    a seat's terminal is tmux, so Grok's launch removes it. Every other program keeps what it was measured with."""
+    from types import SimpleNamespace
+    from quarterdeck import harness
+    launching = SimpleNamespace(harness=harness.get(program), _launch_tmpdir=tmp_path / "t",
+                                _socket_for_seat=lambda: "/r/tmux/server", ship=SimpleNamespace(runtime=tmp_path))
+    words = seatmod.Seat._launch_words(launching, ["env"], {}, os.environ["PATH"])
+    script = tmp_path / "launch.sh"
+    script.write_text(seatmod.launch_script("synthetic", words))
+    inherited = {"PATH": os.environ["PATH"], "VTE_VERSION": "8400", "COLORTERM": "truecolor"}
+    done = subprocess.run(["sh", str(script)], env=inherited, capture_output=True, text=True, timeout=10, check=True)
+    seen = dict(line.split("=", 1) for line in done.stdout.splitlines() if "=" in line)
+    assert ("VTE_VERSION" in seen) is kept
+    assert seen["COLORTERM"] == "truecolor"  # nothing else of the terminal is touched
+
+
 def test_a_ship_still_on_the_default_server_keeps_its_alert_when_the_status_line_overflows():
     from quarterdeck import watch
     cutover = "tmux: still on the default server /tmp/tmux-1/default; qd down, then qd up, moves it"

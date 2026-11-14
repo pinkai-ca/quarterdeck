@@ -56,3 +56,5 @@ annotation. **Native renderer behavior at short heights is unmeasured**; accepta
 here uses invented 100x16 and 100x50 frames and existing measured fold contracts,
 not a live native renderer or provider. No independently established clipped-boundary
 form is available, so no unnumbered height diagnosis is inferred from an unknown box.
+
+**An unread box.** Where the reader finds no box after a paste, outside a human's session, the failed-paste journal also keeps the screen it read as `paste_screen`: the reader's own reason, the screen's last 120 rows cut to 320 characters each and 24,000 in all, and the count of rows cut. Anything shaped like a credential is masked first. The blind reason names the reading and says the screen is kept. It is evidence for a person and nothing else: nothing reads it back to decide, clear or resend, and saving it can fail without changing the outcome. Grok's `VTE_VERSION` hint row was found this way.

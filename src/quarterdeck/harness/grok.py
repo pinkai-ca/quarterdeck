@@ -282,6 +282,10 @@ def program_privacy(path: Path) -> dict | None:
 
 class GrokHarness(Harness):
     box_geometry_known = True  # box_columns below declares the established text area
+    # A seat's terminal is tmux, yet it inherits VTE_VERSION from the operator's own terminal, and 1.0.77 reads
+    # a VTE of 8200 or later as one that tells Shift+Enter apart: it then draws another hint row under the
+    # composer (measured on 13 November). Every other state was measured without it, so the launch removes it.
+    launch_unset = ("VTE_VERSION",)
 
     def model_identity(self, value: str | None, *, version: str | None = None) -> str | None:
         value = super().model_identity(value, version=version)
