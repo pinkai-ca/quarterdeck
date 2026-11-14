@@ -66,7 +66,8 @@ def test_a_taller_unknown_frame_names_the_actual_launch_version():
     assert '0.74.2' not in str(shown)
 
 
-@pytest.mark.parametrize('change', ['no-launch', 'other-pane', 'other-pid', 'no-capture', 'dead', 'unknown-height'])
+@pytest.mark.parametrize('change', ['no-launch', 'other-pane', 'other-pid', 'no-capture', 'dead',
+                                   'unknown-height', 'missing-height', 'missing-launch-reader', 'missing-pid'])
 def test_height_reason_requires_this_captured_launch_and_known_geometry(change):
     door, screen, original, pane, launched = display()
     if change == 'no-launch':
@@ -79,6 +80,12 @@ def test_height_reason_requires_this_captured_launch_and_known_geometry(change):
         door.captured_pane = None
     elif change == 'dead':
         pane.dead = True
+    elif change == 'missing-height':
+        del pane.height
+    elif change == 'missing-launch-reader':
+        del door.seat.launched
+    elif change == 'missing-pid':
+        del pane.pid
     else:
         pane.height = None
     assert door._reading(screen) == original

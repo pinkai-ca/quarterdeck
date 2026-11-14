@@ -202,18 +202,21 @@ class Door:
         """Measured empty-box geometry for this captured pane and its own launch, never admission."""
         heights = getattr(self.harness, 'minimum_pane_heights', {})
         pane = self.captured_pane
+        rows = getattr(pane, 'height', None)
         if (not heights or screen is None or screen.box is not None or screen.interruption is not None
-                or pane is None or pane.dead or type(pane.height) is not int or pane.height <= 0):
+                or pane is None or getattr(pane, 'dead', None) is not False or type(rows) is not int or rows <= 0):
             return '', ''
-        launched = self.seat.launched()
+        launched = getattr(self.seat, 'launched', lambda: None)()
         version = getattr(launched, 'version', None)
-        if launched is None or launched.pane != pane.id or launched.pid != pane.pid:
+        pane_id, pid = getattr(pane, 'id', None), getattr(pane, 'pid', None)
+        if (launched is None or not isinstance(pane_id, str) or type(pid) is not int
+                or getattr(launched, 'pane', None) != pane_id or getattr(launched, 'pid', None) != pid):
             return '', ''
         label = f'{self.harness.display_name} {version or "(version unknown)"}'
         display = f'{label}: {screen.unknown.removeprefix(self.harness.display_name + " ")}' if screen.unknown else ''
-        if (height := heights.get(version)) is None or pane.height >= height:
+        if (height := heights.get(version)) is None or rows >= height:
             return display, ''
-        return 'input box needs a taller pane', f'pane {pane.height} rows; {label} draws its box from {height} rows'
+        return 'input box needs a taller pane', f'pane {rows} rows; {label} draws its box from {height} rows'
 
     def _base_reading(self, screen: Screen | None) -> Reading:
         """The existing admission reading; geometry diagnostics confer no authority."""
