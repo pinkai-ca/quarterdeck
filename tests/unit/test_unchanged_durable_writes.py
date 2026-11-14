@@ -156,9 +156,12 @@ def test_a_post_rename_failure_is_raised_with_its_path_and_never_reported_repair
     input_row(record, proof.data["payload"], post.now())
     folder = proof.path.parent
     real_replace, armed = os.replace, [True]
-    def replace(source, target):
-        result = real_replace(source, target)
-        if armed[0] and Path(target) == proof.path:
+    def replace(source, target, **kwargs):
+        destination = Path(target)
+        if not destination.is_absolute() and 'dst_dir_fd' in kwargs:
+            destination = Path(os.readlink(f"/proc/self/fd/{kwargs['dst_dir_fd']}")) / destination
+        result = real_replace(source, target, **kwargs)
+        if armed[0] and destination == proof.path:
             armed[0] = False
             raise OSError(errno.EIO, 'synthetic post-rename failure')
         return result
