@@ -359,3 +359,86 @@ def test_scoped_replay_includes_owned_records_with_another_recorded_seat(tmp_pat
     finally:
         driver.close()
         svc.ledger.close()
+
+
+def test_planner_finishes_while_the_busy_parent_does_not_read_results(tmp_path, monkeypatch):
+    svc, _, record, _ = world(tmp_path, monkeypatch, 1000)
+    driver = Driver()
+    monkeypatch.setattr(accounting_slices, 'BUDGET', 0.02)
+    try:
+        driver.step(svc)
+        assert driver.process is not None and not driver.outgoing
+        ingested = svc.ledger.ingested(record)
+        done = accounting_slices.frame(('done',))
+        deadline = time.monotonic() + 15
+        # No driver pump, drain or accounting call: another duty owns the parent.
+        while time.monotonic() < deadline:
+            size = os.fstat(driver.plan.fileno()).st_size
+            if size >= len(done) and os.pread(driver.plan.fileno(), len(done), size - len(done)) == done:
+                break
+        else:
+            pytest.fail('planning child waited for its busy parent to read output')
+        assert size > 65536, 'the plan must exceed a pipe-sized output buffer'
+        assert svc.ledger.ingested(record) == ingested, 'only the service applies planned writes'
+        finish(driver, svc)
+        assert svc.ledger.ingested(record) == 1000
+        assert not svc.ledger.catching_up()
+        first_size = os.fstat(driver.plan.fileno()).st_size
+        finish(driver, svc)
+        assert os.fstat(driver.plan.fileno()).st_size < first_size, 'completed jobs reclaim their plan file'
+        assert svc.ledger.ingested(record) == 1000
+    finally:
+        driver.close()
+        svc.ledger.close()
+    assert driver.plan is None
+    assert not list(svc.runtime.glob('tmp*')), 'the anonymous plan has no retained path'
+
+
+def test_progress_is_logged_after_committed_record_groups(tmp_path, monkeypatch):
+    from collections import deque
+    import tempfile
+    svc, seat, _, _ = world(tmp_path, monkeypatch)
+    driver = Driver()
+    driver.active = True
+    driver.started = time.monotonic()
+    driver.job = 1
+    driver.plan = tempfile.TemporaryFile(dir=svc.runtime)
+    driver.identities = {seat.name: driver.identity(svc.runtime, seat.name)}
+    driver.watched = {seat.name}
+    driver.ready = deque([('context', str(tmp_path / f'synthetic-record-{n}'), [seat.name]) for n in range(205)]
+                         + [('context', None, []), ('done',)])
+    monkeypatch.setattr(driver, 'pump', lambda: False)
+    logs = []
+    def logged(event, **fields):
+        assert not svc.ledger.db.in_transaction, 'progress must describe committed work'
+        logs.append((event, fields))
+    svc.log = logged
+    try:
+        driver.step(svc)
+        progress = [data for event, data in logs if event == 'accounting-job-progress']
+        assert len(progress) == 1
+        assert progress[0]['records'] == progress[0]['unique_records'] == 205
+        assert progress[0]['job'] == 1
+        assert [event for event, _ in logs] == ['accounting-job-progress', 'accounting-job-end']
+    finally:
+        driver.close()
+        svc.ledger.close()
+
+
+def test_empty_interstep_drain_does_not_wait_or_start_a_new_job(tmp_path, monkeypatch):
+    svc, _, _, _ = world(tmp_path, monkeypatch)
+    driver = Driver()
+    try:
+        driver.drain(svc)
+        assert driver.process is None
+        driver.active = True
+        driver.started = time.monotonic()
+        monkeypatch.setattr(driver, 'pump', lambda: False)
+        started = time.monotonic()
+        driver.drain(svc)
+        assert time.monotonic() - started < 0.2
+        assert not svc.ledger.db.in_transaction
+        assert driver.process is None and driver.active
+    finally:
+        driver.close()
+        svc.ledger.close()

@@ -158,6 +158,7 @@ class Service:
                     self.tick()
                     until = time.monotonic() + self.ship.tick  # read after tick() reloads the ship file
                     while time.monotonic() < until:
+                        self.drain_accounting()
                         self.status_due()
                         remaining = until - time.monotonic()
                         if remaining > 0:
@@ -209,6 +210,7 @@ class Service:
 
     def _tick_steps(self):
         # Operational duties keep their order and never wait behind the slice.
+        self.drain_accounting()
         for step in (self.server_recovery, self.reconcile, self.file_drops, self.groups, self.cascades, self.fleet_post, self.inboxes, self.recoveries, self.refusals, self.answers, self.looks, self.deliveries, self.follow, self.requests, self.compactions, self.person_quiet, self.fresh_after_order,
                      self.rebrief, self.push_reminders, self.credentials, self.authentications, self.model_differences, self.failover, self.account, self.refresh_usage, self.pool_forecasts, self.retire_post):
             self.heartbeat()  # before every step: a slow delivery or usage read reads as busy, never as dead
@@ -216,7 +218,14 @@ class Service:
                 step()
             except Exception as error:  # one failing step never stops the others
                 self.log("error", step=step.__name__, error=repr(error), trace=traceback.format_exc())
+            self.drain_accounting()
             self.status_due()
+
+    @record_owner.reader_pass()
+    def drain_accounting(self):
+        """Use ready plans between duties; the accounting duty alone starts jobs."""
+        if driver := getattr(self, 'account_driver', None):
+            driver.drain(self)
 
     def pool_forecasts(self) -> None:
         from . import usage_forecast

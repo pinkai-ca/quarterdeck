@@ -9,12 +9,12 @@ import os
 from pathlib import Path
 import pickle
 import resource
-import select
 import signal
 import sqlite3
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 from types import SimpleNamespace
 
@@ -33,6 +33,8 @@ from .provenance import Provenance
 from .usage_cache import UsageCache
 
 BUDGET = 2.0
+DRAIN_BUDGET = 0.02
+PROGRESS_RECORDS = 200
 MAX_PACKET = 8 * 1024 * 1024
 
 
@@ -250,6 +252,8 @@ class Driver:
 
     def __init__(self):
         self.process = None
+        self.plan = None
+        self.plan_offset = 0
         self.incoming, self.outgoing = bytearray(), bytearray()
         self.ready = deque()
         self.events = deque()
@@ -269,6 +273,7 @@ class Driver:
         self.completion = []
         self.job = 0
         self.counts, self.records = Counter(), set()
+        self.completed_records = self.reported_records = 0
 
     def close(self):
         if self.process is not None:
@@ -280,8 +285,11 @@ class Driver:
                     self.process.kill()
                     self.process.wait(timeout=0.2)
             self.process.stdin.close()
-            self.process.stdout.close()
             self.process = None
+        if self.plan is not None:
+            self.plan.close()
+            self.plan = None
+        self.plan_offset = 0
 
     def collect(self, service):
         for seat in service.resolved_seats():
@@ -308,11 +316,19 @@ class Driver:
             environment = dict(os.environ, PYTHONDONTWRITEBYTECODE='1', OPENBLAS_NUM_THREADS='1')
             for name in ('QD_SEAT', 'QD_SHIP', 'QD_TMUX_SOCKET', 'TMUX', 'TMUX_PANE'):
                 environment.pop(name, None)
+            # An anonymous regular file cannot fill a pipe while the service is
+            # occupied by a long duty. Only this parent and its child hold it.
+            self.plan = tempfile.TemporaryFile(dir=service.runtime, buffering=0)
             self.process = subprocess.Popen([sys.executable, '-m', __name__, '--worker', str(os.getpid())],
-                                            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                            stdin=subprocess.PIPE, stdout=self.plan,
                                             stderr=subprocess.DEVNULL, env=environment)
             os.set_blocking(self.process.stdin.fileno(), False)
-            os.set_blocking(self.process.stdout.fileno(), False)
+        else:
+            # 'done' is the last flushed frame; the child now waits for its next
+            # job. Reset the shared file offset only at this job boundary.
+            self.plan.truncate(0)
+            os.lseek(self.plan.fileno(), 0, os.SEEK_SET)
+        self.plan_offset = 0
         self.outgoing.extend(frame(dict(runtime=str(service.runtime), epoch=service.accounting_epoch,
                                         seats=self.seats, reset=self.reset_child,
                                         scope=sorted(self.scope) if self.scope is not None else None)))
@@ -332,14 +348,14 @@ class Driver:
                 moved = bool(count)
             except BlockingIOError:
                 pass
-        try:
-            raw = os.read(self.process.stdout.fileno(), 65536)
-            if not raw and self.process.poll() is not None:
-                raise OSError('accounting child ended')
-            self.incoming.extend(raw)
-            moved |= bool(raw)
-        except BlockingIOError:
-            pass
+        if self.ready:
+            return moved  # retain at most one input chunk (or one bounded large frame)
+        raw = os.pread(self.plan.fileno(), 65536, self.plan_offset)
+        self.plan_offset += len(raw)
+        if not raw and self.process.poll() is not None and not self.ready:
+            raise OSError('accounting child ended')
+        self.incoming.extend(raw)
+        moved |= bool(raw)
         while len(self.incoming) >= 4:
             length = struct.unpack('!I', self.incoming[:4])[0]
             if not 0 < length <= MAX_PACKET:
@@ -349,6 +365,19 @@ class Driver:
             self.ready.append(pickle.loads(self.incoming[4:length + 4]))
             del self.incoming[:length + 4]
         return moved
+
+    def drain(self, service):
+        """Apply ready groups between duties, without waiting or starting a job."""
+        if self.active:
+            self.step(service, seconds=DRAIN_BUDGET, wait=False)
+
+    def report_progress(self, service):
+        if self.completed_records - self.reported_records >= PROGRESS_RECORDS:
+            service.log('accounting-job-progress', job=self.job, records=self.completed_records,
+                        unique_records=len(self.records), counts=dict(self.counts),
+                        seconds=time.monotonic() - self.started,
+                        plan_bytes=os.fstat(self.plan.fileno()).st_size)
+            self.reported_records = self.completed_records
 
     @staticmethod
     def identity(runtime, name):
@@ -399,8 +428,8 @@ class Driver:
                     service.log('accounting-caught-up', seconds=time.monotonic() - self.started)
         return not self.active
 
-    def step(self, service):
-        deadline = time.monotonic() + BUDGET
+    def step(self, service, *, seconds=None, wait=True):
+        deadline = time.monotonic() + (BUDGET if seconds is None else seconds)
         before = service.accounting_health.shown()
         try:
             if self.events and self.callbacks(service, deadline):
@@ -414,6 +443,8 @@ class Driver:
                 self.retry_seats = set()
                 self.completion = []
                 self.counts, self.records = Counter(), set()
+                self.completed_records = self.reported_records = 0
+                self.context = (None, [])
                 self.seats, self.screens = [], []
                 self.inventory = iter(self.collect(service))
             if self.inventory is not None:
@@ -447,14 +478,15 @@ class Driver:
                 while time.monotonic() < deadline:
                     self.pump()
                     if not self.ready:
-                        # Keep draining within this slice. Returning after one pipeful
-                        # would stretch a cold replay over thousands of normal ticks.
-                        select.select([self.process.stdout], [self.process.stdin] if self.outgoing else [], [],
-                                      min(0.05, max(0, deadline - time.monotonic())))
+                        if not wait:
+                            break
+                        time.sleep(min(0.01, max(0, deadline - time.monotonic())))
                         continue
                     packet = self.ready.popleft()
                     self.counts[packet[0]] += 1
                     if packet[0] == 'context':
+                        if self.context[0] is not None:
+                            self.completed_records += 1
                         self.context = packet[1:]
                         self.watched.update(self.context[1])
                         if packet[1] is not None:
@@ -488,6 +520,7 @@ class Driver:
                     self.progress += 1
                     if self.progress % 200 == 0:
                         service.heartbeat()
+            self.report_progress(service)  # after commit, never inside the write transaction
             self.callbacks(service, deadline)
         except Exception as error:
             if self.started is not None and self.active:
