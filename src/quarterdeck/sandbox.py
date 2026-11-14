@@ -55,6 +55,7 @@ def available() -> bool:
     return shutil.which(PROGRAM) is not None
 
 
+OWN_WORK = "work"  # the one folder of its own ship a jailed seat may work in, as the forum's reviewer does
 LOCKS = "locks"  # runtime/locks: the service's own lock files, hidden inside every jail
 
 
@@ -107,16 +108,17 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
                         'for example workspace = "/path/to/your/project". '
                         'If this seat has its own cwd setting, change that to the project folder too.')
     fleet = fleet_roots(ship.folder)
-    own_ship, own_runtime = ship.folder.resolve(), ship.runtime.resolve()
+    own_work = ship.folder.resolve() / OWN_WORK
     if inside := next((root for root in fleet if workspace.is_relative_to(root.resolve())), None):
-        # The one place in the fleet a workspace may lie: a folder of the jail's own ship, outside its runtime, such
-        # as the forum's work folder. It is bound writable after the ship's own read-only folder. Anywhere else the
-        # fence would leave it absent, or read-only, inside.
-        if not workspace.is_relative_to(own_ship) or workspace.is_relative_to(own_runtime):
+        # The one place in the fleet a workspace may lie: the ship's own work folder, as the forum's reviewer has it,
+        # bound writable after the ship's own read-only folder. No other folder of the ship: homes/ holds settings and
+        # code every unjailed seat of a program loads, .git runs hooks when qd commits the declaration, and roles/ and
+        # orders.md go into unjailed seats' briefs, so a jail writing there would escape it. Anywhere else in the fleet
+        # the fence would leave the workspace absent, or read-only, inside.
+        if not workspace.is_relative_to(own_work):
             raise ShipError(f"{seat_name}: sandboxed with its working directory at {workspace}, inside the fleet folder "
-                            f"{inside} and outside this ship's own folders; the jail fences that folder empty, so the "
-                            "working directory would be absent inside it. Give the seat a working directory outside "
-                            f"{inside}, or a folder of this ship's own outside its runtime")
+                            f"{inside}; a jailed seat may work inside its ship's folder only in {own_work}. Give the "
+                            f"seat a working directory there, or outside {inside}")
     programs = (program, *FRAMEWORK_TOOLS)
     folders = [f for f in (*program_folders(programs, path, home), *hidden_folders(programs, path, home))
                if f != workspace and workspace not in f.parents and ship.folder not in f.parents and f != ship.folder]

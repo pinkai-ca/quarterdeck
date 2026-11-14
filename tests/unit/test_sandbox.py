@@ -347,7 +347,9 @@ def test_the_machines_python_and_pip_are_found_through_the_machine_path_never_a_
                 Path(found).resolve().is_relative_to(b.parent) for b in bins if b.name == "bin"), (name, found)
 
 
-@pytest.mark.parametrize('place', ['ships/templates/example', 'ships/alpha/runtime/work', 'ships/beta', 'office', 'office/work'])
+@pytest.mark.parametrize('place', ['ships/templates/example', 'ships/alpha/runtime/work', 'ships/beta', 'office', 'office/work',
+                                   'ships/alpha/homes', 'ships/alpha/homes/claude', 'ships/alpha/.git', 'ships/alpha/roles',
+                                   'ships/alpha/elsewhere'])
 def test_plan_refuses_a_workspace_inside_a_fleet_folder_by_path(tmp_path, monkeypatch, place):
     """The jail fences ships/ and office/ empty after the workspace: a workspace inside one would be absent."""
     project = tmp_path / 'project'
@@ -359,6 +361,7 @@ def test_plan_refuses_a_workspace_inside_a_fleet_folder_by_path(tmp_path, monkey
     with pytest.raises(ShipError, match='inside the fleet folder') as caught:
         sandbox.plan(ship, 'worker', own, own / 'home', workspace, '/usr/bin/python3', '/usr/bin', home=tmp_path / 'home')
     root = project / place.split('/')[0]
+    assert f'only in {ship.folder.resolve() / "work"}' in str(caught.value)
     assert f'at {workspace.resolve()}, inside the fleet folder {root}' in str(caught.value)
     assert not (ship.runtime / 'post').exists(), 'refused before anything of the launch is made'
 
