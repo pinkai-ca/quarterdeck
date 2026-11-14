@@ -178,3 +178,35 @@ def test_heartbeat_continues_inside_a_long_service_step(tmp_path, monkeypatch):
         assert not any(t.name == 'service-heartbeat' for t in threading.enumerate())
     finally:
         svc.ledger.close()
+
+
+def test_restart_resumes_committed_prefix_without_duplicate_turns(tmp_path, monkeypatch):
+    svc, seat, record, _ = world(tmp_path, monkeypatch, 1000)
+    driver = Driver()
+    monkeypatch.setattr(accounting_slices, 'BUDGET', 0.0005)
+    try:
+        until = time.monotonic() + 20
+        while svc.ledger.ingested(record) == 0 and time.monotonic() < until:
+            driver.step(svc)
+            time.sleep(0.005)
+        assert 0 < svc.ledger.ingested(record) < 1000
+        assert svc.ledger.catching_up()
+        assert not svc.ledger.db.in_transaction
+    finally:
+        driver.close()
+        svc.ledger.close()
+    restarted = Service(svc.ship, SimpleNamespace())
+    restarted.resolved_seats = lambda: [seat]
+    restarted.heartbeat = lambda: None
+    restarted.log = lambda *args, **kwargs: None
+    restarted.publish_accounting_health = lambda **kwargs: None
+    driver = Driver()
+    monkeypatch.setattr(accounting_slices, 'BUDGET', 0.02)
+    try:
+        finish(driver, restarted)
+        assert restarted.ledger.ingested(record) == 1000
+        assert restarted.ledger.db.execute('SELECT COUNT(*) FROM tool_calls').fetchone() == (1000,)
+        assert not restarted.ledger.catching_up()
+    finally:
+        driver.close()
+        restarted.ledger.close()
