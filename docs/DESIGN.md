@@ -50,8 +50,8 @@ The canonical [laws](../standing-orders/laws.md) state only guarantees enforced 
 - [Watch](design/watch.md) and [ledger](design/ledger.md)
 - [Orders and laws](design/orders-and-laws.md) and [tests](design/tests.md)
 - [Working on Quarterdeck](design/working.md) and [guided setup](design/guided-setup.md)
-- [Modules and repository layout](MODULES.md#13-repository-layout)
-- [Decisions](DECISIONS.md#14-decisions)
+- [Modules and repository layout](MODULES.md#repository-layout)
+- [Decisions](DECISIONS.md)
 
 ## Where the old sections went
 
@@ -71,7 +71,7 @@ Historical section citations map to these pages:
 | 10. Standing orders | [Orders and laws](design/orders-and-laws.md#10-standing-orders) |
 | 11. The laws, second draft | [Laws](design/orders-and-laws.md#11-the-laws-second-draft) |
 | 12. Tests | [Tests](design/tests.md#12-tests) |
-| 13. Repository layout | [Modules](MODULES.md#13-repository-layout) |
-| 14. Decisions | [Decisions](DECISIONS.md#14-decisions) |
+| 13. Repository layout | [Modules](MODULES.md#repository-layout) |
+| 14. Decisions | [Decisions](DECISIONS.md) |
 | 15. Working on the framework from a ship | [Working](design/working.md#15-working-on-the-framework-from-a-ship) |
 | Guided setup | [Guided setup](design/guided-setup.md#guided-setup); office/raise moved to [Structures](design/structures.md#office-and-raising-a-ship) |

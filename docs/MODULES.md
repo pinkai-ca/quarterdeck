@@ -1,6 +1,6 @@
 # Modules
 
-The modules that grew beside the parts, in `src/quarterdeck/` and in its `harness/` folder, each with what it holds. The module of each part itself, such as `ship.py`, `seat.py`, `door.py`, `post.py`, `watch.py` and `ledger.py`, and the adapter of each harness are named in [section 13 of the design](#13-repository-layout), which lays out the whole repository. [CONTRIBUTING.md](../CONTRIBUTING.md) says how to change them.
+The modules that grew beside the parts, in `src/quarterdeck/` and in its `harness/` folder, each with what it holds. The module of each part itself, such as `ship.py`, `seat.py`, `door.py`, `post.py`, `watch.py` and `ledger.py`, and the adapter of each harness are named in the [repository layout](#repository-layout) below. [CONTRIBUTING.md](../CONTRIBUTING.md) says how to change them.
 
 ## The framework
 
@@ -59,144 +59,150 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `synthetic_record.py` | the fake program's records, in Claude Code's or Codex's shape |
 | `types.py` | the values the adapters and the framework pass between them: inputs, tokens, turns and their recorded failures, state, keys, controls, screens, boxes, credentials, launches |
 
-## 13. Repository layout
+## Repository layout
 
-```
-quarterdeck/                       the project folder: the framework repository
-  LICENSE  README.md  pyproject.toml  .gitignore (ships/*, !ships/drydock/, !ships/default/, !ships/forum/, !ships/cascade/, !ships/shuttle/, work/, .testruns/)
-  AGENTS.md       for an agent that arrives to set Quarterdeck up or to use it; CLAUDE.md is one line that imports it
-  CONTRIBUTING.md for whoever works on Quarterdeck itself, person or agent
-  src/quarterdeck/
-    cli.py         the qd command
-    setup.py       office initialization and guided crew creation/reruns, with Git identity checked before writes and replaceable machine/live seams
-    raise_ship.py  exact template proposals, person-shell approval records in the office runtime, and crew creation/launch
-    setup_answers.py   one flags/file/terminal answer model, edits and explicit acceptance
-    setup_proposal.py  read-only setup proposals and their shared text/JSON summary
-    ship.py        ship.toml -> Ship: crew/office kind, sessions, seats, roles, pools, optional groups and cascade; the line editor; the fence
-    providers.py   declared companies, input normalization and public identities
-    program_use.py   record-first current program activity and launch-bound historical last use
-    check_outcome.py   bounded safe check outcomes, atomic publication and shared operational alarms
-    tmux.py        the only module that runs tmux
-    tmux_socket.py   private endpoint ownership and namespace locking; no native command execution
-    seat.py        seat identity, lifecycle and controls: up, down, restart, fresh, stop, set
-    lifecycle.py   shared seat-transition claim, bounded explicit waits and nonblocking delivery
-    door.py        the one typing path: clear, type, check, submit, confirm; three speeds; the wall it reads
-    pending.py delivery_record.py   saved paste evidence and historical receipts
-    pending_lifecycle.py   service-only null-identity retirement and exact old-launch record links
-    pane_obstruction.py   one bounded short-pane reason marker and its named journal, with writer-owned expiry
-    receipt_refresh.py   service-owned framework-revision receipt-refresh progress
-    human_wake.py  one fixed human-seat wake per watch episode, using Door and the existing Proof/receipt
-    recovery.py    one reserved native continuation and unresolved-mode lifecycle hold, using the existing Door/Proof
-    compaction.py  the threshold, handoff, readiness and transition journal for fresh starts after compaction
-    compaction_alert.py   once-per-reading reports to systems for idle manual-fresh readiness, and named unrouted alarms
-    idle.py        the ordinary live idle proof shared by relaunch, failover and selection
-    move_hold.py   service-written operational move facts bound to launch and watch generation
-    inbox_watch.py   current own-watch registration and live generation proof for the seat-aware idle exception
-    person_quiet.py    a human seat's person quiet time from its record, and its one wake per readiness
-    input_receipt.py   the one rule that matches a delivery to the record's evidence of its input
-    paste_refusal.py   owned unsubmitted-paste cleanup and scoped negative evidence
-    turn_failure.py    a turn ended in a recorded error: the door's hold, its alarm, and the receipts it unsettles
-    refusal.py     a provider-refused crew seat started fresh once, the refused message withheld and its sender told
-    service.py     the ship's one long-running process: inboxes, deliveries, attempts, bounded quick-request slices, deferred controls, the heartbeat,
-                   the machine sample; the one writer of the Ledger
-    servicectl.py  the service's lock, heartbeat, start, stop and requests
-    request_queue.py   one queued-request owner: visible holds, terminal cancellation/supersession and writer coordination
-    shutdown.py    service-local SIGTERM deferral, runtime owner/boundary facts and bounded stop annotation
-    control_confirmation.py   pure value choice and bounded consumed-control continuation in the one request owner
-    model_mismatch.py   record-first canonical model differences, fixed systems report intents and named fallback alarms
-    presentation.py   disposable status text rendering and freshness checks; the console bootstrap's optional fast path,
-                   never lifecycle, receipt or usage evidence
-    harness/reader_stamp.py   explicit per-harness reader dependencies and attribution-engine files, hashed from their bytes for accounting certificates; imports and literal import calls use the same declared sets, and exact computed calls are classified beside them with a reason
-    harness/       base.py types.py home.py claude.py codex.py antigravity.py opencode.py pi.py grok.py fake.py; json_record.py limits.py sqlite_snapshot.py costs.py
-                   grok_record.py grok_screen.py grok_usage.py grok_workspace.py grok_notice.py grok_models.py   native ACP updates, fullscreen composer, program-owned billing, exact native workspace trust, information-only project inventory and measured model-selection/cache readings
-                   opencode_record.py antigravity_record.py antigravity_wire.py antigravity_quota.py; simulator.py synthetic_record.py synthetic_control.py,
-                   the fake program the drill runs, its records in Claude Code's or Codex's shape, and the rendezvous a test holds it at
-                   each fake launch acknowledges its own startup token after its first prompt; only a live synthetic
-                   launch with that acknowledgment can finish the survival observation early; real programs retain it
-    harness/capabilities.py   immutable effort/default metadata, pure declaration admission, override conflicts and shared default labels
-    harness/codex_usage.py   Codex usage windows from the newest eligible snapshot in current launch records
-    harness/claude_statusline.py   packaged default Claude footer: session identity and generic ledger allowance bars, runtime-only background cache
-    harness/claude_limits.py  native Claude model allowances, family scope, reset-period inference and safe shape diagnostics
-    harness/antigravity_models.py  explicit Google model/group relations and native identity equalities; unmeasured facts remain unknown
-    harness/claude_watch.py  structured watch-output consumption for attribution, never delivery receipts
-    harness/claude_background.py   measured root Bash background-task evidence, separate from turn accounting
-    harness/compactions.py   the complete native compaction count and work snapshot from the current owned record
-    harness/closed_record.py   read-only payload absence in an exact closed launch's owned record, using its saved reader and input diagnostics
-    harness/check_evidence.py   bounded private check-only tool call/results from an owned pinned record; no delivery authority
-    harness/thinking.py opencode_thinking.py pi_thinking.py   native recovery source evidence and proved off/restore controls;
-                   program configuration, request/body and selection knowledge stays in adapters
-    endpoint.py    endpoint pools: what a server serves, the model a seat takes from it, the key beside it
-    sandbox.py     the bubblewrap jail around a sandboxed seat's program
-    post.py        messages: store, inbox, the watch; re-exports message values and typed forms
-    post_message.py immutable message identity, JSON and exact delivered envelopes shared with attribution
-    fleet.py       declaration-derived project office and sibling ship discovery, shared with raise
-    fleet_post.py  sender-owned outbound offers and receiver-owned immutable fetches and receipts
-    forward_post.py pinned old-address routes, recorded recipient identity and return ancestry
-    structure_outcome.py shared ended-turn association, in-memory service-pass grace and read-only derived waits
-    group_post.py  declared fanout, fixed intents and member outcomes, current dead/held-limit observation, terminal notices and derived group holds
-    thread_context.py   open-root amendment selection, context-only own questions and exact whole-input consumed-bundle matching
-    post_threads.py     incoming/open/sent-awaiting thread indexes and read-only qd thread rendering
-    carriage.py         canonical carriage metadata, private carried-folder ownership and final exec byte limits
-    carriage_plan.py    bounded first-message/index pages, full self-handoff files and atomic publication
-    cascade.py          declared three-seat ring, runtime-only per-question journal and notes, immutable service relay intents and final notice
-    cascade_runtime.py  checked runtime file observations, once-only notes appends and derived cascade holds
-    watch.py       reading a seat: activity and door; the status line
-    output.py      one shape for every reading: rendered for a person, or serialized as JSON for a caller
-    ledger.py      turns, tokens, tool calls, machine load, by pool, seat and order; opened read-only by every reading
-    accounting_health.py   bounded accounting-failure streaks and process-bound disposable operational status evidence
-    ledger_reading.py   the Ledger's rows and usage windows as a reading takes them, and their tables
-    order_attribution.py   explicit reply threads and timestamped whole-turn attribution rules
-    attribution_cache.py   service replay and compatible side verdicts, invalidated by older turn writes
-    pricing.py cost_evidence.py   a pool's stated rates and the price saved beside a launch; a turn's cost evidence,
-                   kept beside the Ledger's turns
-    provenance.py record_owner.py quota.py usage_cache.py   which launch and which program a record belongs to; quota walls,
-                   the usage refresh, and the latest real reading of each usage window
-    headlines.py   operational status-line text, with category counts when alert names exceed the budget
-    credential.py  the one link (or kept copy) a seat shares with its pool, reseeded and relinked on the tick
-    auth_failure.py recorded sign-in failure readings and bounded resumes after renewed pool files
-    machine.py     a seat's process tree, sampled for the Ledger
-    standing.py    standing orders: laws, the ship's orders, cards, the brief
-    drill.py       the all-hands drill
-    check.py       qd check: an installed program proven live on a throwaway seat
-    daily_live.py  the daily live test: minimal checks of programs unused that day, one report to the desk
-    doctor.py      qd doctor: the installation checked, and the failures handed to a seat
-    install.py     sync: live runtime/venv, one cp -a backup, proof, journaled recovery and back
-    copy_state.py  standard-library-only declaration mode and read-only copy/proof selection
-    resources.py   target resource declaration, bounded historical copy-list reader and explicit share synchronization
-    fakeharness.py the entry point installed as qd-fakeharness, for the simulator under harness/
-  standing-orders/ laws.md  roles/  harnesses/        the laws, and the generic cards a ship starts from
-  ships/
-    drydock/       ship.toml  orders.md    three fake seats, one in each kind of session: the tests and the drill run here
-    default/       ship.toml  orders.md    the smallest crew on real programs, a desk, a captain and an engineer; copy it for a ship of your own
-    forum/         ship.toml  orders.md  roles/lead.md  roles/reviewer.md; one lead and four independent reviewers
-    cascade/       ship.toml orders.md roles/ README.md    three providers in a service-relayed ring and one orchestrator; runtime notes only
-    shuttle/       ship.toml orders.md roles/ README.md mission-record.md    captain, engineer and first officer; reviewed and signed missions
-    office/        ship.toml orders.md roles/desk.md README.md    template for the separate project-top office
-    <yours>/       a nested repository, ignored above: ship.toml  orders.md  roles/  harnesses/  homes/  runtime/
-    */runtime/     a nested repository with no commits: the fence around a ship's state
-  work/            worktrees for work on the framework itself, ignored; the checkout above is what a running ship uses
-  .testruns/       ignored: the test tool's registrations, run scratch, results and reports (test sockets use a derived short private root)
-  tests/           unit/ contract/ fixtures/ integration/; testrun.py and testrunner/, the test tool (standard library only)
-    shared_install.py  worker-local session wheel/install fixtures; immutable seeds and writable relocated copies
+The project folder is the framework's repository.
 
-                   CI layout: testrunner/run.py gitops.py environment.py scratch.py clean.py;
-                   evidence_plugin.py evidence.py report.py measure session layout and outcomes;
-                   sessions.py servers.py accept the trusted CI plugin's explicit run context;
-                   usersite.py carries the resolved tool base through CI nested runs
-    unit/test_ci_lane_options.py  ordinary CI/fast/whole command and declared disk-policy cases
-    integration/ci_layout_ordinary_probe.py  explicitly selected ordinary real-mode Git/temp/environment observations
-    integration/ci_layout_probe.py test_testrun_ci_layout_gates.py test_testrun_ci_layout_corrections.py
-    integration/test_testrun_tests_origin.py; unit/test_testrun_ci_layout.py test_testrun_ci_layout_gates.py
-                   supplied frozen CI verification modules; source/test bytes tracked separately
-    unit/test_fast_lane_selection.py  ordinary pure lane, worker-default, first-line and report checks
-    unit/test_fast_lane_slots.py  ordinary private-process atomic slot acquisition and return checks
-    authentication_shapes.py   invented Claude authentication-error envelopes, using measured structural keys only
-    integration/waiting.py   an attached terminal client retires its verified owned command group and wrapper,
-                   bounded by explicit patience, without waiting for other clients; attach failures keep the whole output
-    unit/test_attached_client_retirement.py   real-process cases for prompt retirement, independent clients and owned descendants
-    unit/test_structure_outcome.py integration/test_structure_outcome.py   ordinary synthetic ended-turn/grace/recovery association and private fake pi service passes
-    unit/test_shuttle_template.py integration/test_shuttle.py   template/resource roundtrip and scripted fake repository missions; no native review-quality claim
-  docs/DESIGN.md  docs/design/  docs/ANTIGRAVITY.md
-```
+| Path | What it holds |
+| --- | --- |
+| `LICENSE` | the MIT licence |
+| `README.md` | what Quarterdeck is, its quick start and how to use it |
+| `pyproject.toml` | the package: no dependencies, the `qd` and `qd-fakeharness` commands, and the files installed beside the code |
+| `.gitignore` | the ignore rules: every ship folder but the templates, each ship's `runtime/`, the live office, `work/` and `.testruns/` |
+| `AGENTS.md` | for an agent that arrives to set Quarterdeck up or to use it; `CLAUDE.md` is one line that imports `AGENTS.md` |
+| `CONTRIBUTING.md` | for whoever works on Quarterdeck itself, person or agent |
+| `src/quarterdeck/` | the framework: the modules in the tables above and below |
+| `standing-orders/` | the laws in `laws.md`, and the generic cards in `roles/` and `harnesses/` that a ship starts from |
+| `ships/` | the template ships, and each ship of your own |
+| `work/` | ignored: worktrees for work on the framework itself |
+| `.testruns/` | ignored: the test tool's runs, their results and reports; the suite's sockets are kept outside the project, in a private folder under `/tmp` named from the user's id and the project's path |
+| `tests/` | the tests, and the repository's own test tool |
+| `docs/` | these pages: the design in `DESIGN.md` and `design/`, and the pages beside the design, such as `ANTIGRAVITY.md` |
 
-Python 3.12 or later. No runtime dependencies beyond the standard library, none optional either. `pytest` for tests, run by the repository's own test tool `tests/testrun.py` ([section 15](design/working.md#15-working-on-the-framework-from-a-ship)), which the framework never imports.
+The framework needs Python and the Python standard library alone. `pyproject.toml` states the Python version the framework requires and declares no dependency; the `dev` extra in `pyproject.toml` holds `pytest` and `pytest-xdist` for the tests. The repository's own test tool, `tests/testrun.py`, runs the tests, and the framework never imports the tool. [Working on the framework from a ship](design/working.md#running-tests) shows the tool's commands.
+
+### Under `src/quarterdeck/`
+
+The modules that the framework table does not list, the module of each part among them.
+
+| Module | What it holds |
+| --- | --- |
+| `accounting_health.py` | the Ledger's health as the service reports it: a named cause, such as a busy database or full storage, and disposable status evidence |
+| `attribution_cache.py` | the attribution the service writes beside the turn rows, which any turn write invalidates |
+| `auth_failure.py` | recorded sign-in failures: the next delivery first, then bounded resumes once the pool's sign-in is renewed |
+| `carriage.py` | what a launch carries, and the byte checks on the final command |
+| `carriage_plan.py` | the thread index pages, bounded by `carry_bytes`, and a fresh seat's whole handoff to itself |
+| `cascade.py` | a ring of seats that the service relays between, with one run and one notes file per question |
+| `cascade_runtime.py` | a cascade's runtime files, read and appended with checks, and the holds derived from those files |
+| `check_outcome.py` | a check's bounded outcome, kept beside the proven marks |
+| `cli.py` | the `qd` command: one verb per act, a proof line after every act, every reading as JSON |
+| `compaction.py` | fresh starts after compaction: the threshold, the handoff, readiness and the transition journal |
+| `control_confirmation.py` | a consumed control's continuation, kept by the request owner |
+| `copy_state.py` | which installed copy runs a ship, read-only, for the CLI and the status path |
+| `door.py` | the door: the one typing path, which clears, types, checks, submits and confirms at each speed; the wall the door reads |
+| `drill.py` | the Drill: the all-hands exercise that proves the ship works |
+| `fleet.py` | the fleet: an index of the project's declarations, never another configuration |
+| `fleet_post.py` | posts between ships: offered by the sender and fetched by the receiver, each writer in its own runtime |
+| `forward_post.py` | recorded forwarding routes from an old address; the original posts stay as they are |
+| `group_post.py` | declared groups: a fixed fanout to the members, and one terminal notice |
+| `human_wake.py` | the one fixed waking line for a human seat, through the door, once per watch |
+| `idle.py` | the one live idle proof that relaunch, failover and selection share |
+| `inbox_watch.py` | a seat's own inbox watch: its registration and its live generation |
+| `ledger.py` | the Ledger: turns, tokens, tool calls and machine use, by pool, seat and order; the service writes the Ledger, and every reading opens the Ledger read-only |
+| `lifecycle.py` | the seat-transition claim that lifecycle acts and ordinary delivery share: an explicit act waits a bounded time for it, a delivery never waits |
+| `model_mismatch.py` | differences between a seat's recorded model and the ship file, and one fixed notice to the systems seats for each |
+| `move_hold.py` | the service's move decisions, kept for display only |
+| `order_attribution.py` | the order a turn is charged to, from reply threads and timestamped evidence, never from prose |
+| `pane_obstruction.py` | one small marker that names why the door held a paste, such as a pane too short |
+| `pending_lifecycle.py` | journal retirement by the journal's writer, and the last exact join of a retiring launch |
+| `person_quiet.py` | a human seat's quiet time, from the seat's record, and one wake per readiness |
+| `post.py` | Post: orders, reports, questions, answers and acknowledgments as immutable files; the store, the inbox, the attempts and the watch |
+| `post_message.py` | a message's immutable identity, its JSON and the envelope the message is typed in |
+| `post_threads.py` | the thread indexes, and a thread read whole for `qd thread` |
+| `presentation.py` | optional, bounded status text, never evidence for a lifecycle or receipt decision |
+| `program_use.py` | each program's current activity, and its last use bound to saved launch evidence |
+| `raise_ship.py` | a template ship, declared after the person approves its exact proposal |
+| `receipt_refresh.py` | the service's progress through one closed-record receipt pass per framework revision |
+| `recovery.py` | one native continuation after a proved thinking exhaustion, through the door's journal |
+| `request_queue.py` | one owner for queued seat requests, their visible waits and their answers |
+| `resources.py` | the framework's resource files, for packaging and `qd sync` |
+| `seat.py` | the Seat: one program in one tmux pane under one role, and its lifecycle: up, down, restart, fresh and a move to another pool |
+| `service.py` | the service: the ship's one long-running process, not a seat, which renders inboxes, delivers, writes attempts, answers requests, the quick ones in short bounded turns between its other duties, re-briefs seats, writes the heartbeat and alone writes the Ledger |
+| `setup.py` | guided setup, which asks Git for a usable identity before it writes anything, with one replaceable boundary for every machine, account and live operation |
+| `setup_answers.py` | one answer resolver for setup's conversation, flags, file and summary edits |
+| `setup_proposal.py` | read-only setup discovery, and the one renderer of a proposed ship |
+| `ship.py` | the Ship: `ship.toml` read and checked, with its kind, sessions, pools, seats, groups and cascade; the line editor that `qd set` writes with; the runtime's fence |
+| `shutdown.py` | the service's stop at a durable delivery boundary |
+| `standing.py` | standing orders: the laws, the ship's orders, the cards and the brief every seat reads |
+| `structure_outcome.py` | read-only proof of an ended turn, and one completed service pass of report grace |
+| `thread_context.py` | open-thread context, with incoming carriage kept apart from outgoing explanation |
+| `tmux_socket.py` | creator evidence and serialization for the ship's private tmux endpoints |
+| `watch.py` | the Watch: a seat's activity and door, and the status line |
+
+### Under `src/quarterdeck/harness/`
+
+The adapters, and the harness modules that the `harness/` table does not list.
+
+| Module | What it holds |
+| --- | --- |
+| `base.py` | the `Harness` interface: everything an adapter knows about one program |
+| `antigravity.py`, `claude.py`, `codex.py`, `grok.py`, `opencode.py`, `pi.py` | the adapters for Antigravity, Claude Code, Codex, Grok, OpenCode and pi |
+| `fake.py` | the fake harness adapter, the reference implementation of the interface; the fake program writes back the launch's startup token once the program has drawn a first screen, which ends a live launch's survival wait early, while a real program's launch keeps the whole wait |
+| `antigravity_models.py` | exact Antigravity scope facts; a model's name alone establishes no quota membership |
+| `check_evidence.py` | bounded tool evidence from a check's own pinned record, never a receipt |
+| `claude_background.py` | Claude Code's root Bash background tasks, apart from turn accounting |
+| `claude_limits.py` | Claude's native allowance fields, model families and safe shape diagnostics |
+| `claude_statusline.py` | Claude Code's default footer, run as a standalone standard-library script |
+| `claude_watch.py` | recorded watch output that a tool consumed, for attribution only, never a receipt |
+| `closed_record.py` | whether a payload is absent from a closed launch's record |
+| `codex_usage.py` | Codex usage windows, from one snapshot dated by its record event |
+| `compactions.py` | a complete snapshot of the current record and its work frontier, for fresh readiness |
+| `grok_models.py` | Grok's model selection diagnostics and its cached model list, read only |
+| `grok_notice.py` | an information-only inventory of the hooks, MCP and LSP that a Grok workspace declares |
+| `grok_record.py` | Grok's native ACP update stream, read through the shared JSON-lines walk |
+| `grok_screen.py` | Grok's fullscreen composer, measured with and without color |
+| `grok_usage.py` | Grok's own ACP billing reader, with no provider HTTP client and no token handling |
+| `grok_workspace.py` | Grok's native folder trust for the whole repository |
+| `reader_stamp.py` | reader identities derived from files, independent of where Quarterdeck is installed |
+| `thinking.py`, `opencode_thinking.py`, `pi_thinking.py` | the proved controls that turn a model's thinking off and back on in OpenCode and pi, and the values and checks the controls share |
+
+### Under `ships/`
+
+Each template holds a `ship.toml` and an `orders.md`.
+
+| Folder | What it holds |
+| --- | --- |
+| `drydock/` | fake seats, one in each kind of session; the tests and the drill run here |
+| `default/` | the smallest crew on real programs: a desk, a captain and an engineer; copy `default/` for a ship of your own |
+| `forum/` | a lead and independent reviewers, with `roles/lead.md` and `roles/reviewer.md` |
+| `cascade/` | a ring of seats on different providers that the service relays between, and an orchestrator, with `roles/` and a `README.md`; the cascade's notes stay in the runtime, never committed |
+| `shuttle/` | a captain, an engineer and a first officer for reviewed and signed missions, with `roles/`, a `README.md` and `mission-record.md` |
+| `office/` | the template for the project's separate office, with `roles/desk.md` and a `README.md` |
+| `<yours>/` | a ship of your own, a nested repository that the project ignores: `ship.toml`, `orders.md`, `roles/`, `harnesses/`, `homes/` and `runtime/` |
+| `*/runtime/` | a nested repository with no commits: the fence around a ship's state |
+
+### Under `tests/`
+
+| Path | What it holds |
+| --- | --- |
+| `unit/`, `contract/`, `integration/` | the tests |
+| `fixtures/` | each program's native forms, ship files and the other fixed inputs the tests read |
+| `testrun.py`, `testrunner/` | the repository's own test tool, standard library only |
+| `testrunner/run.py` | one run of a clean committed target, in fresh scratch the run owns |
+| `testrunner/gitops.py` | Git as the authority on what is tested |
+| `testrunner/environment.py` | the run's environment: the caller's own, less what changes where the target is imported from or how Python, pip, pytest and git start |
+| `testrunner/scratch.py` | a run's working storage; durable evidence stays in `.testruns/results` |
+| `testrunner/clean.py` | a change's registration, a run's retirement and recovery, `clean` and `keep` |
+| `testrunner/evidence_plugin.py`, `testrunner/evidence.py`, `testrunner/report.py` | the events and session layout a run records, what the events prove, and the result and report a run leaves |
+| `testrunner/sessions.py`, `testrunner/servers.py` | the records of a run's session containers and private tmux servers, and the servers' bounded shutdown |
+| `testrunner/usersite.py` | the ordinary interpreter's user site, made visible to the run's environment, nested CI runs included |
+| `shared_install.py` | worker-local, immutable wheel and install fixtures; a test that changes an install clones its own |
+| `authentication_shapes.py` | a measured Claude API-error envelope, with invented text, paths and identities |
+| `integration/waiting.py` | `wait_for`, a condition polled until its deadline, and `attached_client`, which owns a terminal client, keeps the client's whole output and retires the client's own command group |
+| `unit/test_attached_client_retirement.py` | real-process cases of retiring an attached client |
+| `unit/test_ci_lane_options.py` | CI selection, command and declared disk-layout cases |
+| `unit/test_fast_lane_selection.py`, `unit/test_fast_lane_slots.py` | lane selection and its presentation, and scheduling on private slot files |
+| `integration/ci_layout_probe.py`, `integration/ci_layout_ordinary_probe.py` | real-checkout probes that only the CI-layout mode selects |
+| `integration/test_testrun_ci_layout_gates.py`, `integration/test_testrun_ci_layout_corrections.py`, `integration/test_testrun_tests_origin.py`, `unit/test_testrun_ci_layout.py`, `unit/test_testrun_ci_layout_gates.py` | the gates and corrections of the test tool's CI layout, and where a run's `tests` come from |
+| `unit/test_structure_outcome.py`, `integration/test_structure_outcome.py` | ended-turn outcomes, with the fake program and invented pi records, through real doors and service passes |
+| `unit/test_shuttle_template.py`, `integration/test_shuttle.py` | the shuttle declaration and its installed resources, and scripted fake missions that prove transport and artifacts, not an agent's judgment |
