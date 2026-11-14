@@ -6,7 +6,7 @@ For whoever changes Quarterdeck itself, person or agent. An agent that arrives t
 
 - [Design decisions](docs/DECISIONS.md)
 - [The laws](docs/LAWS.md)
-- [The design](docs/DESIGN.md), sections [2](docs/DESIGN.md#2-the-parts), [11](docs/DESIGN.md#11-the-laws-second-draft), [13](docs/DESIGN.md#13-repository-layout) and [15](docs/DESIGN.md#15-working-on-the-framework-from-a-ship)
+- [The design](docs/DESIGN.md), sections [2](docs/DESIGN.md#2-the-parts), [11](docs/design/orders-and-laws.md#11-the-laws-second-draft), [13](docs/MODULES.md#13-repository-layout) and [15](docs/design/working.md#15-working-on-the-framework-from-a-ship)
 
 ## Set up
 

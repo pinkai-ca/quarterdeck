@@ -58,4 +58,4 @@ Each harness proven live launched, took a long paste that the harness's own reco
 
 ## For maintainers
 
-A ship's file in the older spelling, a company's own harness named as a pool's `provider`, is still read. `qd doctor` names the exact edits, and [Design](DESIGN.md#4-the-ship-file) gives the order to make the edits in.
+A ship's file in the older spelling, a company's own harness named as a pool's `provider`, is still read. `qd doctor` names the exact edits, and [Design](design/ship-file.md#4-the-ship-file) gives the order to make the edits in.

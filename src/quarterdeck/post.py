@@ -29,7 +29,7 @@ KINDS = ("order", "report", "question", "answer", "ack")
 SPEEDS = ("now", "interrupt")
 SHIP = "ship"  # the sender of the ship's own notices, and an inbox a seat may answer to
 REPLY_VERB = {"order": "report", "question": "answer"}
-POST_TIMESTAMP_TICK_NS = 2_000_000_000  # conservative filesystem tick; see docs/DESIGN.md
+POST_TIMESTAMP_TICK_NS = 2_000_000_000  # conservative filesystem tick; see docs/design/post.md
 _FIXED_REPORT = ContextVar('quarterdeck_fixed_report', default=None)
 _READING = ContextVar('quarterdeck_post_reading', default=None)
 

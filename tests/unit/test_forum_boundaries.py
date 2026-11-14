@@ -587,7 +587,7 @@ def test_the_template_jails_its_endpoint_reviewer_outside_the_ship_folder(tmp_pa
 
 
 def test_the_cards_and_design_claim_no_fence_and_no_universal_read_detection():
-    design = ' '.join((ROOT / 'docs/DESIGN.md').read_text().split())
+    design = ' '.join((ROOT / 'docs/design/post.md').read_text().split())
     reviewer = ' '.join((ROOT / 'ships/forum/roles/reviewer.md').read_text().split())
     lead = ' '.join((ROOT / 'ships/forum/roles/lead.md').read_text().split())
     assert 'remain readable and writable; independence is instruction-only, not a filesystem fence' in design
