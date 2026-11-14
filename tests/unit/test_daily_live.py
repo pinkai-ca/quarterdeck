@@ -6,6 +6,8 @@ import stat
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from quarterdeck import cli, daily_live, post
 from quarterdeck.ship import ShipError, load
 
@@ -22,6 +24,15 @@ code = "checkout"
 
 [pools.fake]
 provider = "synthetic"
+
+[pools.check-claude]
+provider = "anthropic"
+
+[pools.check-codex]
+provider = "openai"
+
+[pools.check-grok]
+provider = "xai"
 
 [sessions.office]
 title = "Office"
@@ -44,6 +55,17 @@ def ship(folder: Path):
     folder.mkdir()
     (folder / "ship.toml").write_text(SHIP)
     return load(folder)
+
+
+@pytest.fixture(autouse=True)
+def private_daily_slots(tmp_path, monkeypatch):
+    """Stand-in checks use private locks, never the running suite's real slots."""
+    from quarterdeck import check_capacity
+    root = tmp_path / 'private-test-slots'
+    root.mkdir(mode=0o700)
+    for name in check_capacity.NAMES:
+        (root / name).touch(mode=0o600)
+    monkeypatch.setattr(check_capacity, 'folder', lambda origin: root)
 
 
 def test_a_program_used_on_the_clocks_civil_day_is_not_checked():

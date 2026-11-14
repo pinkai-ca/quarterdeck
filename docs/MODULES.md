@@ -7,6 +7,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | Module | What it holds |
 | --- | --- |
 | `check.py` | `qd check`, the live proof of an installed program |
+| `check_capacity.py` | a nightly check's one-pass reservation of an existing shared test slot, held through its cleanup |
 | `compaction_alert.py` | an idle seat that is ready for a fresh start by hand: one report to the systems seats for each such reading, and a named alarm while no systems seat is up |
 | `cost_evidence.py` | a turn's cost evidence, kept beside the Ledger's turns |
 | `credential.py` | the one link a seat shares with its pool, reseeded and relinked on the tick |

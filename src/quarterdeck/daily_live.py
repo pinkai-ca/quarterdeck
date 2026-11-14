@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import sqlite3
 import shlex
 import shutil
 import stat
@@ -19,7 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from . import harness as harnesses, post, program_use, ship as shipmod, standing
+from . import check_capacity, harness as harnesses, post, program_use, ship as shipmod, standing
 from .ship import Ship, ShipError
 from .tmux import Tmux, TmuxError
 
@@ -59,6 +60,37 @@ class CheckRun:
     place: str | None = None
     socket: str | None = None
     retained: str | None = None
+    not_tested: str | None = None
+
+
+def wall_reason(ship: Ship, program: str, now: datetime) -> str | None:
+    """Read the originating book for the exact first pool qd check will choose.
+
+    No native usage refresh or pool fallback belongs to this nightly preflight.
+    A missing book has no recorded wall; an unreadable one cannot establish
+    whether this check is safe to start, so it is deferred without spending.
+    """
+    from .ledger import Ledger
+    from .quota import reset_text
+    from .usage_cache import parse
+    harness = harnesses.get(program)
+    pool = next((pool for pool in ship.pools.values() if harness.accepts(pool) is None), None)
+    if pool is None:
+        return 'no compatible declared pool; try again the next night'
+    try:
+        book = Ledger.reading(ship.runtime / 'ledger.sqlite')
+        if book is None:
+            return None
+        with book:
+            walls = book.walls(ship, now, pool=pool.name)
+            if not walls:
+                return None
+            resets = [reset_text(row.resets_at) for row in book.usage.rows(pool.name)
+                      if row.blocks and row.complete and row.used >= 1 and parse(row.resets_at) > now]
+            detail = '; '.join(dict.fromkeys([*walls, *resets]))
+            return f'pool {pool.name} is at its limit: {detail}; try again the next night'
+    except (OSError, sqlite3.Error, ValueError):
+        return 'pool limit reading is unavailable; try again the next night'
 
 
 def machine_zone():
@@ -277,6 +309,9 @@ def report_body(day: datetime, choices: list[Choice], results: dict[str, CheckRu
                 lines.append(f"{choice.program}: {choice.why}; not checked")
             continue
         run = results[choice.program]
+        if run.not_tested:
+            lines.append(f'{choice.program}: not tested: {run.not_tested}')
+            continue
         if run.exit_code == 0 and not run.retained:
             state = "check passed"
         elif run.exit_code is None:
@@ -308,15 +343,23 @@ def run(ship: Ship, *, now: datetime | None = None, readings=None, history_error
         from .seat import seats
         readings, history_error = program_use.collect(ship, seats(ship, Tmux.for_ship(ship), False))
     choices = plan(readings, history_error=history_error, day=moment)
-    root = ship_root(scratch or (ship.runtime / "daily-live"))
-    binary = qd or installed_qd(ship)
     check = runner or invoke
     results = {}
     for choice in choices:
         if choice.action != "check":
             continue
         try:
-            results[choice.program] = check(ship, choice.program, root, binary)
+            reason = wall_reason(ship, choice.program, now if now is not None else current_time())
+            if reason:
+                results[choice.program] = CheckRun(choice.program, None, '', not_tested=reason)
+                continue
+            with check_capacity.reserve(ship) as reason:
+                if reason:
+                    results[choice.program] = CheckRun(choice.program, None, '', not_tested=reason)
+                    continue
+                root = ship_root(scratch or (ship.runtime / 'daily-live'))
+                binary = qd or installed_qd(ship)
+                results[choice.program] = check(ship, choice.program, root, binary)
         except Exception as error:  # a stand-in or a copy that raises still has to be reported
             results[choice.program] = CheckRun(choice.program, None, _bounded(f"check did not finish: {error}"))
     shipmod.fence(ship)
@@ -325,7 +368,7 @@ def run(ship: Ship, *, now: datetime | None = None, readings=None, history_error
         report_body(moment, choices, results, history_error),
         subject="Daily live test",
     )
-    failed = any(item.exit_code != 0 or item.retained for item in results.values())
+    failed = any((item.exit_code != 0 or item.retained) and not item.not_tested for item in results.values())
     return message, failed
 
 
