@@ -1,0 +1,75 @@
+# Quarterdeck design: Structures
+
+A page of [the design](../DESIGN.md).
+
+Forum, cascade and shuttle are mission structures built from ordinary ships, seats and immutable posts. The office is the person's separate working ship. Their templates carry declarations, orders and role cards; the coordinators add only the runtime evidence needed to recover unfinished work. A template is copied before use. Its folder name, rather than its declared display name, determines template exclusion from default selection and bulk sync.
+
+## Forum
+
+Optional `[groups.reviewers]` declares unique member seats and a separate lead. A group's name cannot collide with a seat, operator or ship address. Groups accept orders only; other kinds refuse before publishing an intent or post.
+
+`qd post order --to reviewers` stores an ordinary root addressed to the lead, with the caller as sender, then a child from the lead to each member. Each child has its own id, references the root and carries the root's exact body, subject, due and speed. A reviewer reports on its child. The lead reports once on the root to the original requester. A service notice closes neither root nor children.
+
+A lead with an existing open request can fan it out using `--re REQUEST` and a byte-identical body. It must be that request's addressee. One request binds one group invocation: identical retries recover its original ids, including after closure; a changed group, snapshot or body refuses. Without `--re`, even identical prose creates a new request.
+
+`group_post.py` saves fixed complete message intents and a declaration snapshot in `runtime/post/groups/ROOT.json` before publication. Admission locks serialize coordination. Recovery checks existing immutable bytes and publishes only missing posts, retaining ids, times and membership. It never replaces a post or silently changes members.
+
+After accounting and before inbox rendering, the service recovers fanouts and checks exact closing reports. It waits until every member has filed or positively failed. Reports take priority over saved failures until the terminal notice intent is saved; that intent fixes one all-filed or member-failure notice. Later reports remain ordinary posts but cannot rewrite or duplicate the notice.
+
+Positive failures are a removed declared member, a positively owned dead pane, a held limit with no eligible destination, or a provider-refusal journal naming this exact child. `group_post.current_seat_failure` shares nonblocking automatic lifecycle coordination, launch-identity rechecks and existing limit readings. A missing/reused pane, busy transition, unknown status, unreadable evidence, elapsed time or missing report alone proves no failure. Each saved failure binds the member and child; it says nothing about later seat state.
+
+The `ships/forum` template carries lead/reviewer cards, orders and `work/README.md`. `workspace = "work"` separates the endpoint reviewer's workspace from its read-only ship folder; card output paths are absolute under `$QD_SHIP/runtime`. The examples use Claude, Codex, Grok and a local endpoint through pi; their real pools, models and endpoint must be configured before use. On each start with an open root, the lead checks for the terminal notice, combines only named reports, preserves dissent and adds no new analysis. Reviewers read their own messages independently.
+
+The shared post store and group journal remain readable and writable; independence is instruction-only, not a filesystem fence. Native records may show a recorded tool read, but cannot reliably prove that every possible read was observed.
+
+Each group journal is processed independently. A malformed/unreadable journal or publication failure holds that group while healthy groups continue. Derived `runtime/post/group-holds/ROOT.json` contains fixed reasons and signatures, never provider bodies or usage. Changed holds are logged after the pass; unchanged holds stay quiet across restarts, and recovery clears them. Read-only status shows these holds even with the service down and preserves their count on crowded lines.
+
+## Cascade
+
+`[cascade]` declares three ordered `seats`, a separate `orchestrator`, `efforts` (default low, medium, high), `notes = "ring"` and `note_chars` (default 800, at most 4000). Seats retain their conversations across laps. The real ring starts on three providers; drydock may use one synthetic provider. The orchestrator or operator explicitly starts an open question addressed to the orchestrator with `qd cascade --re QUESTION [--efforts low,high]`. Its canonical post identity starts at most one run. Only the orchestrator's ordinary answer closes the question.
+
+The service sends child orders as `ship` in that thread. Reports return to ship and close only their child orders. Each has `## Cascade note`, a bounded note, then `## Answer` and the full answer. The next seat receives the whole report. Only the service appends seat/lap notes and requested/observed effort to `runtime/ring/<question>/responses.md`, independently of the workspace.
+
+The journal saves immutable post intents and offset/hash append intents before writing. Recovery publishes missing posts or finishes the missing append suffix. A changed prefix holds the append and produces an early final notice; it is never rewritten. Notes are accessed through one checked regular-file descriptor without following links, under a lock with identity rechecks. Uncertain evidence remains held.
+
+Existing confirmed in-session controls change effort before each next-lap order. Busy, unavailable, interrupted or unconfirmed controls leave the current effort and record the limitation. A possibly typed control is never replayed. The orchestrator must include these limitations in its answer.
+
+Dead-seat and exhausted-pool evidence uses the forum's common observer. Failed-turn evidence must positively belong to this step: canonical inputs naming its order, or, for an input naming no message, a failed turn begun at or after native taking. An input naming another message belongs to that message; posting/attempt clocks alone prove no taking. Consumed queues use consumption time. Unknown evidence holds.
+
+Before accepting a report for onward relay, cascade checks exact current-order exclusion and positively associated reader refusal. A provider-refusal stop withholds the refused input and last full answer from automatic relay. Its fixed notice names the category, seat/lap, notes path and last completed report id for a person. An already filed stopped report remains immutable and separately referenced, not parsed or appended. The orchestrator concludes from completed notes, names the stop and never automatically retypes that report. Dead/limit/generic failures remain report-first. No body-substring classifier establishes a refusal.
+
+One final service report normally carries the last full answer, notes location, observed/unknown efforts and limitations; it does not answer the question. Interrupted children remain open until their addressees report. Late reports cannot resume an ended run.
+
+`cascade_runtime.py` processes runs independently. Malformed, foreign, conflicting or unreadable evidence produces a fixed hold under `runtime/post/cascade-holds/`, visible read-only even with the service down. Changed signatures log once across restarts; recovery clears them. Untyped stopped journals hold instead of guessing a category. Hold readings contain operational facts, never answers or usage.
+
+## Turns that end without a report
+
+Forum copies and cascade steps may end with `turn ended without a report`, or the measured length-cap variant. This needs the current owned nonhuman launch and pinned reader, native conversation, explicit completed turn containing the exact canonical child input, known-empty tools and record queue, and a positively idle empty composer and visible queue. Direct input must match the turn start; steering needs explicit per-turn membership. Unsupported readers, missing completion/input diagnostics, errors, identity changes and unresolved delivery/recovery remain unknown. Pane prose and elapsed time cannot substitute.
+
+The first valid observation waits one complete service pass. A later pass rechecks the entire proof before settlement, giving ordinary report publication and thinking recovery a chance. Duplicate calls in one pass do not age it; renewed activity or unknown evidence resets it. Restart grants grace again. Lifecycle and admission coordination cover the final report check and terminal save; a report admitted within grace wins. Forum freezes member/lead admissions in sorted order and publishes its notice after release.
+
+Settlement produces the structure's terminal notice, never a filed answer, delivery receipt or order closure. Cascade retains only the last filed full answer. A later report cannot change an immutable notice. A thinking-recovery continuation needs the same launch, record, conversation, original input and reserved continuation before its final completion can receive this grace; consumed original work gets no new recovery allowance.
+
+Derived `post/structure-waits/` files hold fixed operational categories and observation identities only. They authorize no action. Status validates the active structure/order, report, launch and record generation without joining records, registering ownership or advancing grace. Stale or malformed observations remain unknown independently of healthy waits. Rolling back requires stopping coordination and retaining journals; code that cannot understand a saved reason must hold it.
+
+## Shuttle
+
+`ships/shuttle` is a three-seat mission: a captain receives and reviews, an engineer builds, and a first officer independently checks and signs the exact result. Its local cards replace shared captain/engineering assumptions, with no desk or worker added. Use a different provider for the first officer where available and disclose limitations. These are standing orders, not framework-enforced review quality or cryptographic signatures.
+
+Repository worktrees live in the shuttle runtime. A named destination advances only by fast-forward after tests, review and signature. A moved branch needs rebase, retest, review and a new signature. A brief without a target ends with a signed mission branch and a merge command for an operator-chosen worktree; the crew does not execute it.
+
+Without a repository, copy `mission-record.md` into runtime before external changes. It records original files/metadata, commands and exits, enabled/started services and proposed undo. The captain reviews that record and live result; the first officer signs its exact revision after checking completeness. Undo needs the person's explicit instruction. The template adds no sandbox or automatic mission-record enforcement and retains user-level scope and the existing security maintenance door.
+
+The template, three cards and reference record are packaged resources. A differently named copy is an ordinary ship, even if its display name is shuttle.
+
+## Office and raising a ship
+
+`qd init` copies `ships/office/` to `<project>/office/` and commits its declaration, orders and desk card in a separate repository. `kind = "office"` has only human sessions, no captain or crew and no required project workspace. Its ignored runtime, tmux server and service are independent of project ships. Init preserves an existing office and uses ordinary `qd up desk`; it neither raises a crew nor moves old seats/messages. First-time `qd setup` initializes the office and returns; subsequent setup uses the [crew wizard](guided-setup.md).
+
+Init/setup first checks existing project ships. A human-session desk means the office still lives there, so creation refuses by name without starting a second office. Moving it remains the person's step after forwarding is proven.
+
+`qd raise <kind> <name>` supports default, forum, cascade and shuttle. `raise_ship.py` uses the office's pool declarations to render and validate a full proposal and hash its files and destination. Pool mapping copies declaration references, never credentials. A desk proposal saves a request and returns a person-shell approval command. Per-name locks serialize requests and successive exact yes/no answers under `office/runtime/raise/<name>/`. An exact previous yes is reusable; changed proposals ask again. Existing matching ships resume unchanged; no existing ship is overwritten.
+
+A new yes must come from a live process whose `/proc` ancestry, including pid/start identities, is not descended from a recorded seat in any project ship or the office. Unreadable/changing ancestry or launch inventory refuses. The same process acts on the yes; there is no queued approval or service handoff. Clearing seat environment variables does not change ancestry.
+
+The reusable answer file is consent, not a security boundary against another process running as the same Unix user: such a process can write it manually. A stronger consent store is outside this design. Creation commits only selected template files and the runtime ignore in the new ship repository, then uses ordinary up. A launch failure retains the declaration and consent. The folder name becomes the fleet address without a registration write.
