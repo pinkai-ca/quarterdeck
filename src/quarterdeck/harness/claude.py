@@ -1513,6 +1513,18 @@ class ClaudeHarness(Harness):
         except (OSError, ValueError):
             return False  # the pre-offer composer is not readiness; no elapsed-time shortcut
 
+    def dismissal_key_without_activity(self, screen: Screen) -> str | None:
+        # This measured startup widget replaces the composer, so the generic
+        # Screen reading cannot establish activity. Its exact decline choices
+        # remain usable; no other notice or key inherits the exception.
+        if (screen.box is not None or screen.unknown is not None or screen.starting
+                or screen.fresh is not None):
+            return None
+        offer = auto_default_offer(screen.text)
+        if offer is not None and screen.interruption == offer and offer.key in ('Down', 'Enter'):
+            return offer.key
+        return None
+
     def screen(self, text: str) -> Screen:
         lines = text.rstrip("\n").split("\n")
         box, queued = None, 1 if "ctrl+x ctrl+s to send now" in text else 0

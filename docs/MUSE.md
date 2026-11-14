@@ -150,8 +150,10 @@ unknown-activity hold. Exact receipts retain the current launch's join
 provenance and every delivered form recognized by the shared receipt owner.
 Screen activity before a record is joined is an explicit Muse capability;
 other programs keep their record-first startup reading, with admission still
-decided separately by the Door. Known native notices retain their existing
-adapter-declared dismissal. Unknown post-paste activity retains the journal's
+decided separately by the Door. Notice dismissal requires known activity in
+both frames. An adapter may declare only its exact measured composerless
+startup choice as an exception, using Down or Enter; Escape is never sent on
+unknown activity. Unknown post-paste activity retains the journal's
 unread-screen and short-pane diagnostics without clearing or submitting.
 
 The adapter also owns the exclusion from unattended daily live checks. The

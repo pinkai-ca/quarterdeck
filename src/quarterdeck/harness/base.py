@@ -600,6 +600,10 @@ class Harness(ABC):
         screen does not say: the idle proof then has no second witness in it (law: record-first)."""
         return None
 
+    def dismissal_key_without_activity(self, screen: Screen) -> str | None:
+        """An exact measured composerless startup choice, or no exception to known activity."""
+        return None
+
     def check_tool_evidence(self, record: Path) -> dict:
         """Private check-only call/results; adapters opt in to a bounded decoder."""
         return dict(status='unknown', reason='adapter tool call/results unsupported', pairs=[])

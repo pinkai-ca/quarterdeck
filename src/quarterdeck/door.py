@@ -614,6 +614,17 @@ class Door:
         self.seat.record_answer(recorded, dict(entry, outcome="cleared" if cleared else "did not clear"))
         return after
 
+    def _dismissal_ready(self, screen: Screen | None) -> bool:
+        if screen is None:
+            return False
+        if screen.working is not None:
+            return True
+        key = screen.interruption.key if screen.interruption is not None else None
+        hook = self.adapter_hook('dismissal_key_without_activity')
+        # Even an erroneous adapter declaration cannot authorize Escape on an
+        # unknown turn. Only a measured startup choice's exact key may proceed.
+        return key in ('Down', 'Enter') and hook is not None and hook(screen) == key
+
     def clear_known(self, screen=UNCAPTURED) -> Screen | None:
         """Dismiss a notice the adapter knows, once, and read again (law: one-door).
 
@@ -629,11 +640,11 @@ class Door:
                 and screen.interruption.click is not None
                 and (screen.box is None if screen.interruption.by_label else screen.box is not None and not screen.box.strip())):
             return self.answer(screen)
-        if screen is None:
+        if not self._dismissal_ready(screen):
             return screen
         if not pending.held(self.seat, screen, self.proof) and screen and screen.interruption and screen.interruption.dismissable and not (screen.box or "").strip():
             current = self.screen()
-            if (current is None or current.interruption != screen.interruption
+            if (not self._dismissal_ready(current) or current.interruption != screen.interruption
                     or (current.box or "").strip() or self.adapter_obstruction(current)):
                 return current
             if self.proof and not self.proof.same_launch(self.seat):
