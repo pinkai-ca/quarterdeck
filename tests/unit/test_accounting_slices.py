@@ -2,7 +2,9 @@
 
 from pathlib import Path
 from types import SimpleNamespace
+from contextlib import nullcontext
 import os
+import threading
 import time
 
 import pytest
@@ -153,4 +155,26 @@ def test_changed_reader_identity_discards_old_plans_then_retries(tmp_path, monke
         assert not svc.ledger.catching_up()
     finally:
         driver.close()
+        svc.ledger.close()
+
+
+def test_heartbeat_continues_inside_a_long_service_step(tmp_path, monkeypatch):
+    from quarterdeck import shutdown
+    svc, _, _, _ = world(tmp_path, monkeypatch)
+    beat = threading.Event()
+    monkeypatch.setattr(service, 'acquire_lock', lambda runtime: None)
+    monkeypatch.setattr(service.servicectl, 'acknowledge', lambda *args: None)
+    monkeypatch.setattr(service, 'write_heartbeat', lambda runtime: beat.set())
+    monkeypatch.setattr(shutdown, 'Stop', lambda *args: SimpleNamespace(installed=nullcontext))
+    class EndProof(Exception):
+        pass
+    def long_step():
+        assert beat.wait(5), 'a step does not have to return before its heartbeat is written'
+        raise EndProof
+    svc.tick = long_step
+    try:
+        with pytest.raises(EndProof):
+            svc.run()
+        assert not any(t.name == 'service-heartbeat' for t in threading.enumerate())
+    finally:
         svc.ledger.close()
