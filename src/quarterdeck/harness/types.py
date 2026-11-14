@@ -373,7 +373,7 @@ def _cells(text: str) -> int | None:
 
 
 # Established Unicode 15 line-break classes and their printable-ASCII pairs.
-# Codex 0.166.0 uses textwrap 0.16.2 / unicode-linebreak 0.1.5, FirstFit.
+# Codex 0.166.0 and Grok 1.0.77 use textwrap 0.16.2 / unicode-linebreak 0.1.5, FirstFit.
 # Parentheses, quotes, numbers and leading hyphens retain their context rules;
 # punctuation is not a blanket permission to break. Unknown context is local,
 # never a reason to reject an independently established break elsewhere.

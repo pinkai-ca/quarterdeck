@@ -166,7 +166,8 @@ class GrokBox(Box):
                 return False
             # Account for every terminal blank row before asking the unchanged
             # shared matcher to verify the remaining visible text and wrapping.
-            return Box(self.text[:-endings]).matches("\n".join(rows[:-endings]), columns, slack)
+            return Box(self.text[:-endings], textwrap_ascii=self.textwrap_ascii).matches(
+                "\n".join(rows[:-endings]), columns, slack)
         return super().matches(shown, columns, slack)
 
 
@@ -552,7 +553,10 @@ class GrokHarness(Harness):
         lines = grok_screen.paste_lines(text)
         folded = (rf"\[Pasted: {lines} lines\]"
                   if grok_screen.lf_layout(text) and lines >= grok_screen.PASTE_FOLD_LINES else None)
-        return GrokBox(text, folded=folded)
+        # Its measured path/punctuation wraps use the shared textwrap boundaries
+        # already established for Codex; exact characters and first-fit width
+        # still decide the comparison. This does not reconstruct a viewport.
+        return GrokBox(text, folded=folded, textwrap_ascii=True)
 
     def controls(self) -> tuple[Control, ...]:
         return (Control("model", "--model <value>", "/model {value}", "screen"),

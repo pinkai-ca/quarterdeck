@@ -837,8 +837,9 @@ def _submit_candidate(door: Door, screen: Screen | None, pane: Pane | None,
         return None, f"refused: {seat.name}'s pending journal is unreadable"
     matching = [p for p in proofs if door.matches(seat.harness.box(p.data["payload"]), screen)]
     if len(matching) != 1:
-        shown = screen.box if len(screen.box) <= 80 else screen.box[:77] + "..."
-        return None, f"refused: {seat.name}'s box shows {shown!r}, not exactly a pending message of {seat.name}"
+        shown = (repr(screen.box) if len(screen.box) <= 80 else
+                 f"{screen.box[:77]!r}… (shortened by qd, {len(screen.box)} chars)")
+        return None, f"refused: {seat.name}'s box shows {shown}, not exactly a pending message of {seat.name}"
     return matching[0], ""
 
 
