@@ -7,6 +7,7 @@ import time
 
 import pytest
 
+from quarterdeck.procstat import EXITED
 from tests.integration import waiting
 
 
@@ -32,7 +33,7 @@ def command(ready, *, ignore=False, descendant=None, output=""):
 
 def alive(pid):
     try:
-        return Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[0] != 'Z'
+        return Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[0] not in EXITED
     except FileNotFoundError:
         return False
 

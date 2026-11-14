@@ -9,6 +9,7 @@ import tempfile
 import time
 
 from quarterdeck.harness.json_record import RecordError
+from quarterdeck.procstat import EXITED
 from quarterdeck.tmux import PrivateTmuxError
 
 RECORD_CHANGED = "record changed while being read"  # the one record refusal a fresh read can cure
@@ -80,7 +81,7 @@ def attached_client(command, attached, *, patience=5.0):
         def active(members, group):
             for pid, stamp in members.items():
                 state = process(pid)
-                if state is not None and state[0] == stamp and state[2:4] == (group[0], group[0]) and state[4] != 'Z':
+                if state is not None and state[0] == stamp and state[2:4] == (group[0], group[0]) and state[4] not in EXITED:
                     return True
             return False
 

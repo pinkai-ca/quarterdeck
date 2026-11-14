@@ -14,6 +14,7 @@ import time
 import pytest
 
 from quarterdeck import tmux as tmuxmod, tmux_socket
+from quarterdeck.procstat import EXITED
 from quarterdeck.tmux import Tmux
 
 
@@ -28,7 +29,7 @@ def server(tmp_path, monkeypatch):
         yield started
     finally:
         fields = tmux_socket.process_state(pid)
-        if fields and fields[0] != 'Z':
+        if fields and fields[0] not in EXITED:
             os.kill(pid, signal.SIGCONT)
         if not started.close():
             os.kill(pid, signal.SIGKILL)  # this test's own server, proved by the pid it recorded at birth
@@ -36,7 +37,7 @@ def server(tmp_path, monkeypatch):
 
 def alive(pid):
     fields = tmux_socket.process_state(pid)
-    return bool(fields) and fields[0] != 'Z'
+    return bool(fields) and fields[0] not in EXITED
 
 
 def test_a_server_slow_to_end_is_waited_for_until_it_exits(server, monkeypatch):

@@ -12,6 +12,8 @@ import stat
 import tempfile
 import time
 
+from .procstat import EXITED
+
 LOCK = '.qd-tmux-lock'
 HEADER = b'quarterdeck private tmux namespace 1\n'
 OWNER = 'QD_PRIVATE_TMUX_OWNER'
@@ -195,7 +197,7 @@ class OwnedSocket:
         if self.pid is None:
             return self.socket_fd is None
         fields = process_state(self.pid)
-        return not fields or fields[0] == 'Z' or fields[19] != self.start
+        return not fields or fields[0] in EXITED or fields[19] != self.start
 
     def record(self, held, query):
         descriptor = os.open(self.name, os.O_PATH | os.O_NOFOLLOW, dir_fd=held.directory)
@@ -207,7 +209,7 @@ class OwnedSocket:
             if environment != f'{OWNER}={self.nonce}':
                 raise OwnershipError('private server birth identity unknown; retained')
             fields = process_state(int(pid))
-            if not fields or fields[0] == 'Z':
+            if not fields or fields[0] in EXITED:
                 raise OwnershipError('private server ended before ownership was recorded; retained')
             held.verify()
             if identity(os.stat(self.name, dir_fd=held.directory, follow_symlinks=False)) != identity(info):
@@ -225,7 +227,7 @@ class OwnedSocket:
         if self.pid is None:
             return False
         fields = process_state(self.pid)
-        if not fields or fields[0] == 'Z' or fields[19] != self.start:
+        if not fields or fields[0] in EXITED or fields[19] != self.start:
             return False
         try:
             environment = Path(f'/proc/{self.pid}/environ').read_bytes().split(b'\0')

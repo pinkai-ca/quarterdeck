@@ -15,6 +15,7 @@ import stat
 import uuid
 
 from . import durable
+from .procstat import EXITED
 
 BEFORE_PASTE = "prepared-before-paste-v1"
 ORDINARY_GRACE = 3.0
@@ -26,7 +27,7 @@ _controller = None
 def process_start(pid: int) -> str | None:
     try:
         fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
-        return fields[19] if fields[0] != "Z" else None
+        return fields[19] if fields[0] not in EXITED else None
     except (OSError, IndexError):
         return None
 
@@ -35,7 +36,7 @@ def process_gone(expected: dict) -> bool:
     """An unreadable process identity is unknown, never evidence of an exit."""
     try:
         fields = Path(f"/proc/{expected['pid']}/stat").read_text().rsplit(")", 1)[1].split()
-        return fields[0] == "Z" or fields[19] != expected["start"]
+        return fields[0] in EXITED or fields[19] != expected["start"]
     except FileNotFoundError:
         return True
     except (OSError, IndexError):

@@ -15,6 +15,7 @@ import signal
 import stat
 
 from . import durable, post
+from .procstat import EXITED
 
 
 def process(pid):
@@ -23,7 +24,7 @@ def process(pid):
         if type(pid) is not int or pid <= 0:
             return None
         fields = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
-        if fields[0] in ('Z', 'X', 'x'):
+        if fields[0] in EXITED:
             return None
         return int(fields[1]), fields[19]
     except (OSError, ValueError, IndexError, UnicodeError):
