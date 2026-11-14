@@ -235,7 +235,7 @@ def tokens_today(seat: Seat | UnresolvedSeat) -> ledger.Count:
 
 def accounted_history(book, seat):
     """A zero is measured too, but only matching successful certificates prove it."""
-    from . import reader_stamp
+    from .harness import reader_stamp
     try:
         if not book.db.execute('SELECT 1 FROM record_accounting LIMIT 1').fetchone():
             return False

@@ -11,7 +11,7 @@ import sys
 
 
 COMMON = (
-    'reader_stamp.py', 'record_owner.py', 'harness/base.py',
+    'harness/reader_stamp.py', 'record_owner.py', 'harness/base.py',
     'harness/types.py', 'harness/limits.py', 'harness/json_record.py',
     'harness/reading_scope.py',
 )
@@ -47,7 +47,7 @@ ATTRIBUTION = ('attribution_cache.py', 'order_attribution.py', 'input_receipt.py
 
 def files_stamp(modules, root=None):
     """Unknown/unreadable code grants no reuse; never hash paths or mtimes."""
-    root = Path(root) if root is not None else Path(__file__).parent
+    root = Path(root) if root is not None else Path(__file__).parent.parent
     digest = hashlib.sha256()
     try:
         for name in sorted(modules):

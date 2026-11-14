@@ -6,13 +6,14 @@ from dataclasses import replace
 
 import pytest
 
-from quarterdeck import harness, reader_stamp
+from quarterdeck import harness
+from quarterdeck.harness import reader_stamp
 from tests.unit.test_account_record_stamps import restart
 from tests.unit.test_ledger_pass_boundaries import world
 
 
 def copied_modules(tmp_path):
-    source = reader_stamp.Path(reader_stamp.__file__).parent
+    source = reader_stamp.Path(reader_stamp.__file__).parent.parent
     for name in {*reader_stamp.ATTRIBUTION,
                  *(name for modules in reader_stamp.MODULES.values() for name in modules)}:
         target = tmp_path / name

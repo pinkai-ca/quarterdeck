@@ -9,7 +9,8 @@ from types import SimpleNamespace
 import pytest
 
 from quarterdeck.ledger import Ledger
-from quarterdeck import record_owner, reader_stamp
+from quarterdeck import record_owner
+from quarterdeck.harness import reader_stamp
 from quarterdeck.post import Message
 from tests.unit.test_ledger_pass_boundaries import AT, world, turn, writes
 

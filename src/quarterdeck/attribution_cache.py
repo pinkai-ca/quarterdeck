@@ -7,7 +7,8 @@ import time
 from os.path import abspath
 from pathlib import Path
 
-from . import harness, record_owner, reader_stamp
+from . import harness, record_owner
+from .harness import reader_stamp
 from .harness.base import record_fingerprint
 from .order_attribution import Threads, Verdict, moment
 

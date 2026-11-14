@@ -100,7 +100,7 @@ quarterdeck/                       the project folder: the framework repository
     model_mismatch.py   record-first canonical model differences, fixed systems report intents and named fallback alarms
     presentation.py   disposable status text rendering and freshness checks; the console bootstrap's optional fast path,
                    never lifecycle, receipt or usage evidence
-    reader_stamp.py   explicit per-harness reader dependencies and attribution-engine files, hashed from their bytes for accounting certificates
+    harness/reader_stamp.py   explicit per-harness reader dependencies and attribution-engine files, hashed from their bytes for accounting certificates
     harness/       base.py types.py home.py claude.py codex.py antigravity.py opencode.py pi.py grok.py fake.py; json_record.py limits.py sqlite_snapshot.py costs.py
                    grok_record.py grok_screen.py grok_usage.py grok_workspace.py grok_notice.py   native ACP updates, fullscreen composer, program-owned billing, exact native workspace trust and information-only project inventory
                    opencode_record.py antigravity_record.py antigravity_wire.py antigravity_quota.py; simulator.py synthetic_record.py synthetic_control.py,

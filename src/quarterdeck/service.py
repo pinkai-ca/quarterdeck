@@ -25,7 +25,7 @@ from pathlib import Path
 
 from . import harness as harnesses
 from . import shutdown
-from . import reader_stamp
+from .harness import reader_stamp
 from . import pending as pending_delivery, delivery_record
 from . import accounting_health, credential, durable, idle, install, machine, move_hold, post, presentation, quota, record_owner, recovery, servicectl, ship as shipmod, standing
 from .door import CONFIRM_SECONDS, Door
