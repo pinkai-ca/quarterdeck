@@ -10,9 +10,11 @@ from quarterdeck import check, group_post, post, post_dir, ship as shipmod
 
 
 def queue(store, count, sender='worker'):
-    messages = [store.prepare('report', sender, 'ship', f'ordinary queued report {n}')
-                for n in range(count)]
-    paths = [post.write_drop(store.dir.parent.parent, message) for message in messages]
+    messages, paths = [], []
+    for n in range(count):
+        message = store.prepare('report', sender, 'ship', f'ordinary queued report {n}')
+        paths.append(post.write_drop(store.dir.parent.parent, message))
+        messages.append(message)
     return messages, paths
 
 
@@ -41,7 +43,7 @@ def test_count_boundary_files_or_holds_the_whole_folder(tmp_path, caller, extra)
     file(store, caller)
     if extra:
         assert all(path.exists() for path in paths)
-        assert all(store.get(message.id) is None for message in messages)
+        assert not {message.id for message in messages} & {message.id for message in store.all()}
         assert post.DROP_COUNT_REASON in post.DROP_HOLD_REASONS
         assert post.drop_alarms(tmp_path / 'runtime') == [
             f'post drop held: drop/worker: {post.DROP_COUNT_REASON}']
@@ -56,7 +58,7 @@ def test_count_boundary_files_or_holds_the_whole_folder(tmp_path, caller, extra)
         assert post.drop_alarms(tmp_path / 'runtime') == []
     # A held folder cannot starve the following seat; scoped hosts leave peers alone.
     assert other_paths[0].exists() == (caller == 'host')
-    assert (store.get(other[0].id) is None) == (caller == 'host')
+    assert (other[0].id not in {message.id for message in store.all()}) == (caller == 'host')
 
 
 @pytest.mark.parametrize('caller', ['full', 'slice'])
@@ -69,7 +71,7 @@ def test_group_scan_uses_the_same_folder_count(tmp_path, caller, extra):
     root, _ = group_post.stage(ship, store, 'reviewers', 'lead', 'ordinary group task')
     queue(store, post.DROP_MAX_FILES - 2 + extra, sender='lead')
     file(store, caller, ship)
-    assert (store.get(root.id) is None) == bool(extra)
+    assert (root.id not in {message.id for message in store.all()}) == bool(extra)
     if extra:
         assert post.drop_alarms(ship.runtime) == [
             f'post drop held: drop/lead: {post.DROP_COUNT_REASON}']
