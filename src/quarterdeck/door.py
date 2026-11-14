@@ -209,7 +209,10 @@ class Door:
                 or screen.unknown != 'pi input box not found' or not screen.shows.get('model')
                 or pane is None or getattr(pane, 'dead', None) is not False or type(rows) is not int or rows <= 0):
             return '', ''
-        launched = getattr(self.seat, 'launched', lambda: None)()
+        try:
+            launched = getattr(self.seat, 'launched', lambda: None)()
+        except (OSError, ValueError, TypeError):
+            return '', ''
         version = getattr(launched, 'version', None)
         pane_id, pid = getattr(pane, 'id', None), getattr(pane, 'pid', None)
         if (launched is None or not isinstance(pane_id, str) or type(pid) is not int
@@ -279,11 +282,15 @@ class Door:
                 or width < 1 or height < 1):
             return ""
         pane_measure = getattr(self.harness, 'minimum_pane_rows', None)
-        launched = getattr(self.seat, 'launched', lambda: None)()
-        version = getattr(launched, 'version', None)
-        if pane_measure is not None and type(rows := pane_measure(text, width, version)) is int:
-            return (f'pane {height} rows; {self.harness.display_name} {version} draws this box from {rows} rows'
-                    if rows > height else '')
+        if pane_measure is not None and getattr(self.harness, 'minimum_pane_heights', {}):
+            try:
+                launched = getattr(self.seat, 'launched', lambda: None)()
+            except (OSError, ValueError, TypeError):
+                launched = None
+            version = getattr(launched, 'version', None)
+            if type(rows := pane_measure(text, width, version)) is int:
+                return (f'pane {height} rows; {self.harness.display_name} {version} draws this box from {rows} rows'
+                        if rows > height else '')
         rows = measure(text, width)
         if type(rows) is not int or rows <= height:
             return ""

@@ -129,6 +129,15 @@ def test_an_unknown_dialog_keeps_its_ordinary_display_and_no_height_annotation()
     assert door._reading(screen) == original
 
 
+@pytest.mark.parametrize('error', [OSError, ValueError])
+def test_unreadable_launch_metadata_leaves_the_original_reading(error):
+    door, screen, original, _, _ = display()
+    def unavailable():
+        raise error('synthetic unavailable metadata')
+    door.seat.launched = unavailable
+    assert door._reading(screen) == original
+
+
 @pytest.mark.parametrize('text,rows', [('', 5), ('a', 5), ('a\nb\nc', 7), ('a\nb\nc\n', 8),
     ('a\nb\nc\nd\ne', 9), ('a\nb\nc\nd\ne\nf', 20), ('x\n' * 6, 24),
     ('x\n' * 8, 30), ('x\n' * 9, 34), ('x\n' * 10, 5), ('x' * 1001, 5),
