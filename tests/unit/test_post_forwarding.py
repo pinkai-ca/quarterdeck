@@ -107,3 +107,27 @@ def test_forward_declaration_requires_a_qualified_target(pair, table):
         stream.write('\n' + table + '\n')
     with pytest.raises(shipmod.ShipError, match='forward'):
         shipmod.load(left.folder)
+
+
+def test_forwarded_closure_returns_its_route_with_an_origin_ancestor_reference(pair):
+    left, right, source, destination = pair
+    folder = right.folder.with_name('gamma')
+    folder.mkdir()
+    (folder / 'ship.toml').write_text(right.file.read_text())
+    third = shipmod.load(folder)
+    third_store = post.Store(third.runtime)
+    order = source.new('order', 'writer', 'captain@beta', 'Finish at the forwarded seat.')
+    original = wire(left, order)
+    assert fleet.run(left, source) == []
+    assert fleet.run(right, destination) == []
+    right = forward(right, target='writer@gamma')
+    assert fleet.run(right, destination) == []
+    assert fleet.run(third, third_store) == []
+    received = third_store.get(order.id)
+    report = third_store.new('report', 'writer', received.sender, 'Finished.', re=order.id)
+    assert fleet.run(third, third_store) == []
+    assert fleet.run(left, source) == []
+    assert source.closing_report(source.get(order.id)).id == report.id
+    assert not source.is_open(source.get(order.id))
+    assert wire(left, order) == original
+    assert not fleet.import_path(left.runtime, order.id).exists()

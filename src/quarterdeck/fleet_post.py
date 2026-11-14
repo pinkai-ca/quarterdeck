@@ -468,7 +468,9 @@ def fetch(ship, source, path):
         for entry, raw, data in files:
             if entry.get('reference'):
                 _reference_bytes(ship, entry)
-                continue  # already owned here; publish neither ancestor bytes nor import metadata
+                from .forward_post import receive
+                receive(ship.runtime, entry, raw, data, adopt=True, source=source.folder.name)
+                continue  # retain its verified route, never copy ancestor bytes or import metadata
             is_direct = raw.id == message.id and direct
             metadata = dict(format=1, origin=entry['origin'], sha256=entry['sha256'], context=True)
             from .forward_post import receive

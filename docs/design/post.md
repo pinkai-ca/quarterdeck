@@ -62,6 +62,9 @@ trail, separately from the post author's origin. A saved pin at that declaring s
 when that ship forwards an imported root, its own matching pin is required. An author's first
 offer may resolve a peer's declaration before the peer has fetched the message. Other ships
 cannot supply a new route in that peer's name. Imported roots otherwise remain ineligible.
+When returning ancestry is an origin reference, the origin reads its own immutable file and
+retains only the validated forwarding route; no ancestor bytes or import metadata are copied.
+That route lets the new seat's closing report still close the original obligation.
 `qd thread` prints the saved old and new addresses for messages its reader sent or received. Imported
 context alone never creates a delivery; an explicit addressed marker is required even when a route
 returns to a different seat on the origin ship and its original file is already there. Normal traffic
