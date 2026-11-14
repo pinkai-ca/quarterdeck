@@ -15,7 +15,7 @@ from pathlib import Path
 import secrets
 import stat
 
-from . import durable, ship as shipmod
+from . import durable
 from .fleet import peers
 from .ship import ShipError
 
@@ -314,7 +314,7 @@ def fetched(source, destination, value):
             if context_only(destination.runtime, root.id):
                 return False
         return True
-    except (OSError, ValueError, KeyError, ShipError):
+    except (OSError, ValueError, KeyError, TypeError, ShipError):
         return False
 
 

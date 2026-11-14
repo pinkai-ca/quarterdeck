@@ -221,10 +221,12 @@ class Store:
                     or not cached_at <= started <= checked):
                 with os.scandir(self.dir) as entries:
                     paths = [self.dir / entry.name for entry in entries if entry.name.endswith('.json')]
-                from .fleet_post import local_view
+                from .fleet_post import local_view, provenance, stable_bytes
 
                 def read(path):
-                    data = path.read_bytes()
+                    if provenance(self.dir.parent.parent, path.stem) is None:
+                        return local_view(self.dir.parent.parent, Message.from_json(path.read_text()))
+                    data = stable_bytes(path)
                     return local_view(self.dir.parent.parent, Message.from_json(data.decode('utf-8')), data=data)
 
                 messages = sorted((read(p) for p in paths), key=lambda m: (m.at, m.id))
@@ -253,18 +255,23 @@ class Store:
             if (self._cache is None or self._cache[0] != stamp or cached_at is None
                     or not cached_at <= started <= checked):
                 paths = post_dir.json_paths(self.dir)
-                from .fleet_post import local_view
+                from .fleet_post import local_view, provenance, stable_bytes
 
                 messages = []
                 for path in paths:
                     try:
-                        data = post_dir.read_bytes(path)
+                        if provenance(self.dir.parent.parent, path.stem) is None:
+                            message = local_view(self.dir.parent.parent,
+                                                 Message.from_json(post_dir.read_text(path)))
+                        else:
+                            data = stable_bytes(path)
+                            message = local_view(self.dir.parent.parent,
+                                                 Message.from_json(data.decode('utf-8')), data=data)
                     except ShipError as error:
                         if str(error) == 'post path is not a regular file':
                             continue  # unread; a special file is not a message
                         raise
-                    messages.append(local_view(self.dir.parent.parent,
-                                               Message.from_json(data.decode('utf-8')), data=data))
+                    messages.append(message)
                 messages.sort(key=lambda m: (m.at, m.id))
                 replies: dict[str, list[Message]] = {}
                 for message in messages:
