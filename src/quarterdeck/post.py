@@ -758,7 +758,7 @@ def file_drops(store: Store, ship=None, *, seats: frozenset[str] | None = None,
     runtime = store.dir.parent.parent
     with ExitStack() as locks:
         try:
-            locks.enter_context(ship_locks.held(ship_locks.path(runtime, 'filing.lock'), 'post filing', wait=0))
+            descriptor = locks.enter_context(ship_locks.held(ship_locks.path(runtime, 'filing.lock'), 'post filing', wait=0))
         except ship_locks.Busy:
             _note_filing_busy(runtime)
             return []
@@ -767,8 +767,13 @@ def file_drops(store: Store, ship=None, *, seats: frozenset[str] | None = None,
             from . import servicectl
             if servicectl.alive(runtime):
                 return []
+        revision = os.pread(descriptor, 8, 0)
         if filing is not None:
-            return filing.advance(store, ship, seats=seats)
+            return filing.advance(store, ship, seats=seats, revision=revision)
+        # A whole host pass can change holds/drops while the service scan is paused.
+        # Its next advance starts afresh rather than sweeping from an older snapshot.
+        os.pwrite(descriptor, (int.from_bytes(revision, 'big') + 1).to_bytes(8, 'big'), 0)
+        os.ftruncate(descriptor, 8)
         return _file_drops(store, ship, seats=seats)
 
 
@@ -785,8 +790,8 @@ class FilingSlice:
         self.scope = None
         self.fresh: list[tuple[str, str]] = []
 
-    def advance(self, store: Store, ship=None, *, seats=None) -> list[tuple[str, str]]:
-        scope = (store.dir, seats, ship)
+    def advance(self, store: Store, ship=None, *, seats=None, revision=b'') -> list[tuple[str, str]]:
+        scope = (store.dir, seats, ship, revision)
         if self.steps is not None and self.scope != scope:
             self.steps.close()
             self.steps = None

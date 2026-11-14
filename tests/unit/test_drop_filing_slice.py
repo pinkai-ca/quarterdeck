@@ -44,6 +44,22 @@ def test_slices_resume_complete_file_operations_and_release_the_lock(tmp_path, m
     assert not list((tmp_path / 'runtime/post/drop').glob('*/*.json'))
 
 
+def test_whole_filing_between_slices_invalidates_the_paused_snapshot(tmp_path):
+    store = post.Store(tmp_path / 'runtime')
+    first, _ = drop(store)
+    filing = post.FilingSlice(seconds=0, operations=1)
+    post.file_drops(store, filing=filing)  # folder boundary
+    post.file_drops(store, filing=filing)  # snapshot contains the first file
+    post.file_drops(store)  # a different caller files it while the scan is paused
+    second, _ = drop(store)
+    for _ in range(10):
+        post.file_drops(store, filing=filing)
+        if filing.steps is None:
+            break
+    assert filing.steps is None
+    assert {message.id for message in store.all()} == {first.id, second.id}
+
+
 def test_group_intents_finish_between_slices_without_retaining_admission(tmp_path):
     from pathlib import Path
     template = Path(__file__).parents[2] / 'ships/forum/ship.toml'
