@@ -17,10 +17,13 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('targets', nargs='*', help='paths or node ids relative to the worktree top (default: the suite)')
     p.add_argument('--target', help='the worktree to test (default: the one the current directory is in)')
     p.add_argument('-n', dest='workers', type=int, default=8, help='xdist workers, 8 at most (0: none)')
-    p.add_argument('--timeout', type=float, default=3600.0, help='seconds before the run is stopped (default 3600)')
+    p.add_argument('--timeout', type=float, default=3600.0,
+                   help='seconds pytest may run, counted from its start (default 3600); setup has its own bound of '
+                        '600 s from admission to a slot, and the wait for a slot is bounded by --wait alone')
     p.add_argument('--memory-mib', type=resources.memory_mib, default=resources.DEFAULT_MEMORY_MIB,
                    help=f'per-process address-space cap, at most {resources.DEFAULT_MEMORY_MIB} MiB (default)')
-    p.add_argument('--wait', type=float, default=0.0, help='seconds to wait for one of four run slots (default: refuse at once)')
+    p.add_argument('--wait', type=float, default=0.0,
+                   help='seconds to wait for one of four run slots, outside both time bounds (default: refuse at once)')
     p.add_argument('--jail', action='store_true',
                    help='run the target\'s code inside bubblewrap, built by this copy of the tool: for a change '
                         'from outside the crew')

@@ -109,7 +109,8 @@ def test_runner_restores_alarm_state_after_its_deadline():
     handler = signal.getsignal(signal.SIGALRM)
     timer = signal.getitimer(signal.ITIMER_REAL)
     runner = run.Runner(SimpleNamespace(timeout=.02), [])
-    with pytest.raises(run.Stop, match='time limit'):
+    runner.bound(.02, 'time limit of 0.02 s')
+    with pytest.raises(run.Stop, match='time limit of 0.02 s'):
         with runner.time_limit():
             time.sleep(.1)
     assert runner.timed_out

@@ -134,11 +134,11 @@ def test_no_tests_is_its_own_ending(tmp_path):
 LIMIT = '600'  # never reached in real time: only the leap ends these runs
 
 
-def timed_out_with_the_fixed_ending(project, done, leapt):
+def timed_out_with_the_fixed_ending(project, done, leapt, note=f'time limit of {float(LIMIT)} s'):
     assert done.returncode == 3, done.stdout + done.stderr
     assert time.monotonic() - leapt < 90, 'the run did not stop promptly once its limit had passed'
     found = result(project)
-    assert found['outcome']['status'] == 'timeout' and found['outcome']['note'] == f'time limit of {float(LIMIT)} s'
+    assert found['outcome']['status'] == 'timeout' and found['outcome']['note'] == note
     assert not found['evidence']['complete'] and set(found['evidence']['counts'].values()) == {None}
     run = leaves_only_the_fixed_ending(project)
     return found, (run / 'report.md').read_text()
@@ -163,7 +163,7 @@ def test_a_time_limit_during_setup_is_a_timeout_that_names_no_test(tmp_path):
     project, worktree = make(tmp_path, {'test_wait.py': WAIT_TEST})
     done, leapt = tool_at_phase('venv', 'run', '--target', str(worktree), '-n', '0',
                                 '--timeout', LIMIT, cwd=project)
-    found, report = timed_out_with_the_fixed_ending(project, done, leapt)
+    found, report = timed_out_with_the_fixed_ending(project, done, leapt, 'time limit of setup, 600 s')
     evidence = found['evidence']
     assert 'argv' not in found and found['outcome']['pytest_exit'] is None, 'pytest never started'
     assert 'the evidence plugin never started' in evidence['causes']

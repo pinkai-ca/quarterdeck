@@ -1,5 +1,8 @@
 """``testrun.py run``: one run of a clean committed target, in fresh owned scratch, with a fixed ending.
 
+Bounds: setup has its own 600 s, the wait for a slot not counted; ``--timeout`` bounds pytest alone, from its start;
+``--wait`` alone bounds the wait for a slot.
+
 Stages: refuse a dirty target; hold one of four slots; recover this change's abandoned runs; make the run folder and
 its lock; check out the exact commit detached; make a venv on the ordinary ``python3`` with the system's
 read-only test tools; install the checkout editable with no index; prove the imports; compile the run's own
@@ -24,6 +27,7 @@ from . import clean, environment, evidence, gitops, jail, owned, procs, report, 
 from .layout import RESULTS, RUNS, RUN_SOCKETS, SOCKETS, Refused, Root, RunGuard, Slot, git_environment, identity, new_run_id, write_json
 
 GRACE = 15.0
+SETUP_SECONDS = 600.0  # setup's own bound, the slot wait not counted; --timeout bounds pytest alone
 FINALIZATION_SECONDS = 60.0
 EMERGENCY_SECONDS = 5.0
 FINALIZATION_EXIT = 7
@@ -60,7 +64,9 @@ class Runner:
         self.runner_files = runner_files
         self.signal = None
         self.timed_out = False
-        self.deadline = None
+        self.deadline = None  # the bound now running: setup's, then pytest's from its start
+        self.limit = None  # what that bound is called when it ends the run
+        self.armed = False  # inside time_limit: its alarm is the running bound's
         self.console = None
         self.last_exit = None
         self.started = time.time()
@@ -82,7 +88,13 @@ class Runner:
 
     def on_timeout(self, number, frame):
         self.timed_out = True
-        raise Stop(f'time limit of {self.args.timeout} s')
+        raise Stop(self.limit)
+
+    def bound(self, seconds, limit):
+        """Start a bound: the deadline every check reads and, inside time_limit, its alarm too."""
+        self.deadline, self.limit = time.monotonic() + seconds, limit
+        if self.armed:
+            signal.setitimer(signal.ITIMER_REAL, seconds)
 
     @contextmanager
     def alarm(self, seconds, handler):
@@ -103,14 +115,16 @@ class Runner:
 
     @contextmanager
     def time_limit(self):
-        """Setup and pytest deadline; interrupted steps retain their bounded stop grace."""
-        if self.deadline is None:
-            self.deadline = time.monotonic() + self.args.timeout
+        """The running bound, setup's or pytest's, as an alarm; interrupted steps retain their bounded stop grace."""
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
             self.on_timeout(signal.SIGALRM, None)
         with self.alarm(remaining, self.on_timeout):
-            yield
+            self.armed = True
+            try:
+                yield
+            finally:
+                self.armed = False
 
     def on_finalization_timeout(self, number, frame):
         raise FinalizationTimeout
@@ -126,7 +140,7 @@ class Runner:
             raise Stop(f'signal {self.signal}')
         if self.deadline is not None and time.monotonic() > self.deadline:
             self.timed_out = True
-            raise Stop(f'time limit of {self.args.timeout} s')
+            raise Stop(self.limit)
 
     def stop_group(self, process):
         """Wait for the whole step session, even when its shell has already exited."""
@@ -200,6 +214,7 @@ class Runner:
         args = self.args
         root = slot = None
         self.run_guard = None
+        self.bound(SETUP_SECONDS, f'time limit of setup, {SETUP_SECONDS:g} s')
         try:
             with self.time_limit():
                 target = gitops.resolve(Path(args.target) if args.target else Path.cwd())
@@ -226,7 +241,10 @@ class Runner:
                 root = Root(target.project)
                 slot = self.slot = Slot(root)
                 self.run = new_run_id()
-                slot.acquire({'verb': 'run', 'run': self.run, 'change': change, 'seat': os.environ.get('QD_SEAT')}, args.wait)
+            waiting = time.monotonic()  # the wait for a slot is governed by --wait alone, outside both bounds
+            slot.acquire({'verb': 'run', 'run': self.run, 'change': change, 'seat': os.environ.get('QD_SEAT')}, args.wait)
+            self.deadline += time.monotonic() - waiting
+            with self.time_limit():
                 for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
                     signal.signal(number, self.on_signal)
                 for line in clean.recover(root, change):
@@ -496,6 +514,7 @@ class Runner:
         result['argv'] = [str(part) for part in argv]
         self.state['stage'] = 'pytest'
         write_json(self.scratch_fd, 'state.json', self.state)
+        self.bound(self.args.timeout, f'time limit of {self.args.timeout} s')  # pytest's own, from its start
         self.user_before = usersite.stamps(user['site']) if user['exists'] else None
         return self.execute(argv, env=env, cwd=checkout, title='pytest', jailed=True)
 

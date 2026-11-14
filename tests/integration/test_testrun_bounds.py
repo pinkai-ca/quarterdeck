@@ -88,15 +88,17 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 sys.path.insert(0, sys.argv[1])
 from testrunner import cli, environment
+from testrunner import run
+run.SETUP_SECONDS = 0.3
 environment.tool_versions = lambda env: time.sleep(60)
 files = [Path(sys.argv[1]) / "testrun.py", *sorted((Path(sys.argv[1]) / "testrunner").glob("*.py"))]
-raise SystemExit(cli.main(["run", "--target", sys.argv[2], "-n", "0", "--timeout", "0.3"], files))
+raise SystemExit(cli.main(["run", "--target", sys.argv[2], "-n", "0", "--timeout", "60"], files))
 '''
     done = command(['timeout', '--kill-after=5s', '15s', 'prlimit', '--as=8589934592', sys.executable,
                     '-c', driver, str(ROOT / 'tests'), str(project)], cwd=ROOT, timeout=20)
     result, report, _ = run_result(project, done)
     assert done.returncode == 3 and result['outcome']['status'] == 'timeout'
-    assert 'time limit of 0.3 s' in report
+    assert 'time limit of setup, 0.3 s' in report, 'setup is ended by its own bound, never by --timeout'
     assert result['seconds'] < 10
     assert result['outcome']['pytest_exit'] is None
 
@@ -169,10 +171,10 @@ def test_actual_limits(case, pytestconfig):
     assert 'allocation refused within this test process' in done.stdout
 
 
-# The tool's wall covers setup as well as pytest (time_limit: "Setup and pytest deadline"). On a loaded runner the
-# checkout, the environment and collection took the whole of an 8 s wall on GitHub, before pytest started or before
-# the synthetic test reached its marker. The wall must leave room for setup and still fall inside the synthetic sleep.
-WALL = 30
+# --timeout bounds pytest alone, from its start; setup has its own bound. So a short wall still reaches the synthetic
+# test however long the checkout and the environment take (all of 8 s on a loaded GitHub runner), and stops it within
+# its sleep. Collection is inside the wall: 3 s leaves it room.
+WALL = 3
 SLEEP = 300
 
 
@@ -203,3 +205,65 @@ def test_synthetic_wait():
         pass
     else:
         assert fields[0] == 'Z', 'owned synthetic child survived timeout termination'
+
+
+# A clock of the run's own that leaps once, at a chosen moment: the bounds read it, real time does not pass.
+LEAPING = '''
+import sys, time, types
+from pathlib import Path
+sys.dont_write_bytecode = True
+sys.path.insert(0, sys.argv[1])
+from testrunner import cli, environment, run
+offset = [0.0]
+run.time = types.SimpleNamespace(monotonic=lambda: time.monotonic() + offset[0], time=time.time, sleep=time.sleep,
+                                 strftime=time.strftime)
+def leap(seconds):
+    offset[0] += seconds
+{patch}
+files = [Path(sys.argv[1]) / "testrun.py", *sorted((Path(sys.argv[1]) / "testrunner").glob("*.py"))]
+raise SystemExit(cli.main(["run", "--target", sys.argv[2], "-n", "0", {args}], files))
+'''
+
+
+def leaping_run(project, patch, *args):
+    driver = LEAPING.format(patch=patch, args=', '.join(repr(arg) for arg in args))
+    return command(['timeout', '--kill-after=10s', '200s', 'prlimit', '--as=8589934592', sys.executable,
+                    '-c', driver, str(ROOT / 'tests'), str(project)], cwd=ROOT, timeout=210)
+
+
+def test_a_long_setup_is_not_counted_in_the_pytest_timeout(synthetic_project):
+    """Setup that takes 500 s on the run's clock, inside its own 600 s, leaves pytest its whole --timeout."""
+    project, commit = synthetic_project
+    (project / 'tests/test_pass.py').write_text('def test_synthetic(): assert True\n')
+    commit()
+    versions = 'measured = environment.tool_versions\nenvironment.tool_versions = lambda env: (leap(500), measured(env))[1]'
+    done = leaping_run(project, versions, '--timeout', '60')
+    result, report, _ = run_result(project, done)
+    assert done.returncode == 0 and result['outcome']['status'] == 'passed', done.stdout + done.stderr + report
+
+
+def test_setup_past_its_own_bound_is_a_setup_timeout_whatever_the_pytest_timeout(synthetic_project):
+    project, commit = synthetic_project
+    (project / 'tests/test_never_reached.py').write_text('def test_synthetic(): assert True\n')
+    commit()
+    versions = 'measured = environment.tool_versions\nenvironment.tool_versions = lambda env: (leap(601), measured(env))[1]'
+    done = leaping_run(project, versions, '--timeout', '86400')
+    result, report, _ = run_result(project, done)
+    assert done.returncode == 3 and result['outcome']['status'] == 'timeout'
+    assert 'time limit of setup, 600 s' in report and result['outcome']['pytest_exit'] is None
+
+
+def test_the_wait_for_a_slot_is_counted_in_neither_bound(synthetic_project):
+    """A wait for a slot of 10 000 s on the run's clock, longer than setup's bound and --timeout together, ends
+    neither: --wait alone governs it."""
+    project, commit = synthetic_project
+    (project / 'tests/test_pass.py').write_text('def test_synthetic(): assert True\n')
+    commit()
+    acquire = ('acquire = run.Slot.acquire\n'
+               'def waited(self, *args, **kwargs):\n'
+               '    leap(10000)\n'
+               '    return acquire(self, *args, **kwargs)\n'
+               'run.Slot.acquire = waited')
+    done = leaping_run(project, acquire, '--timeout', '60')
+    result, report, _ = run_result(project, done)
+    assert done.returncode == 0 and result['outcome']['status'] == 'passed', done.stdout + done.stderr + report
