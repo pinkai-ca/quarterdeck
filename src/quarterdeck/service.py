@@ -1334,8 +1334,11 @@ class Service:
                 seats, names = self.credential_watch
                 marks = credential.detached_marks(names)
                 if marks and not marks <= handled:
-                    for line in credential.reseed(self.ship, seats):
+                    lines = credential.reseed(self.ship, seats)
+                    for line in lines:
                         self.log("credential", proof=line, by="watch")
+                    if any(line.startswith(credential.SKIPPED) for line in lines):
+                        continue  # the lock was held: nothing is marked handled, the next tick tries again
                     marks = credential.detached_marks(names)  # what is left detached after the reseed: retained ones
                 handled = marks
             except Exception as error:  # the watch never stops the service; the pass still reseeds

@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from quarterdeck import credential, harness as harnesses, ship as shipmod
+from quarterdeck import credential, harness as harnesses, sandbox, ship as shipmod
 from quarterdeck.service import Service
 from quarterdeck.tmux import Tmux
 from tests.conftest import ROOT
@@ -139,20 +139,69 @@ def test_a_stub_left_by_a_lost_login_is_relinked_and_never_installed(crew):
     assert read_token(source) == "fake-old", "a stub never replaces the pool's sign-in"
 
 
-def test_every_reseed_waits_for_the_one_lock(crew):
+def test_a_reseed_waits_for_the_one_lock_and_skips_the_round_past_its_bound(crew):
     service, source = crew
     renew_by_replacement(service.ship.runtime / "seats" / "desk" / "home" / source.name, fake(RENEWED, 8 * 3600))
-    lock = service.ship.runtime / "credential-reseed.lock"
+    lock = service.ship.runtime / sandbox.LOCKS / "credential-reseed.lock"
+    lock.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     held = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
-    fcntl.flock(held, fcntl.LOCK_EX)  # another process's reseed, holding the lock
-    done = []
-    worker = threading.Thread(target=lambda: done.append(credential.reseed(service.ship, service.resolved_seats())))
-    worker.start()
-    time.sleep(0.3)
-    assert not done and read_token(source) == "fake-old", "no install while another reseed holds the lock"
-    os.close(held)
+    fcntl.flock(held, fcntl.LOCK_EX)  # another process's reseed, or a stuck one, holding the lock
+    try:
+        started = time.monotonic()
+        lines = credential.reseed(service.ship, service.resolved_seats(), wait=0.3)
+        assert time.monotonic() - started < 2, "the wait is bounded"
+        assert len(lines) == 1 and lines[0].startswith(credential.SKIPPED), lines
+        assert read_token(source) == "fake-old", "no install while another reseed holds the lock"
+        done = []
+        worker = threading.Thread(target=lambda: done.append(credential.reseed(service.ship, service.resolved_seats())))
+        worker.start()
+        time.sleep(0.3)
+        assert not done
+    finally:
+        os.close(held)
     worker.join(timeout=5)
-    assert done and read_token(source) == RENEWED
+    assert done and read_token(source) == RENEWED, "released within the bound, the waiting reseed installs"
+
+
+def test_the_watch_retries_a_skipped_round_on_its_next_tick(crew):
+    service, source = crew
+    service.credentials()
+    lock = service.ship.runtime / sandbox.LOCKS / "credential-reseed.lock"
+    lock.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    held = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(held, fcntl.LOCK_EX)
+    stop, thread = watching(service)
+    try:
+        renew_by_replacement(service.ship.runtime / "seats" / "desk" / "home" / source.name, fake(RENEWED, 8 * 3600))
+        deadline = time.monotonic() + 10
+        while credential.SKIPPED not in (service.log_path.read_text() if service.log_path.exists() else ""):
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+        os.close(held)
+        held = None
+        deadline = time.monotonic() + 2 * credential.RESEED_WAIT + 2
+        while read_token(source) != RENEWED:
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+    finally:
+        if held is not None:
+            os.close(held)
+        stop.set()
+        thread.join(timeout=5)
+
+
+def test_a_copy_as_the_pools_is_not_due_and_takes_no_lock(crew, monkeypatch):
+    service, source = crew
+    monkeypatch.setattr(type(harnesses.native_for("anthropic")), "credential_copy", True, raising=False)
+    for name in service.ship.seats:
+        copy = service.ship.runtime / "seats" / name / "home" / source.name
+        copy.unlink()
+        shutil.copy2(source, copy)  # as the framework makes a copy: the pool's bytes and times
+    lock = service.ship.runtime / sandbox.LOCKS / "credential-reseed.lock"
+    assert credential.reseed(service.ship, service.resolved_seats()) == []
+    assert not lock.exists(), "nothing due, so no lock taken on a pass"
+    os.utime(copy, ns=(time.time_ns(), time.time_ns() + 10**9))  # one seat's program refreshed its copy
+    assert credential._due(service.ship, service.resolved_seats())
 
 
 def test_a_program_whose_seats_hold_a_copy_is_left_to_the_pass(crew, monkeypatch):

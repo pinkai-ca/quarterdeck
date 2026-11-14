@@ -320,7 +320,7 @@ class Seat:
         if same_program:
             self.harness.preflight_resume(selected, self.home, self._resume_id)
         self.record()
-        credential.reseed(self.ship, [self])
+        credential.reseed(self.ship, [self], wait=credential.DOWN_WAIT)
         stopped = self._relaunch_down()
         self.move_to(pool)
         self.spec = selected
@@ -622,7 +622,7 @@ class Seat:
         if self.launched() is not None:
             from . import credential  # the credential module reads seats, so it is imported here, not above
 
-            credential.reseed(self.ship, [self])  # a refresh left in this home reseeds the pool it came from, before any move
+            credential.reseed(self.ship, [self], wait=credential.DOWN_WAIT)  # a refresh left in this home reseeds the pool it came from, before any move
         prior = {item.path for item in record_owner.records(self)}
         prior.update(self.harness.records(self.home))
         for record in prior:
@@ -953,7 +953,7 @@ class Seat:
             link_launch_record(self, launched)  # include a last write before the program ended
             from . import credential  # the credential module reads seats, so it is imported here, not above
 
-            credential.reseed(self.ship, [self])  # the program has ended: a refresh it left reseeds the pool its launch names, while it is named
+            credential.reseed(self.ship, [self], wait=credential.DOWN_WAIT)  # the program has ended: a refresh it left reseeds the pool its launch names, while it is named
         (self.folder / "launch.json").unlink(missing_ok=True)
         (self.folder / RETIRING).unlink(missing_ok=True)
 
@@ -1074,7 +1074,7 @@ def _teardown(cleanup: ExitStack, treated: Ship, seat: Seat, tmux: Tmux, orders:
         if retired and not running and not (seat.folder / "launch.json").exists():
             from . import credential
 
-            credential.reseed(treated, [seat])  # its one pool: a refresh left in the home is not deleted with it
+            credential.reseed(treated, [seat], wait=credential.DOWN_WAIT)  # its one pool: a refresh left in the home is not deleted with it
             shutil.rmtree(seat.folder)
 
     held: list[int] = []

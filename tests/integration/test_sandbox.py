@@ -466,3 +466,50 @@ def test_a_jailed_seat_sees_the_qd_only_folder_first_and_the_machines_interprete
                 assert not (real and Path(real).is_relative_to(venv / "bin")), (name, real)
     finally:
         seat.down()
+
+
+def test_the_reseed_lock_cannot_be_opened_or_taken_from_inside_a_jail(drydock: Path, tmp_path: Path):
+    """The service's lock folder is an empty private tmpfs inside the jail: the lock's path does not exist there, so no
+    jailed seat can hold it (flock needs no write access) and stop the service's pass."""
+    import json
+    import subprocess
+
+    from quarterdeck import credential
+
+    workspace = tmp_path / "lock-work"
+    workspace.mkdir()
+    ship = shipmod.load(drydock)
+    shipmod.fence(ship)
+    own = ship.runtime / "seats" / "worker-1"
+    (own / "home").mkdir(parents=True, exist_ok=True)
+    with credential._reseeding(ship, 0.1):
+        pass  # the service has made its lock file
+    lock = ship.runtime / sandbox.LOCKS / "credential-reseed.lock"
+    assert lock.is_file()
+    jail = sandbox.plan(ship, "worker-1", own, own / "home", workspace, "/usr/bin/python3", "/usr/bin", home=Path.home())
+    probe = r"""
+import fcntl, json, os, sys
+lock, folder = sys.argv[1:3]
+seen = dict(folder=sorted(os.listdir(folder)) if os.path.isdir(folder) else None)
+for flags, name in ((os.O_RDONLY, "read"), (os.O_RDWR | os.O_CREAT, "create")):
+    try:
+        descriptor = os.open(lock, flags, 0o600)
+    except OSError as error:
+        seen[name] = type(error).__name__
+        continue
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        seen[name] = "locked"
+    finally:
+        os.close(descriptor)
+print(json.dumps(seen))
+"""
+    result = subprocess.run(sandbox.command(jail, ["/usr/bin/python3", "-c", probe, str(lock), str(lock.parent)]),
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    seen = json.loads(result.stdout.strip().splitlines()[-1])
+    assert seen["folder"] == [] and seen["read"] == "FileNotFoundError", seen
+    # A lock the jail makes lands in its own private tmpfs, never on the service's file.
+    with credential._reseeding(ship, 0.5):
+        pass
+    assert sorted(os.listdir(lock.parent)) == ["credential-reseed.lock"]

@@ -18,8 +18,9 @@ in one exchange so a refresh that lands meanwhile is never lost (law: one-folder
 The service's pass is not fast enough alone: a renewal retires the token every other seat still
 holds, and they fail until the pool's file has it. So a dedicated watch in the service looks at
 each linked seat's credential name twice a second, and a name that stopped being a link reseeds
-at once. Every reseed that finds a detached name, the watch's, the pass's and a seat's own at down,
-holds one lock file in the runtime, so two never install at once.
+at once. Every reseed with something to judge, the watch's, the pass's and a seat's own at down,
+holds one lock file in runtime/locks, which every jail hides; the pass and the watch wait for it
+at most two seconds and skip the round, a seat going down at most thirty.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ import errno
 import fcntl
 import os
 import stat
+import time
 from contextlib import contextmanager
 import shutil
 from dataclasses import dataclass
@@ -88,13 +90,34 @@ def freshness(pool: Pool, path: Path) -> tuple[float, float] | None:
     return harnesses.native_for(pool.provider).freshness(path)
 
 
+RESEED_WAIT = 2.0  # seconds the service's pass and watch wait for the reseed lock before they skip the round
+DOWN_WAIT = 30.0  # a seat going down waits longer, still bounded: its refresh is in hand
+SKIPPED = "credential reseed skipped: another reseed held the lock"
+
+
+class Busy(Exception):
+    """The reseed lock stayed held for the whole bounded wait."""
+
+
 @contextmanager
-def _reseeding(ship: Ship):
-    """One reseed at a time across the service's pass, its watch and any ``qd`` process: a lock file under the runtime."""
-    ship.runtime.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(ship.runtime / "credential-reseed.lock", os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
+def _reseeding(ship: Ship, wait: float):
+    """One reseed at a time across the service's pass, its watch and any ``qd`` process: a lock file in the
+    runtime's ``locks`` folder, which every jail hides, so no jailed seat can take it. The wait is bounded."""
+    from .sandbox import LOCKS
+
+    folder = ship.runtime / LOCKS
+    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor = os.open(folder / "credential-reseed.lock", os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
     try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        deadline = time.monotonic() + wait
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise Busy() from None
+                time.sleep(0.05)
         yield
     finally:
         os.close(descriptor)
@@ -128,13 +151,44 @@ def detached_marks(names: list[Path]) -> frozenset[tuple[str, int, int, int]]:
     return frozenset(found)
 
 
-def reseed(ship: Ship, seats: list[Seat]) -> list[str]:
-    """Reseed each pool from the newest seat that refreshed, then relink the detached seats; the proof lines."""
-    if not detached_marks([seat.home / source.name for seat in participants(ship, seats)
-                           if (source := pool_file(ship.pools[seat.pool])) is not None]):
-        return []  # every name still a link, or none there: nothing to install and no lock taken
-    with _reseeding(ship):
-        return _reseed(ship, seats)  # judged again under the lock: another reseed may have installed it meanwhile
+def reseed(ship: Ship, seats: list[Seat], *, wait: float = RESEED_WAIT) -> list[str]:
+    """Reseed each pool from the newest seat that refreshed, then relink the detached seats; the proof lines.
+
+    With the lock held past ``wait``, nothing is done and the one line says so; the next pass or tick retries.
+    """
+    if not _due(ship, seats):
+        return []  # every link still a link and every copy as the pool's: nothing to install and no lock taken
+    try:
+        with _reseeding(ship, wait):
+            return _reseed(ship, seats)  # judged again under the lock: another reseed may have installed it meanwhile
+    except Busy:
+        return [f"{SKIPPED} for {wait:g} s; the next round retries"]
+
+
+def _due(ship: Ship, seats: list[Seat]) -> bool:
+    """Whether a reseed has anything to judge, by metadata alone: a linked name that is no longer a link, or a
+    held copy whose size or modification time differs from the pool's file (a copy is made with the pool's times)."""
+    for seat in participants(ship, seats):
+        pool = ship.pools.get(seat.pool)
+        source = pool_file(pool) if pool is not None else None
+        if source is None:
+            continue
+        name = seat.home / source.name
+        try:
+            info = name.lstat()
+        except OSError:
+            continue
+        if stat.S_ISLNK(info.st_mode):
+            continue
+        if not getattr(harnesses.native_for(pool.provider), "credential_copy", False):
+            return True
+        try:
+            held = source.stat()
+        except OSError:
+            return True
+        if (info.st_size, info.st_mtime_ns) != (held.st_size, held.st_mtime_ns):
+            return True
+    return False
 
 
 def _reseed(ship: Ship, seats: list[Seat]) -> list[str]:

@@ -50,6 +50,9 @@ def available() -> bool:
     return shutil.which(PROGRAM) is not None
 
 
+LOCKS = "locks"  # runtime/locks: the service's own lock files, hidden inside every jail
+
+
 @dataclass(frozen=True)
 class Jail:
     """What a jailed seat may see and touch."""
@@ -104,6 +107,7 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
     drop = ship.runtime / "post" / "drop" / seat_name
     post_dir.ensure_directory(drop)  # the one writable post folder, so it must exist before the launch
     (ship.runtime / "tmux").mkdir(mode=0o700, exist_ok=True)  # hidden inside: the mount needs its place in the read-only ship
+    (ship.runtime / LOCKS).mkdir(mode=0o700, exist_ok=True)  # hidden inside: the service's own locks, out of every jail's reach
     from .fleet import declaration_files
     declarations = tuple(file for file in declaration_files(ship) if file.parent != ship.folder)
     jail = Jail(home, seat_home, seat_folder, workspace, ship.folder, ship.runtime, tuple(folders),
@@ -217,10 +221,13 @@ def command(jail: Jail, argv: list[str]) -> list[str]:
     fleet_folders = fleet_roots(jail.ship_folder)
     # The ship's own tmux server is hidden like the other seats: its socket folder is an empty private
     # tmpfs inside, so nothing in the jail reaches the server, by its path or any other way.
+    # The service's own locks are hidden the same way: a lock a jailed seat could take (flock needs no write
+    # access) would let it stop the service's pass.
     mounts += [("--workspace", jail.workspace)]
     mounts += [("--fleet", folder) for folder in fleet_folders]
     mounts += [("--ro-bind", jail.ship_folder),
-               ("--tmpfs", jail.runtime / "seats"), ("--private-tmpfs", jail.runtime / "tmux"), ("--bind", jail.seat_folder)]
+               ("--tmpfs", jail.runtime / "seats"), ("--private-tmpfs", jail.runtime / "tmux"),
+               ("--private-tmpfs", jail.runtime / LOCKS), ("--bind", jail.seat_folder)]
     mounts += [("--bind-try", folder) for folder in jail.writable]
     mounts += [("--declaration", file) for file in getattr(jail, 'declarations', ())]
 
