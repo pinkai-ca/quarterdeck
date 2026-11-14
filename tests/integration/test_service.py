@@ -297,7 +297,20 @@ def test_every_turn_is_accounted_by_pool_seat_and_order(ship: shipmod.Ship, tmux
     order = store.get(short)
     wait_for(lambda: not store.open_for("captain"), seconds=20)
     book_path = ship.runtime / "ledger.sqlite"
-    wait_for(lambda: book_path.exists() and ledger.Ledger(book_path).rollup("seat"), seconds=15)
+    def accounted_turn():
+        if not book_path.exists():
+            return False
+        book = ledger.Ledger(book_path)
+        try:
+            # A report closes the post before its native turn ends; a partial
+            # rollup is not proof that its usage and attribution are committed.
+            rows = book.rollup("seat")
+            return (any(row.key == "captain" and row.turns == 1 and row.read_cached > 0
+                        and row.tool_calls == 1 for row in rows)
+                    and [row.key for row in book.rollup("order")] == [order.id])
+        finally:
+            book.close()
+    wait_for(accounted_turn, seconds=60)
     book = ledger.Ledger(book_path)
     rows = book.rollup("seat")
     assert rows[0].key == "captain" and rows[0].turns == 1 and rows[0].read_cached > 0 and rows[0].tool_calls == 1

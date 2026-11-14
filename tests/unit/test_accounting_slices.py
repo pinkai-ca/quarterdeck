@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from contextlib import nullcontext
 import os
+import signal
 import threading
 import time
 
@@ -222,3 +223,34 @@ def test_restart_resumes_committed_prefix_without_duplicate_turns(tmp_path, monk
     finally:
         driver.close()
         restarted.ledger.close()
+
+
+def test_completed_native_turn_precedes_commit_when_planning_child_is_paused(tmp_path, monkeypatch):
+    svc, seat, record, _ = world(tmp_path, monkeypatch)
+    driver = Driver()
+    start = Driver.start
+    def paused(driver, service):
+        start(driver, service)
+        os.kill(driver.process.pid, signal.SIGSTOP)
+        assert os.WIFSTOPPED(os.waitpid(driver.process.pid, os.WUNTRACED)[1])
+    monkeypatch.setattr(Driver, 'start', paused)
+    monkeypatch.setattr(accounting_slices, 'BUDGET', 0.03)
+    try:
+        turns = seat.harness.turns(record)
+        assert len(turns) == 1 and turns[0].ended is not None
+        driver.step(svc)
+        assert driver.active and not svc.accounting_health.checked
+        assert svc.ledger.rollup('seat') == []
+        # Releasing exactly this child, rather than sleeping, makes the same
+        # native turn eventually available with its usage and tool count.
+        os.kill(driver.process.pid, signal.SIGCONT)
+        monkeypatch.setattr(Driver, 'start', start)
+        finish(driver, svc, timeout=60)
+        row, = svc.ledger.rollup('seat')
+        assert row.key == seat.name and row.turns == 1 and row.read_cached > 0 and row.tool_calls == 1
+        assert not svc.ledger.catching_up()
+    finally:
+        if driver.process is not None:
+            os.kill(driver.process.pid, signal.SIGCONT)
+        driver.close()
+        svc.ledger.close()

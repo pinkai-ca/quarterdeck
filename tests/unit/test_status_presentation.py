@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta, timezone
 import json
 import os
+import signal
 from pathlib import Path
 import subprocess
 import sys
@@ -12,6 +13,7 @@ import pytest
 
 from quarterdeck import copy_state, presentation, servicectl, ship as shipmod, watch
 from quarterdeck.service import Service
+from tests.integration.waiting import wait_for
 
 
 @pytest.fixture
@@ -19,10 +21,20 @@ def live(tmp_path):
     (tmp_path/'ship.toml').write_text('[ship]\ncode="checkout"\nname="synthetic"\n')
     ship=shipmod.load(tmp_path);ship.runtime.mkdir(parents=True)
     lock=servicectl.acquire_lock(ship.runtime);svc=Service(ship,SimpleNamespace())
-    svc.tick()
-    assert (ship.runtime/presentation.NAME).exists()
-    yield ship,svc,lock
-    lock.close();svc.ledger.close()
+    try:
+        svc.tick()
+        assert (ship.runtime/presentation.NAME).exists()
+        # Publication alone is insufficient: the asynchronous accounting child
+        # must first establish health before the optional cache can be reused.
+        def usable_snapshot():
+            svc.tick()
+            return presentation.cached_line(ship.folder)
+        wait_for(usable_snapshot, seconds=60)
+        yield ship,svc,lock
+    finally:
+        if driver := getattr(svc, 'account_driver', None):
+            driver.close()
+        lock.close();svc.ledger.close()
 
 
 def test_snapshot_keeps_every_rendered_alarm_and_unknown_marker(live,monkeypatch):
@@ -180,3 +192,51 @@ def test_framework_identity_is_content_bound_even_with_matching_file_metadata(tm
     before=presentation.framework_stamp()
     source.write_text('other')
     assert presentation.framework_stamp()!=before
+
+
+def test_pending_accounting_uses_independent_alarm_reader_then_enables_cache(tmp_path, monkeypatch):
+    from quarterdeck import accounting_health, accounting_slices
+    (tmp_path / 'ship.toml').write_text('[ship]\ncode="checkout"\nname="synthetic"\n')
+    ship = shipmod.load(tmp_path)
+    ship.runtime.mkdir(parents=True)
+    lock = servicectl.acquire_lock(ship.runtime)
+    svc = Service(ship, SimpleNamespace())
+    start = accounting_slices.Driver.start
+    def paused(driver, service):
+        start(driver, service)
+        # Pause only our child, before its first job can be consumed. The
+        # WUNTRACED acknowledgment makes this independent of runner speed.
+        os.kill(driver.process.pid, signal.SIGSTOP)
+        assert os.WIFSTOPPED(os.waitpid(driver.process.pid, os.WUNTRACED)[1])
+    monkeypatch.setattr(accounting_slices.Driver, 'start', paused)
+    monkeypatch.setattr(accounting_slices, 'BUDGET', 0.03)
+    try:
+        svc.tick()
+        assert svc.account_driver.active and not svc.accounting_health.checked
+        assert presentation.cached_line(ship.folder) is None
+        assert accounting_health.UNKNOWN in presentation.command_line(
+            ['--ship', str(ship.folder), 'status', '--line'])
+        facts = watch.Facts('ok', 1, 0, 1, needs_human=['worker'],
+                            accounting=accounting_health.UNKNOWN)
+        with monkeypatch.context() as reading:
+            reading.setattr(watch, 'facts', lambda *args, **kwargs: facts)
+            assert presentation.publish(ship, svc.tmux, svc.status_framework, svc.store, svc.attempts)
+            assert presentation.cached_line(ship.folder) is None
+            # An optional cache miss must retain both the operational alarm and
+            # the unknown marker, without waiting for the stopped child.
+            assert presentation.command_line(['--ship', str(ship.folder), 'status', '--line']) == facts.line()
+            assert 'worker needs a human' in facts.line() and accounting_health.UNKNOWN in facts.line()
+        os.kill(svc.account_driver.process.pid, signal.SIGCONT)
+        monkeypatch.setattr(accounting_slices.Driver, 'start', start)
+        def ready():
+            svc.tick()
+            return presentation.cached_line(ship.folder)
+        assert wait_for(ready, seconds=60).startswith('service ok')
+        assert svc.accounting_health.checked and not svc.account_driver.active
+    finally:
+        if driver := getattr(svc, 'account_driver', None):
+            if driver.process is not None:
+                os.kill(driver.process.pid, signal.SIGCONT)
+            driver.close()
+        lock.close()
+        svc.ledger.close()
