@@ -190,40 +190,43 @@ def stage(ship: Ship, store: post.Store, group_name: str, sender: str, body: str
 
 
 def file_staged(ship: Ship, store: post.Store) -> list[tuple[str, str]]:
+    return [held for held in staged_steps(ship, store) if held is not None]
+
+
+def staged_steps(ship: Ship, store: post.Store):
     """Publish staged group intents from the service. A refusal is returned and the intent stays.
 
     The walk is the post folder's no-follow walk; the ordinary pass names a seat folder that is not a directory.
     """
     import stat
 
-    holds: list[tuple[str, str]] = []
     root_dir = ship.runtime / 'post' / 'drop'
     try:
         seats = post_dir.list_children(root_dir)
     except FileNotFoundError:
-        return holds
+        return
     except (OSError, ShipError):
-        return [('drop', 'drop unreadable')]
-    with post.admission(ship.runtime, '@groups'):
-        for name, mode in sorted(seats):
-            folder_name = f'drop/{name}'
-            if not stat.S_ISDIR(mode):
-                continue
-            try:
-                files = sorted(file for file, _ in post_dir.list_children(root_dir / name)
-                               if file.endswith('.group.json'))
-            except FileNotFoundError:
-                if not post_dir.gone(root_dir / name):
-                    holds.append((folder_name, 'drop unreadable'))
-                continue
-            except (OSError, ShipError):
-                holds.append((folder_name, 'drop unreadable'))
-                continue
-            for file in files:
+        yield ('drop', 'drop unreadable')
+        return
+    for name, mode in sorted(seats):
+        yield None
+        folder_name = f'drop/{name}'
+        if not stat.S_ISDIR(mode):
+            continue
+        try:
+            files = sorted(file for file, _ in post_dir.list_children(root_dir / name)
+                           if file.endswith('.group.json'))
+        except FileNotFoundError:
+            if not post_dir.gone(root_dir / name):
+                yield (folder_name, 'drop unreadable')
+            continue
+        except (OSError, ShipError):
+            yield (folder_name, 'drop unreadable')
+            continue
+        for file in files:
+            with post.admission(ship.runtime, '@groups'):
                 reason = _file_intent(ship, store, name, root_dir / name / file)
-                if reason:
-                    holds.append((folder_name, reason))
-    return holds
+            yield (folder_name, reason) if reason else None
 
 
 # Each way a staged group intent is held has a fixed reason of its own, never its contents, so a hold names its cause.

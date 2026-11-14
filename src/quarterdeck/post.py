@@ -578,6 +578,46 @@ def _drop_shorts(root: Path) -> set[str]:
     return found
 
 
+DROP_WAIT_SECONDS = 120.0
+
+
+def drop_waits(runtime: Path, *, at: float | None = None) -> list[str]:
+    """Aged drop folders from no-follow metadata only; no message bytes or names are displayed."""
+    root = runtime / 'post' / 'drop'
+    cutoff = (time.time() if at is None else at) - DROP_WAIT_SECONDS
+    try:
+        children = post_dir.list_children(root)
+    except FileNotFoundError:
+        return []
+    except (OSError, ShipError):
+        return ['post drop waiting: drop (age unknown)']
+    lines = []
+    for name, mode in sorted(children):
+        if not stat.S_ISDIR(mode):
+            continue  # the existing hold reader names non-directory entries
+        folder = f'drop/{name}'
+        descriptor = None
+        try:
+            descriptor = post_dir.open_directory(root / name, create=False)
+            for file in os.listdir(descriptor):
+                try:
+                    info = os.stat(file, dir_fd=descriptor, follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                if stat.S_ISREG(info.st_mode) and info.st_mtime <= cutoff:
+                    lines.append(f'post drop waiting: {folder} (over 2m)')
+                    break
+        except FileNotFoundError:
+            if not post_dir.gone(root / name):
+                lines.append(f'post drop waiting: {folder} (age unknown)')
+        except (OSError, ShipError):
+            lines.append(f'post drop waiting: {folder} (age unknown)')
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+    return lines
+
+
 def _hold_dir(runtime: Path) -> Path:
     return runtime / "post" / "drop-holds"
 
@@ -708,7 +748,7 @@ def _note_filing_busy(runtime: Path) -> None:
 
 
 def file_drops(store: Store, ship=None, *, seats: frozenset[str] | None = None,
-               service_absent: bool = False) -> list[tuple[str, str]]:
+               service_absent: bool = False, filing: FilingSlice | None = None) -> list[tuple[str, str]]:
     """One filing door, serialized for the service and a check's scoped fallback.
 
     The fallback checks service ownership under the filing lock. A service starting
@@ -727,10 +767,56 @@ def file_drops(store: Store, ship=None, *, seats: frozenset[str] | None = None,
             from . import servicectl
             if servicectl.alive(runtime):
                 return []
+        if filing is not None:
+            return filing.advance(store, ship, seats=seats)
         return _file_drops(store, ship, seats=seats)
 
 
+class FilingSlice:
+    """A resumable scan; its caller holds the filing lock only during advance().
+
+    The budget is cooperative: directory operations and one message/group intent
+    finish before yielding. No descriptor or admission lock spans two advances.
+    Immutable publication and the ordinary checks remain in the same scan.
+    """
+    def __init__(self, *, seconds: float = 0.02, operations: int = 128):
+        self.seconds, self.operations = seconds, operations
+        self.steps = None
+        self.scope = None
+        self.fresh: list[tuple[str, str]] = []
+
+    def advance(self, store: Store, ship=None, *, seats=None) -> list[tuple[str, str]]:
+        scope = (store.dir, seats)
+        if self.steps is not None and self.scope != scope:
+            self.steps.close()
+            self.steps = None
+        if self.steps is None:
+            self.scope = scope
+            self.steps = _drop_steps(store, ship, seats=seats, fresh=self.fresh)
+        deadline = time.monotonic() + self.seconds
+        try:
+            for _ in range(self.operations):
+                next(self.steps)
+                if time.monotonic() >= deadline:
+                    break
+        except StopIteration:
+            self.steps = None
+        except BaseException:
+            self.steps = None
+            raise
+        result = list(self.fresh)
+        self.fresh.clear()
+        return result
+
+
 def _file_drops(store: Store, ship=None, *, seats: frozenset[str] | None = None) -> list[tuple[str, str]]:
+    fresh: list[tuple[str, str]] = []
+    for _ in _drop_steps(store, ship, seats=seats, fresh=fresh):
+        pass
+    return fresh
+
+
+def _drop_steps(store: Store, ship=None, *, seats: frozenset[str] | None = None, fresh):
     """File each seat's drops into the store. A refusal is held, named, and never deleted.
 
     Returns the holds recorded for the first time this pass, so the service logs each once.
@@ -741,7 +827,6 @@ def _file_drops(store: Store, ship=None, *, seats: frozenset[str] | None = None)
     runtime = store.dir.parent.parent
     root = store.dir.parent / "drop"
     current: set[tuple[str, str]] = set()
-    fresh: list[tuple[str, str]] = []
     folders = None if seats is None else frozenset({"drop", *(f"drop/{name}" for name in seats)})
 
     def hold(folder: str, reason: str) -> None:
@@ -754,21 +839,24 @@ def _file_drops(store: Store, ship=None, *, seats: frozenset[str] | None = None)
         hold("drop", "drop unreadable")
     if found is None:
         _sweep_holds(runtime, current, folders=folders)
-        return fresh
+        return
     if not stat.S_ISDIR(found):
         hold("drop", "drop folder is not a directory")
         _sweep_holds(runtime, current, folders=folders)
-        return fresh
+        return
     if ship is not None and seats is None:
         from . import group_post
-        for folder, reason in group_post.file_staged(ship, store):
-            hold(folder, reason)
+        for held in group_post.staged_steps(ship, store):
+            if held is not None:
+                hold(*held)
+            yield
     try:
         children = sorted(post_dir.list_children(root))
     except (OSError, ShipError):
         hold("drop", "drop unreadable")
-        return fresh
+        return
     for name, mode in children:
+        yield  # a folder listing is one cooperative operation
         if seats is not None and name not in seats:
             continue
         folder = f"drop/{name}"
@@ -786,6 +874,7 @@ def _file_drops(store: Store, ship=None, *, seats: frozenset[str] | None = None)
             continue
         names = {file for file, _ in files}
         for file, kind in files:
+            yield  # finish a whole filing operation before the next slice may yield
             if file.endswith(".group.json"):
                 continue
             path = root / name / file
@@ -837,7 +926,6 @@ def _file_drops(store: Store, ship=None, *, seats: frozenset[str] | None = None)
                 continue
             _remove_drop(path)
     _sweep_holds(runtime, current, folders=folders)
-    return fresh
 
 
 def _drop_senders(runtime: Path, seat: str) -> set[str]:

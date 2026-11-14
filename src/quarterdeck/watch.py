@@ -887,7 +887,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
     from . import fleet_post, usage_forecast
     return Facts(
         service=(state := service_state(ship.runtime)),
-        post_waits=fleet_post.status(ship, store) + post.filing_waits(ship.runtime),
+        post_waits=fleet_post.status(ship, store) + post.filing_waits(ship.runtime) + post.drop_waits(ship.runtime),
         pool_forecasts=[forecast.describe() for forecast in usage_forecast.readings(ship, now) if forecast.warning],
         waiting=len(waiting),
         oldest=oldest,

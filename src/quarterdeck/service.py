@@ -99,6 +99,7 @@ class Service:
         self.runtime = ship.runtime
         self.store = Store(self.runtime)
         self.attempts = Attempts(self.runtime)
+        self.drop_filer = post.FilingSlice()
         self.log_path = self.runtime / "log" / "service.jsonl"
         self.withheld: dict[tuple[str, str], str] = {}  # (message, seat) -> the screen it was withheld on
         self.told: dict[str, str | None] = {}  # seat -> the obstruction the desk was last told of
@@ -230,6 +231,7 @@ class Service:
 
     def _tick_steps(self):
         # Operational duties keep their order and never wait behind the slice.
+        self.drain_drops()
         self.drain_accounting()
         for step in (self.server_recovery, self.reconcile, self.file_drops, self.groups, self.cascades, self.fleet_post, self.inboxes, self.views, self.recoveries, self.refusals, self.answers, self.looks, self.jailed_watches, self.deliveries, self.follow, self.requests, self.compactions, self.person_quiet, self.fresh_after_order,
                      self.rebrief, self.push_reminders, self.credentials, self.authentications, self.model_differences, self.failover, self.account, self.refresh_usage, self.pool_forecasts, self.retire_post):
@@ -238,8 +240,16 @@ class Service:
                 step()
             except Exception as error:  # one failing step never stops the others
                 self.log("error", step=step.__name__, error=repr(error), trace=traceback.format_exc())
+            self.drain_drops()
             self.drain_accounting()
             self.status_due()
+
+    def drain_drops(self) -> None:
+        """Give queued post a bounded turn between duties, independently of pass length."""
+        try:
+            self.file_drops()
+        except Exception as error:
+            self.log('error', step='file_drops', error=repr(error), trace=traceback.format_exc())
 
     @record_owner.reader_pass()
     def drain_accounting(self):
@@ -705,7 +715,7 @@ class Service:
 
     def file_drops(self) -> None:
         """File each seat's drop. The service sets the sender from the folder; a refusal is held and logged once."""
-        for folder, reason in post.file_drops(self.store, self.ship):
+        for folder, reason in post.file_drops(self.store, self.ship, filing=self.drop_filer):
             self.log("drop-held", folder=folder, reason=reason)
 
     def groups(self) -> None:
