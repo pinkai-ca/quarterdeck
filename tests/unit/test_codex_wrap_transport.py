@@ -34,9 +34,9 @@ def transport(tmp_path: Path, monkeypatch):
         proof = pending.active(seat)[0]
         assert proof.data["phase"] == "pasting" and proof.data["payload"] == text
         live["pastes"].append(text)
-        head, body, tail = text.rstrip("\n").split("\n")
-        assert len(body) == 795 and body[470] == "/"
-        live["box"] = "\n".join([head, body[:471], body[471:], tail])
+        head, body, *tail = text.rstrip("\n").split("\n")  # a reply line follows only an order or a question
+        assert len(body) == 795 and body[470] == "/" and len(tail) <= 1
+        live["box"] = "\n".join([head, body[:471], body[471:], *tail])
         if live["damage"] == "partial":
             live["box"] = live["box"][:-1]
         elif live["damage"] == "edited":
