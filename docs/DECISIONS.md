@@ -93,8 +93,9 @@ account would collapse several different questions into one guess.
 
 `activity`, in [src/quarterdeck/watch.py](../src/quarterdeck/watch.py), reads
 the program's record for turn state and reports `unknown` when that evidence
-cannot be read or does not state the answer. The door separately reads the
-screen for an obstruction. Activity and permission to type can consequently
+cannot be read or does not state the answer. A seat that has not started a
+conversation has no record yet, and reads `idle, no record yet`. The door
+separately reads the screen for an obstruction. Activity and permission to type can consequently
 disagree without either reading being concealed.
 
 The unreadable-record test,

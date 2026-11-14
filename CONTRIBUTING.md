@@ -25,7 +25,7 @@ python3 -m venv --system-site-packages .venv
 
 ## Run the tests
 
-`tests/testrun.py` runs the suite for a change's signature. The tool tests the worktree's committed HEAD, one tool run at a time. The tool caps every test process at 8 GiB of address space and stops a run at a timeout, 3600 seconds by default.
+`tests/testrun.py` runs the suite for a change's signature. The tool tests the worktree's committed HEAD. Up to four tool runs go at once on a machine, each with up to 8 workers; a fifth run waits for a free slot for as long as `--wait` allows. The tool caps every test process at 8 GiB of address space. `--timeout`, 3600 seconds by default, bounds pytest alone, from pytest's start. The setup before pytest has a bound of its own, 600 seconds, and a run whose setup outlasts that bound ends with `time limit of setup`.
 
 ```sh
 python3 -I tests/testrun.py run                       # the whole suite, 8 workers
