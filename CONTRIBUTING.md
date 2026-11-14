@@ -25,15 +25,21 @@ python3 -m venv --system-site-packages .venv
 
 ## Run the tests
 
-`tests/testrun.py` runs the suite for a change's signature. The tool tests the worktree's committed HEAD. Up to four tool runs go at once on a machine, each with up to 8 workers; a fifth run waits for a free slot for as long as `--wait` allows. The tool caps every test process at 8 GiB of address space. `--timeout`, 3600 seconds by default, bounds pytest alone, from pytest's start. The setup before pytest has a bound of its own, 600 seconds, and a run whose setup outlasts that bound ends with `time limit of setup`.
+`tests/testrun.py` runs the tests of a change. The tool tests the worktree's committed HEAD, in one of three selections:
 
 ```sh
-python3 -I tests/testrun.py run                       # the whole suite, 8 workers
-python3 -I tests/testrun.py run tests/unit/test_x.py  # named targets
+python3 -I tests/testrun.py run                       # fast: tests/unit and tests/contract, 16 workers
+python3 -I tests/testrun.py run --whole               # whole: every test, 8 workers
+python3 -I tests/testrun.py run tests/unit/test_x.py  # named: only those, 8 workers
 python3 -I tests/testrun.py retire <run-id>           # clear up after one run that crashed
 python3 -I tests/testrun.py clean --change <branch>   # after the branch is merged, or --drop --reason TEXT
 ```
 
+- The fast selection is the default for the person or agent who builds a change. A fast run signs nothing: the whole suite is the only run that signs a change. A project with neither folder runs every test instead, and says why.
+- A change that touches the integration tests, or code that they exercise, also runs those test files by name, or the whole suite, before the change is handed up.
+- Every run names its selection in its first line, in its report and in its result file.
+- A machine has four slots of eight workers each, so no more than 32 test workers run at once: a fast run takes two slots, and a whole or named run takes one. `--wait <seconds>` waits that long for free slots; without `--wait`, the tool refuses at once when the slots are busy.
+- The tool caps every test process at 8 GiB of address space. `--timeout`, 3600 seconds by default, bounds pytest alone, from pytest's start. The setup before pytest has a bound of its own, 600 seconds, and a run whose setup outlasts that bound ends with `time limit of setup`.
 - A run's working files live in memory: the run's checkout, its virtual environment and pytest's temporary folders. They sit in a folder the project owns, under the first of `TMPDIR`, `/dev/shm` and `/tmp` that is in memory with 4 GiB free, and the tool removes them when the run ends.
 - The run's result stays on the drive, under `.testruns/results/<run-id>/`: `result.json`, `report.md` and one file of output for each failing test.
 - On a machine with no such folder in memory, the tool keeps the working files on the drive under `.testruns/`, and prints `testrun: working files on disk: <reason>`.
