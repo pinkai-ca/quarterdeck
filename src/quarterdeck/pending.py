@@ -520,13 +520,14 @@ def check_inbox_owner(runtime: Path, name: str) -> dict:
             os.close(descriptor)
 
 
-def abandon(runtime: Path, name: str, reason: str) -> None:
+def abandon(runtime: Path, name: str, reason: str, *, attempts: post.Attempts | None = None) -> None:
     """Retain the history, but retire unresolved transport for a seat that is gone."""
     proofs, _ = _journals(runtime, name)
     for proof in proofs:
         if proof.data["phase"] not in TERMINAL:
             proof.save(phase="abandoned", resolution=reason)
-    changed = post.Attempts(runtime).abandon(name, reason)
+    reader = attempts if attempts is not None else post.Attempts(runtime)
+    changed = reader.abandon(name, reason)
     if changed:
         path = runtime / "log" / "service.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -547,7 +548,8 @@ def reconcile(service: Service) -> set[Path]:
     for name in names - service.ship.seats.keys():
         with transient_lock(service.runtime, name) as unowned:
             if unowned:
-                abandon(service.runtime, name, "seat no longer declared; submission unconfirmed and never resent")
+                abandon(service.runtime, name, "seat no longer declared; submission unconfirmed and never resent",
+                        attempts=service.attempts)
         paths.update(a.path for a in attempts.values() if a.seat == name)
     for name in service.ship.seats:
         try:

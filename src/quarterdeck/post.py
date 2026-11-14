@@ -135,6 +135,8 @@ class Store:
         self.dir = runtime / "post" / "store"
         self._cache: tuple[tuple[object, ...], list[Message], dict[str, list[Message]]] | None = None
         self._cache_at: int | None = None
+        self._reference_messages: list[Message] | None = None
+        self._references: dict[str, list[Message]] = {}
 
     def new(self, kind: str, sender: str, to: str, body: str, **fields) -> Message:
         fixed = _FIXED_REPORT.get()
@@ -340,7 +342,14 @@ class Store:
 
     def get(self, ref: str) -> Message:
         """A message by its id or its short form; ambiguity refused, never guessed."""
-        found = [m for m in self.all() if ref in (m.id, m.short)]
+        messages = self._loaded()[0]
+        if messages is not self._reference_messages:
+            references: dict[str, list[Message]] = {}
+            for message in messages:
+                for name in {message.id, message.short}:
+                    references.setdefault(name, []).append(message)
+            self._reference_messages, self._references = messages, references
+        found = self._references.get(ref, ())
         if not found:
             raise ShipError(f"no message {ref!r} in {self.dir}")
         if len(found) > 1:
