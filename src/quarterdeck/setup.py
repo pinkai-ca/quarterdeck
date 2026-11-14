@@ -145,7 +145,13 @@ class Operations:
         return cmd_up(argparse.Namespace(ship=str(ship.folder), seat=None, fresh=False))
 
     def up_desk(self, ship: Ship):
-        from .cli import cmd_up
+        from .cli import cmd_up, seat_of
+        desk = seat_of(ship, "desk", launching=True)
+        pane = desk.pane()
+        if pane is not None and not pane.dead:
+            from . import service
+            from .seat_command import qd_command
+            return [f"desk already up in {pane.id}", service.start(ship, qd=Path(qd_command(ship.folder)))]
         return cmd_up(argparse.Namespace(ship=str(ship.folder), seat="desk", fresh=False))
 
     def status(self, ship: Ship):
