@@ -81,8 +81,13 @@ def test_mnt_is_empty_inside_when_nothing_under_it_is_given(drydock: Path, tmp_p
 
 @pytest.fixture
 def other_ship(tmp_path: Path):
-    """A project holding another ship whose runtime has a stored post and a live listening socket."""
-    project = tmp_path / 'project'
+    """A project holding another ship whose runtime has a stored post and a live listening socket.
+
+    Under a short folder in /dev/shm: a unix socket's path is limited to about a hundred bytes, and a folder there
+    that a PATH entry names is bound back into the jail, as a folder under the home is.
+    """
+    short = Path(tempfile.mkdtemp(prefix='qdfr-', dir='/dev/shm'))
+    project = short / 'project'
     other = project / 'ships' / 'other'
     (other / 'runtime' / 'post' / 'store').mkdir(parents=True)
     (other / 'runtime' / 'bin').mkdir()
@@ -97,6 +102,7 @@ def other_ship(tmp_path: Path):
     server.listen(4)
     yield project, other
     server.close()
+    shutil.rmtree(short, ignore_errors=True)
 
 
 def test_another_ships_runtime_is_never_in_the_jail_and_qd_is_this_ships_own(drydock: Path, tmp_path: Path, other_ship):
