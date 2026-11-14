@@ -5,8 +5,8 @@ hooks only, and xdist's hooks only as optional hooks. Each process (the controll
 worker by its id) appends one JSON line per event to its own file in ``$TESTRUN_EVIDENCE`` and flushes it,
 so a process that dies leaves every event it had recorded.
 """
-import json
 from contextlib import contextmanager
+import json
 import os
 import sys
 import tempfile

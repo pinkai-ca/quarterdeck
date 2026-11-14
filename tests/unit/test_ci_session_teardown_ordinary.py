@@ -56,7 +56,7 @@ def test_ci_registration_finishes_after_the_fixture_removes_its_native_child(tmp
     for finish in reversed(finalizers):
         try:
             finish()
-        except BaseException as error:
+        except (Exception, pytest.fail.Exception) as error:
             errors.append(str(error))
     assert errors == []
     assert not folder.exists()
