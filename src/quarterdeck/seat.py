@@ -525,7 +525,7 @@ class Seat:
     # -- the one relaunch path -----------------------------------------------------------
 
     @contextmanager
-    def _lifecycle(self, *, automatic: bool = False) -> Iterator[None]:
+    def _lifecycle(self, *, automatic: bool = False, wait: bool = False) -> Iterator[None]:
         """One caller owns the whole seat transition, including compound relaunches.
 
         Keep the empty inode outside removable seat homes. No lifecycle path unlinks
@@ -533,7 +533,8 @@ class Seat:
         """
         from . import lifecycle
 
-        with lifecycle.claim(self.ship.runtime, self.name):
+        seconds = 0 if automatic else lifecycle.WAIT_SECONDS if wait else lifecycle.explicit_wait()
+        with lifecycle.claim(self.ship.runtime, self.name, wait=seconds):
             if not automatic:
                 from . import compaction
                 compaction.disarm(self, adopt_successor=True)
@@ -894,7 +895,7 @@ class Seat:
                 return
 
     def down(self) -> str:
-        with self._lifecycle():
+        with self._lifecycle(wait=True):
             return self._down()
 
     def _relaunch_down(self) -> str:

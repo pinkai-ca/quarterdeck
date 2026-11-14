@@ -24,7 +24,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import harness as harnesses
-from . import shutdown
+from . import shutdown, lifecycle
 from .harness import reader_stamp
 from . import pending as pending_delivery, delivery_record
 from . import accounting_health, credential, durable, idle, install, machine, move_hold, post, post_dir, presentation, quota, record_owner, recovery, servicectl, ship as shipmod, standing
@@ -807,6 +807,7 @@ class Service:
             return self.select(seat, str(data["pool"]))
         return f"unknown request {kind!r}"
 
+    @lifecycle.explicit()
     def relaunch_request(self, data):
         """A human's own asking turn is its only deferred break and later speech retires it, but for a fresh start
         asked with an open handoff, which waits for any quiet moment and is retired by the person alone."""
@@ -1527,6 +1528,7 @@ class Service:
         """Compatibility wrapper for callers that already hold the service."""
         return idle.reading(seat)
 
+    @lifecycle.explicit()
     def select(self, seat: Seat, pool: str) -> str:
         """An explicit move to one of a seat's declared choices, by failover's path and refusals.
 

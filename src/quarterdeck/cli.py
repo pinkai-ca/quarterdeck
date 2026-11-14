@@ -16,7 +16,7 @@ from typing import Any
 from . import (__version__, check, copy_state, daily_live, doctor, drill, harness as harnesses, install, ledger, post, sandbox, seat as seatmod, service,
                ship as shipmod, standing, watch)
 from .output import Reading
-from . import output, ledger_reading
+from . import output, ledger_reading, lifecycle
 from .ship import ShipError
 from .harness.capabilities import selection_label
 from .tmux import CUTOVER, Tmux, TmuxError, ship_socket as shipsocket
@@ -306,6 +306,7 @@ def cmd_cascade(args: argparse.Namespace) -> str:
     return service.request(ship.runtime, "cascade", question=question.id, caller=caller, efforts=efforts)
 
 
+@lifecycle.explicit()
 def cmd_up(args: argparse.Namespace) -> list[str] | str:
     ship = load_ship(args)
     if args.seat:
@@ -383,6 +384,7 @@ def cmd_fresh(args: argparse.Namespace) -> str:
     return relaunch(load_ship(args), args.seat, resume=False, cancel=getattr(args, 'cancel', None))
 
 
+@lifecycle.explicit()
 def cmd_fresh_ready(args: argparse.Namespace) -> str:
     from . import compaction
     ship = load_ship(args)
@@ -398,6 +400,7 @@ def cmd_fresh_ready(args: argparse.Namespace) -> str:
     return service.request(ship.runtime, 'fresh-ready', seat=seat.name, **act)
 
 
+@lifecycle.explicit()
 def relaunch(ship: shipmod.Ship, name: str | None, resume: bool, cancel=None) -> str:
     """Retain known-idle manual recovery; working seats use the service's queued proof."""
     from . import request_queue
@@ -538,6 +541,7 @@ def select(ship: shipmod.Ship, seat: seatmod.Seat, changes: list[str]) -> str:
     return service.request(ship.runtime, "select", seat=seat.name, pool=pool)
 
 
+@lifecycle.explicit()
 def choose_for_launch(seat: seatmod.Seat, pool: str) -> str:
     """A down seat has no turn to wait for: the choice is written, and its next qd up launches there."""
     with seat._lifecycle():

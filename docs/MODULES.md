@@ -76,7 +76,7 @@ quarterdeck/                       the project folder: the framework repository
     tmux.py        the only module that runs tmux
     tmux_socket.py   private endpoint ownership and namespace locking; no native command execution
     seat.py        seat identity, lifecycle and controls: up, down, restart, fresh, stop, set
-    lifecycle.py   shared seat-transition claim for lifecycle and ordinary delivery
+    lifecycle.py   shared seat-transition claim, bounded explicit waits and nonblocking delivery
     door.py        the one typing path: clear, type, check, submit, confirm; three speeds; the wall it reads
     pending.py delivery_record.py   saved paste evidence and historical receipts
     pending_lifecycle.py   service-only null-identity retirement and exact old-launch record links

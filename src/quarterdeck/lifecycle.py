@@ -1,13 +1,34 @@
 """The shared seat-transition claim, also held by ordinary delivery."""
 
 from contextlib import contextmanager
+from contextvars import ContextVar
 import fcntl
 import os
 from pathlib import Path
 import stat
+import time
 
 from . import post_dir
 from .ship import ShipError
+
+
+WAIT_SECONDS = 30.0  # explicit lifecycle callers wait at most this long for one seat
+
+_EXPLICIT = ContextVar('explicit_lifecycle', default=False)
+
+
+@contextmanager
+def explicit():
+    """Scope a person's or script's act without changing background callers' policy."""
+    token = _EXPLICIT.set(True)
+    try:
+        yield
+    finally:
+        _EXPLICIT.reset(token)
+
+
+def explicit_wait() -> float:
+    return WAIT_SECONDS if _EXPLICIT.get() else 0
 
 
 class Busy(ShipError):
@@ -15,8 +36,8 @@ class Busy(ShipError):
 
 
 @contextmanager
-def claim(runtime: Path, name: str):
-    """Keep the same lock inode outside removable homes; never unlink it."""
+def claim(runtime: Path, name: str, *, wait: float = 0):
+    """Keep the same inode; optionally wait a bounded time, without replaying any effect."""
     path = runtime / 'post' / 'lifecycle' / f'{name}.lock'
     descriptor = None
     try:
@@ -26,10 +47,16 @@ def claim(runtime: Path, name: str):
             opened = os.fstat(descriptor)
             if not stat.S_ISREG(opened.st_mode):
                 raise ShipError(f'{name}: lifecycle lock is not a regular file; retained')
-            try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                raise Busy(f'{name}: another lifecycle transition is in progress; retry when it ends') from None
+            deadline = time.monotonic() + wait
+            while True:
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise Busy(f'{name}: another lifecycle transition is in progress; retry when it ends') from None
+                    time.sleep(min(0.05, remaining))
             current = path.lstat()
             if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
                 raise ShipError(f'{name}: lifecycle lock identity changed; transition refused')

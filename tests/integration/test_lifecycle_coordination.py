@@ -28,6 +28,8 @@ from quarterdeck.ship import load,ShipError
 from quarterdeck.seat import Seat
 from quarterdeck.tmux import Tmux
 ship=load(sys.argv[1]); seat=Seat(ship,ship.seat('worker-1'),Tmux(sys.argv[2]))
+from quarterdeck import lifecycle
+lifecycle.WAIT_SECONDS = 0.1  # exercise timeout without holding the outer transition for production's bound
 try:
  result=seat.up(False) if sys.argv[3]=='up' else getattr(seat,sys.argv[3])()
  outcome=dict(outcome='success',result=result)
