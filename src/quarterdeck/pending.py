@@ -490,9 +490,6 @@ def reconcile(service: Service) -> set[Path]:
                 paths.update(_reconcile_claimed(service, seat, attempts))
         except lifecycle.Busy:
             paths.update(a.path for a in attempts.values() if a.seat == name)
-        except (OSError, ShipError) as error:
-            paths.update(a.path for a in attempts.values() if a.seat == name)
-            service.log('error', step='reconcile', seat=name, error=str(error))
     return paths
 
 

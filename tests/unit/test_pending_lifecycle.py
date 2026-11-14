@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import credential, lifecycle, pending, post
+from quarterdeck import check, credential, lifecycle, pending, post
 from quarterdeck.harness.claude import ClaudeHarness
 from quarterdeck.harness.synthetic_record import ClaudeShape
 from quarterdeck.seat import Launched, Seat
@@ -178,6 +178,36 @@ def test_begin_refuses_an_attempt_from_a_previous_complete_launch(tmp_path):
     assert pending.current_identity(seat) is not None
     with pytest.raises(pending.NoCurrentLaunch):
         pending.Proof.begin(seat, attempt, post.typed([message]))
+    assert not list((tmp_path / 'post/pending').glob('*/*.json'))
+
+
+def test_probe_holds_a_lost_binding_without_typing_or_waiting_for_a_task(tmp_path, monkeypatch, no_credentials):
+    seat = SyntheticSeat(tmp_path, 'worker')
+    begin = pending.Proof.begin
+    waits = []
+
+    def lose_binding(current, attempt, text, **kwargs):
+        seat._pane = None
+        return begin(current, attempt, text, **kwargs)
+
+    def wait_for(predicate, timeout):
+        waits.append(timeout)
+        return predicate()
+
+    monkeypatch.setattr(pending.Proof, 'begin', lose_binding)
+    monkeypatch.setattr(check, 'ready_for_probe', lambda *args: True)
+    monkeypatch.setattr(check, 'wait_for', wait_for)
+    monkeypatch.setattr(check, 'Door', lambda current: SimpleNamespace(
+        reading=lambda: 'synthetic empty box',
+        deliver=lambda *args, **kwargs: pytest.fail('no input under an unproved launch')))
+
+    checks = check.probe(seat.ship, seat)
+
+    assert len(waits) == 1
+    assert checks[-2].name == 'paste held: current launch unconfirmed' and not checks[-2].passed
+    assert checks[-1].name == 'record joined, the turn ended and read' and not checks[-1].passed
+    assert '? turns' in checks[-1].detail
+    assert [attempt.result for attempt in post.Attempts(tmp_path).all()] == ['withheld']
     assert not list((tmp_path / 'post/pending').glob('*/*.json'))
 
 

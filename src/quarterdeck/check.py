@@ -193,6 +193,19 @@ def model_confirmation(seat: Seat, requested: str, *, require_record: bool = Fal
     return ProbeCheck("requested model in record" if require_record else "requested launch model", passed, detail, 'model')
 
 
+def _probe_record_check(seat: Seat, requested_model: str | None, ended: bool) -> ProbeCheck:
+    record = seat.record()
+    try:
+        state = seat.harness.state(record) if record else None
+    except OSError:
+        state = None
+    turns_shown = state.turns if state and state.turns is not None else "?"
+    return ProbeCheck("record joined, the turn ended and read", bool(ended),
+                      f"{record.name if record else 'no record'} · {turns_shown} turns · "
+                      f"requested {requested_model or 'native default'} · launched {getattr(getattr(seat, 'spec', None), 'model', None) or 'native default'} · "
+                      f"record-observed {state.model if state and state.model else '?'}", 'record')
+
+
 def probe(ship: Ship, seat: Seat, orders: list[post.Message] | None = None, *, requested_model: str | None = None) -> list[Check]:
     checks: list[Check] = []
     proof_line = f"qd-check-{secrets.token_hex(4)}"
@@ -230,10 +243,20 @@ def probe(ship: Ship, seat: Seat, orders: list[post.Message] | None = None, *, r
                       f"enough to fold in your box; nothing in it changes the task.\n\n{laws}", subject="qd check")
     if orders is not None:
         orders.append(order)
-    launch = seat.launched()
-    attempt = attempts.open(order, seat.name, launch.pane, launch.pid, launch.at)
     text = post.typed([order])
-    proof = pending.Proof.begin(seat, attempt, text)
+    attempt = None
+    try:
+        bound = pending.current_identity(seat)
+        if bound is None:
+            raise pending.NoCurrentLaunch(f'{seat.name}: current pane/process/launch unproved; no delivery journal opened')
+        attempt = attempts.open(order, seat.name, bound['pane'], bound['pid'], bound['launch'])
+        proof = pending.Proof.begin(seat, attempt, text)
+    except pending.NoCurrentLaunch as error:
+        if attempt is not None:
+            attempts.close(attempt, 'withheld', 'launch unproved before probe reservation; no input typed')
+        checks.append(ProbeCheck('paste held: current launch unconfirmed', False, str(error), 'paste'))
+        checks.append(_probe_record_check(seat, requested_model, False))
+        return checks
     delivery = door.deliver(text, proof=proof)
     proof.finish(delivery.result)
     attempts.close(attempt, delivery.result, delivery.detail)
@@ -274,16 +297,7 @@ def probe(ship: Ship, seat: Seat, orders: list[post.Message] | None = None, *, r
         return s.turns is not None and s.turns >= before_turns + 1 and s.turn_open is False
 
     ended = wait_for(_turn_ended, 60)
-    record = seat.record()
-    try:
-        state = seat.harness.state(record) if record else None
-    except OSError:
-        state = None
-    turns_shown = state.turns if state and state.turns is not None else "?"
-    checks.append(ProbeCheck("record joined, the turn ended and read", bool(ended),
-                             f"{record.name if record else 'no record'} · {turns_shown} turns · "
-                             f"requested {requested_model or 'native default'} · launched {getattr(getattr(seat, 'spec', None), 'model', None) or 'native default'} · "
-                             f"record-observed {state.model if state and state.model else '?'}", 'record'))
+    checks.append(_probe_record_check(seat, requested_model, bool(ended)))
     if requested_model is not None:
         checks.append(model_confirmation(seat, requested_model, require_record=True))
     return checks

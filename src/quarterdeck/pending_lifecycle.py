@@ -68,6 +68,7 @@ def retire_missing_identity(runtime, name, errors, attempts):
             if Path(filename).name != filename:
                 continue
             descriptor = None
+            writing = False
             try:
                 descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
                 opened = os.fstat(descriptor)
@@ -96,6 +97,7 @@ def retire_missing_identity(runtime, name, errors, attempts):
                 current = path.lstat()
                 if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino) or path.read_bytes() != original:
                     continue
+                writing = True
                 updated = post.Attempts(runtime).settle_missing_identity(matching, UNKNOWN)
                 if updated is None:
                     continue
@@ -104,8 +106,16 @@ def retire_missing_identity(runtime, name, errors, attempts):
                 durable.sync_folder(folder)
                 _retirement_log(runtime, name, filename)
                 retired[filename] = updated
-            except (FileNotFoundError, KeyError, ValueError, TypeError, UnicodeError):
+            except FileNotFoundError as error:
+                if writing:
+                    error.add_note(f'pending legacy journal: {path}')
+                    raise
+                continue
+            except (KeyError, ValueError, TypeError, UnicodeError):
                 continue  # malformed or incomplete evidence is still held by the strict reader
+            except OSError as error:
+                error.add_note(f'pending legacy journal: {path}')
+                raise
             finally:
                 if descriptor is not None:
                     os.close(descriptor)
