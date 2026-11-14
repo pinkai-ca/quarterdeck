@@ -328,7 +328,7 @@ def test_an_imports_link_is_named_on_the_status_line(tmp_path):
     assert f'{post_dir.LINK_HELD}{link}' in line
 
 
-def test_a_fifo_at_an_imported_id_is_skipped(tmp_path, monkeypatch):
+def test_a_fifo_at_a_store_name_is_skipped_and_ordinary_messages_remain(tmp_path, monkeypatch):
     from quarterdeck.fleet_post import stable_bytes
 
     runtime = runtime_of(tmp_path)
@@ -340,19 +340,47 @@ def test_a_fifo_at_an_imported_id_is_skipped(tmp_path, monkeypatch):
     store_fifo = store / 'imported.json'
     os.mkfifo(store_fifo)
     (imports / 'imported.json').write_text('{"origin": "peer"}\n')
-    record_fifo = imports / f'{blocked.id}.json'
-    os.mkfifo(record_fifo)
     seen = opened_names(monkeypatch, store_fifo.name)
-    record_seen = opened_names(monkeypatch, record_fifo.name)
     found = at_once(lambda: post.Store(runtime).all())
-    assert [item.id for item in found] == [kept.id]
-    # The imports record shares the store fifo's name and is a real file. One open is that record.
-    assert seen == [store_fifo.name] and record_seen == []
-    assert store_fifo.is_fifo() and record_fifo.is_fifo()
+    assert [item.id for item in found] == [item.id for item in sorted((kept, blocked), key=lambda m: (m.at, m.id))]
+    assert seen == [] and store_fifo.is_fifo()
     with pytest.raises(post_dir.NotRegular, match='post transport source is not a regular file'):
         at_once(lambda: stable_bytes(store_fifo))
+
+
+def test_a_fifo_at_an_imports_record_holds_the_listing_and_names_it(tmp_path, monkeypatch):
+    """A special file at imports/<id>.json must not drop the real message stored under that id."""
+    from quarterdeck.fleet_post import stable_bytes
+
+    ship = declared_ship(tmp_path)
+    kept = post.Store(ship.runtime).new('order', 'desk', 'captain', 'Ordinary body.')
+    blocked = post.Store(ship.runtime).new('order', 'desk', 'captain', 'Blocked record.')
+    imports = ship.runtime / 'post' / 'imports'
+    imports.mkdir()
+    record_fifo = imports / f'{blocked.id}.json'
+    os.mkfifo(record_fifo)
+    seen = opened_names(monkeypatch, record_fifo.name)
+    with pytest.raises(post_dir.NotRegular, match='post transport source is not a regular file'):
+        at_once(lambda: post.Store(ship.runtime).all())
+    line = at_once(lambda: watch.facts(ship, SimpleNamespace()).line())
+    assert 'post transport source is not a regular file' in line
+    assert kept.id != blocked.id and seen == [] and record_fifo.is_fifo()
     with pytest.raises(post_dir.NotRegular, match='post transport source is not a regular file'):
         at_once(lambda: stable_bytes(record_fifo))
+
+
+def test_an_oserror_in_the_store_listing_is_named_on_the_status_line(tmp_path):
+    ship = declared_ship(tmp_path)
+    message = post.Store(ship.runtime).new('order', 'desk', 'captain', 'Ordinary body.')
+    path = ship.runtime / 'post' / 'store' / f'{message.id}.json'
+    path.chmod(0)
+    try:
+        with pytest.raises(OSError, match='Permission denied'):
+            at_once(lambda: post.Store(ship.runtime).all())
+        line = at_once(lambda: watch.facts(ship, SimpleNamespace()).line())
+    finally:
+        path.chmod(0o644)
+    assert 'Permission denied' in line
 
 
 def test_a_store_listing_error_is_named_on_the_status_line(tmp_path):

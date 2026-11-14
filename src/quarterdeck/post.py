@@ -261,17 +261,25 @@ class Store:
                 from .fleet_post import local_view, provenance, stable_bytes
 
                 messages = []
+                runtime = self.dir.parent.parent
                 for path in paths:
+                    # A store name that is not a regular file is not a message. A symlink is a hold,
+                    # raised by the read. An imports record that is not regular stops the listing.
+                    file_info = path.lstat()
+                    if not stat.S_ISREG(file_info.st_mode) and not stat.S_ISLNK(file_info.st_mode):
+                        continue
+                    record = provenance(runtime, path.stem)
                     try:
-                        if provenance(self.dir.parent.parent, path.stem) is None:
-                            message = local_view(self.dir.parent.parent,
-                                                 Message.from_json(post_dir.read_text(path)))
+                        if record is None:
+                            raw = post_dir.read_text(path)
                         else:
                             data = stable_bytes(path)
-                            message = local_view(self.dir.parent.parent,
-                                                 Message.from_json(data.decode('utf-8')), data=data)
                     except post_dir.NotRegular:
-                        continue  # unread; a special file is not a message
+                        continue  # the store file changed to a special file during the read
+                    if record is None:
+                        message = local_view(runtime, Message.from_json(raw))
+                    else:
+                        message = local_view(runtime, Message.from_json(data.decode('utf-8')), data=data)
                     messages.append(message)
                 messages.sort(key=lambda m: (m.at, m.id))
                 replies: dict[str, list[Message]] = {}

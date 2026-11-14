@@ -27,7 +27,11 @@ LINK_HELD = _LINK_HELD
 
 
 class NotRegular(ShipError):
-    """The path is not a regular file. A listing skips this kind and no other."""
+    """The path is not a regular file.
+
+    The store listing skips this kind only when the store file itself is not regular.
+    The same kind from an imports record stops the listing.
+    """
 
 
 def _plain_name(name):

@@ -782,7 +782,7 @@ def _post_listing(ship, store):
     holds = []
     try:
         store.all()
-    except ShipError as error:
+    except (ShipError, OSError) as error:
         holds.append(str(error))
         store = _HeldStore(store)
     extra = _imports_hold(ship.runtime)
