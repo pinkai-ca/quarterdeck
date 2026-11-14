@@ -87,7 +87,11 @@ def test_nested_tool_uses_the_activated_checkout_python_and_can_start_xdist(tmp_
     project = tmp_path / 'nested-ordinary-project'
     project.mkdir()
     (project / 'test_sample.py').write_text('import xdist\ndef test_sample():\n    assert xdist.__version__\n')
-    for args in (['init', '-q'], ['add', 'test_sample.py'],
+    (project / 'pyproject.toml').write_text(
+        '[build-system]\nrequires = ["setuptools"]\nbuild-backend = "setuptools.build_meta"\n'
+        '[project]\nname = "synthetic-ci-nested"\nversion = "0.0.1"\n'
+        '[tool.setuptools]\npy-modules = []\n')
+    for args in (['init', '-q'], ['add', 'test_sample.py', 'pyproject.toml'],
                  ['-c', 'user.name=Synthetic Author', '-c', 'user.email=author@example.invalid',
                   'commit', '-qm', 'Synthetic ordinary test']):
         subprocess.run(['git', '-C', str(project), *args], check=True, timeout=10)
