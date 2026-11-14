@@ -121,6 +121,69 @@ def test_a_slow_owned_command_does_not_hold_cleanup(tmux):
     assert not endpoint.exists() and not endpoint.parent.exists()
 
 
+def readers_taking_turns(tmux, seconds, lease=.05, count=2):
+    """Processes taking shared transport leases through the framework's own lock, overlapping one another, as the
+    service's pane reads and an observer's do on a loaded machine; each retries a busy answer."""
+    code = ('import sys,time\nfrom quarterdeck import tmux_socket\n'
+            'socket,lease,offset,seconds=sys.argv[1],*map(float,sys.argv[2:])\n'
+            'time.sleep(offset)\nprint("reading",flush=True)\nend=time.monotonic()+seconds\nbusy=0\n'
+            'while time.monotonic()<end:\n'
+            ' try:\n  with tmux_socket.locked(socket,exclusive=False):\n   time.sleep(lease)\n'
+            ' except tmux_socket.OwnershipError:\n  busy+=1\n'
+            ' time.sleep(.005)\nprint("busy",busy,flush=True)\n')
+    readers = [subprocess.Popen([sys.executable, '-c', code, tmux.socket, str(lease), str(lease * n / count), str(seconds)],
+                                stdout=subprocess.PIPE, text=True) for n in range(count)]
+    for reader in readers:
+        assert reader.stdout.readline().strip() == 'reading'
+    time.sleep(lease * 2)  # the leases overlap before the exclusive operation begins
+    return readers
+
+
+def test_readers_taking_turns_do_not_starve_a_fresh_start(drydock, tmux):
+    """The red on 005a163: shared leases overlapping one another kept the lock shared for the whole budget, so the
+    drill's fresh start found it never free and its retirement failed busy, though no read was slow."""
+    ship = shipmod.load(drydock)
+    seat = seatmod.Seat(ship, ship.seat('worker-1'), tmux)
+    seat.up(False)
+    old = seat.launched()
+    readers = readers_taking_turns(tmux, BUDGET * 3)
+    try:
+        started = time.monotonic()
+        seat.fresh()
+        waited = time.monotonic() - started
+    finally:
+        reports = [reader.communicate(timeout=BUDGET * 3 + 10)[0] for reader in readers]
+    new = seat.launched()
+    assert new.pane != old.pane and tmux.pane(old.pane) is None and tmux.pane(new.pane).pid == new.pid
+    assert waited < BUDGET, 'the waiting operation went before new leases instead of using up its budget'
+    assert any(int(report.split()[-1]) > 0 for report in reports), 'a reader met the waiting operation and was turned away'
+
+
+def test_a_waiting_exclusive_operation_turns_new_readers_away_and_leaves_no_entry(tmux):
+    import threading
+
+    tmux.new_session('Synthetic')
+    folder = Path(tmux.socket).parent
+    entries = sorted(os.listdir(folder))
+    holder = hold_shared(tmux, SLOW)
+    done = []
+    writer = threading.Thread(target=lambda: done.append(tmux.run('set-option', '-g', 'status', 'off')))
+    try:
+        writer.start()
+        time.sleep(SLOW / 3)  # the operation now waits for the holder's lease
+        with pytest.raises(tmux_socket.OwnershipError, match='busy'):
+            with tmux_socket.locked(tmux.socket, exclusive=False):
+                pass
+        assert sorted(os.listdir(folder)) == entries, 'the mark is on the folder itself, never a new entry in it'
+    finally:
+        holder.wait(timeout=5)
+        writer.join(timeout=BUDGET + 5)
+    assert done == [''], 'the operation ran once the lease ended'
+    with tmux_socket.locked(tmux.socket, exclusive=False):
+        pass  # and new readers are welcome again
+    assert sorted(os.listdir(folder)) == entries
+
+
 def test_a_holder_past_the_budget_still_refuses_and_retains(drydock, tmux):
     ship = shipmod.load(drydock)
     seat = seatmod.Seat(ship, ship.seat('worker-1'), tmux)

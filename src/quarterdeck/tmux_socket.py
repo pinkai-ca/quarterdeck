@@ -64,20 +64,15 @@ def locked(path, namespace=None, *, exclusive=True):
                 or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600):
             raise OwnershipError('private namespace lock is unfamiliar; retained')
         deadline = time.monotonic() + (EXCLUSIVE_WAIT if exclusive else 0)
-        operation = (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB
-        attempted = False
-        while True:
-            if attempted and time.monotonic() >= deadline:
-                raise OwnershipError('private namespace busy; ownership uncertain, retained')
-            attempted = True
-            try:
-                fcntl.flock(lock, operation)
-                break
-            except BlockingIOError:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise OwnershipError('private namespace busy; ownership uncertain, retained') from None
-                time.sleep(min(.01, remaining))
+        # A waiting exclusive operation goes before new shared leases. The wait is a nonblocking poll, so it never
+        # sits on the kernel's queue, and this kernel keeps granting a new shared flock while any shared flock is
+        # held. Readers taking turns therefore keep the lock shared for the whole budget though no read was slow,
+        # and the poll gives up. The waiter marks the namespace folder itself, never a new file in it: a reader
+        # finding the mark answers busy, as it does to an exclusive holder, and the mark goes when the operation ends.
+        _acquire(directory, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH, deadline)
+        if not exclusive:
+            fcntl.flock(directory, fcntl.LOCK_UN)
+        _acquire(lock, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH, deadline)
         held = Locked(Path(path).parent, directory, lock)
         held.verify()
         if os.read(lock, len(HEADER) + 1) != HEADER:
@@ -89,6 +84,23 @@ def locked(path, namespace=None, *, exclusive=True):
         if lock is not None:
             os.close(lock)  # releases the lock even through failure/interruption
         os.close(directory)
+
+
+def _acquire(descriptor, operation, deadline):
+    """One flock, tried at least once and then polled until the deadline; busy past it."""
+    attempted = False
+    while True:
+        if attempted and time.monotonic() >= deadline:
+            raise OwnershipError('private namespace busy; ownership uncertain, retained')
+        attempted = True
+        try:
+            fcntl.flock(descriptor, operation | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise OwnershipError('private namespace busy; ownership uncertain, retained') from None
+            time.sleep(min(.01, remaining))
 
 
 def private_endpoint(path) -> bool:
