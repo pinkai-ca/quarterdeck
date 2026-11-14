@@ -125,7 +125,7 @@ def test_no_path_socket_outside_is_reachable_and_the_endpoint_still_answers(dryd
     print('abstract sockets still reachable until the jail has its own network:', abstract)
     assert seen['session'] == {name: None for name in sandbox.SESSION_VARIABLES}, seen['session']
     assert seen['runtime'] == f'/run/user/{os.getuid()}' and seen['runtime_entries'] == [] and seen['runtime_writable']
-    assert set(seen['run']) <= {'user', 'systemd'}, seen['run']
+    assert set(seen['run']) <= {'user', 'systemd', 'qd-endpoint'}, seen['run']  # qd-endpoint: the relay's own folder
     assert seen['scratch'] in (None, []), 'the shared scratch is hidden'
     assert seen['endpoint'] == 200, seen['endpoint']
     if Path(f'/run/user/{os.getuid()}/bus').exists():
