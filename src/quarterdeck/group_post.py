@@ -226,6 +226,24 @@ def file_staged(ship: Ship, store: post.Store) -> list[tuple[str, str]]:
     return holds
 
 
+# Each way a staged group intent is held has a fixed reason of its own, never its contents, so a hold names its cause.
+INTENT_UNREADABLE = 'group intent unreadable'
+INTENT_MALFORMED = 'group intent malformed'
+INTENT_OTHER_ROOT = 'group intent names another root'
+NO_GROUP = 'group not declared'
+ROOT_MISSING = 'group root not found'
+ROOT_ID_MALFORMED = 'group root id malformed'
+ROOT_NOT_LEADS_ORDER = "group root not an order to the lead"
+FORWARD_NOT_OPEN_STORED = 'forward of an order not open in the store'
+LINK_HELD = 'link held in the post folder'
+PUBLICATION_REFUSED = 'group publication refused'
+PUBLICATION_IO = 'group publication I/O error'
+JOURNAL_MALFORMED = 'group journal malformed'
+INTENT_REASONS = (INTENT_UNREADABLE, INTENT_MALFORMED, INTENT_OTHER_ROOT, NO_GROUP, ROOT_MISSING, ROOT_ID_MALFORMED,
+                  ROOT_NOT_LEADS_ORDER, FORWARD_NOT_OPEN_STORED, LINK_HELD, PUBLICATION_REFUSED, PUBLICATION_IO,
+                  JOURNAL_MALFORMED)
+
+
 def _file_intent(ship: Ship, store: post.Store, seat: str, path: Path) -> str | None:
     """File one intent. Return a hold reason, or None when it is published and removed."""
     if not post._regular(path):
@@ -240,34 +258,34 @@ def _file_intent(ship: Ship, store: post.Store, seat: str, path: Path) -> str | 
     try:
         data = json.loads(text)
     except (ValueError, TypeError):
-        return 'not a message'
+        return INTENT_UNREADABLE
     if not isinstance(data, dict) or set(data) != {'format', 'group', 'root'}:
-        return 'not a message'
+        return INTENT_MALFORMED
     if data.get('format') != 1 or not isinstance(data.get('group'), str) or not isinstance(data.get('root'), str):
-        return 'not a message'
+        return INTENT_MALFORMED
     if data['root'] != path.name[: -len('.group.json')] or '/' in data['root']:
-        return 'not a message'
+        return INTENT_OTHER_ROOT
     if data['group'] not in ship.groups:
-        return 'not a message'
+        return NO_GROUP
     group = ship.groups[data['group']]
     drop_root = path.with_name(f"{data['root']}.json")
     stored = store.dir / f"{data['root']}.json"
     message, root_text = _staged_root(store, drop_root, stored, data['root'])
     if message is None:
-        return 'not a message'
+        return ROOT_MISSING
     if root_text is not None:
         named = post.id_sender(message.id)
         if named is None or message.id[:3] != message.kind[:3]:
-            return 'not a message'
+            return ROOT_ID_MALFORMED
         if named != message.sender:
             return 'from names another seat'  # a staged root's id names its sender, as an ordinary drop does
     if message.kind != 'order' or message.to != group.lead:
-        return 'not a message'
+        return ROOT_NOT_LEADS_ORDER
     forward = seat == group.lead and message.sender != seat
     if message.sender != seat and not forward:
         return 'from names another seat'
     if forward and (root_text is not None or not post._regular(stored) or not store.is_open(message)):
-        return 'not a message'
+        return FORWARD_NOT_OPEN_STORED  # a forward is of an open order already in the store, never a new root
     journal = _folder(ship) / f'{message.id}.json'
     try:
         if post_dir.exists(journal):
@@ -288,8 +306,12 @@ def _file_intent(ship: Ship, store: post.Store, seat: str, path: Path) -> str | 
                            notice=None, failed={})
             _save(journal, payload)
             _fanout(store, payload)
-    except (OSError, ShipError, ValueError, TypeError, KeyError):
-        return 'not a message'
+    except ShipError as error:
+        return LINK_HELD if str(error).startswith(post_dir.LINK_HELD) else PUBLICATION_REFUSED
+    except OSError:
+        return PUBLICATION_IO
+    except (ValueError, TypeError, KeyError):
+        return JOURNAL_MALFORMED
     post._remove_drop(path)
     post._remove_drop(drop_root)
     return None

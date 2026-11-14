@@ -469,6 +469,19 @@ DROP_HOLD_REASONS = (
     "not a message",
     "drop folder is not a directory",
     "drop unreadable",
+    # a staged group intent's own reasons, one for each way it is held (group_post.INTENT_REASONS)
+    "group intent unreadable",
+    "group intent malformed",
+    "group intent names another root",
+    "group not declared",
+    "group root not found",
+    "group root id malformed",
+    "group root not an order to the lead",
+    "forward of an order not open in the store",
+    "link held in the post folder",
+    "group publication refused",
+    "group publication I/O error",
+    "group journal malformed",
 )
 
 
