@@ -49,12 +49,14 @@ print(json.dumps(stale))
 '''
 
 
-def resolve(python: str) -> dict:
+def resolve(python: str, *, carried_base: str | None = None) -> dict:
     """The user site as the ordinary interpreter computes it, in the caller's environment (HOME untouched), or,
     for a run started inside a run, at the base the outer run carried."""
     env = dict(os.environ)
-    if (env.get('TESTRUNS_RUN') or env.get('TESTRUNS_CI_DISK') == '1') and env.get('TESTRUNS_USERBASE'):
-        # CI omits TESTRUNS_RUN, but HOME is already replaced there too.
+    if carried_base is not None:
+        # Only the runner supplies explicit nested CI context; ordinary callers never infer it from a flag.
+        env['PYTHONUSERBASE'] = carried_base
+    elif env.get('TESTRUNS_RUN') and env.get('TESTRUNS_USERBASE'):
         env['PYTHONUSERBASE'] = env['TESTRUNS_USERBASE']
     # -s: the asking interpreter computes the user site and processes nothing in it
     done = subprocess.run([python, '-s', '-B', '-c', RESOLVE], capture_output=True, text=True, timeout=60, env=env)

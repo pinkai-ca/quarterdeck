@@ -362,7 +362,10 @@ class Runner:
                 self.python = jail.python() if getattr(args, 'jail', False) else shutil.which('python3')
                 if self.python is None:
                     raise Refused('no python3 on the ordinary PATH')
-                self.user = usersite.resolve(self.python)  # before HOME is replaced
+                user_options = {}
+                if os.environ.get(storage.CI_DISK_ENV) == '1' and os.environ.get('TESTRUNS_USERBASE'):
+                    user_options['carried_base'] = os.environ['TESTRUNS_USERBASE']
+                self.user = usersite.resolve(self.python, **user_options)  # before HOME is replaced
                 build_options = {'ci_layout': True} if self.ci_layout else {}
                 env, settings = environment.build(scratch, run, self.user['base'] if self.user['exists'] else None,
                                                   **build_options)

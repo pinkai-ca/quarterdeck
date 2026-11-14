@@ -104,12 +104,19 @@ def test_ci_filesystem_view_is_disk_for_each_folder_but_physical_observation_sta
         os.close(fd)
 
 
-def test_ci_nested_resolution_keeps_the_carried_userbase_without_a_normal_run_flag(tmp_path, monkeypatch):
+@pytest.mark.parametrize('explicit_context', [False, True])
+def test_ci_flag_does_not_change_normal_usersite_callers_and_runner_context_is_explicit(
+        tmp_path, monkeypatch, explicit_context):
     declared = tmp_path / 'declared-base'
     monkeypatch.setenv('HOME', str(tmp_path / 'replaced-home'))
     monkeypatch.setenv('TESTRUNS_USERBASE', str(declared))
     monkeypatch.setenv(scratch.CI_DISK_ENV, '1')
     monkeypatch.delenv('TESTRUNS_RUN', raising=False)
-    found = usersite.resolve(sys.executable)
-    assert Path(found['base']) == declared
-    assert Path(found['site']).is_relative_to(declared)
+    options = {'carried_base': str(declared)} if explicit_context else {}
+    found = usersite.resolve(sys.executable, **options)
+    if explicit_context:
+        assert Path(found['base']) == declared
+        assert Path(found['site']).is_relative_to(declared)
+    else:
+        assert Path(found['base']) != declared
+        assert Path(found['base']).is_relative_to(tmp_path / 'replaced-home')
