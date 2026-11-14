@@ -1,4 +1,4 @@
-"""Antigravity (``agy``), record/screen contracts on 1.5.2 and 1.5.5.
+"""Antigravity (``agy``), record/screen contracts on 1.5.2 and 1.5.5; input geometry on 1.5.9.
 
 The program has no home switch: its state lives under ``~/.gemini/antigravity-cli``, so a seat passes
 its settings on the command line and joins the one conversation that appears after its launch, and
@@ -74,6 +74,8 @@ class AntigravityHarness(Harness):
     model_scoped_quota = True
     headline_window = ("Gemini 4 Argon", "7d")
     screen_walls = True
+    box_geometry_known = True
+    wrap_slack = 1  # 1.5.9: words fit through 108/76 columns at pane widths 112/80; hard wraps use 109/77
     record_limits = ("cost is unknown unless the record states it; effort and child-turn counts are not exposed; "
                      "a step without a completion time leaves its duration unknown")
     keys = Keys(submit="Enter", send_now=("M-m",), interrupt="Escape")
@@ -213,6 +215,11 @@ class AntigravityHarness(Harness):
             else:
                 block = None
         return tuple("\n".join(b).strip("\n") for b in found)
+
+    def box_columns(self, pane_width: int) -> int:
+        # 1.5.9: two prompt/indent cells and one reserved cursor cell.
+        # At pane widths 112/80, a 221-character ruler wraps 109+109+3 / 77+77+67.
+        return pane_width - 3
 
     def box(self, text: str) -> Box:
         """A long paste folds two ways (1.5.2): one of few lines to ``[Pasted text #N M chars]``, M the length less

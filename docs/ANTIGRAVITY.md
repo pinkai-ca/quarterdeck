@@ -1,6 +1,6 @@
 # The Antigravity record
 
-Antigravity (`agy`, record/screen contracts on 1.5.2 and 1.5.5) keeps every conversation as a SQLite database under its own state directory, `~/.gemini/antigravity-cli/conversations/<id>.db`, in WAL mode, with protobuf messages in its rows. The program has no home switch, so a seat runs in the user's Antigravity state and its record sits in a folder shared with the user's own conversations. This page says what the adapter reads from that record and how, so that a reader of the code or a reviewer of a fixture can check it against the program.
+Antigravity (`agy`, record/screen contracts on 1.5.2 and 1.5.5, input geometry on 1.5.9) keeps every conversation as a SQLite database under its own state directory, `~/.gemini/antigravity-cli/conversations/<id>.db`, in WAL mode, with protobuf messages in its rows. The program has no home switch, so a seat runs in the user's Antigravity state and its record sits in a folder shared with the user's own conversations. This page says what the adapter reads from that record and how, so that a reader of the code or a reviewer of a fixture can check it against the program.
 
 ## Which record is the seat's
 
@@ -57,8 +57,13 @@ The book keeps one complete reading per window, replacing fraction, reset and re
 | 1.5.2 | Existing record/schema, screen, fold and control contract fixtures remain supported |
 | 1.5.5 (13 November) | Start-up screens measured without a turn at 80×24 and 200×50 for Flash low, medium and high and Argon low and medium: the header names the model with its tier, a dismissable notice may sit above the box, and the footer shows the family and the tier apart. After the opening brief turn the program may draw a feedback survey in place of the box. Synthetic fixtures: `idle-notice-80`, `idle-argon-medium-200`, `feedback-survey` |
 | 1.5.5 | Live `qd check` passed on 11 November 2026 UTC (10 November, America/Vancouver), Gemini 3.8 Flash/medium, 220×50; separate opening and task turns, one task paste/submit, exact record receipt, file and post proof. New synthetic screen fixtures cover the native queue, edit hint, working/idle box and footer |
+| 1.5.9 (14 November) | Private idle composer and one boundary follow-up, no submissions or paid turns: at pane widths 112 and 80 a 211-character paragraph wraps without folding; a 221-character unbroken ruler wraps as 109+109+3 and 77+77+67. Words fit through 108/76 columns, then wrap. Synthetic paragraph/ruler/boundary fixtures retain these layouts without account or workspace data |
 
 These are measured versions, not launch pins. Other versions keep the ordinary best-effort rule and are not called proven by these fixtures.
+
+### Input box geometry
+
+The 1.5.9 composer reserves two cells for the prompt/continuation indent and one cell at the right for the cursor. Its hard text width is therefore the pane width minus three. Words keep one additional cell clear, declared as `wrap_slack=1`: at 112 columns, 105 letters followed by ` at z` show 108 characters then `z`; 106 letters followed by the same suffix wrap before `at z`. The corresponding boundary at 80 columns is 73/74 letters. An unbroken run breaks at the hard text width. The adapter declares this geometry so the shared `Box` comparator can recognize an unfolded paste across visual rows, including the program's trailing row padding. Exact characters and measured wrap boundaries still decide the match; the door and shared comparison policy are unchanged. Folded pastes retain their existing counted-placeholder comparison. The measurement and authorized boundary follow-up used the same throwaway ship on the native Google pool and a private tmux server, stopped after each launch with the composer empty; no model turn was needed.
 
 ## Opening turn and queued input
 

@@ -1,0 +1,6 @@
+Antigravity CLI 1.5.9
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+> Please report the measured input box width and keep this synthetic paragraph together when it crosses the
+  terminal edge. This harmless example contains ordinary words, punctuation, and enough text to wrap twice.     
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+? for shortcuts       Gemini 4 Argon · medium
