@@ -415,13 +415,14 @@ def id_sender(message_id: str) -> str | None:
     return sender
 
 
-def write_drop(runtime: Path, message: Message) -> Path:
+def write_drop(runtime: Path, message: Message, *, seat: str | None = None) -> Path:
     """The seat's write: one regular file in its own drop folder, returned before the service files it.
 
     The bytes are the message's own JSON. The service copies them, or holds them (law: can-post).
-    The walk is the post folder's own: a link on the way is a hold, never followed.
+    The walk is the post folder's own: a link on the way is a hold, never followed. ``seat`` names
+    the folder when the sender is written in its ship-qualified form, for a post to another ship.
     """
-    folder = drop_dir(runtime, message.sender)
+    folder = drop_dir(runtime, seat or message.sender)
     post_dir.ensure_directory(folder)
     path = folder / f"{message.id}.json"
     if _mode(path) is not None:
@@ -640,7 +641,7 @@ def file_drops(store: Store, ship=None) -> list[tuple[str, str]]:
             if named is None or message.id[:3] != message.kind[:3]:
                 hold(folder, "not a message")  # the id does not name its sender in today's form
                 continue
-            if named != name or message.sender != name:
+            if named != message.sender or message.sender not in _drop_senders(runtime, name):
                 hold(folder, "from names another seat")  # id, from and folder are one seat, or the drop is held
                 continue
             try:
@@ -662,6 +663,13 @@ def file_drops(store: Store, ship=None) -> list[tuple[str, str]]:
             _remove_drop(path)
     _sweep_holds(runtime, current)
     return fresh
+
+
+def _drop_senders(runtime: Path, seat: str) -> set[str]:
+    """The senders a seat's folder may file: the seat, and the seat qualified by this ship to another ship."""
+    from .fleet_post import owner
+    here = owner(runtime)
+    return {seat} if here is None else {seat, f"{seat}@{here}"}
 
 
 def _remove_drop(path: Path) -> None:

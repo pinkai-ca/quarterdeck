@@ -747,11 +747,12 @@ def cmd_post(args: argparse.Namespace) -> str:
         if destination == ship.folder.name:
             to = recipient
         else:
-            message = store.new(args.kind, sender, to, body, re=args.re, subject=args.subject,
-                                due=args.due, speed=args.speed)
+            message = store.prepare(args.kind, sender, to, body, re=args.re, subject=args.subject,
+                                    due=args.due, speed=args.speed)
+            post.write_drop(ship.runtime, message, seat=sender)  # law: can-post
             note = ('claims; an ack wakes nobody' if args.kind == 'ack'
                     else 'waiting for the addressee ship to fetch it')
-            return f'{message.short} to {to} · stored · {note}'
+            return f'{message.short} to {to} · filed by the service · {note}'
     if to.lower() == ship.operator.lower():
         to = ship.operator.lower()
     if to in ship.groups:
