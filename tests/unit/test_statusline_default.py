@@ -206,31 +206,12 @@ def test_claude_default_home_command_and_ship_override(tmp_path):
     assert json.loads((home / "settings.json").read_text())["statusLine"]["command"] == "sample custom footer"
 
 
-def test_plain_wheel_install_carries_runnable_default_footer(tmp_path):
-    source = Path(__file__).resolve().parents[2]
-    # The runner deliberately makes its committed checkout read-only. Build a
-    # wheel from a writable copy of just the framework and declared resources.
-    build_source = tmp_path / "source"
-    shutil.copytree(source / "src", build_source / "src")
-    # copytree preserves the runner's read-only directory mode. Setuptools
-    # creates egg-info directly inside src in its writable build copy.
-    (build_source / "src").chmod((build_source / "src").stat().st_mode | 0o200)
-    for name in ("pyproject.toml", "README.md", "LICENSE"):
-        shutil.copy2(source / name, build_source / name)
-    for relative in resources.plan(source):
-        (build_source / relative).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source / relative, build_source / relative)
-    wheel_dir = tmp_path / "wheel"
-    built = subprocess.run([sys.executable, "-m", "pip", "wheel", "--no-deps", "--no-build-isolation",
-                            "--disable-pip-version-check", "-w", str(wheel_dir), str(build_source)],
-                           capture_output=True, text=True, timeout=60)
+def test_plain_wheel_install_carries_runnable_default_footer(tmp_path, shared_wheel_install):
+    built = shared_wheel_install.wheel.proof
     assert built.returncode == 0, built.stdout + built.stderr
-    wheel = next(wheel_dir.glob("quarterdeck-*.whl"))
-    installed = tmp_path / "installed"
-    venv.create(installed, with_pip=True)
-    python = installed / "bin/python"
-    install = subprocess.run([str(python), "-m", "pip", "install", "--no-index", "--no-deps", str(wheel)],
-                             capture_output=True, text=True, timeout=60)
+    installed = shared_wheel_install.prefix
+    python = installed / 'bin/python'
+    install = shared_wheel_install.proof
     assert install.returncode == 0, install.stdout + install.stderr
     proof = '''import json, shlex, sys
 from pathlib import Path

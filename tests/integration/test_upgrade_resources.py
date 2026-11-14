@@ -26,10 +26,10 @@ RESOURCE_ROOTS = ('standing-orders', 'ships/drydock', 'ships/forum', 'ships/casc
 HISTORICAL_RESOURCE_ROOTS = ('standing-orders', 'ships/drydock', 'ships/forum', 'ships/cascade')
 
 
-def run(*command, cwd=None, failure=False):
+def run(*command, cwd=None, failure=False, env=None):
     done = subprocess.run([str(arg) for arg in command], cwd=cwd, capture_output=True,
-                          text=True, timeout=180, env=dict(os.environ, PIP_NO_INDEX='1',
-                                                        PIP_DISABLE_PIP_VERSION_CHECK='1'))
+                          text=True, timeout=180, env={**os.environ, **(env or {}), 'PIP_NO_INDEX': '1',
+                                                    'PIP_DISABLE_PIP_VERSION_CHECK': '1'})
     if failure:
         return done
     assert done.returncode == 0, (command, done.returncode, done.stdout, done.stderr)
@@ -56,9 +56,16 @@ def commit(repo, message):
     return git(repo, 'rev-parse', 'HEAD')
 
 
-def environment(folder):
+def environment(folder, *, env=None, seed=None):
     """Only the run's own child venv is written; available build tools stay read-only."""
-    run(sys.executable, '-m', 'venv', '--system-site-packages', folder)
+    if seed is None:
+        run(sys.executable, '-m', 'venv', '--system-site-packages', folder, env=env)
+    else:
+        from tests.shared_install import copy_environment
+        copy_environment(seed, folder)
+        config = folder / 'pyvenv.cfg'
+        config.write_text(config.read_text().replace('include-system-site-packages = false',
+                                                     'include-system-site-packages = true'))
     site = folder / 'lib' / f'python{sys.version_info.major}.{sys.version_info.minor}' / 'site-packages'
     paths = set()
     for name in ('setuptools', 'wheel'):
@@ -113,6 +120,10 @@ def test_managed_resources_match_tracked_files_and_declaration():
 
 def incumbent(python, revisions):
     install(python, revisions.repo)
+    record_incumbent(revisions)
+
+
+def record_incumbent(revisions):
     (revisions.ship / 'runtime/installed.json').write_text(json.dumps(dict(
         commit=revisions.target, ref=revisions.target, previous=None, at='2026-01-01T00:00:00Z')))
 
@@ -185,11 +196,18 @@ def revisions(tmp_path):
     return Revisions(legacy, original, repo, target, ship, old, unsupported, no_orders, failed_proof)
 
 
-def test_real_predecessor_bootstraps_target_once(revisions):
+@pytest.fixture
+def installed_incumbent(revisions, shared_wheel_install):
+    python = environment(revisions.ship / 'runtime/venv', seed=shared_wheel_install.prefix)
+    record_incumbent(revisions)
+    return python
+
+
+def test_real_predecessor_bootstraps_target_once(revisions, shared_legacy_install):
     legacy, original, target, ref, ship = (revisions.legacy, revisions.original, revisions.repo,
                                          revisions.target, revisions.ship)
-    python = environment(ship / 'runtime/venv')
-    install(python, legacy)
+    from tests.shared_install import copy_environment
+    python = copy_environment(shared_legacy_install.prefix, ship / 'runtime/venv')
     share = ship / 'runtime/venv/share/quarterdeck'
     assert not (share / 'ships/forum/ship.toml').exists()
     proofs = upgrade(python, ship, ref, hashlib.sha256(original).hexdigest())
@@ -201,10 +219,9 @@ def test_real_predecessor_bootstraps_target_once(revisions):
     assert sum(line.startswith('installed ') for line in proofs) == 1
 
 
-def test_declared_target_removes_stale_templates(revisions):
+def test_declared_target_removes_stale_templates(revisions, installed_incumbent):
     target, ship = revisions.repo, revisions.ship
-    python = environment(ship / 'runtime/venv')
-    incumbent(python, revisions)
+    python = installed_incumbent
     # A newer declared template precedes rollback to the original target declaration.
     newer = target / 'ships/extra-test/orders.md'
     newer.parent.mkdir()
@@ -227,10 +244,9 @@ def test_declared_target_removes_stale_templates(revisions):
     assert contents(share) == wanted
 
 
-def test_real_predeclaration_rollback_removes_new_templates(revisions):
+def test_real_predeclaration_rollback_removes_new_templates(revisions, installed_incumbent):
     legacy, target, ship = revisions.legacy, revisions.repo, revisions.ship
-    python = environment(ship / 'runtime/venv')
-    incumbent(python, revisions)
+    python = installed_incumbent
     stale = ship / 'runtime/venv/share/quarterdeck/ships/stale-test/orders.md'
     stale.parent.mkdir()
     stale.write_text('Stale synthetic template.\n')
@@ -244,10 +260,9 @@ def test_real_predeclaration_rollback_removes_new_templates(revisions):
     assert not any('unsupported legacy' in line for line in proofs)
 
 
-def test_unsupported_legacy_rollback_copies_target_baseline(revisions):
+def test_unsupported_legacy_rollback_copies_target_baseline(revisions, installed_incumbent):
     legacy, target, ship = revisions.legacy, revisions.repo, revisions.ship
-    python = environment(ship / 'runtime/venv')
-    incumbent(python, revisions)
+    python = installed_incumbent
     share = ship / 'runtime/venv/share/quarterdeck'
     (share / 'ships/stale-test').mkdir()
     (share / 'ships/stale-test/orders.md').write_text('Left by earlier manual copy.\n')
@@ -260,10 +275,9 @@ def test_unsupported_legacy_rollback_copies_target_baseline(revisions):
     assert json.loads((ship / 'runtime/installed.json').read_text())['commit'] == revisions.unsupported
 
 
-def test_no_standing_orders_reports_help_only(revisions):
+def test_no_standing_orders_reports_help_only(revisions, installed_incumbent):
     ship = revisions.ship
-    python = environment(ship / 'runtime/venv')
-    incumbent(python, revisions)
+    python = installed_incumbent
     proofs = upgrade(python, ship, revisions.no_orders)
     assert sum('laws/cards unavailable' in line for line in proofs) == 1
     assert any('--help proof only' in line for line in proofs)
@@ -271,10 +285,9 @@ def test_no_standing_orders_reports_help_only(revisions):
     assert json.loads((ship / 'runtime/installed.json').read_text())['commit'] == revisions.no_orders
 
 
-def test_failed_rollback_proof_restores_previous_copy_and_truthful_record(revisions):
+def test_failed_rollback_proof_restores_previous_copy_and_truthful_record(revisions, installed_incumbent):
     ship = revisions.ship
-    python = environment(ship / 'runtime/venv')
-    incumbent(python, revisions)
+    python = installed_incumbent
     assert git(revisions.repo, 'merge-base', revisions.failed_proof, revisions.target) == revisions.failed_proof
     result = upgrade(python, ship, revisions.failed_proof, failure=True)
     assert result.returncode != 0 and 'proof command failed' in result.stderr
@@ -288,10 +301,9 @@ def test_failed_rollback_proof_restores_previous_copy_and_truthful_record(revisi
 
 
 @pytest.mark.parametrize('prior_record', ('missing-test', 'corrupt-test'))
-def test_failed_unknown_direction_keeps_original_code_without_inventing_proof(revisions, prior_record):
+def test_failed_unknown_direction_keeps_original_code_without_inventing_proof(revisions, prior_record, installed_incumbent):
     ship = revisions.ship
-    python = environment(ship / 'runtime/venv')
-    incumbent(python, revisions)
+    python = installed_incumbent
     record_path = ship / 'runtime/installed.json'
     if prior_record == 'missing-test':
         record_path.unlink()
@@ -311,10 +323,9 @@ def test_failed_unknown_direction_keeps_original_code_without_inventing_proof(re
     assert not (ship / 'runtime/requests').exists()
 
 
-def test_failed_forward_proof_retains_code(revisions):
+def test_failed_forward_proof_retains_code(revisions, installed_incumbent):
     ship = revisions.ship
-    python = environment(ship / 'runtime/venv')
-    incumbent(python, revisions)
+    python = installed_incumbent
     failing_command(revisions.repo)
     forward = commit(revisions.repo, 'New fake command that fails installed proof')
     assert git(revisions.repo, 'merge-base', revisions.target, forward) == revisions.target

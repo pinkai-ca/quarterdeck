@@ -94,28 +94,18 @@ def scratch(request, tmp_path):
         yield folder
 
 
-def test_wheel_installed_laws_and_fake_drydock(scratch, private_socket_root, capsys):
+def test_wheel_installed_laws_and_fake_drydock(scratch, private_socket_root, capsys, shared_wheel):
     # HEAD is the tested target, including future fixes, never a pinned historical product.
-    ref = git(ROOT, 'rev-parse', 'HEAD')
-    source = scratch / 'source'
-    archive(ref, source, RESOURCE_ROOTS)
-    source_files = {path.relative_to(source).as_posix(): path.read_bytes()
-                    for path in source.rglob('*') if path.is_file()}
-    tracked = git(ROOT, 'ls-tree', '-r', '--name-only', ref).splitlines()
+    ref = shared_wheel.ref
+    source = shared_wheel.source
+    source_files = shared_wheel.source_files
+    tracked = shared_wheel.tracked
     outside = scratch / 'outside'
     outside.mkdir()
     env = child_environment(scratch / 'child', private_socket_root)
 
-    # Only the build environment can see the test tool's read-only build tools.
-    build_python = environment(scratch / 'build-env')
-    output = scratch / 'wheels'
-    output.mkdir()
-    command(build_python, '-I', '-c',
-            'from setuptools.build_meta import build_wheel; import sys; build_wheel(sys.argv[1])',
-            output, cwd=source, env=env)
-    wheel, = output.glob('*.whl')
-    with zipfile.ZipFile(wheel) as built:
-        wheel_files = {name: built.read(name) for name in built.namelist() if not name.endswith('/')}
+    wheel = shared_wheel.path
+    wheel_files = shared_wheel.members
 
     runtime = scratch / 'installed'
     command(sys.executable, '-I', '-m', 'venv', runtime, cwd=outside, env=env)
@@ -123,8 +113,7 @@ def test_wheel_installed_laws_and_fake_drydock(scratch, private_socket_root, cap
     command(python, '-I', '-m', 'pip', 'install', '--no-index', '--no-deps', wheel,
             cwd=outside, env=env)
     # Neither the archive nor the build environment can rescue installed commands.
-    shutil.rmtree(source)
-    shutil.rmtree(scratch / 'build-env')
+    assert not shared_wheel.build_environment.exists()
     assert not source.exists()
     env['PATH'] = os.pathsep.join((str(runtime / 'bin'), '/usr/bin', '/bin'))
     reading = json.loads(command(python, '-I', '-c', INSPECT, cwd=outside, env=env))
