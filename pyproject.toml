@@ -45,6 +45,8 @@ where = ["src"]
 ]
 "share/quarterdeck/ships/drydock" = ["ships/drydock/orders.md", "ships/drydock/ship.toml"]
 "share/quarterdeck/ships/default" = ["ships/default/orders.md", "ships/default/ship.toml"]
+"share/quarterdeck/ships/office" = ["ships/office/orders.md", "ships/office/ship.toml", "ships/office/README.md"]
+"share/quarterdeck/ships/office/roles" = ["ships/office/roles/desk.md"]
 "share/quarterdeck/ships/forum" = [
     "ships/forum/README.md", "ships/forum/orders.md", "ships/forum/ship.toml",
 ]

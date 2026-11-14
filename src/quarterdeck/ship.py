@@ -140,6 +140,7 @@ class Ship:
     tick: float = TICK  # seconds the service waits after each pass; [ship] tick
     code: str | None = None
     carry_bytes: int = CARRY_BYTES  # first message and each index page, UTF-8 bytes; [ship] carry_bytes
+    kind: str = "crew"  # an office has only the desk and the person's own seats
 
     @property
     def file(self) -> Path:
@@ -189,7 +190,7 @@ def find(argument: str | None = None) -> Path:
 
 
 # The folders under ships/ that travel with the framework: templates, and the practice ship (drydock).
-TEMPLATES = frozenset({"default", "drydock", "forum", "cascade", "shuttle"})
+TEMPLATES = frozenset({"default", "drydock", "forum", "cascade", "shuttle", "office"})
 MARK = ".default"  # ships/.default: the default ship's folder name, relative to ships/
 
 
@@ -337,6 +338,7 @@ def _from_text(text: str, folder: Path) -> Ship:
         tick=_tick(head.get("tick", TICK)),
         code=code,
         carry_bytes=_carry_bytes(head.get("carry_bytes", CARRY_BYTES)),
+        kind=head.get("kind", "crew"),
     )
 
 
@@ -462,6 +464,19 @@ def _path(value: str, folder: Path) -> Path:
 def _validate(ship: Ship) -> None:
     from . import harness as harnesses  # the adapters import this module, so it is imported here, not above
     from .harness.capabilities import validate_mode, validate_selection
+
+    if ship.kind not in ("crew", "office"):
+        raise ShipError('ship.kind must be "crew" or "office"; omit it for an existing crew')
+    if ship.kind == "office":
+        desk = ship.seats.get("desk")
+        if desk is None or desk.role != "desk" or sum(s.role == "desk" for s in ship.seats.values()) != 1:
+            raise ShipError('an office needs one seat named desk with role = "desk"')
+        if not ship.sessions or any(not session.human for session in ship.sessions.values()):
+            raise ShipError('an office has only the person\'s sessions; declare human = true on each')
+        crew = {"captain", "first-officer", "engineering", "engineer", "worker", "hand",
+                "operations", "systems", "security", "lead", "reviewer", "orchestrator", "ring"}
+        if any(seat.role in crew for seat in ship.seats.values()) or ship.groups or ship.cascade:
+            raise ShipError('an office has no captain or crew, groups or cascade; declare only the desk and office seats')
 
     for group in ship.groups.values():
         if group.name in ship.seats or group.name.lower() in (ship.operator.lower(), 'ship'):

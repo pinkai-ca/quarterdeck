@@ -1,11 +1,12 @@
-# Ships are their own repositories. The five templates travel with the framework:
-# drydock, default, forum, cascade and shuttle.
+# Ships are their own repositories. The six templates travel with the framework:
+# drydock, default, forum, cascade, shuttle and office.
 ships/*
 !ships/drydock/
 !ships/default/
 !ships/forum/
 !ships/cascade/
 !ships/shuttle/
+!ships/office/
 # A ship's state is fenced in a nested repository and never tracked anywhere.
 ships/*/runtime/
 # Worktrees for work on the framework itself live here, inside the project folder.

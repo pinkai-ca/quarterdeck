@@ -1,0 +1,23 @@
+# One office for the fleet. Add only the person's office seats here, not a crew.
+[ship]
+name = "office"
+kind = "office"
+operator = "operator"
+# No project workspace is required. Programs start in this office's own folder.
+
+[pools.claude]
+provider = "anthropic"
+config_dir = "~/.claude"
+
+[sessions.office]
+title = "Office"
+human = true
+
+[seats.desk]
+session = "office"
+role = "desk"
+harness = "claude"
+pool = "claude"
+model_mode = "program-default"
+effort_mode = "program-default"
+fresh_after_compactions = 2
