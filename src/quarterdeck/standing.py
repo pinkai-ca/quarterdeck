@@ -11,13 +11,13 @@ from __future__ import annotations
 
 import re
 import locale
-import shlex
 import tokenize
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 from .ship import SeatSpec, Ship
+from .seat_command import qd_command
 
 
 def project_dir() -> Path:
@@ -95,7 +95,7 @@ def brief(ship: Ship, seat: SeatSpec) -> Brief:
 
 def seat_section(ship: Ship, seat: SeatSpec, human_session: bool) -> str:
     inbox = f"runtime/post/inbox/{seat.name}.md"
-    qd = shlex.quote(str(ship.runtime / 'bin/qd'))
+    qd = qd_command(ship.folder)
     lines = [
         "# Your seat",
         "",
@@ -116,7 +116,8 @@ def seat_section(ship: Ship, seat: SeatSpec, human_session: bool) -> str:
     if human_session:
         lines.append(
             "- Your session belongs to the human. The ship types only its fixed waking line when a message waits, no watch is armed and your box is known empty. "
-            f"Messages reach you through your watch: run `{qd} inbox --wait` in the background as the last act of every turn; "
+            f"Messages reach you through your watch: run `{qd_command(ship.folder, 'inbox', '--wait')}` "
+            "as a command of its own in the background as the last act of every turn; "
             "it prints new messages in full when they arrive and exits, and you arm it again."
         )
     else:

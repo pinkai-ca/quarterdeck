@@ -354,7 +354,7 @@ class _Reader(JsonLinesReader):
         self.sidechain_ends = set()
         self.subagent_turns = 0
         self.queue_slots = []  # text/phase FIFO, including returned drafts and consumed echo identities
-        self.background = BackgroundBash()
+        self.background = BackgroundBash(record)
         self.walls = []
         self.notice_input = None  # accounting candidate only: a notice cannot open a turn
         super().__init__(record, snapshot)

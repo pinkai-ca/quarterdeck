@@ -8,9 +8,11 @@ an unmeasured version, including any later one, stays unknown.
 
 from dataclasses import dataclass, replace
 from datetime import datetime
+from pathlib import Path
 import re
 
 from .types import ActiveTool
+from ..seat_command import qd_command
 
 
 VERSION = '2.1.317'  # the first version measured for every form below
@@ -122,7 +124,19 @@ class Task:
 
 
 class BackgroundBash:
-    def __init__(self):
+    def __init__(self, record: Path | None = None):
+        self.watch_commands = {'qd inbox --wait'}
+        # A Claude record belongs to home/projects/<slug>/<record>.jsonl. Only the
+        # framework's fixed seat-home layout supplies its ship; neither the caller's
+        # environment nor text inside the command chooses which qd may be a watch.
+        if record is not None:
+            record = Path(record)
+            home = record.parent.parent.parent
+            runtime = home.parent.parent.parent
+            if (record.is_absolute() and record.parent.parent.name == 'projects'
+                    and home.name == 'home' and home.parent.parent.name == 'seats'
+                    and runtime.name == 'runtime'):
+                self.watch_commands.add(qd_command(runtime.parent, 'inbox', '--wait'))
         self.calls = {}
         self.tasks = {}  # includes terminal identities so later duplicate carriers can be joined
         self.task_calls = {}
@@ -143,7 +157,8 @@ class BackgroundBash:
         if call in self.calls or call in self.tasks:
             self.unknown_calls.add(call)
         wanted = arguments.get('run_in_background', False) if name == 'Bash' else arguments.get('task_id')
-        watch = name == 'Bash' and arguments.get('command') == 'qd inbox --wait'
+        command = arguments.get('command')
+        watch = name == 'Bash' and isinstance(command, str) and command in self.watch_commands
         self.calls[call] = name, wanted, at, version, watch
         if name == 'Bash' and (not isinstance(wanted, bool) or wanted and version not in CALL_VERSIONS):
             self.unknown_calls.add(call)
