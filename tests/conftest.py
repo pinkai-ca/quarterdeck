@@ -126,6 +126,10 @@ def pytest_sessionfinish(session, exitstatus):
         try:
             after = memory_roots()
             own = session.config._qd_memory_root_own
+            reporter = session.config.pluginmanager.get_plugin('terminalreporter')
+            if reporter:
+                reporter.write_line(f'pytest shared-memory roots: before={len(before)}, after={len(after)}; '
+                                    'only the project root is exempt; census removes nothing')
             new = sorted(name for name, identity in after.items()
                          if name != own and before.get(name) != identity)
             if new:
