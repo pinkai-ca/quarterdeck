@@ -37,7 +37,8 @@ HIDDEN_BYTES = 1024 * 1024  # every other tmpfs inside is a fence or a hidden fo
 # The rest of runtime/ is an empty folder inside: the ledger, the logs, the evidence, every sign-in a usage reader or a
 # parked credential holds, and whatever the runtime holds later. Its own seat folder and check folder are writable.
 # The runtime's own .git is the empty fence repository that keeps git run above it out; a jailed qd post checks it.
-RUNTIME_SHOWN = ('.git', 'post', 'bin', 'venv', 'venv.prev', 'installed.json', 'service.heartbeat')
+# The post is shown as the seat's own view of it (post_view), never whole: see Jail.post_view.
+RUNTIME_SHOWN = ('.git', 'bin', 'venv', 'venv.prev', 'installed.json', 'service.heartbeat')
 # Of the briefs, only the seat's own: every seat's brief lies in that folder, the counsel's included.
 HOPS = 20  # a chain of links longer than this is nobody's install
 # What the jail hides besides the operator's home: its own empty /tmp and its fresh /dev, whose /dev/shm is empty.
@@ -82,6 +83,7 @@ class Jail:
     writable: tuple[Path, ...] = ()  # this seat's own drop folder and its own check proof folder
     environment: tuple[tuple[str, str], ...] = ()  # set inside the jail: the git identity a commit from the seat carries
     declarations: tuple[Path, ...] = ()  # peer ship files only, under otherwise empty read-only folders
+    post_view: Path | None = None  # the seat's own view of the post, bound read-only in the post's place
 
 
 def git_identity(workspace: Path) -> tuple[tuple[str, str], ...]:
@@ -138,8 +140,10 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
     from .fleet import declaration_files
     declarations = tuple(file for file in declaration_files(ship) if file.parent != ship.folder)
     proof = ensure_check_proof_folder(ship.runtime, seat_name)  # a link is refused here, before any bind
+    from . import post_view
+    view = post_view.refresh(ship.runtime, seat_name)  # what of the post the seat may see, current at its launch
     jail = Jail(home, seat_home, seat_folder, workspace, ship.folder, ship.runtime, tuple(folders),
-                (drop, proof), git_identity(workspace), declarations)
+                (drop, proof), git_identity(workspace), declarations, view)
     if covered := covering(jail):
         what, folder = covered
         raise ShipError(f"{seat_name}: sandboxed with the operator home at {home}, and {what} {folder} is that home or "
@@ -344,12 +348,21 @@ def command(jail: Jail, argv: list[str]) -> list[str]:
                ("--private-tmpfs", jail.runtime / LOCKS), ("--bind", jail.seat_folder)]
     mounts += [("--ro-bind-try", jail.runtime / name) for name in RUNTIME_SHOWN]
     mounts += [("--ro-bind-try", jail.runtime / "brief" / f"{jail.seat_folder.name}.md")]
+    # The post: the seat's own view of it in the post's place, read-only, with its real drop writable over it.
+    # A jail made without a view (only by hand, never by plan) is shown no post at all.
+    if jail.post_view is not None:
+        mounts += [("--view", jail.post_view)]
+        # A check seat's own lease, the real files over the view's placeholders, for its own jailed qd inbox alone.
+        from .post_view import lease_names
+        mounts += [("--ro-bind-try", jail.runtime / "post" / "transient" / name)
+                   for name in lease_names(jail.seat_folder.name)
+                   if (jail.post_view / "transient" / name).exists()]
     mounts += [("--bind-try", folder) for folder in jail.writable]
     mounts += [("--declaration", file) for file in getattr(jail, 'declarations', ())]
 
     def mount_key(mount):
         flag, folder = mount
-        target = folder.parent if flag == '--declaration' else folder
+        target = (folder.parent if flag == '--declaration' else jail.runtime / 'post' if flag == '--view' else folder)
         # Fence the fleet after the writable workspace, even a workspace inside
         # it; then restore its children in parent-first order. The home's tmpfs
         # stays in that depth order, and last when the path is the same.
@@ -377,6 +390,8 @@ def command(jail: Jail, argv: list[str]) -> list[str]:
                 # where the office's own declaration belongs.
                 args += ['--size', str(HIDDEN_BYTES), '--tmpfs', str(folder)]
                 fenced.append(folder)
+        elif flag == '--view':
+            args += ['--ro-bind', str(folder), str(jail.runtime / 'post')]
         elif flag == '--runtime':
             # The runtime is fenced like the fleet: empty, bounded, and read-only once what is shown is in place.
             args += ['--size', str(HIDDEN_BYTES), '--tmpfs', str(folder)]

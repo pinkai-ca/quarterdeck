@@ -147,7 +147,7 @@ def test_a_jail_sees_only_what_a_seat_needs_of_the_runtime_and_every_tmpfs_is_bo
     assert 'secrets' not in seen, seen.get('secrets')
     hidden = {'pool-usage', 'credentials', 'log', 'evidence', 'grading', 'ledger.sqlite'}
     assert not hidden & set(seen['top']), seen['top']
-    assert set(seen['top']) <= {*sandbox.RUNTIME_SHOWN, 'brief', 'seats', 'tmux', 'locks', 'check'}, seen['top']
+    assert set(seen['top']) <= {*sandbox.RUNTIME_SHOWN, 'post', 'brief', 'seats', 'tmux', 'locks', 'check'}, seen['top']
     assert seen['ledger'] in ('OperationalError', 'DatabaseError'), seen['ledger']
     assert seen['runtime_write'] in ('OSError', 'PermissionError'), 'the runtime fence is read-only inside'
     assert seen['locks_flood'] == 'OSError', 'a hidden tmpfs is bounded: a large write fails'
@@ -304,3 +304,90 @@ def test_a_sign_in_in_a_runtime_folder_no_list_knows_is_absent_and_what_the_show
     seen = json.loads(done.stdout.strip().splitlines()[-1]) if done.stdout.strip() else {}
     assert seen.get(str(unknown)) is False, (seen, done.stderr[-400:])
     assert {path: seen[str(path)] for path in planted} == planted, 'unknown absent; each shown folder shows what it holds'
+
+
+@pytest.mark.skipif(not namespaces_allowed(), reason='bubblewrap is not installed, or cannot make a namespace here')
+def test_a_jailed_seat_opens_only_the_post_it_is_party_to(drydock: Path, tmp_path):
+    """The post inside a jail is the seat's own view of it: what it sent or received, its own inbox, nothing else. A
+    message between two other seats, another seat's inbox and the drop holds cannot be opened from inside."""
+    ship = shipmod.load(drydock)
+    shipmod.fence(ship)
+    runtime = ship.runtime
+    store = post.Store(runtime)
+    mine = store.new('order', 'captain', 'worker-1', 'Synthetic order to the jailed seat.')
+    theirs = store.new('order', 'captain', 'desk', 'Synthetic order between two other seats.')
+    for name in ('desk', 'captain'):
+        post.render_inbox(runtime, store, name)
+    post.render_inbox(runtime, store, 'worker-1')
+    holds = runtime / 'post' / 'drop-holds'
+    holds.mkdir(parents=True, exist_ok=True)
+    (holds / 'synthetic.json').write_text('{"format": 1, "folder": "drop/desk", "reason": "not a message"}\n')
+    jail, run = jailed_qd(ship, 'worker-1', tmp_path)
+    paths = {
+        'mine': runtime / 'post' / 'store' / f'{mine.id}.json',
+        'theirs': runtime / 'post' / 'store' / f'{theirs.id}.json',
+        'own inbox': runtime / 'post' / 'inbox' / 'worker-1.md',
+        'desk inbox': runtime / 'post' / 'inbox' / 'desk.md',
+        'holds': holds / 'synthetic.json',
+    }
+    probe = ('import json, sys\nout = {}\nfor name, path in zip(sys.argv[1::2], sys.argv[2::2]):\n'
+             '    try:\n        open(path).read(); out[name] = "read"\n'
+             '    except OSError as error:\n        out[name] = type(error).__name__\nprint(json.dumps(out))')
+    done = subprocess.run(sandbox.command(jail, [sys.executable, '-I', '-c', probe,
+                                                 *[str(item) for pair in paths.items() for item in (pair[0], pair[1])]]),
+                          capture_output=True, text=True, timeout=60)
+    seen = json.loads(done.stdout.strip().splitlines()[-1]) if done.stdout.strip() else {}
+    assert seen == {'mine': 'read', 'theirs': 'FileNotFoundError', 'own inbox': 'read',
+                    'desk inbox': 'FileNotFoundError', 'holds': 'FileNotFoundError'}, (seen, done.stderr[-400:])
+    thread = run('thread', theirs.id)
+    assert 'between two other seats' not in thread.stdout + thread.stderr
+    reply = run('post', 'report', '--re', mine.id, 'done from the view')
+    assert reply.returncode == 0, reply.stderr[-400:]
+    post.file_drops(store)
+    assert any(m.sender == 'worker-1' and m.re == mine.id for m in store.all())
+
+
+LEASE_HOLDER = r'''
+import sys
+from pathlib import Path
+from quarterdeck import pending
+runtime, name = Path(sys.argv[1]), sys.argv[2]
+with pending.transient_lock(runtime, name) as owned:
+    if not owned:
+        raise SystemExit('busy')
+    with pending.check_inbox_registration(runtime, name, True, enabled=True):
+        print('held', flush=True)
+        sys.stdin.read()
+'''
+
+
+@pytest.mark.skipif(not namespaces_allowed(), reason='bubblewrap is not installed, or cannot make a namespace here')
+def test_a_check_seats_lease_is_shown_to_its_own_jail_alone(drydock: Path, tmp_path):
+    """A temporary check seat's own jailed qd inbox proves its lease by the real files; any other jail sees no lease,
+    so none can hold one and make a dead check's registration look live."""
+    ship = shipmod.load(drydock)
+    shipmod.fence(ship)
+    runtime = ship.runtime
+    check = 'check-fake-synthetic'
+    post.Store(runtime).new('order', 'ship', check, 'Synthetic check task.')
+    post.Store(runtime).new('order', 'captain', 'worker-1', 'Synthetic order.')
+    holder = subprocess.Popen([sys.executable, '-c', LEASE_HOLDER, str(runtime), check],
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout.readline().strip() == 'held', holder.stderr.read()
+        lock = runtime / 'post' / 'transient' / f'{check}.lock'
+        assert lock.is_file()
+        _, own = jailed_qd(ship, check, tmp_path)
+        inbox = own('inbox')
+        assert inbox.returncode == 0 and 'Synthetic check task.' in inbox.stdout, inbox.stderr[-600:]
+        other, _ = jailed_qd(ship, 'worker-1', tmp_path)
+        probe = ('import os, sys\ntry:\n    os.open(sys.argv[1], os.O_RDONLY)\n    print("opened")\n'
+                 'except OSError as error:\n    print(type(error).__name__)\n'
+                 'print(sorted(os.listdir(os.path.dirname(os.path.dirname(sys.argv[1])))))')
+        done = subprocess.run(sandbox.command(other, [sys.executable, '-I', '-c', probe, str(lock)]),
+                              capture_output=True, text=True, timeout=60)
+        lines = done.stdout.strip().splitlines()
+        assert lines[0] == 'FileNotFoundError', (done.stdout, done.stderr[-400:])
+        assert 'transient' not in lines[1], 'no lease folder in another seat\'s view'
+    finally:
+        holder.communicate('', timeout=30)

@@ -24,6 +24,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `output.py` | one shape for every reading, rendered for a person or serialized as JSON |
 | `paste_refusal.py` | proved owned-unsubmitted paste cleanup, and refusal evidence scoped by payload, version and geometry |
 | `pending.py`, `delivery_record.py` | saved paste evidence and historical receipts; the service schedules each message |
+| `post_view.py` | a jailed seat's view of the post: copies of what it sent or received, its own inbox, the shorts taken; kept by the service, bound in the post's place |
 | `pricing.py` | a pool's stated rates, and the price saved beside a launch or a model choice |
 | `provenance.py` | which launch a record belongs to |
 | `providers.py` | normalizes declared companies and builds public identity metadata |

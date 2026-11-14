@@ -19,6 +19,7 @@ from .harness.base import Screen
 from .harness.types import _cells
 from .quota import reset_text, stamp
 from .seat import Seat
+from .ship import ShipError
 from .tmux import TmuxError
 
 CONFIRM_SECONDS = 5.0
@@ -453,7 +454,15 @@ class Door:
         return screen
 
     def deliver(self, text: str, speed: str | None = None, confirm: bool = True, proof=None, verify=None, *, human_wake: bool = False) -> Delivery:
-        from . import shutdown
+        from . import post_view, shutdown
+        # A jailed seat reads the post only through its view: bring it up to date before anything is typed, so the
+        # message is there when the seat opens it. The message itself is typed whole either way.
+        runtime = getattr(getattr(self.seat, 'ship', None), 'runtime', None)
+        if runtime is not None and post_view.folder(runtime, self.seat.name).is_dir():
+            try:
+                post_view.refresh(runtime, self.seat.name)
+            except (OSError, ValueError, ShipError):
+                pass  # the service's next pass refreshes it again
         with shutdown.delivery(proof):
             if proof and shutdown.requested():
                 return Delivery('withheld', 'service stopping before paste')

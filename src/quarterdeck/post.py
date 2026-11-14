@@ -194,6 +194,8 @@ class Store:
     def _new_id(self, kind: str, sender: str, at: datetime) -> str:
         taken = {m.short for m in self.all()}
         taken.update(_drop_shorts(self.dir.parent / "drop"))
+        from .post_view import taken_shorts
+        taken.update(taken_shorts(self.dir.parent))  # inside a jail's view, the shorts other seats' messages hold
         while True:
             candidate = f"{kind[:3]}-{at.strftime('%Y%m%d-%H%M')}-{sender}-{secrets.token_hex(2)}"
             if short_of(candidate) not in taken:

@@ -70,7 +70,8 @@ def test_the_command_hides_the_home_binds_the_workspace_writable_and_the_ship_re
     jail = sandbox.Jail(home=home, seat_home=runtime / "seats" / "w" / "home", seat_folder=runtime / "seats" / "w",
                         workspace=home / "dev" / "project", ship_folder=ship_folder, runtime=runtime,
                         read_only=(home / ".local" / "bin", home / ".opencode"),
-                        writable=(runtime / "post" / "drop" / "w", runtime / "check" / "w"))
+                        writable=(runtime / "post" / "drop" / "w", runtime / "check" / "w"),
+                        post_view=runtime / "views" / "w" / "post")
     args = sandbox.command(jail, ["pi", "--model", "m"])
     assert args[:12] == ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--size", str(sandbox.TMP_BYTES), "--tmpfs", "/tmp"]
     assert args[12:16] == ["--size", str(sandbox.HOME_BYTES), "--tmpfs", str(home)], "the operator's home is an empty, bounded tmpfs before anything under it is bound back"
@@ -80,7 +81,9 @@ def test_the_command_hides_the_home_binds_the_workspace_writable_and_the_ship_re
                                          text.index(f"--tmpfs {runtime} "), text.index(f"--bind {runtime / 'seats' / 'w'} "),
                                          text.index(f"--bind-try {runtime / 'post' / 'drop' / 'w'} "))
     assert workspace < ship < seats < seat, "a deeper mount comes later, so the ship folder is read-only inside the writable workspace and this seat is writable inside the hidden runtime"
-    assert text.index(f"--ro-bind-try {runtime / 'post'} ") < post, "the post is shown read-only, the seat's drop writable over it"
+    assert text.index(f"--ro-bind {runtime / 'views' / 'w' / 'post'} {runtime / 'post'} ") < post, \
+        "the seat's own view is shown read-only in the post's place, the seat's drop writable over it"
+    assert f"--ro-bind-try {runtime / 'post'} " not in text and f"--ro-bind {runtime / 'post'} " not in text, "never the post whole"
     assert text.index(f"--remount-ro {runtime}") > post, "the runtime's fence is made read-only after everything inside it"
     assert ship < post, "only the seat's drop folder is writable inside the read-only ship folder"
     binds = [args[i + 1] for i, arg in enumerate(args[:-1]) if arg == "--bind-try"]

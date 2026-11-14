@@ -556,12 +556,13 @@ def test_a_refused_copy_is_carried_as_a_notice_without_its_body(world):
 
 
 def test_a_jailed_reviewer_still_reaches_the_shared_post_folder_but_no_peer_seat_folder(world):
-    # The shared post stays readable through the ship. Only this seat's drop folder is writable.
+    # The seat reaches the post through its own view of it. Only this seat's drop folder is writable.
     runtime = world.ship.runtime
     folder = runtime / 'seats' / 'reviewer-1'
     drop = runtime / 'post' / 'drop' / 'reviewer-1'
     jail = sandbox.Jail(Path('/home/synthetic'), folder / 'home', folder, world.ship.workspace,
-                        world.ship.folder, runtime, (), (drop, runtime / 'check' / 'reviewer-1'))
+                        world.ship.folder, runtime, (), (drop, runtime / 'check' / 'reviewer-1'),
+                        post_view=runtime / 'views' / 'reviewer-1' / 'post')
     args = sandbox.command(jail, ['fake'])
     triples = [tuple(args[i:i + 3]) for i in range(len(args) - 2)]
     assert ('--bind-try', str(drop), str(drop)) in triples
@@ -569,7 +570,9 @@ def test_a_jailed_reviewer_still_reaches_the_shared_post_folder_but_no_peer_seat
     assert ('--ro-bind', str(world.ship.folder), str(world.ship.folder)) in triples
     # The runtime is an empty fence inside: the post is shown read-only, and the seat's own folder is mounted over it.
     assert ('--tmpfs', str(runtime)) in [tuple(args[i:i + 2]) for i in range(len(args) - 1)]
-    assert ('--ro-bind-try', str(runtime / 'post'), str(runtime / 'post')) in triples
+    # Only the seat's own view of the post, in the post's place: never the post whole.
+    assert ('--ro-bind', str(runtime / 'views' / 'reviewer-1' / 'post'), str(runtime / 'post')) in triples
+    assert ('--ro-bind-try', str(runtime / 'post'), str(runtime / 'post')) not in triples
     assert ('--bind', str(folder), str(folder)) in triples
     assert not any(str(runtime / 'seats' / peer) in args for peer in ('lead', *MEMBERS[1:]))
     assert args.index(str(runtime)) < args.index(str(folder))  # own folder mounted over the fence

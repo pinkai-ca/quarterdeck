@@ -231,7 +231,7 @@ class Service:
     def _tick_steps(self):
         # Operational duties keep their order and never wait behind the slice.
         self.drain_accounting()
-        for step in (self.server_recovery, self.reconcile, self.file_drops, self.groups, self.cascades, self.fleet_post, self.inboxes, self.recoveries, self.refusals, self.answers, self.looks, self.deliveries, self.follow, self.requests, self.compactions, self.person_quiet, self.fresh_after_order,
+        for step in (self.server_recovery, self.reconcile, self.file_drops, self.groups, self.cascades, self.fleet_post, self.inboxes, self.views, self.recoveries, self.refusals, self.answers, self.looks, self.deliveries, self.follow, self.requests, self.compactions, self.person_quiet, self.fresh_after_order,
                      self.rebrief, self.push_reminders, self.credentials, self.authentications, self.model_differences, self.failover, self.account, self.refresh_usage, self.pool_forecasts, self.retire_post):
             self.heartbeat()  # before every step: a slow delivery or usage read reads as busy, never as dead
             try:
@@ -629,6 +629,18 @@ class Service:
                 fleet_post.replace_status(path, text)
         else:
             path.unlink(missing_ok=True)
+
+    def views(self) -> None:
+        """Each jailed seat's view of the post, after the inboxes and before any delivery types a message to it: a seat
+        whose launch made a view, or one the ship jails. One seat's failure never stops the others'."""
+        from . import post_view
+        for name, spec in self.ship.seats.items():
+            try:
+                if not (post_view.folder(self.runtime, name).is_dir() or self.ship.jailed(spec)):
+                    continue
+                post_view.refresh(self.runtime, name, self.store)
+            except Exception as error:
+                self.log("error", step="views", seat=name, error=repr(error))
 
     def inboxes(self) -> None:
         for name in self.ship.seats:
