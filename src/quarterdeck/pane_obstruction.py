@@ -7,7 +7,8 @@ import stat
 from datetime import datetime
 from pathlib import Path
 
-from . import durable
+from . import durable, post_dir
+from .ship import ShipError
 
 NAME = '.pane-obstruction'
 MARKER_BYTES = 4096
@@ -19,17 +20,30 @@ def marker_path(journal: Path) -> Path:
 
 
 def _read(path: Path, limit: int | None = None):
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
-        with os.fdopen(fd, 'rb') as stream:
-            info = os.fstat(stream.fileno())
-            if not stat.S_ISREG(info.st_mode) or limit is not None and info.st_size > limit:
+    if not post_dir.under_post(path):
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+            with os.fdopen(descriptor, 'rb') as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode) or limit is not None and info.st_size > limit:
+                    return None
+                raw = stream.read(limit + 1 if limit is not None else -1)
+            if limit is not None and len(raw) > limit:
                 return None
-            raw = stream.read(limit + 1 if limit is not None else -1)
-        if limit is not None and len(raw) > limit:
+            return json.loads(raw)
+        except (OSError, ValueError, UnicodeError, RecursionError):
             return None
+    try:
+        raw = post_dir.read_bytes(path)
+    except ShipError:
+        raise
+    except (OSError, RecursionError):
+        return None
+    if limit is not None and len(raw) > limit:
+        return None
+    try:
         return json.loads(raw)
-    except (OSError, ValueError, UnicodeError, RecursionError):
+    except (ValueError, UnicodeError, RecursionError):
         return None
 
 
@@ -100,5 +114,8 @@ def transitioned(path: Path, data) -> None:
     since = _when(data.get('since'))
     later = confirmed and since is not None and since > _when(value['since'])
     if own_journal or later:
-        marker.unlink(missing_ok=True)
+        try:
+            post_dir.remove(marker)
+        except FileNotFoundError:
+            return
         durable.sync_folder(marker.parent)

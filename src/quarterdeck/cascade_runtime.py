@@ -11,7 +11,7 @@ import stat
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import durable, post
+from . import durable, post, post_dir
 from .ship import ShipError
 
 HOLD_REASONS = frozenset({'cascade evidence is malformed JSON', 'cascade evidence is inconsistent',
@@ -147,8 +147,8 @@ def hold(runtime: Path, question: str, reason: str, signature: str) -> bool:
             return False
     except (OSError, ValueError, ShipError):
         pass
-    created = not path.parent.exists()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    created = not post_dir.exists_dir(path.parent)
+    post_dir.ensure_directory(path.parent)
     if created:
         durable.sync_folder(path.parent.parent)
         durable.sync_folder(runtime)
@@ -159,7 +159,7 @@ def hold(runtime: Path, question: str, reason: str, signature: str) -> bool:
 def clear(runtime: Path, question: str) -> None:
     path = runtime / 'post' / 'cascade-holds' / (key(question) + '.json')
     try:
-        path.unlink()
+        post_dir.remove(path)
     except FileNotFoundError:
         return
     durable.sync_folder(path.parent)
@@ -168,7 +168,9 @@ def clear(runtime: Path, question: str) -> None:
 def holds(runtime: Path) -> list[str]:
     """Read only fixed derived operational reasons, never run/report/provider bodies."""
     try:
-        paths = sorted((runtime / 'post' / 'cascade-holds').glob('*.json'))
+        paths = post_dir.json_paths(runtime / 'post' / 'cascade-holds')
+    except ShipError as error:
+        return [str(error)] if str(error).startswith(post_dir.LINK_HELD) else ['cascades held: hold evidence unreadable']
     except OSError:
         return ['cascades held: hold evidence unreadable']
     lines = []

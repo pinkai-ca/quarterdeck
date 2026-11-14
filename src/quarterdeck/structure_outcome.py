@@ -16,7 +16,7 @@ import os
 import stat
 from pathlib import Path
 
-from . import durable, input_receipt, pending, post, record_owner, recovery
+from . import durable, input_receipt, pending, post, post_dir, record_owner, recovery
 from .door import Door
 from .ship import ShipError
 from .tmux import TmuxError
@@ -74,7 +74,7 @@ def clear(service, order):
 def clear_wait(runtime, request):
     path = _path(runtime, request)
     try:
-        path.unlink()
+        post_dir.remove(path)
     except FileNotFoundError:
         return
     durable.sync_folder(path.parent)
@@ -105,11 +105,11 @@ def _wait(service, name, order, reason, signature=None):
                      observation=json.loads(json.dumps(signature[:8])) if signature is not None else None))
     path = _path(service.runtime, order.id)
     try:
-        if _wait_data(json.loads(path.read_text())) == data:
+        if _wait_data(json.loads(post_dir.read_text(path))) == data:
             return
     except READ_ERRORS:
         pass  # a fresh source observation replaces only derived display metadata
-    path.parent.mkdir(parents=True, exist_ok=True)
+    post_dir.ensure_directory(path.parent)
     durable.replace_file(path, json.dumps(data) + '\n')
 
 
@@ -150,7 +150,7 @@ def _outstanding(runtime):
     for kind, folder, pattern in (('group', runtime / 'post' / 'groups', '*.json'),
                                   ('cascade', runtime / 'ring', '*/state.json')):
         try:
-            paths = sorted(folder.glob(pattern))
+            paths = post_dir.json_paths(folder) if kind == 'group' else sorted(folder.glob(pattern))
         except READ_ERRORS:
             unreadable = True
             continue
@@ -175,7 +175,7 @@ def waits(ship, selected=()):
     store = post.Store(runtime)
     seats = {seat.name: seat for seat in selected}
     try:
-        paths = sorted((runtime / 'post' / 'structure-waits').glob('*.json'))
+        paths = post_dir.json_paths(runtime / 'post' / 'structure-waits')
     except READ_ERRORS:
         return lines + ['structure wait evidence unreadable']
     for path in paths:

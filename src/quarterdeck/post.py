@@ -22,7 +22,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Collection
 
-from . import durable
+from . import durable, post_dir
 from .ship import ShipError
 
 KINDS = ("order", "report", "question", "answer", "ack")
@@ -115,12 +115,12 @@ class Message:
 def admission(runtime: Path, seat: str):
     """Serialize publication/transition claims, never program startup; locks are not reentrant."""
     folder = runtime / 'post' / 'admission'
-    folder.mkdir(parents=True, exist_ok=True)
     name = hashlib.sha256(seat.encode()).hexdigest()
-    descriptor = os.open(folder / (name + '.lock'), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    path = folder / (name + '.lock')
+    descriptor = post_dir.open_lock(path, mode=0o600)
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX)
-        opened, current = os.fstat(descriptor), (folder / (name + '.lock')).lstat()
+        opened, current = os.fstat(descriptor), path.lstat()
         if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
             raise ShipError('post admission lock identity changed; retained')
         yield
@@ -183,9 +183,9 @@ class Store:
 
     def _write(self, message: Message) -> Path:
         """Publish while the caller holds admission; fixed-intent recovery verifies first."""
-        self.dir.mkdir(parents=True, exist_ok=True)
+        post_dir.ensure_directory(self.dir)
         path = self.dir / f"{message.id}.json"
-        if path.exists():
+        if post_dir.exists(path):
             raise ShipError(f"{message.id} exists; messages are immutable")  # law: post-is-files
         durable.replace_file(path, message.to_json())
         return path
@@ -204,31 +204,59 @@ class Store:
         cached_at = self._cache_at
         self._cache_at = None  # a failed refresh cannot certify the previous listing
         started = time.time_ns()
+        if not post_dir.under_post(self.dir):
+            try:
+                info = self.dir.stat()
+            except FileNotFoundError:
+                self._cache = None
+                return [], {}
+            checked = time.time_ns()
+            stamp = (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns)
+            if (self._cache is None or self._cache[0] != stamp or cached_at is None
+                    or not cached_at <= started <= checked):
+                with os.scandir(self.dir) as entries:
+                    paths = [self.dir / entry.name for entry in entries if entry.name.endswith('.json')]
+                messages = sorted((Message.from_json(p.read_text()) for p in paths), key=lambda m: (m.at, m.id))
+                replies: dict[str, list[Message]] = {}
+                for message in messages:
+                    if message.re:
+                        replies.setdefault(message.re, []).append(message)
+                self._cache = (stamp, messages, replies)
+                finished = time.time_ns()
+                if max(info.st_mtime_ns, info.st_ctime_ns) + POST_TIMESTAMP_TICK_NS < started <= checked <= finished:
+                    self._cache_at = started
+            else:
+                self._cache_at = cached_at
+            return self._cache[1], self._cache[2]
         try:
-            info = self.dir.stat()
+            descriptor = post_dir.open_directory(self.dir, create=False)
         except FileNotFoundError:
             self._cache = None
             return [], {}
-        checked = time.time_ns()
-        stamp = (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns)
-        if (self._cache is None or self._cache[0] != stamp or cached_at is None
-                or not cached_at <= started <= checked):
-            with os.scandir(self.dir) as entries:
-                paths = [self.dir / entry.name for entry in entries if entry.name.endswith('.json')]
-            messages = sorted((Message.from_json(p.read_text()) for p in paths), key=lambda m: (m.at, m.id))
-            replies: dict[str, list[Message]] = {}
-            for message in messages:
-                if message.re:
-                    replies.setdefault(message.re, []).append(message)
-            self._cache = (stamp, messages, replies)
-            finished = time.time_ns()
-            # Certify only a listing begun after the entire timestamp bucket.
-            # An unsafe listing must be refreshed even when its stamp has aged.
-            if max(info.st_mtime_ns, info.st_ctime_ns) + POST_TIMESTAMP_TICK_NS < started <= checked <= finished:
-                self._cache_at = started
-        else:
-            self._cache_at = cached_at
-        return self._cache[1], self._cache[2]
+        try:
+            info = os.fstat(descriptor)
+            checked = time.time_ns()
+            stamp = (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns)
+            if (self._cache is None or self._cache[0] != stamp or cached_at is None
+                    or not cached_at <= started <= checked):
+                paths = post_dir.json_paths(self.dir)
+                messages = sorted((Message.from_json(post_dir.read_text(p)) for p in paths),
+                                  key=lambda m: (m.at, m.id))
+                replies: dict[str, list[Message]] = {}
+                for message in messages:
+                    if message.re:
+                        replies.setdefault(message.re, []).append(message)
+                self._cache = (stamp, messages, replies)
+                finished = time.time_ns()
+                # Certify only a listing begun after the entire timestamp bucket.
+                # An unsafe listing must be refreshed even when its stamp has aged.
+                if max(info.st_mtime_ns, info.st_ctime_ns) + POST_TIMESTAMP_TICK_NS < started <= checked <= finished:
+                    self._cache_at = started
+            else:
+                self._cache_at = cached_at
+            return self._cache[1], self._cache[2]
+        finally:
+            os.close(descriptor)
 
     def all(self) -> list[Message]:
         """Every message, oldest first."""
@@ -421,14 +449,16 @@ def _entry(message: Message, closed: str | None) -> list[str]:
 
 def render_inbox(runtime: Path, store: Store, seat: str) -> Path:
     folder = runtime / "post" / "inbox"
-    folder.mkdir(parents=True, exist_ok=True)
+    post_dir.ensure_directory(folder)
     path = folder / f"{seat}.md"
     text = inbox_text(store, seat)
-    if path.exists() and path.read_text() == text:
+    try:
+        current = post_dir.read_text(path)
+    except FileNotFoundError:
+        current = None
+    if current == text:
         return path
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(text)
-    os.replace(tmp, path)
+    durable.replace_file(path, text)
     return path
 
 
@@ -484,17 +514,20 @@ class Attempts:
 
     @contextmanager
     def _locked(self):
-        self.dir.mkdir(parents=True, exist_ok=True)
-        with (self.dir / ".lock").open("a") as stream:
-            fcntl.flock(stream, fcntl.LOCK_EX)
+        descriptor = post_dir.open_lock(self.dir / '.lock')
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
             yield
+        finally:
+            os.close(descriptor)
 
     def open(self, message: Message, seat: str, pane: str | None, pid: int | None, launched_at: str | None) -> Attempt:
         with self._locked():
             at = now()
-            history = [*self.dir.glob(f"{message.id}-*.json"),
-                       *(a.path for name, a in self._retired().items()
-                         if name.startswith(message.id + '-') and name.endswith('.json'))]
+            prefix = f'{message.id}-'
+            history = [path for path in post_dir.json_paths(self.dir) if path.name.startswith(prefix)]
+            history += [a.path for name, a in self._retired().items()
+                        if name.startswith(prefix) and name.endswith('.json')]
             number = max((int(p.stem.rsplit('-', 1)[1]) for p in history), default=0) + 1
             attempt = Attempt(message.id, seat, at.isoformat(timespec="microseconds"), pane, pid, launched_at,
                               path=self.dir / f"{message.id}-{number}.json")
@@ -504,7 +537,7 @@ class Attempts:
     def close(self, attempt: Attempt, result: str, detail: str = "") -> Attempt:
         with self._locked():
             source = attempt_path(self.dir.parent.parent, attempt.path.name)
-            current = Attempt(**json.loads(source.read_text()), path=source)
+            current = Attempt(**json.loads(post_dir.read_text(source)), path=source)
             if source.parent != self.dir:
                 return current  # retired finished evidence is immutable
             if current.result in ("abandoned", "not-in-closed-record", *UNSETTLED):
@@ -519,7 +552,7 @@ class Attempts:
         """Judge only an unfinished attempt; an intervening door/watch verdict stands."""
         with self._locked():
             source = attempt_path(self.dir.parent.parent, attempt.path.name)
-            current = Attempt(**json.loads(source.read_text()), path=source)
+            current = Attempt(**json.loads(post_dir.read_text(source)), path=source)
             if source.parent != self.dir:
                 return False
             if current.result is not None:
@@ -536,7 +569,7 @@ class Attempts:
             for original in expected:
                 if original.path.parent != self.dir:
                     return None
-                current = Attempt(**json.loads(original.path.read_text()), path=original.path)
+                current = Attempt(**json.loads(post_dir.read_text(original.path)), path=original.path)
                 if (current.message, current.seat, current.at, current.pane, current.pid, current.launched_at) != (
                         original.message, original.seat, original.at, original.pane, original.pid, original.launched_at):
                     return None
@@ -567,7 +600,7 @@ class Attempts:
         with self._locked():
             updates = []
             for original in expected:
-                current = Attempt(**json.loads(original.path.read_text()), path=original.path)
+                current = Attempt(**json.loads(post_dir.read_text(original.path)), path=original.path)
                 target = replace(original, result='delivered', detail=detail)
                 if current != original and current != target:
                     if (current.message, current.seat, current.at, current.pane, current.pid, current.launched_at) != (
@@ -615,14 +648,14 @@ class Attempts:
         """Immutable batch metadata: stat batches, never every retained receipt."""
         folder = self.dir.parent / 'retired' / 'index'
         found, cache = {}, {}
-        for path in folder.glob('*.json'):
+        for path in post_dir.json_paths(folder):
             if progress is not None:
                 progress()
-            info = path.stat()
+            info = path.lstat()
             stamp = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
             cached = self._retired_cache.get(path.name)
             if cached is None or cached[0] != stamp:
-                data = json.loads(path.read_text())
+                data = json.loads(post_dir.read_text(path))
                 if (not isinstance(data, dict) or data.get('format') != 1
                         or not isinstance(data.get('attempts'), dict)):
                     raise ShipError('retired attempt index unreadable; delivery held')
@@ -645,24 +678,25 @@ class Attempts:
         # times alone miss same-path edits; stat every entry, parse only changes.
         retired = self._retired(progress)
         try:
-            entries = os.scandir(self.dir)
+            children = post_dir.list_children(self.dir)
         except FileNotFoundError:
             self._cache = {}
             return sorted(retired.values(), key=lambda a: (a.at, a.path.name))
         current = {}
-        with entries:
-            for index, entry in enumerate(entries):
-                if progress is not None and index % 200 == 0:
-                    progress()
-                if not entry.name.endswith('.json'):
-                    continue
-                info = entry.stat()
-                stamp = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-                cached = self._cache.get(entry.name)
-                if cached is None or cached[0] != stamp:
-                    path = self.dir / entry.name
-                    cached = stamp, Attempt(**json.loads(path.read_text()), path=path)
-                current[entry.name] = cached
+        for index, (name, mode) in enumerate(children):
+            if progress is not None and index % 200 == 0:
+                progress()
+            if not name.endswith('.json'):
+                continue
+            if stat.S_ISLNK(mode):
+                post_dir._link_held(self.dir / name)
+            info = (self.dir / name).lstat()
+            stamp = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+            cached = self._cache.get(name)
+            if cached is None or cached[0] != stamp:
+                path = self.dir / name
+                cached = stamp, Attempt(**json.loads(post_dir.read_text(path)), path=path)
+            current[name] = cached
         # A failed scan/read must propagate, never certify a partial snapshot.
         self._cache = current
         retired.update((name, value[1]) for name, value in current.items())

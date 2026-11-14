@@ -19,7 +19,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import standing
+from . import post_dir, standing
 from .ship import Ship, ShipError
 
 PROGRAM = "bwrap"
@@ -99,7 +99,7 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
     programs = (program, *FRAMEWORK_TOOLS)
     folders = [f for f in (*program_folders(programs, path, home), *hidden_folders(programs, path, home))
                if f != workspace and workspace not in f.parents and ship.folder not in f.parents and f != ship.folder]
-    (ship.runtime / "post").mkdir(parents=True, exist_ok=True)  # bound writable, so it must exist before the launch, first post or not
+    post_dir.ensure_directory(ship.runtime / "post")  # bound writable, so it must exist before the launch, first post or not
     (ship.runtime / "tmux").mkdir(mode=0o700, exist_ok=True)  # hidden inside: the mount needs its place in the read-only ship
     jail = Jail(home, seat_home, seat_folder, workspace, ship.folder, ship.runtime, tuple(folders),
                 (ship.runtime / "post", ship.runtime / "check"), git_identity(workspace))

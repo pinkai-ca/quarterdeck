@@ -88,6 +88,7 @@ def test_the_service_answers_a_submit_request_through_the_same_path(setup, monke
 
 def traced_opens(patch, folder):
     """Every open of a file under the folder, by name, through the ways the code reads a file."""
+    import os
     from pathlib import Path
     opened = []
     for method in ("open", "read_text", "read_bytes"):
@@ -96,6 +97,17 @@ def traced_opens(patch, folder):
                 opened.append(self.name)
             return _original(self, *args, **kwargs)
         patch.setattr(Path, method, traced)
+    real_open = os.open
+
+    def traced_open(file, flags, *args, **kwargs):
+        # A runtime/post read opens the file name from the held directory, not Path.open.
+        name = os.fsdecode(file)
+        base = Path(name).name
+        if base.endswith('.json') and (folder / base).is_file() or folder in Path(name).parents:
+            opened.append(base)
+        return real_open(file, flags, *args, **kwargs)
+
+    patch.setattr(os, 'open', traced_open)
     return opened
 
 

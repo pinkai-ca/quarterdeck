@@ -17,7 +17,7 @@ import json
 import math
 import stat
 
-from . import credential, durable, turn_failure
+from . import credential, durable, post_dir, turn_failure
 from .harness.types import AUTHENTICATION
 from .ship import ShipError
 
@@ -241,7 +241,7 @@ def run(service):
                     if (getattr(turn, 'successful', None) is True
                             and turn.timed and turn.failure is None and turn.ended is not None
                             and turn.ended > datetime.fromisoformat(attempt['at'])):
-                        _path(seat).unlink()
+                        post_dir.remove(_path(seat))
                         durable.sync_folder(_path(seat).parent)
                 continue
             now = datetime.now(timezone.utc)
@@ -258,8 +258,10 @@ def run(service):
             _, stamp, _ = observation
             step = 'the resume journal write'
             path = _path(seat)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            durable.sync_folder(path.parent.parent)  # retain the new attempt-directory entry across a power cut
+            created = not post_dir.exists_dir(path.parent)
+            post_dir.ensure_directory(path.parent)
+            if created:
+                durable.sync_folder(path.parent.parent)  # retain the new attempt-directory entry across a power cut
             latest = dict(at=now.isoformat(), pool=seat.launched().pool, credential=stamp)
             attempts = (attempt['attempts'] if attempt else []) + [latest]
             durable.replace_file(path, json.dumps(dict(format=1, **latest, attempts=attempts)) + '\n')

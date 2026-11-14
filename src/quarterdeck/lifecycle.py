@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import stat
 
+from . import post_dir
 from .ship import ShipError
 
 
@@ -20,8 +21,7 @@ def claim(runtime: Path, name: str):
     descriptor = None
     try:
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NONBLOCK | os.O_NOFOLLOW, 0o600)
+            descriptor = post_dir.open_lock(path, mode=0o600, extra=os.O_NONBLOCK)
             os.set_inheritable(descriptor, False)
             opened = os.fstat(descriptor)
             if not stat.S_ISREG(opened.st_mode):

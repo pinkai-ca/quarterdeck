@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import stat
 
-from . import durable, pending, post, record_owner
+from . import durable, pending, post, post_dir, record_owner
 from .ship import ShipError
 
 UNKNOWN = 'delivery journal had no complete launch identity; outcome unknown; never resent'
@@ -70,7 +70,15 @@ def retire_missing_identity(runtime, name, errors, attempts):
             descriptor = None
             writing = False
             try:
-                descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                if post_dir.under_post(path):
+                    parent, filename_at = post_dir._open_parent(path, create=False)
+                    try:
+                        descriptor = os.open(filename_at, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                                             dir_fd=parent)
+                    finally:
+                        os.close(parent)
+                else:
+                    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
                 opened = os.fstat(descriptor)
                 if not stat.S_ISREG(opened.st_mode):
                     continue
@@ -88,20 +96,30 @@ def retire_missing_identity(runtime, name, errors, attempts):
                        for a, value in zip(matching, data['attempts'])):
                     continue
                 destination = folder / 'retired'
-                destination.mkdir(exist_ok=True)
-                if destination.is_symlink() or not destination.is_dir():
-                    continue
                 saved = destination / filename
-                if saved.exists() or saved.is_symlink():
-                    continue  # never replace earlier evidence, even with equal bytes
+                if post_dir.under_post(destination):
+                    post_dir.ensure_directory(destination)
+                    if not post_dir.exists_dir(destination):
+                        continue
+                    if post_dir.exists(saved):
+                        continue  # never replace earlier evidence, even with equal bytes
+                else:
+                    destination.mkdir(exist_ok=True)
+                    if destination.is_symlink() or not destination.is_dir():
+                        continue
+                    if saved.exists() or saved.is_symlink():
+                        continue  # never replace earlier evidence, even with equal bytes
                 current = path.lstat()
-                if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino) or path.read_bytes() != original:
+                if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino) or post_dir.read_bytes(path) != original:
                     continue
                 writing = True
                 updated = post.Attempts(runtime).settle_missing_identity(matching, UNKNOWN)
                 if updated is None:
                     continue
-                path.rename(saved)  # same inode and original bytes, outside journals()'s glob
+                if post_dir.under_post(path):
+                    post_dir.rename(path, saved)  # same inode and original bytes, outside journals()'s glob
+                else:
+                    path.rename(saved)
                 durable.sync_folder(destination)
                 durable.sync_folder(folder)
                 _retirement_log(runtime, name, filename)

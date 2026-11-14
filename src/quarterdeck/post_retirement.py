@@ -11,11 +11,11 @@ from __future__ import annotations
 from dataclasses import asdict
 import json
 import hashlib
-import os
 from pathlib import Path
 import secrets
 import time
 
+from . import post_dir
 from .ship import ShipError
 
 # These are finished outcomes, not a pending input or an unresolved receipt.
@@ -50,27 +50,32 @@ def row(attempt):
 def _folders(paths):
     """Create the batch's archive layout without forcing it to storage."""
     for path in paths:
-        path.mkdir(parents=True, exist_ok=True)
+        post_dir.ensure_directory(path)
 
 
 def _replace_file(path: Path, text: str):
     """Publish a whole index or completion record, without a storage sync."""
-    temporary = path.with_name(f'.{path.name}.{secrets.token_hex(4)}.tmp')
-    try:
-        with temporary.open('x', encoding='utf-8') as stream:
-            stream.write(text)
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
+    post_dir.replace_bytes(path, text.encode('utf-8'), sync=False)
 
 
 def move(source: Path, destination: Path) -> bool:
     """Rename one whole file on the same filesystem, without a storage sync."""
-    if not source.exists():
+    try:
+        if not post_dir.exists(source):
+            return False
+    except FileNotFoundError:
         return False
-    if destination.exists():
-        raise ShipError('retired delivery destination already exists; both files retained')
-    os.rename(source, destination)
+    try:
+        if post_dir.exists(destination):
+            raise ShipError('retired delivery destination already exists; both files retained')
+    except FileNotFoundError:
+        pass
+    try:
+        post_dir.rename(source, destination)
+    except ShipError as error:
+        if 'already exists' in str(error):
+            raise ShipError('retired delivery destination already exists; both files retained') from error
+        raise
     return True
 
 
@@ -88,19 +93,19 @@ def _resume(service, path, data, progress, counts):
     for source, digest in _files(runtime, data):
         progress()
         destination = retired(source, runtime)
-        if source.exists():
+        if post_dir.exists(source):
             if digest is not None:
-                if hashlib.sha256(source.read_bytes()).hexdigest() != digest:
+                if hashlib.sha256(post_dir.read_bytes(source)).hexdigest() != digest:
                     raise ShipError('retirement journal changed; original retained')
             else:
-                if json.loads(source.read_text()) != data['attempts'][source.name]:
+                if json.loads(post_dir.read_text(source)) != data['attempts'][source.name]:
                     raise ShipError('retirement attempt changed; original retained')
             if move(source, destination):
                 counts['journals' if digest is not None else 'attempts'] += 1
-        elif not destination.is_file():
+        elif not post_dir.exists(destination):
             raise ShipError('retirement evidence missing; batch remains unfinished')
     done = runtime / 'post' / 'retired' / 'completed' / path.name
-    if not done.exists():
+    if not post_dir.exists(done):
         _replace_file(done, json.dumps(dict(format=1, batch=path.name)) + '\n')
     return counts
 
@@ -109,11 +114,11 @@ def _recover(service, progress, counts):
     """Finish one published intent before authorizing another batch."""
     from . import lifecycle, post
     root = service.runtime / 'post' / 'retired'
-    for path in sorted((root / 'index').glob('*.json')):
+    for path in post_dir.json_paths(root / 'index'):
         progress()
-        if (root / 'completed' / path.name).is_file():
+        if post_dir.exists(root / 'completed' / path.name):
             continue
-        data = json.loads(path.read_text())
+        data = json.loads(post_dir.read_text(path))
         if 'seat' not in data:
             continue  # older immutable metadata without a batch intent
         name = data['seat']
@@ -139,7 +144,7 @@ def _batch(service, name, mine, proofs, progress, counts, known):
     message_ids.update(known[n].message for p in proofs for n in p.data['attempts'])
     data = dict(format=1, seat=name, messages=sorted(message_ids),
                 attempts={n: row(a) for n, a in mine.items()},
-                journals={p.path.name: hashlib.sha256(p.path.read_bytes()).hexdigest() for p in proofs})
+                journals={p.path.name: hashlib.sha256(post_dir.read_bytes(p.path)).hexdigest() for p in proofs})
     path = root / 'index' / (secrets.token_hex(16) + '.json')
     # Exactly one immutable index publication per pass, before its first rename.
     _replace_file(path, json.dumps(data, sort_keys=True) + '\n')
@@ -216,7 +221,7 @@ def _run(service, limit, counts, progress):
                 for a in group}
     names = sorted({a.seat for a in records if a.path.parent == service.attempts.dir
                     and a.path.name in eligible}
-                   | {p.name for p in (service.runtime / 'post' / 'pending').glob('*') if p.is_dir()})
+                   | set(post_dir.directory_names(service.runtime / 'post' / 'pending')))
     cursor = getattr(service, 'post_retirement_cursor', None)
     if cursor in names:
         position = names.index(cursor)

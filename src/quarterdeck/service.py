@@ -27,7 +27,7 @@ from . import harness as harnesses
 from . import shutdown
 from .harness import reader_stamp
 from . import pending as pending_delivery, delivery_record
-from . import accounting_health, credential, durable, idle, install, machine, move_hold, post, presentation, quota, record_owner, recovery, servicectl, ship as shipmod, standing
+from . import accounting_health, credential, durable, idle, install, machine, move_hold, post, post_dir, presentation, quota, record_owner, recovery, servicectl, ship as shipmod, standing
 from .door import CONFIRM_SECONDS, Door
 from .harness.base import record_fingerprint
 from .harness.capabilities import validate_effort, validate_mode
@@ -574,9 +574,16 @@ class Service:
     def inboxes(self) -> None:
         for name in self.ship.seats:
             path = self.runtime / "post" / "inbox" / f"{name}.md"
-            text = post.inbox_text(self.store, name)
-            if not path.exists() or path.read_text() != text:
-                post.render_inbox(self.runtime, self.store, name)
+            try:
+                text = post.inbox_text(self.store, name)
+                try:
+                    current = post_dir.read_text(path)
+                except FileNotFoundError:
+                    current = None
+                if current != text:
+                    post.render_inbox(self.runtime, self.store, name)
+            except ShipError as error:
+                self.log("error", step="inbox", seat=name, error=str(error))
 
     def groups(self) -> None:
         """Recover fixed group copies and publish one all-filed or failure notice."""

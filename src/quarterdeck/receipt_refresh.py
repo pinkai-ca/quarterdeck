@@ -11,7 +11,7 @@ from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
-from . import durable
+from . import durable, post_dir
 from .ship import ShipError
 
 
@@ -48,7 +48,7 @@ class Checkpoint:
             raise ShipError('closed receipt refresh revision unknown; retained')
         self.path = runtime / 'post' / 'receipt-refresh.json'
         try:
-            saved = _validate(json.loads(self.path.read_text()))
+            saved = _validate(json.loads(post_dir.read_text(self.path)))
         except FileNotFoundError:
             saved = None
         except (ValueError, UnicodeError) as error:
@@ -69,7 +69,7 @@ class Checkpoint:
         return key in self._observed
 
     def _save(self, data):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        post_dir.ensure_directory(self.path.parent)
         durable.replace_file(self.path, json.dumps(data, sort_keys=True) + '\n')
         self.data = data  # a failed publication never advances in-memory progress
         self._observed = set(data['observed'])

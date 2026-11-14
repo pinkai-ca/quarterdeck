@@ -11,7 +11,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from . import durable, post, structure_outcome
+from . import durable, post, post_dir, structure_outcome
 from .ship import Ship, ShipError
 
 FAILURE_REASONS = frozenset({'member no longer declared', 'provider refused this copy',
@@ -26,8 +26,8 @@ def _folder(ship: Ship) -> Path:
 
 
 def _save(path: Path, data: dict) -> None:
-    created = not path.parent.exists()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    created = not post_dir.exists_dir(path.parent)
+    post_dir.ensure_directory(path.parent)
     if created:
         durable.sync_folder(path.parent.parent)
         durable.sync_folder(path.parent.parent.parent)
@@ -45,15 +45,15 @@ def _message(data: dict) -> post.Message:
 def _publish(store: post.Store, message: post.Message) -> None:
     """A cut after publication reuses the exact intent, never another message id."""
     path = store.dir / f'{message.id}.json'
-    if path.exists():
-        if post.Message.from_json(path.read_text()) != message:
+    if post_dir.exists(path):
+        if post.Message.from_json(post_dir.read_text(path)) != message:
             raise ShipError(f'group post {message.id} differs from its saved intent; retained')
     else:
         store.write(message)
 
 
 def _load(path: Path) -> dict:
-    data = json.loads(path.read_text(encoding='utf-8'))
+    data = json.loads(post_dir.read_text(path, encoding='utf-8'))
     if data.get('format') != 1:
         raise ShipError(f'unknown group journal format in {path}; retained')
     root = _message(data['root'])
@@ -143,16 +143,16 @@ def advance(ship: Ship, store: post.Store, failures=None, *, outcomes=None) -> l
     Return newly changed held-group errors, for logging after the whole pass.
     """
     folder = _folder(ship)
-    if not folder.exists():
+    if not post_dir.exists_dir(folder):
         return []
     changed = []
     with post.admission(ship.runtime, '@groups'):
-        for path in sorted(folder.glob('*.json')):
+        for path in post_dir.json_paths(folder):
             try:
                 _advance_one(path, store, failures, outcomes)
                 hold = ship.runtime / 'post/group-holds' / path.name
-                if hold.exists():
-                    hold.unlink()
+                if post_dir.exists(hold):
+                    post_dir.remove(hold)
                     durable.sync_folder(hold.parent)
             except Exception as error:  # one malformed journal cannot stall healthy groups
                 reason = _error_reason(error)
@@ -246,7 +246,9 @@ def holds(runtime: Path) -> list[str]:
     """Read-only derived operational holds; never parse review bodies or repair state."""
     folder = runtime / 'post/group-holds'
     try:
-        paths = sorted(folder.glob('*.json'))
+        paths = post_dir.json_paths(folder)
+    except ShipError as error:
+        return [str(error)] if str(error).startswith(post_dir.LINK_HELD) else ['groups held: hold evidence unreadable']
     except OSError:
         return ['groups held: hold evidence unreadable']
     lines = []

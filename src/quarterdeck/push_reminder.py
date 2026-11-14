@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import re
 
-from . import durable, install, post
+from . import durable, install, post, post_dir
 from .ship import ShipError
 
 
@@ -33,7 +33,7 @@ def timestamp(value):
 
 def load(runtime):
     try:
-        data = json.loads(path(runtime).read_text())
+        data = json.loads(post_dir.read_text(path(runtime)))
     except FileNotFoundError:
         return None
     except (OSError, ValueError) as error:
@@ -62,7 +62,7 @@ def load(runtime):
 
 def save(runtime, data):
     target = path(runtime)
-    target.parent.mkdir(parents=True, exist_ok=True)
+    post_dir.ensure_directory(target.parent)
     durable.replace_file(target, json.dumps(data, sort_keys=True) + '\n')
 
 

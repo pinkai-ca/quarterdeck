@@ -19,7 +19,7 @@ import stat
 from pathlib import Path
 from typing import Any, Iterator, Sequence, TYPE_CHECKING
 
-from . import durable, post, pane_obstruction
+from . import durable, pane_obstruction, post, post_dir
 from . import input_receipt
 from .harness import closed_record
 from .harness.json_record import RecordError
@@ -124,11 +124,11 @@ class Proof:
         try:
             try:
                 # Equality means only nothing to write, never durability or repair of an earlier failure.
-                unchanged = self.path.read_bytes() == text.encode(encoding)
+                unchanged = post_dir.read_bytes(self.path) == text.encode(encoding)
             except FileNotFoundError:
                 unchanged = False
             if not unchanged:
-                self.path.parent.mkdir(parents=True, exist_ok=True)
+                post_dir.ensure_directory(self.path.parent)
                 durable.replace_file(self.path, text, encoding=encoding)
         except OSError as error:
             error.add_note(f'pending journal: {self.path}')
@@ -263,11 +263,11 @@ def _journals(runtime: Path | None, name: str, *, progress=None) -> tuple[list[P
     found, errors = [], []
     if runtime is None:
         return found, errors
-    for path in sorted((runtime / "post" / "pending" / name).glob("*.json")):
+    for path in post_dir.json_paths(runtime / "post" / "pending" / name):
         if progress is not None:
             progress()
         try:
-            data = json.loads(path.read_text())
+            data = json.loads(post_dir.read_text(path))
             validate(data, name)
             if any(not post.attempt_path(runtime, n).is_file() for n in data["attempts"]):
                 raise ValueError("pending attempt receipt missing")
@@ -382,14 +382,16 @@ def transient_lock(runtime: Path, name: str) -> Iterator[bool]:
     Names alone (including check-*) and stale unlocked files establish no owner.
     """
     path = runtime / "post" / "transient" / f"{name}.lock"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a") as stream:
+    descriptor = post_dir.open_lock(path)
+    try:
         try:
-            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             yield False
         else:
             yield True
+    finally:
+        os.close(descriptor)
 
 
 def _check_paths(runtime: Path, name: str) -> tuple[Path, Path]:
@@ -418,10 +420,23 @@ def check_inbox_registration(runtime: Path, name: str, human: bool, *, enabled=F
     lock, marker = _check_paths(runtime, name)
     if type(human) is not bool:
         raise ValueError('unknown temporary human ownership')
-    info = lock.lstat()
-    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-        raise ValueError('temporary check lock unknown')
-    descriptor = os.open(marker, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    if post_dir.under_post(marker):
+        parent, marker_name = post_dir._open_parent(marker, create=False)
+        try:
+            info = os.stat(lock.name, dir_fd=parent, follow_symlinks=False)
+            if stat.S_ISLNK(info.st_mode):
+                post_dir._link_held(lock)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ValueError('temporary check lock unknown')
+            descriptor = os.open(marker_name, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                 0o600, dir_fd=parent)
+        finally:
+            os.close(parent)
+    else:
+        info = lock.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError('temporary check lock unknown')
+        descriptor = os.open(marker, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
     published = False
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -448,7 +463,7 @@ def check_inbox_registration(runtime: Path, name: str, human: bool, *, enabled=F
                     current = marker.lstat()
                     if ([current.st_dev, current.st_ino] != data['registration'] or metadata(marker) != raw):
                         raise ValueError('temporary check registration changed; retained')
-                    marker.unlink()
+                    post_dir.remove(marker)
                     durable.sync_folder(marker.parent)
         finally:
             os.close(descriptor)  # death or normal exit releases this lifetime's lease
@@ -531,7 +546,7 @@ def reconcile(service: Service) -> set[Path]:
     paths = set()
     attempts = {a.path.name: a for a in service.attempts.all()}
     names = {a.seat for a in attempts.values()}
-    names.update(p.name for p in (service.runtime / "post" / "pending").glob("*") if p.is_dir())
+    names.update(post_dir.directory_names(service.runtime / "post" / "pending"))
     for name in names - service.ship.seats.keys():
         with transient_lock(service.runtime, name) as unowned:
             if unowned:
@@ -684,7 +699,7 @@ def _named(seat: Seat, names: Sequence[str], known: dict[str, post.Attempt]) -> 
     for name in dict.fromkeys(names):
         path = journal_path(seat.ship.runtime, seat.name, name)
         try:
-            data = json.loads(path.read_text())
+            data = json.loads(post_dir.read_text(path))
             validate(data, seat.name)
         except FileNotFoundError:
             continue  # an attempt with no journal: a watch's, or the door's before journals
@@ -792,10 +807,11 @@ def _one_look_claimed(service: Service, seat: Seat, attempts: Sequence[post.Atte
             proof_line = service._deliver_claimed(seat, [message], resend=True)
             # The second delivery's journal is named by its new attempt: only this message's journals are listed.
             folder = seat.ship.runtime / "post" / "pending" / seat.name
-            for path in sorted(folder.glob(f"{message.id}-*.json")):
-                if path == proof.path:
+            prefix = f"{message.id}-"
+            for path in post_dir.json_paths(folder):
+                if not path.name.startswith(prefix) or path == proof.path:
                     continue
-                later = Proof(path, json.loads(path.read_text()))
+                later = Proof(path, json.loads(post_dir.read_text(path)))
                 if "look" not in later.data:
                     later.save(look=dict(at=at, outcome="second delivery", of=proof.path.name))
             done.append(f"{message.short} to {seat.name}: typed once more ({proof_line})")
