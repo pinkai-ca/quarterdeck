@@ -27,6 +27,10 @@ NOTICE_VERSIONS = {  # a task notification, by its carrier
     ('attachment', 'queued_command'): frozenset({VERSION}),  # no 2.1.322 attachment carrier measured
 }
 TERMINAL = frozenset({'completed', 'failed', 'killed'})
+# The Monitor tool's own notices, measured on 2.1.317 only, on every notice carrier: its call, its result
+# (toolUseResult {persistent, taskId, timeoutMs}) and an envelope whose summary is followed by exactly one <event>,
+# in two forms: task-id alone while it runs, or task-id, tool-use-id, output-file and status when it ends.
+MONITOR_VERSIONS = frozenset({VERSION})
 # Claude Code's own note on a killed task when it stopped the command itself, under memory pressure while the
 # session was idle: measured byte for byte the same on every instance, it says the command ended, so the kill ends
 # the task. Measured on Claude Code 2.1.317 only, on two carriers: the queue enqueue and the user task-notification
@@ -58,6 +62,49 @@ RESUME_VERSIONS = {
     ('queue-operation', 'enqueue'): frozenset({VERSION}),
     ('user', 'task-notification'): frozenset({VERSION}),
 }
+
+
+HEADER = re.compile(r'\s*<(task-id|tool-use-id|output-file|status|note)>([^<>]*)</\1>', re.S)
+
+
+def _header(header):
+    fields = {}
+    while header.strip():
+        field = HEADER.match(header)
+        if field is None or field[1] in fields:
+            return None
+        fields[field[1]] = field[2]
+        header = header[field.end():]
+    return fields
+
+
+def monitor_event(text):
+    """The Monitor tool's measured event notice: (tool-use-id or None, task-id, status or None), else None.
+    Only the envelope's own fields are read; the summary and the event's text never are."""
+    if not isinstance(text, str):
+        return None
+    match = re.fullmatch(r'\s*<task-notification>(.*)</task-notification>\s*', text, re.S)
+    if match is None:
+        return None
+    header, separator, rest = match[1].partition('<summary>')
+    _, ending, tail = rest.rpartition('</summary>')
+    if not separator or not ending or re.fullmatch(r'\s*<event>(?:(?!<event>).)*</event>\s*', tail, re.S) is None:
+        return None
+    fields = _header(header)
+    if fields is None or not fields.get('task-id') or 'note' in fields:
+        return None
+    if set(fields) == {'task-id'}:
+        return None, fields['task-id'], None
+    if set(fields) == {'task-id', 'tool-use-id', 'output-file', 'status'} and fields['tool-use-id'] and fields['status']:
+        return fields['tool-use-id'], fields['task-id'], fields['status']
+    return None
+
+
+def identities(text):
+    """The task and call identities a notice's own envelope names, whatever else it holds; never its text."""
+    if not isinstance(text, str):
+        return ()
+    return tuple(found[1] for found in re.finditer(r'<(?:task-id|tool-use-id)>([^<>]+)</(?:task-id|tool-use-id)>', text))
 
 
 def notification(text):
@@ -142,6 +189,8 @@ class BackgroundBash:
         self.task_calls = {}
         self.unknown_calls = set()
         self.unbound = False
+        self.monitor_calls = set()
+        self.monitor_tasks = {}  # a Monitor's task id, from its own result, to its call
         # Notifications met before their call's own rows, by root call id, in file order. When the inbox watch
         # returns at once, Claude Code writes the notification's enqueue first. Each binds when its call's result
         # creates the task; one still waiting at the record's end leaves the record's tools unknown.
@@ -149,6 +198,9 @@ class BackgroundBash:
         self.version = None  # queue carriers inherit the nearest preceding explicit record version
 
     def call(self, call, name, arguments, at, version):
+        if name == 'Monitor' and isinstance(call, str) and call and version in MONITOR_VERSIONS:
+            self.monitor_calls.add(call)
+            return
         if name not in ('Bash', 'TaskStop'):
             return
         if not isinstance(call, str) or not call or not isinstance(arguments, dict):
@@ -164,6 +216,13 @@ class BackgroundBash:
             self.unknown_calls.add(call)
 
     def result(self, call, entry, block, at):
+        if call in self.monitor_calls:
+            result = entry.get('toolUseResult')
+            task = result.get('taskId') if isinstance(result, dict) else None
+            if (isinstance(task, str) and task and not block.get('is_error', False)
+                    and entry.get('version') in MONITOR_VERSIONS):
+                self.monitor_tasks.setdefault(task, call)
+            return
         info = self.calls.pop(call, None)
         if info is None:
             return
@@ -247,7 +306,7 @@ class BackgroundBash:
             return
         fields = notification(text)
         if fields is None:
-            self.unbound = True
+            self.unparsed(text, version)
             return
         call, identity, status, note = fields
         task = self.tasks.get(call)
@@ -257,6 +316,25 @@ class BackgroundBash:
             self.early.setdefault(call, []).append((identity, status, note, at, version, carrier))
             return
         self.notice(task, identity, status, note, at, version, carrier)
+
+    def unparsed(self, text, version):
+        """A notice the Bash reading cannot parse holds only itself, never the record's tool state.
+
+        The Monitor tool's measured event notice, bound to a Monitor call by its tool-use-id or its task id, is that
+        tool's own and no Bash evidence. Any other, an Agent's, a SendMessage's, a Workflow's or one not measured,
+        ends nothing: a tracked Bash task it names by either identity becomes unknown, and one it does not name is
+        unchanged, so an unread notice can never end a Bash task, only leave it pending or unknown.
+        """
+        event = monitor_event(text) if version in MONITOR_VERSIONS else None
+        if event is not None:
+            call, task, _ = event
+            owner = self.monitor_tasks.get(task)
+            if call in self.monitor_calls and owner in (None, call) or call is None and owner is not None:
+                return  # the Monitor's own notice
+        for identity in identities(text):
+            target = identity if identity in self.tasks else self.task_calls.get(identity)
+            if target is not None:
+                self.tasks[target].phase, self.tasks[target].invalid = 'unknown', True
 
     def notice(self, task, identity, status, note, at, version, carrier):
         resumed = (status == 'stopped' and note in RESUME_NOTES
