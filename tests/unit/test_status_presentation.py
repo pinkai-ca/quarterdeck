@@ -204,14 +204,20 @@ def test_pending_accounting_uses_independent_alarm_reader_then_enables_cache(tmp
     start = accounting_slices.Driver.start
     def paused(driver, service):
         start(driver, service)
-        # Pause only our child, before its first job can be consumed. The
-        # WUNTRACED acknowledgment makes this independent of runner speed.
+        # Pause the first job to prove unknown health, and the next routine job
+        # to prove a healthy cache does not depend on the driver staying idle.
+        # WUNTRACED makes both states independent of scheduling speed.
         os.kill(driver.process.pid, signal.SIGSTOP)
         assert os.WIFSTOPPED(os.waitpid(driver.process.pid, os.WUNTRACED)[1])
     monkeypatch.setattr(accounting_slices.Driver, 'start', paused)
     monkeypatch.setattr(accounting_slices, 'BUDGET', 0.03)
     try:
-        svc.tick()
+        def first_job_started():
+            svc.tick()
+            driver = getattr(svc, 'account_driver', None)
+            return driver is not None and driver.process is not None
+        assert wait_for(first_job_started, seconds=60)
+        first_job = svc.account_driver.job
         assert svc.account_driver.active and not svc.accounting_health.checked
         assert presentation.cached_line(ship.folder) is None
         assert accounting_health.UNKNOWN in presentation.command_line(
@@ -227,12 +233,16 @@ def test_pending_accounting_uses_independent_alarm_reader_then_enables_cache(tmp
             assert presentation.command_line(['--ship', str(ship.folder), 'status', '--line']) == facts.line()
             assert 'worker needs a human' in facts.line() and accounting_health.UNKNOWN in facts.line()
         os.kill(svc.account_driver.process.pid, signal.SIGCONT)
-        monkeypatch.setattr(accounting_slices.Driver, 'start', start)
         def ready():
             svc.tick()
+            if svc.account_driver.job != first_job + 1:
+                return None
             return presentation.cached_line(ship.folder)
         assert wait_for(ready, seconds=60).startswith('service ok')
-        assert svc.accounting_health.checked and not svc.account_driver.active
+        events = [json.loads(line) for line in svc.log_path.read_text().splitlines()]
+        assert any(row['event'] == 'accounting-job-end' and row['job'] == first_job for row in events)
+        assert svc.accounting_health.checked
+        assert svc.account_driver.active and svc.account_driver.job == first_job + 1
     finally:
         if driver := getattr(svc, 'account_driver', None):
             if driver.process is not None:
