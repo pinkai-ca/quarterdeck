@@ -205,7 +205,7 @@ class Service:
 
     def _tick_steps(self):
         # Operational duties keep their order and never wait behind the slice.
-        for step in (self.server_recovery, self.reconcile, self.groups, self.cascades, self.fleet_post, self.inboxes, self.recoveries, self.refusals, self.answers, self.looks, self.deliveries, self.follow, self.requests, self.compactions, self.person_quiet, self.fresh_after_order,
+        for step in (self.server_recovery, self.reconcile, self.file_drops, self.groups, self.cascades, self.fleet_post, self.inboxes, self.recoveries, self.refusals, self.answers, self.looks, self.deliveries, self.follow, self.requests, self.compactions, self.person_quiet, self.fresh_after_order,
                      self.rebrief, self.push_reminders, self.credentials, self.authentications, self.model_differences, self.failover, self.account, self.refresh_usage, self.pool_forecasts, self.retire_post):
             self.heartbeat()  # before every step: a slow delivery or usage read reads as busy, never as dead
             try:
@@ -604,6 +604,11 @@ class Service:
                     post.render_inbox(self.runtime, self.store, name)
             except ShipError as error:
                 self.log("error", step="inbox", seat=name, error=str(error))
+
+    def file_drops(self) -> None:
+        """File each seat's drop. The service sets the sender from the folder; a refusal is held and logged once."""
+        for folder, reason in post.file_drops(self.store, self.ship):
+            self.log("drop-held", folder=folder, reason=reason)
 
     def groups(self) -> None:
         """Recover fixed group copies and publish one all-filed or failure notice."""

@@ -50,9 +50,9 @@ def test_up_starts_the_service_and_the_service_delivers(ship: shipmod.Ship, tmux
     assert "service started · pid" in out and service.alive(ship.runtime)
     assert "service ok" in qd(capsys, "status").splitlines()[0]
     proof = qd(capsys, "post", "order", "--to", "captain", "--subject", "Stars", "Count the stars.\n$ echo counted")
-    assert proof.endswith("· stored · the service types it into captain's pane")
+    assert proof.endswith("· filed by the service · the service types it into captain's pane")
     store = post.Store(ship.runtime)
-    message = store.all()[0]
+    message = wait_for(lambda: store.all()[0] if store.all() else None, seconds=15)
     assert message.sender == "operator"
     attempts = post.Attempts(ship.runtime)
     done = wait_for(lambda: [a for a in attempts.for_message(message.id) if a.result], seconds=15)

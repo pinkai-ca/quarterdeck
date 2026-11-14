@@ -54,12 +54,19 @@ def test_a_jailed_seat_writes_its_workspace_posts_from_inside_and_cannot_see_the
                 f"$ echo inside > {workspace}/ok.txt\n"
                 f"$ cat {secret} && echo secret-readable || echo secret-hidden\n"
                 f"$ touch {marker}; echo touched=$?\n"
+                "$ qd post ack --re {this} claimed\n"
+                "$ qd post order --to captain note from the jail\n"
                 "$ qd post report --re {this} jail proven")
         message = store.new("order", "desk", "worker-1", body, subject="Jail")
         delivery = Door(seat).deliver(post.typed([message]))
         assert delivery.result == "delivered", delivery.detail
-        report = wait_for(lambda: next((m for m in store.all() if m.kind == "report" and m.re == message.id), None), 30)
+        def filed():
+            post.file_drops(store)
+            return next((m for m in store.all() if m.kind == "report" and m.re == message.id), None)
+        report = wait_for(filed, 30)
         assert report.sender == "worker-1" and report.body == "jail proven", "qd post works from inside the jail"  # law: can-post
+        assert any(m.kind == "ack" and m.sender == "worker-1" and m.re == message.id for m in store.all())
+        assert any(m.kind == "order" and m.sender == "worker-1" and m.body == "note from the jail" for m in store.all())
         assert (workspace / "ok.txt").read_text().strip() == "inside", "the workspace is writable"
         assert not marker.exists(), "a write into the operator's home landed in the jail's empty one, not on the machine"
         screen = tmux.capture(seat.pane().id, history=200)
@@ -93,7 +100,7 @@ def test_nested_synthetic_home_stays_hidden_while_allowed_mounts_work(tmp_path):
     probe = '''
 import json, sys
 from pathlib import Path
-home, workspace, own, other, ship, post = map(Path, sys.argv[1:])
+home, workspace, own, other, ship, post, drop = map(Path, sys.argv[1:])
 def write(path):
     try:
         path.write_text('synthetic')
@@ -103,16 +110,120 @@ def write(path):
 print(json.dumps(dict(operator_read=(home/'operator-marker').exists(),
                       other_read=(other/'other-marker').exists(),
                       workspace=write(workspace/'written'), own=write(own/'written'),
-                      post=write(post/'written'), ship=write(ship/'written'),
+                      post=write(post/'written'), drop=write(drop/'written'), ship=write(ship/'written'),
                       hidden_home=write(home/'escape-marker'))))
 '''
+    drop = ship.runtime/'post'/'drop'/'worker'
     result = subprocess.run(sandbox.command(jail, ['/usr/bin/python3', '-c', probe, *map(str, (
-        home, workspace, own, other, folder, ship.runtime/'post'))]), capture_output=True, text=True, check=True)
+        home, workspace, own, other, folder, ship.runtime/'post', drop))]), capture_output=True, text=True, check=True)
     values = json.loads(result.stdout)
     assert not values['operator_read'] and not values['other_read']
-    assert values['workspace'] and values['own'] and values['post'] and not values['ship']
+    assert values['workspace'] and values['own'] and values['drop'] and not values['post'] and not values['ship']
     assert not (home/'escape-marker').exists(), 'the writable empty home must never reach the host home'
-    assert (workspace/'written').exists() and (own/'written').exists() and (ship.runtime/'post'/'written').exists()
+    assert (workspace/'written').exists() and (own/'written').exists() and (drop/'written').exists()
+    assert not (ship.runtime/'post'/'written').exists()
+
+
+def test_a_jailed_seat_cannot_forge_a_sender_and_its_own_drop_still_files(drydock: Path, tmp_path: Path):
+    """The five forgery variants fail from inside real bwrap. The seat's own drop still files."""
+    import json
+    import subprocess
+
+    workspace = tmp_path / "forge-work"
+    workspace.mkdir()
+    ship = shipmod.load(drydock)
+    shipmod.fence(ship)
+    (ship.runtime / "check").mkdir(parents=True, exist_ok=True)
+    store = post.Store(ship.runtime)
+    victim = store.new("order", "captain", "desk", "VICTIM")
+    victim_bytes = (store.dir / f"{victim.id}.json").read_bytes()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("UNTOUCHED")
+    good = store.prepare("order", "worker-1", "captain", "from the jail")
+    (workspace / "good.json").write_text(good.to_json())
+    own = ship.runtime / "seats" / "worker-1"
+    program_home = own / "home"
+    program_home.mkdir(parents=True, exist_ok=True)
+    jail = sandbox.plan(ship, "worker-1", own, program_home, workspace, "/usr/bin/python3", "/usr/bin", home=Path.home())
+    drop = ship.runtime / "post" / "drop" / "worker-1"
+    probe = r"""
+import json, os, sys
+from pathlib import Path
+workspace, post_dir, drop, store, check, other, outside = map(Path, sys.argv[1:8])
+good_name, victim = sys.argv[8], sys.argv[9]
+def write(path, text="forged"):
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        return True
+    except OSError:
+        return False
+(workspace / "swap.json").write_text("REPLACED")
+def replace(path):
+    try:
+        os.replace(workspace / "swap.json", path)
+        return True
+    except OSError:
+        return False
+copied = False
+try:
+    (drop / good_name).write_bytes((workspace / "good.json").read_bytes())
+    copied = True
+except OSError:
+    copied = False
+def message(mid, kind, sender, body, re=None):
+    return json.dumps({"id": mid, "kind": kind, "from": sender, "to": "desk",
+                       "at": "2026-11-14T03:14:00+00:00", "body": body,
+                       "re": re, "subject": None, "due": None, "speed": None},
+                      indent=2, ensure_ascii=False) + "\n"
+foreign, mismatch = "ord-20261114-0314-captain-ab12", "ord-20261114-0314-captain-ab13"
+report, ack = "rep-20261114-0314-desk-ab14", "ack-20261114-0314-desk-ab15"
+values = dict(
+    store_new=write(store / "ord-20261114-0314-captain-ab99.json",
+                    message("ord-20261114-0314-captain-ab99", "order", "captain", "NEW")),
+    store_edit=write(store / (victim + ".json"), "EDITED-IN-PLACE"),
+    store_replace=replace(store / (victim + ".json")),
+    other_drop=write(other / "planted.json"),
+    admission=write(post_dir / "admission" / "planted"),
+    attempts=write(post_dir / "attempts" / "planted.json"),
+    inbox=write(post_dir / "inbox" / "desk.md"),
+    check=write(check / "worker-1.txt", "qd-check"),
+    good=copied,
+    foreign=write(drop / (foreign + ".json"), message(foreign, "order", "captain", "FOREIGN")),
+    mismatch=write(drop / (mismatch + ".json"), message(mismatch, "order", "worker-1", "MISMATCH")),
+    report=write(drop / (report + ".json"), message(report, "report", "desk", "CLOSED", victim)),
+    ack=write(drop / (ack + ".json"), message(ack, "ack", "desk", "claimed", victim)))
+link = drop / "linked.json"
+try:
+    link.symlink_to(outside)
+    values["link"] = link.is_symlink()
+except OSError:
+    values["link"] = False
+print(json.dumps(values))
+"""
+    result = subprocess.run(sandbox.command(jail, [
+        "/usr/bin/python3", "-c", probe, str(workspace), str(ship.runtime / "post"), str(drop), str(store.dir),
+        str(ship.runtime / "check"), str(ship.runtime / "post" / "drop" / "desk"), str(outside),
+        f"{good.id}.json", victim.id]), capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    values = json.loads(result.stdout)
+    refused = ("store_new", "store_edit", "store_replace", "other_drop", "admission", "attempts", "inbox")
+    assert not any(values[name] for name in refused), values
+    assert values["check"] and values["good"] and values["foreign"] and values["mismatch"]
+    assert values["report"] and values["ack"] and values["link"]
+    good_bytes = (drop / f"{good.id}.json").read_bytes()
+    fresh = post.file_drops(store)
+    assert (store.dir / f"{good.id}.json").read_bytes() == good_bytes
+    assert (store.dir / f"{victim.id}.json").read_bytes() == victim_bytes
+    assert store.is_open(victim) and store.closing_report(victim) is None
+    assert store.claimed("desk", post.now()) is None
+    assert outside.read_text() == "UNTOUCHED" and (drop / "linked.json").is_symlink()
+    assert (ship.runtime / "check" / "worker-1.txt").read_text() == "qd-check"
+    assert ("drop/worker-1", "from names another seat") in fresh
+    assert ("drop/worker-1", "not a regular file") in fresh
+    assert (drop / "ord-20261114-0314-captain-ab12.json").is_file()
+    assert (drop / "rep-20261114-0314-desk-ab14.json").is_file()
+    assert (drop / "ack-20261114-0314-desk-ab15.json").is_file()
 
 
 @pytest.mark.parametrize('cover', ['path-entry', 'install-prefix'])
@@ -270,7 +381,10 @@ def test_a_jailed_post_to_an_up_recipient_does_not_call_hidden_state_down(drydoc
             '$ qd post report --re {this} Synthetic jailed report', subject='Synthetic jailed post')
         sent = Door(worker).deliver(post.typed([message]))
         assert sent.result == 'delivered', sent
-        report = wait_for(lambda: svc.store.closing_report(message), 30)
+        def filed():
+            post.file_drops(svc.store)
+            return svc.store.closing_report(message)
+        report = wait_for(filed, 30)
         assert report.sender == worker.name and report.to == captain.name
         assert captain.is_up, 'recipient is actually up outside the sender jail'
         proof = svc.deliver(captain,[report])
@@ -278,7 +392,7 @@ def test_a_jailed_post_to_an_up_recipient_does_not_call_hidden_state_down(drydoc
         assert 'delivered:' in proof, proof
         assert svc.attempts.latest()[report.id] == 'delivered'
         assert captain.record() is not None
-        screen = wait_for(lambda: (text if '· stored ·' in (text := tmux.capture(worker.pane().id, history=200)) else None))
+        screen = wait_for(lambda: (text if '· filed by the service ·' in (text := tmux.capture(worker.pane().id, history=200)) else None))
         assert '⎿ recipient-runtime-hidden' in screen
         assert 'captain is down' not in screen, screen  # law: record-first
         assert 'recipient state is not visible here' in screen, screen

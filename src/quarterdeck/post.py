@@ -126,12 +126,22 @@ class Store:
 
     def _new_id(self, kind: str, sender: str, at: datetime) -> str:
         taken = {m.short for m in self.all()}
+        taken.update(_drop_shorts(self.dir.parent / "drop"))
         while True:
             candidate = f"{kind[:3]}-{at.strftime('%Y%m%d-%H%M')}-{sender}-{secrets.token_hex(2)}"
             if short_of(candidate) not in taken:
                 return candidate
 
     def write(self, message: Message) -> Path:
+        return self._admitted(message, message.to_json())
+
+    def publish_text(self, message: Message, text: str) -> Path:
+        """File a drop's exact text. Admission is taken here; the bytes are not rewritten."""
+        if Message.from_json(text) != message:
+            raise ShipError("drop bytes are not this message")
+        return self._admitted(message, text)
+
+    def _admitted(self, message: Message, text: str) -> Path:
         runtime = self.dir.parent.parent
         from .fleet_post import local_view
         viewed = local_view(runtime, message)
@@ -145,10 +155,14 @@ class Store:
             from . import compaction
             compaction.protect_closure(runtime, viewed)
             compaction.admitting(runtime, viewed)
-            return self._write(message)
+            return self._write_text(message, text)
 
     def _write(self, message: Message) -> Path:
         """Publish while the caller holds admission; fixed-intent recovery verifies first."""
+        return self._write_text(message, message.to_json())
+
+    def _write_text(self, message: Message, text: str) -> Path:
+        """Publish while the caller holds admission. A name already there is refused, link or not."""
         post_dir.ensure_directory(self.dir)
         if '@' in message.to:
             from .fleet_post import prepare_outbound
@@ -158,7 +172,9 @@ class Store:
         path = self.dir / f"{message.id}.json"
         if post_dir.exists(path):
             raise ShipError(f"{message.id} exists; messages are immutable")  # law: post-is-files
-        durable.replace_file(path, message.to_json())
+        durable.replace_file(path, text)
+        self._cache = None
+        self._cache_at = None
         return path
 
     def _loaded(self) -> tuple[list[Message], dict[str, list[Message]]]:
@@ -357,6 +373,304 @@ class Store:
             if claim and (closed is None or closed.at > before):
                 return claim.id
         return None
+
+
+# -- drop folders ------------------------------------------------------------------------
+
+# A seat writes a new message only here. The service files it and is the one that sets the sender.
+DROP_HOLD_REASONS = (
+    "from names another seat",
+    "not a regular file",
+    "id already stored",
+    "not a message",
+    "drop folder is not a directory",
+    "drop unreadable",
+)
+
+
+def drop_dir(runtime: Path, seat: str) -> Path:
+    if not seat or seat in {".", ".."} or "/" in seat or "\\" in seat:
+        raise ShipError(f"no drop folder for sender {seat!r}")
+    return runtime / "post" / "drop" / seat
+
+
+def id_sender(message_id: str) -> str | None:
+    """The seat named by ``ord-<date>-<time>-<seat>-<suffix>``, or None when the id has another shape.
+
+    The seat is everything between the minute and the four-hex suffix, so a name may contain hyphens.
+    """
+    parts = message_id.split("-")
+    if len(parts) < 5:
+        return None
+    kind, date, minute, suffix = parts[0], parts[1], parts[2], parts[-1]
+    sender = "-".join(parts[3:-1])
+    if kind not in {name[:3] for name in KINDS}:
+        return None
+    if len(date) != 8 or not date.isdigit() or len(minute) != 4 or not minute.isdigit():
+        return None
+    if len(suffix) != 4 or any(character not in "0123456789abcdef" for character in suffix):
+        return None
+    if not sender or sender in {".", ".."} or "/" in sender or "\\" in sender:
+        return None
+    return sender
+
+
+def write_drop(runtime: Path, message: Message) -> Path:
+    """The seat's write: one regular file in its own drop folder, returned before the service files it.
+
+    The bytes are the message's own JSON. The service copies them, or holds them (law: can-post).
+    The walk is the post folder's own: a link on the way is a hold, never followed.
+    """
+    folder = drop_dir(runtime, message.sender)
+    post_dir.ensure_directory(folder)
+    path = folder / f"{message.id}.json"
+    if _mode(path) is not None:
+        raise ShipError(f"{message.id} exists; messages are immutable")  # law: post-is-files
+    durable.replace_file(path, message.to_json())
+    return path
+
+
+def _mode(path: Path) -> int | None:
+    """The name's own mode, never following it; None when missing. A link on the way is a hold."""
+    return post_dir.mode(path)
+
+
+def _regular(path: Path) -> bool:
+    try:
+        found = _mode(path)
+    except (OSError, ShipError):
+        return False
+    return found is not None and stat.S_ISREG(found)
+
+
+def _read_regular(path: Path) -> str | None:
+    """The text of a regular file, or None when the name is missing, a link or not a regular file.
+
+    The post folder's no-follow read: a link is never read through, and a name swapped during
+    the read is refused.
+    """
+    try:
+        return post_dir.read_text(path)
+    except (OSError, ShipError):
+        return None
+
+
+def _drop_shorts(root: Path) -> set[str]:
+    """Short ids already sitting in drop folders, so a second post does not reuse one.
+
+    Nothing here raises for a link: a seat's planted link must not stop another writer's id.
+    """
+    found: set[str] = set()
+    try:
+        seats = post_dir.list_children(root)
+    except (OSError, ShipError):
+        return found
+    for name, mode in seats:
+        if not stat.S_ISDIR(mode):
+            continue
+        try:
+            files = post_dir.list_children(root / name)
+        except (OSError, ShipError):
+            continue
+        for file, kind in files:
+            if stat.S_ISREG(kind) and file.endswith(".json") and not file.endswith(".group.json"):
+                found.add(short_of(file[:-5]))
+    return found
+
+
+def _hold_dir(runtime: Path) -> Path:
+    return runtime / "post" / "drop-holds"
+
+
+def _hold_name(folder: str, reason: str) -> str:
+    return hashlib.sha256(f"{folder}\n{reason}".encode()).hexdigest()[:16]
+
+
+def drop_alarms(runtime: Path) -> list[str]:
+    """Status-line lines for drops the service refused. Each names the folder."""
+    folder = _hold_dir(runtime)
+    try:
+        children = post_dir.list_children(folder)
+    except FileNotFoundError:
+        return []
+    except (OSError, ShipError):
+        return ["post drop held: drop-holds"]
+    lines = []
+    for name, mode in sorted(children):
+        if not name.endswith(".json"):
+            continue
+        if not stat.S_ISREG(mode):
+            lines.append("post drop held: drop-holds")
+            continue
+        try:
+            data = json.loads(post_dir.read_text(folder / name))
+            if data.get("format") == 1 and data.get("reason") in DROP_HOLD_REASONS and isinstance(data.get("folder"), str):
+                lines.append(f"post drop held: {data['folder']}: {data['reason']}")
+                continue
+        except (OSError, ShipError, ValueError, TypeError, AttributeError):
+            pass
+        lines.append("post drop held: drop-holds")
+    return lines
+
+
+def _remember(runtime: Path, current: set[tuple[str, str]], fresh: list[tuple[str, str]], folder: str, reason: str) -> None:
+    current.add((folder, reason))
+    directory = _hold_dir(runtime)
+    post_dir.ensure_directory(directory)
+    path = directory / f"{_hold_name(folder, reason)}.json"
+    payload = json.dumps({"format": 1, "folder": folder, "reason": reason}) + "\n"
+    if _read_regular(path) == payload:
+        return
+    durable.replace_file(path, payload)
+    fresh.append((folder, reason))
+
+
+def _sweep_holds(runtime: Path, current: set[tuple[str, str]]) -> None:
+    folder = _hold_dir(runtime)
+    try:
+        children = post_dir.list_children(folder)
+    except (OSError, ShipError):
+        return
+    for name, mode in children:
+        if not name.endswith(".json") or not stat.S_ISREG(mode):
+            continue
+        try:
+            data = json.loads(post_dir.read_text(folder / name))
+            key = (data.get("folder"), data.get("reason"))
+        except (OSError, ShipError, ValueError, TypeError, AttributeError):
+            continue
+        if key not in current:
+            try:
+                post_dir.remove(folder / name)
+            except (OSError, ShipError):
+                pass
+
+
+def _same_stored(store: Store, message: Message, text: str) -> str | None:
+    """'same' when the store already has these exact bytes, 'differs' when the id is taken, None when free.
+
+    A link at the store name is 'differs': it is not read and not replaced.
+    """
+    path = store.dir / f"{message.id}.json"
+    found = _mode(path)
+    if found is None:
+        return None
+    if not stat.S_ISREG(found):
+        return "differs"
+    existing = _read_regular(path)
+    if existing is None:
+        return "differs"
+    return "same" if existing == text else "differs"
+
+
+def file_drops(store: Store, ship=None) -> list[tuple[str, str]]:
+    """File each seat's drops into the store. A refusal is held, named, and never deleted.
+
+    Returns the holds recorded for the first time this pass, so the service logs each once.
+    Group intents are published first, when the ship is known; a root that still has an
+    intent beside it is left for that pass. Every name is walked by the post folder's
+    no-follow helpers: a link in a drop is held as not a regular file, never followed.
+    """
+    runtime = store.dir.parent.parent
+    root = store.dir.parent / "drop"
+    current: set[tuple[str, str]] = set()
+    fresh: list[tuple[str, str]] = []
+
+    def hold(folder: str, reason: str) -> None:
+        _remember(runtime, current, fresh, folder, reason)
+
+    try:
+        found = _mode(root)
+    except (OSError, ShipError):
+        found = None
+        hold("drop", "drop unreadable")
+    if found is None:
+        _sweep_holds(runtime, current)
+        return fresh
+    if not stat.S_ISDIR(found):
+        hold("drop", "drop folder is not a directory")
+        _sweep_holds(runtime, current)
+        return fresh
+    if ship is not None:
+        from . import group_post
+        for folder, reason in group_post.file_staged(ship, store):
+            hold(folder, reason)
+    try:
+        seats = sorted(post_dir.list_children(root))
+    except (OSError, ShipError):
+        hold("drop", "drop unreadable")
+        return fresh
+    for name, mode in seats:
+        folder = f"drop/{name}"
+        if not stat.S_ISDIR(mode):
+            hold(folder, "drop folder is not a directory")
+            continue
+        try:
+            files = sorted(post_dir.list_children(root / name))
+        except (OSError, ShipError):
+            hold(folder, "drop unreadable")
+            continue
+        names = {file for file, _ in files}
+        for file, kind in files:
+            if file.endswith(".group.json"):
+                continue
+            path = root / name / file
+            if not stat.S_ISREG(kind):
+                hold(folder, "not a regular file")
+                continue
+            if f"{path.stem}.group.json" in names:
+                continue  # the group pass owns a root that still has its intent
+            try:
+                text = _read_regular(path)
+            except UnicodeDecodeError:
+                hold(folder, "not a message")
+                continue
+            if text is None:
+                hold(folder, "not a regular file")
+                continue
+            try:
+                message = Message.from_json(text)
+            except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+                hold(folder, "not a message")
+                continue
+            if message.id != path.stem or "/" in message.id:
+                hold(folder, "not a message")
+                continue
+            named = id_sender(message.id)
+            if named is None or message.id[:3] != message.kind[:3]:
+                hold(folder, "not a message")  # the id does not name its sender in today's form
+                continue
+            if named != name or message.sender != name:
+                hold(folder, "from names another seat")  # id, from and folder are one seat, or the drop is held
+                continue
+            try:
+                stored = _same_stored(store, message, text)
+            except (OSError, ShipError):
+                hold(folder, "drop unreadable")
+                continue
+            if stored == "same":
+                _remove_drop(path)
+                continue
+            if stored == "differs":
+                hold(folder, "id already stored")  # law: post-is-files
+                continue
+            try:
+                store.publish_text(message, text)
+            except (OSError, ShipError, ValueError, TypeError):
+                hold(folder, "not a message")
+                continue
+            _remove_drop(path)
+    _sweep_holds(runtime, current)
+    return fresh
+
+
+def _remove_drop(path: Path) -> None:
+    """Remove a filed drop; a name that is no longer a regular file is left for the next pass to hold."""
+    if _regular(path):
+        try:
+            post_dir.remove(path)
+        except (OSError, ShipError):
+            pass
 
 
 # -- the typed form ----------------------------------------------------------------------

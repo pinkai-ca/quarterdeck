@@ -69,7 +69,8 @@ def test_the_command_hides_the_home_binds_the_workspace_writable_and_the_ship_re
     runtime = ship_folder / "runtime"
     jail = sandbox.Jail(home=home, seat_home=runtime / "seats" / "w" / "home", seat_folder=runtime / "seats" / "w",
                         workspace=home / "dev" / "project", ship_folder=ship_folder, runtime=runtime,
-                        read_only=(home / ".local" / "bin", home / ".opencode"), writable=(runtime / "post", runtime / "check"))
+                        read_only=(home / ".local" / "bin", home / ".opencode"),
+                        writable=(runtime / "post" / "drop" / "w", runtime / "check"))
     args = sandbox.command(jail, ["pi", "--model", "m"])
     assert args[:12] == ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--size", str(sandbox.TMP_BYTES), "--tmpfs", "/tmp"]
     assert args[12:14] == ["--tmpfs", str(home)], "the operator's home is an empty tmpfs before anything under it is bound back"
@@ -77,9 +78,11 @@ def test_the_command_hides_the_home_binds_the_workspace_writable_and_the_ship_re
     text = " ".join(args)
     workspace, ship, seats, seat, post = (text.index(f"--bind {home / 'dev' / 'project'} "), text.index(f"--ro-bind {ship_folder} "),
                                          text.index(f"--tmpfs {runtime / 'seats'}"), text.index(f"--bind {runtime / 'seats' / 'w'} "),
-                                         text.index(f"--bind-try {runtime / 'post'} "))
+                                         text.index(f"--bind-try {runtime / 'post' / 'drop' / 'w'} "))
     assert workspace < ship < seats < seat, "a deeper mount comes later, so the ship folder is read-only inside the writable workspace and this seat is writable inside the hidden seats"
-    assert ship < post, "the post store is writable inside the read-only ship folder"
+    assert ship < post, "only the seat's drop folder is writable inside the read-only ship folder"
+    binds = [args[i + 1] for i, arg in enumerate(args[:-1]) if arg == "--bind-try"]
+    assert str(runtime / "post" / "drop" / "w") in binds and str(runtime / "post") not in binds
     hidden = text.index(f"--perms 0700 --tmpfs {runtime / 'tmux'}")
     assert ship < hidden, "the ship's own tmux server is hidden inside the read-only ship folder, by an empty private tmpfs"
     assert f"--ro-bind-try {home / '.local' / 'bin'} {home / '.local' / 'bin'}" in text and f"--ro-bind-try {home / '.opencode'} " in text
@@ -101,7 +104,7 @@ def test_plan_refuses_a_jail_that_jails_nothing_or_one_without_bubblewrap(tmp_pa
         sandbox.plan(ship, "w", ship.runtime / "seats" / "w", ship.runtime / "seats" / "w" / "home", ship.folder, "pi", path, home=home)
     jail = sandbox.plan(ship, "w", ship.runtime / "seats" / "w", ship.runtime / "seats" / "w" / "home", home / "work", "pi", path, home=home)
     assert jail.workspace == (home / "work").resolve() and jail.ship_folder == ship.folder and jail.seat_home == ship.runtime / "seats" / "w" / "home"
-    assert home / ".local" / "node" in jail.read_only and jail.writable == (ship.runtime / "post", ship.runtime / "check")
+    assert home / ".local" / "node" in jail.read_only and jail.writable == (ship.runtime / "post" / "drop" / "w", ship.runtime / "check")
 
 
 @pytest.mark.parametrize('location', ['parent', 'home', 'root', 'alias', 'parent-through-link'])

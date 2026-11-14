@@ -51,7 +51,7 @@ def test_unreadable_caller_launch_does_not_make_the_recipient_down(tmp_path, mon
 @pytest.mark.parametrize('caller', [False, True])
 @pytest.mark.parametrize('up,alive,expected', [
     (False,False,'recipient is down; carried as its first message at qd up'),
-    (True,False,'service down; qd up restarts it, then it is typed'),
+    (True,False,'service down; the drop waits, and qd up files it, then it is typed'),
     (True,True,"the service types it into recipient's pane"),
 ])
 def test_known_unrestricted_down_and_service_routes_remain_unchanged(tmp_path,monkeypatch,caller,up,alive,expected):
@@ -108,11 +108,13 @@ def test_real_post_with_malformed_caller_launch_stores_once_without_recipient_re
         code = cli.main(['--ship', str(drydock), 'post', 'report', '--to', recipient,
                          'Synthetic malformed caller evidence'])
     finally:
-        messages = post.Store(ship.runtime).all()
+        store = post.Store(ship.runtime)
+        post.file_drops(store)
+        messages = store.all()
         assert len(messages) == 1 and messages[0].sender == sender.name and messages[0].to == recipient
         assert path.read_bytes() == original, 'proof generation must never repair launch data'
     output = capsys.readouterr().out
-    assert code == 0 and '· stored ·' in output
+    assert code == 0 and '· filed by the service ·' in output
     assert ('watch state is not visible here' if recipient == 'desk' else 'recipient state is not visible here') in output
     assert 'is down' not in output and 'no watch armed' not in output
 
@@ -135,9 +137,11 @@ def test_real_post_with_malformed_recipient_launch_keeps_storage_and_unknown_sta
         code = cli.main(['--ship', str(drydock), 'post', 'report', '--to', recipient.name,
                          'Synthetic malformed recipient evidence'])
     finally:
-        messages = post.Store(ship.runtime).all()
+        store = post.Store(ship.runtime)
+        post.file_drops(store)
+        messages = store.all()
         assert len(messages) == 1 and messages[0].to == recipient.name
         assert path.read_bytes() == original
     output = capsys.readouterr().out
-    assert code == 0 and '· stored ·' in output and 'recipient state is unknown here' in output
+    assert code == 0 and '· filed by the service ·' in output and 'recipient state is unknown here' in output
     assert 'is down' not in output

@@ -5,7 +5,8 @@ runs in a jail unless the ship says ``sandbox = false``, and any seat does with 
 jail is one ``bwrap`` command around the program's own: the root read-only; a private ``/tmp``; the
 operator's home replaced by an empty one, with only the folders the program and ``qd`` resolve through
 bound back read-only; the workspace and the seat's own folder writable; the ship folder read-only with
-the other seats' folders hidden; and the post store writable, so ``qd post`` works from inside. The
+the other seats' folders hidden; and only that seat's drop folder writable, the rest of the post
+store read-only, so ``qd post`` writes a drop and the service files it. The
 program's home is the seat home. The operator's files, sign-ins and the other seats' records are not
 merely out of bounds but absent, so nothing the model does inside can read or change them.
 """
@@ -100,12 +101,13 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
     programs = (program, *FRAMEWORK_TOOLS)
     folders = [f for f in (*program_folders(programs, path, home), *hidden_folders(programs, path, home))
                if f != workspace and workspace not in f.parents and ship.folder not in f.parents and f != ship.folder]
-    post_dir.ensure_directory(ship.runtime / "post")  # bound writable, so it must exist before the launch, first post or not
+    drop = ship.runtime / "post" / "drop" / seat_name
+    post_dir.ensure_directory(drop)  # the one writable post folder, so it must exist before the launch
     (ship.runtime / "tmux").mkdir(mode=0o700, exist_ok=True)  # hidden inside: the mount needs its place in the read-only ship
     from .fleet import declaration_files
     declarations = tuple(file for file in declaration_files(ship) if file.parent != ship.folder)
     jail = Jail(home, seat_home, seat_folder, workspace, ship.folder, ship.runtime, tuple(folders),
-                (ship.runtime / "post", ship.runtime / "check"), git_identity(workspace), declarations)
+                (drop, ship.runtime / "check"), git_identity(workspace), declarations)
     if covered := covering(jail):
         what, folder = covered
         raise ShipError(f"{seat_name}: sandboxed with the operator home at {home}, and {what} {folder} is that home or "

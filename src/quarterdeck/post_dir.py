@@ -246,6 +246,31 @@ def exists(path) -> bool:
     return _exists_nofollow(path)
 
 
+def mode(path) -> int | None:
+    """The final name's mode, without following it; None when missing.
+
+    A link at the final name is reported as a link, not held, so a caller can hold it by
+    its own reason. A link on the way to it is a hold, as everywhere under runtime/post.
+    """
+    path = Path(path)
+    if not under_post(path):
+        try:
+            return path.lstat().st_mode
+        except FileNotFoundError:
+            return None
+    try:
+        parent, name = _open_parent(path, create=False)
+    except FileNotFoundError:
+        return None
+    try:
+        try:
+            return os.stat(name, dir_fd=parent, follow_symlinks=False).st_mode
+        except FileNotFoundError:
+            return None
+    finally:
+        os.close(parent)
+
+
 def _json_under(directory):
     """*.json names in a runtime/post directory, without following a link to reach it."""
     return json_paths(directory)

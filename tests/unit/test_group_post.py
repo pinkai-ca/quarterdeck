@@ -250,12 +250,14 @@ def test_group_cli_and_lead_forward_use_the_same_original_request(forum, monkeyp
     monkeypatch.setattr(cli, 'delivery_note', lambda ship, to: 'synthetic delivery pending')
     monkeypatch.delenv('QD_SEAT', raising=False)
     args = cli.build_parser().parse_args(['post', 'order', '--to', 'reviewers', 'Synthetic brief'])
-    assert '4 body-identical copies stored' in cli.cmd_post(args)
+    assert '4 body-identical copies' in cli.cmd_post(args)
     store = post.Store(forum.runtime)
+    post.file_drops(store, forum)
     root, = store.open_for('lead')
     monkeypatch.setenv('QD_SEAT', 'lead')
     args = cli.build_parser().parse_args(['post', 'order', '--to', 'reviewers', '--re', root.id, root.body])
     assert root.id in cli.cmd_post(args)
+    post.file_drops(store, forum)
     assert len(store.all()) == 5
 
 
@@ -270,6 +272,7 @@ def test_group_body_file_keeps_original_whitespace(forum, monkeypatch, tmp_path)
     args = cli.build_parser().parse_args(['post', 'order', '--to', 'reviewers', '--re', root.id,
                                          '--body-file', str(body_file)])
     cli.cmd_post(args)
+    post.file_drops(store, forum)
     copies = [m for m in store.all() if m.kind == 'order' and m.re == root.id]
     assert len(copies) == 4 and all(m.body == root.body for m in copies)
     # The existing individual-seat command still performs its usual normalization.
@@ -286,7 +289,9 @@ def test_group_body_file_preserves_crlf_bytes(forum, monkeypatch, tmp_path):
     body_file.write_bytes(original)
     args = cli.build_parser().parse_args(['post', 'order', '--to', 'reviewers', '--body-file', str(body_file)])
     cli.cmd_post(args)
-    assert all(m.body.encode() == original for m in post.Store(forum.runtime).all())
+    store = post.Store(forum.runtime)
+    post.file_drops(store, forum)
+    assert all(m.body.encode() == original for m in store.all())
 
 
 def test_group_stdin_preserves_crlf_before_universal_newline_decoding(forum, monkeypatch):
@@ -298,7 +303,9 @@ def test_group_stdin_preserves_crlf_before_universal_newline_decoding(forum, mon
     monkeypatch.setattr(cli.sys, 'stdin', stream)
     args = cli.build_parser().parse_args(['post', 'order', '--to', 'reviewers', '-'])
     cli.cmd_post(args)
-    assert all(m.body.encode() == original for m in post.Store(forum.runtime).all())
+    store = post.Store(forum.runtime)
+    post.file_drops(store, forum)
+    assert all(m.body.encode() == original for m in store.all())
 
 
 @pytest.mark.parametrize('raw', [b'  \t\r\n ', b'bad\xfftext'])

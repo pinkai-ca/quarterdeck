@@ -130,6 +130,170 @@ def _fanout(store: post.Store, data: dict) -> None:
         _publish(store, _message(item))
 
 
+def _copies(store: post.Store, group, root: post.Message) -> list[post.Message]:
+    """Child orders from the lead, one per member, in the root's own words."""
+    copies = []
+    taken = {root.short}
+    for member in group.members:
+        while True:
+            copy = store.prepare('order', group.lead, member, root.body,
+                                 subject=root.subject, due=root.due, speed=root.speed)
+            if copy.short not in taken:
+                break
+        taken.add(copy.short)
+        copies.append(post.Message(copy.id, copy.kind, copy.sender, copy.to, copy.at,
+                                   copy.body, root.id, copy.subject, copy.due, copy.speed))
+    return copies
+
+
+def stage(ship: Ship, store: post.Store, group_name: str, sender: str, body: str,
+          *, re: str | None = None, subject: str | None = None,
+          due: str | None = None, speed: str | None = None) -> tuple[post.Message, int]:
+    """A seat's group order: the root in its drop folder, and an intent beside it. Nothing is stored yet.
+
+    A forward leaves the existing root where it is and writes only the intent. The service files both.
+    """
+    group = ship.groups[group_name]
+    if re is not None:
+        root = store.get(re)
+        if (sender != group.lead or root.to != group.lead or root.kind != 'order' or root.body != body):
+            raise ShipError('group --re must name an identical order to this lead, forwarded by the lead')
+        if any(value is not None and value != getattr(root, key)
+               for key, value in (('subject', subject), ('due', due), ('speed', speed))):
+            raise ShipError('group --re cannot change the original order fields')
+        if not store.is_open(root):
+            raise ShipError('cannot start a group review of a closed order')
+    else:
+        root = store.prepare('order', sender, group.lead, body, subject=subject, due=due, speed=speed)
+        post.write_drop(ship.runtime, root)
+    folder = post.drop_dir(ship.runtime, sender)
+    post_dir.ensure_directory(folder)
+    intent = folder / f'{root.id}.group.json'
+    if post._mode(intent) is not None:
+        raise ShipError(f'{root.id} already has a group intent; retained')
+    durable.replace_file(intent, json.dumps({'format': 1, 'group': group_name, 'root': root.id}) + '\n')
+    return root, len(group.members)
+
+
+def file_staged(ship: Ship, store: post.Store) -> list[tuple[str, str]]:
+    """Publish staged group intents from the service. A refusal is returned and the intent stays.
+
+    The walk is the post folder's no-follow walk; the ordinary pass names a seat folder that is not a directory.
+    """
+    import stat
+
+    holds: list[tuple[str, str]] = []
+    root_dir = ship.runtime / 'post' / 'drop'
+    try:
+        seats = post_dir.list_children(root_dir)
+    except FileNotFoundError:
+        return holds
+    except (OSError, ShipError):
+        return [('drop', 'drop unreadable')]
+    with post.admission(ship.runtime, '@groups'):
+        for name, mode in sorted(seats):
+            folder_name = f'drop/{name}'
+            if not stat.S_ISDIR(mode):
+                continue
+            try:
+                files = sorted(file for file, _ in post_dir.list_children(root_dir / name)
+                               if file.endswith('.group.json'))
+            except (OSError, ShipError):
+                holds.append((folder_name, 'drop unreadable'))
+                continue
+            for file in files:
+                reason = _file_intent(ship, store, name, root_dir / name / file)
+                if reason:
+                    holds.append((folder_name, reason))
+    return holds
+
+
+def _file_intent(ship: Ship, store: post.Store, seat: str, path: Path) -> str | None:
+    """File one intent. Return a hold reason, or None when it is published and removed."""
+    if not post._regular(path):
+        return 'not a regular file'
+    text = post._read_regular(path)
+    if text is None:
+        return 'not a regular file'
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        return 'not a message'
+    if not isinstance(data, dict) or set(data) != {'format', 'group', 'root'}:
+        return 'not a message'
+    if data.get('format') != 1 or not isinstance(data.get('group'), str) or not isinstance(data.get('root'), str):
+        return 'not a message'
+    if data['root'] != path.name[: -len('.group.json')] or '/' in data['root']:
+        return 'not a message'
+    if data['group'] not in ship.groups:
+        return 'not a message'
+    group = ship.groups[data['group']]
+    drop_root = path.with_name(f"{data['root']}.json")
+    stored = store.dir / f"{data['root']}.json"
+    message, root_text = _staged_root(store, drop_root, stored, data['root'])
+    if message is None:
+        return 'not a message'
+    if root_text is not None:
+        named = post.id_sender(message.id)
+        if named is None or message.id[:3] != message.kind[:3]:
+            return 'not a message'
+        if named != message.sender:
+            return 'from names another seat'  # a staged root's id names its sender, as an ordinary drop does
+    if message.kind != 'order' or message.to != group.lead:
+        return 'not a message'
+    forward = seat == group.lead and message.sender != seat
+    if message.sender != seat and not forward:
+        return 'from names another seat'
+    if forward and (root_text is not None or not post._regular(stored) or not store.is_open(message)):
+        return 'not a message'
+    journal = _folder(ship) / f'{message.id}.json'
+    try:
+        if post_dir.exists(journal):
+            saved = _load(journal)
+            if saved['group'] != data['group'] or _message(saved['root']) != message:
+                return 'id already stored'
+            _fanout(store, saved)
+        else:
+            if root_text is not None and not post._regular(stored):
+                store.publish_text(message, root_text)
+            elif root_text is not None and post._read_regular(stored) != root_text:
+                return 'id already stored'
+            elif not post._regular(stored):
+                store.write(message)
+            copies = _copies(store, group, message)
+            payload = dict(format=1, group=data['group'], lead=group.lead,
+                           root=_encoded(message), copies=[_encoded(item) for item in copies],
+                           notice=None, failed={})
+            _save(journal, payload)
+            _fanout(store, payload)
+    except (OSError, ShipError, ValueError, TypeError, KeyError):
+        return 'not a message'
+    post._remove_drop(path)
+    post._remove_drop(drop_root)
+    return None
+
+
+def _staged_root(store: post.Store, drop_root: Path, stored: Path, root_id: str):
+    """The root message and, when it is still a drop, the exact bytes to file."""
+    if post._regular(drop_root):
+        text = post._read_regular(drop_root)
+        if text is None:
+            return None, None
+        try:
+            message = post.Message.from_json(text)
+        except (ValueError, KeyError, TypeError):
+            return None, None
+        if message.id != root_id:
+            return None, None
+        return message, text
+    if not post._regular(stored):
+        return None, None
+    try:
+        return store.get(root_id), None
+    except ShipError:
+        return None, None
+
+
 def advance(ship: Ship, store: post.Store, failures=None, *, outcomes=None) -> list[tuple[str, str]]:
     """Recover partial fanouts and finish groups, from local evidence only.
 

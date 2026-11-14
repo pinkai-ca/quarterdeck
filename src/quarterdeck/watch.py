@@ -511,6 +511,7 @@ class Facts:
     held: list[str] = field(default_factory=list)
     turn_errors: list[str] = field(default_factory=list)
     group_held: list[str] = field(default_factory=list)
+    drop_held: list[str] = field(default_factory=list)  # a refused post drop: the folder is named
     cascade_held: list[str] = field(default_factory=list)
     structure_waiting: list[str] = field(default_factory=list)
     manual_fresh: list[str] = field(default_factory=list)  # no systems recipient: retain names on overflow
@@ -556,6 +557,7 @@ class Facts:
         parts += self.post_waits
         parts += self.pool_forecasts
         parts += self.group_held
+        parts += self.drop_held
         parts += self.cascade_held
         parts += self.structure_waiting
         parts += self.check_failed
@@ -916,6 +918,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         pane_obstructions=pane_obstructions,
         post_held=list(post_held),
         group_held=group_post.holds(ship.runtime),
+        drop_held=post.drop_alarms(ship.runtime),
         cascade_held=cascade_runtime.holds(ship.runtime),
         structure_waiting=structure_outcome.waits(ship, selected),
         accounting=accounting_reading(ship.runtime, state),

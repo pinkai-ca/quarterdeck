@@ -83,10 +83,12 @@ def test_an_ack_needs_no_body_and_wakes_nobody(drydock: Path, capsys, monkeypatc
     monkeypatch.delenv("QD_SEAT", raising=False)  # run from inside a seat, this shell would post as that seat and refuse --from
     code, out, _ = run(capsys, "post", "order", "--to", "worker-1", "build it")
     short = out.split(" ")[0]
+    store, attempts = post.Store(drydock / "runtime"), post.Attempts(drydock / "runtime")
+    post.file_drops(store)  # the ack names an order the service has already filed
     code, out, err = run(capsys, "post", "ack", "--from", "worker-1", "--re", short)
     assert code == 0, err
     assert out.startswith("ack-") and out.strip().endswith(f"claims {short} for the ledger; an ack wakes nobody")
-    store, attempts = post.Store(drydock / "runtime"), post.Attempts(drydock / "runtime")
+    post.file_drops(store)
     ack = store.all()[-1]
     assert ack.kind == "ack" and ack.body == "claimed" and ack.to == "operator"
     assert attempts.undelivered(store, "operator") == [], "an ack is never delivered"  # law: open-until-closed
@@ -105,15 +107,19 @@ def test_a_seat_posts_as_itself_and_only_a_shell_that_is_no_seat_may_name_a_send
     monkeypatch.delenv("QD_TMUX_SOCKET", raising=False)  # no server: the test ship's own, never started
     monkeypatch.setenv("QD_SHIP", str(drydock))
     monkeypatch.delenv("QD_SEAT", raising=False)
+    store = post.Store(drydock / "runtime")
     code, out, _ = run(capsys, "post", "order", "--to", "worker-1", "from the operator's own shell")
-    assert code == 0 and post.Store(drydock / "runtime").all()[-1].sender == "operator"
+    post.file_drops(store)
+    assert code == 0 and store.all()[-1].sender == "operator"
     code, out, _ = run(capsys, "post", "order", "--from", "desk", "--to", "worker-1", "the desk, from a shell that is no seat")
-    assert code == 0 and post.Store(drydock / "runtime").all()[-1].sender == "desk"
+    post.file_drops(store)
+    assert code == 0 and store.all()[-1].sender == "desk"
     monkeypatch.setenv("QD_SEAT", "worker-1")
     code, out, _ = run(capsys, "post", "report", "--to", "captain", "signed by the seat itself")
-    assert code == 0 and post.Store(drydock / "runtime").all()[-1].sender == "worker-1"
+    post.file_drops(store)
+    assert code == 0 and store.all()[-1].sender == "worker-1"
     code, out, err = run(capsys, "post", "report", "--from", "captain", "--to", "desk", "a seat speaking for another")
     assert code == 2 and "this shell is seat worker-1, which posts as itself" in err
-    assert post.Store(drydock / "runtime").all()[-1].sender == "worker-1", "nothing was stored"
+    assert store.all()[-1].sender == "worker-1", "nothing was stored"
     code, out, _ = run(capsys, "post", "report", "--from", "worker-1", "--to", "captain", "naming itself is allowed")
     assert code == 0

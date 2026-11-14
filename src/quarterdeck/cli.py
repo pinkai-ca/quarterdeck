@@ -760,18 +760,19 @@ def cmd_post(args: argparse.Namespace) -> str:
         if not body.strip():
             raise ShipError('an empty group order: give the brief, --body-file, or - for stdin')
         from . import group_post
-        root, copies = group_post.submit(ship, store, to, sender, body, re=args.re,
-                                         subject=args.subject, due=args.due, speed=args.speed)
-        return (f'{root.short} to group {to} · request to {root.to} · '
-                f'{len(copies)} body-identical copies stored · common id {root.id} · '
+        root, count = group_post.stage(ship, store, to, sender, body, re=args.re,
+                                        subject=args.subject, due=args.due, speed=args.speed)
+        return (f'{root.short} to group {to} · filed by the service · '
+                f'{count} body-identical copies · common id {root.id} · '
                 f'{delivery_note(ship, root.to)}')
     if to not in ship.seats and to not in getattr(ship, 'forward', {}) and to not in (ship.operator.lower(), post.SHIP):
         raise ShipError(f"no seat {to!r} to address; declared: {', '.join(ship.seats)}, "
                         f"the operator {ship.operator.lower()}, or {post.SHIP} for the ship's own notices")
-    message = store.new(args.kind, sender, to, body, re=args.re, subject=args.subject, due=args.due, speed=args.speed)
+    message = store.prepare(args.kind, sender, to, body, re=args.re, subject=args.subject, due=args.due, speed=args.speed)
+    post.write_drop(ship.runtime, message)  # law: can-post
     if message.kind == "ack":
-        return f"{message.short} to {to} · stored · claims {post.short_of(message.re) if message.re else 'nothing'} for the ledger; an ack wakes nobody"
-    return f"{message.short} to {to} · stored · {delivery_note(ship, to)}"
+        return f"{message.short} to {to} · filed by the service · claims {post.short_of(message.re) if message.re else 'nothing'} for the ledger; an ack wakes nobody"
+    return f"{message.short} to {to} · filed by the service · {delivery_note(ship, to)}"
 
 
 def read_body(args: argparse.Namespace, *, preserve: bool = False) -> str:
@@ -834,7 +835,7 @@ def delivery_note(ship: shipmod.Ship, to: str) -> str:
     if not up:
         return f"{to} is down; carried as its first message at qd up"
     if not service.alive(ship.runtime):
-        return "service down; qd up restarts it, then it is typed"
+        return "service down; the drop waits, and qd up files it, then it is typed"
     return f"the service types it into {to}'s pane"
 
 

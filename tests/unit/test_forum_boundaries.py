@@ -556,14 +556,17 @@ def test_a_refused_copy_is_carried_as_a_notice_without_its_body(world):
 
 
 def test_a_jailed_reviewer_still_reaches_the_shared_post_folder_but_no_peer_seat_folder(world):
-    # This is why independence is instruction-only: the store, inboxes and group journal are bound writable.
+    # The shared post stays readable through the ship. Only this seat's drop folder is writable.
     runtime = world.ship.runtime
     folder = runtime / 'seats' / 'reviewer-1'
+    drop = runtime / 'post' / 'drop' / 'reviewer-1'
     jail = sandbox.Jail(Path('/home/synthetic'), folder / 'home', folder, world.ship.workspace,
-                        world.ship.folder, runtime, (), (runtime / 'post', runtime / 'check'))
+                        world.ship.folder, runtime, (), (drop, runtime / 'check'))
     args = sandbox.command(jail, ['fake'])
     triples = [tuple(args[i:i + 3]) for i in range(len(args) - 2)]
-    assert ('--bind-try', str(runtime / 'post'), str(runtime / 'post')) in triples
+    assert ('--bind-try', str(drop), str(drop)) in triples
+    assert ('--bind-try', str(runtime / 'post'), str(runtime / 'post')) not in triples
+    assert ('--ro-bind', str(world.ship.folder), str(world.ship.folder)) in triples
     assert ('--tmpfs', str(runtime / 'seats')) in [tuple(args[i:i + 2]) for i in range(len(args) - 1)]
     assert ('--bind', str(folder), str(folder)) in triples
     assert not any(str(runtime / 'seats' / peer) in args for peer in ('lead', *MEMBERS[1:]))
