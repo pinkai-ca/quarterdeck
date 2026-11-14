@@ -23,7 +23,7 @@ from .ship import ShipError
 def component(value):
     return (isinstance(value, str) and bool(value) and not value.startswith('.')
             and value not in ('.', '..') and not any(c in value for c in '/\\@\x00\n\r')
-            and value == value.strip())
+            and value.isprintable() and value == value.strip())
 
 
 def address(value, local):
@@ -118,6 +118,8 @@ def local_view(runtime, message, *, data=None):
     if imported and data is not None and imported['sha256'] != digest(data):
         raise ShipError('imported post differs from its immutable source; retained')
     origin = imported['origin'] if imported else here
+    if imported is None and '@' not in message.sender and '@' not in message.to:
+        return message  # the existing local envelope and its read semantics stay unchanged
 
     def view(value):
         seat, ship = address(value, origin)
@@ -155,6 +157,8 @@ def wire_parties(runtime, sender, to):
     if here is None:
         if '@' in to or '@' in sender:
             raise ShipError('cross-ship post needs a declared ship')
+        return sender, to
+    if '@' not in sender and '@' not in to:
         return sender, to
     sending, origin = address(sender, here)
     if origin != here:
@@ -283,6 +287,13 @@ def fetch(ship, source, path):
             else:
                 publish(import_path(ship.runtime, raw.id), encoded(metadata))
             with post.admission(ship.runtime, recipient if is_direct else '@fleet-context'):
+                if is_direct and context_only(ship.runtime, raw.id):
+                    # Import uses the same recipient-admission hooks as local
+                    # publication before making new work eligible for the seat.
+                    from . import compaction
+                    viewed = local_view(ship.runtime, raw, data=data)
+                    compaction.protect_closure(ship.runtime, viewed)
+                    compaction.admitting(ship.runtime, viewed)
                 publish(local, data)  # law: post-is-files -- same bytes and id in the receiving ship
                 if is_direct:
                     publish(ship.runtime / 'post' / 'addressed' / (raw.id + '.json'),
