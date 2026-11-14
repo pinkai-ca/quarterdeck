@@ -143,6 +143,12 @@ def check_pool(ship: Ship, harness) -> tuple[object | None, str | None]:
 
 def _check(ship: Ship, name: str, tmux: Tmux, harness, model: str | None = None,
            *, minimal: bool = False) -> tuple[list[Check], str | None]:
+    check_model = getattr(harness, 'check_model', None)
+    check_effort = getattr(harness, 'check_effort', None)
+    if check_model is not None:
+        if model is not None and model != check_model:
+            return [ProbeCheck('check model', False, f'{name} checks require {check_model}; no launch', 'model')], None
+        model = check_model
     pool, refused = check_pool(ship, harness)
     if pool is None:
         return [ProbeCheck('pool', False, refused or f'no compatible declared pool for {name}', 'pool')], None
@@ -169,8 +175,10 @@ def _check(ship: Ship, name: str, tmux: Tmux, harness, model: str | None = None,
     run = secrets.token_hex(2)
     seat_name, session_name = f"check-{name}-{run}", f"qd-check-{name}-{run}"
     spec = SeatSpec(seat_name, session_name, "worker", name, (pool.name,), model=model if model is not None else like.model if like else None,
-                    effort=like.effort if like else None, cwd=ship.workspace, sandbox=like.sandbox if like else None,
-                    model_mode=like.model_mode if like else None, effort_mode=like.effort_mode if like else None)
+                    effort=check_effort if check_effort is not None else like.effort if like else None,
+                    cwd=ship.workspace, sandbox=like.sandbox if like else None,
+                    model_mode=None if check_model is not None else like.model_mode if like else None,
+                    effort_mode=None if check_effort is not None else like.effort_mode if like else None)
     orders: list[post.Message] = []
     with temporary_seat(ship, tmux, spec, orders, "qd check", installed_version=version, check_inbox=True) as seat:
         options = {'requested_model': model} if model is not None else {}
@@ -193,7 +201,8 @@ def _check(ship: Ship, name: str, tmux: Tmux, harness, model: str | None = None,
     else:
         human_spec = SeatSpec(f"check-wake-{name}-{run}", f"qd-check-wake-{name}-{run}", "worker", name,
                               (pool.name,), model=model if model is not None else like.model if like else None,
-                              effort=like.effort if like else None, cwd=ship.workspace,
+                              effort=check_effort if check_effort is not None else like.effort if like else None,
+                              cwd=ship.workspace,
                               sandbox=like.sandbox if like else None)
         human_orders: list[post.Message] = []
         try:

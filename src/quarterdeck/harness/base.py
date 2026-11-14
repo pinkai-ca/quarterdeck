@@ -188,6 +188,9 @@ class Harness(ABC):
     # The provider's safeguard can refuse, and so lose, a conversation that reads instructions planted for a reader:
     # such a program never reads the pull-request screen's outsider text ([pr_screen] reader).
     refuses_planted_instructions: bool = False
+    check_model: str | None = None  # an explicitly ordered check choice; no ordinary-seat default
+    check_effort: str | None = None
+    requires_deferred_opening: bool = False
     reads_usage: bool = False  # True where usage() reads the provider's windows; a pool of such a program is read before a move
     reads_queue_error: bool = False  # state() can report unresolved native queue identity to automatic status
     remote_control: bool = False  # True where the program can open a seat to the operator's phone and claude.ai as well
@@ -372,6 +375,18 @@ class Harness(ABC):
     def startup_ready(self, home: Path | None) -> bool:
         """Any program-specific startup decision required before its composer can take input."""
         return True
+
+    def opening_readiness(self, home: Path, screen: Screen | None) -> tuple[bool, str]:
+        """Opt-in startup proof before a deferred opening; called only by its launch owner."""
+        return False, "deferred opening startup proof unsupported"
+
+    def opening_current(self, home: Path) -> bool:
+        """Revalidate the opt-in opening's own settings before the Door acts."""
+        return True
+
+    def input_obstruction(self, text: str, screen: Screen | None) -> str | None:
+        """An adapter's named unsupported payload form, before any paste or key."""
+        return None
 
     def synthetic_ready(self, home: Path) -> bool:
         """A synthetic program may acknowledge this launch instead of a timed observation."""

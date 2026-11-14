@@ -1,4 +1,4 @@
-"""Muse Code: registered offline launch, with live authentication still unproved."""
+"""Muse Code's measured native home, record and input interfaces."""
 
 from __future__ import annotations
 
@@ -9,18 +9,26 @@ from pathlib import Path
 
 from ..ship import Pool, SeatSpec, ShipError
 from .base import Harness, program_version
-from .home import ship_template
+from .capabilities import EffortCapability
+from .home import credential, ship_template
 from .limits import Usage
 from .types import Control, Keys, Launch
-from . import muse_home, muse_mask, muse_program, muse_record, muse_screen
+from . import muse_home, muse_program, muse_record, muse_screen
 
-AUTH_PENDING = "Muse authentication location and refresh metadata are unproved; live launch and usage held"
-NATIVE_ENV = ("/usr/bin/env", "-u", "META_API_KEY", "-u", "MUSE_AUTH_PATH", "-u", "MUSE_LOGIN", "--")
+AUTH_PENDING = "Muse startup input gate is not yet composed; live launch and usage held"
 
 
 class MuseHarness(Harness):
     name = program = "muse"
     native_provider = "meta"
+    credential_file = "auth.json"
+    launch_unset = ("META_API_KEY", "MUSE_AUTH_PATH", "MUSE_LOGIN")
+    check_model = "muse-wonder-1.0"
+    check_effort = "minimal"
+    requires_deferred_opening = True
+    effort_selectors = ("reasoning_effort",)
+    efforts = EffortCapability("levels", ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"),
+                               ("1.4.20",), complete=False)
     home_variable = None
     opening_prompt_turn = True
     private_version_home = True
@@ -44,10 +52,22 @@ class MuseHarness(Harness):
             return "Muse currently requires a Meta subscription pool; key and endpoint behavior is unproved"
         return None
 
+    def check_defaults(self, seat: SeatSpec, ship_home: Path | None = None) -> None:
+        super().check_defaults(seat, ship_home)
+        self._settings(seat, ship_template(ship_home, "settings.json"))
+
     def preflight(self, home: Path | None = None, cwd: Path | None = None) -> None:
-        if home is None:
-            raise ShipError(AUTH_PENDING)  # doctor must not say the program holds a proved sign-in
-        muse_mask.preflight(home)
+        from ..seat import program_path
+        muse_program.binary(path=program_path())
+        if home is not None:
+            muse_home.directory(home)
+
+    def selected_program(self) -> Path | None:
+        from ..seat import program_path
+        try:
+            return muse_program.binary(path=program_path())
+        except ShipError:
+            return None
 
     def version(self, home: Path | None = None) -> str | None:
         if home is None:
@@ -75,26 +95,37 @@ class MuseHarness(Harness):
 
     def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None):
         settings = self._settings(seat, ship_template(ship_home, "settings.json"))
-        if settings["provider"] != "echo":
-            raise ShipError(AUTH_PENDING)
         self.preflight(home, seat.cwd)
-        # law: one-folder -- every native root and fixed-path mask belongs here.
+        # law: one-folder -- only the native HOME/XDG roots, without an adapter jail.
         home.mkdir(parents=True, exist_ok=True, mode=0o700)
-        for name in ("user-home", "config/muse", "data", "cache", "state"):
-            path = home / name
-            muse_mask.real_directory(path, missing=True)
-            path.mkdir(parents=True, exist_ok=True, mode=0o700)
-        muse_mask.prepare(home)
+        muse_home.prepare(home)
         path = home / "config/muse/settings.json"
         if path.is_symlink() or (path.exists() and not path.is_file()):
             raise ShipError(f"{path}: Muse settings are not an owned regular file")
-        path.write_text(json.dumps(settings, indent=2) + "\n")
-        return None  # no credential path or credential freshness is invented
+        muse_home.write_settings(home, settings)
+        if settings["provider"] == "echo":
+            return None
+        if pool.config_dir is None or not (pool.config_dir / "auth.json").is_file():
+            raise ShipError("Muse pool needs its native config_dir containing auth.json; sign in there first")
+        attached = home / "auth.json"
+        native = home / "config/muse/auth.json"
+        for link in (attached, native):
+            if link.exists() and not link.is_symlink():
+                raise ShipError(f"{link}: detached Muse credential retained; needs credential review before launch")
+        result = credential(pool, attached, "META_API_KEY")
+        if native.is_symlink():
+            if native.readlink() != attached:
+                raise ShipError(f"{native}: Muse credential link has another target; needs credential review")
+        else:
+            native.symlink_to(attached)
+        return result
 
     def preflight_resume(self, seat, home, resume_id) -> None:
         raise ShipError("Muse resume brief carriage is unmeasured; existing launch retained")
 
     def launch(self, seat, pool, home, brief, resume, first, *, offline: bool = False) -> Launch:
+        if offline:
+            raise ShipError('Muse has no adapter-owned offline wrapper; use the ship jail or test tool')
         if resume:
             raise ShipError("Muse resume brief carriage is unmeasured; no launch")
         self.preflight(home, seat.cwd)
@@ -106,8 +137,8 @@ class MuseHarness(Harness):
         except (OSError, ValueError):
             raise ShipError("Muse launch settings are unreadable") from None
         settings = self._settings(seat, settings)
-        if settings["provider"] != "echo":
-            raise ShipError(AUTH_PENDING)
+        if muse_home.seeded_settings(home) is None:
+            raise ShipError('Muse own contributor-off settings changed since framework seed; no launch')
         from ..seat import program_path
         program = muse_program.binary(path=program_path())
         argv = [str(program), "--provider", settings["provider"], "--model", settings["model"],
@@ -122,27 +153,41 @@ class MuseHarness(Harness):
         # No system-instruction switch was measured: carry the complete brief
         # and opening messages as the fresh positional prompt, one native turn.
         prompt = brief.read_text() + ("\n\n" + first if first else "")
-        argv.append(prompt)  # law: context-is-cache
         environment = muse_home.environment(home)
-        environment["TMPDIR"] = str(home / "mask/tmp")
         # Remove inherited operator sign-in redirects without assuming whether
         # this native version implements them. QD_* and transport env survive.
-        return Launch(muse_mask.command(home, seat.cwd, (*NATIVE_ENV, *argv), offline=offline), environment,
-                      notice=self.workspace_notice(home, seat.cwd))
+        return Launch(tuple(argv), environment,
+                      notice=self.workspace_notice(home, seat.cwd), deferred_opening=prompt)
+
+    def opening_readiness(self, home, screen):
+        if screen is None or screen.starting:
+            return False, 'Muse startup screen unavailable; no opening input'
+        if re.search(muse_screen.label('Contributor mode is on'), screen.text):
+            return False, 'Muse contributor mode is on; launch opening held; needs a human'
+        if (screen.unknown is not None or screen.interruption is not None
+                or screen.working is not False or screen.box != ''):
+            return False, 'Muse startup is not a measured empty idle composer; no opening input'
+        if re.search(muse_screen.label(muse_screen.CONTRIBUTOR_OFF), screen.text):
+            muse_home.remember_off(home)
+            return True, 'Muse contributor-off proof: positive off line on this launch'
+        if muse_home.previously_off(home) and muse_home.seeded_settings(home) is not None:
+            return True, 'Muse contributor-off proof: same proved home, unchanged framework off setting and noncontributor model'
+        return False, 'Muse contributor-off proof unavailable; no opening input'
+
+    def opening_current(self, home):
+        return muse_home.seeded_settings(home) is not None
 
     def owns_launch(self, argv) -> bool:
-        native = muse_mask.native_argv(argv)
-        if native is not None and native[:len(NATIVE_ENV)] == NATIVE_ENV:
-            native = native[len(NATIVE_ENV):]
-        else:
-            return False
+        native = tuple(argv)
         return bool(native and re.fullmatch(r"muse-bin-" + muse_program.RELEASE.pattern, Path(native[0]).name))
 
     def workspace_notice(self, home, cwd) -> str:
         return ("Muse trusts the declared workspace; workspace AGENTS.md and native tooling may load. "
                 "Foreign personal context keys are set off; interactive effect awaits validation. "
-                "Fixed write paths and passwd-home auth fallback are masked into this seat; offline proof pending. "
-                "Only echo is enabled; live credentials and resume remain unproved.")
+                "Muse 1.4.20 uses this seat's HOME and XDG roots. "
+                "Its own settings seed contributor_mode_enabled=false; the contributor-on screen holds all input. "
+                "Subscription auth is linked to the declared pool; native rewrite through that link was observed. "
+                "Resume brief carriage remains unproved.")
 
     def screen(self, text):
         return muse_screen.read(text)
@@ -153,15 +198,13 @@ class MuseHarness(Harness):
     def box(self, text):
         return muse_screen.VisibleBox(text)
 
+    def input_obstruction(self, text, screen):
+        return muse_screen.input_shape_reason(text)
+
     def expected_input(self, item, text):
         if isinstance(item, muse_record.CollapsedInput):
-            count = muse_screen.counted_characters(text)
-            if count is None or item.characters != count:
-                return None
-        # post.typed has exactly one terminal LF. Native model text removes
-        # that one character, collapsed or not. No rstrip or tab expansion:
-        # other end whitespace and every internal byte remain untouched.
-        return text[:-1] if text.endswith("\n") and not text.endswith("\n\n") else text
+            return None  # collapsed/final-LF projection has not been measured at 1.4.20
+        return text
 
     def queues_while_working(self, seat):
         # S3 measured steer/new-run behavior, but its exact queue receipt
@@ -206,4 +249,5 @@ class MuseHarness(Harness):
         return None if active is True else "Muse current activity is not proved working; no Escape sent"
 
     def usage(self, pool):
-        return Usage((), datetime.now(timezone.utc), AUTH_PENDING, called=False)
+        return Usage((), datetime.now(timezone.utc),
+                     'Muse native periodic usage client awaits auth-link review; no call made', called=False)

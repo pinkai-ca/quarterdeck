@@ -1219,7 +1219,16 @@ class Seat:
         launched = Launched(pane.id, pane.pid, at, pool.name, resume_id, argv, version, self.spec.harness,
                             sorted(map(str, prior)), launch.price, launch.recovery, notice=launch.notice,
                             start=process_start(pane.pid))
-        launched.write(self.trusted / trusted_files.LAUNCH)
+        if launch.deferred_opening is not None:
+            from . import launch_opening
+            try:
+                launch_opening.prepare(self, launched, launch.deferred_opening)
+            finally:
+                # Even failed journal publication leaves the live pane owned,
+                # with a missing-journal hold rather than an unrecorded program.
+                launched.write(self.trusted / trusted_files.LAUNCH)
+        else:
+            launched.write(self.trusted / trusted_files.LAUNCH)
         (self.trusted / REFUSED_RELAUNCH).unlink(missing_ok=True)  # up again: a refused relaunch is over
         from . import brief_change
         try:
@@ -1231,6 +1240,8 @@ class Seat:
         if resume_id:
             self.record()  # retain the resumed record's new pool boundary immediately
         self._survives(pane.id, launch.argv[0])
+        if launch.deferred_opening is not None:
+            launched = launch_opening.deliver(self, launched)
         attempts = post.Attempts(self.ship.runtime)
         for message in carried:
             attempt = attempts.open(message, self.name, pane.id, pane.pid, launched.at)

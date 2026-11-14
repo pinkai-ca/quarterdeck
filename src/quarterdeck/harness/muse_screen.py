@@ -1,4 +1,4 @@
-"""Muse 1.4.15's measured composer, preserving style and every input row."""
+"""Muse 1.4.20's measured composer, preserving style and every input row."""
 
 from __future__ import annotations
 
@@ -10,12 +10,13 @@ from .muse_record import FOLDED_INPUT
 
 SGR = re.compile(r"\x1b\[([0-9;]*)m")
 RULE = re.compile(r"─{8,}")
-TYPED = (204, 211, 219)
-MUTED = (103, 108, 116)
-PROMPT = (90, 160, 255)
+TYPED = 252
+MUTED = 242
+PROMPT = 75
 IDLE_HINT = "Type @ to search and insert workspace file paths"
 EXPAND_HINT = "Paste again to expand for editing"
-WORKING = re.compile(r"(?:Thinking|Double checking) \([0-9]+s · esc to interrupt\)")
+WORKING = re.compile(r"(?:Thinking|Working|Double checking) \([0-9]+s · esc to interrupt\)")
+CONTRIBUTOR_OFF = "Contributor mode is off, so your content won't be used for product improvement."
 TRUST = Interruption("Muse workspace trust", r"Do you trust this workspace\?")
 
 
@@ -42,12 +43,12 @@ MODEL_CHOICES = (QUOTA_OFFER, QUOTA_INCOMPLETE, CONTRIBUTOR_ENABLED, MODEL_SWITC
 
 @dataclass(frozen=True)
 class Style:
-    foreground: tuple[int, int, int] | None = None
-    background: tuple[int, int, int] | None = None
+    foreground: tuple[int, int, int] | int | None = None
+    background: tuple[int, int, int] | int | None = None
 
 
 def characters(text: str):
-    """The measured truecolor SGR subset; attributes never delete characters."""
+    """The measured SGR forms; attributes never delete characters."""
     plain, styles, position = [], [], 0
     foreground = background = None
     while position < len(text):
@@ -76,16 +77,26 @@ def characters(text: str):
             elif code == 49:
                 background = None
             elif code in (38, 48):
-                if codes[at + 1:at + 2] != [2] or len(codes) < at + 5:
-                    return None
-                rgb = tuple(codes[at + 2:at + 5])
-                if any(value < 0 or value > 255 for value in rgb):
-                    return None
-                if code == 38:
-                    foreground = rgb
+                if codes[at + 1:at + 2] == [5] and len(codes) >= at + 3:
+                    color = codes[at + 2]
+                    if color not in (75, 237, 242, 244, 246, 247, 251, 252):
+                        return None
+                    if code == 38:
+                        foreground = color
+                    else:
+                        background = color
+                    at += 2
+                elif codes[at + 1:at + 2] == [2] and len(codes) >= at + 5:
+                    rgb = tuple(codes[at + 2:at + 5])
+                    if any(value < 0 or value > 255 for value in rgb):
+                        return None
+                    if code == 38:
+                        foreground = rgb
+                    else:
+                        background = rgb
+                    at += 4
                 else:
-                    background = rgb
-                at += 4
+                    return None
             elif code not in (1, 2, 3, 4, 9, 22, 23, 24, 29):
                 return None
             at += 1
@@ -121,7 +132,7 @@ def read(text: str) -> Screen:
     for row in rows:
         offsets.append(offset)
         offset += len(row) + 1
-    if not any(row.strip() == "Muse Code 1.4.15" for row in rows):
+    if not any(row.strip() == "Muse Code 1.4.20" for row in rows):
         return Screen(plain, None, working=None, unknown="unmeasured Muse header")
     prompts = [index for index, row in enumerate(rows)
                if index > 0 and RULE.fullmatch(rows[index - 1])
@@ -131,6 +142,8 @@ def read(text: str) -> Screen:
     if len(prompts) != 1:
         return Screen(plain, None, working=None, unknown="Muse composer is not uniquely bound to its rule")
     index = prompts[0]
+    if len(rows[index - 1]) != 120:
+        return Screen(plain, None, working=None, unknown="Muse 1.4.20 composer width not measured")
     bottom = next((stop for stop in range(index + 1, len(rows)) if rows[stop] == rows[index - 1]), None)
     if bottom is None:
         return Screen(plain, None, working=None, unknown="unmeasured Muse composer boundaries")
@@ -152,14 +165,11 @@ def read(text: str) -> Screen:
         body.append(content)
         body_styles.append(attributes)
     footer = "\n".join(rows[bottom + 1:])
-    if not re.search(r"(?:echo|meta) · .+ · Launch overrides", footer):
+    if not re.search(r"^  \S[^\n]* · [^\n]+ · Launch overrides", footer, re.MULTILINE):
         return Screen(plain, None, working=None, unknown="unmeasured Muse footer")
     working = bool(WORKING.search("\n".join(rows[:index - 1])))
     folded = len(body) == 1 and FOLDED_INPUT.fullmatch(body[0]) is not None and EXPAND_HINT in footer
-    if (not working and len(body) == 1 and body[0] == IDLE_HINT
-            and all(style.foreground == MUTED for style in body_styles[0])):
-        body = [""]
-    elif not folded and any(style.foreground not in (None, TYPED) for attributes in body_styles for style in attributes):
+    if not folded and any(style.foreground not in (None, TYPED) for attributes in body_styles for style in attributes):
         return Screen(plain, None, working=None, unknown="unmeasured Muse composer text or contextual tip")
     content = ComposerText("\n".join(body), len(rows[index - 1]) - 2, folded)
     # These transitional labels cannot establish a ready idle composer.
@@ -185,61 +195,21 @@ class VisibleBox(Box):
         return projected is not None and "\n".join(projected) == shown
 
 
+def input_shape_reason(text: str) -> str | None:
+    if '\n' in text or '\r' in text or '\t' in text:
+        return 'Muse 1.4.20 multiline/final-LF/tab paste projection unsupported; no input'
+    # The current echo draft proves a 55-cell ordinary single row. No old
+    # version's wrap threshold or collapsed count is borrowed for longer text.
+    if len(text) > 55 or any(not (' ' <= char <= '~') for char in text):
+        return 'Muse 1.4.20 folded/wrapped or non-ASCII paste projection unsupported; no input'
+    return None
+
+
 def counted_characters(text: str) -> str | None:
-    # S3b establishes counts for its measured ordinary character shapes. Keep
-    # unmeasured wide/combining/control forms out until their count is relayed.
-    # The canonical post adds a middle dot; its full native count was measured
-    # separately. The native marker counts each tab as four, not one. This
-    # count does not establish unmeasured interior-tab model/transport behavior.
-    return (str(len(text) + 3 * text.count("\t"))
-            if all(" " <= char <= "~" or char in "\n\t·" for char in text) else None)
+    return None  # collapsed counts have not been remeasured at 1.4.20
 
 
 def wrapped_rows(text: str, columns: int | None) -> list[str] | None:
-    """ASCII/middle-dot words with the observed word-plus-space budget.
-
-    columns is the prefix-derived W-2 bound, not measured physical capacity.
-    At panes 80/120 only, the observed wrap budget is one less: W-3. A move
-    requires a nonempty row and no inner break that would fit on that row.
-    Final words at W-3/W-2 and all internal-word projections remain unknown.
-    """
-    if any(not (" " <= char <= "~" or char in "\n·") for char in text):
+    if input_shape_reason(text) is not None or columns != 118:
         return None
-    result = []
-    for line in text.split("\n"):
-        if columns is None:
-            result.append(line)
-            continue
-        budget = columns - 1
-        if budget < 1 or any(len(word) >= budget for word in line.split(" ")):
-            return None
-        if len(line) < budget:
-            result.append(line)
-            continue
-        if columns not in (78, 118):
-            return None  # no wrap-budget extrapolation to an unmeasured pane
-        if line.startswith(" ") or line.endswith(" ") or "  " in line:
-            return None  # repeated/edge-space wrapping was not established
-        words, row = line.split(" "), ""
-        for index, word in enumerate(words):
-            final = index == len(words) - 1
-            piece = word if final else word + " "
-            end = len(row) + len(piece)
-            if final and end in (budget, budget + 1):
-                return None  # final placement at W-3/W-2 is unmeasured
-            move_limit = budget + 1 if final else budget
-            if end > move_limit:
-                if not row:
-                    return None
-                # A final punctuation character is not an inner break. Never
-                # project a split when an earlier non-alphanumeric prefix fits.
-                prefix = next((word[:at + 1] for at, char in enumerate(word[:-1])
-                               if not char.isalnum()), None)
-                if prefix is not None and len(row) + len(prefix) <= budget:
-                    return None
-                result.append(row)
-                row = piece
-            else:
-                row += piece
-        result.append(row)
-    return result
+    return [text]

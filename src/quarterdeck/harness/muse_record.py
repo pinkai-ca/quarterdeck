@@ -233,15 +233,20 @@ class Reader(JsonLinesReader):
         if run in self.ended_runs:
             return
         if action == "started":
+            prompt = event.get("prompt")
+            if not isinstance(prompt, str) or "task_id" in event:
+                # Native reminder tasks also emit started/completed. They do
+                # not replace the parent prompt or end its root turn.
+                self.tools_known = False
+                return
             if self.open is not None:
                 if self.run_id == run:
                     return
                 self.end(None)  # retain incomplete work, never invent completion
-            prompt = event.get("prompt")
             self.execution_seen, self.run_id = True, run
             self.started[run] = row
             self.start_turn(dict(started=at, input=prompt if isinstance(prompt, str) else "",
-                                 reply=[], tools=[], tokens=Tokens.unknown()))
+                                 reply=[], tools=[], tokens=Tokens.unknown(), model=None, model_seen=False))
             return
         if self.open is None or self.run_id != run:
             self.tools_known = False
@@ -259,11 +264,19 @@ class Reader(JsonLinesReader):
                 self.open["tools"].append(ToolCall(name if isinstance(name, str) and name else "?", None, None))
             self.tools_known = False  # names alone cannot prove outstanding calls
         elif action == "model_completed":
+            model = event.get("model")
+            if isinstance(model, str) and model:
+                self.model = model
+                if not self.open["model_seen"]:
+                    self.open["model"] = model
+                elif self.open["model"] != model:
+                    self.open["model"] = None
+                self.open["model_seen"] = True
             # Echo zeros are not provider quantities. Cache/reasoning overlap
             # is unmeasured; never turn these fields into billed token totals.
             self.open["tokens"] = Tokens.unknown()
         elif action == "terminal":
-            if isinstance(event.get("terminal"), str) and event["terminal"]:
+            if event.get("terminal") == "completed" and event.get("reason") is None:
                 self.ended_runs.add(run)
                 self.end(at, event["terminal"])
             else:
@@ -274,7 +287,7 @@ class Reader(JsonLinesReader):
     def end(self, at, reason=None):
         value = self.close_turn()
         self.record_turn(Turn(len(self.turns), value["started"], at, value["input"],
-                              "\n".join(value["reply"]), None, value["tokens"],
+                              "\n".join(value["reply"]), value["model"], value["tokens"],
                               tuple(value["tools"]), subagent_turns=None, timed=at is not None,
                               end_reason=reason), at)
 

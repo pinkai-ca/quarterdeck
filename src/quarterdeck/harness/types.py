@@ -781,3 +781,4 @@ class Launch:
     price: dict | None = None
     recovery: dict | None = None  # adapter-owned effective-source evidence, captured before the pane opens
     notice: str | None = None  # information-only launch evidence/inventory, captured before the pane opens
+    deferred_opening: str | None = None  # opt-in: startup proof, then the ordinary Door, once

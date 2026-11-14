@@ -1,23 +1,18 @@
-"""Decode Muse's native usage JSON; never request a service endpoint directly.
-
-The no-allowance envelope is reported by the current installed command. Numeric
-allowance decoding is a source-backed draft until subscribed evidence exists.
-"""
+"""Decode Muse 1.4.20's measured native usage envelope; no network calls."""
 
 from __future__ import annotations
 
 import json
-import math
 from datetime import datetime, timezone
 
 from .limits import Usage, Window
 
 
 def reset(value) -> datetime | None:
-    if type(value) not in (int, float) or not math.isfinite(value):
+    if type(value) is not int or value < 0:
         return None
     try:
-        return datetime.fromtimestamp(value, timezone.utc)
+        return datetime.fromtimestamp(value / 1000, timezone.utc)
     except (ValueError, OverflowError, OSError):
         return None
 
@@ -25,10 +20,9 @@ def reset(value) -> datetime | None:
 def bucket(name: str, value: object) -> Window:
     if not isinstance(value, dict):
         return Window(name, None, None, error="Muse allowance bucket is not an object")
-    percent = value.get("used_percent")
-    fraction = (percent / 100 if type(percent) in (int, float)
-                and math.isfinite(percent) and 0 <= percent <= 100 else None)
-    at = reset(value.get("resets_at"))
+    percent = value.get("usedPercent")
+    fraction = percent / 100 if type(percent) is int and 0 <= percent <= 100 else None
+    at = reset(value.get("resetsAtMs"))
     return Window(name, fraction, at,
                   error=("Muse allowance percentage or reset unavailable" if fraction is None or at is None else None))
 
@@ -54,13 +48,8 @@ def decode(text: str, at: datetime | None = None) -> Usage:
         return Usage((), at, "Muse allowance is not an object")
     windows = []
     if "window" in allowance:
-        current = allowance["window"]
-        minutes = current.get("window_duration_mins") if isinstance(current, dict) else None
-        if type(minutes) in (int, float) and math.isfinite(minutes) and minutes > 0:
-            name = f"{minutes:g}m"
-            windows.append(bucket(name, current))
-        else:
-            windows.append(Window("window", None, None, error="Muse window duration unavailable"))
+        # No duration was supplied: retain the native bucket name, not a guessed period.
+        windows.append(bucket("window", allowance["window"]))
     if "weekly" in allowance:
         windows.append(bucket("weekly", allowance["weekly"]))
     if not windows:

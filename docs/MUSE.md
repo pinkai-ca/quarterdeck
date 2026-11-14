@@ -1,240 +1,120 @@
 # Muse contract facts
 
-Muse is registered as harness `muse`, native company `meta`. The legacy program
-spelling is accepted through the normal provider alias mechanism. Registration
-is an implementation checkpoint, not complete subscription support. Fresh echo
-launch construction exists; live launch, credential operations and resumed brief
-carriage refuse while their required facts remain unproved.
+Muse is registered as harness `muse`, native company `meta`, for a subscription
+pool. The measured program is Muse Code 1.4.20. The adapter reads the selected
+installation's version marker and runs its versioned executable directly;
+it never executes the updating launcher. An executed version observation, not
+the marker or an executable hash, establishes the installed version.
 
-The measured executable is Muse Code 1.4.15 (1.4.15-R8339.1). `muse_program.py`
-reads `.muse-version` beside the selected installation and selects the versioned
-binary directly. The updating launcher is never executed. A marker selects a
-candidate; contextual native `--version` establishes an executed version. The
-private version lookup uses a fresh runtime-owned context. Earlier independent
-help/version measurements found no network, credential access or writes.
+## Native home and sign-in
 
-## Home and launch
+Measured native paths follow the seat's explicit HOME and XDG variables.
+The adapter owns `user-home`, `config/muse`, `data`, `cache`, `state` and `tmp`
+below its runtime home. The session index, records, attach paths and command
+socket were observed under `XDG_DATA_HOME/muse`. No adapter-owned bubblewrap
+mask remains. Where the ship declares a jail, the ship's existing jail is the
+only jail.
 
-The ship's optional `homes/muse/settings.json` template and seat settings seed an
-explicit noncontributor model before first launch. Both generated settings and
-`--model` use that same resolved model. This also handles an installed check with
-no permanent matching seat and `model=None`: the template supplies the exact
-catalog model or launch refuses. Contributor choices in any declaration layer
-refuse even if another layer would replace them. No catalog default is used.
-`settings.provider` declares `echo` or `meta`; the default is `meta`. Echo is
-passed unchanged to the native argv and settings. Meta launch currently refuses
-because authentication location and refresh metadata remain unknown.
-Inherited `META_API_KEY`, `MUSE_AUTH_PATH` and `MUSE_LOGIN` are removed before
-executing the versioned binary, without assuming whether the latter two are
-implemented by this version. Framework post and transport environment survives.
+A subscription pool's `config_dir` names its native Muse config folder.
+`auth.json` is linked, never copied: the framework's credential link in the
+seat home is also reached from `config/muse/auth.json`. A native usage call
+rewrote the source file through the link while leaving the link in place.
+That observation does not establish token-refresh values or expiry semantics.
+No freshness or grant-expiry fields are guessed. A detached native credential
+is retained and launch refuses pending review. Auth-link handling requires an
+independent review before landing.
 
-Roots are under the seat home: `user-home`, `config`, `data`, `cache` and `state`.
-The fresh positional prompt carries the complete brief and opening messages as
-one native opening turn. No measured root system-instruction flag exists.
-Resume supports a session reference natively, but its brief/open-message
-carriage is not yet measured, so the adapter refuses resume rather than losing
-context. Model and effort controls have launch forms; native resulting-state
-confirmation is unknown and no unmeasured slash command is sent.
+The launch removes inherited `META_API_KEY`, `MUSE_AUTH_PATH` and `MUSE_LOGIN`.
+Only this adapter's launch removes these sign-in redirects; other adapters keep
+their existing environment policy. Direct version/help measurements used an
+empty private home. No sign-in values or account settings belong in fixtures.
 
-Muse runs with `--trust-workspace`, contributor mode off, approval mode never,
-approval judge off, `--disable-approval` and `--disable-sandbox`. Nonhuman seats
-also request `--disable-request-user-input`. The current flags are documented;
-effective tool policy and native-tool `qd post` still need independent proof.
-The native sandbox-off flag removed startup sandbox validation, its warning and
-the writable-helper-root check in independent offline exec/TUI measurements.
+## Model, settings and opening input
 
-Every declared workspace is trusted, including the framework. Exec measurements
-established workspace `AGENTS.md` loading and precedence over colocated Claude
-instruction files. Project tooling may load; its complete inventory is unknown.
-Personal-context keys are set false. They were accepted in exec; interactive
-personal-context suppression still needs validation. Workspace contents never
-supply an additional refusal, prompt or jail. The ship brief takes precedence.
+Muse requires an explicit noncontributor model. `muse-spark`, its versioned ids,
+and every id ending in `-contributor` are contributor models and refuse in every
+declared settings layer, even when another layer would override that choice.
+Checks select exactly `muse-wonder-1.0` with `minimal` effort; this supplies no
+ordinary-seat model default. A different explicit check selection refuses.
 
-## Fixed native paths
+Every home receives `schema_version: 1` and `contributor_mode_enabled: false`.
+The launch also declares contributor mode off, approval judge off and native
+sandbox off. Wonder with this private setting showed contributor mode off on
+its first idle screen. Spark had shown contributor mode on despite the off
+flag; flags alone never prove the effective state. A contributor-on screen
+holds all input. The setting is named in the launch notice.
 
-Muse ignores HOME/XDG for its session-name authority and writes below the
-passwd home's `.local/share/muse`. Its attach root also ignores TMPDIR and
-writes `/tmp/tbh-<uid>-rt`. The adapter uses the working system bubblewrap with
-`--dev-bind / /`, then three binds from seat-private mode-0700 directories:
+Muse starts without a prompt. Its launch-opening journal is bound to pane,
+process and launch before publication; only that verified owner can bypass
+its own opening hold for one ordinary Door delivery. Carried attempts close
+only on exact confirmation. A failed or unconfirmed opening remains held,
+without retry or a second queue. Startup observation is bounded by the normal
+startup deadline.
 
-| Private source under seat home | Native destination | Reason |
-| --- | --- | --- |
-| `mask/passwd-muse` | passwd-home `.local/share/muse` | Native session-name authority ignores HOME/XDG |
-| `mask/passwd-config` | passwd-home `.config/muse` | Prevent fallback to operator authentication |
-| `mask/tmp` | `/tmp` | Native attach root ignores TMPDIR |
+The startup proof is either an explicit contributor-off idle screen, or a
+later idle launch of the same previously proved home with the unchanged
+framework-seeded contributor-off setting and a noncontributor model. Native
+addition of the measured disclosure-acknowledgement flag is the only excluded
+settings change. Every other seeded field remains bound. An on notice always
+holds. The actual proof is appended to the saved launch notice. Absence of the
+banner alone is insufficient.
+Resume restored an echo record, but resumed brief carriage remains unproved
+and refuses. Native model/effort changes have no guessed slash command.
 
-TMPDIR also names `mask/tmp`. Passwd home comes from the passwd database, never
-HOME. No other host path is hidden or narrowed; production keeps the host
-network available. This is independent of the endpoint jail and uses no
-read-only-root implementation or AppArmor/system change. Missing/refusing
-system bubblewrap has no unmasked fallback. Existing real native destination
-directories are required so the mask cannot create an operator mount point.
-A seat home under `/tmp` refuses because the mask would hide its own storage.
+## Record and screen
 
-`muse_mask.prefix` is shared by actual launch and the independent probe. Its
-explicit `offline=True` adds `--unshare-net` to that same invocation. The
-registered `MuseHarness.launch(..., offline=True)` exposes it for offline
-validation; ordinary calls default to false. No replacement proof prefix or
-nested network wrapper is used. The real mask still needs its separately
-leased offline proof, including resolving every config-path open and confirming
-operator data unchanged. A substitute `qd post` under that prefix proves the
-prefix/environment only; echo does not prove native tool can-post.
+Records enumerate only `data/muse/sessions/YYYY/MM/DD/<session>/session.jsonl`.
+The native session identity must match the record folder. Current typed rows
+use outer schema version 1; accepted and materialized input use payload schema
+version 1. The reader retains native text and timestamps, never mutating a
+record. A single refill text block and a single model-message text block can
+supply exact input evidence. Multi-block rendering is not invented.
 
-## Records and input
+A root `runtime.session` event starts with `event.kind=started` and a prompt.
+Reminder tasks can also emit started/completed events; they do not replace the
+root prompt or close it. Root completion is `event.kind=terminal` with
+`terminal=completed` and a null reason in the measured runs. Reply text and
+`model_completed` precede completion. The native Double checking phase stays
+busy while reminders finish. Other terminal forms remain unproved.
 
-Root records enumerate only `data/muse/sessions/YYYY/MM/DD/<id>/session.jsonl`;
-subagent directories do not become top-level seat records. Flat rows and retained
-`children[].record_json` frames are read without rewriting source records.
-Current events carry integer microseconds. Session identity must agree with the
-root directory; conflicting identity supplies neither conversation nor join
-time. The first native event supplies creation time, never mtime.
+Live `model_completed.model` supplies the exact recorded model. Tool-call
+names are readable; complete tool failure semantics, child counts and token
+cache/reasoning arithmetic remain unknown. Echo zero tokens are not native
+subscription quantities. Accepted/materialized linkage uses explicit native
+record/sequence/session/run links, never equality guessed between identifiers.
 
-Current accepted text requires one text refill block and one model-message text
-block, with source session matching the session stream. Ordinary refill/model
-text agrees. A collapsed refill instead carries `[Pasted Content N chars]`;
-the reader retains the model text and original count separately, never treating
-the marker as the message. Several blocks, unrelated conflicting text and
-unsupported schema remain unreadable receipts; no separator or concatenation
-is invented. Historical ISO/direct-prompt
-synthetic rows remain readable, separately from current-version evidence.
-Accepted text proves acceptance, not queuing or active-run delivery.
+The 120-column styled fixtures distinguish an empty composer, a draft, working
+and queued input. Indexed colors identify the prompt and typed text. The
+composer sits between its full-width rules, separate from transcript prompts.
+Unrecognized styles/layouts report unknown activity. Existing echo queue
+observations establish a later distinct turn, not active-run delivery; working
+delivery remains held until its record receipt is implemented.
 
-The canonical receipt matcher has a default identity `expected_input` hook and
-default-false `exact_input_text` capability, preserving other adapters' existing
-comparison without extra I/O. Muse opts into exact recorded model text versus
-its expected typed form. For a form ending in exactly one LF, the expectation
-removes that single final character, collapsed or not. It never uses a general
-trim, deletes other whitespace or changes internal line-end spaces. An input
-with a native collapsed marker also needs the original full count to agree.
-Native model text is never rewritten. Different remaining text, an unsupported
-form or an unproved count cannot confirm delivery. Multi-LF endings and terminal
-tabs are not assigned a broader end transform.
+A separate echo-only sample proved exactly one final LF removed from a
+12-line brief-like payload, with a literal wrapped draft and no collapsed
+marker. That single sample does not establish post-like bodies, multiple
+terminal LFs, 80-column wrapping or collapsed counts. The current source
+therefore admits only the measured short ordinary single-row form before any
+paste: printable ASCII, at most 55 characters, at the 120-column composer.
+Other forms are named unsupported and withheld, pending the rest of that
+measurement. No old version's projection is borrowed. Literal input retains
+every character and collapsed evidence is unmatched.
 
-Run starts, committed replies and terminals are distinguished from task lifecycle
-rows. Materialization can be inspected only with explicit accepted event
-id/sequence/session/intent links and distinct started session-record and
-source-record links. Intent and run ids are not assumed equal. No global or
-cross-file sequence ordering is imposed; independent echo observations were
-monotonic only within a `(stream.kind, stream.id)` pair in each file.
+## Allowance and remaining proof
 
-Completed/cancelled terminals end only the named run. Reply text alone does not
-prove idle; the native end-of-turn gate remains part of the working interval.
-Tokens stay unknown: echo zeros do not prove provider quantities and cache/input
-and reasoning/output overlap is unmeasured. Subagent structure does not establish
-paid/model child counts. Current model/effort, native tools/failures and complete
-child accounting remain missing; no launch setting supplies a current fact.
+The native command is exactly `muse usage --json`; TUI flags do not prefix it.
+Measured schema version 1 gives `usedPercent` and `resetsAtMs` in `window` and
+`weekly` buckets. Percentages become fractions; reset timestamps are epoch
+milliseconds. No short-window duration is guessed. Account/catalog labels are
+ignored. Absent or unreadable allowance stays unknown, never zero used.
 
-## Door and remaining proof
+The decoder is pure; native periodic usage execution is not yet enabled.
+The shared usage owner preserves one pool reader, an absolute 1800-second
+minimum interval and persisted refusal pacing. No destination gate performs
+a demand read. A whole installed check has not been run. It requires separate
+release after the observed material allowance cost is reviewed. Synthetic
+source/tests spend no allowance. Una owns the eventual live check.
 
-The styled screen reader recognizes the measured header, composer between full
-width rules, footer and working indicator. It selects the no-background prompt
-directly below its rule, not the only prompt in the frame. Transcript echoes
-with background RGB 38,56,84 cannot replace the composer. Two-space continuation
-prefixes are removed while all input rows, break spaces and blank rows remain.
-The first empty screen has no hint; later idle composers show the exact known
-contextual tip in RGB 103,108,116. Only that tip in an otherwise empty idle
-composer is empty. The identical text in typed RGB 204,211,219 stays input;
-unknown tips/styles hold. Faint attributes alone never discard text.
-Unknown activity is explicit: unreadable controls/style, starting or partial
-redraws, missing composer/boundaries, dialogs/results, unmeasured layouts or tips,
-and transitional footers without positive working evidence return `None` rather
-than idle. Complete measured idle/working frames still return false/true.
-Unsupported payload projection alone does not erase independently visible
-activity. Watch says it could not see when screen activity is unknown; a current
-record's true/false fact remains separate and authoritative for lifecycle and
-routing. No new screen veto is added to record-proved fresh/relaunch/failover.
-The Door has its own requirement: observed box and known activity before input,
-after paste and before submit/control. An unknown owned-paste frame is retained
-as uncertain, never replaced by a later frame to permit submit, clear or replay.
-An already submitted exact current-record input can still prove acceptance.
-Static strings from the pinned binary identify the separate quota-offer dialog:
-`You're using your quota fast` with `Keep going`, `Switch to Spark` or
-`Turn on contributor mode`. It is named, holds all input actions and reaches a
-person. Either `Switch to Spark` or `Turn on contributor mode` also names the hold
-without a title, including when quoted in the transcript; `Keep going` alone
-does not. A title with unreadable options remains a named hold. No key is declared,
-including for the `not active yet - esc close` hint. Offers never establish a
-selected model or enabled contributor state. Separate result labels
-`Switched to Spark (saved as default)` and `Contributor mode on`, and the
-established contributor-on notices, also hold for a person. Spark remains a
-display name, not a catalog-id mapping. These labels were read as static strings,
-not captured in offline TUI runs; positions, option order/preselection and keys
-remain unmeasured. No dialog ever changes a model or contributor setting through
-the Door. Independent action/alert/protection proof is still required.
-The payload-derived box projection supports ASCII plus the separately measured
-one-cell middle dot U+00B7, retained wrap spaces and explicit newline rows. A
-short canonical header is no longer excluded merely for its middle dot. The
-prefix-derived `box_columns` bound remains pane width minus two; native physical
-capacity at that bound is unproved. It is separate from the observed word-break
-budget, pane width minus three, including the word's following space.
-
-Offline measurements at widths 80 and 120 support a bounded whole-word
-projection, including the last-three dot edge cases. A word and its following
-space stay on the current row while their sum fits W-3. On overflow the current
-row must be nonempty. An inner break is the prefix through the word's first
-non-alphanumeric character that is not its last character. With no inner break,
-the whole word moves to a continuation. With one, the whole word moves only if
-that prefix also overflows the row; otherwise projection holds. No internal
-break is ever projected. The broken row retains its trailing space. Admission
-is not restricted to three individual edge pairs. Ordinary synthetic long-line
-coverage is distinct from the measured line's structural reproduction.
-The latter uses seventeen identical 17-character words joined by single spaces,
-with inner breaks after characters 10 and 13. Its independently relayed content
-rows have lengths 108/108/89 at width 120 and 72/72/72/72/17 at width 80;
-each broken row retains one space. Safe replacement words preserve those
-lengths and break positions rather than copying the original text. At width
-80 its final word takes the same whole-word move rule.
-A terminal LF retains the final empty content row (its two-space prefix leaves
-the cursor at x=2). No default-styled right padding is assumed, and the composer
-has no background.
-
-A final word without following space stays when its row total is at most W-4;
-totals W-3 and W-2 hold. Past W-2 it uses the same nonempty-row and inner-prefix
-move-or-hold rule. Other unknowns include unmeasured widths, long words, tabs, other
-Unicode, repeated/edge-space wrapping and arbitrary internal-word breaks. One
-hyphen break in the measured footer is not a general hyphen algorithm: that
-83-character footer at width 80 still holds, while its width-120 unwrapped form
-fits the supported range. Literal short canonical fixtures and the measured
-edge shapes have source coverage; the actual Door remains unproved until its
-separately granted M1 stage. No live trial substitutes for that proof.
-A counted collapsed marker also needs the native expansion-hint footer and N
-equal to the full original typed-form character count, including any final LF.
-There is no guessed collapse threshold. Current count support is printable ASCII,
-LF, tabs and the middle dot established by the canonical-post measurement; other
-unmeasured character counts remain unknown. The expected marker count uses four
-for each tab, without expanding or rewriting the payload. Unfolded tab layout
-and interior-tab transport/model semantics remain unmeasured; an unexpected
-record difference still holds. The expansion hint is prose, never permission to
-paste twice.
-The normal Door uses its bracketed paste, checks the box, submits once and
-confirms by the owned record. That path needed no added settle in offline
-measurement; no shared sleep or typed-key substitute is introduced. Safe clear
-keys remain unknown, and an uncertain submission is never retried.
-
-A single Escape cancels a working run and retains draft text. Guarded positive
-idle interrupt-speed delivery uses no key; unknown activity holds. Current fresh
-join provenance and no-op defaults are unchanged; resumed record state remains
-unknown. A positive forbidden current model holds all input actions. Current
-native model and screen-model schemas still need measurement.
-
-Enter while working visibly queues a steer, drained into a new run after the
-current one ends. This is not active-run delivery. Exact queue receipt fields
-are still missing, so the adapter currently withholds working delivery.
-
-The allowance JSON decoder's numeric buckets remain historical synthetic
-examples. No current subscribed windows, precision, reset convention or budget
-coupling is proved. There is no native usage client or credential reader yet;
-usage reports unknown without making a call. Strict 1800-second shared pacing,
-anchored refusal backoff, compatible side-table storage and visible corrupt
-stored-timing holds are implemented; independent synthetic enforcement does not
-prove native completeness. The future authenticated reader must share one pool
-context, including pools without a permanent seat, and never demand-read a
-destination gate. Replacement/reseed freshness and grant expiry need safe auth
-metadata before implementation.
-
-Still owed: offline actual-launch mask/permission and corrected-reader proof,
-ordinary source tests, interactive import suppression and full queue schema, resume carriage,
-current controls/contributor evidence, auth and credential replacement, subscribed
-catalog/allowance proof, native-tool can-post and installed check, affected proof,
-exact-tip full, review and signature. Live work needs separate authorization.
-No permanent seat or operator credential copy is part of this implementation.
+Still required: independent deferred-opening gates, current paste projection,
+Claude migration of the old mask gates, auth-link review, the mechanical watch
+unit-test union check, the combined whole suite, review and exact-tip signature.

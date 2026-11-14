@@ -132,6 +132,7 @@ class Door:
         self.after_paste = None
         self.captured_pane = None
         self.human_wake = False
+        self.opening_owner = None
         self.since = datetime.now(timezone.utc)
 
     def screen(self) -> Screen | None:
@@ -381,6 +382,10 @@ class Door:
 
     def _base_reading(self, screen: Screen | None) -> Reading:
         """The existing admission reading; geometry diagnostics confer no authority."""
+        if getattr(self.harness, 'requires_deferred_opening', False):
+            from .launch_opening import hold
+            if reason := hold(self.seat, self.opening_owner):
+                return Reading(False, reason, "needs a human")
         if reason := self.adapter_obstruction(screen):
             clears = "time" if reason == "starting, waiting for the input box" else "needs a human"
             return Reading(False, reason, clears)  # law: nothing-waits-silently
@@ -693,6 +698,9 @@ class Door:
         screen = self.screen()
         if reading := self.initial_obstruction(screen):
             return Delivery('withheld', str(reading))
+        payload_hook = self.adapter_hook('input_obstruction')
+        if payload_hook is not None and (reason := payload_hook(text, screen)):
+            return Delivery('withheld', reason)
         if not self.human_wake and (reason:=paste_refusal.refused(self.seat,text,screen)):
             return Delivery('withheld',reason)
         screen = self.clear_known(screen)  # law: one-door
@@ -741,6 +749,8 @@ class Door:
                 return Delivery("blind", "launch changed at the final paste check; no keys sent")
         if reason := self.adapter_obstruction(screen):
             return Delivery("withheld", reason)
+        if payload_hook is not None and (reason := payload_hook(text, screen)):
+            return Delivery('withheld', reason)
         owned=paste_refusal.owner(self,text,screen)
         if proof:
             proof.save(phase="pasting")
