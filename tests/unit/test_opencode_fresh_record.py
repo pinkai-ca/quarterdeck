@@ -133,12 +133,12 @@ def test_the_probe_rechecks_closure_for_its_declared_window(tmp_path, databases,
     fresh.start()
     runtime = tmp_path / 'synthetic-runtime'
     ship = SimpleNamespace(runtime=runtime)
-    seat = SimpleNamespace(name='synthetic-seat', harness=OpenCodeHarness(), is_up=True,
+    seat = SimpleNamespace(name='synthetic-seat', ship=ship, harness=OpenCodeHarness(), is_up=True,
                            spec=SimpleNamespace(model=None), up=lambda **kw: 'synthetic launch',
                            launched=lambda: SimpleNamespace(answered=[]), record=lambda: fresh.path)
     store = check.post.Store(runtime)
-    monkeypatch.setattr(check.post, 'Store', lambda folder: SimpleNamespace(
-        new=store.new, closing_report=lambda order: SimpleNamespace(short='synthetic-report', body='written')))
+    monkeypatch.setattr(check.post, 'Store', lambda folder: store)
+    monkeypatch.setattr(store, 'closing_report', lambda order: SimpleNamespace(short='synthetic-report', body='written'))
     monkeypatch.setattr(check.post, 'Attempts', lambda folder: SimpleNamespace(
         open=lambda *args: SimpleNamespace(), close=lambda *args: None))
     monkeypatch.setattr(check.pending, 'current_identity', lambda seat: dict(
