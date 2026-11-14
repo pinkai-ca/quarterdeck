@@ -13,7 +13,7 @@ On the Bridge and in the Crew, where the human reads but does not type, the serv
 ```
 qd > order from desk · ord-7f3a · Codex profile of the fake harness
 Build the Codex profile of the fake harness. Report when its contract tests pass.
-qd > reply: qd post report --re ord-7f3a · inbox: post/inbox/scott.md
+qd > reply: qd post report --re ord-7f3a
 ```
 
 The pane is where the human reads, by scrolling up, so the whole message goes there and not a pointer to a file. Both programs show a sent paste in full in their transcript. Messages arriving together are typed one paste each, and each is confirmed on its own. New due messages go before previously withheld messages, in order within each group, so a failed item never becomes part of another item's payload. A pre-paste refusal can leave the door usable for the next item; a foreign draft, unknown dialog, unverified paste or uncertain submission holds the door. There is no unconditional progress through an occupied or uncertain box. A message has no length limit.

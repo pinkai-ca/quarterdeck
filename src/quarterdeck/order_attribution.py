@@ -141,6 +141,11 @@ class Threads:
         while text:
             matches = [(envelope, m) for envelope, m in self.by_header.get(text.partition('\n')[0], ())
                        if text == envelope or text.startswith(envelope + '\n')]
+            # A legacy non-obligation adds its inbox footer to the current complete
+            # envelope. Consume that longer form when both identify this same immutable
+            # message; competing message identities retain the ambiguity refusal.
+            if matches and all(message == matches[0][1] for _, message in matches):
+                matches = [max(matches, key=lambda item: len(item[0]))]
             if len(matches) != 1:
                 return []  # no partial/truncated bundle or arbitrary surrounding stdout
             envelope, message = matches[0]

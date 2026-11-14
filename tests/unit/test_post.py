@@ -67,12 +67,12 @@ def test_the_typed_form(tmp_path: Path):
     assert text == (
         f"qd > order from desk · {order.short} · Codex profile of the fake harness · due 2026-11-08 18:00\n"
         "Build the Codex profile of the fake harness.\nReport when its contract tests pass.\n"
-        f"qd > reply: qd post report --re {order.short} · inbox: post/inbox/scott.md\n"
+        f"qd > reply: qd post report --re {order.short}\n"
     )
     report = store.new("report", "scott", "desk", "done", re=order.id)
     text = post.typed([report])
-    assert text.startswith(f"qd > report from scott · {report.short} · re {order.short}\ndone\nqd > inbox: post/inbox/desk.md\n")
-    assert post.typed([order, report]).count("qd > ") == 4, "several messages are one paste, each under its own header"
+    assert text.startswith(f"qd > report from scott · {report.short} · re {order.short}\ndone\n")
+    assert post.typed([order, report]).count("qd > ") == 3, "several messages are one paste, each under its own header"
 
 
 def test_the_briefed_header():

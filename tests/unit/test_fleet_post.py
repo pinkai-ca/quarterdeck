@@ -60,7 +60,7 @@ def test_round_trip_preserves_bytes_identity_claim_and_closure(pair):
     assert wire(right, order) == before and wire(left, order) == before  # law: post-is-files
     received = destination.get(order.id)
     assert received.to == 'captain' and received.sender == 'writer@alpha'
-    assert 'post/inbox/captain.md' in post.typed([received])
+    assert post.typed([received]).endswith(f'qd > reply: qd post report --re {received.short}\n')
     assert destination.open_for('captain') == [received]
     assert fleet.waiting(left, source) == []
     ack = destination.new('ack', 'captain', received.sender, 'claimed', re=received.id)

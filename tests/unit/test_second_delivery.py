@@ -15,7 +15,7 @@ def message():
 
 def test_a_first_delivery_has_no_second_line_and_a_second_has_it_before_the_same_envelope():
     m = message()
-    first, second = post.delivered_forms(m)
+    first, second, *legacy = post.delivered_forms(m)
     assert "second delivery" not in first
     line = f"qd > second delivery of {m.id}; you may have it already: act on it once"
     assert second == line + "\n" + first, "the envelope is unchanged under the one added line"
@@ -24,8 +24,8 @@ def test_a_first_delivery_has_no_second_line_and_a_second_has_it_before_the_same
 
 def test_a_receipt_reads_either_form_and_nothing_else():
     m = message()
-    first, second = post.delivered_forms(m)
-    for typed_form in (first, second):
+    first, second, *legacy = post.delivered_forms(m)
+    for typed_form in (first, second, *legacy):
         harness = SimpleNamespace(inputs=lambda record, text=typed_form: [Input(text, AT + timedelta(seconds=1), "accepted")])
         assert input_receipt.confirmed(harness, None, post.delivered_forms(m), AT) == "delivered"
     other = SimpleNamespace(inputs=lambda record: [Input("synthetic other text q", AT + timedelta(seconds=1), "accepted")])

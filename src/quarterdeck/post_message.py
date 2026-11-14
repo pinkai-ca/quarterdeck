@@ -65,6 +65,11 @@ def typed(messages: list[Message], *, second: Collection[str] = (), whole: bool 
     A second delivery keeps its explicit line before the unchanged envelope. Ordinary delivery
     retains its existing trailing-space projection; thread reading can request the whole body.
     """
+    return _typed(messages, second=second, whole=whole)
+
+
+def _typed(messages: list[Message], *, second: Collection[str] = (), whole: bool = False,
+           legacy: bool = False) -> str:
     parts = []
     for message in messages:
         header = f"qd > {message.kind} from {message.sender} · {message.short}"
@@ -74,15 +79,20 @@ def typed(messages: list[Message], *, second: Collection[str] = (), whole: bool 
             header += f" · {message.subject}"
         if message.due:
             header += f" · due {message.due}"
-        footer = f"qd > inbox: post/inbox/{message.to}.md"
+        footer = ""
+        if legacy:
+            footer = f"\nqd > inbox: post/inbox/{message.to}.md"
         if message.obligation:
-            footer = f"qd > reply: qd post {REPLY_VERB[message.kind]} --re {message.short} · {footer[5:]}"
+            footer = f"\nqd > reply: qd post {REPLY_VERB[message.kind]} --re {message.short}"
+            if legacy:
+                footer += f" · inbox: post/inbox/{message.to}.md"
         again = SECOND.format(id=message.id) + "\n" if message.id in second else ""
         body = message.body if whole else message.body.rstrip()
-        parts.append(f"{again}{header}\n{body}\n{footer}")
+        parts.append(f"{again}{header}\n{body}{footer}")
     return "\n".join(parts) + "\n"
 
 
-def delivered_forms(message: Message) -> tuple[str, str]:
-    """The two forms a message is typed in: a first delivery, and a second that says it is one."""
-    return typed([message]), typed([message], second=(message.id,))
+def delivered_forms(message: Message) -> tuple[str, ...]:
+    """Current first/second deliveries, then their legacy inbox-footer forms for old receipts."""
+    return (typed([message]), typed([message], second=(message.id,)),
+            _typed([message], legacy=True), _typed([message], second=(message.id,), legacy=True))
