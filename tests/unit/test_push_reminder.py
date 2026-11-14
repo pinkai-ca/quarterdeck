@@ -183,3 +183,53 @@ def test_invalid_state_is_retained(scene):
     with pytest.raises(ShipError, match='journal invalid'):
         push_reminder.run(svc)
     assert target.read_text() == '{"version": 999}'
+
+
+def test_saved_intent_uses_public_store_publication(scene, monkeypatch):
+    clock, service = scene
+    svc = service()
+    push_reminder.run(svc)
+    clock.tip = FIRST
+    push_reminder.run(svc)
+    clock.at += push_reminder.DELAY
+    original = post.Store.write
+    published = []
+    def write(store, message):
+        assert push_reminder.load(svc.runtime)['intent'] == message.to_json()
+        published.append(message.id)
+        return original(store, message)
+    monkeypatch.setattr(post.Store, 'write', write)
+    push_reminder.run(svc)
+    push_reminder.run(service())
+    [message] = svc.store.all()
+    assert published == [message.id]
+
+
+def test_ref_error_logs_only_when_changed_or_cleared(scene, monkeypatch):
+    clock, service = scene
+    svc = service()
+    logged = []
+    svc.log = lambda event, **fields: logged.append((event, fields))
+    reading = [ShipError('synthetic unavailable ref')]
+    def current(ship):
+        if isinstance(reading[0], Exception):
+            raise reading[0]
+        return reading[0]
+    monkeypatch.setattr(push_reminder, 'current_tip', current)
+    for _ in range(3):
+        push_reminder.run(svc)
+    assert logged == [('error', {'step': 'push-reminder-ref', 'error': 'synthetic unavailable ref'})]
+    reading[0] = OSError('synthetic changed ref error')
+    for _ in range(3):
+        push_reminder.run(svc)
+    assert len(logged) == 2
+    assert logged[-1] == ('error', {'step': 'push-reminder-ref', 'error': 'synthetic changed ref error'})
+    reading[0] = clock.tip
+    for _ in range(3):
+        push_reminder.run(svc)
+    assert len(logged) == 3
+    assert logged[-1] == ('push-reminder-ref-available', {})
+    reading[0] = ShipError('synthetic unavailable ref')
+    push_reminder.run(svc)
+    assert len(logged) == 4
+    assert logged[-1] == logged[0]

@@ -654,6 +654,11 @@ post write therefore neither loses nor duplicates a reminder. A missing or
 temporarily unreadable ref does not discard a pending batch; invalid journal
 state is retained and logged by the service's isolated duty. No new ship setting,
 polling seat, timer process or change to signing is involved.
+Intent recovery compares the existing immutable post before using the public
+`Store.write` path for a missing post; publication hooks and recipient admission
+remain owned by the store. Within a service process an unchanged unavailable-ref
+error is logged once; a changed error or a return to an available reading is
+logged again, and a later recurrence starts a new diagnostic.
 
 Saving a delivery proof compares its newly merged, serialized JSON against the
 current file bytes using the same locale encoding, indentation and trailing

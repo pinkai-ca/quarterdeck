@@ -86,19 +86,13 @@ def publish(service, data):
         return
     message = post.Message.from_json(intent)
     target = service.store.dir / (message.id + '.json')
-    with post.admission(service.runtime, message.to):
-        try:
-            existing = target.read_text()
-        except FileNotFoundError:
-            # Store.write's ordinary publication hooks, while already owning its
-            # non-reentrant recipient admission lock for the identity check.
-            from . import compaction
-            compaction.protect_closure(service.runtime, message)
-            compaction.admitting(service.runtime, message)
-            service.store._write(message)
-        else:
-            if existing != intent:
-                raise ShipError('push reminder immutable post conflict; reminder held')
+    try:
+        existing = target.read_text()
+    except FileNotFoundError:
+        service.store.write(message)
+    else:
+        if existing != intent:
+            raise ShipError('push reminder immutable post conflict; reminder held')
     data['intent'] = None
     save(service.runtime, data)
 
@@ -115,10 +109,16 @@ def run(service):
         tip = current_tip(service.ship)
     except (ShipError, OSError, ValueError) as error:
         # An unavailable ref cannot erase a batch or prevent its already-noted reminder.
-        service.log('error', step='push-reminder-ref', error=str(error))
+        reading = (type(error).__name__, str(error))
+        if service.__dict__.get('push_reminder_ref_error') != reading:
+            service.log('error', step='push-reminder-ref', error=str(error))
+            service.push_reminder_ref_error = reading
         if data is None:
             return
         tip = None
+    else:
+        if service.__dict__.pop('push_reminder_ref_error', None) is not None:
+            service.log('push-reminder-ref-available')
     if data is None:
         save(service.runtime, dict(version=1, last_tip=tip, pending=[], due=None, intent=None))
         return  # first reading is a baseline, not an inferred push
