@@ -520,6 +520,7 @@ class Facts:
     cutover: str = ""  # the ship still runs on tmux's default server, until one qd down and qd up
     server_recovery: list[str] = field(default_factory=list)  # a gone ship server: stopped or unknown
     accounting: str | None = None
+    ledger_recovery: list[str] = field(default_factory=list)
     check_failed: list[str] = field(default_factory=list)
     check_unknown: list[str] = field(default_factory=list)
     model_mismatches: list[str] = field(default_factory=list)
@@ -528,6 +529,7 @@ class Facts:
 
     def line(self) -> str:  # law: nothing-waits-silently
         parts = ["SERVICE DOWN" if self.service == "down" else f"service {self.service}"]
+        parts += self.ledger_recovery
         if self.accounting:
             parts.append(self.accounting)
         parts.append(f"{self.waiting} waiting" + (f", oldest {self.oldest}m" if self.waiting else ""))
@@ -873,7 +875,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
     pending_lines += [f"request claimed: {path.name}; inspect requests/ before retrying"
                       for path in sorted((ship.runtime / "requests").glob("*.claimed"))]
     now = post.now()
-    from . import cascade_runtime, compaction_alert, group_post, model_mismatch, structure_outcome
+    from . import cascade_runtime, compaction_alert, group_post, ledger_recovery, model_mismatch, structure_outcome
     oldest = int(max(((now - m.at).total_seconds() for m in waiting), default=0) // 60)
     queued = [a for a in records if a.result == "queued" and latest.get(a.message) == 'queued']
     outcomes, outcome_errors = check_reading if check_reading is not None else check_outcome.collect(ship.runtime)
@@ -911,6 +913,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         cascade_held=cascade_runtime.holds(ship.runtime),
         structure_waiting=structure_outcome.waits(ship, selected),
         accounting=accounting_reading(ship.runtime, state),
+        ledger_recovery=ledger_recovery.alarms(ship.runtime),
         check_failed=check_outcome.alarms(outcomes),
         check_unknown=outcome_errors,
         unarmed=unarmed,

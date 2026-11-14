@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sqlite3
 import sys
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,12 @@ def main(argv: list[str] | None = None) -> int:
         handoff(args, argv)
     try:
         result = args.run(args)
+    except sqlite3.DatabaseError as error:
+        from .ledger_recovery import malformed
+        if not malformed(error):
+            raise
+        print('qd: ledger malformed; stop the service, then qd ledger --recover', file=sys.stderr)
+        return 2
     except (ShipError, TmuxError) as error:
         note = f" (default ship: {args.default_ship})" if args.default_ship else ""
         print(f"qd: {error}{note}", file=sys.stderr)
@@ -192,6 +199,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = verb("ledger", cmd_ledger, "what the crew spends: the pools, or turns rolled up --by seat, order or pool")
     p.add_argument("--by", choices=("seat", "order", "pool"), help="roll the turns up by this")
     p.add_argument("--tools", action="store_true", help="tool calls by name: count, seconds, failures")
+    recovery = p.add_mutually_exclusive_group()
+    recovery.add_argument('--recover', action='store_true', help='check the ledger and preserve/rebuild it if malformed; service must be stopped')
+    recovery.add_argument('--clear-recovery', action='store_true', help='acknowledge ledger recovery alarms; keep all evidence')
     verb("service", cmd_service, "run the ship's service in the foreground (qd up starts it detached)")
     p = verb("drill", cmd_drill, "the all-hands drill: on the drydock's simulator, or on --ship with real programs")
     p.add_argument("--keep", action="store_true", help="keep the temporary ship and its tmux server for a look")
@@ -677,6 +687,14 @@ def cmd_status(args: argparse.Namespace) -> Reading:
                 return Reading({**output.value(facts), 'copy_warning': warning},
                                lambda _: facts.line() + ' · ' + warning)
             return Reading(facts, watch.Facts.line)
+        except sqlite3.DatabaseError as error:
+            from .ledger_recovery import malformed
+            if not malformed(error):
+                raise
+            state = watch.service_state(ship.runtime)
+            lead = 'SERVICE DOWN' if state == 'down' else f'service {state}'
+            reason = 'ledger malformed; stop the service, then qd ledger --recover'
+            return Reading(dict(service=state, facts=None, error=reason), lambda _: lead + ' · ' + reason)
         except (OSError, ValueError, TypeError, KeyError):
             state = watch.service_state(ship.runtime)
             lead = 'SERVICE DOWN' if state == 'down' else f'service {state}'
@@ -870,7 +888,18 @@ def cmd_service(args: argparse.Namespace) -> None:
 
 def cmd_ledger(args: argparse.Namespace) -> Reading:
     ship = load_ship(args)
-    book = ledger.Ledger.reading(ship.runtime / "ledger.sqlite")  # a reading never writes the book
+    from . import ledger_recovery
+    if getattr(args, 'clear_recovery', False):
+        cleared = ledger_recovery.acknowledge(ship.runtime)
+        return Reading(dict(acknowledged=cleared), lambda d: 'ledger recovery acknowledged; evidence kept: ' + (', '.join(d['acknowledged']) or 'none pending'))
+    if getattr(args, 'recover', False):
+        if service.alive(ship.runtime):
+            raise ShipError('stop the service before qd ledger --recover')
+        with ledger.Ledger(ship.runtime / 'ledger.sqlite'):
+            pass
+        saved = [str(folder.relative_to(ship.runtime)) for folder in ledger_recovery.pending(ship.runtime)]
+        return Reading(dict(evidence=saved), lambda d: 'ledger checked; recovery evidence: ' + (', '.join(d['evidence']) or 'none'))
+    book = ledger.Ledger.reading(ship.runtime / "ledger.sqlite")  # healthy readers never write or scan the book
     if book is None:
         data = ledger_reading.missing(by=args.by, tools=args.tools, ship=ship)
     else:

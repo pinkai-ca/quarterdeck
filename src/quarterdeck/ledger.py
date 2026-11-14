@@ -177,7 +177,13 @@ class Ledger:
             self.quota = Quotas(self.db, create=False)
             self.usage = UsageCache(self.db, create=False)
             return
-        path.parent.mkdir(parents=True, exist_ok=True)
+        from . import ledger_recovery
+        with ledger_recovery.opening(path) as recovered:
+            self._initialize(path)
+            if recovered:
+                self.begin_catchup('ledger rebuilt from malformed database')
+
+    def _initialize(self, path):
         self.db = sqlite3.connect(path)
         self.db.execute("PRAGMA synchronous=OFF")
         if self.db.execute("PRAGMA synchronous").fetchone() != (0,):
