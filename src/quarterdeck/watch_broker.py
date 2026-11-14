@@ -16,6 +16,10 @@ own seat folder allows instead, and the service does the rest on its behalf:
 - The service closes an attempt as a watch delivery only when it is still open, is this seat's, and is named by
   this seat's offer. A receipt that is not a regular file is never read.
 
+Locks: the waiting seat holds only its own lease, in a folder only its own jail sees, and the service only tests
+that lease, never waits on it. The service's locks here (the seat's admission, the attempts lock) are visible in
+every jail, so the service waits on each for at most ``WAIT`` and skips the seat for that pass.
+
 law: one-door: an armed watch holds the waking line, an attempt is opened before anything is printed, a receipt
 is a delivery, and an attempt offered but never receipted stays open to be judged, as for a wait that dies
 between opening and printing.
@@ -33,6 +37,7 @@ from pathlib import Path
 from . import durable, post, post_dir
 from .ship import ShipError
 
+WAIT = 2.0  # the service's bound on a post lock a jail can see; past it the pass skips this seat and retries
 LEASE = 'watch-lease'
 REQUEST = 'watch-broker.json'
 RECEIPTS = 'watch-receipts'
@@ -216,9 +221,20 @@ def receipt(runtime: Path, attempts: list[post.Attempt]) -> None:
 
 
 def run(service, seat) -> None:
-    """Close receipted attempts, then offer what waits to a brokered watch that is armed. Under the seat's admission."""
+    """Close receipted attempts, then offer what waits to a brokered watch that is armed. Under the seat's admission.
+
+    Every lock taken here is one a jail can see, so each wait is bounded: past it this seat is skipped this pass,
+    logged, and tried again on the next. The waiting seat itself locks nothing the service waits on.
+    """
+    try:
+        _run(service, seat)
+    except post.LockBusy as busy:
+        service.log('watch-broker-skipped', seat=seat.name, reason=str(busy))
+
+
+def _run(service, seat) -> None:
     runtime, name = service.runtime, seat.name
-    with post.admission(runtime, name):
+    with post.admission(runtime, name, wait=WAIT):
         offer = read_offer(runtime, name)
         _settle(service, name, offer)
         reading = post.watch_reading(runtime, name)
@@ -234,7 +250,7 @@ def run(service, seat) -> None:
         waiting = service.attempts.undelivered(service.store, name)
         if not waiting:
             return
-        opened = [service.attempts.open(message, name, None, None, None) for message in waiting]  # law: one-door
+        opened = [service.attempts.open(message, name, None, None, None, wait=WAIT) for message in waiting]  # law: one-door
         durable.replace_file(offer_path(runtime, name), json.dumps(dict(
             format=1, seat=name, generation=data['generation'], messages=[m.id for m in waiting],
             attempts=[a.path.name for a in opened])) + '\n')
@@ -262,7 +278,7 @@ def _settle(service, name: str, offer: dict | None) -> None:
                 and entry.name in offered):
             attempt = _attempt(service.runtime, entry.name)
         if attempt is not None and attempt.seat == name and attempt.result is None:
-            service.attempts.close(attempt, 'watch', 'printed by qd inbox --wait')
+            service.attempts.close(attempt, 'watch', 'printed by qd inbox --wait', wait=WAIT)
             service.log('watch-receipt', seat=name, message=attempt.message)
         elif attempt is None or attempt.result is not None:
             service.log('watch-receipt-ignored', seat=name, receipt=entry.name)
