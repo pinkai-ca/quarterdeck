@@ -33,7 +33,8 @@ def start(ship):
     return svc
 
 
-def test_unrelated_landing_keeps_finished_catchup_and_allows_retirement(tmp_path, monkeypatch):
+@pytest.mark.parametrize('module', ['cli.py', 'post.py', 'fleet_post.py'])
+def test_unrelated_landing_keeps_finished_catchup_and_allows_retirement(tmp_path, monkeypatch, module):
     root, ship = setup(tmp_path, monkeypatch)
     svc = start(ship)
     assert svc.ledger.catching_up()
@@ -41,7 +42,8 @@ def test_unrelated_landing_keeps_finished_catchup_and_allows_retirement(tmp_path
     assert not svc.ledger.catching_up()
     epoch = svc.accounting_epoch
     svc.ledger.close()
-    (root / 'cli.py').write_text('synthetic unrelated command revision')
+    source = reader_stamp.Path(reader_stamp.__file__).parent.parent / module
+    (root / module).write_bytes(source.read_bytes() + b'\n# synthetic listing or transport revision\n')
     monkeypatch.setattr(presentation, 'framework_stamp', lambda: ['synthetic replacement package'])
     svc = start(ship)
     try:
@@ -57,7 +59,7 @@ def test_unrelated_landing_keeps_finished_catchup_and_allows_retirement(tmp_path
         svc.ledger.close()
 
 
-@pytest.mark.parametrize('module', ['harness/grok_record.py', 'order_attribution.py'])
+@pytest.mark.parametrize('module', ['harness/grok_record.py', 'order_attribution.py', 'post_message.py'])
 def test_reader_or_attribution_change_reopens_and_child_finishes_the_same_epoch(tmp_path, monkeypatch, module):
     root, ship = setup(tmp_path, monkeypatch)
     svc = start(ship)
@@ -96,7 +98,7 @@ def test_unfinished_catchup_stays_pending_across_unrelated_restart(tmp_path, mon
         svc.ledger.close()
 
 
-@pytest.mark.parametrize('module', ['harness/grok_record.py', 'order_attribution.py'])
+@pytest.mark.parametrize('module', ['harness/grok_record.py', 'order_attribution.py', 'post_message.py'])
 def test_unreadable_code_does_not_certify_catchup_completion(tmp_path, monkeypatch, module):
     root, ship = setup(tmp_path, monkeypatch)
     svc = start(ship)

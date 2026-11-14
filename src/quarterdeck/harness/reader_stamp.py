@@ -44,8 +44,9 @@ MODULES = {
 
 # The verdict engine and its direct semantic imports. Native input interpretation
 # is covered separately by MODULES; control/launch-only imports are not readers.
+# The post dependency is its message values and envelopes, never Store or transport.
 ATTRIBUTION = ('attribution_cache.py', 'order_attribution.py', 'input_receipt.py',
-               'post.py', 'harness/__init__.py')
+               'post_message.py', 'harness/__init__.py')
 
 # Shared modules every reader imports, and that do not interpret a record.
 _LAUNCH_SHARED = (
@@ -114,6 +115,16 @@ _ADAPTER_FACTORY = (
     'the fixed MODULES registry selects an adapter; each harness reader set hashes its selected adapter and delegated readers',
 )
 COMPUTED_IMPORTS = {name: (_ADAPTER_FACTORY,) for name in MODULES}
+ATTRIBUTION_COMPUTED_IMPORTS = (_ADAPTER_FACTORY,)
+
+
+# Attribution also imports native reader code in MODULES. These remaining imports
+# select adapters or carry error types; they do not interpret message/record values.
+ATTRIBUTION_CONTROL_ONLY = (
+    ('__init__.py', 'package entry for status and CLI; not attribution interpretation'),
+    ('ship.py', 'ShipError used by the adapter registry; declarations do not interpret messages'),
+    ('providers.py', 'provider lookup in the adapter registry; native input reading is covered by MODULES'),
+)
 
 
 def files_stamp(modules, root=None):

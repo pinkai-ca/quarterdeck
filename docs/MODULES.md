@@ -124,7 +124,8 @@ quarterdeck/                       the project folder: the framework repository
                    program configuration, request/body and selection knowledge stays in adapters
     endpoint.py    endpoint pools: what a server serves, the model a seat takes from it, the key beside it
     sandbox.py     the bubblewrap jail around a sandboxed seat's program
-    post.py        messages: store, inbox, the typed form, the watch
+    post.py        messages: store, inbox, the watch; re-exports message values and typed forms
+    post_message.py immutable message identity, JSON and exact delivered envelopes shared with attribution
     fleet.py       declaration-derived project office and sibling ship discovery, shared with raise
     fleet_post.py  sender-owned outbound offers and receiver-owned immutable fetches and receipts
     forward_post.py pinned old-address routes, recorded recipient identity and return ancestry

@@ -301,6 +301,19 @@ def test_a_reader_import_outside_its_set_is_named_beside_it():
     assert problems == []
 
 
+def test_attribution_imports_are_hashed_or_named_beside_the_set():
+    root = Path(reader_stamp.__file__).parent.parent
+    control = _named_beside(reader_stamp.ATTRIBUTION_CONTROL_ONLY)
+    native = {module for modules in reader_stamp.MODULES.values() for module in modules}
+    allowed = set(reader_stamp.ATTRIBUTION) | native | control
+    for module in control:
+        assert (root / module).is_file(), module
+    assert 'post_message.py' in reader_stamp.ATTRIBUTION
+    assert 'post.py' not in allowed, 'Store and transport are not message interpretation'
+    assert imports_outside(root, reader_stamp.ATTRIBUTION, allowed,
+                           reader_stamp.ATTRIBUTION_COMPUTED_IMPORTS) == []
+
+
 def test_the_import_walker_catches_a_planted_out_of_set_import(tmp_path):
     root = tmp_path / 'src' / 'quarterdeck'
     for name in ('__init__.py', 'harness/__init__.py', 'harness/kept.py', 'harness/stray.py',

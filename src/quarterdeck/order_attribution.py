@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 import hashlib
 
-from .post import Store, delivered_forms, typed
+from .post_message import delivered_forms
 
 
 def moment(value):
@@ -30,7 +30,7 @@ class Verdict:
 
 
 class Threads:
-    def __init__(self, store: Store):
+    def __init__(self, store):
         self.messages = store.all()
         self.by_id, self.conflicted = {}, set()
         for message in self.messages:

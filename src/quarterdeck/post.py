@@ -20,15 +20,13 @@ import time
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Collection
 
 from . import durable, post_dir
 from .ship import ShipError
+from .post_message import KINDS, REPLY_VERB, SECOND, Message, delivered_forms, short_of, typed
 
-KINDS = ("order", "report", "question", "answer", "ack")
 SPEEDS = ("now", "interrupt")
 SHIP = "ship"  # the sender of the ship's own notices, and an inbox a seat may answer to
-REPLY_VERB = {"order": "report", "question": "answer"}
 POST_TIMESTAMP_TICK_NS = 2_000_000_000  # conservative filesystem tick; see docs/design/post.md
 _FIXED_REPORT = ContextVar('quarterdeck_fixed_report', default=None)
 _READING = ContextVar('quarterdeck_post_reading', default=None)
@@ -68,47 +66,6 @@ def report_sink(message, default):
 
 def now() -> datetime:
     return datetime.now().astimezone()
-
-
-def short_of(message_id: str) -> str:
-    """``ord-7f3a`` for ``ord-20261106-2101-desk-7f3a``: the kind and the hash."""
-    return f"{message_id[:3]}-{message_id.rsplit('-', 1)[1]}"
-
-
-@dataclass(frozen=True)
-class Message:
-    id: str
-    kind: str
-    sender: str
-    to: str
-    at: datetime
-    body: str
-    re: str | None = None
-    subject: str | None = None
-    due: str | None = None
-    speed: str | None = None
-
-    @property
-    def short(self) -> str:
-        """``ord-7f3a``: the kind and the hash, enough to name a message in a pane."""
-        return short_of(self.id)
-
-    @property
-    def obligation(self) -> bool:
-        return self.kind in REPLY_VERB
-
-    def to_json(self) -> str:
-        data = asdict(self)
-        data["from"] = data.pop("sender")
-        data["at"] = self.at.isoformat()
-        return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
-
-    @classmethod
-    def from_json(cls, text: str) -> "Message":
-        data = json.loads(text)
-        data["sender"] = data.pop("from")
-        data["at"] = datetime.fromisoformat(data["at"])
-        return cls(**data)
 
 
 @contextmanager
@@ -403,38 +360,6 @@ class Store:
 
 
 # -- the typed form ----------------------------------------------------------------------
-
-
-SECOND = "qd > second delivery of {id}; you may have it already: act on it once"
-
-
-def typed(messages: list[Message], *, second: Collection[str] = (), whole: bool = False) -> str:
-    """Messages under their envelopes; whole preserves the exact thread body.
-
-    A second delivery keeps its explicit line before the unchanged envelope. Ordinary delivery
-    retains its existing trailing-space projection; thread reading can request the whole body.
-    """
-    parts = []
-    for message in messages:
-        header = f"qd > {message.kind} from {message.sender} · {message.short}"
-        if message.re:
-            header += f" · re {short_of(message.re)}"
-        if message.subject:
-            header += f" · {message.subject}"
-        if message.due:
-            header += f" · due {message.due}"
-        footer = f"qd > inbox: post/inbox/{message.to}.md"
-        if message.obligation:
-            footer = f"qd > reply: qd post {REPLY_VERB[message.kind]} --re {message.short} · {footer[5:]}"
-        again = SECOND.format(id=message.id) + "\n" if message.id in second else ""
-        body = message.body if whole else message.body.rstrip()
-        parts.append(f"{again}{header}\n{body}\n{footer}")
-    return "\n".join(parts) + "\n"
-
-
-def delivered_forms(message: Message) -> tuple[str, str]:
-    """The two forms a message is typed in: a first delivery, and a second that says it is one."""
-    return typed([message]), typed([message], second=(message.id,))
 
 
 def briefed_header(seat: str, role: str, open_messages: list[Message]) -> str:
