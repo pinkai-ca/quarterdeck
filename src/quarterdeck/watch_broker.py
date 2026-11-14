@@ -259,6 +259,34 @@ def receipt(runtime: Path, attempts: list[post.Attempt]) -> None:
 # -- the service's side --------------------------------------------------------------------------------------------
 
 
+def check_seats(ship) -> list:
+    """Undeclared seats that asked for brokering and that a live check owns as a person's seat.
+
+    A seat folder alone admits nothing: only the check's own live lease (pending.check_inbox_owner, the admission
+    qd inbox uses for such a seat) does, and only a human one. Each is a stand-in with the name and the ship.
+    """
+    from types import SimpleNamespace
+    from .pending import check_inbox_owner
+
+    folder = ship.runtime / 'seats'
+    try:
+        names = sorted(entry.name for entry in os.scandir(folder)
+                       if entry.is_dir(follow_symlinks=False) and entry.name not in ship.seats)
+    except OSError:
+        return []
+    found = []
+    for name in names:
+        if request(ship.runtime, name) is None:
+            continue
+        try:
+            owner = check_inbox_owner(ship.runtime, name)
+        except ShipError:
+            continue
+        if owner.get('human') is True:
+            found.append(SimpleNamespace(name=name, ship=ship))
+    return found
+
+
 def run(service, seat) -> None:
     """Close receipted attempts, then offer what waits to a brokered watch that is armed. Under the seat's admission.
 

@@ -415,9 +415,14 @@ class Service:
     def jailed_watches(self) -> None:
         """A jailed watch's attempts, opened and closed on its behalf; each seat alone, before the deliveries."""
         from . import watch_broker
+        served = []
         for seat in self.resolved_seats():
             if not seat.session.human or seat.name in getattr(self.ship, 'forward', {}):
                 continue
+            served.append(seat)
+        # qd check's human-wake seat is declared nowhere: only its check's live lease admits it, as qd inbox does.
+        served += watch_broker.check_seats(self.ship)
+        for seat in served:
             try:
                 watch_broker.run(self, seat)
             except Exception as error:
