@@ -1,31 +1,26 @@
-"""Claude-owned synthetic gates for the Muse fixed-path mask and its quota-offer dialog.
+"""Synthetic gates for Muse's quota-offer dialog.
 
-No native Muse, provider, credential or operator path is involved. The password-database home is
-replaced by a synthetic folder under the test's own tmp, so every mount target here is synthetic;
-nothing is executed (the real-bwrap cases live in tests/integration/test_muse_m1_mask_bwrap.py).
-Dialog screens are built only from the labels the pinned 1.4.15 binary carries; their layout,
-option order and preselection are unmeasured, so the gates never depend on positions.
+The fixed-path mask is gone. What it proved about where a launch may write now
+lives in test_muse_native_home_gates.py and the real-process confinement test.
+Dialog screens are built only from the labels the pinned binary carries; their
+layout, option order and preselection are unmeasured, so the gates never depend
+on positions. The ordinary composer is the measured 1.4.20 width.
 """
 
 from __future__ import annotations
 
-import json
-import os
-import stat
-from pathlib import Path
-from types import SimpleNamespace
-
 import pytest
 
-from quarterdeck import turn_failure
+import json
+
+from quarterdeck import launch_opening, turn_failure
 from quarterdeck.door import Door
-from quarterdeck.harness import get, muse_mask, muse_screen, NAMES
+from quarterdeck.harness import get, muse_screen, NAMES
 from quarterdeck.harness.base import Harness
 from quarterdeck.harness.muse import MuseHarness
 from quarterdeck.harness.types import State
-from quarterdeck.ship import Pool, SeatSpec, ShipError
 
-from .test_owned_paste import editor, frame  # noqa: F401  (shared synthetic editor fixture)
+from .test_owned_paste import editor  # noqa: F401  (shared synthetic editor fixture)
 
 TITLE = "You're using your quota fast"
 OPTIONS = ("Keep going", "Switch to Spark", "Turn on contributor mode")
@@ -33,13 +28,24 @@ SWITCHED = "Switched to Spark (saved as default)"
 CONTRIBUTOR_ON = "Contributor mode on"
 CONTRIBUTOR_OFF_NOTICE = ("Contributor mode is off, so your content won't be used for product improvement. "
                           "Turn it on in /settings.")
-RULE = "─" * 40
+
+
+def row(text: str) -> str:
+    if len(text) > 120:
+        return text
+    return text + " " * (120 - len(text))
 
 
 def composer(text: str = "", above: str = "") -> str:
-    """The offline-measured idle composer, as a synthetic frame."""
-    return (f"  Muse Code 1.4.15\n{above}{RULE}\n❯ {text}\n{RULE}\n"
-            "  echo · /s/y/n/workspace · Launch overrides")
+    """A synthetic 1.4.20 idle composer. An empty prompt row is exactly ``❯``, so the box is empty."""
+    prompt = "❯" if text == "" else f"❯ {text}"
+    if text and len(prompt) <= 120:
+        prompt = row(prompt)
+    lines = [row("  Muse Code 1.4.20")]
+    if above:
+        lines.append(row(above) if len(above) <= 120 else above)
+    lines += ["─" * 120, prompt, "─" * 120, row("  echo · /synthetic/workspace · Launch overrides")]
+    return "\n".join(lines) + "\n"
 
 
 def offer(*options: str, title: bool = True, wrap: bool = False) -> str:
@@ -47,148 +53,6 @@ def offer(*options: str, title: bool = True, wrap: bool = False) -> str:
     if wrap:  # every word on its own line: no layout is assumed
         lines = [word for line in lines for word in line.split(" ")]
     return "\n".join(lines) + "\nnot active yet - esc close\n"
-
-
-@pytest.fixture
-def passwd_home(tmp_path, monkeypatch):
-    """A synthetic password-database home with Muse's two fixed folders present, as on a host."""
-    home = tmp_path / "synthetic-passwd-home"
-    (home / ".local/share/muse").mkdir(parents=True)
-    (home / ".config/muse").mkdir(parents=True)
-    monkeypatch.setattr(muse_mask.pwd, "getpwuid", lambda uid: SimpleNamespace(pw_dir=str(home)))
-    return home
-
-
-@pytest.fixture
-def seat_home(tmp_path, passwd_home):
-    home = tmp_path / "synthetic-seat-home"
-    muse_mask.prepare(home)
-    return home
-
-
-def production(home: Path, cwd: Path) -> tuple[str, ...]:
-    return ("/usr/bin/bwrap", "--die-with-parent", "--dev-bind", "/", "/",
-            "--bind", str(home / "mask/passwd-muse"), str(muse_mask.authority_target()),
-            "--bind", str(home / "mask/passwd-config"), str(muse_mask.config_target()),
-            "--bind", str(home / "mask/tmp"), "/tmp",
-            "--chdir", str(cwd), "--")
-
-
-# -- the mask: one shared prefix ------------------------------------------------------------------
-
-
-def test_prefix_is_the_host_root_plus_exactly_three_private_binds(seat_home, passwd_home, tmp_path):
-    prefix = muse_mask.prefix(seat_home, tmp_path)
-    assert prefix == production(seat_home, tmp_path)
-    assert muse_mask.authority_target() == passwd_home / ".local/share/muse"
-    assert muse_mask.config_target() == passwd_home / ".config/muse"
-    # Not the endpoint jail: no read-only root, no hidden home, no namespace of its own.
-    assert not any(flag.startswith(("--ro-bind", "--tmpfs", "--unshare", "--clearenv")) for flag in prefix)
-    assert prefix.count("--bind") == 3 and prefix.count("/usr/bin/bwrap") == 1
-
-
-def test_offline_adds_only_a_network_namespace_to_the_same_invocation(seat_home, tmp_path):
-    online, offline = muse_mask.prefix(seat_home, tmp_path), muse_mask.prefix(seat_home, tmp_path, offline=True)
-    assert "--unshare-net" not in online
-    assert offline.count("--unshare-net") == 1 and offline.count("/usr/bin/bwrap") == 1
-    assert tuple(flag for flag in offline if flag != "--unshare-net") == online
-    argv = ("/synthetic/program", "synthetic-argument")
-    assert muse_mask.command(seat_home, tmp_path, argv) == (*online, *argv)
-    assert muse_mask.command(seat_home, tmp_path, argv, offline=True) == (*offline, *argv)
-
-
-def test_password_database_home_wins_over_home_and_xdg(passwd_home, tmp_path, monkeypatch):
-    for name in ("HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME"):
-        monkeypatch.setenv(name, str(tmp_path / f"synthetic-{name.lower()}"))
-    assert muse_mask.authority_target() == passwd_home / ".local/share/muse"
-    assert muse_mask.config_target() == passwd_home / ".config/muse"
-
-
-def test_private_sources_are_owner_only_folders_under_the_seat_home(seat_home):
-    for name in ("passwd-muse", "passwd-config", "tmp"):
-        folder = seat_home / "mask" / name
-        info = folder.lstat()
-        assert stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o700
-        assert info.st_uid == os.getuid() and folder.parent.parent == seat_home
-
-
-@pytest.mark.parametrize("fault", ["link", "mode"])
-def test_a_replaced_or_widened_private_source_refuses_the_prefix(seat_home, tmp_path, fault):
-    folder = seat_home / "mask/tmp"
-    if fault == "link":
-        folder.rmdir()
-        elsewhere = tmp_path / "synthetic-elsewhere"
-        elsewhere.mkdir(mode=0o700)
-        folder.symlink_to(elsewhere, target_is_directory=True)
-    else:
-        folder.chmod(0o755)
-    with pytest.raises(ShipError):
-        muse_mask.prefix(seat_home, tmp_path)
-
-
-def test_missing_system_bubblewrap_refuses_and_never_plans_an_unmasked_start(passwd_home, tmp_path, monkeypatch):
-    monkeypatch.setattr(muse_mask, "PROGRAM", tmp_path / "synthetic-absent-bwrap")
-    with pytest.raises(ShipError, match="bwrap"):
-        muse_mask.prepare(tmp_path / "synthetic-seat-home")
-    assert not (tmp_path / "synthetic-seat-home").exists()
-
-
-def test_absent_fixed_folders_refuse_rather_than_letting_bwrap_create_them(tmp_path, monkeypatch):
-    home = tmp_path / "synthetic-bare-passwd-home"
-    home.mkdir()
-    monkeypatch.setattr(muse_mask.pwd, "getpwuid", lambda uid: SimpleNamespace(pw_dir=str(home)))
-    with pytest.raises(ShipError, match="missing"):
-        muse_mask.preflight(tmp_path / "synthetic-seat-home")
-    assert list(home.iterdir()) == []
-
-
-def test_a_seat_home_under_the_masked_tmp_is_refused(passwd_home):
-    with pytest.raises(ShipError, match="outside the /tmp"):
-        muse_mask.preflight(Path("/tmp") / "synthetic-seat-home-wxyz")
-
-
-# -- the registered launch uses that prefix ------------------------------------------------------
-
-
-@pytest.fixture
-def launched(tmp_path, passwd_home, monkeypatch):
-    """Build a seat home and launch plans through the registered adapter; nothing is executed."""
-    monkeypatch.setattr("quarterdeck.harness.muse_program.binary",
-                        lambda **kwargs: Path("/synthetic/bin/muse-bin-1.4.15-R8339.1"))
-    template = tmp_path / "synthetic-template"
-    template.mkdir()
-    (template / "settings.json").write_text(json.dumps(dict(provider="echo", model="synthetic-catalog-model")))
-    workspace = tmp_path / "synthetic-workspace"
-    workspace.mkdir()
-    spec = SeatSpec("synthetic-seat", "synthetic-session", "worker", "muse", ("synthetic-pool",), cwd=workspace)
-    pool = Pool("synthetic-pool", "meta", config_dir=tmp_path / "synthetic-unused-pool")
-    harness, home = get("muse"), tmp_path / "synthetic-launch-home"
-    harness.build_home(home, spec, pool, template)
-    brief = tmp_path / "synthetic-brief.txt"
-    brief.write_text("A fictional brief.")
-
-    def plan(**kwargs):
-        return harness.launch(spec, pool, home, brief, None, None, **kwargs)
-    return SimpleNamespace(harness=harness, home=home, workspace=workspace, plan=plan)
-
-
-def test_registered_launch_is_masked_by_the_shared_prefix_and_production_by_default(launched):
-    default, offline = launched.plan(), launched.plan(offline=True)
-    prefix = muse_mask.prefix(launched.home, launched.workspace)
-    assert default.argv[:len(prefix)] == prefix and "--unshare-net" not in default.argv
-    assert offline.argv[:len(prefix) + 1] == muse_mask.prefix(launched.home, launched.workspace, offline=True)
-    assert offline.argv.count("--unshare-net") == 1
-    assert default.argv[len(prefix):] == offline.argv[len(prefix) + 1:]
-    for launch in (default, offline):
-        assert "--disable-sandbox" in launch.argv and launch.env["TMPDIR"] == str(launched.home / "mask/tmp")
-        assert launched.harness.owns_launch(launch.argv)
-
-
-def test_ownership_refuses_a_wrapper_whose_bind_targets_differ(launched, tmp_path):
-    argv = list(launched.plan().argv)
-    argv[argv.index(str(muse_mask.authority_target()))] = str(tmp_path / "synthetic-other-target")
-    assert not launched.harness.owns_launch(argv)
-    assert not launched.harness.owns_launch(list(launched.plan().argv)[5:])
 
 
 def test_only_muse_overrides_the_guard_hooks_and_the_strict_interval():
@@ -209,7 +73,8 @@ def test_the_offer_is_named_from_its_title_and_any_one_option(option):
         assert screen.interruption == muse_screen.QUOTA_OFFER and screen.box is None
         assert screen.unknown is None and not screen.working
     plain = muse_screen.read(composer())
-    assert plain.interruption is None and plain.box == ""  # the control: an ordinary composer still opens
+    assert plain.interruption is None and plain.unknown is None and plain.box == ""
+    assert plain.working is False  # the control: an ordinary composer still opens
 
 
 @pytest.mark.parametrize("text", [offer(*OPTIONS, wrap=True), offer(), offer(*OPTIONS) + composer("draft")],
@@ -244,6 +109,14 @@ def test_the_esc_hint_never_makes_a_model_choice_dismissable():
 
 def test_the_offer_reaches_a_person_and_is_named(editor, monkeypatch):
     door = offering(editor, monkeypatch, offer("Switch to Spark"))
+    held, _ = door.human_obstruction()
+    assert not held.open and "launch opening" in held.reason
+    launched = editor.seat.launched()
+    launch_opening.prepare(editor.seat, launched, "A fictional brief.")
+    path = launch_opening.path_for(editor.seat, launched)
+    recorded = json.loads(path.read_text())
+    recorded["phase"] = "delivered"
+    path.write_text(json.dumps(recorded) + "\n")
     reading, reason = door.human_obstruction()
     assert not reading.open and reading.clears == "needs a human"
     assert reason and muse_screen.QUOTA_OFFER.name in reason and "needs a human" in reason

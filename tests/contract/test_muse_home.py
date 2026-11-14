@@ -43,9 +43,11 @@ def test_environment_is_a_pure_plan_without_an_unproved_auth_override(tmp_path):
     home = tmp_path / "synthetic-home"
     values = environment(home)
     assert set(values) == {"HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
-                           "XDG_STATE_HOME", "MUSE_NO_AUTO_UPDATE"}
+                           "XDG_STATE_HOME", "MUSE_NO_AUTO_UPDATE", "TMPDIR"}
+    assert values["HOME"] == str(home / "user-home")
     assert values["XDG_CONFIG_HOME"] == str(home / "config")
     assert values["XDG_DATA_HOME"] == str(home / "data")
+    assert values["TMPDIR"] == str(home / "tmp")
     assert values["MUSE_NO_AUTO_UPDATE"] == "1"
     assert not home.exists()
 

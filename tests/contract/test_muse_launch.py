@@ -18,12 +18,10 @@ def test_registry_routes_the_legacy_program_spelling_to_its_company():
 
 def test_no_like_seat_uses_one_explicit_ship_template_model_in_settings_and_argv(tmp_path, monkeypatch):
     harness = MuseHarness()
-    # Replace mask/native planning dependencies: this case proves only the
-    # ordinary check's model=None template route, not filesystem isolation.
-    monkeypatch.setattr(harness, "preflight", lambda *args: None)
-    monkeypatch.setattr("quarterdeck.harness.muse_mask.prepare", lambda *args: None)
-    monkeypatch.setattr("quarterdeck.harness.muse_mask.command", lambda home, cwd, argv, **kwargs: argv)
-    monkeypatch.setattr("quarterdeck.harness.muse_program.binary", lambda **kwargs: Path("/synthetic/muse-binary"))
+    # This case proves the template model reaches settings and argv. The binary
+    # is not executed; isolation of the home is a separate gate.
+    monkeypatch.setattr("quarterdeck.harness.muse_program.binary",
+                        lambda **kwargs: Path("/synthetic/bin/muse-bin-1.4.20-R1.1"))
     template = tmp_path / "template"
     template.mkdir()
     (template / "settings.json").write_text(json.dumps(dict(provider="echo", model="synthetic-catalog-model")))
@@ -38,8 +36,12 @@ def test_no_like_seat_uses_one_explicit_ship_template_model_in_settings_and_argv
     launch = harness.launch(spec, pool, home, brief, None, "A fictional open message.")
     assert settings["model"] == launch.argv[launch.argv.index("--model") + 1] == "synthetic-catalog-model"
     assert settings["provider"] == launch.argv[launch.argv.index("--provider") + 1] == "echo"
-    assert launch.argv[-1] == "A fictional brief.\n\nA fictional open message."
-    assert harness.opening_prompt_turn and launch.env["TMPDIR"] == str(home / "mask/tmp")
+    assert settings["contributor_mode_enabled"] is False
+    assert launch.argv[launch.argv.index("--contributor-mode") + 1] == "off"
+    opening = "A fictional brief.\n\nA fictional open message."
+    assert launch.deferred_opening == opening
+    assert opening not in launch.argv and "/usr/bin/bwrap" not in launch.argv
+    assert harness.opening_prompt_turn and launch.env["TMPDIR"] == str(home / "tmp")
 
 
 def test_no_like_seat_with_no_model_refuses_before_any_home_or_startup(tmp_path):
