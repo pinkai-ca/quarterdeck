@@ -5,6 +5,7 @@ companion proof shares the canonical watch generation, never a second identity.
 Old or incomplete registrations grant no idle exception.
 """
 
+from contextlib import nullcontext
 from datetime import datetime
 import hashlib
 import json
@@ -67,9 +68,10 @@ def generation(runtime, name):
     return value
 
 
-def register(runtime, name, *, validate=None, on_registered=None):
+def register(runtime, name, *, validate=None, on_registered=None, admitted=True):
+    """``admitted=False`` is the jailed wait's: it cannot take the admission lock; its files are its seat folder's."""
     path = post.watch_file(runtime, name)
-    with post.admission(runtime, name):
+    with post.admission(runtime, name) if admitted else nullcontext():
         if validate is not None:
             validate()
         # Lock acquisition and validation remain interruptible. Only publication and handing its
@@ -98,9 +100,9 @@ def register(runtime, name, *, validate=None, on_registered=None):
             signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
 
 
-def retire(runtime, name, registration):
+def retire(runtime, name, registration, *, admitted=True):
     path = post.watch_file(runtime, name)
-    with post.admission(runtime, name):
+    with post.admission(runtime, name) if admitted else nullcontext():
         try:
             if stamp(path) == registration['stamp'] and path.read_text() == registration['watch']:
                 try:

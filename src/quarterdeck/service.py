@@ -418,6 +418,11 @@ class Service:
                     from .auth_failure import status as authentication_status, waiting as authentication_waiting
                     phase = 'ownership'
                     try:
+                        from . import watch_broker
+                        watch_broker.run(self, seat)  # a jailed watch's attempts, opened and closed on its behalf
+                    except Exception as error:
+                        self.log('error', step='watch_broker', seat=seat.name, error=repr(error))
+                    try:
                         signin = authentication_status(seat)  # a sign-in failure the waking line may cure reads as waiting
                         if seat.is_up and not (recovery.held(seat) or signin and not authentication_waiting(signin)
                                                or turn_failure.obstruction(seat, self.store)):

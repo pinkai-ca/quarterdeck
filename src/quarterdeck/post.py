@@ -1278,6 +1278,11 @@ def watch_reading(runtime: Path, seat: str) -> WatchReading:
         return WatchReading(False, generation)
     except (OSError, ValueError, UnicodeError):
         return WatchReading(None, generation, 'inbox watch evidence unreadable; no waking input')
+    from . import watch_broker
+    held = watch_broker.lease_held(runtime, seat, generation)
+    if held is not None:
+        # A jailed watch's process id is its jail's own; its lease in its seat folder says whether it lives.
+        return WatchReading(held, generation)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -1314,6 +1319,10 @@ def wait_batch(runtime: Path, seat: str, interval: float = 1.0, stop_after: floa
     wait registers itself while it runs, so the service and the status line know a watch
     is armed. Nothing is typed into the seat's pane: this is the Office's one path.
     """
+    from . import watch_broker
+    if watch_broker.needed(runtime):
+        # Inside a jail the post folder is read-only: the service opens and closes this watch's attempts.
+        return watch_broker.wait(runtime, seat, interval, stop_after, validate)
     store, attempts = Store(runtime), Attempts(runtime)
     if validate is not None:
         validate()
@@ -1355,7 +1364,14 @@ def wait(runtime: Path, seat: str, interval: float = 1.0, stop_after: float | No
 
 
 def printed(runtime: Path, opened: list[Attempt]) -> None:
-    """Close a watch's attempts once their text has reached the seat."""
+    """Close a watch's attempts once their text has reached the seat.
+
+    A jailed watch cannot write them: its receipts go in its own seat folder, and the service closes them.
+    """
+    from . import watch_broker
+    if watch_broker.needed(runtime):
+        watch_broker.receipt(runtime, opened)
+        return
     attempts = Attempts(runtime)
     for attempt in opened:
         attempts.close(attempt, "watch", "printed by qd inbox --wait")
