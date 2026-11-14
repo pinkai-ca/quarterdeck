@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -181,10 +182,17 @@ def test_a_busy_service_reads_busy_not_dead_and_qd_down_still_stops_it(ship: shi
     qd(capsys, "up", "captain")
     pid, _ = service.read_heartbeat(ship.runtime)
     from quarterdeck.tmux_socket import locked
+    def pause():
+        # Request publication needs admission even while the service is paused.
+        # Take the same order as delivery: seat admissions, then namespace.
+        with ExitStack() as held:
+            for name in sorted(ship.seats):
+                held.enter_context(post.admission(ship.runtime, name))
+            held.enter_context(locked(tmux.socket, tmux._owned.namespace))
+            os.kill(pid, signal.SIGSTOP)
     # Model actor work that never ends, between native namespace operations.
     # Holding an actual namespace lease is separately tested as ownership uncertainty.
-    with locked(tmux.socket, tmux._owned.namespace):
-        os.kill(pid, signal.SIGSTOP)  # the service lock stays held while the heartbeat ages
+    pause()  # the service lock stays held while the heartbeat ages
     try:
         stamp = (datetime.now(timezone.utc) - timedelta(seconds=30)).isoformat()
         service.heartbeat_path(ship.runtime).write_text(f"{pid} {stamp}\n")
@@ -200,7 +208,7 @@ def test_a_busy_service_reads_busy_not_dead_and_qd_down_still_stops_it(ship: shi
     assert qd(capsys, "status", "--line").startswith("service ok")
     captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
     wait_for(lambda: captain.harness.screen(tmux.capture(captain.pane().id)).shows.get("effort") == "low", seconds=15)
-    os.kill(pid, signal.SIGSTOP)
+    pause()
     proof = service.stop(ship.runtime)
     assert proof == f"service killed · pid {pid} · it did not answer SIGTERM within 3s" and not service.alive(ship.runtime)
 
