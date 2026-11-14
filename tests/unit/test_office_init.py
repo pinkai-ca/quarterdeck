@@ -174,7 +174,7 @@ def test_first_setup_initializes_only_the_office_then_keeps_the_crew_wizard(offi
     project, calls = office_project
     wizard = []
     monkeypatch.setattr(setup, "run", lambda args, **kwargs: wizard.append(args) or ["crew wizard"])
-    args = argparse.Namespace()
+    args = cli.build_parser().parse_args(["setup"])
     result = setup.first_step(args)
     assert len(calls) == 1 and not wizard
     assert "Office ready" in result[-1]

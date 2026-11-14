@@ -592,3 +592,68 @@ def test_the_suggestion_is_the_start_folder_unless_it_is_the_quarterdeck_checkou
     folder = getattr(places, where)
     monkeypatch.chdir(folder)
     assert places.default() == (str(folder.resolve()) if suggested else None)
+
+
+@pytest.mark.parametrize("interactive", [False, True])
+def test_first_setup_creates_and_starts_office_before_crew_from_one_conversation(
+        answers, tmp_path, monkeypatch, capsys, interactive):
+    operations = ScriptedOperations()
+    def up_desk(office):
+        assert office.kind == "office"
+        assert not Path(answers["folder"]).exists()
+        operations.calls.append("office up")
+        return ["scripted office started"]
+    monkeypatch.setattr(operations, "up_desk", up_desk)
+    monkeypatch.setattr(setup, "Operations", lambda: operations)
+    if interactive:
+        data = {key: value for key, value in answers.items() if key not in ("accept", "start")}
+        prompts = []
+        def respond(prompt):
+            prompts.append(prompt)
+            if prompt.startswith("Change an item"):
+                return "accept"
+            return "yes"
+        lines = []
+        conversation = setup.Conversation(data, interactive=True, read=respond, write=lines.append)
+        args = cli.build_parser().parse_args(["setup"])
+        setup.first_step(args, operations=operations, conversation=conversation)
+        assert len(prompts) == 3
+        assert prompts[0].startswith("Continue with a ship and crew")
+        assert sum(prompt.startswith("Change an item") for prompt in prompts) == 1
+        assert sum(prompt.startswith("Start the office and crew") for prompt in prompts) == 1
+    else:
+        file = tmp_path / "answers.json"
+        file.write_text(json.dumps(answers))
+        assert cli.main(["setup", "--answers", str(file)]) == 0
+        assert "scripted office started" in capsys.readouterr().out
+    assert ship.load(tmp_path / "office").kind == "office"
+    crew = ship.load(Path(answers["folder"]))
+    assert {seat.role for seat in crew.seats.values()} == {"desk", "captain", "engineering"}
+    assert operations.calls.index("office up") < operations.calls.index(("check", "codex")) < operations.calls.index("up")
+
+
+def test_first_setup_file_without_accept_writes_neither_office_nor_crew(answers, tmp_path):
+    answers.pop("accept")
+    conversation = setup.Conversation(answers, interactive=False, write=lambda _: None)
+    with pytest.raises(setup.ShipError, match="missing answer accept"):
+        setup.first_step(argparse.Namespace(json=False), operations=ScriptedOperations(), conversation=conversation)
+    assert not (tmp_path / "office").exists()
+    assert not Path(answers["folder"]).exists()
+
+
+def test_terminal_can_stop_at_office_without_crew_questions(answers, tmp_path, monkeypatch):
+    operations = ScriptedOperations()
+    calls = []
+    monkeypatch.setattr(operations, "up_desk", lambda office: calls.append(office) or ["office up"])
+    prompts = []
+    def respond(prompt):
+        prompts.append(prompt)
+        return "no" if prompt.startswith("Continue") else "yes"
+    conversation = setup.Conversation({}, interactive=True, read=respond, write=lambda _: None)
+    result = setup.first_step(argparse.Namespace(json=False), operations=operations, conversation=conversation)
+    assert "Office ready" in result[-1]
+    assert len(calls) == 1 and operations.calls == ["access"]
+    assert len(prompts) == 3
+    assert prompts[1].startswith("Create this project's office")
+    assert prompts[2].startswith("Start the office's desk")
+    assert not Path(answers["folder"]).exists()

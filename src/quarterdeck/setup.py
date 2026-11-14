@@ -255,18 +255,43 @@ def init_office(args: argparse.Namespace, *, operations: Operations | None = Non
     return lines
 
 
-def first_step(args: argparse.Namespace, *, operations: Operations | None = None):
-    """The first setup creates only the office; an existing office leaves the crew wizard intact."""
+def conversation_for(args: argparse.Namespace) -> Conversation:
+    return Conversation(read_answers(args), interactive=sys.stdin.isatty() and not args.json and not args.answers,
+                        write=lambda line: print(line, file=sys.stderr if args.json else sys.stdout, flush=True))
+
+
+def first_step(args: argparse.Namespace, *, operations: Operations | None = None,
+               conversation: Conversation | None = None):
+    """Create the office before the crew, sharing answers and a single acceptance."""
     operations = operations or Operations()
     folder = office_folder(operations.project_folder())
-    if not (folder / "ship.toml").exists():
-        answers = read_answers(args) if hasattr(args, "answers") else {}
-        if answers.get("accept") == "no":
-            return ["Setup stopped before acceptance; no office changes were written."]
-        return init_office(argparse.Namespace(ship=None), operations=operations, start=answers.get("start") != "no")
-    if ships.load(folder).kind != "office":
-        raise ShipError(f"{folder} is not an office; resolve it before qd setup")
-    return run(args, operations=operations)
+    if (folder / "ship.toml").exists():
+        if ships.load(folder).kind != "office":
+            raise ShipError(f"{folder} is not an office; resolve it before qd setup")
+        return run(args, operations=operations, conversation=conversation)
+    conversation = conversation or conversation_for(args)
+    answers = conversation.answers
+    crew = any(value for key, value in answers.items() if key not in ("accept", "start"))
+    if conversation.interactive:
+        conversation.say("Setup creates your office first. You can stop there or add a ship and its crew in this run.")
+        try:
+            choice = conversation.read("Continue with a ship and crew after the office? yes or no [yes]: ").strip() or "yes"
+        except (EOFError, KeyboardInterrupt):
+            raise ShipError("setup stopped before office creation; rerun qd setup to continue") from None
+        if choice not in ("yes", "no"):
+            raise ShipError("choose yes or no for continuing with a ship and crew; rerun qd setup")
+        crew = choice == "yes"
+    if crew:
+        return run(args, operations=operations, conversation=conversation, initialize_office=True)
+    if conversation.interactive:
+        accepted = conversation.choice("accept", "Create this project's office? yes or no", ("yes", "no"))
+    else:
+        accepted = answers.get("accept")
+    if accepted == "no":
+        return ["Setup stopped before acceptance; no office changes were written."]
+    start = (conversation.choice("start", "Start the office's desk? Opening its brief may spend turns. yes or no",
+                                 ("yes", "no"), "yes") if conversation.interactive else answers.get("start", "yes"))
+    return init_office(argparse.Namespace(ship=None), operations=operations, start=start != "no")
 
 
 def program_list(value: str, available: dict) -> list[str]:
@@ -508,10 +533,9 @@ def update(ship: Ship, edits: list, operations: Operations, conversation: Conver
 
 
 def run(args: argparse.Namespace, *, operations: Operations | None = None,
-        conversation: Conversation | None = None) -> list[str]:
+        conversation: Conversation | None = None, initialize_office: bool = False) -> list[str]:
     operations = operations or Operations()
-    conversation = conversation or Conversation(read_answers(args), interactive=sys.stdin.isatty() and not args.json and not args.answers,
-                                                write=lambda line: print(line, file=sys.stderr if args.json else sys.stdout, flush=True))
+    conversation = conversation or conversation_for(args)
     text, orders, defaults = template()
     available = operations.discover(defaults)
     for name, (row, sign_in) in available.items():
@@ -524,13 +548,20 @@ def run(args: argparse.Namespace, *, operations: Operations | None = None,
         accepted = conversation.review(lambda: setup_proposal.render_summary(data))
         if accepted is not None:
             break
+    office_lines = []
     def finish(lines):
         if args.json:
             from .output import Reading
-            return Reading({**data, "result": lines}, lambda reading: reading["result"])
+            return Reading({**data, "result": office_lines + lines}, lambda reading: reading["result"])
         return lines
     if not accepted:
         return finish(["Setup stopped before acceptance; no ship changes were written."])
+    if initialize_office:
+        start_office = conversation.choice("start", "Start the office and crew? Opening briefs may spend turns. yes or no",
+                                           ("yes", "no"), "yes")
+        office_lines = init_office(argparse.Namespace(ship=None), operations=operations, start=start_office == "yes")
+        for line in office_lines:
+            conversation.say(line)
     folder = proposal.ship.folder
     rerun = shlex.join(["qd", "--ship", str(folder), "setup", "--existing", "keep",
                        "--use-defaults", "yes", "--accept", "yes"])
