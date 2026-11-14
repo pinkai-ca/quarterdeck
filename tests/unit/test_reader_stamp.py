@@ -61,14 +61,17 @@ def test_missing_reader_code_never_certifies_reuse(tmp_path):
 
 
 @pytest.mark.parametrize('module', reader_stamp.ATTRIBUTION)
-def test_every_attribution_dependency_changes_verdict_keys_only(tmp_path, module):
+def test_every_attribution_dependency_changes_verdict_keys_and_its_reader_dependents(tmp_path, module):
     root = copied_modules(tmp_path)
     before = reader_stamp.attributions(root)
     records = reader_stamp.readers(root)
     path = root / module
     path.write_bytes(path.read_bytes() + b'\n# synthetic verdict revision\n')
     assert all(reader_stamp.attributions(root)[name] != key for name, key in before.items())
-    assert reader_stamp.readers(root) == records
+    after = reader_stamp.readers(root)
+    assert {name for name in records if after[name] != records[name]} == {
+        name for name, modules in reader_stamp.MODULES.items() if module in modules
+    }
 
 
 def test_restart_outside_readers_reuses_all_and_changed_reader_rechecks_only_its_records(tmp_path, monkeypatch):
