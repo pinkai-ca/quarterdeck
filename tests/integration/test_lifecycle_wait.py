@@ -1,12 +1,58 @@
 """Explicit lifecycle commands wait for a concurrent seat transition to finish."""
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 import threading
+import time
+from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import cli, lifecycle, seat as seatmod, ship as shipmod
+from quarterdeck import cli, lifecycle, request_queue, seat as seatmod, ship as shipmod
+from quarterdeck.service import Service
 from .test_launch_lifecycle import process_identity, windows
 from .waiting import wait_for
+
+
+@pytest.mark.parametrize('operation', ['restart', 'fresh', 'select'])
+def test_service_lifecycle_requests_refuse_busy_claim_without_waiting(drydock, tmux, monkeypatch, operation):
+    ship = shipmod.load(drydock)
+    seat = seatmod.Seat(ship, ship.seat('worker-1'), tmux)
+    seat.up(False)
+    prior = seat.launched()
+    runner = Service.__new__(Service)
+    runner.runtime = ship.runtime
+    runner.seat = lambda name: seat
+    runner.resolved_seats = lambda: [seat]
+    runner.log = lambda *args, **kwargs: None
+    # Synthetic admission isolates ordinary lifecycle contention from idle-policy tests.
+    monkeypatch.setattr('quarterdeck.service.idle.reading', lambda *args, **kwargs: (None, None))
+    if operation == 'select':
+        seat.spec = replace(seat.spec, pools=[seat.pool.name, 'other'],
+                            pool_choices={seat.pool.name: {}, 'other': {}})
+        runner.not_idle = lambda candidate: None
+        runner.known_open = lambda candidate, pool: True
+        kind, data = 'select', dict(pool='other')
+    else:
+        kind, data = 'relaunch', dict(resume=operation == 'restart')
+    path = request_queue.enqueue(ship.runtime, kind, dict(seat=seat.name, **data),
+                                 name='request-busy-0-zz')
+    later = request_queue.enqueue(ship.runtime, 'unknown', {}, name='request-healthy-0-zz')
+
+    def no_wait(seconds):
+        pytest.fail('service request waited on a lifecycle claim')
+
+    with lifecycle.claim(ship.runtime, seat.name), monkeypatch.context() as immediate:
+        # Fail on a first sleep as well as bounding elapsed time, so a regression
+        # never spends the production thirty-second deadline inside this test.
+        immediate.setattr(lifecycle, 'time', SimpleNamespace(monotonic=time.monotonic, sleep=no_wait))
+        started = time.monotonic()
+        runner.requests()
+        assert time.monotonic() - started < 0.5
+        assert path.with_suffix('.done').read_text() == (
+            f'refused: {seat.name}: another lifecycle transition is in progress; retry when it ends\n')
+        assert later.with_suffix('.done').read_text() == "unknown request 'unknown'\n"
+        assert not path.exists() and not path.with_suffix('.claimed').exists()
+        assert seat.launched() == prior and seat.pane().pid == prior.pid
 
 
 @pytest.mark.parametrize('whole_ship', [False, True], ids=['one-seat', 'whole-ship'])
