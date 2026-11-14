@@ -24,6 +24,12 @@ from tests.testrunner import layout
 def command(*argv, cwd, env, timeout=180):
     done = subprocess.run([str(arg) for arg in argv], cwd=cwd, env=env,
                           capture_output=True, text=True, timeout=timeout)
+    if done.returncode != 0:
+        # Assertion reprs truncate long drill tables; captured streams retain every check.
+        print('command stdout:', flush=True)
+        print(done.stdout, end='', flush=True)
+        print('command stderr:', file=sys.stderr, flush=True)
+        print(done.stderr, end='', file=sys.stderr, flush=True)
     assert done.returncode == 0, (argv, done.returncode, done.stdout, done.stderr)
     return done.stdout
 
