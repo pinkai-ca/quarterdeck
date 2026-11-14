@@ -58,7 +58,7 @@ def test_up_starts_the_service_and_the_service_delivers(ship: shipmod.Ship, tmux
     done = wait_for(lambda: [a for a in attempts.for_message(message.id) if a.result], seconds=15)
     assert done[0].result == "delivered" and done[0].pane.startswith("%")
     captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
-    wait_for(lambda: captain.record() and captain.harness.turns(captain.record()))
+    wait_for(lambda: (record := captain.record()) and captain.harness.turns(record))
     assert "⎿ counted" in tmux.capture(captain.pane().id, history=100)
     inbox_path = ship.runtime / "post" / "inbox" / "captain.md"
     def rendered_order():
@@ -237,10 +237,10 @@ def test_a_restart_waits_for_the_turn_to_end(ship: shipmod.Ship, tmux: Tmux, cap
     captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
     first = captain.launched()
     qd(capsys, "post", "order", "--to", "captain", "slow work\n$ echo first-turn-marker")
-    wait_for(lambda: captain.record() and captain.harness.state(captain.record()).turn_open, seconds=15)
+    wait_for(lambda: (record := captain.record()) and captain.harness.state(record).turn_open, seconds=15)
     proof = qd(capsys, "restart", "captain")
     assert proof.startswith("pending: the service has not answered") or "resumed" in proof
-    wait_for(lambda: captain.launched() and captain.launched().at != first.at, seconds=30)
+    wait_for(lambda: (launched := captain.launched()) and launched.at != first.at, seconds=30)
     turns = captain.harness.turns(captain.record())
     assert turns and all(t.ended for t in turns), "the running turn ended before the relaunch"
     assert captain.launched().resume is not None, "a restart resumes"
@@ -313,7 +313,7 @@ def test_a_seat_moves_on_at_a_wall_and_stays(ship: shipmod.Ship, tmux: Tmux, cap
     book = ledger.Ledger(ship.runtime / "ledger.sqlite")
     book.record_usage("fake", Usage((Window("5h", 1.0, datetime.now(timezone.utc) + timedelta(hours=1)),), datetime.now(timezone.utc)))
     book.close()
-    wait_for(lambda: captain.launched() and captain.launched().at != first.at, seconds=20)
+    wait_for(lambda: (launched := captain.launched()) and launched.at != first.at, seconds=20)
     assert captain.pool.name == "fake-2" and captain.launched().pool == "fake-2"
     notice = wait_for(lambda: [m for m in post.Store(ship.runtime).all() if m.sender == "ship" and "moved to pool" in m.body], seconds=10)[0]
     assert notice.body == "moved to pool fake-2 from fake at its wall"
@@ -438,7 +438,7 @@ def test_the_service_reconciles_an_attempt_it_died_in_the_middle_of(ship: shipmo
     attempts.open(lost, "captain", launched.pane, launched.pid, launched.at)
     tmux.paste(captain.pane().id, post.typed([typed]))
     tmux.keys(captain.pane().id, "Enter")
-    wait_for(lambda: captain.record() and captain.harness.state(captain.record()).turns)
+    wait_for(lambda: (record := captain.record()) and captain.harness.state(record).turns)
     assert "service started" in qd(capsys, "up").splitlines()[-1], "qd up restarts a dead service"
     wait_for(lambda: all(a.result for a in attempts.all()), seconds=10)
     results = {a.message: a.result for a in attempts.all()}
