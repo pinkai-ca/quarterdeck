@@ -113,7 +113,17 @@ def program_folders(programs: tuple[str, ...], path: str, home: Path) -> list[Pa
     ``node_modules``. Then every PATH entry, so the shell finds the operator's tools, and the framework's own
     interpreter, code and files, so ``qd`` runs inside.
     """
-    return sorted((f for f in _resolved(programs, path, home) if home in f.parents), key=lambda f: (len(f.parts), str(f)))
+    return sorted((f for f in _resolved(programs, path, home) if home in f.parents and not covers(f, home)),
+                  key=lambda f: (len(f.parts), str(f)))
+
+
+def covers(folder: Path, home: Path) -> bool:
+    """Whether binding ``folder`` would lay it over the hidden home: it is the home or contains it.
+
+    Every bind back comes after the home's empty tmpfs, so such a folder would show the home again, read-only.
+    A program installed inside the home is bound back by its own folders below the home, never by one above.
+    """
+    return home.is_relative_to(folder)
 
 
 def _resolved(programs: tuple[str, ...], path: str, home: Path) -> set[Path]:
@@ -146,9 +156,10 @@ def _resolved(programs: tuple[str, ...], path: str, home: Path) -> set[Path]:
 def hidden_folders(programs: tuple[str, ...], path: str, home: Path) -> list[Path]:
     """The same folders where they lie below the jail's own /tmp or fresh /dev, which hide them as the home is
     hidden: a test run's working storage in memory, or a program installed there. Each is bound back read-only;
-    /tmp, /dev and /dev/shm themselves never are, so the jail is no wider than on disk."""
+    /tmp, /dev and /dev/shm themselves never are, and neither is a folder that is or contains the home, which
+    would lay it over the hidden home: so the jail is no wider than on disk."""
     return sorted((f for f in _resolved(programs, path, home)
-                   if f not in NEVER and any(root in f.parents for root in HIDDEN)),
+                   if f not in NEVER and any(root in f.parents for root in HIDDEN) and not covers(f, home)),
                   key=lambda f: (len(f.parts), str(f)))
 
 

@@ -115,6 +115,46 @@ print(json.dumps(dict(operator_read=(home/'operator-marker').exists(),
     assert (workspace/'written').exists() and (own/'written').exists() and (ship.runtime/'post'/'written').exists()
 
 
+@pytest.mark.parametrize('cover', ['path-entry', 'install-prefix'])
+def test_a_resolved_folder_that_contains_the_home_never_shows_it_again(cover):
+    """A folder bound back read-only after the home's tmpfs is laid over it: one that contains the home would show
+    the home again. Under the jail's own /tmp, a PATH entry or an install prefix that contains the home is not
+    bound back; a program installed there still runs from its own folder."""
+    import json
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix='qdj-', dir='/tmp') as temporary:
+        above = Path(temporary)/'tools'
+        home = above/'nested'/'operator-home'
+        workspace = Path(temporary)/'work'
+        folder = workspace/'ships'/'test'
+        ship = shipmod.Ship(folder, 'synthetic', 'operator', workspace, {}, {}, {})
+        own = ship.runtime/'seats'/'worker'
+        (own/'home').mkdir(parents=True)
+        home.mkdir(parents=True)
+        (home/'operator-marker').write_text('synthetic operator marker')
+        probe = ('import json, sys\nfrom pathlib import Path\n'
+                 'print(json.dumps(dict(ran=True, operator_read=Path(sys.argv[1]).exists())))\n')
+        if cover == 'path-entry':
+            path, program = f'/usr/bin{os.pathsep}{above}', '/usr/bin/python3'
+            argv = [program, '-c', probe, str(home/'operator-marker')]
+        else:
+            (above/'bin').mkdir()
+            program = str(above/'bin'/'synthetic-probe')
+            Path(program).write_text('#!/usr/bin/python3\n' + probe)
+            Path(program).chmod(0o755)
+            path = f'/usr/bin{os.pathsep}{above/"bin"}'
+            argv = [program, str(home/'operator-marker')]
+        jail = sandbox.plan(ship, 'worker', own, own/'home', workspace, program, path, home=home)
+        assert not any(sandbox.covers(f, home) for f in jail.read_only), jail.read_only
+        if cover == 'install-prefix':
+            assert above/'bin' in jail.read_only, 'the program is still bound back by its own folder'
+        result = subprocess.run(sandbox.command(jail, argv), capture_output=True, text=True, timeout=60)
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == dict(ran=True, operator_read=False)
+
+
 def test_a_jailed_post_to_an_up_recipient_does_not_call_hidden_state_down(drydock: Path, tmux: Tmux, tmp_path: Path):
     """Real bwrap + qd post + fake recipient: hidden metadata is not a down seat."""
     from quarterdeck.service import Service

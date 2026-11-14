@@ -46,6 +46,23 @@ def test_program_folders_follow_the_links_to_the_install_prefix_and_never_bind_t
     assert sandbox.program_folders(("nothing-here",), path, home) == [home / ".local" / "bin"], "a program not found binds nothing; the PATH entry is bound even so"
 
 
+def test_no_folder_bound_back_is_the_home_or_contains_it():
+    """Every bind back follows the home's tmpfs, so a folder at or above the home would show it again."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix='qdj-', dir='/tmp') as temporary:
+        above = Path(temporary)/'tools'
+        home = above/'operator-home'
+        (home/'bin').mkdir(parents=True)
+        (above/'bin').mkdir()
+        path = os.pathsep.join(map(str, (above, home, home/'bin', above/'bin', '/usr/bin')))
+        hidden = sandbox.hidden_folders(('nothing-here',), path, home)
+        assert above not in hidden and home not in hidden, 'a PATH entry at or above the home stays hidden'
+        assert home/'bin' in hidden and above/'bin' in hidden, 'folders beside or below the home are still bound back'
+        assert sandbox.program_folders(('nothing-here',), path, home) == [home/'bin']
+        assert sandbox.covers(home, home) and sandbox.covers(above, home) and not sandbox.covers(home/'bin', home)
+
+
 def test_the_command_hides_the_home_binds_the_workspace_writable_and_the_ship_read_only_in_depth_order(tmp_path: Path):
     home = tmp_path / "home"
     ship_folder = home / "dev" / "project" / "ships" / "x"
