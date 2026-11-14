@@ -176,3 +176,104 @@ print(json.dumps(dict(seen, code=code)))
     sent, = [m for m in post.Store(left.runtime).all() if m.body == 'From the jail.']
     assert sent.to == 'captain@beta' and sent.sender == 'worker-1'
     assert secret not in done.stdout + done.stderr
+
+
+@pytest.mark.skipif(not namespaces_allowed(), reason='bubblewrap is not installed, or cannot make a namespace here')
+def test_a_ship_raised_after_the_jail_launched_is_absent_inside_it(tmp_path):
+    """The fleet folders are fenced whole: a ship raised later shows inside as nothing, not read-only."""
+    import fcntl
+    import time
+
+    home = tmp_path / 'operator-home'
+    project = home / 'project'
+    left, right = make_ship(project, 'alpha'), make_ship(project, 'beta')
+    for ship in (left, right):
+        shipmod.fence(ship)
+    workspace = home / 'work'
+    workspace.mkdir()
+    own = left.runtime / 'seats' / 'worker-1'
+    (own / 'home').mkdir(parents=True)
+    jail = sandbox.plan(left, 'worker-1', own, own / 'home', workspace, sys.executable, os.environ['PATH'], home=home)
+    probe = '''
+import fcntl, json, os, sys, time
+from pathlib import Path
+from quarterdeck import cli
+alpha, beta, gamma, work = map(Path, sys.argv[1:5])
+deadline = time.monotonic() + 30
+while not (work / 'raised').exists() and time.monotonic() < deadline:
+    time.sleep(.02)
+def lock(path):
+    try:
+        fd = os.open(path, os.O_RDONLY)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return 'taken'
+    except OSError as error:
+        return type(error).__name__
+def read(path):
+    try:
+        return path.read_text()
+    except OSError as error:
+        return type(error).__name__
+seen = dict(
+    raised=(work / 'raised').exists(),
+    gamma=gamma.exists(), gamma_declaration=read(gamma / 'ship.toml'),
+    gamma_lock=lock(gamma / 'runtime' / 'locks' / 'credential-reseed.lock'),
+    gamma_home=read(gamma / 'runtime' / 'seats' / 's1' / 'home' / '.credentials.json'),
+    ships=sorted(p.name for p in beta.parent.iterdir()),
+    beta_declaration=(beta / 'ship.toml').is_file(), beta_runtime=(beta / 'runtime').exists(),
+    own_declaration=(alpha / 'ship.toml').is_file(), own_runtime=(alpha / 'runtime' / 'post').is_dir())
+(work / 'checked').write_text('')
+while not (work / 'done').exists() and time.monotonic() < deadline:
+    time.sleep(.02)
+code = cli.main(['--ship', str(alpha), 'post', 'order', '--from', 'worker-1', '--to', 'captain@beta', 'From the fenced jail.'])
+print(json.dumps(dict(seen, code=code)))
+'''
+    env = {key: value for key, value in os.environ.items() if not key.startswith(('QD_', 'TMUX'))}
+    gamma = project / 'ships' / 'gamma'
+    child = subprocess.Popen(sandbox.command(jail, [sys.executable, '-c', probe, str(left.folder), str(right.folder),
+                                                    str(gamma), str(workspace)]),
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+    try:
+        time.sleep(.4)  # the jail has launched; the late ship is raised outside it now
+        late = make_ship(project, 'gamma')
+        shipmod.fence(late)
+        locks = late.runtime / 'locks'
+        locks.mkdir(parents=True, exist_ok=True)
+        (locks / 'credential-reseed.lock').touch()
+        secret = 'synthetic-late-ship-sign-in'
+        credentials = late.runtime / 'seats' / 's1' / 'home' / '.credentials.json'
+        credentials.parent.mkdir(parents=True)
+        credentials.write_text(secret)
+        (workspace / 'raised').write_text('')
+        deadline = time.monotonic() + 30
+        while not (workspace / 'checked').exists() and child.poll() is None and time.monotonic() < deadline:
+            time.sleep(.02)
+        # While the jail still runs, the late ship's reseed lock is free outside.
+        fd = os.open(locks / 'credential-reseed.lock', os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            held = False
+        except BlockingIOError:
+            held = True
+        finally:
+            os.close(fd)
+        (workspace / 'done').write_text('')
+        out, err = child.communicate(timeout=60)
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=10)
+    reading = json.loads(out.strip().splitlines()[-1]) if out.strip() else {}
+    assert reading.get('code') == 0, (out, err)
+    assert reading['raised'], 'the late ship was raised while the jail ran'
+    assert not held, "the jail holds the late ship's reseed lock"
+    assert reading['gamma'] is False, 'a ship raised after the launch is no folder inside'
+    assert reading['gamma_declaration'] == reading['gamma_home'] == reading['gamma_lock'] == 'FileNotFoundError'
+    assert reading['ships'] == ['alpha', 'beta'], 'only the ship itself and the peers found at launch'
+    assert reading['beta_declaration'] and not reading['beta_runtime']
+    assert reading['own_declaration'] and reading['own_runtime']
+    assert secret not in out + err
+    assert post.file_drops(post.Store(left.runtime)) == [], "the jail's drop files as its own seat's"
+    sent, = [m for m in post.Store(left.runtime).all() if m.body == 'From the fenced jail.']
+    assert sent.to == 'captain@beta' and sent.sender == 'worker-1'

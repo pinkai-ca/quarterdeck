@@ -7,7 +7,9 @@ operator's home replaced by an empty one, with only the folders the program and 
 bound back read-only; the workspace and the seat's own folder writable; the ship folder read-only with
 the other seats' folders hidden; only that seat's drop folder writable, the rest of the post
 store read-only, so ``qd post`` writes a drop and the service files it; and that seat's own check
-proof folder writable, never another seat's. The
+proof folder writable, never another seat's. In a project's ``ships/`` and
+``office/``, which are empty and read-only inside, only the ship's own folder and its peers' ship files
+found at the launch are bound back, so a ship raised later is not there at all. The
 program's home is the seat home. The operator's files, sign-ins and the other seats' records are not
 merely out of bounds but absent, so nothing the model does inside can read or change them.
 """
@@ -303,6 +305,7 @@ def command(jail: Jail, argv: list[str]) -> list[str]:
         fleet = flag != '--workspace' and any(target.is_relative_to(root) for root in fleet_folders)
         return fleet, len(target.parts), str(target), mount == ('--tmpfs', jail.home)
 
+    fenced = []
     for flag, folder in sorted(mounts, key=mount_key):  # a child mount is never hidden by its parent's
         if flag == '--workspace':
             flag = '--bind'
@@ -310,18 +313,22 @@ def command(jail: Jail, argv: list[str]) -> list[str]:
             args += ['--tmpfs', str(folder.parent), '--ro-bind', str(folder), str(folder),
                      '--remount-ro', str(folder.parent)]
         elif flag == '--fleet':
-            if folder.exists():
-                args += ['--ro-bind', str(folder), str(folder)]
-            elif any(folder.parent.is_relative_to(root)
-                     for root in (jail.workspace, jail.seat_folder, *jail.writable)):
+            # The whole fleet folder is an empty tmpfs, never the folder itself: a ship raised there after
+            # this launch shows inside as nothing. Only this ship's own folder and the peers' ship files
+            # found at launch are bound back into it, and it is made read-only once they are in place.
+            if folder.exists() or any(folder.parent.is_relative_to(root)
+                                      for root in (jail.workspace, jail.seat_folder, *jail.writable)):
                 # law: one-folder
-                # This empty mount point stays inside the project; office/ is
+                # A missing folder's empty mount point stays inside the project; office/ is
                 # where the office's own declaration belongs.
-                args += ['--tmpfs', str(folder), '--remount-ro', str(folder)]
+                args += ['--tmpfs', str(folder)]
+                fenced.append(folder)
         elif flag == "--private-tmpfs":
             args += ["--perms", "0700", "--tmpfs", str(folder)]
         else:
             args += [flag, str(folder)] if flag == "--tmpfs" else [flag, str(folder), str(folder)]
+    for folder in fenced:  # after every mount inside it, which needed its mount point made there
+        args += ['--remount-ro', str(folder)]
     for variable, value in jail.environment:
         args += ["--setenv", variable, value]
     # The launch's TMPDIR may name a filesystem the jail mounts read-only; the program

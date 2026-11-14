@@ -34,15 +34,21 @@ def test_workspace_precedes_both_fleet_containers_and_their_child_mounts(tmp_pat
     args = command(jail, ['synthetic-program'])
     writable = position(args, '--bind', jail.workspace, jail.workspace)
     for root in (project/'ships', project/'office'):
-        fence = position(args, '--ro-bind', root, root)
-        assert writable < fence
+        fence = position(args, '--tmpfs', root)
+        assert writable < fence, 'the fleet is fenced after the writable workspace, even one inside it'
+        assert ['--ro-bind', str(root), str(root)] not in [args[i:i+3] for i in range(len(args))] or root == jail.ship_folder
     own = max(i for i in range(len(args)) if args[i:i+3] == ['--ro-bind', str(jail.ship_folder), str(jail.ship_folder)])
     container = project/'office' if office else project/'ships'
-    assert position(args, '--ro-bind', container, container) < own
+    assert position(args, '--tmpfs', container) < own
     assert own < position(args, '--bind', jail.seat_folder, jail.seat_folder)
     assert own < position(args, '--bind-try', jail.runtime/'post', jail.runtime/'post')
     peer = project/'ships/beta'
-    assert position(args, '--ro-bind', project/'ships', project/'ships') < position(args, '--tmpfs', peer)
+    assert position(args, '--tmpfs', project/'ships') < position(args, '--tmpfs', peer)
+    last_child = max(position(args, '--bind', jail.seat_folder, jail.seat_folder),
+                     position(args, '--bind-try', jail.runtime/'post', jail.runtime/'post'),
+                     position(args, '--remount-ro', peer), own)
+    for root in (project/'ships', project/'office'):
+        assert last_child < position(args, '--remount-ro', root), 'read-only once every mount inside it is in place'
 
 
 @pytest.mark.parametrize('office', [False, True])
@@ -54,7 +60,7 @@ def test_missing_fleet_containers_with_writable_parent_have_readonly_placeholder
     for root in (project/'ships', project/'office'):
         assert writable < position(args, '--tmpfs', root) < position(args, '--remount-ro', root)
     peer = project/'ships/beta'
-    assert position(args, '--remount-ro', project/'ships') < position(args, '--tmpfs', peer)
+    assert position(args, '--tmpfs', project/'ships') < position(args, '--tmpfs', peer) < position(args, '--remount-ro', project/'ships')
     assert not project.exists()
 
 
@@ -69,7 +75,8 @@ def test_missing_office_below_a_readonly_parent_needs_no_mountpoint(tmp_path):
     assert not office.exists()
     assert str(office) not in args
     ships = tmp_path/'project/ships'
-    assert position(args, '--bind', workspace, workspace) < position(args, '--ro-bind', ships, ships)
+    assert position(args, '--bind', workspace, workspace) < position(args, '--tmpfs', ships)
+    assert ['--ro-bind', str(ships), str(ships)] not in [args[i:i+3] for i in range(len(args))]
 
 
 def test_declaration_sorts_at_its_parent_before_child_mounts(tmp_path):

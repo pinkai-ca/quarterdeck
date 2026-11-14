@@ -38,7 +38,7 @@ cross-ship messages are pending. Forwarding old addresses is a separate change, 
 does not move an office or edit any live ship declaration.
 
 
-An ancestor authored by the destination is an id/hash reference only: sender and fetch verify its existing destination file, and fetch copies no ancestor bytes or metadata. A missing or differing file holds the descendant. Other refused ancestors hold their descendants on both paths; refused roots never become eligible and unreadable refusal evidence holds too. Each offered origin belongs to its authoring ship; a foreign ancestor crosses only as context backed by its import provenance. A jailed sender sees peer declarations through read-only files in otherwise empty, read-only ship folders; peer homes and runtimes stay hidden.
+An ancestor authored by the destination is an id/hash reference only: sender and fetch verify its existing destination file, and fetch copies no ancestor bytes or metadata. A missing or differing file holds the descendant. Other refused ancestors hold their descendants on both paths; refused roots never become eligible and unreadable refusal evidence holds too. Each offered origin belongs to its authoring ship; a foreign ancestor crosses only as context backed by its import provenance. A jailed sender sees `ships/` and `office/` as empty read-only folders, with only its own ship and the peer declarations found at its launch bound back read-only; peer homes and runtimes stay hidden, and a ship raised after the launch shows inside as nothing.
 
 `[forward]` maps retired local seat names to qualified addresses of another ship, for example
 `desk = "desk@office"`. The mapping can retain a name removed from `[seats]`; it cannot replace a
