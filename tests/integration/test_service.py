@@ -208,9 +208,13 @@ def test_a_busy_service_reads_busy_not_dead_and_qd_down_still_stops_it(ship: shi
     assert qd(capsys, "status", "--line").startswith("service ok")
     captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
     wait_for(lambda: captain.harness.screen(tmux.capture(captain.pane().id)).shows.get("effort") == "low", seconds=15)
+    # A stopped service never answers SIGTERM: its grace is shortened for this test alone (production 3 s); the
+    # proof, killed after not answering and naming the bound it waited, does not depend on the bound's length.
+    from quarterdeck import shutdown
+    monkeypatch.setattr(shutdown, "ORDINARY_GRACE", 0.5)
     pause()
     proof = service.stop(ship.runtime)
-    assert proof == f"service killed · pid {pid} · it did not answer SIGTERM within 3s" and not service.alive(ship.runtime)
+    assert proof == f"service killed · pid {pid} · it did not answer SIGTERM within 0.5s" and not service.alive(ship.runtime)
 
 
 def test_a_watch_attempt_is_judged_only_after_the_confirm_window(ship: shipmod.Ship, tmux: Tmux, capsys):
