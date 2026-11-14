@@ -336,6 +336,7 @@ def render_table(data: dict) -> list[str]:
     recovery_lines = list(getattr(data.get("facts"), "server_recovery", None) or [])  # law: nothing-waits-silently
     recovery_lines += list(getattr(data.get("facts"), "leftover_checks", None) or [])  # a check's seat left running
     recovery_lines += list(getattr(data.get("facts"), "post_waits", None) or [])
+    recovery_lines += list(getattr(data.get("facts"), "pool_forecasts", None) or [])
     rows = [head, *recovery_lines, f"{'seat':<10} {'activity':<24} {'door':<40} {'order':<10} {'today':>8}  harness · provider · pool · model · effort"]
     if accounting := getattr(data.get('facts'), 'accounting', None):
         rows.insert(1, accounting)
@@ -528,6 +529,7 @@ class Facts:
     pane_obstructions: list[str] = field(default_factory=list)  # preserve named geometry diagnostics on overflow
     post_held: list[str] = field(default_factory=list)  # an error that stops the store listing, or a link at imports
     post_waits: list[str] = field(default_factory=list)
+    pool_forecasts: list[str] = field(default_factory=list)
 
     def line(self) -> str:  # law: nothing-waits-silently
         parts = ["SERVICE DOWN" if self.service == "down" else f"service {self.service}"]
@@ -552,6 +554,7 @@ class Facts:
         parts += self.pane_obstructions
         parts += self.post_held
         parts += self.post_waits
+        parts += self.pool_forecasts
         parts += self.group_held
         parts += self.cascade_held
         parts += self.structure_waiting
@@ -879,10 +882,11 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
     oldest = int(max(((now - m.at).total_seconds() for m in waiting), default=0) // 60)
     queued = [a for a in records if a.result == "queued" and latest.get(a.message) == 'queued']
     outcomes, outcome_errors = check_reading if check_reading is not None else check_outcome.collect(ship.runtime)
-    from . import fleet_post
+    from . import fleet_post, usage_forecast
     return Facts(
         service=(state := service_state(ship.runtime)),
         post_waits=fleet_post.status(ship, store),
+        pool_forecasts=[forecast.describe() for forecast in usage_forecast.readings(ship, now) if forecast.warning],
         waiting=len(waiting),
         oldest=oldest,
         blind=sum(result == 'blind' for result in latest.values()),

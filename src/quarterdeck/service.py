@@ -206,13 +206,17 @@ class Service:
     def _tick_steps(self):
         # Operational duties keep their order and never wait behind the slice.
         for step in (self.server_recovery, self.reconcile, self.groups, self.cascades, self.fleet_post, self.inboxes, self.recoveries, self.refusals, self.answers, self.looks, self.deliveries, self.follow, self.requests, self.compactions, self.person_quiet, self.fresh_after_order,
-                     self.rebrief, self.push_reminders, self.credentials, self.authentications, self.model_differences, self.failover, self.account, self.refresh_usage, self.retire_post):
+                     self.rebrief, self.push_reminders, self.credentials, self.authentications, self.model_differences, self.failover, self.account, self.refresh_usage, self.pool_forecasts, self.retire_post):
             self.heartbeat()  # before every step: a slow delivery or usage read reads as busy, never as dead
             try:
                 step()
             except Exception as error:  # one failing step never stops the others
                 self.log("error", step=step.__name__, error=repr(error), trace=traceback.format_exc())
             self.status_due()
+
+    def pool_forecasts(self) -> None:
+        from . import usage_forecast
+        usage_forecast.notify(self)
 
     def retire_post(self) -> None:
         """Move only finished, settled delivery files after accounting catch-up."""

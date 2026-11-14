@@ -73,7 +73,10 @@ def collect(book: Ledger, ship: Ship | None = None, *, by: str | None = None, to
         item = window_reading(row, now)
         item["wall"] = any(w == row.label or w.startswith(row.label + " ·") for w in walls)
         windows.append(item)
+    from .usage_forecast import collect as forecasts
     return {**data, "observed_at": now, "windows": windows, "pools": pools,
+            "usage_forecasts": forecasts(book, now, {p.name for p in ship.pools.values() if p.kind == 'subscription'}
+                                        if ship is not None else None),
             "usage_absent_reason": "no usage read yet: the service reads active subscription pools in the background"
             if not windows and not any(p["kind"] in ("key", "endpoint") for p in pools) else None,
             "usage_attempts": [dict(zip(("pool", "at", "error"), row)) for row in
@@ -144,6 +147,7 @@ def render_pools(data: dict) -> list[str]:
     lines.append("pool window · used · freshness · reset · reading time (age)")
     for window in data["windows"]:
         lines.append(window["reading"].describe(window["observed_at"], inspect_command=None) + ("  WALL" if window["wall"] else ""))
+    lines += [forecast.describe(detail=True) for forecast in data.get('usage_forecasts', [])]
     for pool in data["pools"]:
         if pool["kind"] != "key":
             continue

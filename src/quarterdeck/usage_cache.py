@@ -1,7 +1,8 @@
 """One complete real measurement per pool/window, plus its latest attempt verdict.
 
 A failure changes freshness metadata, never pieces of the retained measurement.
-There is no reading-history table and rejected numeric values are not stored.
+Weekly accepted numeric readings also feed the bounded forecast history;
+rejected numeric values are not stored.
 """
 
 from dataclasses import dataclass
@@ -115,6 +116,8 @@ class UsageCache:
         self.db = db
         if not create:  # a reading opens the book read-only and migrates nothing
             return
+        from .usage_forecast import SCHEMA
+        db.execute(SCHEMA)
         columns = {r[1] for r in db.execute("PRAGMA table_info(pools)")}
         for name in ("attempted_at", "error"):
             if name not in columns:
@@ -179,6 +182,8 @@ class UsageCache:
                              bucket, new.bucket_name, attempted_at.isoformat(), new.uncertainty, warning))
             if new.uncertainty:
                 errors.append(f"{name}: {new.uncertainty}")
+            from .usage_forecast import remember
+            remember(self.db, pool, new, usage.read_at)
             accepted.append(new)
         retired = self.reconcile(pool, previous, grouped, accepted, usage, attempted_at)
         errors = [error for error in errors if not any(error.startswith(name + ": ") for name in retired)]
