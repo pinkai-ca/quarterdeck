@@ -290,8 +290,8 @@ class GrokHarness(Harness):
 
     def model_identity(self, value: str | None, *, version: str | None = None) -> str | None:
         value = super().model_identity(value, version=version)
-        # 1.0.77's footer omits native-id distinctions (for example the build suffix).
-        # Its measured display grammar proves no unique id; record ids remain literal.
+        # Display labels establish no native-id alias. Billing keys can differ too;
+        # the measured display grammar proves no unique id; record ids remain literal.
         if value is not None and re.fullmatch(r'Grok [0-9.]+(?: Fast)?', value):
             return None
         return value

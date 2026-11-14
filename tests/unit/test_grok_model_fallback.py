@@ -152,8 +152,9 @@ def test_doctor_distinguishes_missing_ids_from_unknown_lists(tmp_path, monkeypat
         cache(home)
     monkeypatch.setattr(GrokHarness, 'preflight', lambda *args: None)
     monkeypatch.setattr(GrokHarness, 'workspace_notice', lambda *args: None)
+    kind = 'model' if known else 'effort'
     check = next(c for c in doctor.seat_readiness(ship, versions={'grok': '1.0.77'})
-                 if c.name == 'seat worker pool subscription model')
+                 if c.name == f'seat worker pool subscription {kind}')
     assert check.passed is passed
     assert ('unknown' in check.detail) is (not known)
     if known:

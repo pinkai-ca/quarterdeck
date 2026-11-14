@@ -141,8 +141,11 @@ def seat_readiness(ship: Ship, *, versions: dict[str, str | None] | None = None)
                               f'declared {selected.model}; ' +
                               ('listed by the program' if selected.model in models else
                                'not listed by the program; listed ids: ' + ', '.join(sorted(models))))
-                    found.append(Check(f"seat {seat.name} pool {choice} model", models is None or selected.model in models,
-                                       detail))
+                    if models is None:
+                        prior = found[-1]
+                        found[-1] = Check(prior.name, prior.passed, prior.detail + '; ' + detail)
+                    else:
+                        found.append(Check(f"seat {seat.name} pool {choice} model", selected.model in models, detail))
                 reader.preflight(home, cwd)
             except (ShipError, OSError) as error:
                 found.append(Check(f"seat {seat.name} pool {choice} readiness", False, str(error)))

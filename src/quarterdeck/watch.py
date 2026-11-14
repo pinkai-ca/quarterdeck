@@ -341,8 +341,8 @@ def render_table(data: dict) -> list[str]:
         rows.insert(1, data['accounting_note'])
     for r in data["seats"]:
         rows.append(f"{r.name:<10} {str(r.activity):<24} {str(r.door):<40} {r.order_text:<10} {str(r.today):>8}  {r.harness_text} · {r.provider_name or 'unknown'} · {r.pool} · {r.model_text} · {r.effort_text}")
-        if r.selection_text:
-            rows.append(f"  {r.selection_text}")
+        if warning := getattr(r, 'selection_text', None):
+            rows.append(f"  {warning}")
         if r.compaction:
             rows.append(f"  {r.compaction}")
         if r.wake:
@@ -420,8 +420,8 @@ def render_full(data: dict) -> list[str]:
     today = f"{r.today} tokens today" + (" (+: some turns were not measured)" if r.today.unmeasured else "")
     lines = [f"{r.name}: {r.activity} · door {r.door} · order {r.order_text} · {today}",
              f"  {r.harness_text} · provider {r.provider_name or 'unknown'} · pool {r.pool} · model {r.model_text} · effort {r.effort_text}"]
-    if r.selection_text:
-        lines.append(f"  {r.selection_text}")
+    if warning := getattr(r, 'selection_text', None):
+        lines.append(f"  {warning}")
     if r.compaction:
         lines.append(f"  {r.compaction}")
     lines += ['  ' + request_queue.describe(row) for row in data.get('requests', ())]
