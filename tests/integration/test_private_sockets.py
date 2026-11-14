@@ -308,7 +308,10 @@ def test_unknown_lock_is_neither_repaired_nor_cleanup_authority(tmux):
         lock.write_bytes(tmux_socket.HEADER) # restore only this fixture's deliberately modified owned header
 
 
-def test_an_exclusive_lock_in_another_process_refuses_reads_and_cleanup_without_waiting_forever(tmux):
+def test_an_exclusive_lock_in_another_process_refuses_reads_and_cleanup_without_waiting_forever(tmux,monkeypatch):
+    # One exclusive budget of 1 s for this test alone (production 2 s): the bound below still parts three budgets
+    # (under 4 s with its slack) from a nested full-wait retry (at least 6 s).
+    monkeypatch.setattr(tmux_socket,'EXCLUSIVE_WAIT',1.0)
     tmux.new_session('Synthetic')
     endpoint=Path(tmux.socket);before=endpoint.lstat()
     code=('import fcntl,sys,time\n'

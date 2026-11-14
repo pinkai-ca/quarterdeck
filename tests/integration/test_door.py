@@ -169,13 +169,18 @@ def test_the_door_never_types_into_a_human_session(drydock: Path, tmux: Tmux):
     assert desk.harness.screen(tmux.capture(desk.pane().id)).box == ""
 
 
-def test_an_empty_box_without_a_record_receipt_stays_unconfirmed(drydock: Path, tmux: Tmux):
-    """An emptied box is not acceptance; only the later exact input confirms the single paste."""
-    ship = ship_with(drydock, '\n[seats.captain.settings]\nstep_seconds = "0.05"\naccept_seconds = "7"\n')
+def test_an_empty_box_without_a_record_receipt_stays_unconfirmed(drydock: Path, tmux: Tmux, monkeypatch):
+    """An emptied box is not acceptance; only the later exact input confirms the single paste.
+
+    The program accepts only after the door's confirmation window has ended: the window is 0.5 s for this test
+    alone and acceptance comes at 1.5 s, the same order as the production 5 s window against 7 s."""
+    ship = ship_with(drydock, '\n[seats.captain.settings]\nstep_seconds = "0.05"\naccept_seconds = "1.5"\n')
     captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
     captain.up()
     wait_for(lambda: Door(captain).reading().open)
     door = Door(captain)
+    original = Door.confirm
+    monkeypatch.setattr(Door, 'confirm', lambda self, text, seconds=0.5: original(self, text, seconds))
     text = post.typed([order(captain, "slow to accept")])
     delivery = door.deliver(text)
     assert delivery.result == "blind", delivery
