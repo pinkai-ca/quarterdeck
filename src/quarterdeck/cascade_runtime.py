@@ -174,6 +174,9 @@ def holds(runtime: Path) -> list[str]:
             if (type(data['format']) is int and data['format'] == 1 and data['request'] == path.stem
                     and data['reason'] in HOLD_REASONS and isinstance(data['signature'], str)):
                 reason = data['reason']
+        except FileNotFoundError:
+            if post_dir.gone(path):
+                continue
         except (OSError, ValueError, ShipError, KeyError, TypeError):
             pass
         label = post.short_of(path.stem) if path.stem.startswith('que-') and key(path.stem) == path.stem else 'run'

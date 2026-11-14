@@ -118,7 +118,12 @@ def _recover(service, progress, counts):
         progress()
         if post_dir.exists(root / 'completed' / path.name):
             continue
-        data = json.loads(post_dir.read_text(path))
+        try:
+            data = json.loads(post_dir.read_text(path))
+        except FileNotFoundError:
+            if not post_dir.gone(path):
+                raise
+            continue
         if 'seat' not in data:
             continue  # older immutable metadata without a batch intent
         name = data['seat']
@@ -140,11 +145,19 @@ def _batch(service, name, mine, proofs, progress, counts, known):
     root = runtime / 'post' / 'retired'
     progress()
     _folders([root / 'index', root / 'completed', root / 'attempts', root / 'pending' / name])
+    journals = {}
+    for proof in proofs:
+        try:
+            journals[proof.path.name] = hashlib.sha256(post_dir.read_bytes(proof.path)).hexdigest()
+        except FileNotFoundError:
+            if not post_dir.gone(proof.path):
+                raise
+    proofs = [proof for proof in proofs if proof.path.name in journals]
     message_ids = {a.message for a in mine.values()}
     message_ids.update(known[n].message for p in proofs for n in p.data['attempts'])
     data = dict(format=1, seat=name, messages=sorted(message_ids),
                 attempts={n: row(a) for n, a in mine.items()},
-                journals={p.path.name: hashlib.sha256(post_dir.read_bytes(p.path)).hexdigest() for p in proofs})
+                journals=journals)
     path = root / 'index' / (secrets.token_hex(16) + '.json')
     # Exactly one immutable index publication per pass, before its first rename.
     _replace_file(path, json.dumps(data, sort_keys=True) + '\n')

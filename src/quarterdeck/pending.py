@@ -276,6 +276,9 @@ def _journals(runtime: Path | None, name: str, *, progress=None) -> tuple[list[P
             if any(not post.attempt_path(runtime, n).is_file() for n in data["attempts"]):
                 raise ValueError("pending attempt receipt missing")
             found.append(Proof(path, data))
+        except FileNotFoundError:
+            if not post_dir.gone(path):
+                errors.append(path.name)
         except (OSError, ValueError, TypeError, KeyError):
             errors.append(path.name)
     return found, errors
@@ -840,7 +843,12 @@ def _one_look_claimed(service: Service, seat: Seat, attempts: Sequence[post.Atte
             for path in post_dir.json_paths(folder):
                 if not path.name.startswith(prefix) or path == proof.path:
                     continue
-                later = Proof(path, json.loads(post_dir.read_text(path)))
+                try:
+                    later = Proof(path, json.loads(post_dir.read_text(path)))
+                except FileNotFoundError:
+                    if not post_dir.gone(path):
+                        raise
+                    continue
                 if "look" not in later.data:
                     later.save(look=dict(at=at, outcome="second delivery", of=proof.path.name))
             done.append(f"{message.short} to {seat.name}: typed once more ({proof_line})")

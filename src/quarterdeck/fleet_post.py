@@ -551,6 +551,9 @@ def run(ship, store):
                     if not fetched(source, ship, value):
                         fetch(ship, source, path)
                         store._cache = None
+                except FileNotFoundError as error:
+                    if not post_dir.gone(path):
+                        errors.append(_hold_line(f'{name}: incoming post held', error))
                 except (OSError, ValueError, KeyError, TypeError, ShipError) as error:
                     errors.append(_hold_line(f'{name}: incoming post held', error))
         except (OSError, ShipError) as error:

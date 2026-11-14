@@ -156,6 +156,9 @@ def _outstanding(runtime):
         for path in paths:
             try:
                 active.update(_active_requests(json.loads(path.read_text()), kind))
+            except FileNotFoundError:
+                if kind != 'group' or not post_dir.gone(path):
+                    unreadable = True
             except READ_ERRORS:
                 unreadable = True
     return active, unreadable
@@ -205,6 +208,9 @@ def waits(ship, selected=()):
                 lines.append(f"waiting on {data['member']}: turn ended, no report")
             else:
                 lines.append(f"waiting on {data['member']}: turn outcome unknown ({reason})")
+        except FileNotFoundError:
+            if not post_dir.gone(path):
+                lines.append('structure wait evidence unreadable')
         except READ_ERRORS:
             lines.append('structure wait evidence unreadable')
     return lines

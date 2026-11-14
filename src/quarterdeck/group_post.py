@@ -198,6 +198,10 @@ def file_staged(ship: Ship, store: post.Store) -> list[tuple[str, str]]:
             try:
                 files = sorted(file for file, _ in post_dir.list_children(root_dir / name)
                                if file.endswith('.group.json'))
+            except FileNotFoundError:
+                if not post_dir.gone(root_dir / name):
+                    holds.append((folder_name, 'drop unreadable'))
+                continue
             except (OSError, ShipError):
                 holds.append((folder_name, 'drop unreadable'))
                 continue
@@ -211,9 +215,13 @@ def file_staged(ship: Ship, store: post.Store) -> list[tuple[str, str]]:
 def _file_intent(ship: Ship, store: post.Store, seat: str, path: Path) -> str | None:
     """File one intent. Return a hold reason, or None when it is published and removed."""
     if not post._regular(path):
+        if post_dir.gone(path):
+            return None
         return 'not a regular file'
     text = post._read_regular(path)
     if text is None:
+        if post_dir.gone(path):
+            return None
         return 'not a regular file'
     try:
         data = json.loads(text)
@@ -313,6 +321,12 @@ def advance(ship: Ship, store: post.Store, failures=None, *, outcomes=None) -> l
                 hold = ship.runtime / 'post/group-holds' / path.name
                 if post_dir.exists(hold):
                     post_dir.remove(hold)
+            except FileNotFoundError as error:
+                if post_dir.gone(path):
+                    continue
+                reason = _error_reason(error)
+                if _hold(ship.runtime, path, reason):
+                    changed.append((path.stem, reason))
             except Exception as error:  # one malformed journal cannot stall healthy groups
                 reason = _error_reason(error)
                 if _hold(ship.runtime, path, reason):
@@ -418,6 +432,9 @@ def holds(runtime: Path) -> list[str]:
             if (data['format'] == 1 and data['request'] == path.stem
                     and data['reason'] in HOLD_REASONS and isinstance(data['signature'], str)):
                 reason = data['reason']
+        except FileNotFoundError:
+            if post_dir.gone(path):
+                continue
         except (OSError, ValueError, KeyError, TypeError):
             pass
         lines.append(f'{post.short_of(path.stem)} group held: {reason}')

@@ -214,7 +214,14 @@ class Store:
                     data = stable_bytes(path)
                     return local_view(self.dir.parent.parent, Message.from_json(data.decode('utf-8')), data=data)
 
-                messages = sorted((read(p) for p in paths), key=lambda m: (m.at, m.id))
+                messages = []
+                for path in paths:
+                    try:
+                        messages.append(read(path))
+                    except FileNotFoundError:
+                        if not post_dir.gone(path):
+                            raise
+                messages.sort(key=lambda m: (m.at, m.id))
                 replies: dict[str, list[Message]] = {}
                 for message in messages:
                     if message.re:
@@ -263,7 +270,10 @@ class Store:
                 for path in paths:
                     # A store name that is not a regular file is not a message. A symlink is a hold,
                     # raised by the read. An imports record that is not regular stops the listing.
-                    file_info = path.lstat()
+                    try:
+                        file_info = path.lstat()
+                    except FileNotFoundError:
+                        continue
                     if not stat.S_ISREG(file_info.st_mode) and not stat.S_ISLNK(file_info.st_mode):
                         continue
                     record = provenance(runtime, path.stem)
@@ -274,6 +284,10 @@ class Store:
                             data = stable_bytes(path)
                     except post_dir.NotRegular:
                         continue  # the store file changed to a special file during the read
+                    except FileNotFoundError:
+                        if not post_dir.gone(path):
+                            raise
+                        continue
                     if record is None:
                         message = local_view(runtime, Message.from_json(raw))
                     else:
@@ -509,6 +523,9 @@ def drop_alarms(runtime: Path) -> list[str]:
             if data.get("format") == 1 and data.get("reason") in DROP_HOLD_REASONS and isinstance(data.get("folder"), str):
                 lines.append(f"post drop held: {data['folder']}: {data['reason']}")
                 continue
+        except FileNotFoundError:
+            if post_dir.gone(folder / name):
+                continue
         except (OSError, ShipError, ValueError, TypeError, AttributeError):
             pass
         lines.append("post drop held: drop-holds")
@@ -609,6 +626,10 @@ def file_drops(store: Store, ship=None) -> list[tuple[str, str]]:
             continue
         try:
             files = sorted(post_dir.list_children(root / name))
+        except FileNotFoundError:
+            if not post_dir.gone(root / name):
+                hold(folder, "drop unreadable")
+            continue
         except (OSError, ShipError):
             hold(folder, "drop unreadable")
             continue
@@ -628,6 +649,8 @@ def file_drops(store: Store, ship=None) -> list[tuple[str, str]]:
                 hold(folder, "not a message")
                 continue
             if text is None:
+                if post_dir.gone(path):
+                    continue
                 hold(folder, "not a regular file")
                 continue
             try:
@@ -989,11 +1012,21 @@ class Attempts:
         for path in post_dir.json_paths(folder):
             if progress is not None:
                 progress()
-            info = path.lstat()
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                self._retired_cache.pop(path.name, None)
+                continue
             stamp = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
             cached = self._retired_cache.get(path.name)
             if cached is None or cached[0] != stamp:
-                data = json.loads(post_dir.read_text(path))
+                try:
+                    data = json.loads(post_dir.read_text(path))
+                except FileNotFoundError:
+                    if not post_dir.gone(path):
+                        raise
+                    self._retired_cache.pop(path.name, None)
+                    continue
                 if (not isinstance(data, dict) or data.get('format') != 1
                         or not isinstance(data.get('attempts'), dict)):
                     raise ShipError('retired attempt index unreadable; delivery held')
@@ -1027,13 +1060,26 @@ class Attempts:
             if not name.endswith('.json'):
                 continue
             if stat.S_ISLNK(mode):
+                if post_dir.gone(self.dir / name):
+                    self._cache.pop(name, None)
+                    continue
                 post_dir._link_held(self.dir / name)
-            info = (self.dir / name).lstat()
+            path = self.dir / name
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                self._cache.pop(name, None)
+                continue
             stamp = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
             cached = self._cache.get(name)
             if cached is None or cached[0] != stamp:
-                path = self.dir / name
-                cached = stamp, Attempt(**json.loads(post_dir.read_text(path)), path=path)
+                try:
+                    cached = stamp, Attempt(**json.loads(post_dir.read_text(path)), path=path)
+                except FileNotFoundError:
+                    if not post_dir.gone(path):
+                        raise
+                    self._cache.pop(name, None)
+                    continue
                 # Retain parsed work even if a retirement slice ends mid-scan.
                 # Re-list and re-stat on every call; this cache is no snapshot.
                 self._cache[name] = cached

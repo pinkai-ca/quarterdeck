@@ -291,6 +291,14 @@ def mode(path) -> int | None:
         os.close(parent)
 
 
+def gone(path) -> bool:
+    """Positive evidence that a listed name disappeared; unreadable is not gone."""
+    try:
+        return mode(path) is None
+    except (OSError, ShipError):
+        return False
+
+
 def _json_under(directory):
     """*.json names in a runtime/post directory, without following a link to reach it."""
     return json_paths(directory)
@@ -328,7 +336,13 @@ def list_children(directory):
             for entry in scan:
                 if entry.name in ('.', '..'):
                     continue
-                found.append((entry.name, entry.stat(follow_symlinks=True).st_mode))
+                try:
+                    kind = entry.stat(follow_symlinks=True).st_mode
+                except FileNotFoundError:
+                    if not gone(directory / entry.name):
+                        raise
+                    continue
+                found.append((entry.name, kind))
         return found
     descriptor = open_directory(directory, create=False)
     try:
@@ -337,7 +351,11 @@ def list_children(directory):
             for entry in scan:
                 if entry.name in ('.', '..'):
                     continue
-                found.append((entry.name, entry.stat(follow_symlinks=False).st_mode))
+                try:
+                    kind = entry.stat(follow_symlinks=False).st_mode
+                except FileNotFoundError:
+                    continue
+                found.append((entry.name, kind))
         return found
     finally:
         os.close(descriptor)
@@ -355,6 +373,8 @@ def json_paths(directory):
         if not name.endswith('.json'):
             continue
         if stat.S_ISLNK(mode):
+            if gone(directory / name):
+                continue
             _link_held(directory / name)
         paths.append(directory / name)
     return paths
@@ -370,6 +390,8 @@ def directory_names(directory):
     names = []
     for name, mode in children:
         if stat.S_ISLNK(mode):
+            if gone(directory / name):
+                continue
             _link_held(directory / name)
         if stat.S_ISDIR(mode):
             names.append(name)
