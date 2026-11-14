@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from quarterdeck.ledger import Ledger
-from quarterdeck import record_owner
+from quarterdeck import record_owner, reader_stamp
 from quarterdeck.post import Message
 from tests.unit.test_ledger_pass_boundaries import AT, world, turn, writes
 
@@ -58,7 +58,7 @@ def test_grown_record_rechecks_all_its_turns_and_writes_only_the_new_one(tmp_pat
     assert writes(trace) == []
 
 
-@pytest.mark.parametrize('change', ['mtime', 'replacement', 'framework', 'launch', 'missing', 'malformed'])
+@pytest.mark.parametrize('change', ['mtime', 'replacement', 'reader', 'launch', 'missing', 'malformed'])
 def test_new_or_missing_evidence_requires_reading(tmp_path, monkeypatch, change):
     w = world(tmp_path, monkeypatch)
     path = w.paths[0]
@@ -70,8 +70,10 @@ def test_new_or_missing_evidence_requires_reading(tmp_path, monkeypatch, change)
         other = path.with_name('replacement')
         other.write_bytes(path.read_bytes())
         other.replace(path)
-    elif change == 'framework':
-        w.svc.status_framework = ['synthetic changed implementation']
+    elif change == 'reader':
+        keys = reader_stamp.readers()
+        keys['fake'] = ['synthetic changed reader implementation']
+        monkeypatch.setattr(reader_stamp, 'readers', lambda root=None: keys)
     elif change == 'launch':
         w.journal.write_text(w.journal.read_text() + '\n')
     elif change == 'missing':

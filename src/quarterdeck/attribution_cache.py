@@ -7,7 +7,7 @@ import time
 from os.path import abspath
 from pathlib import Path
 
-from . import harness, record_owner
+from . import harness, record_owner, reader_stamp
 from .harness.base import record_fingerprint
 from .order_attribution import Threads, Verdict, moment
 
@@ -109,6 +109,7 @@ class Attribution:
         seat_bounds = {seat: hashlib.sha256(json.dumps(bounds, sort_keys=True).encode()).hexdigest()
                        for seat, bounds in by_seat.items()} if framework is not None else {}
         certificates, reused = {}, set()
+        reader_keys = reader_stamp.attributions() if framework is not None else {}
         changed = False
         for record in by_record:
             prior = self.sources.get(record)
@@ -122,13 +123,13 @@ class Attribution:
             stamp = (reader, None)
             try:
                 stamp = (reader, record_fingerprint(Path(record))) if reader in harness.NAMES else (reader, None)
-                if framework is not None and reader in harness.NAMES and stamp[1][0][0]:
+                if reader_keys.get(reader) is not None and stamp[1][0][0]:
                     ends = [moment(row['ended']) for row in by_record[record]]
                     ended = max((end for end in ends if end is not None), default=None)
                     # A record can contain several established seat identities.
                     seats = sorted({row['seat'] for row in by_record[record]})
                     scope = [(seat, seat_bounds[seat], graph.scope(seat, ended)) for seat in seats]
-                    evidence = hashlib.sha256(json.dumps([framework, stamp, sorted(names), scope]).encode()).hexdigest()
+                    evidence = hashlib.sha256(json.dumps([reader_keys[reader], stamp, sorted(names), scope]).encode()).hexdigest()
                     old = self.db.execute('SELECT evidence FROM attribution_records WHERE record=?', (record,)).fetchone()
                     if record not in invalid_records and old == (evidence,):
                         reused.add(record)
@@ -208,6 +209,7 @@ class Attribution:
             WHERE a.valid IS NULL OR a.valid=0''')}
         graph = Threads(store)
         written, count = 0, 0
+        reader_keys = reader_stamp.attributions() if framework is not None else {}
         for record, turns in by_record.items():
             seats = sorted({row['seat'] for row in turns})
             on_record(record, seats)
@@ -226,8 +228,8 @@ class Attribution:
                 ends = [moment(row['ended']) for row in turns]
                 ended = max((end for end in ends if end is not None), default=None)
                 scope = [(seat, bounds[seat], graph.scope(seat, ended)) for seat in seats]
-                if stamp[1][0][0]:
-                    certificate = hashlib.sha256(json.dumps([framework, stamp, sorted(names), scope]).encode()).hexdigest()
+                if reader_keys.get(reader) is not None and stamp[1][0][0]:
+                    certificate = hashlib.sha256(json.dumps([reader_keys[reader], stamp, sorted(names), scope]).encode()).hexdigest()
                     old = self.db.execute('SELECT evidence FROM attribution_records WHERE record=?', (record,)).fetchone()
                     if record not in invalid and old == (certificate,):
                         continue

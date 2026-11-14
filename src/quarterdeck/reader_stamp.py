@@ -19,7 +19,7 @@ CODEX = ('harness/codex.py', 'harness/codex_usage.py',
          'harness/compactions.py', 'harness/failures.py')
 CLAUDE = ('harness/claude.py', 'harness/claude_background.py',
           'harness/claude_limits.py', 'harness/claude_watch.py',
-          'harness/compactions.py', 'harness/failures.py')
+          'harness/compactions.py', 'harness/failures.py', 'seat_command.py')
 PI = ('harness/pi.py', 'harness/endpoint.py', 'harness/costs.py',
       'harness/failures.py', 'pricing.py')
 
@@ -39,6 +39,11 @@ MODULES = {
     'fake': tuple(sorted({*COMMON, *CODEX, *CLAUDE, *PI, 'harness/fake.py'})),
 }
 
+# The verdict engine and its direct semantic imports. Native input interpretation
+# is covered separately by MODULES; control/launch-only imports are not readers.
+ATTRIBUTION = ('attribution_cache.py', 'order_attribution.py', 'input_receipt.py',
+               'post.py', 'harness/__init__.py')
+
 
 def files_stamp(modules, root=None):
     """Unknown/unreadable code grants no reuse; never hash paths or mtimes."""
@@ -56,3 +61,9 @@ def files_stamp(modules, root=None):
 def readers(root=None):
     """One bounded collection per accounting pass or status reading."""
     return {name: files_stamp(modules, root) for name, modules in MODULES.items()}
+
+
+def attributions(root=None):
+    engine = files_stamp(ATTRIBUTION, root)
+    return {name: [key, engine] if key is not None and engine is not None else None
+            for name, key in readers(root).items()}
