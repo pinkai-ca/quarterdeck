@@ -20,7 +20,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `headlines.py` | priority and display-column budgeting for live, cached and annotated status lines |
 | `input_receipt.py` | the one rule that matches a delivery to the record's evidence of its input |
 | `install.py` | `qd sync`: the framework at one commit installed as the ship's own copy, which every `qd` then hands off to |
-| `launch_opening.py` | a deferred opening bound to one published launch, its startup proof and one ordinary Door delivery; held openings are never resent |
+| `launch_opening.py` | a deferred opening bound to one published launch, its startup proof and one ordinary Door delivery; the service advances it without polling and held openings are never resent |
 | `ledger_recovery.py` | preserves malformed accounting databases, starts fresh replay and keeps named recovery alarms until acknowledged |
 | `ledger_reading.py` | the Ledger's rows and usage windows as a reading takes them, and their tables |
 | `lock_holders.py` | who holds a file's exclusive flock, read from the kernel's lock table and, where the table shows no row, confirmed from the holders' own descriptors; never takes the lock. The one reader for the service's lock and the installer's |

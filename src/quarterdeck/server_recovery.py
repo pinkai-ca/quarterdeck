@@ -212,6 +212,7 @@ def pass_once(service) -> str | None:
                     if relaunch_intent.pending_server_choice(ship, seat.name):
                         choosing.append(seat.name)
                         continue
+                    seat.defer_opening = True  # observe startup on a later service pass
                     with relaunch_intent.section(service, seat, 'server-recovery', resume=True):
                         seat._up_with_pool_choice(True, require_resume_target=True)
             except resume_target.Unproved as error:

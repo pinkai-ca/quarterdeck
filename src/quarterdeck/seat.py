@@ -1273,6 +1273,8 @@ class Seat:
             carried_note += f" in {carried_file.relative_to(self.ship.runtime)}"
         jail_note = " · jailed: the operator's home hidden, the workspace writable" if jailed else ""
         notice_note = f" · {launched.notice}" if launched.notice else ""
+        if launch.deferred_opening is not None and self.defer_opening:
+            notice_note += " · opening deferred; ordinary delivery held until record confirmation"
         unchecked_note = f" · {effort_note}" if effort_note else ""
         if started := getattr(self, "server_started", None):
             unchecked_note += f" · {started}"

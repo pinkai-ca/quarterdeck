@@ -9,6 +9,7 @@ from quarterdeck.door import Delivery
 from quarterdeck.harness.types import Screen
 from quarterdeck.seat import Launched, Seat
 from quarterdeck.service import Service
+from quarterdeck.ship import ShipError
 
 
 @pytest.fixture
@@ -84,8 +85,38 @@ def test_expired_startup_stays_held_without_a_transport(opening):
     stale = Launched(**{**old.__dict__, 'at': (old.when - timedelta(seconds=61)).isoformat()})
     stale.write(seat.folder/'launch.json')
     launch_opening.prepare(seat, stale, 'synthetic opening')
-    with pytest.raises(Exception, match='synthetic startup proof'):
+    with pytest.raises(ShipError, match='synthetic startup proof'):
         launch_opening.advance(seat)
     launch_opening.advance(seat)
     assert sent == []
     assert json.loads(launch_opening.path_for(seat, stale).read_text())['phase'] == 'held'
+
+
+def test_carried_attempts_close_only_after_confirmed_opening_and_only_once(opening, monkeypatch):
+    seat, screen, sent, confirmations = opening
+    store = SimpleNamespace(get=lambda identifier: SimpleNamespace(id=identifier))
+    saved, closed = [], []
+    def reserve(message, name, pane, pid, at):
+        attempt = SimpleNamespace(seat=name, pane=pane, pid=pid, launched_at=at, accepted=False)
+        saved.append(attempt)
+        return attempt
+    def close(attempt, outcome, detail):
+        assert outcome == 'launch'
+        attempt.accepted = True
+        closed.append(attempt)
+    attempts = SimpleNamespace(for_message=lambda identifier: saved, open=reserve, close=close)
+    monkeypatch.setattr('quarterdeck.post.Store', lambda _: store)
+    monkeypatch.setattr('quarterdeck.post.Attempts', lambda _: attempts)
+    path = launch_opening.path_for(seat, seat.launched())
+    data = json.loads(path.read_text())
+    data['carried'] = ['synthetic carried message']
+    path.write_text(json.dumps(data))
+    launch_opening.advance(seat)
+    screen[0] = Screen('', box='', working=False)
+    launch_opening.advance(seat)
+    assert saved == [] and closed == []
+    confirmations.append(Delivery('delivered'))
+    launch_opening.advance(seat)
+    launch_opening.advance(seat)
+    assert len(saved) == len(closed) == 1
+    assert json.loads(path.read_text())['carried_closed'] is True
