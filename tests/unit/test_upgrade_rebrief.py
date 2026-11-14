@@ -1,6 +1,7 @@
 """Upgrade carries old brief baselines across a new service's initial card stamp."""
 
 from io import BytesIO
+from itertools import count
 from dataclasses import replace
 import json
 from pathlib import Path
@@ -86,7 +87,13 @@ def upgraded(drydock, tmp_path, monkeypatch):
             started[-1].requests();started[-1].rebrief()
         except (OSError,ShipError):
             raise OSError('synthetic rebrief response pending') from None
-        return original_result(path,data,timeout=0.01)
+        # The synthetic service has already published or declined its response.
+        # Scheduling must not expire this short fixture deadline before its first read.
+        elapsed=[0.0]
+        def sleep(seconds):elapsed[0]+=seconds
+        with monkeypatch.context() as clock:
+            clock.setattr(install,'time',SimpleNamespace(monotonic=lambda:elapsed[0],sleep=sleep))
+            return original_result(path,data,timeout=0.01)
     monkeypatch.setattr(install,'rebrief_result',result)
     store=post.Store(ship.runtime)
     order=store.new('order','operator','captain','still open')
@@ -326,8 +333,12 @@ def test_existing_edited_card_path_only_notifies_changed_running_briefs(upgraded
     assert notices(s)[0].body=="ship's orders changed · read runtime/brief/captain.md"
 
 
-def test_brief_updated_by_old_service_during_install_is_the_upgrade_baseline(upgraded,monkeypatch):
+@pytest.mark.parametrize('preempted',[False,True])
+def test_brief_updated_by_old_service_during_install_is_the_upgrade_baseline(upgraded,monkeypatch,preempted):
     s=upgraded;change_archive(s)
+    if preempted:
+        ticks=count(0.0,0.02)
+        monkeypatch.setattr(install,'time',SimpleNamespace(monotonic=lambda:next(ticks),sleep=lambda seconds:None))
     old=Service(s.ship,s.tmux);s.started.append(old)
     stop=s.stop
     def stop_after_card_event(runtime):
