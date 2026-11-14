@@ -38,6 +38,13 @@ LOCAL_TAGS = ("<command-name>", "<local-command", "<bash-input>", "<bash-stdout>
 INTERRUPTED = "[Request interrupted"
 PASTE_FORM_VERSIONS = frozenset({"2.1.317"})  # versions measured to record a paste in the form recorded_paste gives
 PASTE_TAG, PASTE_TAG_ESCAPED = "<pasted_content", "<\\pasted_content"  # a literal opening tag, as the record escapes it
+# The format characters (Unicode category Cf) among those 2.1.317 treats as hidden when it cleans a paste, read from
+# the program's own sanitiser: it removes each one or, in a context it names (a joiner inside an emoji or an Indic
+# word, a mark beside right-to-left text), keeps it. Its other hidden characters are controls, marks and fillers.
+PASTE_HIDDEN_FORMAT = frozenset(chr(code) for first, last in (
+    (0x00AD, 0x00AD), (0x061C, 0x061C), (0x180E, 0x180E), (0x200B, 0x200F), (0x202A, 0x202E), (0x2060, 0x2064),
+    (0x2066, 0x206F), (0xFEFF, 0xFEFF), (0xFFF9, 0xFFFB), (0x13430, 0x1343F), (0x1BCA0, 0x1BCA3),
+    (0x1D173, 0x1D17A), (0xE0001, 0xE0001), (0xE0020, 0xE007F)) for code in range(first, last + 1))
 INPUT_IGNORED = ('api-request', 'api-request-blob', 'attachment', 'bridge-session', 'custom-title',
                  'agent-name', 'mode', 'permission-mode', 'session-owner', 'atis-latch', 'last-prompt',
                  'file-history-delta', 'file-history-snapshot', 'tools-used', 'api-request-shape', 'cost-state')
@@ -1116,13 +1123,26 @@ class ClaudeHarness(Harness):
         ``version`` field on the record's rows from ``since``: every one must name a measured version. None,
         or any other, leaves the payload as typed.
         """
-        if "\t" not in text and PASTE_TAG not in text:
-            return text
-        versions = {entry.get("version") for entry in entries(record)
-                    if "version" in entry and (moment := when(entry.get("timestamp"))) is not None and moment >= since}
-        if not versions or not versions <= PASTE_FORM_VERSIONS:
+        if "\t" not in text and PASTE_TAG not in text or not self._paste_measured(record, since):
             return text
         return text.replace("\t", "    ").replace(PASTE_TAG, PASTE_TAG_ESCAPED)
+
+    def paste_ignored(self, text: str, record: Path, since: datetime) -> frozenset[str]:
+        """Measured on 2.1.317 (13 November): the program drops a zero-width space (U+200B) from a paste, in the
+        queued entry, its removal and its attachment alike. Its sanitiser treats the other format characters of
+        ``PASTE_HIDDEN_FORMAT`` the same way, removing each unless its context keeps it, so the receipt removes
+        exactly these from both sides before comparing; nothing else is ignored. Only for a payload that holds
+        one, and under the same version scope as ``recorded_paste``.
+        """
+        if PASTE_HIDDEN_FORMAT.isdisjoint(text) or not self._paste_measured(record, since):
+            return frozenset()
+        return PASTE_HIDDEN_FORMAT
+
+    @staticmethod
+    def _paste_measured(record: Path, since: datetime) -> bool:
+        versions = {entry.get("version") for entry in entries(record)
+                    if "version" in entry and (moment := when(entry.get("timestamp"))) is not None and moment >= since}
+        return bool(versions) and versions <= PASTE_FORM_VERSIONS
     reads_usage = True
     model_scoped_usage = True
 

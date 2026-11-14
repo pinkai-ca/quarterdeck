@@ -20,8 +20,19 @@ def recorded_forms(harness: Harness, record: Path, payload: str, since: datetime
     return (payload,) if form == payload else (payload, form)
 
 
-def same_input(recorded: str, forms: tuple[str, ...]) -> bool:
-    return any(same_text(recorded, form) for form in forms)
+def ignored(harness: Harness, record: Path, payload: str, since: datetime) -> frozenset[str]:
+    """The characters the adapter measured its program to drop from this payload as it records a paste."""
+    drop = getattr(harness, "paste_ignored", None)  # a bare reader declares none
+    return drop(payload, record, since) if drop is not None else frozenset()
+
+
+def without(text: str, chars: frozenset[str]) -> str:
+    return "".join(char for char in text if char not in chars) if chars else text
+
+
+def same_input(recorded: str, forms: tuple[str, ...], ignoring: frozenset[str] = frozenset()) -> bool:
+    """The recorded text is one of the forms, once the ignored characters are removed from both sides alike."""
+    return any(same_text(without(recorded, ignoring), without(form, ignoring)) for form in forms)
 
 
 def confirmed(reader: str | Harness, record: Path, text: str | tuple[str, ...], since: datetime) -> str | None:
@@ -35,10 +46,11 @@ def confirmed(reader: str | Harness, record: Path, text: str | tuple[str, ...], 
         # Native precision affects only this comparison, never the saved attempt.
         since = datetime.fromtimestamp(floor(since.timestamp() / resolution) * resolution, since.tzinfo)
     queued = False
-    forms = tuple(form for each in ((text,) if isinstance(text, str) else text)
-                  for form in recorded_forms(harness, record, each, since))
+    texts = (text,) if isinstance(text, str) else text
+    forms = tuple(form for each in texts for form in recorded_forms(harness, record, each, since))
+    ignoring = frozenset().union(*(ignored(harness, record, each, since) for each in texts))
     for item in harness.inputs(record):
-        if item.at is None or item.at < since or not same_input(item.text, forms):
+        if item.at is None or item.at < since or not same_input(item.text, forms, ignoring):
             continue
         if item.kind == "accepted":
             return "delivered"

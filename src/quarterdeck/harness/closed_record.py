@@ -57,10 +57,11 @@ def not_in_closed_record(seat: 'Seat', proof: 'Proof') -> bool:
             return False
         since = datetime.fromisoformat(data['at'])
         forms = input_receipt.recorded_forms(reader, record, data['payload'], since)
+        ignoring = input_receipt.ignored(reader, record, data['payload'], since)
         for item in inputs:
             if item.at is None:
                 return False
-            if item.at >= since and input_receipt.same_input(item.text, forms):
+            if item.at >= since and input_receipt.same_input(item.text, forms, ignoring):
                 return False
         return _closed(seat, data['identity'])
     except (OSError, ValueError, TypeError, KeyError, AttributeError, TmuxError):

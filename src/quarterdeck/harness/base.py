@@ -208,6 +208,13 @@ class Harness(ABC):
         """
         return text
 
+    def paste_ignored(self, text: str, record: Path, since: datetime) -> frozenset[str]:
+        """Characters the adapter measured its program to drop from this payload, pasted at ``since``, as it
+        records it, where its context does not keep them. Receipts remove exactly these from both the recorded
+        text and each form before comparing. The default is none.
+        """
+        return frozenset()
+
     def thinking_recovery(self, home: Path, evidence: dict | None, version: str | None, seat: SeatSpec, pool: Pool):
         """A proved native off/restore client, or no supported automatic recovery."""
         return None
