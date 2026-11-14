@@ -1,6 +1,7 @@
 """Claude's default footer, run as a standalone stdlib script with -I -S.
 
-Reads ship.toml, Claude's stdin facts and the ship's ordinary JSON readings.
+Reads ship.toml, Claude's stdin facts, the ship's ordinary JSON readings and
+read-only launch-pool metadata from its Ledger.
 Only its disposable cache is written, under runtime/statusline. Provider knowledge
 stays with the ledger: no provider requests or model/window-name inference here.
 """
@@ -12,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -71,6 +73,32 @@ def qd_reading(ship_dir: Path, verb: str) -> dict | None:
         return None
 
 
+def launched_pools(ship_dir: Path) -> list[str] | None:
+    """Only pool names from this ship's accounted launches; no records or migrations."""
+    source = ship_dir / 'runtime' / 'ledger.sqlite'
+    try:
+        db = sqlite3.connect(source.absolute().as_uri() + '?mode=ro', uri=True, timeout=.1)
+        try:
+            return sorted(pool for (pool,) in db.execute('SELECT DISTINCT pool FROM record_launches')
+                          if isinstance(pool, str) and pool)
+        finally:
+            db.close()
+    except (OSError, sqlite3.Error):
+        return None
+
+
+def used_pools(cache: dict, ship: dict) -> set[str]:
+    """A seat declares the pool, or this ship has a launch on it."""
+    found = {pool for pool in cache.get('launched_pools') or [] if isinstance(pool, str)}
+    for seat in (ship.get('seats') or {}).values():
+        choices = (seat or {}).get('pool', [])
+        for choice in choices if isinstance(choices, list) else [choices]:
+            pool = choice.get('pool') if isinstance(choice, dict) else choice
+            if isinstance(pool, str):
+                found.add(pool)
+    return found
+
+
 def refresh(ship_dir: Path, path: Path) -> None:
     """One background reader at a time; process exit releases its lock."""
     with open(os.open(path.with_suffix(".lock"), os.O_CREAT | os.O_RDWR, 0o600), "a") as lock:
@@ -79,6 +107,9 @@ def refresh(ship_dir: Path, path: Path) -> None:
         except BlockingIOError:
             return
         cache = read_json(path)
+        history = launched_pools(ship_dir)
+        if history is not None:
+            cache['launched_pools'] = history
         now = time.time()
         ledger = qd_reading(ship_dir, "ledger")
         cache["ledger_attempted_at"] = now
@@ -161,6 +192,7 @@ def allowances(cache: dict, ship: dict, own_pool: str | None) -> list[dict]:
     """
     rows = []
     declared = ship.get("pools") or {}
+    used = used_pools(cache, ship)
     providers = list(dict.fromkeys((spec or {}).get("provider", "") for spec in declared.values()))
     names = sorted(declared, key=lambda name: (providers.index((declared[name] or {}).get("provider", "")), name))
     now = time.time()
@@ -173,6 +205,8 @@ def allowances(cache: dict, ship: dict, own_pool: str | None) -> list[dict]:
         return unavailable or not window.get("current") or seconds_until(window.get("resets_at")) <= 0
 
     for name in names:
+        if name not in used:
+            continue
         spec = declared[name] or {}
         kind = (cache.get("pools") or {}).get(name)
         if kind in ("key", "endpoint") or "endpoint" in spec or "api_key" in spec:

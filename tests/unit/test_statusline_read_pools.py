@@ -2,6 +2,9 @@
 
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import pytest
 
 from quarterdeck import ledger_reading, output, watch
 from quarterdeck.harness import claude_statusline as line
@@ -12,8 +15,10 @@ from .test_statusline_default import cache, plain, window
 
 
 def test_unread_own_pool_and_never_used_declaration_do_not_get_cells():
-    ship = {'pools': {'sample-read': {}, 'sample-unread': {}, 'sample-never-used': {}}}
-    data = cache([window('sample-read', .06)])
+    ship = {'pools': {'sample-read': {}, 'sample-unread': {}, 'sample-never-used': {}},
+            'seats': {'sample-seat': {'pool': ['sample-read', 'sample-unread']}}}
+    data = cache([window('sample-read', .06), window('sample-never-used', .7)])
+    data['launched_pools'] = []
     data['seats'] = {'sample-seat': 'sample-read'}
     rows = line.allowances(data, ship, 'sample-unread')
     assert [row['pool'] for row in rows] == ['sample-read']
@@ -38,7 +43,8 @@ def test_failed_attempt_without_a_window_stays_unknown_after_cache_refresh(tmp_p
     data = line.read_json(path)
     assert data['attempted_pools'] == ['sample-failed']
     assert 'synthetic failed provider read' not in path.read_text()
-    row, = line.allowances(data, {'pools': {'sample-failed': {}, 'sample-unread': {}}}, None)
+    row, = line.allowances(data, {'pools': {'sample-failed': {}, 'sample-unread': {}},
+                                  'seats': {'sample-seat': {'pool': 'sample-failed'}}}, None)
     assert row['used'] is None and row['unknown']
     assert 'Failed unknown' in plain(line.cell(row, 3)) and '0%' not in plain(line.cell(row, 3))
 
@@ -53,13 +59,15 @@ def test_failed_window_with_retained_measurement_stays_visible_as_unknown(tmp_pa
     monkeypatch.setattr(line, 'qd_reading', lambda *args: next(replies))
     path = tmp_path / 'readings.json'
     line.refresh(tmp_path, path)
-    row, = line.allowances(line.read_json(path), {'pools': {'sample-failed': {}}}, None)
+    row, = line.allowances(line.read_json(path), {'pools': {'sample-failed': {}},
+                                                'seats': {'sample-seat': {'pool': 'sample-failed'}}}, None)
     text = plain(line.cell(row, 3))
     assert '40%?' in text and '+ unknown' in text
 
 
 def test_successful_attempt_with_missing_windows_is_incomplete_not_unread():
-    row, = line.allowances({'attempted_pools': ['sample']}, {'pools': {'sample': {}}}, None)
+    row, = line.allowances({'attempted_pools': ['sample'], 'launched_pools': ['sample']},
+                           {'pools': {'sample': {}}}, None)
     assert row['unknown'] and row['used'] is None
     assert 'unknown' in plain(line.cell(row, 0))
 
@@ -80,6 +88,9 @@ def test_footer_selection_does_not_change_detailed_ledger_or_status(tmp_path, mo
     with Ledger(ship.runtime / 'ledger.sqlite') as book:
         book.record_usage('sample-read', Usage((Window('7d', .06, now + timedelta(days=7)),), now))
         book.record_usage('sample-failed', Usage((), now, 'synthetic failed read'))
+        book.record_usage('sample-never-used', Usage((Window('7d', .7, now + timedelta(days=7)),), now))
+        for name in ('sample-read', 'sample-failed'):
+            book.provenance.remember(Path('synthetic-record'), 'sample-former-seat', name, now)
         detailed = output.value(ledger_reading.collect(book, ship))
         before = deepcopy(detailed)
         monkeypatch.setattr(watch.post, 'now', lambda: now)
@@ -89,8 +100,35 @@ def test_footer_selection_does_not_change_detailed_ledger_or_status(tmp_path, mo
         path = tmp_path / 'readings.json'
         line.refresh(tmp_path, path)
         rows = line.allowances(line.read_json(path), {'pools': {name: {} for name in pools}}, None)
+        assert line.read_json(path)['launched_pools'] == ['sample-failed', 'sample-read']
         assert {row['pool'] for row in rows} == {'sample-read', 'sample-failed'}
         assert detailed == before
         assert {pool['name'] for pool in detailed['pools']} == set(pools)
         assert output.value(watch.headline_readings(ship)) == status_before
         assert {row['pool'] for row in status_before} == set(pools)
+
+
+@pytest.mark.parametrize('choices,expected', [
+    ('sample-one', {'sample-one'}),
+    (['sample-one', 'sample-two'], {'sample-one', 'sample-two'}),
+    ({'pool': 'sample-one', 'harness': 'claude', 'model': 'sample-model'}, {'sample-one'}),
+    (['sample-one', {'pool': 'sample-two', 'harness': 'codex', 'model': 'sample-model'}],
+     {'sample-one', 'sample-two'}),
+])
+def test_seat_declarations_count_as_used_for_each_supported_pool_form(choices, expected):
+    ship = {'pools': {'sample-one': {}, 'sample-two': {}, 'sample-unused': {}},
+            'seats': {'sample-seat': {'pool': choices}}}
+    data = cache([window(name, .1) for name in ship['pools']])
+    data['launched_pools'] = []
+    assert {row['pool'] for row in line.allowances(data, ship, None)} == expected
+
+
+def test_failed_background_read_of_a_never_used_pool_is_also_omitted():
+    data = {'attempted_pools': ['sample-unused']}
+    ship = {'pools': {'sample-unused': {}}, 'seats': {}}
+    assert line.allowances(data, ship, None) == []
+
+
+def test_launch_history_lookup_does_not_create_a_missing_ledger(tmp_path):
+    assert line.launched_pools(tmp_path) is None
+    assert list(tmp_path.iterdir()) == []

@@ -30,7 +30,7 @@ def window(pool, used, **extra):
 
 
 def cache(windows):
-    return dict(windows=windows, ledger_at=time.time())
+    return dict(windows=windows, ledger_at=time.time(), launched_pools=sorted({w['pool'] for w in windows}))
 
 
 def plain(text):
@@ -155,7 +155,7 @@ def test_refresh_keeps_only_display_fields_and_retains_failed_reading(tmp_path, 
     later = line.read_json(path)
     assert later["windows"] == first["windows"] and later["ledger_at"] == first["ledger_at"]
     assert later["ledger_unavailable"] is True
-    row = line.allowances(later, {"pools": {"sample": {}}}, None)[0]
+    row = line.allowances(later, {"pools": {"sample": {}}, 'seats': {'sample-seat': {'pool': 'sample'}}}, None)[0]
     assert "40%?" in plain(line.cell(row, 3))
 
 

@@ -37,7 +37,7 @@ def reading(monkeypatch):
     windows = [window('claude-primary', .32, 4, 22), window('claude-primary', .26, 4, 22, 'fable'),
                window('claude-secondary', .86, 4, 22), window('claude-secondary', .93, 1, 3, 'fable'),
                window('codex', .54, 4, 6), window('google', .22, 3, 4), window('grok', .88, 2, 7)]
-    return ship, seat, session, dict(windows=windows, ledger_at=NOW)
+    return ship, seat, session, dict(windows=windows, ledger_at=NOW, launched_pools=list(ship['pools']))
 
 
 def rows(reading):
@@ -100,6 +100,7 @@ def test_provider_order_and_short_names_are_independent_of_own_seat(reading):
     ship['pools'] = {'provider-secondary': {'provider': 'first'}, 'different-primary': {'provider': 'second'},
                      'provider-primary': {'provider': 'first'}, 'standalone': {'provider': 'second'}}
     cache['windows'] = [{**cache['windows'][0], 'pool': name} for name in ship['pools']]
+    cache['launched_pools'] = list(ship['pools'])
     first = line.allowances(cache, ship, 'provider-primary')
     second = line.allowances(cache, ship, 'different-primary')
     expected = ['provider-primary', 'provider-secondary', 'different-primary', 'standalone']
@@ -168,7 +169,7 @@ def test_partial_data_is_not_hidden_by_detail_shedding(reading):
 
 def test_unknown_subscriptions_are_all_kept_even_when_two_rows_cannot_fit(reading):
     ship, seat, session, _ = reading
-    attempted = {'attempted_pools': list(ship['pools'])}
+    attempted = {'attempted_pools': list(ship['pools']), 'launched_pools': list(ship['pools'])}
     rendered = line.draw(80, seat, 'sample-seat', session, line.allowances(attempted, ship, None))
     assert len(rendered) > 2
     text = plain('\n'.join(rendered))
