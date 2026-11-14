@@ -296,6 +296,7 @@ STEERING = re.compile(r"^\s*Steering: (.*?)\s*$", re.M)
 
 class PiHarness(EndpointHarness):
     box_geometry_known = True  # box_columns below declares the established text area
+    minimum_pane_heights = {"0.79.0": 5}  # OPEN native idle pane, 52/80/120/256 columns, both resize directions
 
     def check_tool_evidence(self, record: Path) -> dict:
         from .check_evidence import json_tools, pi_tools
@@ -449,14 +450,14 @@ class PiHarness(EndpointHarness):
                      **({"effort": footer.group("level").removeprefix('thinking ')} if footer.group("level") else {})}
         interruption = self.recognize(text)
         if footer is None or interruption is not None:
-            unknown = None if footer or interruption else "no footer drawn as 0.74.2 draws it"
+            unknown = None if footer or interruption else "pi footer not found"
             return Screen(text, box=None, working=working, interruption=interruption, unknown=unknown, queued=queued, shows=shows, echoes=echoes)
         bottom = next((i for i in range(footer_at - 1, -1, -1) if RULE.match(lines[i])), None)
         if bottom is None or footer_at - bottom > 3:  # the working directory sits between the bottom rule and the footer
-            return Screen(text, box=None, working=working, unknown="no box drawn as 0.74.2 draws it", queued=queued, shows=shows, echoes=echoes)
+            return Screen(text, box=None, working=working, unknown="pi input box not found", queued=queued, shows=shows, echoes=echoes)
         top = next((i for i in range(bottom - 1, -1, -1) if RULE.match(lines[i])), None)
         if top is None:
-            return Screen(text, box=None, working=working, unknown="no box drawn as 0.74.2 draws it", queued=queued, shows=shows, echoes=echoes)
+            return Screen(text, box=None, working=working, unknown="pi input box not found", queued=queued, shows=shows, echoes=echoes)
         body = lines[top + 1:bottom]
         body = trimmed(body)
         return Screen(text, box="\n".join(body), working=working, queued=queued, shows=shows, echoes=echoes)

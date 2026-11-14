@@ -39,6 +39,7 @@ class Reading:
     working: bool = False
     waiting: bool = False
     diagnostic: str = ""  # reason metadata only; never changes whether the door is open
+    display_reason: str = ""  # presentation only; admission and repeated-frame confirmation keep reason
 
     def __str__(self) -> str:
         if self.open:
@@ -46,7 +47,7 @@ class Reading:
         elif self.waiting:
             text = self.reason
         else:
-            text = f"obstructed: {self.reason}, {self.clears}"
+            text = f"obstructed: {self.display_reason or self.reason}, {self.clears}"
         return f"{text}; {self.diagnostic}" if self.diagnostic else text
 
 
@@ -188,7 +189,31 @@ class Door:
 
     def _reading(self, screen: Screen | None) -> Reading:
         """Read this captured frame, including absence, without taking another capture."""
-        return replace(self._base_reading(screen), diagnostic=self.pane_obstruction() or "")
+        reading = replace(self._base_reading(screen), diagnostic=self.pane_obstruction() or "")
+        display, reason = self.pane_diagnostic(screen)
+        if display or reason:
+            diagnostic = '; '.join(item for item in (reading.diagnostic, reason) if item)
+            if screen.unknown is None or reading.reason != f'unknown dialog: {screen.unknown}':
+                display = ''
+            reading = replace(reading, diagnostic=diagnostic, display_reason=display)
+        return reading
+
+    def pane_diagnostic(self, screen: Screen | None) -> tuple[str, str]:
+        """Measured empty-box geometry for this captured pane and its own launch, never admission."""
+        heights = getattr(self.harness, 'minimum_pane_heights', {})
+        pane = self.captured_pane
+        if (not heights or screen is None or screen.box is not None or screen.interruption is not None
+                or pane is None or pane.dead or type(pane.height) is not int or pane.height <= 0):
+            return '', ''
+        launched = self.seat.launched()
+        version = getattr(launched, 'version', None)
+        if launched is None or launched.pane != pane.id or launched.pid != pane.pid:
+            return '', ''
+        label = f'{self.harness.display_name} {version or "(version unknown)"}'
+        display = f'{label}: {screen.unknown.removeprefix(self.harness.display_name + " ")}' if screen.unknown else ''
+        if (height := heights.get(version)) is None or pane.height >= height:
+            return display, ''
+        return 'input box needs a taller pane', f'pane {pane.height} rows; {label} draws its box from {height} rows'
 
     def _base_reading(self, screen: Screen | None) -> Reading:
         """The existing admission reading; geometry diagnostics confer no authority."""

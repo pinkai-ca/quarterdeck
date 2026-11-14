@@ -1,0 +1,114 @@
+"""Ordinary synthetic pane-height reason metadata and status text; no native program launch."""
+
+from dataclasses import replace
+from types import SimpleNamespace
+
+import pytest
+
+from quarterdeck import watch
+from quarterdeck.door import Door, Reading
+from quarterdeck.harness.pi import PiHarness
+
+
+def frame(height):
+    rows = ['─' * 80, ' ' * 80, '─' * 80, '/synthetic-project',
+            '0.0%/100k  synthetic-model • thinking off']
+    return '\n'.join(([''] * max(0, height - len(rows)) + rows)[-height:])
+
+
+def display(height=4, version='0.79.0', original=None):
+    pane = SimpleNamespace(id='synthetic-pane', pid=71, dead=False, height=height, width=80)
+    launched = SimpleNamespace(pane=pane.id, pid=pane.pid, version=version)
+    seat = SimpleNamespace(harness=PiHarness(), tmux=SimpleNamespace(), launched=lambda: launched)
+    door = Door(seat)
+    door.captured_pane = pane
+    screen = seat.harness.screen(frame(height))
+    original = original or Reading(False, f'unknown dialog: {screen.unknown}', 'needs a human')
+    door._base_reading = lambda captured: original
+    door.pane_obstruction = lambda: None
+    return door, screen, original, pane, launched
+
+
+@pytest.mark.parametrize('height', [1, 2, 3, 4])
+def test_short_empty_box_reading_names_actual_height_and_measured_version(height):
+    door, screen, original, _, _ = display(height)
+    shown = door._reading(screen)
+    assert shown.diagnostic == f'pane {height} rows; pi 0.79.0 draws its box from 5 rows'
+    assert shown.display_reason == 'input box needs a taller pane'
+    assert 'unknown dialog' not in str(shown) and '0.74.2' not in str(shown)
+    assert shown.diagnostic in str(shown)
+    assert replace(shown, diagnostic='', display_reason='') == original
+
+
+@pytest.mark.parametrize('height', [5, 7, 14])
+def test_measured_minimum_and_taller_frames_have_no_small_pane_label(height):
+    door, screen, original, _, _ = display(height, original=Reading(True))
+    assert screen.box == '' and screen.unknown is None
+    assert door._reading(screen) == original
+
+
+@pytest.mark.parametrize('version', [None, '0.74.2', 'unmeasured-version'])
+def test_an_unmeasured_version_is_named_without_claiming_a_height(version):
+    door, screen, original, _, _ = display(version=version)
+    shown = door._reading(screen)
+    assert shown.diagnostic == ''
+    assert shown.display_reason == f'pi {version or "(version unknown)"}: input box not found'
+    assert replace(shown, display_reason='') == original
+
+
+def test_a_taller_unknown_frame_names_the_actual_launch_version():
+    door, _, _, _, _ = display(height=7)
+    screen = door.harness.screen(frame(4))
+    door._base_reading = lambda captured: Reading(False, f'unknown dialog: {captured.unknown}', 'needs a human')
+    shown = door._reading(screen)
+    assert shown.display_reason == 'pi 0.79.0: input box not found'
+    assert shown.diagnostic == ''
+    assert '0.74.2' not in str(shown)
+
+
+@pytest.mark.parametrize('change', ['no-launch', 'other-pane', 'other-pid', 'no-capture', 'dead', 'unknown-height'])
+def test_height_reason_requires_this_captured_launch_and_known_geometry(change):
+    door, screen, original, pane, launched = display()
+    if change == 'no-launch':
+        door.seat.launched = lambda: None
+    elif change == 'other-pane':
+        launched.pane = 'earlier-pane'
+    elif change == 'other-pid':
+        launched.pid += 1
+    elif change == 'no-capture':
+        door.captured_pane = None
+    elif change == 'dead':
+        pane.dead = True
+    else:
+        pane.height = None
+    assert door._reading(screen) == original
+
+
+@pytest.mark.parametrize('original', [Reading(False, 'prior delivery pending', 'time', waiting=True),
+                                      Reading(False, 'ordinary existing reason', 'needs a human')])
+def test_geometry_does_not_replace_an_unrelated_reason(original):
+    door, screen, _, _, _ = display(original=original)
+    shown = door._reading(screen)
+    assert shown.display_reason == ''
+    assert original.reason in str(shown)
+    assert replace(shown, diagnostic='') == original
+
+
+@pytest.mark.parametrize('overflow', [False, True])
+def test_status_names_the_short_pane_even_when_alerts_overflow(overflow):
+    door, screen, _, _, _ = display()
+    shown = door._reading(screen)
+    facts = watch.Facts(service='up', waiting=0, oldest=0, blind=0,
+                        pane_obstructions=['synthetic-seat: ' + shown.diagnostic],
+                        unknown=['synthetic alert ' * 30] if overflow else [])
+    line = facts.line()
+    assert 'synthetic-seat: pane 4 rows; pi 0.79.0 draws its box from 5 rows' in line
+    assert 'unknown dialog' not in line and '0.74.2' not in line
+    if overflow:
+        assert 'details: qd status' in line
+
+
+def test_missing_pi_screen_parts_do_not_claim_the_old_renderer_version():
+    harness = PiHarness()
+    assert harness.screen('synthetic unrecognized frame').unknown == 'pi footer not found'
+    assert harness.screen(frame(4)).unknown == 'pi input box not found'
