@@ -35,53 +35,97 @@ def file(store, caller, ship=None):
 
 
 @pytest.mark.parametrize('caller', ['full', 'slice', 'host'])
-@pytest.mark.parametrize('extra', [0, 1])
-def test_count_boundary_files_or_holds_the_whole_folder(tmp_path, caller, extra):
+@pytest.mark.parametrize('count', [128, 129, 300])
+def test_busy_ordinary_queue_drains_in_bounded_rounds(tmp_path, caller, count):
     store = post.Store(tmp_path / 'runtime')
-    messages, paths = queue(store, post.DROP_MAX_FILES + extra)
+    messages, paths = queue(store, count)
     other, other_paths = queue(store, 1, sender='z-last')
-    file(store, caller)
-    if extra:
-        assert all(path.exists() for path in paths)
-        assert not {message.id for message in messages} & {message.id for message in store.all()}
-        assert post.DROP_COUNT_REASON in post.DROP_HOLD_REASONS
-        assert post.drop_alarms(tmp_path / 'runtime') == [
-            f'post drop held: drop/worker: {post.DROP_COUNT_REASON}']
-        # Removing one queued item lets the same unchanged filing door recover.
-        paths[-1].unlink()
+    rounds = (count + post.DROP_MAX_FILES - 1) // post.DROP_MAX_FILES
+    for number in range(rounds):
         file(store, caller)
-        assert all(not path.exists() for path in paths)
+        assert sum(not path.exists() for path in paths) == min((number + 1) * post.DROP_MAX_FILES, count)
         assert post.drop_alarms(tmp_path / 'runtime') == []
-    else:
-        assert all(not path.exists() for path in paths)
-        assert all(store.get(message.id) == message for message in messages)
-        assert post.drop_alarms(tmp_path / 'runtime') == []
-    # A held folder cannot starve the following seat; scoped hosts leave peers alone.
-    assert other_paths[0].exists() == (caller == 'host')
-    assert (other[0].id not in {message.id for message in store.all()}) == (caller == 'host')
+        if number == 0:
+            assert other_paths[0].exists() == (caller == 'host')
+    assert all(store.get(message.id) == message for message in messages)
+    assert not any(path.exists() for path in paths)
 
 
 @pytest.mark.parametrize('caller', ['full', 'slice'])
-@pytest.mark.parametrize('extra', [0, 1])
-def test_group_scan_uses_the_same_folder_count(tmp_path, caller, extra):
+def test_groups_and_ordinary_drops_share_the_same_window(tmp_path, caller, monkeypatch):
     template = Path(__file__).parents[2] / 'ships/forum/ship.toml'
     (tmp_path / 'ship.toml').write_text(template.read_text())
     ship = shipmod.load(tmp_path)
     store = post.Store(ship.runtime)
     root, _ = group_post.stage(ship, store, 'reviewers', 'lead', 'ordinary group task')
-    queue(store, post.DROP_MAX_FILES - 2 + extra, sender='lead')
-    file(store, caller, ship)
-    assert (root.id not in {message.id for message in store.all()}) == bool(extra)
-    if extra:
-        assert post.drop_alarms(ship.runtime) == [
-            f'post drop held: drop/lead: {post.DROP_COUNT_REASON}']
-        assert len(list(post.drop_dir(ship.runtime, 'lead').iterdir())) == post.DROP_MAX_FILES + 1
-    else:
-        assert not list(post.drop_dir(ship.runtime, 'lead').iterdir())
+    messages, paths = queue(store, 298, sender='lead')
+    listings = []
+    listing = post_dir.list_children
+    def observed(directory, **kwargs):
+        if Path(directory) == post.drop_dir(ship.runtime, 'lead'):
+            listings.append(kwargs.get('limit'))
+        return listing(directory, **kwargs)
+    monkeypatch.setattr(post_dir, 'list_children', observed)
+    for _ in range(4):
+        before = len(listings)
+        file(store, caller, ship)
+        assert len(listings) == before + 1
+    assert listings == [128] * 4
+    assert store.get(root.id) == root
+    assert all(store.get(message.id) == message for message in messages)
+    assert not any(path.exists() for path in paths)
+    assert not list(post.drop_dir(ship.runtime, 'lead').iterdir())
+
+
+@pytest.mark.parametrize('caller', ['full', 'slice'])
+def test_full_unfileable_window_is_named_immediately_and_following_seat_files(tmp_path, caller):
+    runtime = tmp_path / 'runtime'
+    folder = post.drop_dir(runtime, 'first')
+    folder.mkdir(parents=True)
+    # Skipped group intent names without a group caller exercise a no-progress window.
+    for number in range(post.DROP_MAX_FILES):
+        (folder / f'ordinary-{number}.group.json').write_text('{}')
+    store = post.Store(runtime)
+    messages, paths = queue(store, 1, sender='z-last')
+    file(store, caller)
+    reason = f'post drop held: drop/first: {post.DROP_STALLED_REASON}'
+    assert post.DROP_STALLED_REASON in post.DROP_HOLD_REASONS
+    assert reason in post.drop_alarms(runtime)
+    assert store.get(messages[0].id) == messages[0] and not paths[0].exists()
+    assert len(list(folder.iterdir())) == post.DROP_MAX_FILES
+    # A fresh independent status reading sees the persisted reason, not message text.
+    from quarterdeck import watch
+    from .test_check_lifetime import synthetic_ship
+    ship = synthetic_ship(tmp_path)
+    assert reason in watch.facts(ship, SimpleNamespace(), walls=[], login=[], check_reading=([], [])).line()
+
+
+@pytest.mark.parametrize('caller', ['full', 'slice'])
+def test_sustained_budget_use_alerts_after_three_rounds_and_clears(tmp_path, caller, monkeypatch):
+    runtime = tmp_path / 'runtime'
+    store = post.Store(runtime)
+    _, paths = queue(store, 600)
+    folder = 'drop/worker'
+    marker = runtime / 'post/drop-holds' / (post._hold_name(folder, post.DROP_COUNT_REASON) + '.json')
+    writes = []
+    replace_file = post.durable.replace_file
+    def observed(path, *args, **kwargs):
+        if path == marker:
+            writes.append(path)
+        return replace_file(path, *args, **kwargs)
+    monkeypatch.setattr(post.durable, 'replace_file', observed)
+    alert = f'post drop held: {folder}: {post.DROP_COUNT_REASON}'
+    for number in range(4):
+        file(store, caller)
+        assert (alert in post.drop_alarms(runtime)) == (number >= 2)
+    assert len(writes) == 3  # saturation causes no repeated marker writes
+    file(store, caller)  # final 88-name window clears telemetry and its alert
+    assert not any(path.exists() for path in paths)
+    assert not marker.exists() and post.drop_alarms(runtime) == []
 
 
 @pytest.mark.parametrize('extra', [0, 1, 64])
-def test_status_listing_stops_at_count_plus_one_without_message_reads(tmp_path, monkeypatch, extra):
+def test_status_listing_stops_at_the_window_before_stat_without_message_reads(tmp_path, monkeypatch, extra):
     runtime = tmp_path / 'runtime'
     folder = post.drop_dir(runtime, 'worker')
     folder.mkdir(parents=True)
@@ -102,10 +146,20 @@ def test_status_listing_stops_at_count_plus_one_without_message_reads(tmp_path, 
             for entry in self.scan:
                 if self.watched:
                     visited.append(entry.name)
-                yield entry
+                if self.watched:
+                    class Entry:
+                        def __init__(self, original):
+                            self.original, self.name = original, original.name
+                        def stat(self, **kwargs):
+                            assert len(visited) == post.DROP_MAX_FILES
+                            return self.original.stat(**kwargs)
+                    yield Entry(entry)
+                else:
+                    yield entry
     monkeypatch.setattr(post_dir.os, 'scandir', Observed)
     monkeypatch.setattr(post, '_read_regular', lambda *a, **kw: pytest.fail('status read content'))
     lines = post.drop_waits(runtime, at=0)
-    assert len(visited) == min(post.DROP_MAX_FILES + extra, post.DROP_MAX_FILES + 1)
-    assert lines == ([f'post drop held: drop/worker: {post.DROP_COUNT_REASON}'] if extra else [])
+    assert len(visited) == post.DROP_MAX_FILES
+    assert lines == []
+    assert not (runtime / 'post/drop-holds').exists(), 'status must not publish round counters'
     assert all('ordinary-' not in line and 'private' not in line for line in lines)

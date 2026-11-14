@@ -214,11 +214,7 @@ def staged_steps(ship: Ship, store: post.Store):
         if not stat.S_ISDIR(mode):
             continue
         try:
-            files = sorted(file for file, _ in post_dir.list_children(root_dir / name, limit=post.DROP_MAX_FILES)
-                           if file.endswith('.group.json'))
-        except post_dir.CountLimit:
-            yield (folder_name, post.DROP_COUNT_REASON)
-            continue
+            files = post_dir.list_children(root_dir / name, limit=post.DROP_MAX_FILES)
         except FileNotFoundError:
             if not post_dir.gone(root_dir / name):
                 yield (folder_name, 'drop unreadable')
@@ -226,13 +222,18 @@ def staged_steps(ship: Ship, store: post.Store):
         except (OSError, ShipError):
             yield (folder_name, 'drop unreadable')
             continue
-        for file in files:
-            with post.admission(ship.runtime, '@groups'):
-                try:
-                    reason = _file_intent(ship, store, name, root_dir / name / file)
-                except post_dir.ReadLimit:
-                    reason = post.DROP_SIZE_REASON
-            yield (folder_name, reason) if reason else None
+        yield from staged_folder_steps(ship, store, name, files)
+
+
+def staged_folder_steps(ship: Ship, store: post.Store, name: str, files):
+    """Process only the caller's bounded no-follow snapshot, before its ordinary drops."""
+    for file in sorted(file for file, _ in files if file.endswith('.group.json')):
+        with post.admission(ship.runtime, '@groups'):
+            try:
+                reason = _file_intent(ship, store, name, post.drop_dir(ship.runtime, name) / file)
+            except post_dir.ReadLimit:
+                reason = post.DROP_SIZE_REASON
+        yield (f'drop/{name}', reason) if reason else None
 
 
 # Each way a staged group intent is held has a fixed reason of its own, never its contents, so a hold names its cause.

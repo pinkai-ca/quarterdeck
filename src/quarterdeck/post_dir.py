@@ -14,6 +14,7 @@ from __future__ import annotations
 import ctypes
 import errno
 import locale
+from itertools import islice
 import os
 from pathlib import Path
 import secrets
@@ -36,10 +37,6 @@ class NotRegular(ShipError):
 
 class ReadLimit(ShipError):
     """The regular file exceeds the caller's bounded read."""
-
-
-class CountLimit(ShipError):
-    """The directory exceeds the caller's bounded entry count."""
 
 
 def _plain_name(name):
@@ -337,20 +334,17 @@ def exists_dir(path) -> bool:
 
 
 def list_children(directory, *, limit: int | None = None):
-    """(name, mode) for each child, without following a link to the directory or the child."""
+    """Child metadata without following links; limit bounds names collected before any stat."""
     directory = Path(directory)
     if limit is not None and limit < 0:
         raise ValueError("directory limit must be nonnegative")
     if not under_post(directory):
         found = []
-        seen = 0
         with os.scandir(directory) as scan:
-            for entry in scan:
+            names = scan if limit is None else list(islice(scan, limit))
+            for entry in names:
                 if entry.name in ('.', '..'):
                     continue
-                seen += 1
-                if limit is not None and seen > limit:
-                    raise CountLimit('directory exceeds entry limit')
                 try:
                     kind = entry.stat(follow_symlinks=True).st_mode
                 except FileNotFoundError:
@@ -362,14 +356,11 @@ def list_children(directory, *, limit: int | None = None):
     descriptor = open_directory(directory, create=False)
     try:
         found = []
-        seen = 0
         with os.scandir(f'/proc/self/fd/{descriptor}') as scan:
-            for entry in scan:
+            names = scan if limit is None else list(islice(scan, limit))
+            for entry in names:
                 if entry.name in ('.', '..'):
                     continue
-                seen += 1
-                if limit is not None and seen > limit:
-                    raise CountLimit('directory exceeds entry limit')
                 try:
                     kind = entry.stat(follow_symlinks=False).st_mode
                 except FileNotFoundError:

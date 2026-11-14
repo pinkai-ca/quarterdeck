@@ -465,7 +465,9 @@ class Store:
 
 # A seat writes a new message only here. The service files it and is the one that sets the sender.
 DROP_MAX_FILES = 128
-DROP_COUNT_REASON = "drop exceeds file count limit"
+DROP_COUNT_REASON = "drop filing budget reached repeatedly"
+DROP_STALLED_REASON = "drop filing window made no progress"
+DROP_BACKLOG_ROUNDS = 3
 DROP_MAX_BYTES = 1024 * 1024
 DROP_SIZE_REASON = "drop exceeds size limit"
 DROP_HOLD_REASONS = (
@@ -490,6 +492,7 @@ DROP_HOLD_REASONS = (
     "group journal malformed",
     DROP_SIZE_REASON,
     DROP_COUNT_REASON,
+    DROP_STALLED_REASON,
 )
 
 
@@ -617,8 +620,6 @@ def drop_waits(runtime: Path, *, at: float | None = None) -> list[str]:
                 if stat.S_ISREG(info.st_mode) and info.st_mtime <= cutoff:
                     lines.append(f'post drop waiting: {folder} (over 2m)')
                     break
-        except post_dir.CountLimit:
-            lines.append(f'post drop held: {folder}: {DROP_COUNT_REASON}')
         except FileNotFoundError:
             if not post_dir.gone(root / name):
                 lines.append(f'post drop waiting: {folder} (age unknown)')
@@ -657,6 +658,13 @@ def drop_alarms(runtime: Path) -> list[str]:
         try:
             data = json.loads(post_dir.read_text(folder / name))
             if data.get("format") == 1 and data.get("reason") in DROP_HOLD_REASONS and isinstance(data.get("folder"), str):
+                if data['reason'] == DROP_COUNT_REASON:
+                    rounds = data.get('rounds')
+                    if type(rounds) is not int or not 1 <= rounds <= DROP_BACKLOG_ROUNDS:
+                        lines.append("post drop held: drop-holds")
+                        continue
+                    if rounds < DROP_BACKLOG_ROUNDS:
+                        continue
                 lines.append(f"post drop held: {data['folder']}: {data['reason']}")
                 continue
         except FileNotFoundError:
@@ -679,6 +687,32 @@ def _remember(runtime: Path, current: set[tuple[str, str]], fresh: list[tuple[st
     durable.replace_file(path, payload)
     fresh.append((folder, reason))
 
+
+
+def _note_drop_round(runtime: Path, current, fresh, folder: str, *, full: bool) -> None:
+    """Capped consecutive budget use; no exact count beyond the listed window is inferred."""
+    if not full:
+        return  # the completed scan sweeps this folder's old counter/alert
+    current.add((folder, DROP_COUNT_REASON))
+    directory = _hold_dir(runtime)
+    post_dir.ensure_directory(directory)
+    path = directory / f"{_hold_name(folder, DROP_COUNT_REASON)}.json"
+    rounds = 0
+    try:
+        old = json.loads(post_dir.read_text(path))
+        if (old.get('format') == 1 and old.get('folder') == folder
+                and old.get('reason') == DROP_COUNT_REASON
+                and type(old.get('rounds')) is int and 1 <= old['rounds'] <= DROP_BACKLOG_ROUNDS):
+            rounds = old['rounds']
+    except (OSError, ShipError, ValueError, TypeError, AttributeError):
+        pass
+    if rounds == DROP_BACKLOG_ROUNDS:
+        return
+    rounds += 1
+    payload = dict(format=1, folder=folder, reason=DROP_COUNT_REASON, rounds=rounds)
+    durable.replace_file(path, json.dumps(payload) + '\n')
+    if rounds == DROP_BACKLOG_ROUNDS:
+        fresh.append((folder, DROP_COUNT_REASON))
 
 def _sweep_holds(runtime: Path, current: set[tuple[str, str]], *, folders: frozenset[str] | None = None) -> None:
     folder = _hold_dir(runtime)
@@ -861,17 +895,12 @@ def _drop_steps(store: Store, ship=None, *, seats: frozenset[str] | None = None,
         hold("drop", "drop folder is not a directory")
         _sweep_holds(runtime, current, folders=folders)
         return
-    if ship is not None and seats is None:
-        from . import group_post
-        for held in group_post.staged_steps(ship, store):
-            if held is not None:
-                hold(*held)
-            yield
     try:
         children = sorted(post_dir.list_children(root))
     except (OSError, ShipError):
         hold("drop", "drop unreadable")
         return
+    windows = []
     for name, mode in children:
         yield  # a folder listing is one cooperative operation
         if seats is not None and name not in seats:
@@ -882,9 +911,6 @@ def _drop_steps(store: Store, ship=None, *, seats: frozenset[str] | None = None,
             continue
         try:
             files = sorted(post_dir.list_children(root / name, limit=DROP_MAX_FILES))
-        except post_dir.CountLimit:
-            hold(folder, DROP_COUNT_REASON)
-            continue
         except FileNotFoundError:
             if not post_dir.gone(root / name):
                 hold(folder, "drop unreadable")
@@ -892,7 +918,17 @@ def _drop_steps(store: Store, ship=None, *, seats: frozenset[str] | None = None,
         except (OSError, ShipError):
             hold(folder, "drop unreadable")
             continue
-        names = {file for file, _ in files}
+        windows.append((name, files))
+    # Group and ordinary passes share exactly these windows; no second folder listing.
+    if ship is not None and seats is None:
+        from . import group_post
+        for name, files in windows:
+            for held in group_post.staged_folder_steps(ship, store, name, files):
+                if held is not None:
+                    hold(*held)
+                yield
+    for name, files in windows:
+        folder = f"drop/{name}"
         for file, kind in files:
             yield  # finish a whole filing operation before the next slice may yield
             if file.endswith(".group.json"):
@@ -901,8 +937,13 @@ def _drop_steps(store: Store, ship=None, *, seats: frozenset[str] | None = None,
             if not stat.S_ISREG(kind):
                 hold(folder, "not a regular file")
                 continue
-            if f"{path.stem}.group.json" in names:
-                continue  # the group pass owns a root that still has its intent
+            try:
+                intent = _mode(path.with_name(f"{path.stem}.group.json"))
+            except (OSError, ShipError):
+                hold(folder, "drop unreadable")
+                continue
+            if intent is not None:
+                continue  # the group pass owns this root, even beyond the bounded window
             try:
                 text = _read_regular(path, limit=DROP_MAX_BYTES)
             except post_dir.ReadLimit:
@@ -948,6 +989,10 @@ def _drop_steps(store: Store, ship=None, *, seats: frozenset[str] | None = None,
                 hold(folder, "not a message")
                 continue
             _remove_drop(path)
+        full = len(files) == DROP_MAX_FILES
+        _note_drop_round(runtime, current, fresh, folder, full=full)
+        if full and not any(post_dir.gone(root / name / file) for file, _ in files):
+            hold(folder, DROP_STALLED_REASON)
     _sweep_holds(runtime, current, folders=folders)
 
 
