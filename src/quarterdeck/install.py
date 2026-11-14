@@ -152,7 +152,10 @@ def source_repo(ship: Ship | None = None) -> Path:
                 and (path / 'src/quarterdeck/install.py').is_file())
     if framework(executing):
         return executing
-    candidates = {p.resolve() for p in (ship.folder.parent.parent,) if framework(p)} if ship is not None else set()
+    # A project's office is at its top, while crews are under ships/.
+    parent = (ship.folder.parent if ship is not None and ship.kind == 'office'
+              else ship.folder.parent.parent if ship is not None else None)
+    candidates = {parent.resolve()} if parent is not None and framework(parent) else set()
     if len(candidates) == 1:
         return candidates.pop()
     raise ShipError('no unambiguous local framework checkout; run qd sync from the checkout')

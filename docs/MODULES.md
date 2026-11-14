@@ -62,10 +62,10 @@ quarterdeck/                       the project folder: the framework repository
   CONTRIBUTING.md for whoever works on Quarterdeck itself, person or agent
   src/quarterdeck/
     cli.py         the qd command
-    setup.py       guided ship creation and reruns, with replaceable machine and live-operation seams
+    setup.py       office initialization and guided crew creation/reruns, with replaceable machine and live-operation seams
     setup_answers.py   one flags/file/terminal answer model, edits and explicit acceptance
     setup_proposal.py  read-only setup proposals and their shared text/JSON summary
-    ship.py        ship.toml -> Ship: sessions, seats, roles, pools, optional groups and cascade; the line editor; the fence
+    ship.py        ship.toml -> Ship: crew/office kind, sessions, seats, roles, pools, optional groups and cascade; the line editor; the fence
     providers.py   declared companies, input normalization and public identities
     program_use.py   record-first current program activity and launch-bound historical last use
     check_outcome.py   bounded safe check outcomes, atomic publication and shared operational alarms
@@ -158,6 +158,7 @@ quarterdeck/                       the project folder: the framework repository
     forum/         ship.toml  orders.md  roles/lead.md  roles/reviewer.md; one lead and four independent reviewers
     cascade/       ship.toml orders.md roles/ README.md    three providers in a service-relayed ring and one orchestrator; runtime notes only
     shuttle/       ship.toml orders.md roles/ README.md mission-record.md    captain, engineer and first officer; reviewed and signed missions
+    office/        ship.toml orders.md roles/desk.md README.md    template for the separate project-top office
     <yours>/       a nested repository, ignored above: ship.toml  orders.md  roles/  harnesses/  homes/  runtime/
     */runtime/     a nested repository with no commits: the fence around a ship's state
   work/            worktrees for work on the framework itself, ignored; the checkout above is what a running ship uses

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from quarterdeck import cli, setup, ship, standing
+from quarterdeck import cli, install, setup, ship, standing
 
 
 @pytest.fixture
@@ -100,6 +100,35 @@ def test_init_uses_normal_up_with_the_desk_named_explicitly(office_project, monk
 
 
 UP_DESK = setup.Operations.up_desk
+PROJECT_FOLDER = setup.Operations.project_folder
+
+
+def framework_folder(folder):
+    folder.mkdir(parents=True)
+    (folder / ".git").mkdir()
+    (folder / "pyproject.toml").write_text('[project]\nname = "quarterdeck"\n')
+    package = folder / "src" / "quarterdeck"
+    package.mkdir(parents=True)
+    (package / "install.py").write_text("")
+
+
+def test_an_installed_office_finds_its_project_at_the_new_depth(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    framework_folder(project)
+    text, _, _ = setup.template("office")
+    office = ship._from_text(text, project / "office")
+    monkeypatch.setattr(install, "__file__", str(tmp_path / "prefix" / "lib" / "quarterdeck" / "install.py"))
+    assert install.source_repo(office) == project
+
+
+def test_packaged_init_can_identify_the_checkout_from_its_current_directory(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    framework_folder(project)
+    nested = project / "notes"
+    nested.mkdir()
+    monkeypatch.chdir(nested)
+    monkeypatch.setattr(install, "__file__", str(tmp_path / "prefix" / "lib" / "quarterdeck" / "install.py"))
+    assert PROJECT_FOLDER(setup.Operations()) == project
 
 
 def test_init_cli_does_not_take_the_inherited_ship_or_default(office_project, monkeypatch, capsys):

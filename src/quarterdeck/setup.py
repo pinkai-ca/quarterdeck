@@ -83,7 +83,13 @@ class Operations:
         try:
             return install.source_repo()
         except ShipError:
-            raise ShipError("cannot identify the Quarterdeck project folder; run setup from the Quarterdeck checkout") from None
+            # A packaged entry has no checkout beside its module. The person's
+            # current checkout still identifies the project before an office exists.
+            for folder in (Path.cwd(), *Path.cwd().parents):
+                if ((folder / ".git").exists() and (folder / "pyproject.toml").is_file()
+                        and (folder / "src/quarterdeck/install.py").is_file()):
+                    return folder.resolve()
+            raise ShipError("cannot identify the Quarterdeck project folder; run init or setup from the Quarterdeck checkout") from None
 
 
     def workspace_default(self) -> str | None:
