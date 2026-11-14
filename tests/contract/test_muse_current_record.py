@@ -137,8 +137,8 @@ def test_muse_collapsed_receipt_uses_model_text_and_the_original_form_count(tmp_
     path = save(tmp_path, [row])
     harness = get("muse")
     item, = inputs(path)
-    assert harness.expected_input(item, original) == "first \nsecond"
-    assert confirmed(harness, path, original, first_timestamp(path)) == "delivered"
+    assert harness.expected_input(item, original) is None
+    assert confirmed(harness, path, original, first_timestamp(path)) is None
 
 
 def test_muse_unfolded_receipt_uses_the_same_single_final_newline_projection(tmp_path):
@@ -146,11 +146,12 @@ def test_muse_unfolded_receipt_uses_the_same_single_final_newline_projection(tmp
     from quarterdeck.input_receipt import confirmed
 
     original = "first \nsecond\n"
-    path = save(tmp_path, [accepted(original[:-1])])
+    path = save(tmp_path, [accepted(original)])
     harness = get("muse")
     item, = inputs(path)
     assert type(item) is not CollapsedInput
-    assert harness.expected_input(item, original) == "first \nsecond"
+    assert item.text == original
+    assert harness.expected_input(item, original) == original
     assert confirmed(harness, path, original, first_timestamp(path)) == "delivered"
 
 

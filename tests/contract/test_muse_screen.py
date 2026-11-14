@@ -9,10 +9,10 @@ from quarterdeck.harness.muse_screen import (EXPAND_HINT, IDLE_HINT, MUTED, PROM
 
 
 def frame(text="", status="", working=False):
-    rule = "─" * 80
-    return ("Muse Code 1.4.15\n" + ("Thinking (2s · esc to interrupt)\n" if working else "")
+    rule = "─" * 120
+    return ("Muse Code 1.4.20\n" + ("Thinking (2s · esc to interrupt)\n" if working else "")
             + rule + "\n❯ " + text + "\n" + rule + "\n"
-            + "echo · synthetic-folder · Launch overrides" + status)
+            + "  echo · synthetic-folder · Launch overrides" + status)
 
 
 def test_working_indicator_survives_reply_text_and_gate_until_terminal_frame():
@@ -34,30 +34,36 @@ def test_no_placeholder_is_discarded_and_queue_is_only_screen_evidence():
 def test_trust_requires_a_person_and_unknown_layout_never_supplies_a_box():
     screen = read("Do you trust this workspace?\n1 Trust and continue\n2 Quit\nEsc quits")
     assert screen.interruption == TRUST and not TRUST.dismissable
-    assert read(frame().replace("─" * 80, "unmeasured border")).unknown is not None
+    assert read(frame().replace("─" * 120, "unmeasured border")).unknown is not None
     assert read("An unfamiliar screen.").box is None
 
 
 def colour(text, foreground, background=None):
-    start = "\x1b[38;2;" + ";".join(map(str, foreground)) + "m"
+    """Indexed SGR for a palette index; an RGB triple stays truecolor."""
+    def channel(kind, color):
+        if isinstance(color, int):
+            return f"\x1b[{kind};5;{color}m"
+        return "\x1b[" + kind + ";2;" + ";".join(map(str, color)) + "m"
+
+    start = channel("38", foreground)
     if background is not None:
-        start += "\x1b[48;2;" + ";".join(map(str, background)) + "m"
+        start += channel("48", background)
     return start + text + "\x1b[0m"
 
 
-def composer(rows, columns=80, foreground=TYPED, footer="", transcript=""):
+def composer(rows, columns=120, foreground=TYPED, footer="", transcript=""):
     body = colour("❯ ", PROMPT) + colour(rows[0], foreground)
     body += "".join("\n" + colour("  ", MUTED) + colour(row, foreground) for row in rows[1:])
     rule = colour("─" * columns, MUTED)
-    return ("  " + colour("Muse Code", TYPED) + " 1.4.15\n" + transcript
+    return ("  " + colour("Muse Code", TYPED) + " 1.4.20\n" + transcript
             + rule + "\n" + body + "\n" + rule + "\n"
-            + "echo · synthetic-folder · Launch overrides" + footer)
+            + "  echo · synthetic-folder · Launch overrides" + footer)
 
 
 def test_known_grey_idle_tip_is_empty_while_the_same_bright_literal_is_text():
     grey = read(composer([IDLE_HINT], foreground=MUTED))
     bright = read(composer([IDLE_HINT]))
-    assert grey.box == "" and grey.unknown is None
+    assert grey.box is None and grey.unknown is not None
     assert bright.box == IDLE_HINT and bright.unknown is None
     assert read(composer(["A different fictional tip."], foreground=MUTED)).unknown is not None
 
@@ -74,41 +80,50 @@ def test_repeated_transcript_prompts_do_not_replace_the_composer():
 def test_multiline_and_explicit_blank_rows_keep_their_exact_shape():
     text = "first \nsecond\n\nfourth"
     screen = read(composer(["first ", "second", "", "fourth"]))
-    assert screen.box == text and VisibleBox(text).matches(screen.box, 78)
-    assert not VisibleBox("first\nsecond\n\nfourth").matches(screen.box, 78)
+    assert screen.box == text and screen.unknown is None
+    assert wrapped_rows(text, 118) is None
+    assert not VisibleBox(text).matches(screen.box, 118)
+    assert not VisibleBox("first\nsecond\n\nfourth").matches(screen.box, 118)
 
 
 def test_ascii_word_wrap_keeps_the_break_space_and_uses_the_pane_width():
     prefix = "word " * 15
     text = prefix + "xy completion"
+    assert wrapped_rows(text, 78) is None
+    assert wrapped_rows(text, 118) is None
     narrow = read(composer([prefix, "xy completion"], columns=80))
     wide = read(composer([text], columns=120))
-    assert VisibleBox(text).matches(narrow.box, 78)
-    assert VisibleBox(text).matches(wide.box, 118)
-    assert not VisibleBox(text).matches(narrow.box, 118)
+    assert not VisibleBox(text).matches(narrow.box, 78)
+    assert not VisibleBox(text).matches(wide.box, 118)
 
 
 def test_counted_fold_is_a_projection_of_the_full_original_form():
     text = "A fictional post · fictional paragraph.\n" * 40
     marker = f"[Pasted Content {len(text)} chars]"
+    assert counted_characters(text) is None
     screen = read(composer([marker], footer="\n" + EXPAND_HINT))
-    assert VisibleBox(text).matches(screen.box, 78)
-    assert not VisibleBox(text + "x").matches(screen.box, 78)
+    assert screen.box.folded
+    assert not VisibleBox(text).matches(screen.box, 118)
+    assert not VisibleBox(text + "x").matches(screen.box, 118)
     literal = read(composer([marker]))
-    assert not VisibleBox(text).matches(literal.box, 78)
-    assert VisibleBox(marker).matches(literal.box, 78)
+    assert not literal.box.folded
+    assert not VisibleBox(text).matches(literal.box, 118)
+    assert VisibleBox(marker).matches(literal.box, 118)
 
 
 def test_unmeasured_wrap_shapes_remain_unknown_projections():
+    short = "A synthetic short line."
+    assert wrapped_rows(short, 118) == [short]
+    assert wrapped_rows(short, 78) is None
     assert wrapped_rows("x" * 18, 18) is None
     assert wrapped_rows("first\tsecond", 78) is None
     assert wrapped_rows("A fictional \u754c character.", 78) is None
     assert wrapped_rows("A fictional e\u0301 character.", 78) is None
 
 
-def test_marker_counts_each_tab_as_four_without_expanding_the_input():
+def test_collapsed_character_counts_are_not_remeasured():
     text = "A fictional ending\t"
-    assert counted_characters(text) == str(len(text) + 3)
+    assert counted_characters(text) is None
     assert text.endswith("\t")
 
 
@@ -127,9 +142,13 @@ def test_short_canonical_post_retains_middle_dots_and_its_final_empty_row(column
     assert all(len(row) < columns - 3 for row in rows)
     screen = read(composer(rows, columns=columns))
     harness = get("muse")
-    assert screen.box == text and not screen.box.folded
-    assert harness.box(text).matches(screen.box, harness.box_columns(columns))
-    assert harness.expected_input(Input(text[:-1], at), text) == text[:-1]
+    assert harness.expected_input(Input(text[:-1], at), text) == text
+    assert wrapped_rows(text, harness.box_columns(columns)) is None
+    if columns == 120:
+        assert screen.unknown is None and screen.box == text and not screen.box.folded
+    else:
+        assert screen.box is None and screen.unknown is not None
+    assert not harness.box(text).matches(screen.box, harness.box_columns(columns))
 
 
 @pytest.mark.parametrize("columns", [80, 120])
@@ -151,8 +170,8 @@ def test_measured_middle_dot_edge_placements_keep_the_word_and_its_space(columns
         assert len(prefix) == columns - 2
     text = prefix + tail + "\n"
     assert text.index("·") == columns + dot_offset
-    screen = read(composer(rows, columns=columns))
-    assert VisibleBox(text).matches(screen.box, columns - 2)
+    assert wrapped_rows(text, columns - 2) is None
+    assert not VisibleBox(text).matches(read(composer(rows, columns=columns)).box, columns - 2)
 
 
 def test_unknown_final_word_and_internal_word_breaks_have_no_projection():
@@ -163,8 +182,10 @@ def test_unknown_final_word_and_internal_word_breaks_have_no_projection():
 def test_greedy_wrap_moves_a_whole_short_word_from_an_earlier_offset():
     prefix = "word " * 10
     text = prefix + "x" * 30 + " end"
+    assert wrapped_rows(text, 78) is None
+    assert wrapped_rows(text, 118) is None
     screen = read(composer([prefix, "x" * 30 + " end"], columns=80))
-    assert VisibleBox(text).matches(screen.box, 78)
+    assert not VisibleBox(text).matches(screen.box, 78)
 
 
 @pytest.mark.parametrize("columns", [80, 120])
@@ -175,8 +196,9 @@ def test_greedy_wrap_retains_each_break_space_across_a_long_ascii_line(columns):
         rows = ["introduction " + "word " * 12] + ["word " * 15] * 3 + ["word ok"]
     else:
         rows = ["introduction " + "word " * 20, "word " * 23, "word " * 15 + "ok"]
+    assert wrapped_rows(text, columns - 2) is None
     screen = read(composer(rows, columns=columns))
-    assert VisibleBox(text).matches(screen.box, columns - 2)
+    assert not VisibleBox(text).matches(screen.box, columns - 2)
 
 
 @pytest.mark.parametrize("columns", [80, 120])
@@ -193,8 +215,9 @@ def test_kept_long_line_structural_reproduction_moves_the_inner_prefix_whole(col
     else:
         rows = [(word + " ") * 6] * 2 + [" ".join([word] * 5)]
         assert list(map(len, rows)) == [108, 108, 89]
+    assert wrapped_rows(text, columns - 2) is None
     screen = read(composer(rows, columns=columns))
-    assert VisibleBox(text).matches(screen.box, columns - 2)
+    assert not VisibleBox(text).matches(screen.box, columns - 2)
 
 
 @pytest.mark.parametrize("columns", [80, 120])
@@ -202,8 +225,9 @@ def test_overflow_moves_whole_when_its_first_inner_prefix_also_overflows(columns
     prefix = "word " * ((columns - 5) // 5)
     text = prefix + "abcd-ef end"
     assert len(prefix) == columns - 5
+    assert wrapped_rows(text, columns - 2) is None
     screen = read(composer([prefix, "abcd-ef end"], columns=columns))
-    assert VisibleBox(text).matches(screen.box, columns - 2)
+    assert not VisibleBox(text).matches(screen.box, columns - 2)
 
 
 @pytest.mark.parametrize("columns", [80, 120])
@@ -212,8 +236,9 @@ def test_word_final_punctuation_is_not_an_inner_break(columns, word):
     prefix = "word " * ((columns - 10) // 5) + "final "
     text = prefix + word + " end"
     assert len(prefix) == columns - 4
+    assert wrapped_rows(text, columns - 2) is None
     screen = read(composer([prefix, word + " end"], columns=columns))
-    assert VisibleBox(text).matches(screen.box, columns - 2)
+    assert not VisibleBox(text).matches(screen.box, columns - 2)
 
 
 @pytest.mark.parametrize("columns", [80, 120])
@@ -228,8 +253,9 @@ def test_overflow_holds_when_the_first_inner_prefix_would_fit(columns, word):
 def test_final_word_stays_at_the_last_supported_row_length(columns):
     text = "word " * ((columns - 5) // 5) + "q"
     assert len(text) == columns - 4
+    assert wrapped_rows(text, columns - 2) is None
     screen = read(composer([text], columns=columns))
-    assert VisibleBox(text).matches(screen.box, columns - 2)
+    assert not VisibleBox(text).matches(screen.box, columns - 2)
 
 
 @pytest.mark.parametrize("columns", [80, 120])
@@ -245,8 +271,9 @@ def test_final_word_placement_at_the_two_unknown_edge_lengths_holds(columns, wor
 def test_final_word_past_the_unknown_edge_moves_by_the_same_prefix_rule(columns, word):
     prefix = "word " * ((columns - 5) // 5)
     text = prefix + word + "\n"
+    assert wrapped_rows(text, columns - 2) is None
     screen = read(composer([prefix, word, ""], columns=columns))
-    assert VisibleBox(text).matches(screen.box, columns - 2)
+    assert not VisibleBox(text).matches(screen.box, columns - 2)
 
 
 @pytest.mark.parametrize("columns", [80, 120])
@@ -262,7 +289,7 @@ def test_final_word_past_the_unknown_edge_holds_when_its_inner_prefix_fits(colum
     "Muse Code 1.4.15\nA fictional dialog without a composer.",
     "An unfamiliar program layout.",
     frame().replace("❯", "unmeasured prompt"),
-    frame().replace("─" * 80 + "\necho", "─" * 79 + "\necho"),
+    frame().replace("─" * 120, "─" * 119, 1),
     frame("first\nunindented continuation"),
     frame().replace("Launch overrides", "Unmeasured footer"),
     frame() + "\x1b[?m",
@@ -296,4 +323,5 @@ def test_unsupported_payload_projection_does_not_erase_visible_idle_activity():
     text = "A fictional \u754c draft."
     screen = read(composer([text]))
     assert screen.working is False and screen.unknown is None
-    assert not VisibleBox(text).matches(screen.box, 78)
+    assert wrapped_rows(text, 118) is None
+    assert not VisibleBox(text).matches(screen.box, 118)

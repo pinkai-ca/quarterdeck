@@ -20,10 +20,10 @@ def test_no_allowance_is_unknown_without_an_invented_window():
 
 
 def test_present_percentage_keeps_its_precision_and_explicit_period():
-    result = reading(dict(window=dict(used_percent=1.25, window_duration_mins=120, resets_at=2208996000),
-                          weekly=dict(used_percent=0, resets_at=2209593600)))
+    result = reading(dict(window=dict(usedPercent=12, resetsAtMs=2208996000000),
+                          weekly=dict(usedPercent=0, resetsAtMs=2209593600000)))
     assert result.error is None
-    assert [(window.name, window.used) for window in result.windows] == [("120m", .0125), ("weekly", 0)]
+    assert [(window.name, window.used) for window in result.windows] == [("window", 0.12), ("weekly", 0)]
     assert result.windows[0].resets_at == datetime.fromtimestamp(2208996000, timezone.utc)
 
 

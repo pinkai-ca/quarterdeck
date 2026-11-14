@@ -236,7 +236,8 @@ def blind(*args, **kwargs):
 def recorded(state):
     restarted = []
     seat = SimpleNamespace(
-        name="synthetic", record=lambda: Path("synthetic-record"), pane=lambda: SimpleNamespace(dead=False),
+        name="synthetic", launched=lambda: None, record=lambda: Path("synthetic-record"),
+        pane=lambda: SimpleNamespace(dead=False),
         join=lambda: SimpleNamespace(record=Path("synthetic-record")), read_pane=blind,
         harness=SimpleNamespace(state=lambda path: state, screen=blind, waiting_for_human=lambda state: False),
         restart=lambda: restarted.append("restart") or "synthetic restart",
@@ -268,7 +269,7 @@ def test_service_relaunch_is_decided_by_the_record_alone(monkeypatch, record_sta
 @pytest.mark.parametrize("working", [True, False, None])
 def test_cli_relaunch_acts_now_only_on_known_idle(monkeypatch, working):
     called = []
-    seat = SimpleNamespace(is_working=lambda: working, name="synthetic",
+    seat = SimpleNamespace(is_working=lambda: working, name="synthetic", launched=lambda: None,
                            restart=lambda: called.append("restart") or "restarted",
                            fresh=lambda: called.append("fresh") or "fresh")
     monkeypatch.setattr(cli, "this_seat", lambda ship, name: "synthetic")
@@ -280,9 +281,14 @@ def test_cli_relaunch_acts_now_only_on_known_idle(monkeypatch, working):
 
 def controlled(working):
     return SimpleNamespace(
-        name="synthetic", is_up=True, is_working=lambda: working,
+        name="synthetic", is_up=True, is_working=lambda: working, launched=lambda: None,
+        record=lambda: Path("synthetic-record"),
         spec=SimpleNamespace(pool_choices=()),
-        harness=SimpleNamespace(control=lambda name: Control(name, None, "/synthetic {value}", "record")))
+        harness=SimpleNamespace(
+            name="synthetic",
+            control=lambda name: Control(name, None, "/synthetic {value}", "record"),
+            effort_capability=lambda version=None: SimpleNamespace(kind="unrestricted"),
+            state=lambda path: RECORDS["closed"]))
 
 
 @pytest.mark.parametrize("working", [True, False, None])

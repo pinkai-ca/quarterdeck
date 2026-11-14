@@ -230,7 +230,7 @@ def test_direct_interrupt_refuses_under_a_delivery_fault(editor, monkeypatch):
 def test_direct_interrupt_never_keys_a_human_session(editor, monkeypatch):
     door = guarded(editor, monkeypatch, WORKING)
     editor.seat.session.human = True
-    assert door.interrupt() == "a human owns this session; no interrupt sent"
+    assert door.interrupt() == f"{editor.seat.name}: a human owns this session; no interrupt key sent"
     assert editor.terminal.submitted == [] and door.harness.seen == []
 
 
