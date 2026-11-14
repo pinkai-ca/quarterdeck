@@ -105,3 +105,54 @@ def test_only_an_offered_open_attempt_of_this_seat_is_closed_by_a_receipt(tmp_pa
     assert (receipts / 'linked.json').is_symlink(), 'a link is never read and is left where it is'
     watch_broker.run(svc, SimpleNamespace(name='desk'))
     assert watch_broker.read_offer(runtime, 'desk') is None, 'a settled offer is retired'
+
+
+def test_a_held_lease_is_only_tested_and_never_delays_a_pass(tmp_path: Path):
+    """The wait holds its lease for its whole life; the service only tests it, without blocking, for every seat."""
+    runtime = tmp_path / 'runtime'
+    svc = service(runtime)
+    _, lease = armed(runtime, 'desk')  # held, exclusively, as a live wait holds it
+    _, other = armed(runtime, 'office')
+    try:
+        svc.store.new('order', 'captain', 'office', 'for the other seat')
+        started = time.monotonic()
+        for _ in range(20):
+            assert watch_broker.lease_held(runtime, 'desk', 'a' * 32) is True
+            watch_broker.run(svc, SimpleNamespace(name='desk'))
+            watch_broker.run(svc, SimpleNamespace(name='office'))
+        assert time.monotonic() - started < 2, 'forty passes over held leases, none waiting on them'
+        assert watch_broker.read_offer(runtime, 'office') is not None
+    finally:
+        os.close(lease)
+        os.close(other)
+
+
+def test_a_receipts_folder_that_is_a_link_is_never_entered(tmp_path: Path):
+    runtime = tmp_path / 'runtime'
+    svc = service(runtime)
+    armed(runtime, 'desk')
+    svc.store.new('order', 'captain', 'desk', 'waiting')
+    watch_broker.run(svc, SimpleNamespace(name='desk'))
+    name = watch_broker.read_offer(runtime, 'desk')['attempts'][0]
+    outside = tmp_path / 'outside'
+    outside.mkdir()
+    (outside / name).write_text(json.dumps(dict(format=1, attempt=name)))
+    (outside / 'precious.json').write_text('keep me')
+    (post.watch_file(runtime, 'desk').parent / watch_broker.RECEIPTS).symlink_to(outside)
+    watch_broker.run(svc, SimpleNamespace(name='desk'))
+    assert sorted(p.name for p in outside.iterdir()) == sorted([name, 'precious.json']), 'nothing outside is removed'
+    attempt, = svc.attempts.for_message(watch_broker.read_offer(runtime, 'desk')['messages'][0])
+    assert attempt.result is None, 'a claim reached through a link closes nothing'
+
+
+def test_an_oversized_or_linked_request_is_no_claim(tmp_path: Path):
+    runtime = tmp_path / 'runtime'
+    armed(runtime, 'desk')
+    request = post.watch_file(runtime, 'desk').parent / watch_broker.REQUEST
+    request.write_text(' ' * (watch_broker.LIMIT + 1))
+    assert watch_broker.request(runtime, 'desk') is None
+    request.unlink()
+    elsewhere = tmp_path / 'elsewhere.json'
+    elsewhere.write_text(json.dumps(dict(format=1, generation='a' * 32, lease=[0, 0])))
+    request.symlink_to(elsewhere)
+    assert watch_broker.request(runtime, 'desk') is None

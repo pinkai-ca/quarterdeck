@@ -60,24 +60,41 @@ def offer_path(runtime: Path, seat: str) -> Path:
     return runtime / 'post' / 'watch-offers' / f'{seat}.json'
 
 
-def _read_regular(path: Path, limit: int = 1 << 20) -> bytes | None:
-    """A regular file's bytes, never through a link; None when absent or anything else."""
+LIMIT = 1 << 16  # the bound on any one file the service reads from a seat's folder
+
+
+def _folder_fd(folder: Path, parent: int | None = None) -> int | None:
+    """A descriptor for a real directory, never through a link; None when it is absent or anything else."""
     try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        return os.open(folder if parent is None else folder.name,
+                       os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                       **({} if parent is None else dict(dir_fd=parent)))
     except OSError:
         return None
+
+
+def _claim(folder_fd: int, name: str, path: Path) -> bytes | None:
+    """The seat's own claim: one regular file read through post_dir's guard (no link followed, regular, bounded,
+    and refused if it changes in place during the read); None for anything else."""
     try:
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
-            return None
-        with os.fdopen(descriptor, 'rb', closefd=False) as stream:
-            return stream.read(limit + 1)
+        return post_dir._read_nofollow(folder_fd, name, path, LIMIT)
+    except (OSError, ShipError):
+        return None
+
+
+def _seat_file(runtime: Path, seat: str, name: str) -> bytes | None:
+    folder = seat_folder(runtime, seat)
+    descriptor = _folder_fd(folder)
+    if descriptor is None:
+        return None
+    try:
+        return _claim(descriptor, name, folder / name)
     finally:
         os.close(descriptor)
 
 
 def request(runtime: Path, seat: str) -> dict | None:
-    raw = _read_regular(seat_folder(runtime, seat) / REQUEST)
+    raw = _seat_file(runtime, seat, REQUEST)
     try:
         data = json.loads(raw) if raw is not None else None
         if (not isinstance(data, dict) or data.get('format') != 1 or not isinstance(data.get('generation'), str)
@@ -97,13 +114,17 @@ def lease_held(runtime: Path, seat: str, generation: str | None) -> bool | None:
     data = request(runtime, seat)
     if data is None or generation is None or data['generation'] != generation:
         return None
-    path = seat_folder(runtime, seat) / LEASE
+    folder = _folder_fd(seat_folder(runtime, seat))
+    if folder is None:
+        return None
     try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        descriptor = os.open(LEASE, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=folder)
     except FileNotFoundError:
         return False
     except OSError:
         return None
+    finally:
+        os.close(folder)
     try:
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode) or [info.st_dev, info.st_ino] != data['lease']:
@@ -258,31 +279,46 @@ def _run(service, seat) -> None:
 
 
 def _settle(service, name: str, offer: dict | None) -> None:
-    folder = seat_folder(service.runtime, name) / RECEIPTS
-    try:
-        entries = list(os.scandir(folder))
-    except FileNotFoundError:
+    """Close what the seat's receipts claim. The folder and each receipt are walked without following a link: a
+    receipts folder that is a link is never entered, and nothing outside the seat's own folder is read or removed."""
+    seat = _folder_fd(seat_folder(service.runtime, name))
+    if seat is None:
         return
+    try:
+        folder = _folder_fd(seat_folder(service.runtime, name) / RECEIPTS, seat)
+    finally:
+        os.close(seat)
+    if folder is None:
+        return
+    try:
+        _settle_in(service, name, offer, folder)
+    finally:
+        os.close(folder)
+
+
+def _settle_in(service, name: str, offer: dict | None, folder: int) -> None:
+    where = seat_folder(service.runtime, name) / RECEIPTS
     offered = set(offer['attempts']) if offer is not None else set()
-    for entry in entries:
-        path = Path(entry.path)
-        if not entry.is_file(follow_symlinks=False):
+    with os.scandir(folder) as entries:
+        names = [(entry.name, entry.is_file(follow_symlinks=False)) for entry in entries]
+    for entry, regular in names:
+        if not regular:
             continue  # never read through a link or a special file; the seat's own folder keeps it
-        raw = _read_regular(path)
+        raw = _claim(folder, entry, where / entry)
         try:
             data = json.loads(raw) if raw is not None else None
         except (ValueError, UnicodeError):
             data = None
         attempt = None
-        if (isinstance(data, dict) and data.get('format') == 1 and data.get('attempt') == entry.name
-                and entry.name in offered):
-            attempt = _attempt(service.runtime, entry.name)
+        if (isinstance(data, dict) and data.get('format') == 1 and data.get('attempt') == entry
+                and entry in offered):
+            attempt = _attempt(service.runtime, entry)
         if attempt is not None and attempt.seat == name and attempt.result is None:
             service.attempts.close(attempt, 'watch', 'printed by qd inbox --wait', wait=WAIT)
             service.log('watch-receipt', seat=name, message=attempt.message)
         elif attempt is None or attempt.result is not None:
-            service.log('watch-receipt-ignored', seat=name, receipt=entry.name)
+            service.log('watch-receipt-ignored', seat=name, receipt=entry)
         try:
-            path.unlink()
+            os.unlink(entry, dir_fd=folder)
         except FileNotFoundError:
             pass

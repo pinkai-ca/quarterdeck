@@ -165,3 +165,53 @@ print(json.dumps(dict(
     seen = json.loads(out.strip().splitlines()[-1])
     assert seen == dict(store=False, other_drop=False, admission=False, attempts=False, offers=False, own_receipts=True), seen
     assert (store.dir / f'{victim.id}.json').is_file() and not (store.dir / 'forged.json').exists()
+
+
+AUDITED = r"""
+import json, os, sys
+writes, locks = [], []
+WRITE = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
+
+def hook(event, args):
+    if event == 'open':
+        path, mode, flags = args
+        if isinstance(path, int):
+            return
+        writing = (isinstance(flags, int) and flags & WRITE) or (isinstance(mode, str) and any(c in mode for c in 'wax+'))
+        if writing:
+            writes.append(os.fsdecode(path))
+    elif event == 'fcntl.flock':
+        try:
+            locks.append(os.readlink(f'/proc/self/fd/{args[0]}'))
+        except OSError:
+            locks.append('unknown descriptor')
+
+sys.addaudithook(hook)
+from quarterdeck import cli
+code = cli.main(['inbox', '--wait'])
+sys.stdout.flush()
+sys.stderr.write('AUDIT ' + json.dumps(dict(writes=writes, locks=locks)) + '\n')
+sys.exit(code)
+"""
+
+
+def test_a_woken_jailed_wait_writes_and_locks_only_its_own_seat_folder(ship, tmux, capsys):
+    """Every write-open and every flock the jailed wait makes, from Python's own audit events, is in its seat folder."""
+    qd(capsys, 'up')
+    desk = seatmod.Seat(ship, ship.seat('desk'), tmux)
+    qd(capsys, 'post', 'order', '--from', 'captain', '--to', 'desk', 'Synthetic: audited.')
+    assert wait_for(lambda: inputs(desk) or None, seconds=60) == [EXACT], 'woken by the message'
+    wait = jailed(ship, [sys.executable, '-B', '-c', AUDITED])
+    try:
+        out, err = wait.communicate(timeout=90)
+    finally:
+        if wait.poll() is None:
+            wait.kill()
+    assert wait.returncode == 0, err
+    assert 'Synthetic: audited.' in out
+    audit = json.loads(next(line for line in err.splitlines() if line.startswith('AUDIT '))[6:])
+    own = str(ship.runtime / 'seats' / 'desk') + os.sep
+    post_folder = str(ship.runtime / 'post') + os.sep
+    assert audit['locks'] and all(path.startswith(own) for path in audit['locks']), audit['locks']
+    assert audit['writes'] and all(os.path.isabs(path) and path.startswith(own) for path in audit['writes']), audit['writes']
+    assert not any(path.startswith(post_folder) for path in audit['writes'] + audit['locks'])
