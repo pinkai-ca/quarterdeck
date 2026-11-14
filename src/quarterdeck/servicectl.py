@@ -20,6 +20,7 @@ from pathlib import Path
 
 from . import durable
 from .ship import Ship, ShipError
+from .procstat import EXITED
 
 STALE_SECONDS = 10.0  # a tick longer than this reads as busy
 ANSWER_SECONDS = 8.0
@@ -95,8 +96,10 @@ def started(runtime: Path) -> bool:
 
 
 def process_start(pid: int) -> str | None:
+    """The start time of a process that has not exited: an exited one (Z, X, x) proves no identity, so None."""
     try:
-        return Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[19]
+        fields = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
+        return fields[19] if fields[0] not in EXITED else None
     except (OSError, IndexError, UnicodeError):
         return None
 

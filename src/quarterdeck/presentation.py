@@ -8,6 +8,7 @@ import sys
 import time
 
 from . import copy_state, servicectl
+from .procstat import EXITED
 
 NAME = 'status-line.json'
 MAX_AGE_NS = 3_000_000_000  # covers long actor duties; independent owner checks still run on every job
@@ -29,8 +30,10 @@ def framework_stamp():
 
 
 def process_start(pid):
+    """The start time of a process that has not exited: an exited one (Z, X, x) proves no identity, so None."""
     try:
-        return Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[19]
+        fields = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
+        return fields[19] if fields[0] not in EXITED else None
     except (OSError, IndexError, UnicodeError):
         return None
 
