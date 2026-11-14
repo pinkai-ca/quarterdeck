@@ -6,6 +6,7 @@ import fcntl
 import os
 from pathlib import Path
 import secrets
+import signal
 import socket
 import stat
 import tempfile
@@ -216,6 +217,27 @@ class OwnedSocket:
         finally:
             if descriptor is not None:
                 os.close(descriptor)
+
+    def terminate(self):
+        """Ask this creator's own recorded server to end, once, by its pid: only when that pid is still the process
+        this owner recorded (same start) and its environment still carries this owner's nonce. tmux ends its panes on
+        SIGTERM as on kill-server; no stronger signal is sent, so no pane's program is left behind."""
+        if self.pid is None:
+            return False
+        fields = process_state(self.pid)
+        if not fields or fields[0] == 'Z' or fields[19] != self.start:
+            return False
+        try:
+            environment = Path(f'/proc/{self.pid}/environ').read_bytes().split(b'\0')
+        except OSError:
+            return False
+        if f'{OWNER}={self.nonce}'.encode() not in environment or process_state(self.pid)[19:20] != [self.start]:
+            return False
+        try:
+            os.kill(self.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return False
+        return True
 
     def remove_dead(self, held):
         present = self.current(held)

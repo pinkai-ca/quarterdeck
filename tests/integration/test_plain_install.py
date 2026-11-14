@@ -104,6 +104,9 @@ def test_wheel_installed_laws_and_fake_drydock(scratch, private_socket_root, cap
     tracked = shared_wheel.tracked
     outside = scratch / 'outside'
     outside.mkdir()
+    # The worker session's socket container is shared with every test on this worker: this test answers only for
+    # the private namespaces its own drill makes, never for another test's leftover.
+    namespaces_before = set(private_socket_root.glob('qd-pt-*'))
     env = child_environment(scratch / 'child', private_socket_root)
 
     wheel = shared_wheel.path
@@ -178,7 +181,7 @@ def test_wheel_installed_laws_and_fake_drydock(scratch, private_socket_root, cap
                      "desk never typed into · box ''", 'briefed with its open order'):
         assert evidence in drill_text, drill_text
     assert not list(Path(env['TMPDIR']).glob('qd-drill-*'))
-    assert not list(private_socket_root.glob('qd-pt-*'))
+    assert set(private_socket_root.glob('qd-pt-*')) - namespaces_before == set(), 'its own drill left no namespace'
 
     # No-capture output is kept in the main tool's report, including successful evidence.
     # The focused lease uses no xdist workers so these proof lines reach that console.

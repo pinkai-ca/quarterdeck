@@ -21,6 +21,8 @@ HISTORY_LINES = 50_000
 SHIP_SOCKET = ("tmux", "server")  # under the ship's runtime: the ship's own server, never tmux's default
 SOCKET_LIMIT = 108  # bytes in a Unix socket's path (sun_path), its terminating NUL included
 CUTOVER = "qd down, then qd up, moves it to its own; the default server itself is left running"
+SHUTDOWN_WAIT = 10.0  # seconds a private server may take to end after its kill-server on a loaded machine
+TERM_AFTER = 3.0  # then its own recorded server, identity proved again, is asked once to end by its pid
 
 
 def socket_bytes(path) -> int:
@@ -462,14 +464,23 @@ class Tmux:
             pass
 
     def _remove_ended(self, held):
-        deadline = time.monotonic() + 2
+        """Wait for this creator's own server to end and remove its proved-dead socket. A loaded machine may take
+        seconds to finish a kill-server: the wait ends on the server's own exit, and after TERM_AFTER the recorded
+        server, its identity proved again, is asked once to end by its pid. A server that still will not end within
+        SHUTDOWN_WAIT is held with its reason, its socket retained."""
+        started = time.monotonic()
+        asked = False
         while True:
             try:
                 self._owned.remove_dead(held)
                 return
             except ShutdownPending:
-                if time.monotonic() >= deadline:
+                waited = time.monotonic() - started
+                if waited >= SHUTDOWN_WAIT:
                     raise
+                if not asked and waited >= TERM_AFTER:
+                    asked = True
+                    self._owned.terminate()
                 time.sleep(.01)
 
     def close(self) -> bool:
