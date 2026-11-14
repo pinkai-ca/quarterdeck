@@ -58,9 +58,29 @@ class FinalizationTimeout(BaseException):
     """Escape cleanup error handlers; the remaining scratch and first result must stay."""
 
 
+def selection(args) -> dict:
+    """Resolve a declared lane or named targets without observing or starting a test."""
+    targets = list(args.targets)
+    lane = getattr(args, 'lane', None)
+    if lane is not None and targets:
+        raise Refused('--fast and --whole cannot be combined with named targets')
+    name = 'targets' if targets else (lane or 'fast')
+    if name not in ('fast', 'whole', 'targets'):
+        raise Refused('the test selection must be fast, whole or named targets')
+    if not targets:
+        targets = ['tests/unit', 'tests/contract'] if name == 'fast' else ['tests']
+    maximum = 16 if name == 'fast' else 8
+    workers = maximum if args.workers is None else args.workers
+    if not 0 <= workers <= maximum:
+        raise Refused(f'-n takes 0 to {maximum} workers for {name}')
+    return {'name': name, 'targets': targets, 'workers': workers}
+
+
 class Runner:
     def __init__(self, args, runner_files: list[Path]):
         self.args = args
+        self.selection = selection(args)
+        args.workers = self.selection['workers']
         self.runner_files = runner_files
         self.signal = None
         self.timed_out = False
@@ -212,6 +232,7 @@ class Runner:
     # -- the run --------------------------------------------------------------------------------------------
     def main(self) -> int:
         args = self.args
+        print('testrun: ' + report.selection_label(self.selection), flush=True)
         root = slot = None
         self.run_guard = None
         self.bound(SETUP_SECONDS, f'time limit of setup, {SETUP_SECONDS:g} s')
@@ -223,7 +244,7 @@ class Runner:
                     shown = '\n  '.join(problems[:20]) + ('\n  ...' if len(problems) > 20 else '')
                     raise Refused(f'target {target.top} has uncommitted changes; commit them (a WIP commit is fine) so the '
                                   f'result names exactly what ran:\n  {shown}')
-                targets = [check_target(target.top, item) for item in args.targets]
+                targets = [check_target(target.top, item) for item in self.selection['targets']]
                 if getattr(args, 'jail', False):
                     try:
                         jail.tool_outside(self.runner_files, target.top)
@@ -286,7 +307,7 @@ class Runner:
         write_json(self.scratch_fd, 'state.json', self.state)
         clean.record(root, run, self.state)
         os.close(root.child(RESULTS, run, 'sessions'))
-        result = {'run': run, 'change': change, 'started': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
+        result = {'run': run, 'change': change, 'selection': self.selection, 'started': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
                   'target': {'top': str(target.top), 'project': str(target.project), 'head': target.head,
                              'tree': target.tree, 'branch': target.branch},
                   'working_storage': self.storage,

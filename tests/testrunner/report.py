@@ -72,11 +72,24 @@ def jail_line(jail: dict | None) -> str:
             f'{jail.get("timeout_seconds")} s · memory {jail.get("memory_mib")} MiB ({jail.get("memory_resource")})')
 
 
+
+def selection_label(selected: dict | None) -> str:
+    """Old results carry no lane evidence; do not infer a signing selection for them."""
+    if not selected:
+        return 'unrecorded selection'
+    if selected['name'] == 'fast':
+        return 'fast: unit, contract'
+    if selected['name'] == 'whole':
+        return 'whole'
+    return 'targets: ' + ', '.join(selected['targets'])
+
+
 def render(result: dict, console: str, failures: list[dict]) -> str:
     target, runner, outcome = result['target'], result['runner'], result['outcome']
     counts = result.get('evidence', {}).get('counts') or {}
     observed = result.get('evidence', {}).get('observed_at_least') or {}
     out = [f'# Test run {result["run"]}', '',
+           f'- selection: **{selection_label(result.get("selection"))}**',
            f'- status: **{outcome["status"]}**',
            f'- exits: wrapper {outcome["wrapper_exit"]}, pytest {outcome.get("pytest_exit")}, '
            f'signal {outcome.get("signal")}, cleanup {result.get("cleanup", {}).get("outcome")}',

@@ -13,10 +13,18 @@ from .layout import Refused
 def parser() -> argparse.ArgumentParser:
     top = argparse.ArgumentParser(prog='tests/testrun.py', description=__doc__)
     verbs = top.add_subparsers(dest='verb', required=True)
-    p = verbs.add_parser('run', help='run the whole suite, or named targets, of a clean committed worktree')
-    p.add_argument('targets', nargs='*', help='paths or node ids relative to the worktree top (default: the suite)')
+    p = verbs.add_parser('run', help='fast unit/contract tests by default; --whole for a signing run',
+                        description='Default: fast unit and contract tests at 16 workers. Signing runs explicitly '
+                                    'choose --whole (every test, 8 workers). Four slots, one per run; bounds unchanged.')
+    p.add_argument('targets', nargs='*', help='named paths or node ids (8 workers by default); omit for fast')
+    lanes = p.add_mutually_exclusive_group()
+    lanes.add_argument('--fast', dest='lane', action='store_const', const='fast',
+                       help='unit and contract tests, 16 workers by default (the default lane)')
+    lanes.add_argument('--whole', dest='lane', action='store_const', const='whole',
+                       help='every test, 8 workers by default; required for a signing run')
     p.add_argument('--target', help='the worktree to test (default: the one the current directory is in)')
-    p.add_argument('-n', dest='workers', type=int, default=8, help='xdist workers, 8 at most (0: none)')
+    p.add_argument('-n', dest='workers', type=int, default=None,
+                   help='xdist workers: fast defaults to 16, at most 16; whole/named default to 8, at most 8 (0: none)')
     p.add_argument('--timeout', type=float, default=3600.0,
                    help='seconds pytest may run, counted from its start (default 3600); setup has its own bound of '
                         '600 s from admission to a slot, and the wait for a slot is bounded by --wait alone')
@@ -47,8 +55,6 @@ def main(argv: list[str] | None, runner_files: list[Path]) -> int:
         if args.verb == 'run':
             if not math.isfinite(args.timeout) or args.timeout <= 0:
                 raise Refused('--timeout must be finite and greater than zero')
-            if not 0 <= args.workers <= 8:
-                raise Refused('-n takes 0 to 8 workers')
             return run.Runner(args, runner_files).main()
         if args.verb == 'clean':
             return clean.clean(args)
