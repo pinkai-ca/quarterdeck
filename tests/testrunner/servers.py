@@ -203,7 +203,7 @@ def stop(descriptor, path, birth, budget):
                 query = subprocess.run([*command, 'display-message', '-p', '#{pid} #{' + OWNER + '}'],
                                        env=env, capture_output=True, text=True, timeout=2)
             except subprocess.TimeoutExpired:
-                query = None
+                raise Refused('private server did not answer; held') from None
             if query is not None and not query.returncode and query.stdout.strip() == f"{birth['pid']} {birth['owner']}":
                 verify()
                 endpoint(descriptor, name, birth)
@@ -212,7 +212,7 @@ def stop(descriptor, path, birth, budget):
                     subprocess.run([*command, 'if-shell', '-F', guard, 'kill-server'], env=env,
                                    capture_output=True, timeout=2, check=False)
                 except subprocess.TimeoutExpired:
-                    pass  # only the proved process/socket death below can authorize removal
+                    raise Refused('private server did not answer; held') from None
             # A server already shutting down may have stopped answering. Send nothing further;
             # wait for the same recorded process and endpoint to be proved dead, or hold.
         deadline = time.monotonic() + 2
