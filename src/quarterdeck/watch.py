@@ -19,6 +19,8 @@ from pathlib import Path
 from . import accounting_health, acts, check_outcome, credential, idle, ledger, move_hold, server_recovery, pending as pending_delivery, post, program_use, providers, quota, record_owner, recovery, request_queue, servicectl as service
 from .door import Door, Reading
 from .harness.capabilities import selection_label
+from .harness import reading_scope
+from .harness.base import record_fingerprint
 from .seat import Seat, UnresolvedSeat, leftover_checks, seats
 from .ship import Ship, ShipError
 from .servicectl import STALE_SECONDS
@@ -207,6 +209,10 @@ def tokens_today(seat: Seat | UnresolvedSeat) -> ledger.Count:
                 counted = book.today(seat.name, day)
             except sqlite3.OperationalError:  # a book written by an older service: read the records instead
                 counted = ledger.Count()
+            else:
+                if (not counted.known and not counted.unmeasured and not isinstance(seat, UnresolvedSeat)
+                        and accounted_history(book, seat)):
+                    return counted
         if counted.known or counted.unmeasured:
             return counted
     if isinstance(seat, UnresolvedSeat):
@@ -225,6 +231,34 @@ def tokens_today(seat: Seat | UnresolvedSeat) -> ledger.Count:
         if state.turns is None or state.turn_open is None:
             found += ledger.Count(0, 1)  # the record leaves its own turn count uncertain
     return found
+
+
+def accounted_history(book, seat):
+    """A zero is measured too, but only matching successful certificates prove it."""
+    from . import presentation
+    try:
+        if not book.db.execute('SELECT 1 FROM record_accounting LIMIT 1').fetchone():
+            return False
+        owned = record_owner.records(seat, publish=False)
+        if not owned:
+            return False
+        try:
+            named = (seat.home.parent / 'record').read_text().strip()
+            current = Path(named) if named else None
+        except FileNotFoundError:
+            current = None
+        prepared = book.provenance.prepare(seat, current, seat.launched())
+        framework = presentation.framework_stamp()
+        for item in owned:
+            if item.reader is None or item.transient:
+                return False
+            stamp = item.name, record_fingerprint(item.path)
+            evidence = book.accounting_evidence(seat.name, stamp, item.reason, prepared[1], framework)
+            if not book.accounted(item.path, evidence):
+                return False
+        return True
+    except (OSError, sqlite3.Error, ValueError, TypeError, KeyError):
+        return False  # missing/changed/malformed evidence keeps the ordinary reading path
 
 
 def running_settings(seat: Seat, *, screen=None) -> dict[str, str]:
@@ -254,6 +288,9 @@ def service_state(runtime: Path) -> str:
     return f"busy {int(late)}s" if late else "ok"
 
 
+@post.reading_pass()
+@reading_scope.reading_pass()
+@record_owner.reader_pass()
 def status_reading(ship: Ship, tmux: Tmux) -> dict:
     store = post.Store(ship.runtime)
     requests = request_queue.pending(ship.runtime)
@@ -663,6 +700,8 @@ def limit_state(ship: Ship, selected: list[Seat | UnresolvedSeat]):
         return [], ["held seats unknown; ledger unreadable"], []
 
 
+@post.reading_pass()
+@reading_scope.reading_pass()
 def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tuple[str, str]] | None = None,
           *, store=None, attempts=None, request_rows: list[dict] | None = None, check_reading=None) -> Facts:
     """Everything the status line says; cheap enough for tmux to ask every few seconds."""

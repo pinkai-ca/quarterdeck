@@ -420,7 +420,8 @@ class Harness(ABC):
     @classmethod
     def read(cls, record: Path) -> tuple[State, list[Turn]]:
         """The live state and ended turns from one reading by this adapter's reader."""
-        return cls.reader(record)
+        from . import reading_scope
+        return reading_scope.read(cls, record, lambda: cls.reader(record))
 
     def inputs(self, record: Path) -> list[Input]:
         """Timestamped owned-record evidence; optional ``skipped`` diagnostics contain no row contents."""

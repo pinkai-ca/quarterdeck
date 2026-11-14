@@ -1388,7 +1388,7 @@ class Service:
                     if marks.get(record) == stamp and prepared[2] is None:
                         continue
                     framework = getattr(self, 'status_framework', None)
-                    checkpoint = json.dumps([seat.name, stamp, owned.reason, prepared[1], framework]) if framework else None
+                    checkpoint = self.ledger.accounting_evidence(seat.name, stamp, owned.reason, prepared[1], framework)
                     if checkpoint is not None and self.ledger.accounted(record, checkpoint):
                         marks[record] = stamp
                         continue

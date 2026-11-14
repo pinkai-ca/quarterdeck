@@ -132,7 +132,7 @@ def register(folder: Path, record: Path, name: str | None) -> None:
             stream.write(json.dumps(row) + "\n")
 
 
-def bindings(seat: Seat) -> dict[Path, set[str]]:
+def bindings(seat: Seat, *, publish=True) -> dict[Path, set[str]]:
     folder = seat.home.parent
     found: dict[Path, set[str]] = {}
     saved = registry_events(folder)
@@ -147,8 +147,9 @@ def bindings(seat: Seat) -> dict[Path, set[str]]:
         names = found.setdefault(path, set())
         if path not in registered and not names and (name := launch_reader(seat.launched())):
             names.add(name)
-        for name in names or {None}:
-            register(folder, path, name)
+        if publish:
+            for name in names or {None}:
+                register(folder, path, name)
     # The owned-path list proves seat ownership, never a program's file format.
     owned = seat.home / "conversations.owned"
     if owned.is_file():
@@ -177,10 +178,10 @@ class Owned:
         return self.reader.read(self.path)
 
 
-def records(seat: Seat) -> list[Owned]:
+def records(seat: Seat, *, publish=True) -> list[Owned]:
     """Known owned files, including missing/unknown ones, with their original adapters."""
     try:
-        found = bindings(seat)
+        found = bindings(seat) if publish else bindings(seat, publish=False)
     except OSError as error:
         return [Owned(registry(seat.home.parent), None, None, f"{error}; inspect ownership for {seat.name} with qd watch {seat.name}",
                       transient=True)]
@@ -200,7 +201,8 @@ def records(seat: Seat) -> list[Owned]:
     result = []
     for path, names in found.items():
         name = next(iter(names)) if len(names) == 1 and names <= set(harnesses.NAMES) else None
-        register(seat.home.parent, path, name)
+        if publish:
+            register(seat.home.parent, path, name)
         result.append(Owned(path, name, readers.get(name),
                             f"record reader unknown or conflicting for {seat.name}, {path.name}; historical harness evidence required; inspect with qd watch {seat.name}" if name is None else None))
     return sorted(result, key=lambda item: str(item.path))

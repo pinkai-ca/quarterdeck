@@ -31,6 +31,20 @@ SHIP = "ship"  # the sender of the ship's own notices, and an inbox a seat may a
 REPLY_VERB = {"order": "report", "question": "answer"}
 POST_TIMESTAMP_TICK_NS = 2_000_000_000  # conservative filesystem tick; see docs/DESIGN.md
 _FIXED_REPORT = ContextVar('quarterdeck_fixed_report', default=None)
+_READING = ContextVar('quarterdeck_post_reading', default=None)
+
+
+@contextmanager
+def reading_pass():
+    """One immutable message/reply snapshot shared by a read-only presentation."""
+    if _READING.get() is not None:
+        yield
+        return
+    token = _READING.set({})
+    try:
+        yield
+    finally:
+        _READING.reset(token)
 
 
 @contextmanager
@@ -177,6 +191,15 @@ class Store:
         return path
 
     def _loaded(self) -> tuple[list[Message], dict[str, list[Message]]]:
+        reading = _READING.get()
+        if reading is not None:
+            key = self.dir.absolute()
+            if key not in reading:
+                reading[key] = self._load_current()
+            return reading[key]
+        return self._load_current()
+
+    def _load_current(self) -> tuple[list[Message], dict[str, list[Message]]]:
         """Immutable messages and replies; recent directory listings stay untrusted."""
         cached_at = self._cache_at
         self._cache_at = None  # a failed refresh cannot certify the previous listing

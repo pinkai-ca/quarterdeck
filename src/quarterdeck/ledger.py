@@ -297,6 +297,10 @@ class Ledger:
             self.db.execute('UPDATE accounting_progress SET pending=0 WHERE singleton=1 AND epoch=?',
                             (json.dumps(epoch),))
 
+    @staticmethod
+    def accounting_evidence(seat, stamp, reason, launch, framework):
+        return json.dumps([seat, stamp, reason, launch, framework]) if framework else None
+
     def accounted(self, record: Path, evidence: str) -> bool:
         """A successful committed read of exactly this source and accounting implementation."""
         row = self.db.execute('SELECT evidence FROM record_accounting WHERE record=?', (str(record),)).fetchone()

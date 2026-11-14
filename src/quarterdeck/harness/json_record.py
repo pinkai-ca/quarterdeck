@@ -16,6 +16,7 @@ from pathlib import Path
 import time
 from threading import RLock
 from typing import TYPE_CHECKING
+from . import reading_scope
 
 if TYPE_CHECKING:
     from .base import State, Turn
@@ -226,7 +227,7 @@ class JsonLinesReader(RecordReader):
     @classmethod
     def read(cls, record: Path):
         with _read_lock:
-            return cls.read_snapshot(record, _parsed(record))
+            return reading_scope.read(cls, record, lambda: cls.read_snapshot(record, _parsed(record)))
 
     @classmethod
     def read_snapshot(cls, record: Path, snapshot: _Snapshot):
