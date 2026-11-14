@@ -155,6 +155,46 @@ def test_a_resolved_folder_that_contains_the_home_never_shows_it_again(cover):
         assert json.loads(result.stdout) == dict(ran=True, operator_read=False)
 
 
+@pytest.mark.parametrize('kind', ['read-only', 'writable'])
+def test_an_ancestor_bound_into_the_jail_never_shows_or_reaches_the_home(kind):
+    """Built past plan's refusal, as a jail made by hand would be: the home's tmpfs follows any mount that contains
+    it, so the home stays hidden, and a write to the home's path lands in that tmpfs, never in the home."""
+    import json
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix='qdj-', dir='/tmp') as temporary:
+        root = Path(temporary)
+        above = root/'above'
+        home = above/'operator-home'
+        home.mkdir(parents=True)
+        (home/'operator-marker').write_text('synthetic operator marker')
+        seat = root/'ship'/'runtime'/'seats'/'worker'
+        (seat/'home').mkdir(parents=True)
+        (root/'ship'/'runtime'/'tmux').mkdir(mode=0o700)  # what plan makes before a launch
+        (root/'work').mkdir()
+        jail = sandbox.Jail(home=home, seat_home=seat/'home', seat_folder=seat, workspace=root/'work',
+                            ship_folder=root/'ship', runtime=root/'ship'/'runtime',
+                            read_only=(above,) if kind == 'read-only' else (),
+                            writable=(above,) if kind == 'writable' else ())
+        assert sandbox.covering(jail) is not None, 'plan refuses this jail; the mounts are tested past it'
+        probe = (
+            'import json, sys\nfrom pathlib import Path\nhome, above = map(Path, sys.argv[1:])\n'
+            'def write(path):\n    try:\n        path.write_text("synthetic")\n        return True\n'
+            '    except OSError:\n        return False\n'
+            'print(json.dumps(dict(operator_read=(home/"operator-marker").exists(), home_write=write(home/"escape"),'
+            ' beside=write(above/"beside"))))\n')
+        result = subprocess.run(sandbox.command(jail, ['/usr/bin/python3', '-c', probe, str(home), str(above)]),
+                                capture_output=True, text=True, timeout=60)
+        assert result.returncode == 0, result.stderr
+        values = json.loads(result.stdout)
+        assert values['operator_read'] is False
+        assert values['beside'] is (kind == 'writable'), 'the ancestor itself is bound as declared'
+        assert not (home/'escape').exists(), 'a write to the home path never reaches the home'
+        assert (home/'operator-marker').read_text() == 'synthetic operator marker'
+        assert sorted(p.name for p in home.iterdir()) == ['operator-marker']
+
+
 def test_a_jailed_post_to_an_up_recipient_does_not_call_hidden_state_down(drydock: Path, tmux: Tmux, tmp_path: Path):
     """Real bwrap + qd post + fake recipient: hidden metadata is not a down seat."""
     from quarterdeck.service import Service

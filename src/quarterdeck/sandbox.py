@@ -101,8 +101,28 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
                if f != workspace and workspace not in f.parents and ship.folder not in f.parents and f != ship.folder]
     (ship.runtime / "post").mkdir(parents=True, exist_ok=True)  # bound writable, so it must exist before the launch, first post or not
     (ship.runtime / "tmux").mkdir(mode=0o700, exist_ok=True)  # hidden inside: the mount needs its place in the read-only ship
-    return Jail(home, seat_home, seat_folder, workspace, ship.folder, ship.runtime, tuple(folders),
+    jail = Jail(home, seat_home, seat_folder, workspace, ship.folder, ship.runtime, tuple(folders),
                 (ship.runtime / "post", ship.runtime / "check"), git_identity(workspace))
+    if covered := covering(jail):
+        what, folder = covered
+        raise ShipError(f"{seat_name}: sandboxed with the operator home at {home}, and {what} {folder} is that home or "
+                        "contains it; bound inside the jail it would show the hidden home again, so it jails nothing. "
+                        f"Keep {what} out of the home's own path: below the home, or elsewhere")
+    return jail
+
+
+def covering(jail: Jail) -> tuple[str, Path] | None:
+    """The first folder the jail would bind that is the operator home or contains it, named, or None.
+
+    The home's empty tmpfs lies in depth order among the mounts, so an ancestor bound before it is covered again;
+    a jail that binds one is refused all the same, since it would hold the home's own path open beside it. A
+    folder inside the home that is bound back is allowed: that is how a program installed there runs.
+    """
+    named = [("the working directory", jail.workspace), ("the ship folder", jail.ship_folder),
+             ("the seat's own folder", jail.seat_folder)]
+    named += [("the bound-back folder", folder) for folder in jail.read_only]
+    named += [("the writable folder", folder) for folder in jail.writable]
+    return next(((what, folder) for what, folder in named if covers(folder, jail.home)), None)
 
 
 def program_folders(programs: tuple[str, ...], path: str, home: Path) -> list[Path]:
@@ -166,14 +186,18 @@ def hidden_folders(programs: tuple[str, ...], path: str, home: Path) -> list[Pat
 def command(jail: Jail, argv: list[str]) -> list[str]:
     """The ``bwrap`` command line around a program's own."""
     args = [PROGRAM, "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
-            "--size", str(TMP_BYTES), "--tmpfs", "/tmp", "--tmpfs", str(jail.home)]
-    mounts: list[tuple[str, Path]] = [("--ro-bind-try", folder) for folder in jail.read_only]
+            "--size", str(TMP_BYTES), "--tmpfs", "/tmp"]
+    # The operator's home is an empty tmpfs placed in depth order like every other mount: after any folder that
+    # contains it, which it then covers again, and before the folders inside it that are bound back.
+    mounts: list[tuple[str, Path]] = [("--tmpfs", jail.home)]
+    mounts += [("--ro-bind-try", folder) for folder in jail.read_only]
     # The ship's own tmux server is hidden like the other seats: its socket folder is an empty private
     # tmpfs inside, so nothing in the jail reaches the server, by its path or any other way.
     mounts += [("--bind", jail.workspace), ("--ro-bind", jail.ship_folder),
                ("--tmpfs", jail.runtime / "seats"), ("--private-tmpfs", jail.runtime / "tmux"), ("--bind", jail.seat_folder)]
     mounts += [("--bind-try", folder) for folder in jail.writable]
-    for flag, folder in sorted(mounts, key=lambda m: (len(m[1].parts), str(m[1]))):  # parents first: a child mount is never hidden by its parent's
+    # Parents first: a child mount is never hidden by its parent's. At the home's own path the tmpfs comes last.
+    for flag, folder in sorted(mounts, key=lambda m: (len(m[1].parts), str(m[1]), m == ("--tmpfs", jail.home))):
         if flag == "--private-tmpfs":
             args += ["--perms", "0700", "--tmpfs", str(folder)]
         else:

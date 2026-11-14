@@ -71,8 +71,8 @@ def test_the_command_hides_the_home_binds_the_workspace_writable_and_the_ship_re
                         workspace=home / "dev" / "project", ship_folder=ship_folder, runtime=runtime,
                         read_only=(home / ".local" / "bin", home / ".opencode"), writable=(runtime / "post", runtime / "check"))
     args = sandbox.command(jail, ["pi", "--model", "m"])
-    assert args[:13] == ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--size", str(sandbox.TMP_BYTES), "--tmpfs", "/tmp", "--tmpfs"]
-    assert args[13] == str(home), "the operator's home is an empty tmpfs before anything under it is bound back"
+    assert args[:12] == ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--size", str(sandbox.TMP_BYTES), "--tmpfs", "/tmp"]
+    assert args[12:14] == ["--tmpfs", str(home)], "the operator's home is an empty tmpfs before anything under it is bound back"
     assert args[-9:] == ["--setenv", "HOME", str(runtime / "seats" / "w" / "home"), "--unshare-pid", "--die-with-parent", "--", "pi", "--model", "m"]
     text = " ".join(args)
     workspace, ship, seats, seat, post = (text.index(f"--bind {home / 'dev' / 'project'} "), text.index(f"--ro-bind {ship_folder} "),
@@ -117,6 +117,42 @@ def test_ancestor_workspace_cannot_rebind_the_hidden_home(tmp_path, drydock, mon
     with pytest.raises(ShipError, match='contains the operator home'):
         sandbox.plan(ship, 'worker', ship.runtime/'seats'/'worker', ship.runtime/'seats'/'worker'/'home',
                      workspace, '/usr/bin/python3', '/usr/bin', home=home)
+
+
+@pytest.mark.parametrize('inside', ['ship folder', 'below the ship folder', 'post store', 'seat folder'])
+def test_a_home_at_or_inside_the_ship_folder_is_refused(tmp_path, inside, monkeypatch):
+    """The ship folder and the stores inside it are bound after the home's tmpfs: one that holds the home shows it."""
+    folder = tmp_path/'ship'
+    ship = shipmod.Ship(folder, 'synthetic', 'operator', tmp_path/'work', {}, {}, {})
+    own = ship.runtime/'seats'/'worker'
+    home = {'ship folder': folder, 'below the ship folder': folder/'h'/'operator-home',
+            'post store': ship.runtime/'post'/'operator-home', 'seat folder': own/'operator-home'}[inside]
+    home.mkdir(parents=True)
+    (tmp_path/'work').mkdir()
+    monkeypatch.setattr(sandbox, 'available', lambda: True)
+    with pytest.raises(ShipError, match='is that home or contains it'):
+        sandbox.plan(ship, 'worker', own, own/'home', tmp_path/'work', '/usr/bin/python3', '/usr/bin', home=home)
+
+
+def test_the_home_tmpfs_lies_in_depth_order_after_any_folder_that_contains_it(tmp_path: Path):
+    above = tmp_path/'above'
+    home = above/'operator-home'
+    jail = sandbox.Jail(home=home, seat_home=tmp_path/'s'/'home', seat_folder=tmp_path/'s', workspace=tmp_path/'w',
+                        ship_folder=tmp_path/'ship', runtime=tmp_path/'ship'/'runtime',
+                        read_only=(above, home/'bin'), writable=(tmp_path/'ship'/'runtime'/'post', above))
+    text = ' '.join(sandbox.command(jail, ['true']))
+    hidden = text.index(f'--tmpfs {home} ')
+    assert text.index(f'--ro-bind-try {above} ') < hidden and text.index(f'--bind-try {above} ') < hidden
+    assert hidden < text.index(f'--ro-bind-try {home/"bin"} '), 'a folder inside the home is still bound back over it'
+    assert sandbox.covering(jail) == ('the bound-back folder', above)
+    assert sandbox.covering(replace_mounts(jail, read_only=(home/'bin',))) == ('the writable folder', above)
+    assert sandbox.covering(replace_mounts(jail, read_only=(home/'bin',), writable=())) is None
+    assert sandbox.covering(replace_mounts(jail, read_only=(), writable=(), seat_folder=home)) == ("the seat's own folder", home)
+
+
+def replace_mounts(jail, **fields):
+    from dataclasses import replace
+    return replace(jail, **fields)
 
 
 def test_a_jailed_seat_commits_as_the_workspace_would_outside(tmp_path: Path):
