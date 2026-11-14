@@ -94,7 +94,7 @@ qd setup
 
 It asks the same questions in your terminal, with a suggestion for every one but your project's folder: on a harness you are already signed in to, name the folder, press Enter at the rest, and you have a working ship. It shows you the whole ship, writes it and brings the crew up.
 
-Or write the ship's file yourself: [A ship of your own](docs/SHIPS.md#a-ship-of-your-own) goes through it step by step, and ends with the crew up.
+Or write the ship's file yourself: [A ship of your own](docs/SHIPS.md#a-project-ship-of-your-own) goes through it step by step, and ends with the crew up.
 
 **3. Move into your office.**
 
