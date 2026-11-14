@@ -288,6 +288,11 @@ class Seat:
         from . import ledger, quota
         book = ledger.Ledger.reading(self.ship.runtime / 'ledger.sqlite')
         try:
+            if book is not None and book.catching_up():
+                for name in pools:
+                    if quota.cached_open(self.ship, book, name, self):
+                        return name, 'declared choice with independent quota evidence while history catches up'
+                return current, 'saved choice retained; pool room unknown while accounting catches up'
             for name in pools:
                 if book is None or not book.walled(name, self.ship, scope=quota.model_scope(self, name)):
                     return name, ('its saved choice' if name == saved else

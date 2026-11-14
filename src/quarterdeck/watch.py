@@ -201,6 +201,8 @@ def tokens_today(seat: Seat | UnresolvedSeat) -> ledger.Count:
     book = ledger.Ledger.reading(seat.ship.runtime / "ledger.sqlite")
     if book is not None:
         with book:
+            if book.catching_up():
+                return ledger.Count(None, 1)  # no all-record fallback while history catches up
             try:
                 counted = book.today(seat.name, day)
             except sqlite3.OperationalError:  # a book written by an older service: read the records instead
@@ -503,6 +505,14 @@ SCHEMA_BEHIND = "ledger written by an older service; qd up restarts it"
 def accounting_reading(runtime, state: str) -> str | None:
     """The accounting alarm; unknown evidence is said only while the service runs, since its state says the rest."""
     reading = accounting_health.reading(runtime)
+    try:
+        book = ledger.Ledger.reading(runtime / 'ledger.sqlite')
+        if book is not None:
+            with book:
+                if book.catching_up() and reading in (None, accounting_health.UNKNOWN):
+                    return 'accounting catching up; history last known'
+    except (OSError, sqlite3.Error):
+        pass
     return None if reading == accounting_health.UNKNOWN and state != "ok" else reading
 
 
@@ -589,7 +599,8 @@ def ledger_walls(ship: Ship) -> list[str]:
         return []
     with book:
         try:
-            return book.walls(ship)
+            walls = book.walls(ship)
+            return (['wall history last known while accounting catches up'] if book.catching_up() else []) + walls
         except sqlite3.OperationalError:
             return [SCHEMA_BEHIND]
 

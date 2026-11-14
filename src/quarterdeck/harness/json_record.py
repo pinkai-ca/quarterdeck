@@ -50,6 +50,12 @@ _TIMESTAMP_TICK_NS = 2_000_000_000  # same conservative local metadata window as
 _read_lock = RLock()
 
 
+def release(record: Path) -> None:
+    """A background sweep need not retain parsed native text after its record."""
+    with _read_lock:
+        _snapshots.pop(Path(record), None)
+
+
 def _stamp(info):
     return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
 

@@ -102,6 +102,8 @@ def cached_open(ship, book, pool_name: str, seat=None) -> bool:
     from . import harness as harnesses
 
     pool = ship.pools[pool_name]
+    if pool.kind == 'key' and book.catching_up():
+        return False  # configured spend cannot be inferred from an unfinished history
     if pool.kind in ("key", "endpoint"):
         return not book.walled(pool_name, ship)
     reader = harnesses.native_for(pool.provider)

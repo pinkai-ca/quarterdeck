@@ -46,6 +46,9 @@ def notes(data: dict) -> list[str]:
 def collect(book: Ledger, ship: Ship | None = None, *, by: str | None = None, tools: bool = False) -> dict:
     data = {"available": True, "reason": None, "by": by, "kind": "tools" if tools else "rollup" if by else "pools",
             **uncertainty(book)}
+    if book.catching_up():
+        data['accounting_current'] = False
+        data['accounting_note'] = 'accounting catching up: historical figures and key spend are last known'
     if ship is not None:
         data.update(providers.identities(ship))
     if tools:
@@ -100,7 +103,7 @@ def render(data: dict) -> list[str]:
     if data["kind"] != "pools":
         lines += [f"pool {p['name']} · provider {p['provider_name']} · {p['kind']} · native harness {p['native_harness'] or 'none'}"
                   for p in data.get("pools", [])]
-    return lines + notes(data)
+    return ([data['accounting_note']] if data.get('accounting_note') else []) + lines + notes(data)
 
 
 def render_rollup(data: dict) -> list[str]:

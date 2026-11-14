@@ -135,6 +135,8 @@ def collect(ship, selected):
         if book is not None:
             with book:
                 last, error = history(book.db)
+                if book.catching_up() and error is None:
+                    error = 'program history last known while accounting catches up'
     except (sqlite3.Error, OSError, ValueError, TypeError):
         error = 'program history unavailable'
     return [dict(harness=name, working_now=aggregate(states.get(name, [])),

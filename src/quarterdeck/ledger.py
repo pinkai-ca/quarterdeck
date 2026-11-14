@@ -89,6 +89,9 @@ CREATE TABLE IF NOT EXISTS records (
 CREATE TABLE IF NOT EXISTS record_accounting (
     record TEXT PRIMARY KEY, evidence TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS accounting_progress (
+    singleton INTEGER PRIMARY KEY CHECK(singleton=1), epoch TEXT NOT NULL, pending INTEGER NOT NULL
+);
 """
 # Columns added since a table was first written; an older file gains them when the service opens it.
 ADDED_COLUMNS = {
@@ -118,14 +121,17 @@ class Machine:
 class Count:
     """A figure and how many turns it could not measure; shown as ``1234+`` when some are."""
 
-    known: int = 0
+    known: int | None = 0
     unmeasured: int = 0
 
     def __str__(self) -> str:
+        if self.known is None:
+            return 'unknown'
         return f"{self.known}{'+' if self.unmeasured else ''}"
 
     def __add__(self, other: "Count") -> "Count":
-        return Count(self.known + other.known, self.unmeasured + other.unmeasured)
+        known = self.known + other.known if self.known is not None and other.known is not None else None
+        return Count(known, self.unmeasured + other.unmeasured)
 
 
 @dataclass(frozen=True)
@@ -271,6 +277,25 @@ class Ledger:
             self._record_active = staged._record_active = False
 
     # -- turns -----------------------------------------------------------------------------
+
+    def catching_up(self) -> bool:
+        if not self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='accounting_progress'").fetchone():
+            return False
+        row = self.db.execute('SELECT pending FROM accounting_progress WHERE singleton=1').fetchone()
+        return bool(row and row[0])
+
+    def begin_catchup(self, epoch, *, force=False) -> None:
+        self.prepare_usage()
+        value = json.dumps(epoch)
+        row = self.db.execute('SELECT epoch FROM accounting_progress WHERE singleton=1').fetchone()
+        if row != (value,) or force and not self.catching_up():
+            self.db.execute('INSERT OR REPLACE INTO accounting_progress VALUES (1,?,1)', (value,))
+            self.db.commit()
+
+    def finish_catchup(self, epoch) -> None:
+        if epoch is not None and self.catching_up():
+            self.db.execute('UPDATE accounting_progress SET pending=0 WHERE singleton=1 AND epoch=?',
+                            (json.dumps(epoch),))
 
     def accounted(self, record: Path, evidence: str) -> bool:
         """A successful committed read of exactly this source and accounting implementation."""

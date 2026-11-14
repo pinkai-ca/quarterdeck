@@ -16,6 +16,7 @@ import signal
 import sys
 import time
 import traceback
+import threading
 from copy import deepcopy
 from contextlib import ExitStack
 from dataclasses import replace
@@ -100,6 +101,7 @@ class Service:
                                  else copy['commit'] if copy else None)
         self.copy_start_token = os.environ.pop('QD_COPY_START', None)
         self.ledger = Ledger(self.runtime / "ledger.sqlite")
+        self.ledger.begin_catchup(self.status_framework)
         self.meters: dict[str, machine.Meter] = {}
         self.usage_read: dict[str, float] = {}
         self.usage_hold: dict[str, float] = {}  # a refused pool's Retry-After, by the monotonic clock
@@ -109,6 +111,7 @@ class Service:
         self.accounting_health = accounting_health.Health()  # a new process starts unchecked
         self.accounting_health_error = None
         self.accounting_health_due = 0.0
+        self.heartbeat_lock = threading.Lock()
         self.working: dict[str, bool] = {}  # seat -> whether its record last showed a turn open
         self.work_marks: dict[str, tuple] = {}  # seat -> (record, fingerprint) its working state was read at
         self.blind_checked = -BLIND_INTERVAL  # when the blind attempts were last read against the records
@@ -123,15 +126,31 @@ class Service:
         servicectl.acknowledge(self.runtime, self.copy_identity, self.copy_start_token)
         self.log("start", pid=os.getpid())
         from .shutdown import Stop
-        with Stop(self.runtime, self.lock).installed():
-            while True:
-                self.tick()
-                until = time.monotonic() + self.ship.tick  # read after tick() reloads the ship file
-                while time.monotonic() < until:
-                    self.status_due()
-                    remaining = until - time.monotonic()
-                    if remaining > 0:
-                        time.sleep(min(remaining, max(0.001, self.next_status - time.monotonic())))
+        beat_stop = threading.Event()
+        def keep_heartbeat():
+            while not beat_stop.wait(2.0):
+                try:
+                    with self.heartbeat_lock:
+                        write_heartbeat(self.runtime)
+                except OSError:
+                    pass  # the main step reports storage failures through its usual path
+        beat = threading.Thread(target=keep_heartbeat, name='service-heartbeat', daemon=True)
+        beat.start()
+        try:
+            with Stop(self.runtime, self.lock).installed():
+                while True:
+                    self.tick()
+                    until = time.monotonic() + self.ship.tick  # read after tick() reloads the ship file
+                    while time.monotonic() < until:
+                        self.status_due()
+                        remaining = until - time.monotonic()
+                        if remaining > 0:
+                            time.sleep(min(remaining, max(0.001, self.next_status - time.monotonic())))
+        finally:
+            beat_stop.set()
+            beat.join(timeout=0.2)
+            if driver := getattr(self, 'account_driver', None):
+                driver.close()
 
     def rebind(self) -> None:
         """A service that found its ship on tmux's default server follows it to its own once it has moved.
@@ -162,15 +181,23 @@ class Service:
             self.log("error", step="load", error=str(error))
         self.rebind()
         self.structure_passes.begin()
-        for step in (self.server_recovery, self.reconcile, self.account, self.groups, self.cascades, self.inboxes, self.recoveries, self.refusals, self.answers, self.looks, self.deliveries, self.follow, self.requests, self.compactions, self.person_quiet, self.fresh_after_order,
-                     self.rebrief, self.push_reminders, self.credentials, self.authentications, self.model_differences, self.failover):  # accounting before anything relaunches a seat
+        self._accounting_tick = True
+        try:
+            self._tick_steps()
+        finally:
+            self._accounting_tick = False
+            self.structure_passes.finish()
+
+    def _tick_steps(self):
+        # Operational duties keep their order and never wait behind the slice.
+        for step in (self.server_recovery, self.reconcile, self.groups, self.cascades, self.inboxes, self.recoveries, self.refusals, self.answers, self.looks, self.deliveries, self.follow, self.requests, self.compactions, self.person_quiet, self.fresh_after_order,
+                     self.rebrief, self.push_reminders, self.credentials, self.authentications, self.model_differences, self.failover, self.account, self.refresh_usage):
             self.heartbeat()  # before every step: a slow delivery or usage read reads as busy, never as dead
             try:
                 step()
             except Exception as error:  # one failing step never stops the others
                 self.log("error", step=step.__name__, error=repr(error), trace=traceback.format_exc())
             self.status_due()
-        self.structure_passes.finish()
 
     def status_due(self) -> None:
         now = time.monotonic()
@@ -196,7 +223,8 @@ class Service:
         push_reminder.run(self)
 
     def heartbeat(self) -> None:
-        write_heartbeat(self.runtime)
+        with self.heartbeat_lock:
+            write_heartbeat(self.runtime)
         self.publish_accounting_health()
 
     def publish_accounting_health(self, *, force=False) -> None:
@@ -270,7 +298,9 @@ class Service:
         latest = self.attempts.latest(attempts=records)
         queued = {message for message, result in latest.items() if result == 'queued'}
         blind = {message for message, result in latest.items() if result == 'blind'}
-        for attempt in records:
+        for index, attempt in enumerate(records):
+            if index % 200 == 0:
+                self.heartbeat()
             if attempt.path in tracked or attempt.seat not in self.ship.seats:
                 continue
             result = attempt.result
@@ -1227,6 +1257,11 @@ class Service:
         Program/screen/provider calls never run under the record write lock.
         Checkpoints and machine/source caches describe only committed accounting.
         """
+        if getattr(self, '_accounting_tick', False):
+            from .accounting_slices import Driver
+            if not hasattr(self, 'account_driver'):
+                self.account_driver = Driver()
+            return self.account_driver.step(self)
         before = self.accounting_health.shown()
         try:
             observations, notices, human_readings = self.account_records()
@@ -1261,12 +1296,20 @@ class Service:
         if self.accounting_health.shown() != before:
             self.status_checked = None
 
-    def account_records(self):
+    def refresh_usage(self):
+        """Live provider evidence is independent of a historical accounting backlog."""
+        for seat in self.resolved_seats():
+            pane = seat.pane()
+            quota.refresh(self, seat, pane is not None and not pane.dead, seat.launched())
+        quota.refresh_declared(self)
+
+    def account_records(self, *, source_records=None, source_screens=None, source_walls=None,
+                        replay=True, process_table=None):
         """Prepare and commit the pass; callers handle only its accounting outcome."""
         # A usage write whose commit was refused is completed first, never rolled back, so that no
         # record is read while its transaction stands; if it fails again the pass fails and is counted.
         self.ledger.prepare_usage()
-        table = machine.processes()
+        table = machine.processes() if process_table is None else process_table
         observations, notices, human_readings = [], [], []
         marks, errors = dict(self.read_marks), dict(self.account_errors)
         meters = deepcopy(self.meters)
@@ -1284,7 +1327,7 @@ class Service:
                     meter = meters[seat.name] = machine.Meter(pane.pid)
                 meter.sample(table)
             reads = []
-            for owned in record_owner.records(seat):  # law: every-turn-accounted
+            for owned in (source_records[seat.name] if source_records is not None else record_owner.records(seat)):  # law: every-turn-accounted
                 record = owned.path
                 pool = launched.pool if (record == current and launched) else UNKNOWN
                 stamp, evidence = None, None
@@ -1338,7 +1381,8 @@ class Service:
                     continue
                 errors.pop(record, None)
                 reads.append((record, pool, stamp, state, turns, None, owned.reader, None))
-            screen = Door(seat).screen() if live and seat.harness.screen_walls else None
+            screen = (source_screens.get(seat.name) if source_screens is not None else
+                      Door(seat).screen() if live and seat.harness.screen_walls else None)
             observations.append((seat, pane, launched, live, current, prepared, reads, screen))
 
         with self.ledger.record_pass() as book:
@@ -1355,7 +1399,10 @@ class Service:
                     if state is None:  # an empty record of unknown reader: settled, with nothing to account
                         book.mark_record(record, seat.name, pool, None, commit=False)
                         continue
-                    book.quota.record(record, seat.name, state.walls, book.provenance, post.now(), commit=False)
+                    if source_walls is None:
+                        book.quota.record(record, seat.name, state.walls, book.provenance, post.now(), commit=False)
+                    else:
+                        source_walls(record, seat.name, state.walls, post.now())
                     incomplete = "incomplete turn state in record" if (state.turns is None or state.turn_open is None) else None
                     book.mark_record(record, seat.name, pool, incomplete, commit=False)
                     if turns:
@@ -1373,8 +1420,10 @@ class Service:
                     if record == current and seat.session.human:
                         human_readings.append((seat, record, state, turns, stamp[1]))
                 quota.observe_screen(book, seat, screen, launched, commit=False)
-            book.attributions.replay(self.store, self.runtime, commit=False, retry_interval=ACCOUNT_RETRY,
-                                     framework=getattr(self, 'status_framework', None))
+            if replay:
+                book.attributions.replay(self.store, self.runtime, commit=False, retry_interval=ACCOUNT_RETRY,
+                                         framework=getattr(self, 'status_framework', None))
+                book.finish_catchup(getattr(self, 'status_framework', None))
 
         self.read_marks, self.account_errors, self.meters = marks, errors, meters
         return observations, notices, human_readings
@@ -1382,6 +1431,12 @@ class Service:
     def failover(self) -> None:
         """At a wall, try eligible later choices first, then earlier choices in declared order."""
         for seat in self.resolved_seats():
+            if (self.ledger.catching_up() and seat.is_up and getattr(seat.harness, 'screen_walls', False)
+                    and not quota.current_walled(seat, self.ledger)):
+                screen = Door(seat).screen()
+                if screen is not None and screen.quota:
+                    with self.ledger.record_pass() as book:
+                        quota.observe_screen(book, seat, screen, seat.launched(), commit=False)
             if recovery.held(seat) or len(seat.spec.pools) < 2 or not seat.is_up or not quota.current_walled(seat, self.ledger):
                 continue
             if self.not_idle(seat):
