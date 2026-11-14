@@ -155,7 +155,8 @@ def test_the_probe_rechecks_closure_for_its_declared_window(tmp_path, databases,
             return SimpleNamespace(open=True)
 
         def deliver(self, text, *, proof):
-            (runtime / 'check' / 'synthetic-seat.txt').write_text('qd-check-synthetic-proof\n')
+            (runtime / 'check' / 'synthetic-seat' / 'synthetic-seat.txt').write_text(
+                'qd-check-synthetic-proof\n')
             return Delivery('delivered', 'synthetic transport')
 
     monkeypatch.setattr(check, 'Door', Door)
