@@ -210,6 +210,9 @@ class MuseHarness(Harness):
     def box(self, text):
         return muse_screen.VisibleBox(text)
 
+    def empty_cell(self, screen):
+        return muse_screen.empty_cell(screen)
+
     def input_obstruction(self, text, screen):
         return muse_screen.input_shape_reason(text)
 

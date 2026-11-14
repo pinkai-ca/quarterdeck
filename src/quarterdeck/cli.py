@@ -492,13 +492,13 @@ def relaunch(ship: shipmod.Ship, name: str | None, resume: bool, cancel=None, re
                 return restart_needs_handoff(ship, seat, error)
             raise
 
-    if seat.is_working():
+    if seat.is_working() is not False:
         return ask_service()
     kind = 'restart' if resume else 'fresh'
     with request_queue.direct(ship.runtime, seat.name, kind) as retired:
         suffix = f'; retired pending relaunch request(s): {", ".join(retired)}' if retired else ''
         working = seat.is_working()
-    if not working:
+    if working is False:
         try:
             if resume:
                 proof = seat.restart()

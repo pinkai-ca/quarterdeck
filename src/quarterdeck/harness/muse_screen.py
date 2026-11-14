@@ -179,6 +179,27 @@ def read(text: str) -> Screen:
                   queued=int("Queued input · ↑ to edit" in plain))
 
 
+def empty_cell(screen: Screen) -> tuple[int, int] | None:
+    """The measured two-cell prompt, for Door's cursor-bracketed padding proof.
+
+    Spaces alone remain text until the same owned frame positively shows its
+    visible cursor at the first input cell; the parser never strips a draft.
+    """
+    if (screen.unknown is not None or screen.interruption is not None or screen.starting
+            or screen.working is not False or not screen.box
+            or any(char != ' ' for char in screen.box)):
+        return None
+    rows = screen.text.split('\n')
+    prompts = [index for index, row in enumerate(rows)
+               if index > 0 and rows[index - 1] == '─' * 120 and row.startswith('❯ ')]
+    if len(prompts) != 1:
+        return None
+    index = prompts[0]
+    if index + 1 >= len(rows) or rows[index + 1] != '─' * 120:
+        return None  # only the measured single empty composer row
+    return 2, index
+
+
 @dataclass(frozen=True)
 class VisibleBox(Box):
     def matches(self, shown: str | None, columns=None, slack=0) -> bool:

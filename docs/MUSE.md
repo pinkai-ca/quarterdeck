@@ -87,6 +87,10 @@ record/sequence/session/run links, never equality guessed between identifiers.
 The 120-column styled fixtures distinguish an empty composer, a draft, working
 and queued input. Indexed colors identify the prompt and typed text. The
 composer sits between its full-width rules, separate from transcript prompts.
+An all-space composer remains text unless the Door's bracketed owned frames
+show a visible cursor at its first input cell, after the measured two-cell
+prompt. That positive cursor proof reads the native painted padding as empty;
+it does not strip spaces from a draft.
 Unrecognized styles/layouts report unknown activity. Existing echo queue
 observations establish a later distinct turn, not active-run delivery; working
 delivery remains held until its record receipt is implemented.
@@ -137,7 +141,9 @@ it changes no crew brief or ordinary launch. Its native proof remains pending.
 
 The adapter's obstruction methods default to no action in every other harness.
 Unknown activity stays unknown through Door, watch, service and interrupt
-callers. Main's unread-screen journal evidence remains in front of the
+callers. A saved launch with no resolved owned pane reads unknown, while a
+known dead pane or a seat without a launch reads off. Relaunch and in-session
+controls require an explicit idle answer. Main's unread-screen journal evidence remains in front of the
 unknown-activity hold. Exact receipts retain the current launch's join
 provenance and every delivered form recognized by the shared receipt owner.
 

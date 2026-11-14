@@ -1878,9 +1878,11 @@ class Service:
                 except (OSError, ValueError, ShipError):
                     self.request_wait = ('control-confirmation', 'request ownership unknown')
                     return None
-        if seat.is_working():
+        working = seat.is_working()
+        if working is not False:
             if self is not None:
-                self.request_wait = ('turn-open', 'a turn is open')
+                self.request_wait = (('turn-open', 'a turn is open') if working is True else
+                                     ('activity-unknown', 'current pane identity or activity unknown'))
             return None  # retain the existing control admission
         state, hold = idle.reading(seat)
         if (state is None and hold is not None) or (state is not None and state.pending_tools != ()):

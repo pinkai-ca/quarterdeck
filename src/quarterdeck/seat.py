@@ -36,7 +36,7 @@ from .pricing import save_price
 from . import trusted_cache, trusted_files
 from .harness import resume_target
 from .ship import Pool, SeatSpec, Ship, ShipError
-from .tmux import Pane, Tmux, check_private_folder
+from .tmux import Pane, Tmux, TmuxError, check_private_folder
 
 
 PROCESS_END_SECONDS = 10.0  # how long down watches a closed pane's program end before it leaves the rest to the tick
@@ -876,24 +876,33 @@ class Seat:
                         return True
         return False
 
-    def is_working(self) -> bool:
+    def is_working(self) -> bool | None:
         """Whether a turn is open: from the record first, from the screen when its state is unknown.
 
-        A screen that cannot show it, or a pane that cannot be read, answers True: every caller holds
-        on working, and none may act as if the seat were idle on what it could not see (law: record-first).
+        A screen that cannot show it, or a pane that cannot be read, answers True. A saved launch whose
+        pane identity cannot be found answers None; a seat with no launch, or a known dead pane, is off.
+        Every caller holds on True or None, never treating unseen activity as idle (law: record-first).
         """
-        pane = self.pane()
-        if pane is None or pane.dead:
+        try:
+            pane = self.pane()
+        except (OSError, TmuxError):
+            return True
+        if pane is None:
+            return None if self.launched() is not None else False
+        if pane.dead:
             return False
-        if (record := self.record()) is not None:
-            try:
-                turn_open = self.harness.state(record).turn_open
-            except OSError:
-                turn_open = None
-            if turn_open is not None:
-                return turn_open  # law: record-first
-        found = self.read_pane()
-        return found is None or self.harness.screen(found[1]).working is not False
+        try:
+            if (record := self.record()) is not None:
+                try:
+                    turn_open = self.harness.state(record).turn_open
+                except OSError:
+                    turn_open = None
+                if turn_open is not None:
+                    return turn_open  # law: record-first
+            found = self.read_pane()
+            return found is None or self.harness.screen(found[1]).working is not False
+        except (OSError, TmuxError):
+            return True
 
     def record(self) -> Path | None:
         """Read a retained join; otherwise discover/journal it through the one joining path."""
