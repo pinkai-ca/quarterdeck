@@ -35,7 +35,7 @@ def check(path, *, rollback=False):
 
 def _folder(path):
     folder = path.parent / 'evidence' / (PREFIX + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ-') + secrets.token_hex(4))
-    folder.mkdir(parents=True)
+    folder.mkdir(mode=0o700, parents=True)
     return folder
 
 
@@ -73,7 +73,7 @@ def opening(path):
                     for suffix in ('', '-journal', '-wal', '-shm'):
                         source = Path(str(path) + suffix)
                         if source.exists():
-                            shutil.copyfile(source, before / source.name)
+                            shutil.copy2(source, before / source.name)
                     try:
                         healthy = check(path, rollback=True)
                     except sqlite3.DatabaseError as rollback_error:
