@@ -28,6 +28,7 @@ def test_two_services_fetch_and_deliver_one_original_then_return_its_report(pair
         qd(left, tmux, 'up', 'captain')
         qd(left, tmux, 'post', 'order', '--from', 'writer', '--to', 'captain@beta',
            'Count once.\n$ qd post report --re {this} counted')
+        wait_for(lambda: len(source.all()) == 1)  # the running service files the drop on its tick
         order, = source.all()
         wait_for(lambda: (left.runtime / 'post' / 'outbound' / 'beta' / (order.id + '.json')).exists())
         assert fleet_post.waiting(left, source) and destination.all() == [], 'a down ship has not fetched'

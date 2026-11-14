@@ -217,10 +217,12 @@ def test_cli_uses_qualified_address_and_default_reply_target(pair, monkeypatch, 
     assert cli.main(['--ship', str(left.folder), 'post', 'question', '--from', 'writer',
                      '--to', 'captain@beta', 'Which plan?']) == 0
     assert 'waiting for the addressee ship to fetch' in capsys.readouterr().out
+    post.file_drops(source)  # the service files the seat's drop on its tick
     fleet.run(left, source); fleet.run(right, destination)
     question = destination.for_seat('captain')[0]
     assert cli.main(['--ship', str(right.folder), 'post', 'answer', '--from', 'captain',
                      '--re', question.id, 'Plan one.']) == 0
+    post.file_drops(destination)
     fleet.run(right, destination); fleet.run(left, source)
     assert not source.is_open(source.get(question.id))
     answer = source.replies(source.get(question.id))[0]

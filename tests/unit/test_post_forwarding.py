@@ -117,6 +117,7 @@ def test_cli_accepts_a_retired_name_qualified_by_its_old_ship(pair, monkeypatch,
     assert cli.main(['--ship', str(left.folder), 'post', 'question', '--from', 'writer',
                      '--to', 'retired-seat@beta', 'Reach the declared new address.']) == 0
     capsys.readouterr()
+    post.file_drops(source)  # the service files the seat's drop on its tick
     fleet.run(left, source)
     question, = source.for_seat('writer')
     assert question.to == 'writer' and json.loads(wire(left, question))['to'] == 'retired-seat@beta'
