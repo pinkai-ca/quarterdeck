@@ -2,6 +2,8 @@
 
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+import json
+from pathlib import Path
 
 import pytest
 
@@ -9,6 +11,7 @@ from quarterdeck import delivery_record, post
 from quarterdeck.harness import grok_screen, synthetic_record
 from quarterdeck.harness.claude import ClaudeHarness
 from quarterdeck.harness.fake import FakeHarness
+from quarterdeck.harness.grok import GrokHarness
 from quarterdeck.ledger import Ledger
 from quarterdeck.order_attribution import Threads
 
@@ -93,3 +96,32 @@ def test_old_footer_is_consumed_once_in_a_mixed_bundle(tmp_path, kind):
     received = Threads(store).received(legacy(first) + post.typed([second]),
                                        AT + timedelta(seconds=10), 'worker')
     assert [entry['message'] for entry in received] == [first.id, second.id]
+
+
+@pytest.mark.parametrize('kind', ['order', 'report'])
+@pytest.mark.parametrize('second', [False, True])
+@pytest.mark.parametrize('old', [False, True])
+def test_current_and_legacy_queue_previews_and_claude_queue_echo(tmp_path, monkeypatch, kind, second, old):
+    m = message(kind)
+    payload = legacy(m, second) if old else post.typed([m], second=[m.id] if second else [])
+    sample = Path(__file__).parents[1] / 'fixtures/grok/1.0.77/queue-native-112.json'
+    data = json.loads(sample.read_text())
+    rows = data['screens']['1']
+    rows = ['     #1 ' + grok_screen.queue_preview(payload) if row.startswith('     #1 ') else row
+            for row in rows]
+    grok = GrokHarness()
+    before = grok.screen('\n'.join(data['draft']) + '\n')
+    after = grok.screen('\n'.join(rows) + '\n')
+    assert grok.queued_waiting(payload, after)
+    assert grok.queued_input(payload, before, after)
+    clock = [AT + timedelta(seconds=10)]
+    monkeypatch.setattr(synthetic_record, 'now', lambda: clock[0])
+    record = synthetic_record.ClaudeShape(tmp_path / 'home', tmp_path, 'synthetic-queue', 'fake-model')
+    record.queued(payload)
+    assert delivery_record.receipt(FakeHarness(), record.path, m, AT) == 'queued'
+    clock[0] += timedelta(seconds=1)
+    record.dequeued(payload)
+    record.begin(payload, 'fake-model', 'low')
+    clock[0] += timedelta(seconds=1)
+    record.end('ordinary synthetic report')
+    assert delivery_record.receipt(FakeHarness(), record.path, m, AT) == 'delivered'
