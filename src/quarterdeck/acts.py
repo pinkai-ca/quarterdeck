@@ -33,40 +33,84 @@ LABEL = re.compile(r"(?:\[([0-9A-Za-z])\]|\(([0-9A-Za-z])\)|(?<![0-9A-Za-z])([0-
 OWN_LABEL = re.compile(r"^\s*(?:\[([0-9A-Za-z])\]|\(([0-9A-Za-z])\)|([0-9])[.)])\s+\S")
 
 
-# Security's guard (adopted by the captain): the qd path itself refuses, by the screen's measured form and the
-# choice's own text, any act that grants a permission, trusts a path or folder, widens a sandbox, allows a command
-# always, or answers an account holder's or a terms question; such a screen is the desk's, never a systems seat's.
-# A screen it cannot classify is refused too. The words are matched broadly: a refusal sends a screen to the desk,
-# a miss would press it.
+# Security's guard (La'an's, adopted by the captain): the qd path itself refuses, by the screen's measured form,
+# the choice's own text or the typed line, and the dialog's words, any act that grants a permission, trusts a path
+# or folder, widens a sandbox, allows a command always, or answers an account holder's, money, data or terms
+# question; such a screen is the desk's, never a systems seat's. A screen it cannot classify is refused too.
+# qd press presses only a choice on a short benign list, and qd type never types a program command. The words are
+# matched broadly, on normalised text: a refusal sends a screen to the desk, a miss would press it. The phrases are
+# written with \s+ and either apostrophe, so they hold on raw text as well.
+_S = r"\s+"
+_A = r"['’‘]"
 KINDS = (
     ("grants a permission", re.compile(
-        r"\b(allow|allowed|approve|approval|grant|permit|permission|permissions|authori[sz]e|proceed|auto[- ]?mode|"
-        r"accept edits|bypass)\b", re.I)),
-    ("trusts a path or folder", re.compile(r"\b(trust|trusted|trusts|trusting)\b", re.I)),
+        r"\b(allow\w*|approv\w*|grant\w*|permit\w*|permission\w*|authori[sz]\w*|proceed\w*|auto[- ]?mode|accept\w*|"
+        r"bypass\w*|run|runs|running|execut\w*|exec|apply|applies|applied|edit\w*|write\w*|writing|overwrit\w*|"
+        r"delet\w*|remov\w*|modif\w*|creat\w*|install\w*|enabl\w*|command\w*|mcp|server\w*|hook\w*|plugin\w*|"
+        r"extension\w*|tool\w*|director(?:y|ies)|add-dir)\b|"
+        rf"\ball{_S}future\b|\bdo{_S}you{_S}want{_S}to\b|\bwould{_S}you{_S}like{_S}to\b", re.I)),
+    ("trusts a path or folder", re.compile(r"\btrust\w*", re.I)),
     ("widens a sandbox", re.compile(
-        r"sandbox|full[- ]access|unrestricted|danger|yolo|network access|outside (the|this) (workspace|project|folder)|"
-        r"workspace[- ]write|read[- ]only|--dangerously", re.I)),
+        rf"sandbox|full[- ]?access|unrestricted|danger\w*|yolo|network{_S}access|"
+        rf"outside{_S}(?:the|this){_S}(?:workspace|project|folder)|workspace[- ]write|read[- ]only|--dangerously|"
+        rf"\b(?:sudo|root|admin\w*|elevat\w*|escalat\w*)\b|skip{_S}permissions|no{_S}restrictions|full{_S}auto", re.I)),
     ("allows a command always", re.compile(
-        r"\balways\b|don'?t ask again|do not ask again|never ask|for (the rest of )?(this|the) session|"
-        r"auto[- ]?(approve|accept)|remember (this|my) (choice|decision|answer)", re.I)),
-    ("answers an account holder's or terms question", re.compile(
-        r"\b(terms|privacy|policy|policies|agree|agreement|consent|license|licence|training|account|sign[- ]?in|"
-        r"log[- ]?in|login|logout|authenticate|subscription|subscribe|billing|payment|upgrade|survey|feedback|"
-        r"rating|opt[- ]?(in|out)|telemetry|share (my |your |usage )?data|improve (the |our )?(model|product)s?)\b", re.I)),
+        rf"\balways\b|\bdon{_A}?t{_S}ask\b|\bdo{_S}not{_S}ask\b|\bnever{_S}ask\b|\bwithout{_S}asking\b|"
+        rf"\b(?:for|during){_S}(?:the{_S}rest{_S}of{_S})?(?:this|the){_S}session\b|\bfrom{_S}now{_S}on\b|"
+        rf"\bevery{_S}time\b|\bpermanent\w*|\bfor{_S}all\b|\bauto[- ]?(?:approv\w*|accept\w*|run\w*)|"
+        rf"\bskip{_S}(?:approval|confirmation)s?\b|\bremember{_S}(?:this|my){_S}(?:choice|decision|answer)\b", re.I)),
+    ("answers an account holder's, money, data or terms question", re.compile(
+        r"\b(terms|privacy|polic(?:y|ies)|agree\w*|consent\w*|licen[cs]\w*|training|account\w*|sign[- ]?in|"
+        r"log[- ]?in|login|logout|authenticat\w*|subscri\w*|billing|payment\w*|upgrade\w*|survey\w*|feedback|"
+        r"rating\w*|opt[- ]?(?:in|out)|telemetry|share\w*|data|improv\w*|key|keys|api[- ]?key\w*|token\w*|"
+        r"credential\w*|password\w*|code|codes|oauth|organi[sz]ation\w*|plan|plans|credit|credits|usage|overage\w*|"
+        r"purchas\w*|buy|pay|paid|charg\w*|contribut\w*|crash\s+reports?|diagnostic\w*|analytics|e-?mail\w*|"
+        r"verif\w*)\b", re.I)),
 )
-REGION_LINES = 15  # the dialog: the lines above its choice (or above the box) and everything below
+# The legitimate presses are few: continue, dismiss a notice, wait for a limit. Only a choice whose own text, its
+# label and pointer set aside, is one of these may be pressed; the dialog's words are checked as well.
+BENIGN = frozenset({"continue", "ok", "dismiss", "skip", "later", "wait", "no", "not now", "close"})
+COMMAND_STARTS = "/!#$&@\\`"  # a slash command, a shell mode, a memory line, a reference: never typed through qd
+FRAME = re.compile(r"[─-▟■-◿❯›‹»«▶►◀◄•·]")
+TOP_FRAME = re.compile(r"^\s*[╭┌╔┏]")
+POINTER = re.compile(r"^[\s>❯›▶►*•-]*(?:\[\w\]|\(\w\)|\w[.)])?\s*")
+
+
+def normalised(text: str) -> str:
+    """NFKC; curly apostrophes and quotes straight; frame and pointer characters out; all whitespace, newlines
+    included, one space: so a wrapped phrase or a curly apostrophe still matches."""
+    import unicodedata
+    text = unicodedata.normalize("NFKC", text)
+    text = text.translate({0x2019: "'", 0x2018: "'", 0x02BC: "'", 0x201B: "'", 0x201C: '"', 0x201D: '"'})
+    text = FRAME.sub(" ", text)
+    return " ".join(text.split())
+
+
+def benign(choice: str) -> bool:
+    """The choice's own text, its label, pointer and a trailing key hint set aside, is on the short benign list."""
+    text = normalised(choice)
+    text = POINTER.sub("", text)
+    text = re.sub(r"\s*\((?:esc|enter|\w)\)$", "", text)
+    return text.strip(" .!").lower() in BENIGN
 
 
 def _kind(text: str) -> tuple[str, str] | None:
+    flat = normalised(text)
     for kind, pattern in KINDS:
-        if found := pattern.search(text):
+        if found := pattern.search(flat):
             return kind, found.group(0)
     return None
 
 
+def region(rows: list[str], at: int) -> tuple[list[str], str]:
+    """The dialog's words: from its top frame above row ``at`` where one can be measured, else the whole screen."""
+    top = next((y for y in range(min(at, len(rows) - 1), -1, -1) if TOP_FRAME.match(rows[y])), None)
+    return (rows[top:], "the dialog's frame") if top is not None else (rows, "the whole screen")
+
+
 def guard(screen, choice: str | None = None, line: str | None = None) -> str | None:
     """Why this act is the desk's and not a systems seat's, or None: by the screen's measured form, then the
-    choice's own text or the typed line, then the dialog's words. A screen that cannot be classified is refused."""
+    choice or the line itself, then the dialog's words. A screen that cannot be classified is refused."""
     from .harness.types import ControlInterruption, _cells
     known = screen.interruption
     if known is not None:
@@ -76,6 +120,11 @@ def guard(screen, choice: str | None = None, line: str | None = None) -> str | N
             return f"its screen is the measured {known.name!r}, an account holder's question whose answer the orders fix"
         if found := _kind(known.name):
             return f"its screen is the measured {known.name!r}, which {found[0]}"
+    if choice is not None and not benign(choice):
+        return (f"the choice {choice!r} is not on the benign list ({', '.join(sorted(BENIGN))}); "
+                "any other answer is the desk's")
+    if line is not None and line.lstrip()[:1] in COMMAND_STARTS:
+        return f"the line {line!r} starts with {line.lstrip()[0]!r}: a program command, shell mode or reference"
     own = choice if choice is not None else line
     if own is not None and (found := _kind(own)):
         return f"the {'choice' if choice is not None else 'line'} {own!r} {found[0]} ({found[1]!r})"
@@ -83,12 +132,64 @@ def guard(screen, choice: str | None = None, line: str | None = None) -> str | N
     at = next((y for y, row in enumerate(rows) if choice and choice in row), None) if choice else None
     if at is None:
         at = next((y for y in range(len(rows) - 1, -1, -1) if rows[y].strip()), 0)
-    region = rows[max(0, at - REGION_LINES):]
-    if not any(row.strip() for row in region) or any(_cells(row) is None for row in region):
+    read, where = region(rows, at)
+    if not any(row.strip() for row in read) or any(_cells(row) is None for row in read):
         return "its screen cannot be classified (blank, or characters the reader cannot measure)"
-    if found := _kind("\n".join(region)):
-        return f"its screen reads as a question that {found[0]} (it says {found[1]!r})"
+    if found := _kind("\n".join(read)):
+        return f"its screen reads as a question that {found[0]} ({where} says {found[1]!r})"
     return None
+
+
+NOTICE_LINES = 20  # the screen's last lines in the desk's notice
+NOTICE_CHARS = 2000
+
+
+def notices(seat) -> Path:
+    return seat.folder / "acts-notices.jsonl"
+
+
+def tell_desk(service, seat, launched, caller, act: str, reason: str, screen) -> str:
+    """The guard's refusal goes to the desk from the service itself, once per seat and screen: the desk never
+    depends on the caller passing it on. Keyed by the seat's launch and the screen as shown; posted, then noted."""
+    import hashlib
+    from . import post
+    shown = bounded(screen.text)
+    identity = f"{seat.name}\n{launched.pane}\n{launched.pid}\n{launched.at}\n{shown}"
+    key = hashlib.sha256(identity.encode()).hexdigest()[:24]
+    try:
+        for row in notices(seat).read_text(encoding="utf-8").splitlines():
+            try:
+                done = json.loads(row)
+            except ValueError:
+                continue
+            if done.get("key") == key:
+                return f"the desk was told already ({done.get('message')})"
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        return f"the desk's notice is unknown ({error}); not posted again"
+    desks = sorted(spec.name for spec in service.ship.seats.values() if spec.role == "desk")
+    if not desks:
+        return "no desk seat is declared; nobody was told"
+    lines = "\n".join(shown.split("\n")[-NOTICE_LINES:])[-NOTICE_CHARS:]
+    posted = []
+    for desk in desks:
+        body = (f"A screen for the desk on {seat.name}: {caller or 'a caller'} asked qd to {act} there, and the guard "
+                f"refused it: {reason}. Such a screen is the desk's to answer, never a systems seat's; "
+                f"qd watch {seat.name} shows it. Its last lines:\n{lines}")
+        message = service.store.new("report", post.SHIP, desk, body)
+        posted.append(message.short)
+        try:
+            write_notice = notices(seat)
+            write_notice.parent.mkdir(parents=True, exist_ok=True)
+            with write_notice.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(dict(key=key, message=message.id, to=desk, at=_now(), act=act,
+                                             caller=caller)) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+        except OSError as error:
+            return f"the desk is told ({', '.join(posted)}), but the notice could not be noted ({error})"
+    return f"the desk is told ({', '.join(posted)})"
 
 
 def path(seat) -> Path:
@@ -210,7 +311,8 @@ def press(service, seat, choice: str, caller: str | None) -> str:
     if screen.box is not None and screen.box.strip():
         return f"refused: {seat.name}'s box holds text; a key pressed now could submit it; nothing is pressed"
     if reason := guard(screen, choice=choice):
-        return f"refused: {reason}; that is the desk's to answer, never a systems seat's; nothing is pressed"
+        told = tell_desk(service, seat, launched, caller, f"press {choice!r}", reason, screen)
+        return f"refused: {reason}; that is the desk's to answer, never a systems seat's; nothing is pressed; {told}"
     key = label_key(screen.text, choice) if screen.box is None else None  # a key into a drawn box would be typed
     how = None
     if key is not None:
@@ -270,7 +372,8 @@ def type_line(service, seat, line: str, caller: str | None) -> str:
         shown = screen.box if len(screen.box) <= 80 else screen.box[:77] + "..."
         return f"refused: {seat.name}'s box is not empty, it shows {shown!r}; nothing is typed"
     if reason := guard(screen, line=line):
-        return f"refused: {reason}; that is the desk's to answer, never a systems seat's; nothing is typed"
+        told = tell_desk(service, seat, launched, caller, f"type {line!r}", reason, screen)
+        return f"refused: {reason}; that is the desk's to answer, never a systems seat's; nothing is typed; {told}"
     pane, screen = _settled(door, screen)
     if screen is None or screen.box is None or screen.box.strip():
         return f"refused: {seat.name}'s screen changed while it was read; nothing is typed"
