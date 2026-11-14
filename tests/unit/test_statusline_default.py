@@ -53,12 +53,13 @@ def test_declared_subscriptions_use_generic_ledger_windows():
     assert all(" · 1h" in plain(line.cell(row, 3)) and "reset " not in plain(line.cell(row, 3)) for row in rows)
 
 
-def test_unknown_window_and_missing_pool_are_never_zero():
+def test_incomplete_window_is_unknown_and_unread_pool_is_omitted():
     ship = {"pools": {"sample-unread": {}, "sample-missing": {}}}
     rows = line.allowances(cache([window("sample-unread", None)]), ship, None)
     assert all(r["used"] is None for r in rows)
+    assert [r['pool'] for r in rows] == ['sample-unread']
     text = plain("\n".join(line.draw(80, {}, "sample-seat", {}, rows)))
-    assert text.count("not read") == 2 and "0%" not in text
+    assert text.count("unknown") == 1 and "Missing" not in text and "0%" not in text
 
 
 @pytest.mark.parametrize("value", [True, float("nan"), float("inf"), -0.1, 1.1, "0.0"])
@@ -91,11 +92,11 @@ def test_stale_reading_is_named_and_expired_reset_is_not_a_new_zero():
     assert "60%?" in text and "reset passed" in text
 
 
-def test_narrow_screen_keeps_every_subscription():
+def test_narrow_screen_keeps_every_attempted_subscription():
     ship = {"pools": {f"sample-{n}": {} for n in range(10)}}
-    rows = line.allowances(cache([]), ship, None)
+    rows = line.allowances(cache([window(name, None) for name in ship['pools']]), ship, None)
     text = plain("\n".join(line.draw(25, {}, "sample-seat", {}, rows)))
-    assert all(line.label(name) + " not read" in text for name in ship["pools"])
+    assert all(line.label(name) + " unknown" in text for name in ship["pools"])
 
 
 def test_identity_uses_session_facts():
@@ -130,7 +131,7 @@ def test_display_only_writes_inside_ship_runtime_and_never_waits_for_qd(tmp_path
     monkeypatch.setattr(line, "renew_in_background", renewals.append)
     line.main()
     text = plain(capsys.readouterr().out)
-    assert "ship ledger unavailable" in text and "Sample not read" in text
+    assert "ship ledger unavailable" in text and "Sample" not in text
     assert renewals == [ship / "runtime/statusline/readings.json"]
     assert not (tmp_path / "outside").exists()
     assert sorted(p.name for p in ship.iterdir()) == ["runtime", "ship.toml"]

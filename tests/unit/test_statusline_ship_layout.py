@@ -99,6 +99,7 @@ def test_provider_order_and_short_names_are_independent_of_own_seat(reading):
     ship, _, _, cache = reading
     ship['pools'] = {'provider-secondary': {'provider': 'first'}, 'different-primary': {'provider': 'second'},
                      'provider-primary': {'provider': 'first'}, 'standalone': {'provider': 'second'}}
+    cache['windows'] = [{**cache['windows'][0], 'pool': name} for name in ship['pools']]
     first = line.allowances(cache, ship, 'provider-primary')
     second = line.allowances(cache, ship, 'different-primary')
     expected = ['provider-primary', 'provider-secondary', 'different-primary', 'standalone']
@@ -137,25 +138,25 @@ def test_ambiguous_group_membership_is_not_guessed_from_the_model_name(reading):
     _, _, _, cache = reading
     cache['windows'].append({**cache['windows'][3], 'group': 'another-family', 'used': .99})
     row = rows(reading)[1]
-    assert row['used'] == 86 and row['model'] is None and row['unknown']
+    assert row['used'] == 86 and row['model'] is None and not row['unknown']
     text = plain(line.cell(row, 3))
-    assert '86%' in text and '+ unknown' in text and not any(c in text for c in '╋╂')
+    assert '86%' in text and 'unknown' not in text and not any(c in text for c in '╋╂')
 
 
 def test_grouped_only_reading_is_not_drawn_as_a_whole_allowance_bar(reading):
     _, _, _, cache = reading
     cache['windows'] = [cache['windows'][3]]
-    row = rows(reading)[1]
-    assert row['used'] == 93 and not row['whole'] and row['unknown']
+    row, = rows(reading)
+    assert row['used'] == 93 and not row['whole'] and not row['unknown']
     text = plain(line.cell(row, 3))
-    assert '93%' in text and '+ unknown' in text and not any(c in text for c in '━─╋╂')
+    assert '93%' in text and 'unknown' not in text and not any(c in text for c in '━─╋╂')
 
 
 def test_an_unplaced_wall_is_kept_without_assigning_it_the_totals_reset(reading):
     _, _, _, cache = reading
     cache['windows'].append({**cache['windows'][3], 'group': 'another-family', 'wall': True})
     text = plain(line.cell(rows(reading)[1], 3))
-    assert '86%' in text and '+ unknown' in text and 'WALL' in text
+    assert '86%' in text and 'unknown' not in text and 'WALL' in text
     assert 'back in' not in text and '4d 22h' not in text
 
 
@@ -167,10 +168,11 @@ def test_partial_data_is_not_hidden_by_detail_shedding(reading):
 
 def test_unknown_subscriptions_are_all_kept_even_when_two_rows_cannot_fit(reading):
     ship, seat, session, _ = reading
-    rendered = line.draw(80, seat, 'sample-seat', session, line.allowances({}, ship, None))
+    attempted = {'attempted_pools': list(ship['pools'])}
+    rendered = line.draw(80, seat, 'sample-seat', session, line.allowances(attempted, ship, None))
     assert len(rendered) > 2
     text = plain('\n'.join(rendered))
-    assert all(line.label(pool) + ' not read' in text for pool in ship['pools'])
+    assert all(line.label(pool) + ' unknown' in text for pool in ship['pools'])
     assert all(line.width(text) <= 76 for text in rendered)
 
 

@@ -86,10 +86,12 @@ def refresh(ship_dir: Path, path: Path) -> None:
         if not cache["ledger_unavailable"]:
             cache["windows"] = [
                 {"pool": w.get("pool"), "wall": bool(w.get("wall")), "current": bool(w.get("current")),
-                 "complete": w.get("complete"),
+                 "complete": w.get("complete"), "failed": bool((w.get("reading") or {}).get("error")),
                  **{k: (w.get("reading") or {}).get(k) for k in ("window", "used", "resets_at", "blocks", "group")}}
                 for w in ledger.get("windows") or []]
             cache["pools"] = {p["name"]: p.get("kind") for p in ledger.get("pools") or []}
+            cache["attempted_pools"] = sorted({a["pool"] for a in ledger.get("usage_attempts") or []
+                                              if isinstance(a.get("pool"), str) and a.get("at")})
             cache["ledger_at"] = now
         if now - cache.get("seats_attempted_at", 0) > SEATS_TTL:
             status = qd_reading(ship_dir, "status")
@@ -176,6 +178,8 @@ def allowances(cache: dict, ship: dict, own_pool: str | None) -> list[dict]:
         if kind in ("key", "endpoint") or "endpoint" in spec or "api_key" in spec:
             continue
         windows = [w for w in cache.get("windows") or [] if w.get("pool") == name]
+        if not windows and name not in (cache.get("attempted_pools") or []):
+            continue  # declaration and current seat membership establish no usage reading
         known = [w for w in windows if readable(w)]
         blocking = [w for w in known if w.get("blocks") is not False]
         whole = [w for w in known if not w.get("group")]
@@ -190,7 +194,7 @@ def allowances(cache: dict, ship: dict, own_pool: str | None) -> list[dict]:
                      "wall": bool(top.get("wall")) if top else any(w.get("wall") for w in windows),
                      "observed_wall": any(w.get("wall") for w in windows),
                      "whole": bool(whole),
-                     "unknown": len(known) < len(windows) or bool(known) and (not whole or len(groups) > 1),
+                     "unknown": not known or len(known) < len(windows) or any(w.get("failed") for w in windows),
                      "stale": bool(top) and stale(top),
                      "model": ({"used": single["used"] * 100,
                                 "resets": seconds_until(single.get("resets_at")),
@@ -217,7 +221,7 @@ def cell(row: dict, detail: int) -> str:
     mark = f"{PINK}●{RESET} " if row["own"] else "  "
     name = f"{BOLD if row['own'] else ''}{label(row['pool'])}{RESET}"
     if row["used"] is None:
-        return f"{mark}{name} {DIM}not read{RESET}" + (f" {RED}WALL{RESET}" if row["wall"] else "")
+        return f"{mark}{name} {DIM}unknown{RESET}" + (f" {RED}WALL{RESET}" if row["wall"] else "")
     single = row.get("model")
     tighter = single if single and (single["wall"] and not row["wall"]
                                    or single["wall"] == row["wall"] and single["used"] > row["used"]) else None
@@ -286,7 +290,7 @@ def spread(cells: list[str], room: int, least: int = 3, most: int = 8, lead: int
 
 
 def draw(columns: int, seat: dict, name: str, session: dict, rows: list[dict]) -> list[str]:
-    """The ship's one/two rows; retain every subscription when narrower screens need more."""
+    """The ship's one/two rows; retain every selected subscription on narrower screens."""
     room = max(20, min(columns - MARGIN, BAND))
     who = identity(seat, name, session, 2)
     for detail in (3, 2):
