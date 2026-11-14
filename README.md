@@ -49,11 +49,13 @@ Office name:    Office
 
 Ship name:      Endeavour
 Project path:   ~/code/my-app
+Office folder: ~/quarterdeck/office
+The office holds your desk; the ship holds its crew. The captain takes orders from desk@office.
 
-Seat       Name     Harness       Model             Effort
-Desk       Maeve    Claude Code   claude-opus-5-5   max
-Captain    Picard   Codex         gpt-6-astra       xhigh
-Engineer   Geordi   pi            qwen3.8-27b       medium
+Where    Seat       Name     Harness       Model             Effort
+Office   Desk       Maeve    Claude Code   claude-opus-5-5   max
+Ship     Captain    Picard   Codex         gpt-6-astra       xhigh
+Ship     Engineer   Geordi   pi            qwen3.8-27b       medium
 
 Runs on
   Claude Code   a subscription you are signed in to (~/.claude)
