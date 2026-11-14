@@ -464,6 +464,8 @@ class Store:
 # -- drop folders ------------------------------------------------------------------------
 
 # A seat writes a new message only here. The service files it and is the one that sets the sender.
+DROP_MAX_FILES = 128
+DROP_COUNT_REASON = "drop exceeds file count limit"
 DROP_MAX_BYTES = 1024 * 1024
 DROP_SIZE_REASON = "drop exceeds size limit"
 DROP_HOLD_REASONS = (
@@ -487,6 +489,7 @@ DROP_HOLD_REASONS = (
     "group publication I/O error",
     "group journal malformed",
     DROP_SIZE_REASON,
+    DROP_COUNT_REASON,
 )
 
 
@@ -604,8 +607,9 @@ def drop_waits(runtime: Path, *, at: float | None = None) -> list[str]:
         folder = f'drop/{name}'
         descriptor = None
         try:
+            files = post_dir.list_children(root / name, limit=DROP_MAX_FILES)
             descriptor = post_dir.open_directory(root / name, create=False)
-            for file in os.listdir(descriptor):
+            for file, _ in files:
                 try:
                     info = os.stat(file, dir_fd=descriptor, follow_symlinks=False)
                 except FileNotFoundError:
@@ -613,6 +617,8 @@ def drop_waits(runtime: Path, *, at: float | None = None) -> list[str]:
                 if stat.S_ISREG(info.st_mode) and info.st_mtime <= cutoff:
                     lines.append(f'post drop waiting: {folder} (over 2m)')
                     break
+        except post_dir.CountLimit:
+            lines.append(f'post drop held: {folder}: {DROP_COUNT_REASON}')
         except FileNotFoundError:
             if not post_dir.gone(root / name):
                 lines.append(f'post drop waiting: {folder} (age unknown)')
@@ -875,7 +881,10 @@ def _drop_steps(store: Store, ship=None, *, seats: frozenset[str] | None = None,
             hold(folder, "drop folder is not a directory")
             continue
         try:
-            files = sorted(post_dir.list_children(root / name))
+            files = sorted(post_dir.list_children(root / name, limit=DROP_MAX_FILES))
+        except post_dir.CountLimit:
+            hold(folder, DROP_COUNT_REASON)
+            continue
         except FileNotFoundError:
             if not post_dir.gone(root / name):
                 hold(folder, "drop unreadable")

@@ -38,6 +38,10 @@ class ReadLimit(ShipError):
     """The regular file exceeds the caller's bounded read."""
 
 
+class CountLimit(ShipError):
+    """The directory exceeds the caller's bounded entry count."""
+
+
 def _plain_name(name):
     return (isinstance(name, str) and name not in ('', '.', '..')
             and '/' not in name and '\\' not in name and '\x00' not in name)
@@ -332,15 +336,21 @@ def exists_dir(path) -> bool:
     return True
 
 
-def list_children(directory):
+def list_children(directory, *, limit: int | None = None):
     """(name, mode) for each child, without following a link to the directory or the child."""
     directory = Path(directory)
+    if limit is not None and limit < 0:
+        raise ValueError("directory limit must be nonnegative")
     if not under_post(directory):
         found = []
+        seen = 0
         with os.scandir(directory) as scan:
             for entry in scan:
                 if entry.name in ('.', '..'):
                     continue
+                seen += 1
+                if limit is not None and seen > limit:
+                    raise CountLimit('directory exceeds entry limit')
                 try:
                     kind = entry.stat(follow_symlinks=True).st_mode
                 except FileNotFoundError:
@@ -352,10 +362,14 @@ def list_children(directory):
     descriptor = open_directory(directory, create=False)
     try:
         found = []
+        seen = 0
         with os.scandir(f'/proc/self/fd/{descriptor}') as scan:
             for entry in scan:
                 if entry.name in ('.', '..'):
                     continue
+                seen += 1
+                if limit is not None and seen > limit:
+                    raise CountLimit('directory exceeds entry limit')
                 try:
                     kind = entry.stat(follow_symlinks=False).st_mode
                 except FileNotFoundError:

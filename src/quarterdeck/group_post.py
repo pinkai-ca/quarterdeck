@@ -214,8 +214,11 @@ def staged_steps(ship: Ship, store: post.Store):
         if not stat.S_ISDIR(mode):
             continue
         try:
-            files = sorted(file for file, _ in post_dir.list_children(root_dir / name)
+            files = sorted(file for file, _ in post_dir.list_children(root_dir / name, limit=post.DROP_MAX_FILES)
                            if file.endswith('.group.json'))
+        except post_dir.CountLimit:
+            yield (folder_name, post.DROP_COUNT_REASON)
+            continue
         except FileNotFoundError:
             if not post_dir.gone(root_dir / name):
                 yield (folder_name, 'drop unreadable')
