@@ -55,12 +55,14 @@ def account_question(door: Door) -> str | None:
 
 
 def ready_for_probe(seat: Seat, door: Door) -> bool:
-    """An opening prompt's own turn must finish before the check task is sent."""
+    """Unknown activity is never ready; an opening prompt's own turn must finish."""
     opened = door.reading()
     if not opened.open:
         screen = door.screen()
         if screen is not None and screen.interruption is not None and screen.interruption.click is not None:
             door.clear_known(screen)  # the account holder's question the orders answer, through the door, once
+        return False
+    if opened.working is None:
         return False
     if not seat.harness.opening_prompt_turn:
         return True
