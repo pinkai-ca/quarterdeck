@@ -98,6 +98,14 @@ def encoded(value):
     return (json.dumps(value, sort_keys=True, ensure_ascii=False) + '\n').encode('utf-8')
 
 
+def prepare_outbound(runtime):
+    """Establish the local transport index before its first pending post or hold."""
+    directory = runtime / 'post' / 'outbound'
+    if not directory.exists():
+        directory.mkdir(parents=True, exist_ok=True)
+        durable.sync_folder(directory.parent)
+
+
 def import_path(runtime, identifier):
     return runtime / 'post' / 'imports' / (identifier + '.json')
 
@@ -352,6 +360,8 @@ def run(ship, store):
 
 def waiting(ship, store=None):
     """Read-only outbound state, including messages not offered yet by a down sender."""
+    if not (ship.runtime / 'post' / 'outbound').exists():
+        return []
     from . import post
     store = store or post.Store(ship.runtime)
     fleet, pending = peers(ship), {}
@@ -373,6 +383,8 @@ def waiting(ship, store=None):
 
 
 def status(ship, store=None):
+    if not (ship.runtime / 'post' / 'outbound').exists():
+        return []
     try:
         lines = waiting(ship, store)
         try:

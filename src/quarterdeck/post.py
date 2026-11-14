@@ -189,6 +189,9 @@ class Store:
     def _write(self, message: Message) -> Path:
         """Publish while the caller holds admission; fixed-intent recovery verifies first."""
         post_dir.ensure_directory(self.dir)
+        if '@' in message.to:
+            from .fleet_post import prepare_outbound
+            prepare_outbound(self.dir.parent.parent)
         path = self.dir / f"{message.id}.json"
         if post_dir.exists(path):
             raise ShipError(f"{message.id} exists; messages are immutable")  # law: post-is-files

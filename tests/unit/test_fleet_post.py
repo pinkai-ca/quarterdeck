@@ -279,3 +279,12 @@ def test_a_marker_without_destination_bytes_never_clears_waiting(pair):
     fleet.run(right, destination)
     assert wire(right, order) == wire(left, order)
     assert fleet.waiting(left, source) == []
+
+
+def test_status_without_outbound_never_discovers_or_reads_the_fleet(tmp_path, monkeypatch):
+    ship = SimpleNamespace(runtime=tmp_path / 'runtime')
+    def unexpected(*args):
+        pytest.fail('no outbound: status must not discover peers')
+    monkeypatch.setattr(fleet, 'peers', unexpected)
+    assert fleet.waiting(ship) == []
+    assert fleet.status(ship) == []

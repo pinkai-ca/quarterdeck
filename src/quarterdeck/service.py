@@ -576,6 +576,7 @@ class Service:
         errors = fleet_post.run(self.ship, self.store)
         path = self.runtime / 'post' / 'transport-holds.json'
         if errors:
+            fleet_post.prepare_outbound(self.runtime)
             text = json.dumps(errors, sort_keys=True) + '\n'
             if not path.exists() or path.read_text() != text:
                 from . import durable

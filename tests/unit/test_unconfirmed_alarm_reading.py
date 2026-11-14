@@ -193,7 +193,8 @@ def test_watch_keeps_standing_hold_after_notification_and_restart(alarm, monkeyp
     alarm.actor = alarm.restart()
     assert notice(alarm) == first
 
-    from quarterdeck import compaction, model_mismatch, structure_outcome, turn_failure
+    from quarterdeck import compaction, fleet_post, model_mismatch, structure_outcome, turn_failure
+    monkeypatch.setattr(fleet_post, 'status', lambda *args: [])
 
     monkeypatch.setattr(watch, 'seats', lambda *args: [alarm.seat])
     monkeypatch.setattr(watch, 'limit_state', lambda *args: ([], [], []))
