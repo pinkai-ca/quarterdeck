@@ -51,7 +51,7 @@ A harness runs on a pool, one way of paying:
 
 ## What a live check proves
 
-Pi 0.79.0 needs at least five pane rows to show its empty input box (measured at 52, 80, 120 and 256 columns); a message spanning more rows can need a taller pane.
+Pi 0.79.0 needs five pane rows for its empty box; an unfolded payload needs four more rows than its wrapped text (including a final newline's cursor row), and over five text rows also need enough pane height for pi's 30% editor viewport; large pastes fold to one row.
 
 Each harness proven live launched, took a long paste that the harness's own record confirmed, wrote a named file, posted a report with `qd post`, and had the turn read by Quarterdeck.
 

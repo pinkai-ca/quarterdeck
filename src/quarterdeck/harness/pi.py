@@ -25,7 +25,7 @@ from ..pricing import Price, amount
 from .endpoint import EndpointHarness
 from .costs import CostStep, costed, model_name
 from .json_record import JsonLinesReader, input_reader, input_rows
-from .types import CappedGeneration, Inputs
+from .types import CappedGeneration, Inputs, _cells, _pi_wrap
 
 from ..ship import Pool, SeatSpec, ShipError
 from .base import (Box, ship_template, trimmed, Input, Control, Credential, Harness, Interruption, Keys, Launch, RecordError, Screen, State, Tokens,
@@ -467,6 +467,28 @@ class PiHarness(EndpointHarness):
 
     def box_columns(self, pane_width: int) -> int | None:
         return pane_width - 1  # the box spans the pane from the first column; the last column stays clear
+
+    def minimum_pane_rows(self, text: str, pane_width: int, version: str | None) -> int | None:
+        """0.79.0: four chrome rows; the editor shows max(5, floor(0.3 * pane rows)) text rows.
+
+        A final LF needs its cursor row too. Native pastes over ten lines or
+        1000 UTF-16 code units fold to one marker; unknown wrapped glyphs stay unknown.
+        This is display metadata only, never a substitute for reading the box.
+        """
+        if version != '0.79.0' or type(pane_width) is not int or pane_width < 52:
+            return None
+        lines = text.split('\n')
+        if any(_cells(line) is None for line in lines):
+            return None
+        if len(lines) > 10 or sum(2 if ord(char) > 0xffff else 1 for char in text) > 1000:
+            return 5
+        rows = 0
+        for line in lines:
+            wrapped = _pi_wrap(line, self.box_columns(pane_width))
+            if wrapped is None:
+                return None
+            rows += len(wrapped)
+        return max(rows + 4, (10 * rows + 2) // 3 if rows > 5 else 5)
 
     def box(self, text: str) -> Box:
         """Probed on 0.74.2: a short paste shows whole; a long one folds to its count of lines, or of characters when few."""

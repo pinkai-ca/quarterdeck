@@ -195,6 +195,8 @@ class Door:
             diagnostic = '; '.join(item for item in (reading.diagnostic, reason) if item)
             if screen.unknown is None or reading.reason != f'unknown dialog: {screen.unknown}':
                 display = ''
+            elif reading.diagnostic and getattr(self.harness, 'minimum_pane_heights', {}):
+                display = 'input box needs a taller pane'
             reading = replace(reading, diagnostic=diagnostic, display_reason=display)
         return reading
 
@@ -204,6 +206,7 @@ class Door:
         pane = self.captured_pane
         rows = getattr(pane, 'height', None)
         if (not heights or screen is None or screen.box is not None or screen.interruption is not None
+                or screen.unknown != 'pi input box not found' or not screen.shows.get('model')
                 or pane is None or getattr(pane, 'dead', None) is not False or type(rows) is not int or rows <= 0):
             return '', ''
         launched = getattr(self.seat, 'launched', lambda: None)()
@@ -275,6 +278,12 @@ class Door:
         if (measure is None or type(width) is not int or type(height) is not int
                 or width < 1 or height < 1):
             return ""
+        pane_measure = getattr(self.harness, 'minimum_pane_rows', None)
+        launched = getattr(self.seat, 'launched', lambda: None)()
+        version = getattr(launched, 'version', None)
+        if pane_measure is not None and type(rows := pane_measure(text, width, version)) is int:
+            return (f'pane {height} rows; {self.harness.display_name} {version} draws this box from {rows} rows'
+                    if rows > height else '')
         rows = measure(text, width)
         if type(rows) is not int or rows <= height:
             return ""

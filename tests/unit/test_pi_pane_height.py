@@ -119,3 +119,43 @@ def test_missing_pi_screen_parts_do_not_claim_the_old_renderer_version():
     harness = PiHarness()
     assert harness.screen('synthetic unrecognized frame').unknown == 'pi footer not found'
     assert harness.screen(frame(4)).unknown == 'pi input box not found'
+
+
+def test_an_unknown_dialog_keeps_its_ordinary_display_and_no_height_annotation():
+    door, _, _, _, _ = display()
+    screen = door.harness.screen('synthetic unrecognized frame')
+    original = Reading(False, f'unknown dialog: {screen.unknown}', 'needs a human')
+    door._base_reading = lambda captured: original
+    assert door._reading(screen) == original
+
+
+@pytest.mark.parametrize('text,rows', [('', 5), ('a', 5), ('a\nb\nc', 7), ('a\nb\nc\n', 8),
+    ('a\nb\nc\nd\ne', 9), ('a\nb\nc\nd\ne\nf', 20), ('x\n' * 6, 24),
+    ('x\n' * 8, 30), ('x\n' * 9, 34), ('x\n' * 10, 5), ('x' * 1001, 5),
+    ('x' * 120, 6), ('header · synthetic\nbody\nfooter\n', 8)])
+def test_payload_height_counts_cursor_chrome_viewport_and_native_folding(text, rows):
+    assert PiHarness().minimum_pane_rows(text, 120, '0.79.0') == rows
+
+
+@pytest.mark.parametrize('text,width,version', [('a\tb', 120, '0.79.0'), ('e\u0301', 120, '0.79.0'),
+    ('é' * 200, 120, '0.79.0'), ('abc', 120, None), ('abc', 120, '0.74.2'), ('abc', 20, '0.79.0')])
+def test_unmeasured_payload_layout_has_no_pane_height_claim(text, width, version):
+    assert PiHarness().minimum_pane_rows(text, width, version) is None
+
+
+def test_payload_reason_is_computed_for_the_box_not_the_empty_editor():
+    door, screen, original, _, _ = display(height=7)
+    door.seat.session = SimpleNamespace(human=False)
+    payload = 'header\nbody\nfooter\n'
+    reason = door._short_pane_geometry(payload, 120, 7)
+    assert reason == 'pane 7 rows; pi 0.79.0 draws this box from 8 rows'
+    assert door._short_pane_geometry(payload, 120, 8) == ''
+    door.pane_obstruction = lambda: reason
+    screen = door.harness.screen(frame(4))
+    door._base_reading = lambda captured: Reading(False, f'unknown dialog: {captured.unknown}', 'needs a human')
+    shown = door._reading(screen)
+    assert shown.diagnostic == reason and shown.display_reason == 'input box needs a taller pane'
+    assert 'unknown dialog' not in str(shown)
+    assert replace(shown, diagnostic='', display_reason='') == door._base_reading(screen)
+    assert 'synthetic-seat: ' + reason in watch.Facts(service='up', waiting=0, oldest=0, blind=1,
+        pane_obstructions=['synthetic-seat: ' + shown.diagnostic]).line()

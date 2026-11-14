@@ -473,6 +473,10 @@ class Harness(ABC):
     box_geometry_known = False  # adapters opt in only with an established text-column declaration
     minimum_pane_heights: dict[str, int] = {}  # measured empty-box heights, by installed version; diagnostic only
 
+    def minimum_pane_rows(self, text: str, pane_width: int, version: str | None) -> int | None:
+        """A measured pane bound for this payload and version, separate from text-only row bounds."""
+        return None
+
     def minimum_box_rows(self, text: str, pane_width: int) -> int | None:
         """Diagnostic only; the ordinary Box comparator still decides whether the whole paste is shown."""
         if not self.box_geometry_known:
