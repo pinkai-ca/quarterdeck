@@ -73,10 +73,12 @@ supply exact input evidence. Multi-block rendering is not invented.
 
 A root `runtime.session` event starts with `event.kind=started` and a prompt.
 Reminder tasks can also emit started/completed events; they do not replace the
-root prompt or close it. Root completion is `event.kind=terminal` with
-`terminal=completed` and a null reason in the measured runs. Reply text and
+root prompt or close it. A matching root's `event.kind=terminal` closes its
+turn, retaining its textual reason or, if absent, its terminal kind. Successful
+measured runs used `terminal=completed` and a null reason; other terminal kinds
+are endings without an invented success verdict. Reply text and
 `model_completed` precede completion. The native Double checking phase stays
-busy while reminders finish. Other terminal forms remain unproved.
+busy while reminders finish.
 
 Live `model_completed.model` supplies the exact recorded model. Tool-call
 names are readable; complete tool failure semantics, child counts and token
@@ -150,4 +152,6 @@ provenance and every delivered form recognized by the shared receipt owner.
 Strict usage pacing is opt-in. Its persisted refusal deadline lives beside the
 existing attempt table, retains the absolute minimum interval, and bounds
 malformed native retry values. It introduces no provider request at a
-destination gate. The module inventory is in [Modules](MODULES.md).
+destination gate. A standalone usage writer rolls back incomplete attempt/hold
+writes, so a later commit cannot publish an attempt whose hold failed. The
+module inventory is in [Modules](MODULES.md).

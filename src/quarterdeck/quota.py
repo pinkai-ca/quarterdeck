@@ -344,9 +344,13 @@ class Quotas:
         if self.commit_attempt is not None:
             self.commit_attempt(write, commit=commit)
         else:
-            write()
+            try:
+                write()
+            except BaseException:
+                self.db.rollback()  # an incomplete attempt must never outlive its missing hold
+                raise
             if commit:
-                self.db.commit()
+                self.db.commit()  # a completed writer's failed commit remains visible to its owner
 
     def strict_attempt(self, pool: str, now: datetime | None = None) -> datetime | None:
         """A strict floor needs sane local attempt evidence, never an indefinite future wait."""

@@ -176,8 +176,12 @@ class MuseHarness(Harness):
             return False, 'Muse startup screen unavailable; no opening input'
         if re.search(muse_screen.label('Contributor mode is on'), screen.text):
             return False, 'Muse contributor mode is on; launch opening held; needs a human'
+        # A padding-only candidate must reach the contributor proof. The Door
+        # still requires its bracketed visible-cursor proof before treating the
+        # box as empty or typing; readiness alone never clears a space draft.
+        empty = screen.box == '' or self.empty_cell(screen) is not None
         if (screen.unknown is not None or screen.interruption is not None
-                or screen.working is not False or screen.box != ''):
+                or screen.working is not False or not empty):
             return False, 'Muse startup is not a measured empty idle composer; no opening input'
         if re.search(muse_screen.label(muse_screen.CONTRIBUTOR_OFF), screen.text):
             muse_home.remember_off(home)

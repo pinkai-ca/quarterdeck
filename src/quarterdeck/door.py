@@ -764,6 +764,8 @@ class Door:
             except (OSError, ValueError, TypeError):
                 pass
         if shown is None or shown.working is None:
+            if reason := self.adapter_obstruction():
+                return Delivery("blind", f"{reason}; draft not submitted or cleared; needs a human")
             return Delivery("blind", "screen activity unknown after paste; draft not submitted or cleared; needs a human")
         if not self.matches(self.harness.box(text), shown):  # law: one-door
             current = self.captured_pane
@@ -832,14 +834,14 @@ class Door:
         screen = self.screen()
         reading = self.reading(screen)
         if not reading.open or reading.working is not False or screen is None or screen.queued:
-            return Delivery('withheld', str(reading))
+            return Delivery('withheld', self.adapter_obstruction(screen) or str(reading))
         if not proof.same_launch(self.seat) or not verify():
             return Delivery('withheld', 'bound mode/source changed; no control key sent')
         pane = self.seat.pane()
         current = self.screen()
         current_reading = self._reading(current)
         if not current_reading.open or current_reading.working is not False or current.queued:
-            return Delivery("withheld", str(current_reading))
+            return Delivery("withheld", self.adapter_obstruction(current) or str(current_reading))
         if not proof.same_launch(self.seat) or not verify():
             return Delivery('withheld', 'bound mode/source changed at the control check; no key sent')
         if reason := self.adapter_obstruction(current):

@@ -276,11 +276,10 @@ class Reader(JsonLinesReader):
             # is unmeasured; never turn these fields into billed token totals.
             self.open["tokens"] = Tokens.unknown()
         elif action == "terminal":
-            if event.get("terminal") == "completed" and event.get("reason") is None:
-                self.ended_runs.add(run)
-                self.end(at, event["terminal"])
-            else:
-                self.tools_known = False
+            self.ended_runs.add(run)
+            reason, terminal = event.get("reason"), event.get("terminal")
+            self.end(at, reason if isinstance(reason, str) else
+                     terminal if isinstance(terminal, str) else None)
         else:
             self.tools_known = False
 
