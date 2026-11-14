@@ -5,8 +5,9 @@ runs in a jail unless the ship says ``sandbox = false``, and any seat does with 
 jail is one ``bwrap`` command around the program's own: the root read-only; a private ``/tmp``; the
 operator's home replaced by an empty one, with only the folders the program and ``qd`` resolve through
 bound back read-only; the workspace and the seat's own folder writable; the ship folder read-only with
-the other seats' folders hidden; and only that seat's drop folder writable, the rest of the post
-store read-only, so ``qd post`` writes a drop and the service files it. The
+the other seats' folders hidden; only that seat's drop folder writable, the rest of the post
+store read-only, so ``qd post`` writes a drop and the service files it; and that seat's own check
+proof folder writable, never another seat's. The
 program's home is the seat home. The operator's files, sign-ins and the other seats' records are not
 merely out of bounds but absent, so nothing the model does inside can read or change them.
 """
@@ -64,7 +65,7 @@ class Jail:
     ship_folder: Path  # read-only, the other seats hidden
     runtime: Path
     read_only: tuple[Path, ...] = ()  # the program's own folders under the operator's home, bound back
-    writable: tuple[Path, ...] = ()  # the post store, and the check's proof folder when there is one
+    writable: tuple[Path, ...] = ()  # the post store, and this seat's own check proof folder
     environment: tuple[tuple[str, str], ...] = ()  # set inside the jail: the git identity a commit from the seat carries
     declarations: tuple[Path, ...] = ()  # peer ship files only, under otherwise empty read-only folders
 
@@ -110,8 +111,10 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
     (ship.runtime / LOCKS).mkdir(mode=0o700, exist_ok=True)  # hidden inside: the service's own locks, out of every jail's reach
     from .fleet import declaration_files
     declarations = tuple(file for file in declaration_files(ship) if file.parent != ship.folder)
+    proof = check_proof_folder(ship.runtime, seat_name)
+    proof.mkdir(parents=True, exist_ok=True)  # bound writable, and only this seat's jail receives it
     jail = Jail(home, seat_home, seat_folder, workspace, ship.folder, ship.runtime, tuple(folders),
-                (drop, ship.runtime / "check"), git_identity(workspace), declarations)
+                (drop, proof), git_identity(workspace), declarations)
     if covered := covering(jail):
         what, folder = covered
         raise ShipError(f"{seat_name}: sandboxed with the operator home at {home}, and {what} {folder} is that home or "
@@ -133,6 +136,20 @@ def fleet_roots(ship_folder: Path) -> tuple[Path, ...]:
     else:
         return ()
     return (project / 'ships', project / 'office')
+
+
+def check_proof_folder(runtime: Path, seat_name: str) -> Path:
+    """``runtime/check/<seat>``: the only check directory this seat's jail may write."""
+    folder = runtime / "check" / seat_name
+    if (not seat_name or seat_name in (".", "..") or "/" in seat_name or "\\" in seat_name
+            or folder.parent != runtime / "check"):
+        raise ShipError(f"{seat_name}: check proof folder must be one directory under the check folder")
+    return folder
+
+
+def check_proof_file(runtime: Path, seat_name: str) -> Path:
+    """The regular file ``qd check`` asks this seat to write, inside its own proof folder."""
+    return check_proof_folder(runtime, seat_name) / f"{seat_name}.txt"
 
 
 def covering(jail: Jail) -> tuple[str, Path] | None:

@@ -5,7 +5,9 @@ the ship's runtime, on the ship's first pool for that provider. The contract pro
 once: launch, an open door, a message long enough to fold in any program's box, pasted and
 matched as the program shows it, submitted and found in the record, and one task the check
 can verify without reading prose: write a named file with a given line, and post a report
-on the order. When everything holds the version is marked proven in the runtime. It spends
+on the order. The file lives in that seat's own check folder. It is read without following
+a link, and the row says only whether the regular file matched. When everything holds the
+version is marked proven in the runtime. It spends
 real tokens and runs only when asked. The explicit minimal mode keeps the same task, delivery and
 record confirmation, omits the deliberate folding and human-session wake probes, and never marks the
 full check proven.
@@ -13,7 +15,10 @@ full check proven.
 
 from __future__ import annotations
 
+import errno
 import json
+import os
+import stat
 from contextlib import contextmanager
 from pathlib import Path
 import secrets
@@ -21,7 +26,7 @@ import signal
 import threading
 from dataclasses import dataclass
 
-from . import check_outcome, harness as harnesses, durable, human_wake, pending, post, providers, record_owner, standing
+from . import check_outcome, harness as harnesses, durable, human_wake, pending, post, providers, record_owner, sandbox, standing
 from .door import Delivery, Door
 from .drill import Check, wait_for
 from .harness.base import _version_in_runtime, program_where, record_fingerprint
@@ -220,6 +225,50 @@ def _probe_record_check(seat: Seat, requested_model: str | None, ended: bool) ->
                       f"record-observed {state.model if state and state.model else '?'}", 'record')
 
 
+_PROOF_SLACK = 8  # a newline and light padding; anything longer is not the one line the task asked for
+
+
+def proof_verdict(path: Path, expected: str) -> tuple[bool, str]:
+    """Whether ``path`` is a regular file whose text, stripped, is ``expected``.
+
+    The open does not follow a link. The report is only ``matched``, ``did not match``
+    or ``not a regular file``: the file's bytes are never part of it.
+    """
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return False, "did not match"
+    except OSError as error:
+        if error.errno == errno.ELOOP:  # the final component is a symlink
+            return False, "not a regular file"
+        return False, "did not match"
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            return False, "not a regular file"
+        bound = len(expected.encode("utf-8")) + _PROOF_SLACK
+        if info.st_size > bound:
+            return False, "did not match"
+        raw = os.read(descriptor, bound + 1)
+    finally:
+        os.close(descriptor)
+    if len(raw) > bound:
+        return False, "did not match"
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return False, "did not match"
+    if text.strip() != expected:
+        return False, "did not match"
+    return True, "matched"
+
+
+def proof_check(path: Path, expected: str) -> ProbeCheck:
+    """The probe row for a proof file: passed or not, and nothing of what the file held."""
+    passed, detail = proof_verdict(path, expected)
+    return ProbeCheck("task: the named file holds the given line", passed, detail, "file")
+
+
 def _task_body(proof_file: Path, proof_line: str, *, minimal: bool = False) -> str:
     body = (f"Write the file {proof_file} containing exactly one line: {proof_line}\n"
             f"Then post your report on this order with the body: written")
@@ -234,7 +283,7 @@ def probe(ship: Ship, seat: Seat, orders: list[post.Message] | None = None, *, r
           minimal: bool = False) -> list[Check]:
     checks: list[Check] = []
     proof_line = f"qd-check-{secrets.token_hex(4)}"
-    proof_file = ship.runtime / "check" / f"{seat.name}.txt"
+    proof_file = sandbox.check_proof_file(ship.runtime, seat.name)
     proof_file.parent.mkdir(parents=True, exist_ok=True)
     launched = seat.up(resume=False)
     checks.append(ProbeCheck("launch", seat.is_up, launched, 'launch'))
@@ -307,8 +356,7 @@ def probe(ship: Ship, seat: Seat, orders: list[post.Message] | None = None, *, r
     closed = wait_for(lambda: store.closing_report(order), PATIENCE)
     checks.append(ProbeCheck("task: the report closed the order", closed is not None,
                              f"report {closed.short}: {closed.body[:40]!r}" if closed else "no report within the patience", 'report'))  # law: can-post
-    content = proof_file.read_text().strip() if proof_file.exists() else None
-    checks.append(ProbeCheck("task: the named file holds the given line", content == proof_line, f"{proof_file}: {content!r}", 'file'))
+    checks.append(proof_check(proof_file, proof_line))
     def _turn_ended() -> bool:
         if (r := seat.record()) is None:
             return False

@@ -366,6 +366,46 @@ def test_a_home_inside_a_fleet_folder_is_refused_and_stays_hidden(place):
         assert not (home / 'escape').exists()
 
 
+def test_another_seats_check_folder_is_not_writable_from_the_jail(tmp_path: Path):
+    """The jail can write its own proof folder and cannot plant a file in another seat's."""
+    import json
+    import subprocess
+
+    home = tmp_path / "operator-home"
+    workspace = home / "project"
+    folder = workspace / "ships" / "test"
+    ship = shipmod.Ship(folder, "synthetic", "operator", workspace, {}, {}, {})
+    own = ship.runtime / "seats" / "worker"
+    (own / "home").mkdir(parents=True)
+    other = ship.runtime / "check" / "other"
+    other.mkdir(parents=True)
+    kept = "other-seat-proof-kept"
+    (other / "other.txt").write_text(kept)
+    jail = sandbox.plan(ship, "worker", own, own / "home", workspace, "/usr/bin/python3", "/usr/bin", home=home)
+    assert jail.writable == (ship.runtime / "post", ship.runtime / "check" / "worker")
+    probe = (
+        "import json, sys\nfrom pathlib import Path\nown, other = map(Path, sys.argv[1:])\n"
+        "def write(path):\n"
+        "    try:\n"
+        "        path.parent.mkdir(parents=True, exist_ok=True)\n"
+        "        path.write_text('planted')\n"
+        "        return True\n"
+        "    except OSError:\n"
+        "        return False\n"
+        "print(json.dumps(dict(own=write(own / 'worker.txt'), other=write(other / 'other.txt'),"
+        " sibling=write(other.parent / 'planted.txt'))))\n")
+    result = subprocess.run(sandbox.command(jail, ["/usr/bin/python3", "-c", probe,
+                                                   str(ship.runtime / "check" / "worker"), str(other)]),
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    values = json.loads(result.stdout)
+    assert values == {"own": True, "other": False, "sibling": False}
+    assert (other / "other.txt").read_text() == kept
+    assert kept not in result.stdout and kept not in result.stderr
+    assert (ship.runtime / "check" / "worker" / "worker.txt").read_text() == "planted"
+    assert not (ship.runtime / "check" / "planted.txt").exists()
+
+
 def test_a_jailed_post_to_an_up_recipient_does_not_call_hidden_state_down(drydock: Path, tmux: Tmux, tmp_path: Path):
     """Real bwrap + qd post + fake recipient: hidden metadata is not a down seat."""
     from quarterdeck.service import Service

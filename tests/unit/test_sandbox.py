@@ -104,7 +104,33 @@ def test_plan_refuses_a_jail_that_jails_nothing_or_one_without_bubblewrap(tmp_pa
         sandbox.plan(ship, "w", ship.runtime / "seats" / "w", ship.runtime / "seats" / "w" / "home", ship.folder, "pi", path, home=home)
     jail = sandbox.plan(ship, "w", ship.runtime / "seats" / "w", ship.runtime / "seats" / "w" / "home", home / "work", "pi", path, home=home)
     assert jail.workspace == (home / "work").resolve() and jail.ship_folder == ship.folder and jail.seat_home == ship.runtime / "seats" / "w" / "home"
-    assert home / ".local" / "node" in jail.read_only and jail.writable == (ship.runtime / "post" / "drop" / "w", ship.runtime / "check")
+    assert home / ".local" / "node" in jail.read_only and jail.writable == (ship.runtime / "post" / "drop" / "w", ship.runtime / "check" / "w")
+    assert (ship.runtime / "check" / "w").is_dir()
+
+
+def test_each_jail_binds_only_its_own_check_folder(tmp_path: Path, drydock: Path, monkeypatch):
+    ship = shipmod.load(drydock)
+    home = tmp_path / "home"
+    (home / "work").mkdir(parents=True)
+    monkeypatch.setattr(sandbox, "available", lambda: True)
+    path = "/usr/bin"
+
+    def planned(name: str):
+        return sandbox.plan(ship, name, ship.runtime / "seats" / name, ship.runtime / "seats" / name / "home",
+                            home / "work", "pi", path, home=home)
+
+    one, two = planned("one"), planned("two")
+    assert one.writable == (ship.runtime / "post" / "drop" / "one", ship.runtime / "check" / "one")
+    assert two.writable == (ship.runtime / "post" / "drop" / "two", ship.runtime / "check" / "two")
+    assert ship.runtime / "check" not in one.writable and ship.runtime / "check" not in two.writable
+    text = " ".join(sandbox.command(one, ["true"]))
+    assert f"--bind-try {ship.runtime / 'check' / 'one'} {ship.runtime / 'check' / 'one'}" in text
+    assert f"--bind-try {ship.runtime / 'check'} " not in text
+    assert f"--bind-try {ship.runtime / 'check' / 'two'} " not in text
+    with pytest.raises(ShipError, match="one directory under the check folder"):
+        sandbox.check_proof_folder(ship.runtime, "one/two")
+    with pytest.raises(ShipError, match="one directory under the check folder"):
+        sandbox.check_proof_folder(ship.runtime, "..")
 
 
 @pytest.mark.parametrize('location', ['parent', 'home', 'root', 'alias', 'parent-through-link'])

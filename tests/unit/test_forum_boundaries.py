@@ -561,7 +561,7 @@ def test_a_jailed_reviewer_still_reaches_the_shared_post_folder_but_no_peer_seat
     folder = runtime / 'seats' / 'reviewer-1'
     drop = runtime / 'post' / 'drop' / 'reviewer-1'
     jail = sandbox.Jail(Path('/home/synthetic'), folder / 'home', folder, world.ship.workspace,
-                        world.ship.folder, runtime, (), (drop, runtime / 'check'))
+                        world.ship.folder, runtime, (), (drop, runtime / 'check' / 'reviewer-1'))
     args = sandbox.command(jail, ['fake'])
     triples = [tuple(args[i:i + 3]) for i in range(len(args) - 2)]
     assert ('--bind-try', str(drop), str(drop)) in triples

@@ -179,7 +179,7 @@ def test_check_probe_handles_unknown_turns_without_crashing(tmp_path: Path, monk
         if val:
             return val
         for m in store.open_for("check-agy"):
-            (tmp_path / "check" / "check-agy.txt").write_text(" dummy \n")
+            (tmp_path / "check" / "check-agy" / "check-agy.txt").write_text(" dummy \n")
             return store.new("report", "check-agy", "ship", "written", re=m.id)
         return False
 
