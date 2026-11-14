@@ -33,7 +33,7 @@ def weekly(window):
     return window == '7d' or window.endswith(' / 7d')
 
 
-def remember(db, pool, window, at):
+def remember(db, pool, window, at, bucket):
     """Part of the existing usage transaction; repeat reads add no observations."""
     if not weekly(window.name) or not window.blocks or window.uncertainty:
         return
@@ -44,7 +44,7 @@ def remember(db, pool, window, at):
         CASE WHEN used IS excluded.used AND resets_at=excluded.resets_at
                   AND group_name IS excluded.group_name AND bucket IS excluded.bucket
              THEN used ELSE NULL END''',
-        (pool, window.name, stamp, window.used, reset, window.group, window.bucket))
+        (pool, window.name, stamp, window.used, reset, window.group, bucket))
     db.execute('DELETE FROM usage_samples WHERE pool=? AND read_at<?',
                (pool, (at - RETENTION).astimezone(timezone.utc).isoformat()))
 
@@ -172,8 +172,14 @@ def notify(service):
     for forecast in readings(service.ship, now):
         if not forecast.warning or not recipients or (forecast.pool, forecast.resets_at) in known:
             continue
-        reports = [service.store.prepare('report', post.SHIP, name, forecast.describe(detail=True)).to_json()
-                   for name in recipients]
+        reports, planned = [], set()
+        for name in recipients:
+            while True:
+                message = service.store.prepare('report', post.SHIP, name, forecast.describe(detail=True))
+                if message.short not in planned:
+                    break
+            reports.append(message.to_json())
+            planned.add(message.short)
         journal['periods'].append(dict(pool=forecast.pool, reset=forecast.resets_at.isoformat(), reports=reports))
         known.add((forecast.pool, forecast.resets_at))
     if not journal['periods']:

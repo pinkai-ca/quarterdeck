@@ -106,6 +106,13 @@ def test_same_observation_does_not_become_three_samples_and_conflicts_are_unknow
     assert book.db.execute('SELECT used FROM usage_samples ORDER BY read_at DESC LIMIT 1').fetchone() == (None,)
 
 
+def test_missing_optional_bucket_uses_the_caches_established_identity(book):
+    record(book, [(0, .1), (.5, .3)], bucket='sample-bucket')
+    record(book, [(1, .5)])
+    result, = forecast.collect(book, AT + timedelta(hours=1))
+    assert result.samples == 3 and result.rate_per_hour == pytest.approx(.4)
+
+
 def test_only_accepted_weekly_blocking_readings_enter_bounded_history(book):
     record(book, [(0, .1), (.5, .3), (1, .5)])
     for window, changes in [('5h', {}), ('7d', {'blocks': False}),

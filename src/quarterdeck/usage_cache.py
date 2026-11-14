@@ -183,7 +183,7 @@ class UsageCache:
             if new.uncertainty:
                 errors.append(f"{name}: {new.uncertainty}")
             from .usage_forecast import remember
-            remember(self.db, pool, new, usage.read_at)
+            remember(self.db, pool, new, usage.read_at, bucket)
             accepted.append(new)
         retired = self.reconcile(pool, previous, grouped, accepted, usage, attempted_at)
         errors = [error for error in errors if not any(error.startswith(name + ": ") for name in retired)]
