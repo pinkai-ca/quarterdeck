@@ -401,7 +401,7 @@ class Runner:
         console = (scratch / 'console.txt').read_text(encoding='utf-8', errors='replace')
         found = evidence.analyse(scratch / 'evidence', pytest_exit)
         if self.ci_layout:
-            layout_problems = ci_layout_problems(found, checkout, args.workers)
+            layout_problems = ci_layout_problems(found, checkout, self.args.workers)
             result.setdefault('ci_layout', {})['session_verified'] = not layout_problems
             if layout_problems:
                 found.update(complete=False, causes=[*layout_problems, *found['causes']],
