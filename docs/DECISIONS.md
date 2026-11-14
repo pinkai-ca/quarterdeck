@@ -174,6 +174,6 @@ Decided on the evening of 7 November 2026, for the local models: a third pool ki
 
 ## Let the operating system schedule ordinary writes
 
-Changed: ordinary framework and test-tool writes request no file or folder sync, and the ledger uses `synchronous=OFF`; only refusal quarantine and compaction transition records retain barriers for `context-is-cache`.
+Changed: ordinary framework and test-tool writes request no file or folder sync, and the ledger uses `synchronous=OFF`; refusal quarantine and compaction transition records retain barriers for `context-is-cache`, and SQLite keeps its own hot-journal recovery syncs before OFF applies.
 Risk accepted: power or operating-system failure can lose recent writes and can corrupt the SQLite ledger, requiring automatic reconstruction from the programs’ records; the original database stays as named evidence until its alarm is acknowledged.
 Why rename stays: a writer closes its complete temporary before replacing the destination, so a reader and a process restart see a whole old or new file.

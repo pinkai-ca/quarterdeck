@@ -32,6 +32,8 @@ An unknown/ambiguous reader never gets guessed from filenames or content. A pres
 
 `launch_harnesses` records explicit program provenance beside stable `record_launches`. Missing/conflicting metadata stays unknown, never filled from pool provider or current seat preference. Table-change triggers invalidate it; read-only old books project unknown. Reader-registry observations are shared only within one account invocation, with metadata revalidation. Registration of a missing exact row rereads under its existing exclusive lock before appending. No cache or lock spans future passes or native reading.
 
+SQLite itself may sync a hot rollback journal and database while recovering at open after a process crash, before `synchronous=OFF` takes effect. This recovery-only exception is not a steady-state write barrier. SQLite 3.46.1 marks the pragma [NeedSchema](https://github.com/sqlite/sqlite/blob/version-3.46.1/src/pragma.h#L552), [loads schema before applying it](https://github.com/sqlite/sqlite/blob/version-3.46.1/src/pragma.c#L478), and [syncs hot-journal recovery](https://github.com/sqlite/sqlite/blob/version-3.46.1/src/pager.c#L5053). The two hot-journal fixtures observed four native `fdatasync` calls.
+
 ### Malformed database recovery
 
 Every writer open, including service construction, runs SQLite's read-only table-valued `quick_check` before schema setup, checking data pages as well as the header. Ordinary status, watch and ledger readers do not scan or move files; a `SQLITE_CORRUPT` or `SQLITE_NOTADB` they actually encounter reports the remedy to stop the service and run `qd ledger --recover`. Busy, locked, full, generic read-only and I/O errors are not corruption verdicts.
