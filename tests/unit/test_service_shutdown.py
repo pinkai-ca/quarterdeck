@@ -126,3 +126,36 @@ def test_stop_waits_for_the_process_to_be_gone_after_its_lock_frees(tmp_path, mo
     monkeypatch.setattr(shutdown, "annotate", lambda runtime, owner, forced: seen.append("annotate") or "synthetic annotation")
     assert "synthetic annotation" in servicectl.stop(tmp_path)
     assert seen == ["look", "look", "look", "annotate"], "annotated only once the process reads gone"
+
+
+@pytest.mark.parametrize('prior', [False, True])
+def test_preflight_history_keeps_the_earliest_attempt_without_a_second_walk(tmp_path, monkeypatch, prior):
+    from types import SimpleNamespace
+    from quarterdeck import post
+
+    runtime = tmp_path / 'runtime'
+    at = datetime(2000, 1, 2, tzinfo=timezone.utc).isoformat()
+    earlier = datetime(2000, 1, 1, tzinfo=timezone.utc).isoformat()
+    bound = dict(pane='synthetic-pane-zzzz', pid=101, launch=at, harness='fake')
+    seat = SimpleNamespace(name='synthetic-history-zzzz', ship=SimpleNamespace(runtime=runtime), record=lambda: None)
+    attempt = post.Attempt('synthetic-message-history-zzzz', seat.name, at, bound['pane'], bound['pid'], at,
+                           path=runtime / 'post/attempts/synthetic-history-zzzz.json')
+    previous = post.Attempt(attempt.message, seat.name, earlier)
+    unrelated = post.Attempt('synthetic-other-message-zzzz', seat.name, earlier)
+    monkeypatch.setattr(pending, 'current_identity', lambda _: bound)
+    def unexpected_walk(*args, **kwargs):
+        pytest.fail('opening a journal repeated the preflight history scan')
+    monkeypatch.setattr(post.Attempts, 'all', unexpected_walk)
+    proof = pending.Proof.begin(seat, attempt, 'synthetic history payload',
+                                attempt_history=[unrelated, previous] if prior else [])
+    assert proof.data['at'] == (earlier if prior else at)
+    assert proof.data['attempts'] == [attempt.path.name]
+
+
+def test_stop_already_requested_cannot_enter_a_new_write_unit(tmp_path):
+    from types import SimpleNamespace
+    with shutdown.Stop(tmp_path).installed():
+        shutdown._controller.requested = True
+        with pytest.raises(SystemExit):
+            with shutdown.transaction_scope(SimpleNamespace(runtime=tmp_path)):
+                pytest.fail('a new write began after the requested stop')

@@ -142,7 +142,8 @@ class Proof:
                 pass  # optional reason cleanup can neither block nor settle this journal
 
     @classmethod
-    def begin(cls, seat: Seat, attempt: post.Attempt, text: str, *, before_paste: bool = False) -> Proof:
+    def begin(cls, seat: Seat, attempt: post.Attempt, text: str, *, before_paste: bool = False,
+              attempt_history=None) -> Proof:
         bound = current_identity(seat)
         if (bound is None or attempt.seat != seat.name
                 or (attempt.pane, attempt.pid, attempt.launched_at)
@@ -153,7 +154,9 @@ class Proof:
         if current_identity(seat) != bound:
             raise NoCurrentLaunch(f'{seat.name}: launch changed before reservation; no delivery journal opened')
         proof = cls(path, {})
-        original = min(a.at for a in post.Attempts(seat.ship.runtime).for_message(attempt.message))
+        history = (post.Attempts(seat.ship.runtime).for_message(attempt.message)
+                   if attempt_history is None else attempt_history)
+        original = min([attempt.at, *(a.at for a in history if a.message == attempt.message)])
         from .shutdown import BEFORE_PASTE, prepare, prepared
         boundary = {"paste_boundary": BEFORE_PASTE} if before_paste else {}
         if before_paste:

@@ -331,20 +331,30 @@ def requested() -> bool:
     return _controller is not None and _controller.requested
 
 
+@contextmanager
+def transaction_scope(service):
+    """Defer from the first delivery write, after interruptible preflight reads."""
+    owner = _controller
+    if owner is None or owner.runtime != service.runtime:
+        yield
+        return
+    previous = owner.delivering
+    if owner.requested and not previous:
+        raise SystemExit(0)
+    owner.delivering = True
+    try:
+        yield
+    finally:
+        owner.delivering = previous
+        if owner.requested and not previous:
+            raise SystemExit(0)
+
+
 def transaction(method):
     @wraps(method)
     def wrapped(service, *args, **kwargs):
-        owner = _controller
-        if owner is None or owner.runtime != service.runtime:
+        with transaction_scope(service):
             return method(service, *args, **kwargs)
-        previous = owner.delivering
-        owner.delivering = True
-        try:
-            return method(service, *args, **kwargs)
-        finally:
-            owner.delivering = previous
-            if owner.requested and not previous:
-                raise SystemExit(0)
     return wrapped
 
 

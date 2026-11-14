@@ -544,7 +544,6 @@ class Service:
         except lifecycle.Busy as error:
             return str(error)
 
-    @shutdown.transaction
     def _deliver_current(self, seat: Seat, message: post.Message, resend: bool = False) -> str:
         """The caller owns the same seat claim as every lifecycle transition."""
         door = Door(seat)
@@ -553,31 +552,36 @@ class Service:
         clearable = reading.clears == "dismissable" or (speed == "interrupt" and reading.clears == "time")
         if not reading.open and not clearable:  # the door itself clears a known notice or interrupts; this only spares an attempt file
             return f"{seat.name}: {reading}"
-        with post.admission(self.runtime, seat.name):
-            from . import compaction
-            reserved, transitioning = compaction.withheld(self.runtime, seat.name)
-            if transitioning or message.id in reserved:
-                return f"{seat.name}: compaction handoff/transition reserved; held for successor"
-            bound = pending_delivery.current_identity(seat)
-            if bound is None:
-                return f'{seat.name}: current pane/process/launch unproved; message waits unread'
-            attempt = self.attempts.open(message, seat.name, bound['pane'], bound['pid'], bound['launch'])
-            text = post.typed([message], second=(message.id,) if resend else ())  # a resend says it is one
-            try:
-                proof = pending_delivery.Proof.begin(seat, attempt, text, before_paste=True)
-            except pending_delivery.NoCurrentLaunch as error:
-                self.attempts.close(attempt, 'withheld', 'launch ended before reservation; no input typed')
-                return str(error)
-        delivery = door.deliver(text, speed, proof=proof)
-        if proof:
-            proof.finish(delivery.result)
-        detail = delivery.detail + (" · resend" if resend else "")
-        screen = door.screen()
-        self.attempts.close(attempt, delivery.result, detail)
-        if delivery.result == "withheld":
-            self.withheld[(attempt.message, seat.name)] = screen.text if screen else ""
-        self.log("delivery", seat=seat.name, messages=[message.id], speed=speed, result=delivery.result, detail=detail)
-        return f"{message.short} to {seat.name} · {delivery.result}: {detail}"
+        with ExitStack() as delivery_scope:
+            with post.admission(self.runtime, seat.name):
+                from . import compaction
+                reserved, transitioning = compaction.withheld(self.runtime, seat.name)
+                if transitioning or message.id in reserved:
+                    return f"{seat.name}: compaction handoff/transition reserved; held for successor"
+                bound = pending_delivery.current_identity(seat)
+                if bound is None:
+                    return f'{seat.name}: current pane/process/launch unproved; message waits unread'
+                # Read mutable history before the first delivery write, while TERM
+                # may still exit immediately. Keep attempt creation through submit together.
+                history = self.attempts.for_message(message.id)
+                delivery_scope.enter_context(shutdown.transaction_scope(self))
+                attempt = self.attempts.open(message, seat.name, bound['pane'], bound['pid'], bound['launch'])
+                text = post.typed([message], second=(message.id,) if resend else ())  # a resend says it is one
+                try:
+                    proof = pending_delivery.Proof.begin(seat, attempt, text, before_paste=True, attempt_history=history)
+                except pending_delivery.NoCurrentLaunch as error:
+                    self.attempts.close(attempt, 'withheld', 'launch ended before reservation; no input typed')
+                    return str(error)
+            delivery = door.deliver(text, speed, proof=proof)
+            if proof:
+                proof.finish(delivery.result)
+            detail = delivery.detail + (" · resend" if resend else "")
+            screen = door.screen()
+            self.attempts.close(attempt, delivery.result, detail)
+            if delivery.result == "withheld":
+                self.withheld[(attempt.message, seat.name)] = screen.text if screen else ""
+            self.log("delivery", seat=seat.name, messages=[message.id], speed=speed, result=delivery.result, detail=detail)
+            return f"{message.short} to {seat.name} · {delivery.result}: {detail}"
 
     def fleet_post(self) -> None:
         from . import fleet_post
