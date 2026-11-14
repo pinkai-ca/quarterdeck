@@ -68,7 +68,7 @@ def test_matrix_observes_late_attempt_after_report_at_global_deadline(tmp_path, 
 def test_matrix_receipt_timeout_is_bounded_and_names_actual_attempt_state(tmp_path, monkeypatch, result):
     exercise, clock = matrix(tmp_path, monkeypatch, settles=False, result=result)
     exercise.matrix('synthetic')
-    assert clock.elapsed <= 0.400001
+    assert clock.elapsed <= 0.300001
     assert [attempt.result for attempt in exercise.attempts.all()] == [result, result]
     for check in exercise.checks[:-1]:
         assert not check.passed

@@ -122,13 +122,15 @@ class Drill:
         # receipt. Wait for both observable facts, keeping the exact-once check.
         wait_for(lambda: all(not self.store.is_open(o) and any(a.accepted for a in self.attempts.for_message(o.id))
                              for o in orders.values()), self.patience * 2)
+        receipt_deadline = time.monotonic() + self.patience
         for (sender, to), order in orders.items():
             report = self.store.closing_report(order)
             attempts = self.attempts.for_message(order.id)
             if report is not None and not any(a.accepted for a in attempts):
                 # The global wait may expire just before this report appears.
-                # Give its receipt a bounded settlement window of its own.
-                wait_for(lambda: any(a.accepted for a in self.attempts.for_message(order.id)), self.patience)
+                # Reported orders share one extra window, not one per order.
+                remaining = max(0.0, receipt_deadline - time.monotonic())
+                wait_for(lambda: any(a.accepted for a in self.attempts.for_message(order.id)), remaining)
                 attempts = self.attempts.for_message(order.id)
             results = [a.result for a in attempts if a.accepted]
             ok = report is not None and len(results) == 1
