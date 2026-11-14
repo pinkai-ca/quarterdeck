@@ -221,6 +221,9 @@ class Proof:
             return uncertain("pending box changed or is foreign; untouched")
         if screen.box and screen.box.startswith("[Pasted"):
             return uncertain("pending folded box is ambiguous; untouched")
+        if (self.data.get("screen_queue") and screen.box == ""
+                and seat.harness.queued_waiting(self.data["payload"], screen)):
+            return ("queued on screen; waiting for record confirmation", "record confirmation", True)
         age = ((now or post.now()) - datetime.fromisoformat(self.data["at"])).total_seconds()
         if age >= WAIT_SECONDS:
             return uncertain("pending delivery exceeded 600s; not resent; box and record need inspection")

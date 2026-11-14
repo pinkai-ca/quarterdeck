@@ -56,12 +56,25 @@ HINT_STATES = {
      "Enter Enter:send now", "Ctrl+x:shortcuts"): True,
     ("Enter:send now", "Shift+Tab:mode", "Ctrl+c:cancel", "Ctrl+b:send to bg"): True,
     ("Enter:send now", "Shift+Tab:mode", "Ctrl+c:cancel", "Ctrl+;:queue"): True,
+    # Foreground tool with a native queue, measured at 112 and 256 columns.
+    ("Enter:send now", "Shift+Tab:mode", "Ctrl+c:cancel", "Ctrl+b:send to bg", "Ctrl+;:queue"): True,
+    ("Enter:send now", "Shift+Tab:mode", "Ctrl+c:cancel", "Ctrl+b:send to bg", "Ctrl+;:queue",
+     "Ctrl+x:shortcuts"): True,
+    ("Enter:queue", "Alt+Enter:newline", "Shift+Tab:mode", "Ctrl+c:cancel",
+     "Enter Enter:send now"): True,
+    ("Enter:queue", "Alt+Enter:newline", "Shift+Tab:mode", "Ctrl+c:cancel", "Ctrl+b:send to bg",
+     "Ctrl+x:shortcuts"): True,
 }
 
 
 def paste_lines(text: str) -> int:
     """1.0.77 counts LF lines, excluding exactly one final LF terminator."""
     return text.count("\n") + (not text.endswith("\n")) if text else 0
+
+
+def queue_preview(text: str) -> str:
+    lines = paste_lines(text)
+    return text.split("\n", 1)[0] + (f" (+{lines - 1} lines)" if lines > 1 else "")
 
 
 def lf_layout(text: str) -> bool:
@@ -103,6 +116,37 @@ def hint_working(rows: list[str]) -> bool | None:
     if re.fullmatch(r"Grok Build\s+1\.0\.77", shown[0]):
         return False
     return HINT_STATES.get(tuple(part.strip(" ") for part in shown[0].split("│")))
+
+
+def queue_entries(text: str) -> tuple[str, ...] | None:
+    """The complete native list immediately above the composer, not transcript echoes.
+
+    1.0.77 at 112/256 columns shows a blank row, `   ▾ Queued N`, N numbered
+    previews, and a blank row before the composer's top border. Previews are
+    display evidence only; no preview supplies the recorded input body.
+    """
+    rows = text.splitlines()
+    footer = next((i for i in range(len(rows) - 1, -1, -1) if FOOTER.fullmatch(rows[i])), None)
+    if footer is None:
+        return None
+    top = next((i for i in range(footer - 1, -1, -1) if re.fullmatch(r"  ╭─+╮ *", rows[i])), None)
+    if top is None or top < 2 or rows[top - 1].strip():
+        return None
+    index, found = top - 2, []
+    while index >= 0:
+        match = re.fullmatch(r"     #([1-9][0-9]*) (\S.*)", rows[index].rstrip(" "))
+        if match is None:
+            break
+        found.append((int(match[1]), match[2]))
+        index -= 1
+    title = re.fullmatch(r"   ▾ Queued ([1-9][0-9]*) *", rows[index]) if index >= 0 else None
+    if title is None:
+        return None if found or index >= 0 and "Queued" in rows[index] else ()
+    found.reverse()
+    if (index == 0 or rows[index - 1].strip() or len(found) != int(title[1])
+            or [number for number, _ in found] != list(range(1, len(found) + 1))):
+        return None
+    return tuple(preview for _, preview in found)
 
 
 @dataclass(frozen=True)
@@ -278,7 +322,8 @@ def read(text: str) -> Screen:
     working = hint_working(below)
     if working is None:
         return Screen(plain, box=None, unknown="unmeasured Grok composer hint", shows=shows)
-    return Screen(plain, box=box, working=working, shows=shows)
+    queued = queue_entries(plain)
+    return Screen(plain, box=box, working=working, shows=shows, queued=len(queued or ()))
 
 
 PROMPT = "  │ ❯ "

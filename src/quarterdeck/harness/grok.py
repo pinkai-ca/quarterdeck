@@ -360,6 +360,23 @@ class GrokHarness(Harness):
     session_id = staticmethod(grok_record.session_id)
     inputs = staticmethod(grok_record.inputs)
 
+    def queued_waiting(self, text: str, screen: Screen) -> bool:
+        if (screen.working is not True or screen.unknown or screen.interruption
+                or screen.box is None or screen.box.strip()):
+            return False
+        entries = grok_screen.queue_entries(screen.text)
+        return bool(entries and grok_screen.queue_preview(text) in entries)
+
+    def queued_input(self, text: str, before: Screen, after: Screen) -> str | None:
+        """An exact new preview after the Door matched the full paste, not a delivery receipt."""
+        if before.working is not True or not self.queued_waiting(text, after):
+            return None
+        previous, current = grok_screen.queue_entries(before.text), grok_screen.queue_entries(after.text)
+        if (previous is not None and current is not None and len(current) == len(previous) + 1
+                and current[:-1] == previous and current[-1] == grok_screen.queue_preview(text)):
+            return "native Grok queue shows the submitted envelope; awaiting exact record receipt"
+        return None
+
     def preflight(self, home: Path | None = None, cwd: Path | None = None) -> None:
         no_admin_layers(home)
         for name in INHERITED_REDIRECTS:

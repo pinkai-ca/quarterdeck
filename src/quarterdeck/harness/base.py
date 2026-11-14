@@ -264,6 +264,10 @@ class Harness(ABC):
     def queued_input(self, text: str, before: Screen, after: Screen) -> str | None:
         """A newly visible native queue after one matched paste, never a record receipt."""
         return None
+
+    def queued_waiting(self, text: str, screen: Screen) -> bool:
+        """A previously acknowledged input still visibly queued, awaiting its exact record receipt."""
+        return False
     # -- launch ------------------------------------------------------------------------
 
     @abstractmethod
