@@ -93,8 +93,9 @@ def jail_for(drydock: Path, tmp_path: Path, endpoint: str | None = None) -> sand
     own = ship.runtime / 'seats' / 'worker-1'
     (own / 'home').mkdir(parents=True, exist_ok=True)
     path = os.pathsep.join([str(Path(sys.executable).parent), '/usr/bin', '/bin'])
+    extra = {} if endpoint is None else dict(endpoint=endpoint)
     return sandbox.plan(ship, 'worker-1', own, own / 'home', workspace, sys.executable, path,
-                        home=Path(pwd.getpwuid(os.getuid()).pw_dir), endpoint=endpoint)
+                        home=Path(pwd.getpwuid(os.getuid()).pw_dir), **extra)
 
 
 PROBE = r"""
