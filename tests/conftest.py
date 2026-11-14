@@ -201,6 +201,25 @@ class SyntheticMemoryRoots:
                 self.bases.add(root.parent)
         return projects
 
+    def open_root(self, project, base):
+        """Open the derived root by name, never following a link; a shared base must be tmpfs or ramfs.
+
+        A base inside this test's own tmp_path stands in for memory. Where it is memory it opens through the
+        tool's own scratch.memory_root, as every base does. Where the basetemp is on disk, as on a runner
+        without a large tmpfs, it opens the same way without asking the mount, since the test made it there.
+        Every other check of the teardown is the same for both."""
+        if base.is_relative_to(self.tmp_path):
+            if not base.is_absolute() or base.resolve() != base:
+                raise layout.Refused(f'{base}: memory storage base is not an absolute plain path')
+            fd = os.open(base, layout.DIRECTORY)
+            try:
+                if not scratch.filesystem(fd):
+                    path = base / scratch.project_name(project)
+                    return path, layout.open_child(fd, path.name, path, create=False, device=os.fstat(fd).st_dev)
+            finally:
+                os.close(fd)
+        return scratch.memory_root(project, base, create=False)
+
     def finish(self):
         failures = []
         for project in sorted(self.projects()):
@@ -216,7 +235,7 @@ class SyntheticMemoryRoots:
                     if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
                             or stat.S_IMODE(info.st_mode) != 0o700):
                         raise layout.Refused(f'{path}: synthetic memory root is not our private plain directory')
-                    where, descriptor = scratch.memory_root(project, base, create=False)
+                    where, descriptor = self.open_root(project, base)
                     try:
                         expected = layout.identity(os.fstat(descriptor))
                         if layout.identity(info) != expected:
