@@ -42,7 +42,9 @@ def test_host_stands_aside_for_live_service_then_files_after_it_ends(tmp_path):
 
 def test_host_and_service_yield_while_shared_filing_lock_is_owned(tmp_path):
     seat, store, order, report, drop = waiting_report(tmp_path)
-    descriptor = post_dir.open_lock(seat.ship.runtime / 'post' / 'filing.lock', mode=0o600)
+    folder = seat.ship.runtime / 'locks'
+    folder.mkdir(mode=0o700)
+    descriptor = post_dir.open_lock(folder / 'filing.lock', mode=0o600)
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         assert check.closing_report(seat, store, order) is None
@@ -51,3 +53,12 @@ def test_host_and_service_yield_while_shared_filing_lock_is_owned(tmp_path):
     finally:
         os.close(descriptor)
     assert check.closing_report(seat, store, order) == report
+
+
+def test_filing_lock_lives_under_runtime_locks(tmp_path):
+    seat, store, order, report, drop = waiting_report(tmp_path)
+    assert check.closing_report(seat, store, order) == report
+    folder = seat.ship.runtime / 'locks'
+    assert (folder / 'filing.lock').is_file()
+    assert folder.stat().st_mode & 0o777 == 0o700
+    assert not (seat.ship.runtime / 'post' / 'filing.lock').exists()

@@ -677,7 +677,11 @@ def file_drops(store: Store, ship=None, *, seats: frozenset[str] | None = None,
     to the next ordinary pass; neither caller waits while holding another lock.
     """
     runtime = store.dir.parent.parent
-    path = runtime / 'post' / 'filing.lock'
+    from .sandbox import LOCKS
+
+    folder = runtime / LOCKS
+    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = folder / 'filing.lock'
     descriptor = post_dir.open_lock(path, mode=0o600)
     try:
         try:
