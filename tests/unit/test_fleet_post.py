@@ -288,3 +288,23 @@ def test_status_without_outbound_never_discovers_or_reads_the_fleet(tmp_path, mo
     monkeypatch.setattr(fleet, 'peers', unexpected)
     assert fleet.waiting(ship) == []
     assert fleet.status(ship) == []
+
+
+def test_reply_references_its_origins_existing_ancestor_without_copying_it(pair, monkeypatch):
+    left, right, source, destination = pair
+    order = source.new('question', 'writer', 'captain@beta', 'An origin keeps its own original.')
+    original = wire(left, order)
+    fleet.run(left, source); fleet.run(right, destination)
+    answer = destination.new('answer', 'captain', 'writer@alpha', 'Reply without an ancestor copy.', re=order.id)
+    fleet.run(right, destination)
+    path = offer_path(right, 'alpha', answer)
+    value = json.loads(path.read_bytes())
+    assert value['files'][0]['reference'] is True
+    assert 'reference' not in value['files'][-1]
+    publish = fleet.publish
+    def no_ancestor_copy(path, data):
+        assert path != source.dir / (order.id + '.json'), 'an existing origin ancestor is read only'
+        return publish(path, data)
+    monkeypatch.setattr(fleet, 'publish', no_ancestor_copy)
+    fleet.run(left, source)
+    assert wire(left, order) == original and source.get(answer.id).body == 'Reply without an ancestor copy.'

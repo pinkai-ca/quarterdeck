@@ -210,7 +210,18 @@ def _source(ship, identifier):
     return message, data
 
 
-def _chain(ship, message):
+def _reference_bytes(destination, entry):
+    """An origin reads its own ancestor; a reference never imports its words."""
+    if destination is None or entry['origin'] != destination.folder.name:
+        raise ShipError('ancestor reference does not name its destination origin')
+    message, data = _source(destination, entry['id'])
+    if (len(data) != entry['size'] or digest(data) != entry['sha256']
+            or address(message.sender, entry['origin'])[1] != entry['origin']):
+        raise ShipError('destination ancestor differs from its reference; descendant retained')
+    return message, data
+
+
+def _chain(ship, message, target):
     """Required ancestry, oldest first. Each entry names its actual byte source."""
     chain, seen = [], set()
     while True:
@@ -221,23 +232,28 @@ def _chain(ship, message):
         imported = provenance(ship.runtime, message.id)
         _ownership(ship, message.id, imported['origin'] if imported else ship.folder.name,
                    raw, data, root=not chain)
-        _refusal_clear(ship, raw, imported['origin'] if imported else ship.folder.name)
-        chain.append(dict(id=message.id, origin=imported['origin'] if imported else ship.folder.name,
-                          size=len(data), sha256=digest(data)))
+        entry = dict(id=message.id, origin=imported['origin'] if imported else ship.folder.name,
+                     size=len(data), sha256=digest(data))
+        reference = bool(chain) and entry['origin'] == target
+        if reference:
+            _reference_bytes(peers(ship).get(target), entry)
+            entry['reference'] = True
+        _refusal_clear(ship, raw, entry['origin'], reference=reference)
+        chain.append(entry)
         if not raw.re:
             return list(reversed(chain))
         message, _ = _source(ship, raw.re)
 
 
 def offer(ship, message, target):
-    chain = _chain(ship, message)
+    chain = _chain(ship, message, target)
     value = dict(format=1, source=ship.folder.name, target=target, message=message.id, files=chain)
     path = ship.runtime / 'post' / 'outbound' / target / (message.id + '.json')
     publish(path, encoded(value))
     return value
 
 
-def _refusal_clear(ship, message, origin):
+def _refusal_clear(ship, message, origin, *, reference=False):
     """A refused ancestor holds its descendant; no refused words cross as context."""
     from . import refusal
     recipient, name = address(message.to, origin)
@@ -248,7 +264,7 @@ def _refusal_clear(ship, message, origin):
         excluded = refusal.excluded(destination.runtime, recipient)
     except refusal.JournalError:
         raise ShipError('ancestor refusal evidence unreadable; descendant retained') from None
-    if message.id in excluded:
+    if message.id in excluded and not reference:
         raise ShipError('refused ancestor; descendant retained without copying its words')
 
 
@@ -306,10 +322,16 @@ def _offer(source, target, path):
     for index, entry in enumerate(value['files']):
         if not component(entry['origin']):
             raise ShipError('post transport origin is invalid')
-        message, data = _source(source, entry['id'])
+        root = index == len(value['files']) - 1
+        if 'reference' in entry:
+            if entry['reference'] is not True or root:
+                raise ShipError('only an ancestor can be an origin reference')
+            message, data = _reference_bytes(peers(source).get(target), entry)
+        else:
+            message, data = _source(source, entry['id'])
         _ownership(source, entry['id'], entry['origin'], message, data,
-                   root=index == len(value['files']) - 1)
-        _refusal_clear(source, message, entry['origin'])
+                   root=root)
+        _refusal_clear(source, message, entry['origin'], reference=entry.get('reference', False))
         if len(data) != entry['size'] or digest(data) != entry['sha256']:
             raise ShipError('post transport offer no longer matches its source')
         files.append((entry, message, data))
@@ -333,6 +355,9 @@ def fetch(ship, source, path):
     # One local import coordinator also serializes different offers sharing ancestors.
     with post.admission(ship.runtime, '@fleet-import'):
         for entry, raw, data in files:
+            if entry.get('reference'):
+                _reference_bytes(ship, entry)
+                continue  # already owned here; publish neither ancestor bytes nor import metadata
             is_direct = raw.id == message.id and direct
             metadata = dict(format=1, origin=entry['origin'], sha256=entry['sha256'], context=True)
             local = ship.runtime / 'post' / 'store' / (raw.id + '.json')

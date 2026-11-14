@@ -38,7 +38,7 @@ cross-ship messages are pending. Forwarding old addresses is a separate change, 
 does not move an office or edit any live ship declaration.
 
 
-A refused ancestor holds its descendant on the sender and fetch paths: no refused words travel as context. Unknown or unreadable refusal evidence holds too. Each offered origin belongs to its authoring ship; a foreign ancestor crosses only as context backed by its import provenance. A jailed sender sees peer declarations through read-only files in otherwise empty, read-only ship folders; peer homes and runtimes stay hidden.
+An ancestor authored by the destination is an id/hash reference only: sender and fetch verify its existing destination file, and fetch copies no ancestor bytes or metadata. A missing or differing file holds the descendant. Other refused ancestors hold their descendants on both paths; refused roots never become eligible and unreadable refusal evidence holds too. Each offered origin belongs to its authoring ship; a foreign ancestor crosses only as context backed by its import provenance. A jailed sender sees peer declarations through read-only files in otherwise empty, read-only ship folders; peer homes and runtimes stay hidden.
 
 For a ship declaring `una`, the service observes the framework checkout's local
 `refs/remotes/origin/main`. The first reading establishes a baseline; each later
