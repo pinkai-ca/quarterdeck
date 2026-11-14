@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from . import check_capacity, harness as harnesses, post, program_use, ship as shipmod
+from . import check_capacity, durable, harness as harnesses, post, program_use, ship as shipmod
 from .ship import Ship, ShipError
 from .tmux import Tmux, TmuxError
 
@@ -269,7 +269,10 @@ def _release(tmux: Tmux | None, parent: Path | None) -> str | None:
 
 
 def invoke(origin: Ship, program: str, root: Path, qd: str) -> CheckRun:
-    """``qd check PROGRAM --minimal`` on a throwaway copy, then remove the copy and its server."""
+    """``qd check PROGRAM --minimal`` with every copied seat's workspace inside the throwaway.
+
+    The originating project is never the copy's working directory. Remove the copy and its server afterward.
+    """
     parent = root / f"qd-daily-live-{secrets.token_hex(8)}"
     parent.mkdir(parents=True, exist_ok=False)
     tmux = None
@@ -281,6 +284,13 @@ def invoke(origin: Ship, program: str, root: Path, qd: str) -> CheckRun:
         folder = parent / origin.folder.name
         shutil.copytree(origin.folder, folder, symlinks=True,
                         ignore=shutil.ignore_patterns("runtime", ".git", "__pycache__"))
+        copied = shipmod.load(folder)
+        workspace = folder / 'check-workspace'
+        workspace.mkdir(mode=0o700)  # a fresh writable folder, never the originating workspace
+        declaration = shipmod.edit(copied.file.read_text(), 'ship', 'workspace', str(workspace))
+        for name in copied.seats:
+            declaration = shipmod.edit(declaration, f'seats.{name}', 'cwd', str(workspace))
+        durable.replace_file(folder / 'ship.toml', declaration)
         tmux = open_private(parent)
         socket = tmux.socket
         completed = subprocess.run(
