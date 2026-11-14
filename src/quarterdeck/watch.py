@@ -260,12 +260,21 @@ def status_reading(ship: Ship, tmux: Tmux) -> dict:
     selected = seats(ship, tmux, False)
     programs, program_error = program_use.collect(ship, selected)
     outcomes = check_outcome.collect(ship.runtime)
-    return {"service": service_state(ship.runtime), "seats": [reading(seat, store) for seat in selected],
+    data = {"service": service_state(ship.runtime), "seats": [reading(seat, store) for seat in selected],
             "programs": programs, "programs_error": program_error,
             "check_outcomes": outcomes[0], "check_outcome_errors": outcomes[1],
             "open_orders": [m for m in store.all() if m.kind == "order" and store.is_open(m)],
             "requests": requests, "facts": facts(ship, tmux, check_reading=outcomes),
             "usage": headline_readings(ship), **providers.identities(ship)}
+    try:
+        book = ledger.Ledger.reading(ship.runtime / 'ledger.sqlite')
+        if book is not None:
+            with book:
+                if book.catching_up():
+                    data['accounting_note'] = 'accounting catching up; historical figures are last known'
+    except (OSError, sqlite3.Error):
+        pass
+    return data
 
 
 def render_table(data: dict) -> list[str]:
@@ -276,6 +285,8 @@ def render_table(data: dict) -> list[str]:
     rows = [head, *recovery_lines, f"{'seat':<10} {'activity':<24} {'door':<40} {'order':<10} {'today':>8}  harness · provider · pool · model · effort"]
     if accounting := getattr(data.get('facts'), 'accounting', None):
         rows.insert(1, accounting)
+    if data.get('accounting_note'):
+        rows.insert(1, data['accounting_note'])
     for r in data["seats"]:
         rows.append(f"{r.name:<10} {str(r.activity):<24} {str(r.door):<40} {r.order_text:<10} {str(r.today):>8}  {r.harness_text} · {r.provider_name or 'unknown'} · {r.pool} · {r.model_text} · {r.effort_text}")
         if r.compaction:
@@ -505,14 +516,6 @@ SCHEMA_BEHIND = "ledger written by an older service; qd up restarts it"
 def accounting_reading(runtime, state: str) -> str | None:
     """The accounting alarm; unknown evidence is said only while the service runs, since its state says the rest."""
     reading = accounting_health.reading(runtime)
-    try:
-        book = ledger.Ledger.reading(runtime / 'ledger.sqlite')
-        if book is not None:
-            with book:
-                if book.catching_up() and reading in (None, accounting_health.UNKNOWN):
-                    return 'accounting catching up; history last known'
-    except (OSError, sqlite3.Error):
-        pass
     return None if reading == accounting_health.UNKNOWN and state != "ok" else reading
 
 
@@ -599,8 +602,7 @@ def ledger_walls(ship: Ship) -> list[str]:
         return []
     with book:
         try:
-            walls = book.walls(ship)
-            return (['wall history last known while accounting catches up'] if book.catching_up() else []) + walls
+            return book.walls(ship)
         except sqlite3.OperationalError:
             return [SCHEMA_BEHIND]
 

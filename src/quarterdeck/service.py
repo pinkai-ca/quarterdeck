@@ -1261,6 +1261,9 @@ class Service:
             from .accounting_slices import Driver
             if not hasattr(self, 'account_driver'):
                 self.account_driver = Driver()
+            # Schedule the independent quota duty when accounting actually runs,
+            # including while its child is busy. A disabled duty schedules no work.
+            self.usage_pending = True
             return self.account_driver.step(self)
         before = self.accounting_health.shown()
         try:
@@ -1298,6 +1301,9 @@ class Service:
 
     def refresh_usage(self):
         """Live provider evidence is independent of a historical accounting backlog."""
+        if not getattr(self, 'usage_pending', False):
+            return
+        self.usage_pending = False
         for seat in self.resolved_seats():
             pane = seat.pane()
             quota.refresh(self, seat, pane is not None and not pane.dead, seat.launched())
@@ -1431,13 +1437,15 @@ class Service:
     def failover(self) -> None:
         """At a wall, try eligible later choices first, then earlier choices in declared order."""
         for seat in self.resolved_seats():
-            if (self.ledger.catching_up() and seat.is_up and getattr(seat.harness, 'screen_walls', False)
+            if recovery.held(seat) or len(seat.spec.pools) < 2 or not seat.is_up:
+                continue
+            if (getattr(seat.harness, 'screen_walls', False) and self.ledger.catching_up()
                     and not quota.current_walled(seat, self.ledger)):
                 screen = Door(seat).screen()
                 if screen is not None and screen.quota:
                     with self.ledger.record_pass() as book:
                         quota.observe_screen(book, seat, screen, seat.launched(), commit=False)
-            if recovery.held(seat) or len(seat.spec.pools) < 2 or not seat.is_up or not quota.current_walled(seat, self.ledger):
+            if not quota.current_walled(seat, self.ledger):
                 continue
             if self.not_idle(seat):
                 continue

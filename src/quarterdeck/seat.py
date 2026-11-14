@@ -287,19 +287,21 @@ class Seat:
             return current, 'chosen for this launch by qd set'
         from . import ledger, quota
         book = ledger.Ledger.reading(self.ship.runtime / 'ledger.sqlite')
+        history_pending = False
         try:
-            if book is not None and book.catching_up():
-                for name in pools:
-                    if quota.cached_open(self.ship, book, name, self):
-                        return name, 'declared choice with independent quota evidence while history catches up'
-                return current, 'saved choice retained; pool room unknown while accounting catches up'
             for name in pools:
+                pool = self.ship.pool(name)
+                if book is not None and pool.kind == 'key' and pool.budget is not None and book.catching_up():
+                    history_pending = True
+                    continue
                 if book is None or not book.walled(name, self.ship, scope=quota.model_scope(self, name)):
                     return name, ('its saved choice' if name == saved else
                                   f'the first declared choice with room, before its saved {saved}')
         finally:
             if book is not None:
                 book.close()
+        if history_pending:
+            return current, 'saved choice retained; budget room unknown while accounting catches up'
         return current, 'every declared choice is walled; its saved choice stays'
 
     def failover_to(self, pool: str) -> str:

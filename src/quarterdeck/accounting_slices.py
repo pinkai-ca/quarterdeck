@@ -231,6 +231,7 @@ class Driver:
         self.identities, self.invalid = {}, set()
         self.progress = 0
         self.reset_child = False
+        self.changed = False
 
     def close(self):
         if self.process is not None:
@@ -341,7 +342,8 @@ class Driver:
                     self.reset_child = True
                 self.active = False
                 service.accounting_health.committed()
-                service.log('accounting-caught-up', seconds=time.monotonic() - self.started)
+                if self.changed and not self.invalid:
+                    service.log('accounting-caught-up', seconds=time.monotonic() - self.started)
         return not self.active
 
     def step(self, service):
@@ -352,6 +354,7 @@ class Driver:
                 return
             if not self.active:
                 self.active = True
+                self.changed = False
                 self.invalid = set()
                 self.seats, self.screens = [], []
                 self.inventory = iter(self.collect(service))
@@ -396,9 +399,14 @@ class Driver:
                     elif packet[0] == 'sql' and self.valid(service):
                         for sql, parameters, many in packet[1]:
                             if 'accounting_progress' not in sql or not self.invalid:
+                                changes = book.db.total_changes
                                 (book.db.executemany if many else book.db.execute)(sql, parameters)
+                                if 'accounting_progress' not in sql and book.db.total_changes != changes:
+                                    self.changed = True
                     elif packet[0] == 'walls' and self.valid(service):
+                        changes = book.db.total_changes
                         book.quota.record(Path(packet[1]), packet[2], packet[3], book.provenance, packet[4], commit=False)
+                        self.changed |= book.db.total_changes != changes
                     elif packet[0] == 'heartbeat':
                         service.heartbeat()
                     elif packet[0] == 'error':
