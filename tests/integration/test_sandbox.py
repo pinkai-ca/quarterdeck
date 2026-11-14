@@ -435,7 +435,10 @@ def test_a_jailed_seat_sees_the_qd_only_folder_first_and_the_machines_interprete
         message = store.new("order", "desk", "worker-1", f"Resolve.\n$ sh {workspace}/probe.sh {workspace}\n"
                             "$ qd post report --re {this} resolved", subject="Probe")
         assert Door(seat).deliver(post.typed([message])).result == "delivered"
-        wait_for(lambda: next((m for m in store.all() if m.kind == "report" and m.re == message.id), None), 30)
+        def filed():
+            post.file_drops(store)
+            return next((m for m in store.all() if m.kind == "report" and m.re == message.id), None)
+        wait_for(filed, 30)
         inside_path = (workspace / "path.txt").read_text().strip()
         assert inside_path == launch_path, "the jailed program runs with the launch's own PATH"
         assert inside_path.split(os.pathsep)[0] == str(ship.runtime / "bin")

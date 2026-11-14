@@ -50,7 +50,11 @@ def qd(capsys, *args):
     code = cli.main(list(args))
     output = capsys.readouterr()
     assert code == 0, output.err
-    return output.out
+    text = output.out
+    if args and args[0] == "post" and "resend" not in args:
+        from .waiting import await_drop
+        await_drop(text.strip())
+    return text
 
 
 def test_fake_forum_files_four_identical_reviews_and_one_notice(forum, tmux, capsys):

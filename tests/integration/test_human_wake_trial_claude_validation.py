@@ -57,7 +57,11 @@ def qd(capsys, *argv: str) -> str:
     code = cli.main(list(argv))
     out = capsys.readouterr()
     assert code == 0, out.err
-    return out.out.rstrip("\n")
+    text = out.out.rstrip("\n")
+    if argv and argv[0] == "post" and "resend" not in argv:
+        from .waiting import await_drop
+        await_drop(text)
+    return text
 
 
 def as_desk() -> dict:

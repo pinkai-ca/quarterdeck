@@ -63,7 +63,11 @@ def qd(capsys, *args):
     assert cli.main(list(args)) == 0
     captured = capsys.readouterr()
     assert not captured.err
-    return captured.out
+    text = captured.out
+    if args and args[0] == "post" and "resend" not in args:
+        from .waiting import await_drop
+        await_drop(text.strip())
+    return text
 
 
 def active_order(ship, store):

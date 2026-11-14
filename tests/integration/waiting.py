@@ -34,6 +34,30 @@ def wait_for(predicate, seconds: float = 10.0):
     raise AssertionError("condition not met in time") from last_read_error
 
 
+def await_drop(text: str, *, seconds: float = 15) -> str:
+    """A post returns before the service's tick files it. Wait for that file when a service is up."""
+    short = text.split(" ", 1)[0] if text else ""
+    ship = os.environ.get("QD_SHIP")
+    if not short or not ship:
+        return text
+    runtime = Path(ship) / "runtime"
+    from quarterdeck import post, service
+    from quarterdeck.ship import ShipError
+    if not service.alive(runtime):
+        return text
+    store = post.Store(runtime)
+
+    def ready():
+        try:
+            store.get(short)
+        except ShipError:
+            return None
+        return True
+
+    wait_for(ready, seconds)
+    return text
+
+
 @contextmanager
 def attached_client(command, attached, *, patience=5.0):
     """Own a terminal client. Its output is kept in a temporary file, embedded whole in an attach failure, and the

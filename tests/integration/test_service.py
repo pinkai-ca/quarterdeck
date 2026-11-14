@@ -16,7 +16,7 @@ from quarterdeck.door import CONFIRM_SECONDS
 from quarterdeck.harness.base import Usage, Window
 from quarterdeck.tmux import Tmux
 
-from .waiting import wait_for
+from .waiting import await_drop, wait_for
 from .progress import service_progress
 from quarterdeck.harness.synthetic_control import Rendezvous, events
 
@@ -42,7 +42,10 @@ def qd(capsys, *argv: str) -> str:
     code = cli.main(list(argv))
     out = capsys.readouterr()
     assert code == 0, out.err
-    return out.out.rstrip("\n")
+    text = out.out.rstrip("\n")
+    if argv and argv[0] == "post" and "resend" not in argv:
+        await_drop(text)  # the service files the drop on its tick
+    return text
 
 
 def test_up_starts_the_service_and_the_service_delivers(ship: shipmod.Ship, tmux: Tmux, capsys):
