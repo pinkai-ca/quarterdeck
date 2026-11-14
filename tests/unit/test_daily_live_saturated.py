@@ -80,6 +80,25 @@ def test_a_spent_first_pool_does_not_fall_through_to_another_paid_pool(tmp_path,
     assert reason is not None and 'check-grok' in reason
 
 
+def test_a_wall_recorded_while_reserving_capacity_still_precedes_the_copy(tmp_path, monkeypatch, slots):
+    from contextlib import contextmanager
+    origin = ship(tmp_path / 'origin')
+    origin.runtime.mkdir()
+    with Ledger(origin.runtime / 'ledger.sqlite') as book:
+        book.record_usage('check-grok', Usage((Window('7d', .9, NOW + timedelta(days=1)),), NOW))
+    no_launch(monkeypatch)
+    real_reserve = check_capacity.reserve
+    @contextmanager
+    def reserve_then_wall(ship):
+        with real_reserve(ship) as reason:
+            with Ledger(origin.runtime / 'ledger.sqlite') as book:
+                book.record_usage('check-grok', Usage((Window('7d', 1.0, NOW + timedelta(days=1)),), NOW))
+            yield reason
+    monkeypatch.setattr(check_capacity, 'reserve', reserve_then_wall)
+    report, failed = daily_live.run(origin, now=NOW, readings=[reading('grok')])
+    assert not failed and 'pool check-grok is at its limit' in report.body
+
+
 def test_all_four_actual_tool_locks_defer_once_without_resources_or_alarm(tmp_path, monkeypatch, slots):
     root, protocol, tool = slots
     tool.acquire({'verb': 'synthetic holders'}, count=4)

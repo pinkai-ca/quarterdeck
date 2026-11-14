@@ -357,6 +357,12 @@ def run(ship: Ship, *, now: datetime | None = None, readings=None, history_error
                 if reason:
                     results[choice.program] = CheckRun(choice.program, None, '', not_tested=reason)
                     continue
+                # Finding the common repository can take a few seconds. A wall
+                # newly recorded during that work still precedes any launch.
+                reason = wall_reason(ship, choice.program, now if now is not None else current_time())
+                if reason:
+                    results[choice.program] = CheckRun(choice.program, None, '', not_tested=reason)
+                    continue
                 root = ship_root(scratch or (ship.runtime / 'daily-live'))
                 binary = qd or installed_qd(ship)
                 results[choice.program] = check(ship, choice.program, root, binary)
