@@ -786,7 +786,7 @@ class FilingSlice:
         self.fresh: list[tuple[str, str]] = []
 
     def advance(self, store: Store, ship=None, *, seats=None) -> list[tuple[str, str]]:
-        scope = (store.dir, seats)
+        scope = (store.dir, seats, ship)
         if self.steps is not None and self.scope != scope:
             self.steps.close()
             self.steps = None
@@ -819,7 +819,7 @@ def _file_drops(store: Store, ship=None, *, seats: frozenset[str] | None = None)
 def _drop_steps(store: Store, ship=None, *, seats: frozenset[str] | None = None, fresh):
     """File each seat's drops into the store. A refusal is held, named, and never deleted.
 
-    Returns the holds recorded for the first time this pass, so the service logs each once.
+    Append newly recorded holds for the caller to log once, and yield only outside admission.
     Group intents are published first, when the ship is known; a root that still has an
     intent beside it is left for that pass. Every name is walked by the post folder's
     no-follow helpers: a link in a drop is held as not a regular file, never followed.
