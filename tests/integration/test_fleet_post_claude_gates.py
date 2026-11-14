@@ -83,6 +83,7 @@ def test_an_imported_message_reaches_the_persons_desk_only_by_watch_or_the_wakin
     qd(left, 'post', 'question', '--from', 'worker-1', '--to', 'desk@beta', 'Synthetic question for the desk.')
     qd(left, 'post', 'order', '--from', 'worker-1', '--to', 'captain@beta', 'Synthetic order for the captain.')
     source, destination = post.Store(left.runtime), post.Store(right.runtime)
+    wait_for(lambda: len(source.all()) == 2, seconds=30)  # the running service files each drop on its tick
     question, order = sorted(source.all(), key=lambda m: m.kind == 'order')
     wait_for(lambda: all((destination.dir / f'{m.id}.json').exists() for m in (question, order)), seconds=30)
 
@@ -171,6 +172,7 @@ print(json.dumps(dict(seen, code=code)))
     reading = json.loads(done.stdout.strip().splitlines()[-1]) if done.stdout.strip() else {}
     assert reading.get('code') == 0, (done.stdout, done.stderr)
     assert reading['store'] == [], "nothing of the other ship's runtime is readable from the jail"
+    assert post.file_drops(post.Store(left.runtime)) == [], "the jail's drop files as its own seat's"
     sent, = [m for m in post.Store(left.runtime).all() if m.body == 'From the jail.']
     assert sent.to == 'captain@beta' and sent.sender == 'worker-1'
     assert secret not in done.stdout + done.stderr

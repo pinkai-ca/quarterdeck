@@ -133,15 +133,16 @@ class Store:
                 return candidate
 
     def write(self, message: Message) -> Path:
-        return self._admitted(message, message.to_json())
+        return self._admitted(message, lambda: self._write(message))
 
     def publish_text(self, message: Message, text: str) -> Path:
         """File a drop's exact text. Admission is taken here; the bytes are not rewritten."""
         if Message.from_json(text) != message:
             raise ShipError("drop bytes are not this message")
-        return self._admitted(message, text)
+        return self._admitted(message, lambda: self._write_text(message, text))
 
-    def _admitted(self, message: Message, text: str) -> Path:
+    def _admitted(self, message: Message, publish) -> Path:
+        """Take admission for the message's parties, then publish it through the given writer."""
         runtime = self.dir.parent.parent
         from .fleet_post import local_view
         viewed = local_view(runtime, message)
@@ -155,7 +156,7 @@ class Store:
             from . import compaction
             compaction.protect_closure(runtime, viewed)
             compaction.admitting(runtime, viewed)
-            return self._write_text(message, text)
+            return publish()
 
     def _write(self, message: Message) -> Path:
         """Publish while the caller holds admission; fixed-intent recovery verifies first."""

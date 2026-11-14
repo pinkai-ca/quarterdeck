@@ -53,6 +53,7 @@ def test_a_forwarded_desk_is_never_typed_into_on_either_ship_and_only_the_new_de
         new = seatmod.Seat(right, right.seat('desk'), peer)
         qd(left, 'post', 'question', '--from', 'worker-1', '--to', 'desk', 'Synthetic question to the old desk.')
         source, destination = post.Store(left.runtime), post.Store(right.runtime)
+        wait_for(lambda: len(source.all()) == 1, seconds=30)  # the running service files the drop on its tick
         question, = source.all()
         wait_for(lambda: (destination.dir / f'{question.id}.json').exists(), seconds=30)
         service_progress(left)
