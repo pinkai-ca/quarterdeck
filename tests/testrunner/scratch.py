@@ -1,11 +1,13 @@
 """Ephemeral working storage; durable ownership and test evidence stay in .testruns/results.
 
 Linux statfs establishes the filesystem type. Names such as /tmp never establish that a folder is
-in memory. One project can have one outstanding memory run, including a crashed or kept run.
+in memory. Each run has its own reservation, including a crashed or kept run.
 """
 from __future__ import annotations
 
 import ctypes
+from contextlib import contextmanager
+import fcntl
 import hashlib
 import os
 from pathlib import Path
@@ -15,6 +17,7 @@ import time
 from .layout import DIRECTORY, RESULTS, RUNS, Refused, identity, open_child, read_json, write_json
 
 BOUND = 4 * 1024 ** 3
+MARGIN = 8 * 1024 ** 3
 INTERVAL = 1.0
 METADATA_ALLOWANCE = 4096  # conservative inode/dentry allowance per directory entry, including empty files
 MEMORY_TYPES = {0x01021994: 'tmpfs', 0x858458f6: 'ramfs'}
@@ -41,7 +44,7 @@ def candidates(environ=None):
     return list(dict.fromkeys(Path(p).absolute() for p in (environ.get('TMPDIR'), '/dev/shm', '/tmp') if p))
 
 
-def choose(bound=BOUND):
+def choices(bound=BOUND):
     for path in candidates():
         try:
             if path.resolve() != path or not os.access(path, os.W_OK | os.X_OK):
@@ -51,12 +54,15 @@ def choose(bound=BOUND):
                 kind = filesystem(fd)
                 space = os.fstatvfs(fd)
                 if kind and not space.f_flag & getattr(os, 'ST_NOEXEC', 8) and space.f_bavail * space.f_frsize >= bound:
-                    return path, kind
+                    yield path, kind
             finally:
                 os.close(fd)
         except (OSError, AttributeError):
             continue
-    return None
+
+
+def choose(bound=BOUND):
+    return next(choices(bound), None)
 
 
 def memory_root(project, base, *, create=True, name=None):
@@ -178,52 +184,78 @@ def disk_fallback(root, run, reason):
     return {'kind': 'disk', 'path': str(path(root, run)), 'bound_bytes': None, 'reason': reason}
 
 
-def prepare(root, run):
-    selected = choose()
-    if selected is None:
-        return disk_fallback(root, run, 'no writable executable tmpfs/ramfs has 4 GiB free')
-    errors = {}
-    old = pending(root, errors=errors)
-    if old:
-        detail = '; '.join(errors.values())
-        return disk_fallback(root, run, (detail + '; ' if detail else '')
-                             + f'memory reservations of runs {old} remain (one memory run per project); '
-                             'continue on disk; retire can clear only unkept runs with verifiable storage; '
-                             'kept reservations have no release command, and changed filesystems need the original memory mount restored')
-    base, kind = selected
+@contextmanager
+def reservation_lock(root):
+    # A fresh open description also serializes callers sharing a Root in one process.
+    fd = os.open('.', DIRECTORY, dir_fd=root.fd)
     try:
-        where, fd = memory_root(root.project, base)
-    except (Refused, OSError) as error:
-        return disk_fallback(root, run, f'memory storage unavailable ({error}); continue on disk')
-    try:
-        try:
-            space = os.fstatvfs(fd)
-        except OSError as error:
-            return disk_fallback(root, run, f'memory storage free space unreadable ({error}); continue on disk')
-        if space.f_bavail * space.f_frsize < BOUND:
-            return disk_fallback(root, run, 'memory free space fell below 4 GiB before setup')
-        from . import procs
-        data = {'run': run, 'base': str(base), 'root': where.name, 'identity': identity(os.fstat(fd)), 'kind': kind,
-                'boot': procs.boot_id(), 'bound_bytes': BOUND}
-        result = root.child(RESULTS, run)
-        try:
-            write_json(result, RECORD, data)
-        finally:
-            os.close(result)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
     finally:
         os.close(fd)
-    print(f'testrun: working files in {kind}: {where / RUNS / run} (4 GiB bound); results on disk', flush=True)
-    return {**data, 'path': str(path(root, run)), 'sample_seconds': INTERVAL, 'metadata_allowance_per_entry': METADATA_ALLOWANCE}
+
+
+def reserved(root, device):
+    """Charge each outstanding promise in full, even if some bytes are already used.
+
+    Durable records are the authority; never infer a dead run or release its promise here.
+    Full charging is conservative because statvfs also charges files already written.
+    """
+    total = 0
+    errors = {}
+    for run in pending(root, errors=errors):
+        if run in errors:
+            raise Refused(errors[run])
+        data = record(root, run)
+        if data is None:
+            continue
+        if data['identity'][0] == device:
+            bound = data.get('bound_bytes', BOUND)  # older reservations used the fixed bound
+            if type(bound) is not int or bound <= 0:
+                raise Refused(f'{root.path / RESULTS / run / RECORD}: invalid reservation bound; held')
+            total += bound
+    return total
+
+
+def prepare(root, run):
+    with reservation_lock(root):
+        if record(root, run) is not None:
+            raise Refused(f'run {run}: already has a memory reservation; retained')
+        # Selection, the fresh free-space check, and publishing the promise share this lock.
+        for base, kind in choices(BOUND + MARGIN):
+            where, fd = memory_root(root.project, base)
+            try:
+                space = os.fstatvfs(fd)
+                promised = reserved(root, os.fstat(fd).st_dev)
+                if space.f_bavail * space.f_frsize < BOUND + MARGIN + promised:
+                    continue
+                from . import procs
+                data = {'run': run, 'base': str(base), 'root': where.name,
+                        'identity': identity(os.fstat(fd)), 'kind': kind,
+                        'boot': procs.boot_id(), 'bound_bytes': BOUND}
+                result = root.child(RESULTS, run)
+                try:
+                    write_json(result, RECORD, data)
+                finally:
+                    os.close(result)
+            finally:
+                os.close(fd)
+            print(f'testrun: working files in {kind}: {where / RUNS / run} (4 GiB bound); results on disk', flush=True)
+            return {**data, 'path': str(path(root, run)), 'sample_seconds': INTERVAL,
+                    'metadata_allowance_per_entry': METADATA_ALLOWANCE}
+    return disk_fallback(root, run, 'no writable executable tmpfs/ramfs has room for a 4 GiB reservation '
+                         'plus the 8 GiB margin and outstanding reservations')
 
 
 def discard(root, run):
-    fd = root.child(RESULTS, run, create=False)
-    try:
-        if record(root, run) is not None:
-            os.unlink(RECORD, dir_fd=fd)
-            os.fsync(fd)
-    finally:
-        os.close(fd)
+    with reservation_lock(root):
+        fd = root.child(RESULTS, run, create=False)
+        try:
+            if record(root, run) is not None:
+                os.unlink(RECORD, dir_fd=fd)
+                os.fsync(fd)
+        finally:
+            os.close(fd)
 
 
 def usage(path):
