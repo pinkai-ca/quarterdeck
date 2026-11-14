@@ -173,6 +173,8 @@ def test_an_open_reading_always_carries_known_activity(setup, working, box, open
     assert reading.open is opened
     if opened:
         assert reading.working is working and str(reading) != "activity unknown"
+    elif box:
+        assert reading.reason == "text in the box"  # a person's draft holds by its own name, unknown or not
     elif working is None:
         assert reading.reason == "current activity unknown" and reading.clears == "time"
 
@@ -267,7 +269,7 @@ def test_service_relaunch_is_decided_by_the_record_alone(monkeypatch, record_sta
 # The common callers act on a known value and hold, or defer to the service, on unknown.
 
 @pytest.mark.parametrize("working", [True, False, None])
-def test_cli_relaunch_acts_now_only_on_known_idle(monkeypatch, working):
+def test_cli_relaunch_acts_now_only_on_known_idle(monkeypatch, tmp_path, working):
     called = []
     seat = SimpleNamespace(is_working=lambda: working, name="synthetic", launched=lambda: None,
                            restart=lambda: called.append("restart") or "restarted",
@@ -275,7 +277,7 @@ def test_cli_relaunch_acts_now_only_on_known_idle(monkeypatch, working):
     monkeypatch.setattr(cli, "this_seat", lambda ship, name: "synthetic")
     monkeypatch.setattr(cli, "seat_of", lambda ship, name: seat)
     monkeypatch.setattr(cli.service, "request", lambda runtime, kind, **data: called.append(kind) or "requested")
-    cli.relaunch(SimpleNamespace(runtime=Path("synthetic-runtime")), "synthetic", True)
+    cli.relaunch(SimpleNamespace(runtime=tmp_path / "runtime"), "synthetic", True)
     assert called == (["restart"] if working is False else ["relaunch"])
 
 

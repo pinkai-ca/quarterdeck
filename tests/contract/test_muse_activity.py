@@ -6,6 +6,7 @@ import pytest
 
 from quarterdeck import watch
 from quarterdeck.door import Reading
+from quarterdeck.harness.muse import MuseHarness
 from quarterdeck.harness.types import Screen, State
 from quarterdeck.ledger import Count
 from quarterdeck.seat import Seat
@@ -93,7 +94,7 @@ def test_legacy_screen_default_and_unobserved_reading_are_separate():
     (Screen("synthetic complete frame", "", working=True), "working"),
 ])
 def test_unjoined_watch_activity_requires_an_observed_value(monkeypatch, screen, expected):
-    seat = SimpleNamespace(pane=lambda: SimpleNamespace(dead=False),
+    seat = SimpleNamespace(pane=lambda: SimpleNamespace(dead=False), harness=MuseHarness(),
                            join=lambda: SimpleNamespace(record=None, reason="not yet written"))
     monkeypatch.setattr(watch, "Door", lambda value: SimpleNamespace(screen=lambda: screen))
     assert watch.activity(seat).state == expected
