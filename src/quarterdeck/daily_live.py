@@ -14,13 +14,14 @@ import sqlite3
 import shlex
 import shutil
 import stat
+import tempfile
 import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from . import check_capacity, harness as harnesses, post, program_use, ship as shipmod, standing
+from . import check_capacity, harness as harnesses, post, program_use, ship as shipmod
 from .ship import Ship, ShipError
 from .tmux import Tmux, TmuxError
 
@@ -221,9 +222,16 @@ def open_private(ship_parent: Path) -> Tmux:
     if memory is not None:
         places.append(memory)
     places.append(ship_parent)
-    work = standing.PROJECT_DIR / "work"
-    if work not in places:
-        places.append(work)
+    # Last, a private folder of this user's own under the system's temporary folder: never the project's work/,
+    # which jails see through the workspaces bound from it.
+    private = Path(tempfile.gettempdir()) / f"qd-live-tmux-{os.getuid()}"
+    try:
+        private.mkdir(mode=0o700, exist_ok=True)
+        info = private.lstat()
+        if stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and not stat.S_ISLNK(info.st_mode):
+            places.append(private)
+    except OSError:
+        pass
     errors = []
     for place in places:
         try:

@@ -95,7 +95,7 @@ class Jail:
     environment: tuple[tuple[str, str], ...] = ()  # set inside the jail: the git identity a commit from the seat carries
     declarations: tuple[Path, ...] = ()  # peer ship files only, under otherwise empty read-only folders
     post_view: Path | None = None  # the seat's own view of the post, bound read-only in the post's place
-    foreign_runtimes: tuple[Path, ...] = ()  # other ships' runtimes inside a bound folder, each an empty tmpfs
+    foreign_runtimes: tuple[Path, ...] = ()  # other ships' runtimes and test-run folders inside a bound folder, each an empty tmpfs
     endpoint: str | None = None  # the pool's model endpoint, relayed into the jail's own network; None: no way out
 
 
@@ -139,6 +139,30 @@ def held_runtimes(folder: Path, depth: int = 3) -> list[Path]:
         return found
     for entry in entries:
         found += held_runtimes(entry, depth - 1)
+    return found
+
+
+TEST_RUNS = '.testruns'  # the test tool's folder in a checkout: its runs' live tmux servers listen there
+
+
+def held_test_runs(folder: Path, depth: int = 3) -> list[Path]:
+    """Test-run folders inside a folder, a few levels down: a checkout's .testruns, whose runs hold live sockets.
+
+    A path socket ignores the jail's own network, so a folder bound into a jail must not show them.
+    """
+    found = []
+    candidate = folder / TEST_RUNS
+    if candidate.is_dir() and not candidate.is_symlink():
+        found.append(candidate)
+    if depth <= 0:
+        return found
+    try:
+        entries = [Path(entry.path) for entry in os.scandir(folder)
+                   if entry.is_dir(follow_symlinks=False) and not entry.name.startswith('.') and entry.name != 'runtime']
+    except OSError:
+        return found
+    for entry in entries:
+        found += held_test_runs(entry, depth - 1)
     return found
 
 
@@ -222,8 +246,12 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
                and inside_foreign_runtime(f, ship) is None]  # never another ship's runtime, nor a folder inside one
     # A folder bound back that holds another ship's runtime (the framework's checkout holds every ship's) keeps it
     # covered by an empty tmpfs; this ship's own runtime is shown as always, with its seats and tmux hidden.
-    foreign = tuple(sorted({runtime for folder in (*folders, workspace) for runtime in held_runtimes(folder)
-                            if runtime.resolve() != ship.runtime.resolve()}, key=lambda r: (len(r.parts), str(r))))
+    # So does a test run's folder (.testruns): its live tmux servers listen there, and a path socket ignores the
+    # jail's own network.
+    covered = {runtime for folder in (*folders, workspace) for runtime in held_runtimes(folder)
+               if runtime.resolve() != ship.runtime.resolve()}
+    covered |= {runs for folder in (*folders, workspace) for runs in held_test_runs(folder)}
+    foreign = tuple(sorted(covered, key=lambda r: (len(r.parts), str(r))))
     drop = ship.runtime / "post" / "drop" / seat_name
     post_dir.ensure_directory(drop)  # the one writable post folder, so it must exist before the launch
     (ship.runtime / "tmux").mkdir(mode=0o700, exist_ok=True)  # hidden inside: the mount needs its place in the read-only ship
