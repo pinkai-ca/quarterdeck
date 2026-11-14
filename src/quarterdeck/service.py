@@ -82,9 +82,19 @@ BLIND_INTERVAL = 60.0  # how often the blind attempts are read against the recor
 OWN_TURN_RULE = object()  # handoff_fresh does not decide: the asking turn's own rule does
 
 
+def ship_file_stamp(ship) -> tuple | None:
+    """The ship file's identity and change times, or None where it is not on disk."""
+    try:
+        info = ship.file.stat()
+    except (OSError, AttributeError):
+        return None
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+
 class Service:
     def __init__(self, ship: Ship, tmux: Tmux):
         self.ship, self.tmux = ship, tmux
+        self.ship_stamp = None  # the ship file's identity as this pass's load read it; None: not loaded by a pass
         self.runtime = ship.runtime
         self.store = Store(self.runtime)
         self.attempts = Attempts(self.runtime)
@@ -176,7 +186,9 @@ class Service:
     def tick(self) -> None:
         """One pass: the ship file read afresh, then every duty, each failing alone."""
         try:
+            stamp = ship_file_stamp(self.ship)  # before the read: a write during it reads as a change later
             self.ship = shipmod.load(self.ship.folder)  # law: ship-file
+            self.ship_stamp = stamp
         except ShipError as error:
             self.log("error", step="load", error=str(error))
         self.rebind()
@@ -251,6 +263,17 @@ class Service:
 
     def seat(self, name: str) -> Seat:
         return Seat(self.ship, self.ship.seat(name), self.tmux)
+
+    def refresh_ship(self) -> None:
+        """Read the service's own ship again when its file changed since this pass loaded it; else keep it."""
+        if self.ship_stamp is None:
+            return  # not loaded by a pass from a file: nothing on disk to be newer than
+        stamp = ship_file_stamp(self.ship)
+        if stamp is None or stamp == self.ship_stamp:
+            return
+        self.ship = shipmod.load(self.ship.folder)  # law: ship-file; a refusal here is the request's refusal
+        self.ship_stamp = stamp
+        self.log("ship", reloaded="declaration changed since this pass loaded it")
 
     def hold_selection(self, error: SelectionError) -> None:
         from . import alarms
@@ -740,11 +763,11 @@ class Service:
                 return acts.press(self, seat, str(data["choice"]), data.get("caller"))
             return acts.type_line(self, seat, str(data["line"]), data.get("caller"))
         if kind == "control":
-            # The CLI may write the declaration after this pass loaded its ship.
-            # A control kept across passes must start from that current declaration.
-            declared = shipmod.load(self.ship.folder)
-            seat = Seat(declared, declared.seat(data["seat"]), self.tmux)
-            return self.control(seat, data["name"], str(data["value"]))
+            # The CLI writes the declaration, then queues the control: when that write came after this pass loaded
+            # its ship, the service's own ship is read again first, so the control starts from the current
+            # declaration and through the service's own seat, its kept continuation included (law: ship-file).
+            self.refresh_ship()
+            return self.control(self.seat(data["seat"]), data["name"], str(data["value"]))
         if kind == "relaunch":
             return self.relaunch_request(data)
         if kind == "select":  # the seats failover acts on: a seat whose selection is unknown is held, not guessed
