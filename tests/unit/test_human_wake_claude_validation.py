@@ -126,6 +126,15 @@ def desk(drydock, monkeypatch):
                            pastes=pastes, keys=keys, watch=watch, runtime=ship.runtime)
 
 
+def no_receipt(d, monkeypatch, seconds=0.3):
+    """The program never takes the line, so no receipt will exist: the door's record-confirmation window is
+    shortened for this test alone. What is proved, never resent and the standing phase, does not depend on the
+    window's length; the door still polls the record across it and then reads the outcome as pending."""
+    d.tmux.record = None
+    original = Door.confirm
+    monkeypatch.setattr(Door, 'confirm', lambda self, text, seconds=seconds: original(self, text, seconds))
+
+
 def dead_pid() -> int:
     child = subprocess.Popen([sys.executable, '-c', ''])
     child.wait()
@@ -453,9 +462,9 @@ def test_a_relaunch_after_a_confirmed_wake_releases_it_for_exactly_one_new_wake(
 
 
 @pytest.mark.parametrize('phase', ['pasting', 'submitting', 'submitted'])
-def test_a_crash_left_typing_phase_without_a_receipt_is_never_resent(desk, phase):
+def test_a_crash_left_typing_phase_without_a_receipt_is_never_resent(desk, monkeypatch, phase):
     desk.order()
-    desk.tmux.record = None  # the program never takes it: no receipt will exist
+    no_receipt(desk, monkeypatch)
     human_wake.run(desk.seat)
     data = reservation(desk)
     data['phase'] = phase
@@ -566,7 +575,7 @@ def test_a_standing_reservation_reads_only_its_own_receipt_or_ended_state_and_a_
         human_wake.run(desk.seat)
         assert received(desk) and desk.seat.harness.state(desk.record.path).turn_open is True
     else:
-        desk.tmux.record = None  # the program never takes it, so no receipt will be found
+        no_receipt(desk, monkeypatch)  # the program never takes it, so no receipt will be found
         human_wake.run(desk.seat)
         assert reservation(desk)['phase'] == 'submitted'
         if phase == 'queued':
