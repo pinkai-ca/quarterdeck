@@ -120,3 +120,51 @@ def test_launch_record_and_watch_show_cached_evidence_without_calling_it_a_press
     shown = '\n'.join(watch.render_full(data))
     assert grok.PRIVACY_ACK_NOTICE in shown
     assert 'pressed at' not in shown
+
+
+@pytest.mark.parametrize('replacement', [
+    {'synthetic-account': {'coding_data_retention_opt_out': False}},
+    {'synthetic-account': {}},
+    '{ unreadable synthetic sign-in',
+])
+def test_rebuild_drops_a_framework_seed_when_the_flag_no_longer_reads_true(setup_home, replacement):
+    args = setup_home({'synthetic-account': {'coding_data_retention_opt_out': True}})
+    adapter, pool, home, spec, brief = args
+    assert grok.PRIVACY_ACK_NOTICE in launch(*args).notice
+    marker = home / grok.PRIVACY_SEED_RECORD
+    assert json.loads(marker.read_text())['writer'] == 'quarterdeck'
+    source = pool.config_dir / 'auth.json'
+    source.write_text(replacement if isinstance(replacement, str) else json.dumps(replacement))
+    adapter.build_home(home, spec, pool, None)
+    assert 'privacy' not in tomllib.loads((home / 'config.toml').read_text())
+    assert not marker.exists()
+    assert launch(*args).notice == 'workspace example'
+
+
+def test_launch_rechecks_and_removes_its_previous_seed(setup_home):
+    args = setup_home({'synthetic-account': {'coding_data_retention_opt_out': True}})
+    adapter, pool, home, spec, brief = args
+    assert grok.PRIVACY_ACK_NOTICE in launch(*args).notice
+    (pool.config_dir / 'auth.json').write_text(json.dumps(
+        {'synthetic-account': {'coding_data_retention_opt_out': False}}))
+    assert launch(*args).notice == 'workspace example'
+    assert 'privacy' not in tomllib.loads((home / 'config.toml').read_text())
+    assert not (home / grok.PRIVACY_SEED_RECORD).exists()
+
+
+@pytest.mark.parametrize('opted_out', [False, True])
+def test_program_press_acknowledgement_without_seed_record_survives_rebuild(setup_home, opted_out):
+    args = setup_home({'synthetic-account': {'coding_data_retention_opt_out': False}})
+    adapter, pool, home, spec, brief = args
+    path = home / 'config.toml'
+    config = tomllib.loads(path.read_text())
+    native = {'privacy_banner_acked': '2040-01-01T00:00:00+00:00'}
+    config['privacy'] = native
+    path.write_text(grok.config_text(config))  # the state left by a native opt-out press
+    assert not (home / grok.PRIVACY_SEED_RECORD).exists()
+    (pool.config_dir / 'auth.json').write_text(json.dumps(
+        {'synthetic-account': {'coding_data_retention_opt_out': opted_out}}))
+    adapter.build_home(home, spec, pool, None)
+    assert tomllib.loads(path.read_text())['privacy'] == native
+    assert launch(*args).notice == 'workspace example'
+    assert not (home / grok.PRIVACY_SEED_RECORD).exists()

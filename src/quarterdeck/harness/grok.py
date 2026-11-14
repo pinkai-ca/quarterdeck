@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..ship import Pool, SeatSpec, ShipError, literal
+from .. import durable
 from .base import Harness, program_version
 from .home import credential, key_environment, merged, ship_template
 from .json_record import when
@@ -168,7 +169,8 @@ class GrokBox(Box):
         return super().matches(shown, columns, slack)
 
 
-PRIVACY_ACK_NOTICE = "Grok privacy banner acknowledged: the account's cached opt-out reads true"
+PRIVACY_ACK_NOTICE = "Grok privacy banner acknowledged: the account's cached opt-out reads true (framework seed)"
+PRIVACY_SEED_RECORD = "quarterdeck-privacy-seed.json"
 
 
 def cached_coding_opt_out(home: Path, pool: Pool) -> bool:
@@ -192,23 +194,73 @@ def cached_coding_opt_out(home: Path, pool: Pool) -> bool:
         return False
 
 
-def acknowledge_cached_opt_out(home: Path, pool: Pool) -> str | None:
-    """A dismissal follows a positive cached opt-out; it never changes the account's choice."""
-    if not cached_coding_opt_out(home, pool):
+def privacy_seed_record(home: Path) -> dict | None:
+    """Only an explicit framework record establishes that an acknowledgement is ours."""
+    path = home / PRIVACY_SEED_RECORD
+    try:
+        if path.is_symlink():
+            raise ShipError("Grok privacy seed record is linked; retained for review")
+        data = json.loads(path.read_text())
+    except FileNotFoundError:
         return None
+    except (OSError, ValueError, UnicodeError):
+        raise ShipError("Grok privacy seed record is unreadable; retained for review") from None
+    if (not isinstance(data, dict) or set(data) != {"format", "writer", "privacy_banner_acked"}
+            or type(data.get("format")) is not int or data["format"] != 1
+            or data.get("writer") != "quarterdeck" or not isinstance(data.get("privacy_banner_acked"), str)):
+        raise ShipError("Grok privacy seed record is unrecognized; retained for review")
+    try:
+        at = datetime.fromisoformat(data["privacy_banner_acked"].replace("Z", "+00:00"))
+        if at.tzinfo is None:
+            raise ValueError
+    except ValueError:
+        raise ShipError("Grok privacy seed record timestamp is unreadable; retained for review") from None
+    return data
+
+
+def acknowledge_cached_opt_out(home: Path, pool: Pool) -> str | None:
+    """Reconcile only our seed on every rebuild/launch; native press state has no seed record."""
+    seed = privacy_seed_record(home)
+    opted_out = cached_coding_opt_out(home, pool)
     path = home / "config.toml"
-    if program_privacy(path) is None:
-        config = tomllib.loads(path.read_text())
-        config["privacy"] = {"privacy_banner_acked": datetime.now(timezone.utc).isoformat()}
-        path.write_text(config_text(config))
+    if seed is None and (not opted_out or program_privacy(path) is not None):
+        return None  # never label an unmarked native acknowledgement as our own
+    config = tomllib.loads(path.read_text())
+    privacy = config.get("privacy")
+    if privacy is not None and not isinstance(privacy, dict):
+        raise ShipError("Grok privacy configuration is unrecognized; retained for review")
+    if seed is None and privacy is not None and "privacy_banner_acked" in privacy:
+        raise ShipError("Grok privacy acknowledgement is unrecognized; retained for review")
+    if seed is not None and privacy is not None and "privacy_banner_acked" in privacy:
+        if privacy["privacy_banner_acked"] != seed["privacy_banner_acked"]:
+            raise ShipError("Grok privacy acknowledgement differs from its seed record; retained for review")
+    record = home / PRIVACY_SEED_RECORD
+    if not opted_out:
+        # Clear the config first: interruption cannot leave an unmarked framework seed behind.
+        if privacy is not None and "privacy_banner_acked" in privacy:
+            privacy.pop("privacy_banner_acked")
+            if not privacy:
+                config.pop("privacy")
+            durable.replace_file(path, config_text(config))
+        record.unlink()
+        durable.sync_folder(home)
+        return None
+    if seed is None:
+        seed = {"format": 1, "writer": "quarterdeck",
+                "privacy_banner_acked": datetime.now(timezone.utc).isoformat()}
+        # Publish provenance first, so a cut before/after the config write can be reconciled.
+        durable.replace_file(record, json.dumps(seed, sort_keys=True) + "\n")
+    if privacy is None or "privacy_banner_acked" not in privacy:
+        config.setdefault("privacy", {})["privacy_banner_acked"] = seed["privacy_banner_acked"]
+        durable.replace_file(path, config_text(config))
     return PRIVACY_ACK_NOTICE
 
 
 def program_privacy(path: Path) -> dict | None:
-    """The measured native acknowledgement, kept across rebuilds of this same home.
+    """Read the measured acknowledgement without inferring its writer from the timestamp.
 
-    Only its RFC 3339 timestamp is carried. A fresh acknowledgement requires the separate
-    positive cached-opt-out reading above, never a template or seat setting.
+    Native acknowledgements without a framework seed record survive rebuilds. Framework
+    seeds are separately reevaluated against the current flag at every rebuild and launch.
     """
     try:
         table = tomllib.loads(path.read_text()).get("privacy")
@@ -357,7 +409,9 @@ class GrokHarness(Harness):
         if (kept := program_privacy(home / "config.toml")) is not None:
             settings["privacy"] = kept
         (home / "config.toml").write_text(config_text(settings))
-        return credential(pool, home / self.credential_file, "XAI_API_KEY")
+        attached = credential(pool, home / self.credential_file, "XAI_API_KEY")
+        acknowledge_cached_opt_out(home, pool)
+        return attached
 
     def launch(self, seat: SeatSpec, pool: Pool, home: Path, brief: Path, resume: str | None, first: str | None) -> Launch:
         workspace_args = grok_workspace.launch_args(seat.cwd)
