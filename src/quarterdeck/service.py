@@ -112,7 +112,9 @@ class Service:
                                  else copy['commit'] if copy else None)
         self.copy_start_token = os.environ.pop('QD_COPY_START', None)
         self.ledger = Ledger(self.runtime / "ledger.sqlite")
-        self.ledger.begin_catchup(self.status_framework)
+        reader_keys = reader_stamp.attributions()
+        self.accounting_epoch = reader_keys if all(reader_keys.values()) else None
+        self.ledger.begin_catchup(self.accounting_epoch)
         self.meters: dict[str, machine.Meter] = {}
         self.usage_read: dict[str, float] = {}
         self.usage_hold: dict[str, float] = {}  # a refused pool's Retry-After, by the monotonic clock
@@ -1481,7 +1483,7 @@ class Service:
             if replay:
                 book.attributions.replay(self.store, self.runtime, commit=False, retry_interval=ACCOUNT_RETRY,
                                          framework=getattr(self, 'status_framework', None))
-                book.finish_catchup(getattr(self, 'status_framework', None))
+                book.finish_catchup(getattr(self, 'accounting_epoch', None))
 
         self.read_marks, self.account_errors, self.meters = marks, errors, meters
         return observations, notices, human_readings

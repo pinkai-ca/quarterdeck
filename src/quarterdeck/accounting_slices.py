@@ -154,7 +154,7 @@ def worker():
                 service.read_marks, service.account_errors = {}, {}
             service.runtime = Path(job['runtime'])
             service.store = post.Store(service.runtime)
-            service.status_framework = job['epoch']
+            service.accounting_epoch = job['epoch']
             book = planning_book(service.runtime / 'ledger.sqlite', send)
             service.ledger = book
             selected, sources = [], {}
@@ -277,7 +277,7 @@ class Driver:
                                             stderr=subprocess.DEVNULL, env=environment)
             os.set_blocking(self.process.stdin.fileno(), False)
             os.set_blocking(self.process.stdout.fileno(), False)
-        self.outgoing.extend(frame(dict(runtime=str(service.runtime), epoch=service.status_framework,
+        self.outgoing.extend(frame(dict(runtime=str(service.runtime), epoch=service.accounting_epoch,
                                         seats=self.seats, reset=self.reset_child)))
         self.reset_child = False
         self.started = time.monotonic()
@@ -341,7 +341,7 @@ class Driver:
                     if self.identity(service.runtime, name) != identity:
                         self.invalid.add(name)
                 if self.invalid:
-                    service.ledger.begin_catchup(service.status_framework, force=True)
+                    service.ledger.begin_catchup(service.accounting_epoch, force=True)
                     self.reset_child = True
                 self.active = False
                 service.accounting_health.committed()
@@ -431,7 +431,7 @@ class Driver:
             self.ready.clear()
             self.events.clear()
             try:
-                service.ledger.begin_catchup(service.status_framework, force=True)
+                service.ledger.begin_catchup(service.accounting_epoch, force=True)
             except Exception:
                 pass  # retain the original failure and the last committed progress
             if service.accounting_health.failed(accounting_health.cause(error), post.now()):
