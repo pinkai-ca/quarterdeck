@@ -1,9 +1,10 @@
 # Ships
 
-A ship is one crew of AI coding agents, with the crew's orders and records: a folder under `ships/`, in the Quarterdeck folder you cloned. Each agent runs in a harness, a terminal coding program such as Claude Code or Codex. [The parts of Quarterdeck](PARTS.md) explains the other words.
+A ship is a group of AI agents, with its orders and records: a folder under `ships/`, in the Quarterdeck folder you cloned. Each has its own service, runtime and tmux server. Each agent runs in a harness, a terminal coding program such as Claude Code or Codex. [The parts of Quarterdeck](PARTS.md) explains the other words.
 
 ## Ships to start from
 
+- [`ships/office/`](../ships/office/README.md), the person's working office for the fleet: one desk initially, and any additional office seats the person declares. It has `kind = "office"`, no captain or crew, and no project workspace requirement. Creating an office does not move any seat or message from an existing ship.
 - [`ships/drydock/`](../ships/drydock/ship.toml), the practice ship: three stand-in agents on a fake harness, for the drill (`qd drill`), a whole-crew exercise, and for Quarterdeck's own tests. Spends nothing.
 - [`ships/default/`](../ships/default/ship.toml), the smallest real crew: a desk that you talk to, on Claude Code, and on Codex a captain who turns what you say into orders and reviews the work, and an engineer who builds it. Uses the sign-ins already on your machine.
 - [`ships/forum/`](../ships/forum/README.md), a lead and four reviewers: give every reviewer the same order, and get one combined report from the lead. The forum's README has the steps and the limits.
