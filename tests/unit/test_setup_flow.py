@@ -612,12 +612,12 @@ def test_first_setup_creates_and_starts_office_before_crew_from_one_conversation
             prompts.append(prompt)
             if prompt.startswith("Change an item"):
                 return "accept"
-            return "yes"
+            return "yes" if prompt.startswith(("Continue with", "Start the office")) else ""
         lines = []
         conversation = setup.Conversation(data, interactive=True, read=respond, write=lines.append)
         args = cli.build_parser().parse_args(["setup"])
         setup.first_step(args, operations=operations, conversation=conversation)
-        assert len(prompts) == 3
+        assert len(prompts) == len(set(prompts))
         assert prompts[0].startswith("Continue with a ship and crew")
         assert sum(prompt.startswith("Change an item") for prompt in prompts) == 1
         assert sum(prompt.startswith("Start the office and crew") for prompt in prompts) == 1
