@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from dataclasses import FrozenInstanceError
 import time
 
 import pytest
@@ -50,7 +51,8 @@ def test_native_scope_reuses_only_stable_results_and_expires_at_exit(tmp_path, m
         return State(model=record.read_text()), []
     with reading_scope.reading_pass():
         state, turns = reading_scope.read('synthetic', record, load)
-        state.model = 'caller changed its container'
+        with pytest.raises(FrozenInstanceError):
+            state.model = 'caller changed its container'
         turns.append('caller addition')
         state, turns = reading_scope.read('synthetic', record, load)
         assert state.model == 'first' and turns == [] and len(calls) == 1
