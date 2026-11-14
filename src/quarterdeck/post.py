@@ -668,6 +668,47 @@ def _same_stored(store: Store, message: Message, text: str) -> str | None:
     return "same" if existing == text else "differs"
 
 
+FILING_BUSY_PASSES = 3
+FILING_BUSY_REASON = 'post filing waits: filing lock busy'
+
+
+def _filing_folder(runtime: Path) -> Path:
+    from .sandbox import LOCKS
+
+    return runtime / LOCKS
+
+
+def _filing_misses(runtime: Path) -> int | None:
+    try:
+        data = json.loads((_filing_folder(runtime) / 'filing-wait.json').read_text())
+        passes = data['passes']
+        if (data.get('format') == 1 and type(passes) is int
+                and 1 <= passes <= FILING_BUSY_PASSES and data.get('reason') == FILING_BUSY_REASON):
+            return passes
+    except FileNotFoundError:
+        return 0
+    except (OSError, ValueError, TypeError, KeyError):
+        pass
+    return None
+
+
+def filing_waits(runtime: Path) -> list[str]:
+    """Disposable lock-contention evidence, visible independently of the service."""
+    misses = _filing_misses(runtime)
+    if misses is None:
+        return ['post filing wait unknown']
+    return [FILING_BUSY_REASON] if misses >= FILING_BUSY_PASSES else []
+
+
+def _note_filing_busy(runtime: Path) -> None:
+    misses = _filing_misses(runtime)
+    if misses == FILING_BUSY_PASSES:
+        return  # bounded evidence: a held lock does not cause a write on every pass
+    data = dict(format=1, passes=min((misses if misses is not None else FILING_BUSY_PASSES) + 1,
+                                     FILING_BUSY_PASSES), reason=FILING_BUSY_REASON)
+    durable.replace_file(_filing_folder(runtime) / 'filing-wait.json', json.dumps(data) + '\n')
+
+
 def file_drops(store: Store, ship=None, *, seats: frozenset[str] | None = None,
                service_absent: bool = False) -> list[tuple[str, str]]:
     """One filing door, serialized for the service and a check's scoped fallback.
@@ -677,9 +718,7 @@ def file_drops(store: Store, ship=None, *, seats: frozenset[str] | None = None,
     to the next ordinary pass; neither caller waits while holding another lock.
     """
     runtime = store.dir.parent.parent
-    from .sandbox import LOCKS
-
-    folder = runtime / LOCKS
+    folder = _filing_folder(runtime)
     folder.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = folder / 'filing.lock'
     descriptor = post_dir.open_lock(path, mode=0o600)
@@ -687,10 +726,12 @@ def file_drops(store: Store, ship=None, *, seats: frozenset[str] | None = None,
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
+            _note_filing_busy(runtime)
             return []
         opened, current = os.fstat(descriptor), path.lstat()
         if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
             raise ShipError('post filing lock identity changed; retained')
+        (_filing_folder(runtime) / 'filing-wait.json').unlink(missing_ok=True)
         if service_absent:
             from . import servicectl
             if servicectl.alive(runtime):

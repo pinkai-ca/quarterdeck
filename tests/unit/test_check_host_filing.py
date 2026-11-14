@@ -4,7 +4,8 @@ import fcntl
 import os
 from types import SimpleNamespace
 
-from quarterdeck import check, post, post_dir, servicectl
+from quarterdeck import check, post, post_dir, servicectl, watch
+from .test_check_lifetime import synthetic_ship
 
 
 def waiting_report(tmp_path):
@@ -62,3 +63,35 @@ def test_filing_lock_lives_under_runtime_locks(tmp_path):
     assert (folder / 'filing.lock').is_file()
     assert folder.stat().st_mode & 0o777 == 0o700
     assert not (seat.ship.runtime / 'post' / 'filing.lock').exists()
+
+
+def test_repeated_filing_contention_is_on_every_status_line_until_progress(tmp_path):  # law: nothing-waits-silently
+    seat, store, order, report, drop = waiting_report(tmp_path)
+    seat.ship = synthetic_ship(tmp_path)
+    folder = seat.ship.runtime / 'locks'
+    folder.mkdir(mode=0o700)
+    descriptor = post_dir.open_lock(folder / 'filing.lock', mode=0o600)
+
+    def status():
+        return watch.facts(seat.ship, SimpleNamespace(), walls=[], login=[], check_reading=([], []))
+
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        for _ in range(post.FILING_BUSY_PASSES - 1):
+            assert post.file_drops(store) == []
+            assert post.FILING_BUSY_REASON not in status().line()
+        assert post.file_drops(store) == []
+        evidence = (folder / 'filing-wait.json').read_bytes()
+        for _ in range(2):
+            facts = status()  # independent status readers, as in different sessions
+            assert post.FILING_BUSY_REASON in facts.line()
+            facts.pending = ['synthetic wait ' * 30]
+            assert post.FILING_BUSY_REASON in facts.line()
+        assert check.closing_report(seat, store, order) is None
+        assert (folder / 'filing-wait.json').read_bytes() == evidence
+        assert drop.exists()
+    finally:
+        os.close(descriptor)
+    assert check.closing_report(seat, store, order) == report
+    assert post.FILING_BUSY_REASON not in status().line()
+    assert not (folder / 'filing-wait.json').exists()
