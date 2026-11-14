@@ -10,9 +10,25 @@ A ship is a group of AI agents, with its orders and records: a folder under `shi
 - [`ships/forum/`](../ships/forum/README.md), a lead and four reviewers: give every reviewer the same order, and get one combined report from the lead. The forum's README has the steps and the limits.
 - [`ships/cascade/`](../ships/cascade/README.md), three agents on Claude Code, Codex and Grok Build: the three take turns on one question before one conclusion. The cascade's README has the steps; the template still needs a live proof on installed harnesses.
 
-## A ship of your own
+## Start with your office
 
-The README's [Quick start](../README.md#quick-start) has a ship written for you, by the harness you already use or by `qd setup`. To write a ship by hand, install Quarterdeck as the Quick start says, then run these steps from the folder you cloned, where `qd` is `.venv/bin/qd`.
+From the Quarterdeck project folder, run:
+
+```sh
+.venv/bin/qd init
+```
+
+This copies the tracked office template to `office/`, at the top of the project, and commits the declaration, orders and local desk card in the office's own git repository. Its `runtime/` is ignored. The office gets its own service and tmux server; only the desk starts. The template uses Claude Code's existing sign-in and the program's model and effort defaults. If the program or sign-in needs attention, the office remains saved: edit its declaration or complete the program's sign-in, then rerun `qd init`. No live check is run by init.
+
+The office is always the real `office/` folder at the project top. It has no alternate location or alias. Neither init nor setup moves an existing ship's office seats or messages.
+
+To open the desk, run `.venv/bin/qd --ship office attach`. Tell the desk what you want to work on. Declaring further office seats is your choice: add them to `office/ship.toml` with a role such as counsel or communications and a session with `human = true`, then bring each up by name. Rerunning init starts only the desk, even if other declared seats are marked up.
+
+`qd setup` remains the crew wizard. When no office exists, its first step runs init and returns with the desk ready; a later setup keeps the wizard for a project crew. The desk's command for raising a project ship is a separate part of the fleet work; this change does not provide that command.
+
+## A project ship of your own
+
+After initializing the office, `qd setup` can write a project crew for you. To write a ship by hand, install Quarterdeck as the README's [Quick start](../README.md#quick-start) says, then run these steps from the folder you cloned, where `qd` is `.venv/bin/qd`.
 
 **1. Practise on stand-ins.** Optional, and spends nothing.
 

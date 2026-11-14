@@ -450,6 +450,8 @@ def test_answers_file_validation_is_an_ordinary_refusal(tmp_path, document):
 
 
 def test_non_tty_cli_uses_same_setup_without_inherited_ship_handoff(answers, tmp_path, monkeypatch, capsys):
+    text, orders, _ = setup.template("office")
+    ship.create(tmp_path / "office", text, orders)
     file = tmp_path / "answers.json"
     file.write_text(json.dumps(answers))
     operations = ScriptedOperations()

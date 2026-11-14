@@ -9,6 +9,8 @@ ships/*
 !ships/office/
 # A ship's state is fenced in a nested repository and never tracked anywhere.
 ships/*/runtime/
+# The live office is its own repository, separate from the tracked office template.
+/office/
 # Worktrees for work on the framework itself live here, inside the project folder.
 work/
 !ships/forum/work/

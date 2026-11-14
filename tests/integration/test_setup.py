@@ -10,6 +10,19 @@ from quarterdeck.drill import Check
 from quarterdeck.output import Reading
 
 
+@pytest.fixture(autouse=True)
+def established_office(tmp_path, monkeypatch):
+    """These cases exercise the crew wizard after the office-first setup step."""
+    for name, value in {"GIT_AUTHOR_NAME": "Setup Example", "GIT_AUTHOR_EMAIL": "setup@example.invalid",
+                        "GIT_COMMITTER_NAME": "Setup Example", "GIT_COMMITTER_EMAIL": "setup@example.invalid",
+                        "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("GIT_DIR", raising=False)
+    monkeypatch.delenv("GIT_WORK_TREE", raising=False)
+    text, orders, _ = setup.template("office")
+    ship.create(tmp_path / "office", text, orders)
+
+
 @pytest.mark.parametrize("check,start,install_fails", [
     ("yes", "yes", False), ("no", "yes", False),
     ("yes", "no", False), ("yes", "yes", True),

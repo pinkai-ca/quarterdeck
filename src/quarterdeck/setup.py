@@ -144,6 +144,10 @@ class Operations:
         from .cli import cmd_up
         return cmd_up(argparse.Namespace(ship=str(ship.folder), seat=None, fresh=False))
 
+    def up_desk(self, ship: Ship):
+        from .cli import cmd_up
+        return cmd_up(argparse.Namespace(ship=str(ship.folder), seat="desk", fresh=False))
+
     def status(self, ship: Ship):
         from .cli import cmd_status
         return cmd_status(argparse.Namespace(ship=str(ship.folder), line=False))
@@ -152,13 +156,75 @@ class Operations:
         return shlex.join(["qd", "--ship", str(ship.folder), "attach", ship.seat("desk").session])
 
 
-def template() -> tuple[str, str, dict]:
-    folder = standing.project_dir() / "ships" / "default"
+def template(kind: str = "default") -> tuple[str, str, dict]:
+    folder = standing.project_dir() / "ships" / kind
     try:
         text, orders = (folder / "ship.toml").read_text(), (folder / "orders.md").read_text()
         return text, orders, tomllib.loads(text)
     except (OSError, ValueError):
-        raise ShipError("default ship template unavailable; install this version's packaged resources and rerun qd setup") from None
+        raise ShipError(f"{kind} ship template unavailable; install this version's packaged resources and rerun qd setup") from None
+
+
+def office_folder(project: Path) -> Path:
+    """The single office lives at the project top; no alias or alternate location."""
+    project = project.resolve()
+    folder = project / "office"
+    if folder.is_symlink():
+        raise ShipError(f"the office must be a real folder at {folder}, not a link; restore its directory before qd init")
+    return folder
+
+
+def init_office(args: argparse.Namespace, *, operations: Operations | None = None) -> list[str]:
+    """Copy only the office declarations, commit them, then use normal up for its desk."""
+    operations = operations or Operations()
+    project = operations.project_folder().resolve()
+    if getattr(args, "ship", None):
+        raise ShipError("qd init initializes the project's office, not --ship; run it without --ship")
+    folder = office_folder(project)
+    lines = []
+    if not folder.exists():
+        if not folder.parent.is_dir():
+            raise ShipError(f"office parent {folder.parent} must already exist; create it before qd init")
+        source = standing.project_dir() / "ships" / "office"
+        names = ("ship.toml", "orders.md", "README.md", "roles/desk.md")
+        try:
+            files = {name: (source / name).read_text() for name in names}
+        except (OSError, UnicodeError) as error:
+            raise ShipError(f"office template unavailable ({type(error).__name__}); install this version's packaged resources") from None
+        ships._validate(ships._from_text(files["ship.toml"], folder))
+        folder.mkdir()  # exclusive, as for setup's crew declaration
+        for name, text in {**files, ".gitignore": "/runtime/\n"}.items():
+            path = folder / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            ships._write_atomically(path, text)
+        try:
+            ships._git(folder, "init", "--quiet")
+            commit = ships.commit(folder, [*names, ".gitignore"], "qd init: declare office")
+        except ShipError as error:
+            raise ShipError(f"office files saved in {folder}, but its first commit is unfinished: {error}; "
+                            "resolve git identity and commit only its declaration, orders, cards, README and .gitignore before rerunning qd init") from None
+        lines.append(f"office created at {folder} · committed {commit} · runtime ignored")
+    office = ships.load(folder)
+    if office.kind != "office":
+        raise ShipError(f"{folder} is not kind = \"office\"; choose the project's office, not a crew ship")
+    if not office.is_repository:
+        raise ShipError(f"{folder} needs its own git repository; initialize and commit its declaration before qd init")
+    ships._git(folder, "rev-parse", "--verify", "HEAD")
+    result = operations.up_desk(office)
+    lines.extend([result] if isinstance(result, str) else result)
+    lines += [f"Desk access: {operations.access(office)}", "Office ready; tell the desk what you want to work on."]
+    return lines
+
+
+def first_step(args: argparse.Namespace, *, operations: Operations | None = None):
+    """The first setup creates only the office; an existing office leaves the crew wizard intact."""
+    operations = operations or Operations()
+    folder = office_folder(operations.project_folder())
+    if not (folder / "ship.toml").exists():
+        return init_office(argparse.Namespace(ship=None, office=None), operations=operations)
+    if ships.load(folder).kind != "office":
+        raise ShipError(f"{folder} is not an office; resolve it before qd setup")
+    return run(args, operations=operations)
 
 
 def program_list(value: str, available: dict) -> list[str]:

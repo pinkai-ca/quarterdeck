@@ -4,6 +4,17 @@ A page of [the design](../DESIGN.md).
 
 ## Guided setup
 
+The entry is `qd init`: it copies the tracked `ships/office/` template to the fixed
+`<project>/office/` directory and commits its declaration, orders and local desk card
+in a repository of its own. The office has `kind = "office"`, no captain or crew,
+only human sessions, and no required project workspace. Its ignored runtime,
+tmux server and service are independent of every project ship. Init uses ordinary
+`qd up desk`, preserving any existing office declaration and starting no other seat.
+It neither raises a project ship nor moves existing office seats or messages.
+The first `qd setup` initializes this office and returns; after an office exists,
+setup retains the crew wizard below. There is no office alias, alternate path or
+additional routing configuration.
+
 `qd setup` asks, in order, what the crew calls the person (Admiral), ship name,
 office (Office), workspace, then desk, captain and engineering: display name,
 harness, model and effort. Suggestions come from the default template and adapter
