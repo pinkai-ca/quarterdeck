@@ -611,3 +611,54 @@ def test_a_jailed_seats_report_is_in_its_view_as_soon_as_the_service_files_it(dr
     finally:
         seat.down()
         svc.ledger.close()
+
+
+def test_a_jailed_seat_reads_plain_success_words_and_cannot_post_the_same_report_twice(drydock: Path, tmux: Tmux, tmp_path: Path):
+    """Real bwrap + the fake program: the success words, and the repeat guard from what the jail shows.
+
+    The first repeat is caught in the seat's own drop, before the service files it; the second, in a later
+    turn, in the read-only store. An order with the same words is posted twice: orders are never deduplicated.
+    """
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    path = drydock / "ship.toml"
+    text = shipmod.edit(path.read_text(), "seats.worker-1", "sandbox", True)
+    text = shipmod.edit(text, "seats.worker-1", "cwd", str(workspace))
+    path.write_text(text + '\n[seats.worker-1.settings]\nstep_seconds = "0.05"\n')
+    ship = shipmod.load(drydock)
+    worker = seatmod.Seat(ship, ship.seat("worker-1"), tmux)
+    store = post.Store(ship.runtime)
+    drop = ship.runtime / "post" / "drop" / "worker-1"
+    try:
+        worker.up(resume=False)
+        assert worker.launched().argv[0] == "bwrap"
+        wait_for(lambda: Door(worker).reading().open)
+        first = store.new("order", "desk", worker.name,
+                          "$ qd post ack --re {this}\n"
+                          "$ qd post ack --re {this}\n"
+                          "$ qd post report --re {this} jail proven\n"
+                          "$ qd post report --re {this} jail proven\n"
+                          "$ qd post order --to captain the same words\n"
+                          "$ qd post order --to captain the same words\n"
+                          "$ ls " + str(drop) + " | wc -l | sed 's/^/drops=/'", subject="Twice")
+        assert Door(worker).deliver(post.typed([first])).result == "delivered"
+        screen = wait_for(lambda: (s if "⎿ drops=" in (s := tmux.capture(worker.pane().id, history=400)) else None), 60)
+        assert "⎿ drops=4" in screen, screen  # one ack, one report, two orders: nothing else was written
+        post.file_drops(store)
+        (ack,) = [m for m in store.all() if m.kind == "ack" and m.re == first.id]
+        (report,) = [m for m in store.all() if m.kind == "report" and m.re == first.id]
+        assert len([m for m in store.all() if m.kind == "order" and m.body == "the same words"]) == 2
+        assert f"Posted {report.short} to desk. Nothing more to do: the ship delivers it." in screen
+        assert f"Posted {ack.short} to desk. Nothing more to do: the ship files it." in screen
+        assert f"Already posted as {report.short}; not posted again. Nothing more to do." in screen
+        assert f"Already posted as {ack.short}; not posted again. Nothing more to do." in screen
+        second = store.new("order", "desk", worker.name,
+                           f"$ qd post report --re {first.id} jail proven\n$ echo second-done", subject="Again")
+        wait_for(lambda: (r := Door(worker).reading()).open and not r.working, 60)
+        assert Door(worker).deliver(post.typed([second])).result == "delivered"
+        screen = wait_for(lambda: (s if "⎿ second-done" in (s := tmux.capture(worker.pane().id, history=400)) else None), 60)
+        assert screen.count(f"Already posted as {report.short}; not posted again.") == 2, screen
+        assert post.file_drops(store) == [] and not list(drop.glob("*.json"))
+        assert [m.id for m in store.all() if m.kind == "report" and m.re == first.id] == [report.id]
+    finally:
+        worker.down()

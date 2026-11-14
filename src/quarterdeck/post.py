@@ -615,6 +615,59 @@ def write_drop(runtime: Path, message: Message, *, seat: str | None = None) -> P
     return path
 
 
+REPEATS_REFUSED = ("report", "answer", "ack")  # an order or a question is never deduplicated
+
+
+def already_posted(store: Store, message: Message, *, seat: str | None = None) -> Message | None:
+    """The message this seat already posted with the same kind, re and byte-identical body, or None.
+
+    Only a report, an answer or an ack that names a message is checked: posting the same one twice
+    says nothing new, and a seat that took the command's answer for a failure would otherwise file
+    it again and again. A post with no re is never refused, so a standing report may recur. An ack is
+    refused only while the identical one is still the seat's latest ack: the Ledger reads the latest
+    claim, so acking A, then B, then A again moves the claim back and is posted.
+
+    The search reads only what the poster can see: its own drop folder, then the post store as it is
+    shown here (a jailed seat's view of it). The drop is read first, so a drop the service files
+    between the two readings is found in the store by the second. Nothing is written or widened.
+    """
+    if message.kind not in REPEATS_REFUSED or not message.re:
+        return None
+    runtime = store.dir.parent.parent
+    folder = seat or message.sender
+    senders = _drop_senders(runtime, folder) | {message.sender}
+    mine: dict[str, Message] = {}
+    for found in (*_own_drops(runtime, folder), *store.all()):
+        if found.id != message.id and found.kind == message.kind and found.sender in senders:
+            mine.setdefault(found.id, found)
+    if not mine:
+        return None
+    ordered = sorted(mine.values(), key=lambda found: (found.at, found.id))
+    if message.kind == "ack":
+        ordered = ordered[-1:]  # only the latest claim can be repeated
+    return next((found for found in ordered if found.re == message.re and found.body == message.body), None)
+
+
+def _own_drops(runtime: Path, seat: str) -> list[Message]:
+    """The messages still waiting in one seat's drop folder, by the no-follow walk; a name that is no message is skipped."""
+    folder = drop_dir(runtime, seat)
+    try:
+        files = post_dir.list_children(folder)
+    except (OSError, ShipError):
+        return []
+    found = []
+    for name, kind in sorted(files):
+        if not stat.S_ISREG(kind) or not name.endswith(".json") or name.endswith(".group.json"):
+            continue
+        try:
+            text = _read_regular(folder / name)
+            if text is not None:
+                found.append(Message.from_json(text))
+        except (ValueError, KeyError, TypeError, AttributeError):
+            continue
+    return found
+
+
 def _mode(path: Path) -> int | None:
     """The name's own mode, never following it; None when missing. A link on the way is a hold."""
     return post_dir.mode(path)

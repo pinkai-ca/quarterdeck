@@ -12,6 +12,7 @@ from quarterdeck.input_receipt import confirmed
 from .test_service import ship, qd
 from .test_fakeharness import Seat, wait_for
 from .send_now_forcing import record_behind_a_blind_screen
+from .waiting import posted_short
 
 SETTLE = 1.0  # the fake begins a queued turn at once when one ends; a second turn would show well within this
 
@@ -85,7 +86,7 @@ def test_post_now_consumes_during_the_running_turn_through_the_service(ship, tmu
         qd(capsys, "post", "order", "--to", "captain", "running initial turn")
         wait_for(boundary.reached)
         assert captain.harness.state(captain.record()).open_tool is not None
-        ref = qd(capsys, "post", "question", "--to", "captain", "--now", "urgent during this turn").split()[0]
+        ref = posted_short(qd(capsys, "post", "question", "--to", "captain", "--now", "urgent during this turn"))
         message = store.get(ref)
         payload = post.typed([message]).strip()
         assert message.speed == "now"

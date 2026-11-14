@@ -16,7 +16,7 @@ from quarterdeck.door import CONFIRM_SECONDS
 from quarterdeck.harness.base import Usage, Window
 from quarterdeck.tmux import Tmux
 
-from .waiting import await_drop, wait_for
+from .waiting import await_drop, posted_short, wait_for
 from .progress import service_progress
 from quarterdeck.harness.synthetic_control import Rendezvous, events
 
@@ -53,6 +53,7 @@ def test_up_starts_the_service_and_the_service_delivers(ship: shipmod.Ship, tmux
     assert "service started · pid" in out and service.alive(ship.runtime)
     assert "service ok" in qd(capsys, "status").splitlines()[0]
     proof = qd(capsys, "post", "order", "--to", "captain", "--subject", "Stars", "Count the stars.\n$ echo counted")
+    assert proof.startswith("Posted ") and "Nothing more to do: the ship delivers it." in proof
     assert proof.endswith("· filed by the service · the service types it into captain's pane")
     store = post.Store(ship.runtime)
     message = wait_for(lambda: store.all()[0] if store.all() else None, seconds=15)
@@ -295,7 +296,7 @@ def test_set_adopt_writes_what_the_seat_runs_into_the_file(ship: shipmod.Ship, t
 def test_every_turn_is_accounted_by_pool_seat_and_order(ship: shipmod.Ship, tmux: Tmux, capsys):
     qd(capsys, "up", "captain")
     proof = qd(capsys, "post", "order", "--to", "captain", "count\n$ qd post report --re {this} counted")
-    short = proof.split(" ")[0]
+    short = posted_short(proof)
     store = post.Store(ship.runtime)
     order = store.get(short)
     wait_for(lambda: not store.open_for("captain"), seconds=20)
@@ -367,7 +368,7 @@ def test_a_blocked_delivery_goes_in_on_the_tick_after_the_human_clears_the_box(s
     draft_report = wait_for(lambda: next((m for m in store.for_seat("desk") if m.sender == "ship"
                                          and m.body == "captain obstructed, text in the box"), None))
     proof = qd(capsys, "post", "order", "--to", "captain", "waits behind the human's text")
-    order = store.get(proof.split()[0])
+    order = store.get(posted_short(proof))
     assert store.all().index(draft_report) < store.all().index(order)
     service_progress(ship)
     assert attempts.all() == [], "nothing typed, nothing attempted while a human's text is in the box"  # law: one-door
@@ -388,7 +389,7 @@ def test_a_message_once_queued_is_not_carried_again_once_read(ship: shipmod.Ship
         record = captain.record()
         assert captain.harness.state(record).turn_open
         assert captain.harness.state(record).open_tool is not None
-        ref = qd(capsys, "post", "order", "--to", "captain", "second, mid-turn\n$ qd post report --re {this} done-2").split(" ")[0]
+        ref = posted_short(qd(capsys, "post", "order", "--to", "captain", "second, mid-turn\n$ qd post report --re {this} done-2"))
         message = store.get(ref)
         payload = post.typed([message]).strip()
         assert wait_for(lambda: attempts.latest("captain").get(message.id) == "queued")
@@ -416,7 +417,7 @@ def test_interrupt_reaches_a_working_seat_that_does_not_queue_through_the_servic
     captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
     qd(capsys, "post", "order", "--to", "captain", "a long turn")
     wait_for(lambda: captain.harness.screen(tmux.capture(captain.pane().id)).working, seconds=15)
-    urgent = qd(capsys, "post", "order", "--to", "captain", "--interrupt", "urgent").split(" ")[0]
+    urgent = posted_short(qd(capsys, "post", "order", "--to", "captain", "--interrupt", "urgent"))
     store, attempts = post.Store(ship.runtime), post.Attempts(ship.runtime)
     done = wait_for(lambda: [a for a in attempts.for_message(store.get(urgent).id) if a.result], seconds=15)
     assert done[0].result in ("delivered", "queued"), done[0]
@@ -427,7 +428,7 @@ def test_an_ack_wakes_nobody_and_a_resend_to_the_office_goes_to_its_watch(ship: 
     qd(capsys, "up", "captain")
     qd(capsys, "up", "desk")
     captain = seatmod.Seat(ship, ship.seat("captain"), tmux)
-    order = qd(capsys, "post", "order", "--from", "captain", "--to", "worker-1", "build it").split(" ")[0]
+    order = posted_short(qd(capsys, "post", "order", "--from", "captain", "--to", "worker-1", "build it"))
     qd(capsys, "post", "ack", "--from", "worker-1", "--re", order)
     service_progress(ship)
     assert post.Attempts(ship.runtime).all() == [], "an ack is never typed into the captain's pane"  # law: open-until-closed
@@ -435,7 +436,7 @@ def test_an_ack_wakes_nobody_and_a_resend_to_the_office_goes_to_its_watch(ship: 
     # Filing and the waking line share one tick. The service stays down until the blind attempt
     # exists, so that tick cannot type into the desk (law: one-door).
     service.stop(ship.runtime)
-    question = qd(capsys, "post", "question", "--to", "desk", "for the desk").split(" ")[0]
+    question = posted_short(qd(capsys, "post", "question", "--to", "desk", "for the desk"))
     store, attempts = post.Store(ship.runtime), post.Attempts(ship.runtime)
     post.file_drops(store)
     message = store.get(question)

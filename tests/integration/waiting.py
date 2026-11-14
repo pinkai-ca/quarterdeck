@@ -34,9 +34,16 @@ def wait_for(predicate, seconds: float = 10.0):
     raise AssertionError("condition not met in time") from last_read_error
 
 
+def posted_short(text: str) -> str:
+    """The short id qd post names in its first words: 'Posted <short> to <seat>. Nothing more to do ...'."""
+    words = text.split()
+    assert words[:1] == ["Posted"] and len(words) > 1, text
+    return words[1]
+
+
 def await_drop(text: str, *, seconds: float = 15) -> str:
     """A post returns before the service's tick files it. Wait for that file when a service is up."""
-    short = text.split(" ", 1)[0] if text else ""
+    short = posted_short(text) if text.startswith("Posted ") else ""
     ship = os.environ.get("QD_SHIP")
     if not short or not ship:
         return text

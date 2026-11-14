@@ -82,12 +82,13 @@ def test_an_ack_needs_no_body_and_wakes_nobody(drydock: Path, capsys, monkeypatc
     monkeypatch.setenv("QD_SHIP", str(drydock))
     monkeypatch.delenv("QD_SEAT", raising=False)  # run from inside a seat, this shell would post as that seat and refuse --from
     code, out, _ = run(capsys, "post", "order", "--to", "worker-1", "build it")
-    short = out.split(" ")[0]
+    assert out.startswith("Posted ord-") and " to worker-1. Nothing more to do: the ship delivers it. " in out
+    short = out.split()[1]
     store, attempts = post.Store(drydock / "runtime"), post.Attempts(drydock / "runtime")
     post.file_drops(store)  # the ack names an order the service has already filed
     code, out, err = run(capsys, "post", "ack", "--from", "worker-1", "--re", short)
     assert code == 0, err
-    assert out.startswith("ack-") and out.strip().endswith(f"claims {short} for the ledger; an ack wakes nobody")
+    assert out.startswith("Posted ack-") and "Nothing more to do: the ship files it." in out and out.strip().endswith(f"claims {short} for the ledger; an ack wakes nobody")
     post.file_drops(store)
     ack = store.all()[-1]
     assert ack.kind == "ack" and ack.body == "claimed" and ack.to == "operator"
