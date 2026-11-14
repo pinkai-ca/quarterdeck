@@ -26,6 +26,10 @@ class MuseHarness(Harness):
     check_model = "muse-wonder-1.0"
     check_effort = "minimal"
     minimal_check_task = "Write OK to proof.txt."
+    screen_activity_before_record = True
+    daily_live_hold_reason = (
+        "Muse was skipped: a check costs it about 3% of its week, so the Admiral decides about Muse"
+    )
     requires_deferred_opening = True
     effort_selectors = ("reasoning_effort",)
     efforts = EffortCapability("levels", ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"),
@@ -195,7 +199,8 @@ class MuseHarness(Harness):
 
     def owns_launch(self, argv) -> bool:
         native = tuple(argv)
-        return bool(native and re.fullmatch(r"muse-bin-" + muse_program.RELEASE.pattern, Path(native[0]).name))
+        return bool(native and (Path(native[0]).name == self.program or
+                    re.fullmatch(r"muse-bin-" + muse_program.RELEASE.pattern, Path(native[0]).name)))
 
     def workspace_notice(self, home, cwd) -> str:
         return ("Muse trusts the declared workspace; workspace AGENTS.md and native tooling may load. "

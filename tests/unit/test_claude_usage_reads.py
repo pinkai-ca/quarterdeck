@@ -127,7 +127,13 @@ def ship_service(tmp_path, monkeypatch):
     pools = {name: subscription(tmp_path, name) for name in ("claude-primary", "claude-secondary")}
     ship = Ship(tmp_path, "example", "operator", tmp_path, pools, {"crew": Session("crew", "crew")}, {})
     clock = SimpleNamespace(mono=1000.0, wall=datetime.now(timezone.utc))
+    class ClockDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock.wall.astimezone(tz) if tz is not None else clock.wall.replace(tzinfo=None)
+
     monkeypatch.setattr(quota, "time", SimpleNamespace(monotonic=lambda: clock.mono))
+    monkeypatch.setattr(quota, "datetime", ClockDatetime)
     monkeypatch.setattr(servicemod.post, "now", lambda: clock.wall)
     svc = Service(ship, SimpleNamespace())
     yield ship, svc, clock

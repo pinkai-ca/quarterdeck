@@ -152,7 +152,7 @@ def test_the_probe_rechecks_closure_for_its_declared_window(tmp_path, databases,
             pass
 
         def reading(self):
-            return SimpleNamespace(open=True)
+            return SimpleNamespace(open=True, working=False)
 
         def deliver(self, text, *, proof):
             (runtime / 'check' / 'synthetic-seat' / 'synthetic-seat.txt').write_text(

@@ -47,7 +47,7 @@ def claude_pool(tmp_path: Path, grant_ends: datetime) -> tuple[Ship, Pool]:
 def test_each_adapter_declares_its_measured_grant_kind():
     declared = {name: harnesses.get(name).grant_kind for name in harnesses.NAMES if name != "fake"}
     assert declared == {"claude": "fixed", "grok": "self-renewing", "codex": "unknown",
-                        "antigravity": "unknown", "opencode": "unknown", "pi": "unknown"}
+                        "antigravity": "unknown", "opencode": "unknown", "pi": "unknown", "muse": "unknown"}
     assert all(kind in GRANT_KINDS for kind in declared.values())
 
 

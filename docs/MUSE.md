@@ -148,6 +148,15 @@ known dead pane or a seat without a launch reads off. Relaunch and in-session
 controls require an explicit idle answer. Main's unread-screen journal evidence remains in front of the
 unknown-activity hold. Exact receipts retain the current launch's join
 provenance and every delivered form recognized by the shared receipt owner.
+Screen activity before a record is joined is an explicit Muse capability;
+other programs keep their record-first startup reading, with admission still
+decided separately by the Door. Known native notices retain their existing
+adapter-declared dismissal. Unknown post-paste activity retains the journal's
+unread-screen and short-pane diagnostics without clearing or submitting.
+
+The adapter also owns the exclusion from unattended daily live checks. The
+daily scheduler reads that declaration rather than containing a second table
+of program names. The exclusion and its report text are unchanged.
 
 Strict usage pacing is opt-in. Its persisted refusal deadline lives beside the
 existing attempt table, retains the absolute minimum interval, and bounds

@@ -1,6 +1,6 @@
 """One opt-in deferred launch opening, durably held until the ordinary Door confirms it.
 
-Muse uses this owner so its startup privacy proof precedes every input. Nothing
+An opted-in adapter uses this owner so its startup privacy proof precedes every input. Nothing
 retries the opening, and other adapters keep their existing launch path.
 """
 

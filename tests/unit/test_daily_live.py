@@ -101,7 +101,7 @@ def test_unknown_history_is_checked_and_muse_is_skipped_by_name(tmp_path):
     assert message.subject == "Daily live test"
     assert message.body.startswith("Daily live test for 2026-11-14.\n")
     assert "Readings: program history unavailable" in message.body
-    assert daily_live.MUSE_LINE in message.body
+    assert daily_live.exclusions()["muse"] in message.body
     assert "claude: use unknown; check passed" in message.body
     assert "grok: use unknown; check failed (exit 1)" in message.body
     assert "synthetic failure" in message.body
@@ -236,7 +236,7 @@ def test_without_memory_the_throwaway_uses_the_scratch(tmp_path, monkeypatch):
     assert Path(saved["socket"]).parent.name.startswith("qd-pt-")
     assert not Path(saved["socket"]).exists()
     assert "codex: not used that day; check passed" in message.body
-    assert daily_live.MUSE_LINE in message.body
+    assert daily_live.exclusions()["muse"] in message.body
 
 
 def test_the_live_checks_private_server_falls_back_outside_the_project(monkeypatch, tmp_path):

@@ -415,10 +415,10 @@ class Door:
             if self.starting_up():
                 return Reading(False, "starting, the input box is not drawn yet", "time")
             return Reading(False, "box not found on the screen", "needs a human")
-        if screen.working is None:
-            return Reading(False, "current activity unknown", "time")
         if screen.box.strip():
             return Reading(False, "text in the box", "needs a human")
+        if screen.working is None:
+            return Reading(False, "current activity unknown", "time")
         if screen.working is True and not self.harness.queues_while_working(self.seat.spec):
             return Reading(False, "working, program does not queue", "time", working=True)
         if not self.harness.startup_ready(getattr(self.seat, 'home', None)):
@@ -518,7 +518,7 @@ class Door:
         if reason := self.adapter_obstruction(screen):
             clears = "time" if reason == "starting, waiting for the input box" else "needs a human"
             return Reading(False, reason, clears)
-        if (screen is None or screen.working is None or screen.unknown is not None
+        if (screen is None or (screen.working is None and screen.interruption is None) or screen.unknown is not None
                 or (screen.box is None and screen.interruption is None)):
             return self._reading(screen)
         return None
@@ -629,11 +629,11 @@ class Door:
                 and screen.interruption.click is not None
                 and (screen.box is None if screen.interruption.by_label else screen.box is not None and not screen.box.strip())):
             return self.answer(screen)
-        if screen is None or screen.working is None:
+        if screen is None:
             return screen
         if not pending.held(self.seat, screen, self.proof) and screen and screen.interruption and screen.interruption.dismissable and not (screen.box or "").strip():
             current = self.screen()
-            if (current is None or current.working is None or current.interruption != screen.interruption
+            if (current is None or current.interruption != screen.interruption
                     or (current.box or "").strip() or self.adapter_obstruction(current)):
                 return current
             if self.proof and not self.proof.same_launch(self.seat):
@@ -763,11 +763,8 @@ class Door:
                 proof.save(paste_screen=pending.screen_evidence(shown))
             except (OSError, ValueError, TypeError):
                 pass
-        if shown is None or shown.working is None:
-            if reason := self.adapter_obstruction():
-                return Delivery("blind", f"{reason}; draft not submitted or cleared; needs a human")
-            return Delivery("blind", "screen activity unknown after paste; draft not submitted or cleared; needs a human")
-        if not self.matches(self.harness.box(text), shown):  # law: one-door
+        activity_unknown = shown is None or shown.working is None
+        if activity_unknown or not self.matches(self.harness.box(text), shown):  # law: one-door
             current = self.captured_pane
             diagnostic = self.short_pane_reason(text, current)
             if (diagnostic and proof and current and current.id == pane.id and current.pid == pane.pid
@@ -780,6 +777,12 @@ class Door:
                     pass  # optional reason metadata; never alter paste/clear/submit decisions
             if reason := self.adapter_obstruction():
                 return Delivery("blind", f"{reason}; draft not submitted or cleared; needs a human")
+            if activity_unknown:
+                reason = "screen activity unknown after paste; draft not submitted or cleared; needs a human"
+                if unread and proof and 'paste_screen' in proof.data:
+                    reason = (f"screen activity unknown ({proof.data['paste_screen']['reading']}); draft not submitted "
+                              "or cleared; the screen read is kept in its journal; needs a human")
+                return Delivery('blind', f'{diagnostic}; {reason}' if diagnostic else reason)
             if verify is None or verify():
                 if reason:=paste_refusal.clear(self,text,owned,shown,BOX_SECONDS):
                     return Delivery('withheld', f'{diagnostic}; {reason}' if diagnostic else reason)

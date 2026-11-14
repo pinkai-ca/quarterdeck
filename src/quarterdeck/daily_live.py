@@ -2,8 +2,8 @@
 
 The schedule is a user timer of the same kind as the desk's morning report. This module
 does not install that timer. Operations installs the text from ``qd daily-live --units``
-after the desk agrees, as it does for the other ``qd-*`` units. Muse is never checked:
-a check costs about 3% of its week, and the Admiral decides.
+after the desk agrees, as it does for the other ``qd-*`` units. Adapter-declared
+exclusions remain held for the person to decide.
 """
 
 from __future__ import annotations
@@ -25,10 +25,6 @@ from . import check_capacity, durable, harness as harnesses, post, program_use, 
 from .ship import Ship, ShipError
 from .tmux import Tmux, TmuxError
 
-MUSE = "muse"
-MUSE_LINE = (
-    "Muse was skipped: a check costs it about 3% of its week, so the Admiral decides about Muse"
-)
 WHEN = "23:00:00"  # the civil day is the one ending; the machine's zone, never a named zone
 REPORTED = "daily-live-reported"  # in the ship's runtime: the latest civil day whose report is filed
 OUTPUT_LIMIT = 2000
@@ -174,18 +170,25 @@ def classify(row: dict, *, history_known: bool, day: datetime) -> str:
     return "unknown"
 
 
+def exclusions() -> dict[str, str]:
+    """Pure adapter metadata; no installed program or provider is called."""
+    return {name: reason for name in harnesses.NAMES
+            if (reason := harnesses.get(name).daily_live_hold_reason) is not None}
+
+
 def checkable(name: str) -> bool:
-    """A program ``qd check`` accepts. Muse is decided by name before this."""
+    """A native program that is not excluded from unattended checks."""
     if name not in harnesses.NAMES:
         return False
     try:
-        return not harnesses.get(name).synthetic
+        adapter = harnesses.get(name)
+        return not adapter.synthetic and adapter.daily_live_hold_reason is None
     except ShipError:
         return False
 
 
 def plan(readings, *, history_error: str | None, day: datetime) -> list[Choice]:
-    """Muse is skipped by name. Used programs are skipped. Unknown use is checked."""
+    """Excluded and used programs are skipped. Unknown use is checked."""
     day = _aware(day)
     found: dict[str, dict] = {}
     for row in readings or ():
@@ -195,10 +198,11 @@ def plan(readings, *, history_error: str | None, day: datetime) -> list[Choice]:
         if not isinstance(name, str) or not name.strip():
             continue
         found[name] = row
-    choices = [Choice(MUSE, "skip", "held", MUSE_LINE)]
+    held = exclusions()
+    choices = [Choice(name, "skip", "held", reason) for name, reason in held.items()]
     history_known = history_error is None
     for name in sorted(found, key=str.casefold):
-        if name.casefold() == MUSE:
+        if name.casefold() in held:
             continue
         use = classify(found[name], history_known=history_known, day=day)
         if use == "used":
@@ -367,9 +371,10 @@ def report_body(day: datetime, choices: list[Choice], results: dict[str, CheckRu
     if history_error:
         lines.append(f"Readings: {history_error}")
         lines.append("")
-    lines.append(MUSE_LINE)
+    held = exclusions()
+    lines.extend(held.values())
     for choice in choices:
-        if choice.program.casefold() == MUSE:
+        if choice.program.casefold() in held:
             continue
         if choice.action == "skip":
             if choice.use == "used":

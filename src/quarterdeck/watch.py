@@ -71,6 +71,8 @@ def activity(seat: Seat | UnresolvedSeat, now: datetime | None = None) -> Activi
                 "record missing", "ambiguous", "record reader unknown", "record reader changed",
                 "record unreadable", "record pointer unreadable", "record pointer empty"):
             return Activity("unknown", join.reason)  # what the Watch cannot see, it says, never a default
+        if not getattr(seat.harness, 'screen_activity_before_record', False):
+            return Activity("idle", join.reason or "")  # preserve the record-first startup reading
         screen = Door(seat).screen()
         if screen is None or screen.working is None:
             return Activity("unknown", join.reason or "could not see current activity")

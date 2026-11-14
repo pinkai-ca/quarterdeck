@@ -20,8 +20,10 @@ EXPECTED_KINDS = {
     "antigravity": "unknown",
     "pi": "levels",
     "opencode": "none",
+    "muse": "levels",
 }
 PI_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"]
+MUSE_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
 
 
 @pytest.fixture
@@ -56,11 +58,11 @@ def test_shipless_capabilities_plain_and_json(shipless, capsys, name, json_outpu
         facts = data["effort"]
         assert facts["kind"] == EXPECTED_KINDS[name]
         assert facts["version"] is None and facts["measured"] is False
-        assert facts["levels"] == (PI_LEVELS if name == "pi" else [])
-        assert data["defaults"]["model_default"] is (name not in ("pi", "opencode"))
+        assert facts["levels"] == (PI_LEVELS if name == "pi" else MUSE_LEVELS if name == "muse" else [])
+        assert data["defaults"]["model_default"] is (name not in ("pi", "opencode", "muse"))
         assert isinstance(data["controls"], list)
     else:
-        levels = ", ".join(PI_LEVELS) if name == "pi" else EXPECTED_KINDS[name]
+        levels = ", ".join(PI_LEVELS if name == "pi" else MUSE_LEVELS) if name in ("pi", "muse") else EXPECTED_KINDS[name]
         assert f"{name}: effort {levels}" in captured.out
         assert "installed version/support unknown; no program was called" in captured.out
         assert "measured versions:" in captured.out
