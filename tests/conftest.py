@@ -86,8 +86,25 @@ def pytest_configure(config):
     tempfile.tempdir = None  # gettempdir() reads TMPDIR again
 
 
+def memory_roots():
+    """Read the shared-memory root names and identities; the census never removes anything."""
+    prefix = f'qd-{os.getuid()}-'
+    found = {}
+    with os.scandir('/dev/shm') as entries:
+        for entry in entries:
+            if entry.name.startswith(prefix):
+                try:
+                    found[entry.name] = layout.identity(entry.stat(follow_symlinks=False))
+                except FileNotFoundError:
+                    pass  # a concurrent test finished its own teardown
+    return found
+
+
 def pytest_sessionstart(session):
     config = session.config
+    if not hasattr(config, 'workerinput'):
+        config._qd_memory_roots_before = memory_roots()
+        config._qd_memory_root_own = scratch.project_name(socket_parent().parent.parent)
     monitor = getattr(config, '_qd_scratch_monitor', None)
     if monitor is not None and not hasattr(config, 'workerinput'):
         config._qd_scratch_observer = scratch.PlainMonitor(monitor.paths[0], monitor.paths[1:])
@@ -96,17 +113,33 @@ def pytest_sessionstart(session):
 @pytest.hookimpl(trylast=True)
 def pytest_sessionfinish(session, exitstatus):
     observer = getattr(session.config, '_qd_scratch_observer', None)
-    if observer is None:
-        return
-    try:
-        refusal = observer.finish()['refusal']
-    except (layout.Refused, OSError, ValueError, subprocess.TimeoutExpired) as error:
-        refusal = str(error)
-    if refusal:
+    refusals = []
+    if observer is not None:
+        try:
+            refusal = observer.finish()['refusal']
+        except (layout.Refused, OSError, ValueError, subprocess.TimeoutExpired) as error:
+            refusal = str(error)
+        if refusal:
+            refusals.append(refusal)
+    before = getattr(session.config, '_qd_memory_roots_before', None)
+    if before is not None:
+        try:
+            after = memory_roots()
+            own = session.config._qd_memory_root_own
+            new = sorted(name for name, identity in after.items()
+                         if name != own and before.get(name) != identity)
+            if new:
+                refusals.append('new shared-memory roots remain after the suite: '
+                                + ', '.join('/dev/shm/' + name for name in new)
+                                + '; reported only, nothing removed')
+        except OSError as error:
+            refusals.append(f'cannot complete shared-memory root census: {error}')
+    if refusals:
         session.exitstatus = pytest.ExitCode.USAGE_ERROR
         reporter = session.config.pluginmanager.get_plugin('terminalreporter')
         if reporter:
-            reporter.write_line('pytest: refused: ' + refusal, red=True)
+            for refusal in refusals:
+                reporter.write_line('pytest: refused: ' + refusal, red=True)
 
 
 def pytest_report_header(config):
@@ -120,10 +153,9 @@ def pytest_report_header(config):
 
 @pytest.fixture(autouse=True)
 def per_test_tmpdir(tmp_path, monkeypatch):
-    """A synthetic tool launched by direct pytest keeps all its scratch inside this test's lifetime."""
-    if not os.environ.get('TESTRUNS_RUN'):
-        monkeypatch.setenv('TMPDIR', str(tmp_path))
-        monkeypatch.setattr(tempfile, 'tempdir', None)
+    """Every child starts with temporary files inside this test's lifetime, including tool runs."""
+    monkeypatch.setenv('TMPDIR', str(tmp_path))
+    monkeypatch.setattr(tempfile, 'tempdir', None)
 
 
 @pytest.hookimpl(hookwrapper=True, tryfirst=True)
