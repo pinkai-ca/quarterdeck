@@ -140,25 +140,51 @@ def test_control_keys_need_known_idle_at_both_checks(terminal, activity, unknown
 NOTICE = Interruption("synthetic notice", "synthetic notice", key="Escape")
 
 
-@pytest.mark.parametrize("given, current, dismissed", [
-    (False, False, True),
-    (None, False, False),  # the frame that showed the notice could not see activity
-    (False, None, False),  # the frame read again just before the key could not
-    (False, "other", False),  # the notice changed before the key
-])
-def test_a_known_notice_is_dismissed_only_on_two_known_frames(setup, monkeypatch, given, current, dismissed):
-    svc, seat, live, record = setup
-    pressed = []
-    monkeypatch.setattr(svc.tmux, "keys", lambda pane, *keys: pressed.append(keys))
+def notice_frames(given, current):
     shown = Screen("synthetic notice", "", working=given, interruption=NOTICE)
     if current == "other":
-        again = Screen("synthetic other notice", "", working=False,
+        again = Screen("synthetic other notice", "", working=given,
                        interruption=Interruption("synthetic other", "synthetic other", key="Escape"))
     else:
         again = Screen("synthetic notice", "", working=current, interruption=NOTICE)
+    return shown, again
+
+
+# Muse alone declares that a notice is dismissed only on two known frames: Escape on an idle Muse seat
+# arms a rewind, so its Escape goes only to a seat proved working at both reads.
+@pytest.mark.parametrize("given, current, dismissed", [
+    (True, True, True),
+    (None, True, False),  # the frame that showed the notice could not see activity
+    (True, None, False),  # the frame read again just before the key could not
+    (True, "other", False),  # the notice changed before the key
+    (False, False, False),  # never Escape to an idle Muse seat
+])
+def test_a_known_notice_is_dismissed_only_on_two_known_frames(setup, monkeypatch, given, current, dismissed):
+    svc, seat, live, record = setup
+    monkeypatch.setattr(seat, "harness", MuseHarness())
+    # The synthetic notice is no Muse composer, which Muse's own obstruction would hold first (pinned by
+    # test_muse_delivers_and_interrupts_only_on_a_readable_composer); here only the two-frame rule is read.
+    monkeypatch.setattr(MuseHarness, "delivery_obstruction", lambda self, state, screen: None)
+    pressed = []
+    monkeypatch.setattr(svc.tmux, "keys", lambda pane, *keys: pressed.append(keys))
+    shown, again = notice_frames(given, current)
     monkeypatch.setattr(Door, "screen", lambda self: again)
     Door(seat).clear_known(shown)
     assert pressed == ([("Escape",)] if dismissed else [])
+
+
+# Every other program keeps its measured dismissal, including a notice drawn without an input box,
+# whose activity the screen cannot show.
+@pytest.mark.parametrize("given, current", [(False, False), (None, False), (False, None), (None, None)])
+def test_other_programs_keep_their_measured_dismissal(setup, monkeypatch, given, current):
+    svc, seat, live, record = setup
+    assert not seat.harness.dismissal_requires_activity
+    pressed = []
+    monkeypatch.setattr(svc.tmux, "keys", lambda pane, *keys: pressed.append(keys))
+    shown, again = notice_frames(given, current)
+    monkeypatch.setattr(Door, "screen", lambda self: again)
+    Door(seat).clear_known(shown)
+    assert pressed == [("Escape",)]
 
 
 @pytest.mark.parametrize("working, box, opened", [

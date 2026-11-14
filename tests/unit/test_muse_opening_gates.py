@@ -87,7 +87,7 @@ def test_an_empty_off_screen_is_the_proof_and_a_multiline_opening_is_not_typed(t
         def screen(self):
             return seat.screen_now
 
-        def deliver(self, text, verify=None):
+        def deliver(self, text, verify=None, confirm=True):
             reason = seat.harness.input_obstruction(text, seat.screen_now)
             if reason:
                 return Delivery("withheld", reason)

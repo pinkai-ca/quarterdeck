@@ -71,13 +71,15 @@ def test_proven_absent_launch_and_dead_owned_pane_are_off():
     assert Seat.is_working(seat) is False
 
 
-def test_unknown_owned_pane_identity_does_not_become_off():
-    seat, _ = observed()
+def test_a_missing_pane_reads_off_even_with_a_saved_launch():
+    # Restored for every program, Muse included: no adapter declares otherwise.
+    seat, captured = observed()
     seat.pane = lambda: None
     launch = SimpleNamespace(pane="synthetic-pane")
     seat.launched = lambda: launch
     seat.tmux = SimpleNamespace(pane=lambda pane: SimpleNamespace())
-    assert Seat.is_working(seat) is None
+    assert Seat.is_working(seat) is False
+    assert not captured
 
 
 def test_legacy_screen_default_and_unobserved_reading_are_separate():
@@ -114,8 +116,10 @@ def test_watch_reports_unknown_screen_separately_from_record_idle(monkeypatch, s
     assert "working False" not in text
 
 
-def test_follow_has_no_idle_baseline_before_the_first_record():
+def test_follow_has_an_idle_baseline_before_the_first_record():
+    # Restored for every program, Muse included: follow shows a fresh seat's first turn.
     service = SimpleNamespace(work_marks={}, working={})
-    seat = SimpleNamespace(name="synthetic", launched=lambda: "synthetic launch", record=lambda: None)
-    assert Service._working(service, seat) is None
+    seat = SimpleNamespace(name="synthetic", launched=lambda: "synthetic launch", record=lambda: None,
+                           harness=MuseHarness())
+    assert Service._working(service, seat) is False
     assert service.working == {} and service.work_marks == {}
