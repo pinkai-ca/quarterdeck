@@ -103,7 +103,7 @@ def test_a_forward_of_an_order_not_in_the_store_is_held(fleet_pair, monkeypatch)
     office, agora, office_store, agora_store = fleet_pair
     missing = 'ord-20261114-1242-desk@office-ffff'
     path = intent(agora, 'lead', missing)
-    assert ('drop/lead', 'not a message') in post.file_drops(agora_store, agora)
+    assert ('drop/lead', group_post.ROOT_MISSING) in post.file_drops(agora_store, agora)
     assert path.is_file() and agora_store.all() == []
 
 
@@ -114,7 +114,7 @@ def test_a_forward_of_a_closed_cross_ship_order_is_held(fleet_pair, monkeypatch)
     post.file_drops(agora_store, agora)
     assert not agora_store.is_open(agora_store.get(root.id))
     path = intent(agora, 'lead', root.id)
-    assert ('drop/lead', 'not a message') in post.file_drops(agora_store, agora)
+    assert ('drop/lead', group_post.FORWARD_NOT_OPEN_STORED) in post.file_drops(agora_store, agora)
     assert path.is_file() and copies_of(agora_store, root) == []
 
 
@@ -134,7 +134,7 @@ def test_a_planted_root_naming_another_ship_with_its_forward_is_held(fleet_pair,
     folder.mkdir(parents=True, exist_ok=True)
     (folder / f'{forged.id}.json').write_text(forged.to_json())
     path = intent(agora, 'lead', forged.id)
-    assert ('drop/lead', 'not a message') in post.file_drops(agora_store, agora)
+    assert ('drop/lead', group_post.FORWARD_NOT_OPEN_STORED) in post.file_drops(agora_store, agora)
     assert path.is_file() and agora_store.all() == []
 
 
