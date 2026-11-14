@@ -366,6 +366,8 @@ class Service:
         latest = self.attempts.latest(attempts=records)
         queued = {message for message, result in latest.items() if result == 'queued'}
         blind = {message for message, result in latest.items() if result == 'blind'}
+        from . import watch_broker
+        offered = watch_broker.offered(self.runtime)  # a jailed watch's attempts close on the broker's next pass
         for index, attempt in enumerate(records):
             if index % 200 == 0:
                 self.heartbeat()
@@ -376,6 +378,9 @@ class Service:
                 if time.time() < attempt.when.timestamp() + CONFIRM_SECONDS:
                     continue
                 if attempt.pane is None:
+                    if (attempt.path.name in offered
+                            and time.time() < attempt.when.timestamp() + watch_broker.OFFER_SECONDS):
+                        continue  # offered to a jailed watch: its receipt is settled by the broker, which runs later
                     self.attempts.judge(attempt, "blind", "a watch opened it and never reported printing it; qd post resend")
                     continue
             elif not (result == "queued" and attempt.message in queued

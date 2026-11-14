@@ -38,6 +38,7 @@ from . import durable, post, post_dir
 from .ship import ShipError
 
 WAIT = 2.0  # the service's bound on a post lock a jail can see; past it the pass skips this seat and retries
+OFFER_SECONDS = 60.0  # an offered attempt is the broker's to settle this long; past it reconcile judges it as any watch's
 LEASE = 'watch-lease'
 REQUEST = 'watch-broker.json'
 RECEIPTS = 'watch-receipts'
@@ -153,6 +154,23 @@ def read_offer(runtime: Path, seat: str) -> dict | None:
             or not all(isinstance(item, str) for item in data['attempts'] + data['messages'])):
         return None
     return data
+
+
+def offered(runtime: Path) -> set[str]:
+    """The attempt names every live offer holds: the broker settles these from receipts, on a pass of its own.
+
+    The offer is the service's own file; nothing the seat writes can add a name here.
+    """
+    names: set[str] = set()
+    try:
+        paths = post_dir.json_paths(runtime / 'post' / 'watch-offers')
+    except (OSError, ShipError):
+        return names
+    for path in paths:
+        data = read_offer(runtime, path.stem)
+        if data is not None:
+            names.update(data['attempts'])
+    return names
 
 
 def _attempt(runtime: Path, name: str) -> post.Attempt | None:
