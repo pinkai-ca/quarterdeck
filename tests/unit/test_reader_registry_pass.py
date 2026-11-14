@@ -1,9 +1,9 @@
 """Independent gates for the reader registry's pass-scoped membership (record_owner, Service.account).
 
 Synthetic seats, records and registries only. Registry parses, write-mode opens and locks are counted
-at the boundaries the change names: ``record_owner.events``, ``Path.open`` and ``fcntl.flock``. A
-competing writer is a second open file description with its own real ``flock``, which is what another
-process holds; no second interpreter is started.
+at the boundaries the change names: ``record_owner.events``, ``Path.open`` and the ship's registry lock
+(``ship_locks.held``, under runtime/locks). A competing writer is a second open file description appending
+under its own real ``flock``, which is what another process does; no second interpreter is started.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import attribution_cache, record_owner, service, turn_failure
+from quarterdeck import attribution_cache, record_owner, service, ship_locks, turn_failure
 from quarterdeck.harness.base import RecordError, State, Tokens, Turn
 from quarterdeck.harness.fake import FakeHarness
 from quarterdeck.service import Service
@@ -38,6 +38,8 @@ class Spy:
         self.writes: list[tuple[Path, str]] = []
         self.locks: list[tuple[Path, int]] = []
         self.real_events, self.real_open, self.real_flock = record_owner.events, Path.open, fcntl.flock
+        self.real_held = ship_locks.held
+        self.before_lock: list = []  # run as the registry's lock is taken: another writer's turn
 
         def counted_events(path):
             if Path(path).name == record_owner.REGISTRY:
@@ -49,15 +51,16 @@ class Spy:
                 self.writes.append((path, mode))
             return self.real_open(path, mode, *args, **kwargs)
 
-        def counted_flock(stream, operation):
-            name = getattr(stream, 'name', None)
-            if isinstance(name, str) and Path(name).name == record_owner.REGISTRY:
-                self.locks.append((Path(name), operation))
-            return self.real_flock(stream, operation)
+        def counted_held(lock, what, **options):
+            if Path(lock).name.endswith(f'--{record_owner.REGISTRY}.lock'):
+                self.locks.append((Path(lock), fcntl.LOCK_SH if options.get('shared') else fcntl.LOCK_EX))
+                for hook in self.before_lock:
+                    hook()
+            return self.real_held(lock, what, **options)
 
         monkeypatch.setattr(record_owner, 'events', counted_events)
         monkeypatch.setattr(Path, 'open', counted_open)
-        monkeypatch.setattr(record_owner.fcntl, 'flock', counted_flock)
+        monkeypatch.setattr(ship_locks, 'held', counted_held)
 
     def ownership(self, path: Path) -> int:
         """Parses of one registry made by the ownership path itself (bindings/register)."""
@@ -200,15 +203,14 @@ def test_the_same_row_appended_by_another_writer_after_the_check_is_not_appended
     seat, typed, unknown, registry = typed_seat(tmp_path)
     fresh = touch(seat, 'z')
     spy = Spy(monkeypatch)
-    counted, raced = record_owner.fcntl.flock, []
+    raced = []
 
-    def another_writer_first(stream, operation):
-        if not raced and operation == fcntl.LOCK_EX and Path(getattr(stream, 'name', '')).name == record_owner.REGISTRY:
+    def another_writer_first():
+        if not raced:
             raced.append(True)  # same row, other key order: equality is by whole row, not by bytes
             append_as_another_writer(registry, {'harness': 'fake', 'record': str(fresh)}, spy.real_flock)
-        return counted(stream, operation)
 
-    monkeypatch.setattr(record_owner.fcntl, 'flock', another_writer_first)
+    spy.before_lock.append(another_writer_first)
     before = len(rows_of(registry))
     with record_owner.reader_pass():
         record_owner.bindings(seat)
@@ -226,15 +228,14 @@ def test_a_conflicting_row_from_another_writer_is_kept_and_seen_and_nothing_is_g
     fresh = touch(seat, 'z')
     conflict = {'record': str(typed[0]), 'harness': 'codex'}
     spy = Spy(monkeypatch)
-    counted, raced = record_owner.fcntl.flock, []
+    raced = []
 
-    def another_writer_first(stream, operation):
-        if not raced and operation == fcntl.LOCK_EX and Path(getattr(stream, 'name', '')).name == record_owner.REGISTRY:
+    def another_writer_first():
+        if not raced:
             raced.append(True)
             append_as_another_writer(registry, conflict, spy.real_flock)
-        return counted(stream, operation)
 
-    monkeypatch.setattr(record_owner.fcntl, 'flock', another_writer_first)
+    spy.before_lock.append(another_writer_first)
     with record_owner.reader_pass():
         assert record_owner.pinned_reader(seat, typed[0]) == 'fake'
         record_owner.register(seat.folder, fresh, 'fake')

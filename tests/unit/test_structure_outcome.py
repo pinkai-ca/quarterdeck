@@ -51,7 +51,7 @@ def structures(tmp_path, monkeypatch):
         launch.write(home.parent / 'launch.json')
         (home.parent / 'record').write_text(str(program.record.path))
         record_owner.register(home.parent, program.record.path, 'fake')
-        locks = ship.runtime / 'post/lifecycle'
+        locks = ship.runtime / 'locks/lifecycle'
         locks.mkdir(parents=True, exist_ok=True)
         (locks / f'{name}.lock').touch()
         pane = Pane(launch.pane, 'Synthetic', 'Synthetic', launch.pid, 100, 40, False, False, None)

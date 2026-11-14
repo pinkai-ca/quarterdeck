@@ -161,7 +161,10 @@ How a paste is checked and cleared, and how a message is typed into a seat that 
 runtime/
   .git/                a fence: no commits, never tracked, keeps git run above it out
   service.heartbeat    pid and time, written each tick
-  service.lock         exclusive service ownership; runtime-only PID, process start and generation token stamp
+  locks/               every lock the service or qd waits on, hidden in every jail: service.lock (exclusive service
+                       ownership; PID, process start and generation token stamp), request, install, admission/,
+                       lifecycle/, attempts, check-outcomes/, raise/, the service log's and the ledger opening's,
+                       seat-files/ for each seat's record registry and launches, credential-reseed
   service.delivery     runtime-only in-flight owner/transaction token and confined pending-journal path
   seats/<seat>/home/   the program's home, built by qd: the ship's settings, the seat's records and logs
   seats/<seat>/record  the path of the current record, taken at launch
@@ -180,6 +183,8 @@ runtime/
   log/                 the service's and the door's own logs, JSON lines
 ```
 
+
+**The ship's locks.** `flock` needs no write access: a descriptor opened read-only takes an exclusive lock, so any lock file a jailed seat can open is one it can hold. Every lock the service or a `qd` command waits on therefore lies under `runtime/locks`, which every jail hides behind an empty private tmpfs (`ship_locks.py`). That includes the locks once taken on a data file itself, such as the service log's append, a seat's record registry and launch journal (which that seat's own jail can see), and the ledger's opening, once taken on the runtime folder. The files those locks guard stay where they are, and the ship no longer locks them. Every wait is bounded: thirty seconds, or ten minutes for a copy waiting on another copy; past it the caller gets the lock's name and skips or refuses, as the service's pass does for any failing step, and tries again later. Inside a jail no service lock is visible, so `qd` reads a heartbeat younger than two minutes as a running service. The lock's earlier place, `runtime/service.lock`, still counts as held while it exists, because during a sync the earlier code's service may hold it; the first service of this code removes it, and a held one refuses the start by name. The install lock's earlier place is treated the same way. One lock stays in reach: a temporary check seat's lease under `post/transient/`, which the check seat's own jailed `qd inbox` must read. Every take of it is non-blocking, so nothing waits on it. A foreign jail holding it could make a check refuse as busy, or make a dead check's registration read as live; it cannot stall the service or any delivery.
 
 How a delivery is stopped in the middle of a paste or a submit, including the waking reservation, is [the door](door.md#the-door).
 

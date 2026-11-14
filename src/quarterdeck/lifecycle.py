@@ -35,13 +35,21 @@ class Busy(ShipError):
     """Another caller owns this seat's transition or delivery."""
 
 
+def lock_path(runtime: Path, name: str) -> Path:
+    """A seat's lifecycle lock, under runtime/locks, which every jail hides."""
+    from . import ship_locks
+    return ship_locks.path(runtime, 'lifecycle', f'{name}.lock')
+
+
 @contextmanager
 def claim(runtime: Path, name: str, *, wait: float = 0):
     """Keep the same inode; optionally wait a bounded time, without replaying any effect."""
-    path = runtime / 'post' / 'lifecycle' / f'{name}.lock'
+    path = lock_path(runtime, name)
     descriptor = None
     try:
         try:
+            from . import ship_locks
+            ship_locks.prepare(path)
             descriptor = post_dir.open_lock(path, mode=0o600, extra=os.O_NONBLOCK)
             os.set_inheritable(descriptor, False)
             opened = os.fstat(descriptor)

@@ -11,7 +11,8 @@ from quarterdeck import pending, shutdown
 def reservation(tmp_path, phase="prepared", *, marked=True):
     runtime = tmp_path / "runtime"
     runtime.mkdir()
-    lock = runtime / "service.lock"
+    lock = runtime / "locks" / "service.lock"
+    lock.parent.mkdir()
     lock.touch()
     info = lock.stat()
     owner = dict(version=1, pid=999999999, start="synthetic-start-zzzz", token="synthetic-owner-zzzz",

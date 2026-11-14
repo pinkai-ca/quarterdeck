@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, timezone
-import fcntl
 import json
 import os
 from pathlib import Path
@@ -115,22 +114,18 @@ def read(runtime, harness):
 
 
 @contextmanager
-def _lock(source):
-    source.parent.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(source.with_suffix('.lock'), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
-    try:
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-            raise ValueError('check publication lock is not regular')
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
+def _lock(runtime, harness):
+    """Hidden from every jail, and waited for within a bound."""
+    from . import ship_locks
+    with ship_locks.held(ship_locks.path(runtime, 'check-outcomes', f'{harness}.lock'), f'{harness}: check outcome'):
         yield
-    finally:
-        os.close(descriptor)
 
 
 def publish(runtime, harness, observed):
     """A short publication lock orders completions; no lock covers a paid check."""
     source = path(runtime, harness)
-    with _lock(source):
+    source.parent.mkdir(parents=True, exist_ok=True)
+    with _lock(runtime, harness):
         previous = read(runtime, harness)
         sequence = previous['latest_attempt']['sequence'] + 1 if previous else 1
         latest = _event(dict(observed, sequence=sequence))

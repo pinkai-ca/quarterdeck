@@ -196,7 +196,7 @@ with seat._lifecycle():
     try:
         assert select.select([child.stdout], [], [], 10)[0], 'owned lease process did not become ready'
         assert child.stdout.readline().strip() == 'LEASE_HELD'
-        path = ship.runtime / 'post/lifecycle/worker-1.lock'
+        path = ship.runtime / 'locks/lifecycle/worker-1.lock'
         before = path.stat()
         with pytest.raises(ShipError, match='lifecycle'):
             outer.up(False)
@@ -217,7 +217,7 @@ with seat._lifecycle():
 def test_unfamiliar_coordination_file_is_refused_and_retained(drydock, tmux, kind):
     import os
     ship = shipmod.load(drydock)
-    path = ship.runtime / 'post/lifecycle/worker-1.lock'
+    path = ship.runtime / 'locks/lifecycle/worker-1.lock'
     path.parent.mkdir(parents=True)
     if kind == 'fifo':
         os.mkfifo(path)

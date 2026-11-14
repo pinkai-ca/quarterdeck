@@ -22,7 +22,7 @@ def test_status_from_a_fresh_seat_object_reads_the_wait_and_writes_nothing(setup
     ship, svc, seat, root, order = setup_structure(kind, 'stop')
     svc.tick()
     expected = ['waiting on alpha: turn ended, no report']
-    lock = ship.runtime / 'post/lifecycle/alpha.lock'
+    lock = ship.runtime / 'locks/lifecycle/alpha.lock'
     assert lock.exists()
     home = ship.runtime / 'seats/alpha/home'  # the program's own files are not the reader's
     before = tree(ship.runtime, home)

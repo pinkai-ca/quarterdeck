@@ -46,14 +46,14 @@ def service(runtime, answer):
 
 @pytest.fixture
 def busy_owner(runtime):
-    runtime.mkdir(parents=True)
+    (runtime / 'locks').mkdir(parents=True)
     process = subprocess.Popen([sys.executable, '-c', '''
 import fcntl, select, sys
 with open(sys.argv[1], 'a') as lock:
     fcntl.flock(lock, fcntl.LOCK_EX)
     print('locked', flush=True)
     select.select([sys.stdin], [], [], 5)
-''', str(runtime / 'request.lock')], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+''', str(runtime / 'locks' / 'request.lock')], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
     try:
         assert process.stdout.readline().strip() == 'locked'
         yield process
@@ -63,7 +63,7 @@ with open(sys.argv[1], 'a') as lock:
 
 
 def assert_owner_available(runtime):
-    with (runtime / 'request.lock').open('r') as lock:
+    with (runtime / 'locks' / 'request.lock').open('r') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 

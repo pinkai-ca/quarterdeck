@@ -252,19 +252,45 @@ def install_lock(ship: Ship, *, blocking: bool = True):
     resources.share_path(ship.runtime / 'venv/share/quarterdeck')
     resources.share_path(ship.runtime / 'upgrade')
     fence(ship)
-    with (ship.runtime / 'install.lock').open('a') as handle:
-        try:
-            fcntl.flock(handle, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
-        except BlockingIOError:
-            raise ShipError('another copy operation holds the install lock; try qd up or qd sync after it finishes') from None
-        try:
+    from . import ship_locks
+    busy = 'another copy operation holds the install lock; try qd up or qd sync after it finishes'
+    try:
+        # Hidden from every jail, and waited for within a bound long enough for a copy to finish.
+        with ship_locks.held(install_lock_path(ship.runtime), 'install', wait=INSTALL_WAIT if blocking else 0):
+            _retire_legacy_install_lock(ship.runtime)
             try:
                 yield
             except OSError:
                 raise ShipError('copy storage/control failed; completion is not confirmed; '
                                 'journal retained where written; inspect qd doctor') from None
-        finally:
-            fcntl.flock(handle, fcntl.LOCK_UN)
+    except ship_locks.Busy:
+        raise ShipError(busy) from None
+
+
+INSTALL_WAIT = 600.0  # seconds a copy operation waits for another to finish before it refuses
+
+
+def install_lock_path(runtime: Path) -> Path:
+    from . import ship_locks
+    return ship_locks.path(runtime, 'install.lock')
+
+
+def _retire_legacy_install_lock(runtime: Path) -> None:
+    """The lock's earlier place: held by a copy of the earlier code, it refuses; free, it is removed."""
+    legacy = runtime / 'install.lock'
+    try:
+        descriptor = os.open(legacy, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ShipError('a copy operation of the earlier code, or a seat that can see it, holds '
+                            f'{legacy}; try again after it finishes') from None
+        legacy.unlink()
+    finally:
+        os.close(descriptor)
 
 
 def _phase(ship: Ship, data: dict, phase: str, **changes) -> None:
@@ -853,7 +879,7 @@ def _parent_holds_install_lock(ship: Ship, pending: dict) -> bool:
             or servicectl.process_start(pid) != pending['owner_start']):
         return False
     try:
-        with (ship.runtime / 'install.lock').open('rb') as handle:
+        with install_lock_path(ship.runtime).open('rb') as handle:
             try:
                 fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:

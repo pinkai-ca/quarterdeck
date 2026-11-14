@@ -13,6 +13,7 @@ import fcntl
 import json
 import os
 import signal
+import stat
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -23,6 +24,7 @@ from .ship import Ship, ShipError
 from .procstat import EXITED
 
 STALE_SECONDS = 10.0  # a tick longer than this reads as busy
+JAILED_HEARTBEAT_SECONDS = 120.0  # inside a jail, which cannot see the lock: a service that ticked this recently is up
 ANSWER_SECONDS = 8.0
 EXIT_SETTLE = 2.0  # after the lock frees, how long stop waits for the kernel to mark the process gone
 START_SECONDS = 30.0
@@ -34,6 +36,14 @@ def heartbeat_path(runtime: Path) -> Path:
 
 
 def lock_path(runtime: Path) -> Path:
+    """The service's lock, under runtime/locks, which every jail hides: a jailed seat cannot hold it."""
+    from . import ship_locks
+    return ship_locks.path(runtime, "service.lock")
+
+
+def legacy_lock_path(runtime: Path) -> Path:
+    """Where the lock lay before it moved. A service of the earlier code may still hold it during a sync, so it
+    counts as held while it exists; the first service of this code to start removes it."""
     return runtime / "service.lock"
 
 
@@ -58,26 +68,80 @@ def read_heartbeat(runtime: Path) -> tuple[int, float] | None:
 
 
 def acquire_lock(runtime: Path):
-    """Take the ship's service lock for this process's life, or refuse."""
-    handle = lock_path(runtime).open("a")
+    """Take the ship's service lock for this process's life, or refuse.
+
+    The lock lies under runtime/locks. Its earlier place is taken too while it exists, and removed once held:
+    no service of the earlier code can then be running, and no jail can make that file again."""
+    from . import ship_locks
+    path = lock_path(runtime)
+    ship_locks.prepare(path)
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    handle = os.fdopen(descriptor, "a")
     try:
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        raise ShipError(f"another service holds {lock_path(runtime)}") from None
+        handle.close()
+        raise ShipError(f"another service holds {path}") from None
+    try:
+        _retire_legacy(runtime)
+    except BaseException:
+        handle.close()
+        raise
     return handle
 
 
-def locked(runtime: Path) -> bool:
-    """Whether a service holds the runtime's lock: the one fact that says a service owns this ship."""
+def _retire_legacy(runtime: Path) -> None:
+    legacy = legacy_lock_path(runtime)
     try:
-        with lock_path(runtime).open("rb") as handle:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            fcntl.flock(handle, fcntl.LOCK_UN)
+        descriptor = os.open(legacy, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
     except FileNotFoundError:
+        return
+    except OSError as error:
+        raise ShipError(f"the earlier service lock {legacy} cannot be opened ({error.strerror}); retained") from None
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ShipError(f"the earlier service lock {legacy} is not a regular file; retained")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ShipError(f"a service of the earlier code, or a seat that can see it, holds {legacy}; "
+                            "stop that service (or that seat) and start again") from None
+        legacy.unlink()
+    finally:
+        os.close(descriptor)
+
+
+def _held(path: Path) -> bool | None:
+    """True when a process holds the lock, False when it is free, None when there is no such file."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return True
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
         return False
     except OSError:
         return True
-    return False
+    finally:
+        os.close(descriptor)
+
+
+def locked(runtime: Path) -> bool:
+    """Whether a service holds the runtime's lock: the one fact that says a service owns this ship.
+
+    Inside a jail runtime/locks is an empty folder of the jail's own, so no lock file is there to read. Where
+    neither the lock nor its earlier place exists, a fresh heartbeat is the reading instead: the jail sees
+    that file read-only and cannot write it."""
+    found = [_held(lock_path(runtime)), _held(legacy_lock_path(runtime))]
+    if True in found:
+        return True
+    if False in found:
+        return False
+    beat = read_heartbeat(runtime)
+    return beat is not None and 0 <= beat[1] <= JAILED_HEARTBEAT_SECONDS
 
 
 def alive(runtime: Path) -> bool:

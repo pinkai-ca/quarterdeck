@@ -2,7 +2,6 @@
 
 from contextlib import contextmanager, ExitStack
 from datetime import datetime, timezone
-import fcntl
 import os
 from pathlib import Path
 import secrets
@@ -51,10 +50,10 @@ def _move(path, folder):
 @contextmanager
 def opening(path):
     """Serialize writer initialization, and exclude a live service before any move."""
+    from . import ship_locks
     path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-    try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
+    # A lock of the ship's own, hidden from every jail: the runtime folder itself is open to any jail's read.
+    with ship_locks.held(ship_locks.path(path.parent, 'ledger-opening.lock'), 'ledger opening'):
         with ExitStack() as owners:
             folder = None
             try:
@@ -93,8 +92,6 @@ def opening(path):
             # A crash after moving the DB but before schema setup also resumes
             # as a fresh catching-up ledger, without losing its evidence alarm.
             yield not healthy or not path.exists() and bool(pending(path.parent))
-    finally:
-        os.close(descriptor)
 
 
 def pending(runtime):

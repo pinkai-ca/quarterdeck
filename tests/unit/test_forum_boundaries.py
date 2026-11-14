@@ -236,7 +236,7 @@ def test_an_absent_saved_pane_is_pending_not_failed(world):
 def test_a_busy_lifecycle_is_pending_even_over_a_dead_pane(world):
     _, copies = world.submit()
     world.launch('reviewer-1', dead=True)
-    path = world.ship.runtime / 'post' / 'lifecycle' / 'reviewer-1.lock'
+    path = world.ship.runtime / 'locks' / 'lifecycle' / 'reviewer-1.lock'
     path.parent.mkdir(parents=True, exist_ok=True)
     held = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
     try:

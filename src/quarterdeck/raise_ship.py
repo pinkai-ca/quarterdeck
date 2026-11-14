@@ -8,7 +8,6 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 from dataclasses import dataclass
-import fcntl
 import hashlib
 import json
 import os
@@ -220,9 +219,10 @@ def office_for(args: argparse.Namespace, operations: setup.Operations) -> tuple[
 
 
 @contextmanager
-def locked(path: Path):
-    with path.open("a") as stream:
-        fcntl.flock(stream, fcntl.LOCK_EX)
+def locked(runtime: Path, name: str):
+    """One raise of a name at a time: a lock of the office's own, hidden from every jail, waited for within a bound."""
+    from . import ship_locks
+    with ship_locks.held(ship_locks.path(runtime, "raise", f"{name}.lock"), f"raise {name}"):
         yield
 
 
@@ -256,7 +256,7 @@ def run(args: argparse.Namespace, *, operations: setup.Operations | None = None,
     ships.fence(office)
     records = office.runtime / "raise" / draft.name
     records.mkdir(parents=True, exist_ok=True)
-    with locked(records / "lock"):
+    with locked(office.runtime, draft.name):
         request = records / f"{draft.digest}.request.json"
         answers = sorted(records.glob(f"{draft.digest}.answer-*.json"))
         answer = answers[-1] if answers else None

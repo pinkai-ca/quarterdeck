@@ -14,7 +14,7 @@ def test_busy_wait_expires_at_one_deadline_and_releases_its_descriptor(tmp_path,
 
     monkeypatch.setattr(lifecycle.time, 'monotonic', lambda: clock[0])
     monkeypatch.setattr(lifecycle.time, 'sleep', sleep)
-    path = tmp_path / 'post/lifecycle/worker.lock'
+    path = tmp_path / 'locks/lifecycle/worker.lock'
     with lifecycle.claim(tmp_path, 'worker'):
         before = path.stat()
         with pytest.raises(lifecycle.Busy) as caught:

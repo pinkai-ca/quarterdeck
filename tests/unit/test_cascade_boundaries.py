@@ -536,7 +536,8 @@ def test_the_ring_never_writes_outside_its_own_question_folder(tmp_path):
         reply(ring.store, step_order(ring.store, ring.path))
         ring.runner.advance(ring.path)
     after = {p for p in ring.ship.runtime.rglob("*") if "ring" not in p.relative_to(ring.ship.runtime).parts}
-    assert {p.relative_to(ring.ship.runtime).parts[0] for p in after - before} <= {"post"}, "posts only"
+    # The ship's lock files lie under runtime/locks, out of every jail's reach; they hold no data.
+    assert {p.relative_to(ring.ship.runtime).parts[0] for p in after - before} <= {"post", "locks"}, "posts only"
     assert not (ring.ship.runtime / "post" / "cascade-holds").exists(), "no hold on a healthy run"
     assert sorted(p.name for p in (ring.ship.runtime / "ring").iterdir()) == [ring.question.id]
     assert {p.name for p in ring.path.iterdir() if not p.name.startswith(".")} == {"state.json", "responses.md"}

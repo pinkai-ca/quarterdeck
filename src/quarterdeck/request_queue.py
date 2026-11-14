@@ -41,7 +41,9 @@ def coordination(runtime, *, wait=True):
     """Bound CLI admission; service passes defer immediately when another owner is busy."""
     folder = runtime / 'requests'
     folder.mkdir(parents=True, exist_ok=True)
-    path = runtime / 'request.lock'
+    from . import ship_locks
+    path = ship_locks.path(runtime, 'request.lock')  # hidden from every jail
+    ship_locks.prepare(path)
     descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
     try:
         opened = os.fstat(descriptor)

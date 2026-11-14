@@ -219,7 +219,8 @@ def waits(ship, selected=()):
 @contextmanager
 def _status_lock(seat):
     """Read the existing lifecycle inode without creating or repairing it."""
-    path = seat.ship.runtime / 'post' / 'lifecycle' / f'{seat.name}.lock'
+    from .lifecycle import lock_path
+    path = lock_path(seat.ship.runtime, seat.name)
     descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         opened = os.fstat(descriptor)

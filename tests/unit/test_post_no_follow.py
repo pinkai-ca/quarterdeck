@@ -65,8 +65,9 @@ def test_ordinary_store_inbox_lock_and_admission(tmp_path):
     attempts = post.Attempts(runtime)
     with attempts._locked():
         pass
-    lock = runtime / 'post' / 'attempts' / '.lock'
+    lock = runtime / 'locks' / 'attempts.lock'  # the ship's locks lie where every jail hides them
     assert lock.is_file() and not lock.is_symlink()
+    assert not (runtime / 'post' / 'attempts' / '.lock').exists() and not (runtime / 'post' / 'admission').exists()
 
 
 def test_store_directory_link_holds_on_write_and_listing(tmp_path):
@@ -125,9 +126,9 @@ def test_attempts_directory_link_holds(tmp_path):
 def test_attempts_lock_link_holds(tmp_path):
     runtime = runtime_of(tmp_path)
     target = outside_of(tmp_path)
-    attempts = runtime / 'post' / 'attempts'
-    attempts.mkdir()
-    link = attempts / '.lock'
+    locks = runtime / 'locks'
+    locks.mkdir()
+    link = locks / 'attempts.lock'
     link.symlink_to(target / 'kept.txt')
     before = snapshot(target)
     with pytest.raises(ShipError) as caught:
@@ -140,7 +141,8 @@ def test_attempts_lock_link_holds(tmp_path):
 def test_admission_directory_link_holds(tmp_path):
     runtime = runtime_of(tmp_path)
     target = outside_of(tmp_path)
-    link = runtime / 'post' / 'admission'
+    (runtime / 'locks').mkdir()
+    link = runtime / 'locks' / 'admission'
     link.symlink_to(target, target_is_directory=True)
     before = snapshot(target)
     with pytest.raises(ShipError) as caught:

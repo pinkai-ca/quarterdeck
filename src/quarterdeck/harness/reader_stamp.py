@@ -58,6 +58,7 @@ _CONTROL_SHARED = (
     ('__init__.py', 'package entry for the status line and the CLI; readers load it only as their package'),
     ('providers.py', 'which program may run on a pool; records are not interpreted here'),
     ('harness/capabilities.py', 'model and effort selection for launch and controls'),
+    ('ship_locks.py', "the registry's lock under runtime/locks; it reads no record"),
 )
 _CHECK = (
     ('harness/check_evidence.py', "qd check's tool evidence; turns are read by the record parser"),

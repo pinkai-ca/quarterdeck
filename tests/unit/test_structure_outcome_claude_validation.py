@@ -68,7 +68,7 @@ def crew(tmp_path, monkeypatch):
             launch.write(home.parent / 'launch.json')
             (home.parent / 'record').write_text(str(program.record.path))
             record_owner.register(home.parent, program.record.path, 'fake')
-            locks = ship.runtime / 'post/lifecycle'
+            locks = ship.runtime / 'locks/lifecycle'
             locks.mkdir(parents=True, exist_ok=True)
             (locks / f'{name}.lock').touch()
             pane = Pane(launch.pane, 'Validation', 'Validation', launch.pid, 100, 40, False, False, None)
@@ -136,7 +136,7 @@ def tree(folder):
 
 
 def admission_lock(runtime, name):
-    return runtime / 'post' / 'admission' / (hashlib.sha256(name.encode()).hexdigest() + '.lock')
+    return runtime / 'locks' / 'admission' / (hashlib.sha256(name.encode()).hexdigest() + '.lock')
 
 
 def try_exclusive(path):
@@ -296,7 +296,7 @@ def test_status_reading_writes_nothing_and_creates_no_lifecycle_inode(crew, kind
     for _ in range(3):
         assert outcome.waits(case.ship, [seat]) == [f'waiting on alpha: {ENDED}']
     assert tree(case.ship.folder) == before
-    lock = case.ship.runtime / 'post/lifecycle/alpha.lock'
+    lock = case.ship.runtime / 'locks/lifecycle/alpha.lock'
     lock.unlink()
     before = tree(case.ship.folder)
     assert outcome.waits(case.ship, [seat]) == ['waiting on alpha: turn outcome unknown (record proof unknown)']
@@ -312,7 +312,7 @@ def test_status_never_waits_on_a_held_lifecycle_and_shows_it_unknown(crew, kind)
     case = crew(kind)
     seat, _ = case.take(case.orders['alpha'])
     case.one_pass()
-    lock = case.ship.runtime / 'post/lifecycle/alpha.lock'
+    lock = case.ship.runtime / 'locks/lifecycle/alpha.lock'
     holder = os.open(lock, os.O_RDWR)
     try:
         fcntl.flock(holder, fcntl.LOCK_EX)

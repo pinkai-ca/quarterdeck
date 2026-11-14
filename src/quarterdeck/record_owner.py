@@ -9,7 +9,6 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-import fcntl
 import json
 from pathlib import Path
 from typing import Any, Iterator, TYPE_CHECKING
@@ -125,8 +124,10 @@ def register(folder: Path, record: Path, name: str | None) -> None:
     if cache is not None:
         cache.pop(path, None)
     folder.mkdir(parents=True, exist_ok=True)
-    with path.open("a+") as stream:
-        fcntl.flock(stream, fcntl.LOCK_EX)
+    from . import ship_locks
+    # The lock is the ship's, not the file's: the seat's own jail sees its folder and could hold the file.
+    with ship_locks.held(ship_locks.for_seat_file(folder, path.name), f"{folder.name}: record registry"), \
+            path.open("a+") as stream:
         # Another process may have appended since the read-only membership check.
         if row not in events(path):
             stream.write(json.dumps(row) + "\n")

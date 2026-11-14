@@ -3,7 +3,6 @@
 Callers hold the seat's lifecycle claim. Readings never call these repairs.
 """
 
-import fcntl
 import json
 import os
 from pathlib import Path
@@ -46,8 +45,8 @@ def _retirement_log(runtime, name, filename):
     path.parent.mkdir(parents=True, exist_ok=True)
     row = dict(at=post.now().isoformat(), event='pending-retired', seat=name,
                journal=filename, result='unknown', detail=UNKNOWN)
-    with path.open('a') as stream:
-        fcntl.flock(stream, fcntl.LOCK_EX)
+    from . import ship_locks
+    with ship_locks.held(ship_locks.path(runtime, 'service-log.lock'), 'service log'), path.open('a') as stream:
         stream.write(json.dumps(row) + '\n')
         stream.flush()
 

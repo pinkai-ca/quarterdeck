@@ -9,7 +9,6 @@ view: open obligations first, oldest first, then what was already delivered.
 from __future__ import annotations
 
 import json
-import fcntl
 import hashlib
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
@@ -134,21 +133,23 @@ def now() -> datetime:
     return datetime.now().astimezone()
 
 
+def __getattr__(name):
+    if name == 'LockBusy':  # the bounded wait's refusal, by the name the jailed wait uses
+        from .ship_locks import Busy
+        return Busy
+    raise AttributeError(name)
+
+
 @contextmanager
-def admission(runtime: Path, seat: str):
-    """Serialize publication/transition claims, never program startup; locks are not reentrant."""
-    folder = runtime / 'post' / 'admission'
+def admission(runtime: Path, seat: str, *, wait: float | None = None):
+    """Serialize publication/transition claims, never program startup; locks are not reentrant.
+
+    The lock lives under runtime/locks, which every jail hides, and the wait for it is bounded."""
+    from . import ship_locks
     name = hashlib.sha256(seat.encode()).hexdigest()
-    path = folder / (name + '.lock')
-    descriptor = post_dir.open_lock(path, mode=0o600)
-    try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
-        opened, current = os.fstat(descriptor), path.lstat()
-        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
-            raise ShipError('post admission lock identity changed; retained')
+    with ship_locks.held(ship_locks.path(runtime, 'admission', name + '.lock'), f'{seat}: post admission',
+                         wait=ship_locks.WAIT if wait is None else wait):
         yield
-    finally:
-        os.close(descriptor)
 
 
 class Store:
@@ -938,16 +939,16 @@ class Attempts:
         self._retired_cache = {}
 
     @contextmanager
-    def _locked(self):
-        descriptor = post_dir.open_lock(self.dir / '.lock')
-        try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
+    def _locked(self, wait: float | None = None):
+        from . import ship_locks
+        post_dir.ensure_directory(self.dir)  # the attempts' own folder, which the lock once made beside it
+        with ship_locks.held(ship_locks.path(self.dir.parent.parent, 'attempts.lock'), 'delivery attempts',
+                             wait=ship_locks.WAIT if wait is None else wait):
             yield
-        finally:
-            os.close(descriptor)
 
-    def open(self, message: Message, seat: str, pane: str | None, pid: int | None, launched_at: str | None) -> Attempt:
-        with self._locked():
+    def open(self, message: Message, seat: str, pane: str | None, pid: int | None, launched_at: str | None, *,
+             wait: float | None = None) -> Attempt:
+        with self._locked(wait):
             at = now()
             prefix = f'{message.id}-'
             history = [path for path in post_dir.json_paths(self.dir) if path.name.startswith(prefix)]
@@ -963,8 +964,8 @@ class Attempts:
             shutdown.opened(self.dir.parent.parent, attempt)
         return attempt
 
-    def close(self, attempt: Attempt, result: str, detail: str = "") -> Attempt:
-        with self._locked():
+    def close(self, attempt: Attempt, result: str, detail: str = "", *, wait: float | None = None) -> Attempt:
+        with self._locked(wait):
             source = attempt_path(self.dir.parent.parent, attempt.path.name)
             current = Attempt(**json.loads(post_dir.read_text(source)), path=source)
             if source.parent != self.dir:

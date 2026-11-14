@@ -32,6 +32,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `refusal.py` | a provider-refused crew seat started fresh once, the refused message withheld and its sender told |
 | `sandbox.py` | the bubblewrap jail around a sandboxed seat's program |
 | `servicectl.py` | the service's heartbeat, lock, start, stop and requests |
+| `ship_locks.py` | the ship's lock files, all under runtime/locks where every jail hides them, and the one bounded wait for each |
 | `tmux.py` | the only module that runs tmux |
 | `turn_failure.py` | a turn that ended in a recorded error: the door's hold, its alarm, the receipts it unsettles and a human seat's operational metadata |
 | `usage_cache.py` | the latest real reading of each usage window, and its last attempt |

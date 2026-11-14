@@ -63,7 +63,8 @@ def _read(path: Path, limit: int):
 
 
 def owner(runtime: Path, pid: int | None = None) -> dict | None:
-    read = _read(runtime / "service.lock", 4096)
+    from .servicectl import lock_path
+    read = _read(lock_path(runtime), 4096)
     if read is None:
         return None
     data, info = read
@@ -215,7 +216,8 @@ def annotate(runtime: Path, expected: dict | None, *, forced: bool) -> str:
     if expected is None:
         return "delivery owner unknown; journal left unchanged" if pointer_path(runtime).exists() else ""
     try:
-        fd = os.open(runtime / "service.lock", os.O_RDWR | os.O_NONBLOCK | os.O_NOFOLLOW)
+        from .servicectl import lock_path
+        fd = os.open(lock_path(runtime), os.O_RDWR | os.O_NONBLOCK | os.O_NOFOLLOW)
         try:
             info = os.fstat(fd)
             if not stat.S_ISREG(info.st_mode) or (info.st_dev, info.st_ino) != (expected["device"], expected["inode"]):
