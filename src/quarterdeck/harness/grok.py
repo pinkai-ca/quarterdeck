@@ -360,12 +360,26 @@ class GrokHarness(Harness):
     session_id = staticmethod(grok_record.session_id)
     inputs = staticmethod(grok_record.inputs)
 
-    def queued_waiting(self, text: str, screen: Screen) -> bool:
+    def queued_waiting(self, text: str, screen: Screen, *, record: Path | None = None,
+                       now: datetime | None = None) -> bool:
         if (screen.working is not True or screen.unknown or screen.interruption
                 or screen.box is None or screen.box.strip()):
             return False
         entries = grok_screen.queue_entries(screen.text)
-        return bool(entries and grok_screen.queue_preview(text) in entries)
+        if entries and grok_screen.queue_preview(text) in entries:
+            return True
+        if entries is None or record is None or now is None:
+            return False
+        # The queue can disappear between the service's record read and screen
+        # read. A newly closed preceding turn bounds that transition without a
+        # mutable screen-reading clock or an unbounded extension of the hold.
+        try:
+            state, turns = grok_record.Reader.read(record)
+        except (OSError, ValueError):
+            return False
+        ended = turns[-1].ended if turns else None
+        return (state.turn_open is False and ended is not None
+                and 0 <= (now - ended).total_seconds() < 5)
 
     def queued_input(self, text: str, before: Screen, after: Screen) -> str | None:
         """An exact new preview after the Door matched the full paste, not a delivery receipt."""

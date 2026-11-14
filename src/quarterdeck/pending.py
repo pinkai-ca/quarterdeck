@@ -221,9 +221,23 @@ class Proof:
             return uncertain("pending box changed or is foreign; untouched")
         if screen.box and screen.box.startswith("[Pasted"):
             return uncertain("pending folded box is ambiguous; untouched")
-        if (self.data.get("screen_queue") and screen.box == ""
-                and seat.harness.queued_waiting(self.data["payload"], screen)):
-            return ("queued on screen; waiting for record confirmation", "record confirmation", True)
+        if self.data.get("screen_queue") and screen.box == "":
+            if seat.harness.queued_waiting(self.data["payload"], screen):
+                return ("queued on screen; waiting for record confirmation", "record confirmation", True)
+            # A queue entry can leave just after the service's first record read.
+            # Read the owned record once more before applying the age limit; a
+            # screen read never writes a receipt or advances a grace clock.
+            if self.data["record"]:
+                record = Path(self.data["record"])
+                try:
+                    receipt = input_receipt.confirmed(self.data["identity"]["harness"], record,
+                        self.data["payload"], datetime.fromisoformat(self.data["since"]))
+                    if receipt == "delivered":
+                        return None
+                    if seat.harness.queued_waiting(self.data["payload"], screen, record=record, now=now or post.now()):
+                        return ("queued prompt starting; waiting for record confirmation", "record confirmation", True)
+                except (OSError, ValueError):
+                    pass
         age = ((now or post.now()) - datetime.fromisoformat(self.data["at"])).total_seconds()
         if age >= WAIT_SECONDS:
             return uncertain("pending delivery exceeded 600s; not resent; box and record need inspection")

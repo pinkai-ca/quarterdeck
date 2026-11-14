@@ -58,8 +58,26 @@ def test_grok_visible_queue_waits_past_600s_then_settles_once(setup, monkeypatch
     svc.reconcile()
     assert svc.attempts.latest()[message.id] == "queued"
     assert len(svc.attempts.for_message(message.id)) == 1
+    # The old foreground turn ends; the queue leaves the screen before the new
+    # user row lands. The preceding record completion bounds a five-second wait.
+    completion = {"timestamp": int((later - timedelta(seconds=1)).timestamp()), "method": "_x.ai/session/update",
+        "params": {"sessionId": "synthetic-queue", "update": {
+            "sessionUpdate": "turn_completed", "prompt_id": "synthetic-initial-prompt"}}}
+    with record.open("a") as stream:
+        stream.write(json.dumps(completion) + "\n")
+    starting = replace(seat.harness.screen(frame(data["screens"]["0"])), box="")
+    assert proof.confirmed(seat) is None  # the service's first record read
+    before = proof.path.read_bytes()
+    assert proof.reading(seat, starting, now=later) == (
+        "queued prompt starting; waiting for record confirmation", "record confirmation", True)
+    assert proof.path.read_bytes() == before  # a screen read advances no clock
+    assert not seat.harness.queued_waiting(payload, starting, record=record, now=later + timedelta(seconds=6))
+    # A later pass reads the old record, then sees the dequeued screen. The row
+    # lands in between: the second record check wins even after both time bounds.
+    assert proof.confirmed(seat) is None
     with record.open("a") as stream:
         stream.write(native_input(payload, later))
+    assert proof.reading(seat, starting, now=later + timedelta(seconds=6)) is None
     svc.reconcile()
     svc.reconcile()
     assert svc.attempts.latest()[message.id] == "delivered"
