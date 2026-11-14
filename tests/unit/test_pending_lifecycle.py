@@ -270,10 +270,15 @@ def test_fresh_links_and_settles_submission_from_the_exact_old_record(tmp_path, 
     seat.fresh()
     old = json.loads(proof.path.read_text())
     assert old['record'] == str(writer.path)
-    assert old['phase'] == 'delivered'
+    assert old['phase'] == 'submitted'
+    later = open_attempt(service, seat, message)
+    service.attempts.close(later, 'launch', 'synthetic indexed context; not a receipt')
+    carried = later.path.read_bytes()
     original = writer.path.read_bytes()
     pending.reconcile(service)
+    assert json.loads(proof.path.read_text())['phase'] == 'delivered'
     assert service.attempts.for_message(message.id)[0].result == 'delivered'
+    assert later.path.read_bytes() == carried
     assert writer.path.read_bytes() == original
     assert seat.record() is None
     assert pending.detached(seat) == []

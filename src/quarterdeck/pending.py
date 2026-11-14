@@ -526,14 +526,18 @@ def _reconcile_claimed(service: Service, seat: Seat, attempts: dict[str, post.At
             proof.save(phase="cancelled", resolution="attested prepared reservation; no paste began; eligible for ordinary delivery")
         phase = proof.data["phase"]
         carried = [attempts[n] for n in proof.data["attempts"]]
-        if phase not in TERMINAL and all(any(a.message == old.message and a.seat == old.seat
+        result = "delivered" if phase == "delivered" else None
+        if phase not in TERMINAL:
+            result = proof.confirmed(seat)
+        # A real receipt from the retained old join wins over a later launch's
+        # context-only carry marker. Non-delivery evidence keeps the old rule.
+        if result != 'delivered' and phase not in TERMINAL and all(any(a.message == old.message and a.seat == old.seat
                 and a.result == "launch" and a.launched_at != old.launched_at and a.when >= old.when
                 for a in attempts.values()) for old in carried):
             proof.save(phase="carried", resolution="carried by a later explicit launch; old submission unconfirmed")
             phase = "carried"
-        result = "delivered" if phase == "delivered" else None
+            result = None
         if phase not in TERMINAL:
-            result = proof.confirmed(seat)
             if (not result and not any(a.result in ("delivered", "launch", "watch", *post.UNSETTLED) for a in carried)
                     and closed_record.not_in_closed_record(seat, proof)):
                 proof.save(phase=closed_record.PHASE, resolution=closed_record.DETAIL)

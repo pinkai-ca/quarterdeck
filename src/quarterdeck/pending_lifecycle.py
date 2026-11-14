@@ -140,5 +140,3 @@ def link_launch_record(seat, launched):
                 continue
             if proof.data['record'] is None:
                 proof.save(record=str(record))
-            if proof.confirmed(seat) == 'delivered':
-                proof.finish('delivered')  # ordinary attempt reconciliation finishes this positive receipt

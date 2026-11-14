@@ -618,8 +618,8 @@ seat's delivery cannot delay its relaunch. A paste reservation requires a comple
 and launch. A missing or changed binding leaves the message unread, without a delivery journal.
 
 Before retirement discards a launch, its unresolved ordinary journals retain that launch's existing
-one-record join. The final join is checked again after the program ends. An exact positive receipt in
-that record settles the journal; ordinary reconciliation finishes its attempts. Neither a new launch
+one-record join. The final join is checked again after the program ends. Ordinary reconciliation settles
+the journal and its attempts from an exact positive receipt there, ahead of a later context-only carry marker. Neither a new launch
 nor a different record supplies missing historical evidence. The service separately retires intact
 ordinary legacy journals whose only defect is null identity fields: the original bytes stay in a
 `retired` subfolder, unresolved matching attempts become unknown and never resent, and one durable
