@@ -20,7 +20,7 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from . import durable, post_dir
+from . import durable, post_dir, ship_locks
 from .ship import ShipError
 from .post_message import KINDS, REPLY_VERB, SECOND, Message, delivered_forms, short_of, typed
 
@@ -673,9 +673,7 @@ FILING_BUSY_REASON = 'post filing waits: filing lock busy'
 
 
 def _filing_folder(runtime: Path) -> Path:
-    from .sandbox import LOCKS
-
-    return runtime / LOCKS
+    return ship_locks.folder(runtime)
 
 
 def _filing_misses(runtime: Path) -> int | None:
@@ -718,27 +716,18 @@ def file_drops(store: Store, ship=None, *, seats: frozenset[str] | None = None,
     to the next ordinary pass; neither caller waits while holding another lock.
     """
     runtime = store.dir.parent.parent
-    folder = _filing_folder(runtime)
-    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path = folder / 'filing.lock'
-    descriptor = post_dir.open_lock(path, mode=0o600)
-    try:
+    with ExitStack() as locks:
         try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+            locks.enter_context(ship_locks.held(ship_locks.path(runtime, 'filing.lock'), 'post filing', wait=0))
+        except ship_locks.Busy:
             _note_filing_busy(runtime)
             return []
-        opened, current = os.fstat(descriptor), path.lstat()
-        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
-            raise ShipError('post filing lock identity changed; retained')
         (_filing_folder(runtime) / 'filing-wait.json').unlink(missing_ok=True)
         if service_absent:
             from . import servicectl
             if servicectl.alive(runtime):
                 return []
         return _file_drops(store, ship, seats=seats)
-    finally:
-        os.close(descriptor)
 
 
 def _file_drops(store: Store, ship=None, *, seats: frozenset[str] | None = None) -> list[tuple[str, str]]:

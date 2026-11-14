@@ -45,7 +45,7 @@ def test_host_stands_aside_for_live_service_then_files_after_it_ends(tmp_path):
 def test_host_and_service_yield_while_shared_filing_lock_is_owned(tmp_path):
     seat, store, order, report, drop = waiting_report(tmp_path)
     folder = seat.ship.runtime / 'locks'
-    folder.mkdir(mode=0o700)
+    folder.mkdir(mode=0o700, exist_ok=True)
     descriptor = post_dir.open_lock(folder / 'filing.lock', mode=0o600)
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -70,7 +70,7 @@ def test_repeated_filing_contention_is_on_every_status_line_until_progress(tmp_p
     seat, store, order, report, drop = waiting_report(tmp_path)
     seat.ship = synthetic_ship(tmp_path)
     folder = seat.ship.runtime / 'locks'
-    folder.mkdir(mode=0o700)
+    folder.mkdir(mode=0o700, exist_ok=True)
     descriptor = post_dir.open_lock(folder / 'filing.lock', mode=0o600)
 
     def status():
