@@ -204,7 +204,7 @@ def test_present_unreadable_journal_keeps_its_error(tmp_path, monkeypatch):
 def test_derived_post_scan_does_not_publish_a_phantom_error(tmp_path, monkeypatch, kind, operation):
     runtime = tmp_path / 'runtime'
     folders = dict(drop='drop-holds', group='group-holds', cascade='cascade-holds', wait='structure-waits')
-    victim = runtime / 'post' / folders[kind] / 'synthetic.json'
+    victim = runtime / 'post' / folders[kind] / 'ord-synthetic-sample.json'
     victim.parent.mkdir(parents=True)
     victim.write_text('{')  # a present malformed file must remain an error
     subject = SimpleNamespace(runtime=runtime, seats={})
