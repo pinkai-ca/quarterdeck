@@ -49,7 +49,8 @@ def test_true_cached_opt_out_seeds_before_launch_and_names_its_evidence(setup_ho
     args = setup_home({'synthetic-account': {'coding_data_retention_opt_out': True,
                                            'unrelated': 'synthetic-private-value'}}, name=name, human=human)
     adapter, pool, home, spec, brief = args
-    assert (home / 'auth.json').is_symlink()
+    copy = home / 'auth.json'
+    assert not copy.is_symlink() and copy.read_bytes() == (pool.config_dir / 'auth.json').read_bytes()  # a copy
     selected = launch(*args)
     privacy = tomllib.loads((home / 'config.toml').read_text())['privacy']
     at = datetime.fromisoformat(privacy['privacy_banner_acked'])

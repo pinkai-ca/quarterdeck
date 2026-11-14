@@ -142,6 +142,10 @@ class Harness(ABC):
     waking_inapplicability: str | None = None  # explicit reason to omit only the added live waking step
     synthetic: bool = False
     credential_file: str | None = None
+    # A program that writes its refreshed sign-in through the seat's link, into the pool's own file, gets a copy of the
+    # pool's file instead: its refresh lands in its own home, and the service alone puts the newest live grant in the
+    # pool's place and brings every older copy up to it (credential.reseed).
+    credential_copy: bool = False
     # Informational current-vendor-doc hints only: never an executable auth path or version proof.
     sign_in_command: tuple[str, ...] | None = None
     sign_in_home_variable: str | None = None  # only when docs establish credential-home selection

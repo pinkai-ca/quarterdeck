@@ -11,8 +11,9 @@ from ..ship import Pool, ShipError
 from .types import Credential
 
 
-def credential(pool: Pool, link: Path, variable: str) -> Credential | None:
-    """How a pool's credential reaches a seat home: a key by environment, a subscription by one link.
+def credential(pool: Pool, link: Path, variable: str, *, copy: bool = False) -> Credential | None:
+    """How a pool's credential reaches a seat home: a key by environment, a subscription by one link, or by one copy
+    for a program that writes its refresh through the link into the pool's own file (``copy``).
 
     A refreshed file in the link's place is left alone: the service reseeds the pool from it.
     """
@@ -26,12 +27,46 @@ def credential(pool: Pool, link: Path, variable: str) -> Credential | None:
     if pool.config_dir is None:
         return None
     source = pool.config_dir / link.name
+    if copy:
+        return _copy(pool, link, source)
     if _newer(pool, link, source):
         raise ShipError(f"{link} holds a credential newer than pool {pool.name}'s and is not deleted: it may hold the only "
                         f"live token. If it is {pool.name}'s, put it in {source}; otherwise move it aside; then try again")
     link.unlink(missing_ok=True)  # a link to a former pool, or a refreshed file the service has reseeded from
     link.symlink_to(source)
     return Credential(link=(link, source))
+
+
+def _copy(pool: Pool, path: Path, source: Path) -> Credential:
+    """The home's own copy of the pool's sign-in, made while no program of this home runs (a build or a launch).
+
+    A copy newer than the pool's is this home's own refresh and stays, for the service to put in the pool's place. A link
+    left from before, an older or unreadable copy, or none at all becomes a copy of the pool's file, put in one step at
+    mode 600. A copy as fresh as the pool's is left as it is. With no pool file there is nothing to copy.
+    """
+    from . import native_for  # the adapters import this module
+
+    reader = native_for(pool.provider)
+    if path.is_symlink():
+        path.unlink()
+    elif path.exists() and (_newer(pool, path, source)
+                            or (source.exists() and reader.freshness(path) is not None
+                                and reader.freshness(path) == reader.freshness(source))):
+        return Credential(link=(path, source))
+    if source.exists():
+        put_copy(source, path)
+    return Credential(link=(path, source))
+
+
+def put_copy(source: Path, path: Path) -> None:
+    """A copy of ``source`` at ``path`` in one step: its bytes and times kept, so it reads exactly as fresh, mode 600."""
+    import shutil
+
+    tmp = path.with_name(f"{path.name}.qd-tmp")
+    tmp.unlink(missing_ok=True)
+    shutil.copy2(source, tmp)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
 
 
 def _newer(pool: Pool, link: Path, source: Path | None) -> bool:

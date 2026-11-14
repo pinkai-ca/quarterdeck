@@ -174,8 +174,10 @@ PRIVACY_SEED_RECORD = "quarterdeck-privacy-seed.json"
 
 
 def cached_coding_opt_out(home: Path, pool: Pool) -> bool:
-    """Read only the native opt-out boolean through this home's declared subscription link.
+    """Read only the native opt-out boolean from the declared subscription's own sign-in, for a home attached to it.
 
+    A home is attached by its copy of the pool's file, or by a link naming that file (a home not rebuilt since seats
+    held copies). The pool's own file is read, not the copy, which may wait one service pass to be brought up to it.
     The cache is not a fresh account query. Ambiguous accounts and every value except true
     leave the native question in place; no credential or account text is returned or logged.
     """
@@ -183,9 +185,11 @@ def cached_coding_opt_out(home: Path, pool: Pool) -> bool:
         return False
     link = home / "auth.json"
     try:
-        if not link.is_symlink() or Path(os.readlink(link)) != pool.config_dir / "auth.json":
+        if link.is_symlink() and Path(os.readlink(link)) != pool.config_dir / "auth.json":
             return False
-        data = json.loads(link.read_text())
+        if not link.is_symlink() and not link.is_file():
+            return False
+        data = json.loads((pool.config_dir / "auth.json").read_text())
         if not isinstance(data, dict) or len(data) != 1:
             return False
         grant = next(iter(data.values()))
@@ -303,6 +307,9 @@ class GrokHarness(Harness):
     native_provider = "xai"
     home_variable = "GROK_HOME"
     credential_file = "auth.json"
+    # Measured 13 November on 1.0.77: Grok replaces its auth.json at the link's target, the pool's own file, so two seats
+    # refreshing at once would race on the account holder's sign-in. Each seat holds a copy instead.
+    credential_copy = True
     # Measured 11 November on 1.0.77: the program renews its short access grant on use, so expires_at
     # passing needs no login. The end of the grant that renews it and a failed renewal have no field
     # the adapter knows by name, so neither is read.
@@ -431,7 +438,7 @@ class GrokHarness(Harness):
         if (kept := program_privacy(home / "config.toml")) is not None:
             settings["privacy"] = kept
         (home / "config.toml").write_text(config_text(settings))
-        attached = credential(pool, home / self.credential_file, "XAI_API_KEY")
+        attached = credential(pool, home / self.credential_file, "XAI_API_KEY", copy=self.credential_copy)
         acknowledge_cached_opt_out(home, pool)
         return attached
 
@@ -473,7 +480,7 @@ class GrokHarness(Harness):
         home.mkdir(parents=True, exist_ok=True)
         build_private_user_home(home)
         (home / "config.toml").write_text(config_text(SETTINGS))
-        credential(pool, home / self.credential_file, "XAI_API_KEY")
+        credential(pool, home / self.credential_file, "XAI_API_KEY", copy=self.credential_copy)
         acknowledge_cached_opt_out(home, pool)
         try:
             self.preflight(home, home)

@@ -8,10 +8,18 @@ credential path: one that is no longer a link has refreshed. Of the detached fil
 pool, the newest live one is put in the pool's place, one copy of the replaced file kept
 under the runtime, and every detached seat relinked; a logged-out stub installs nothing.
 Expiry times are read as metadata; token values are never read.
+
+A program that writes its refresh through the link instead would put it straight into
+the pool's own file, the account holder's sign-in, where two seats refreshing at once race. Its
+seats hold a copy, never a link: each refresh lands in its own home, the newest live one is put
+in the pool's place as above, and every copy older than the pool's is brought up to it, swapped
+in one exchange so a refresh that lands meanwhile is never lost (law: one-folder).
 """
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import os
 import shutil
 from dataclasses import dataclass
@@ -96,14 +104,67 @@ def reseed(ship: Ship, seats: list[Seat]) -> list[str]:
                           f"{parked.relative_to(ship.folder) if parked else 'nothing'}")
         if not source.exists():
             continue  # a pool with no credential yet and only stubs to offer: nothing to link to
+        copies = getattr(harnesses.native_for(pool.provider), "credential_copy", False)
+        current = freshness(pool, source)
         for link, seat in candidates:
-            if seat.usage_reader and freshness(pool, link) is None:
+            held = freshness(pool, link)
+            if seat.usage_reader and held is None:
                 proofs.append(f"{seat.name} credential unreadable; detached file retained for a human")
+                continue
+            if copies:
+                if held is not None and current is not None and held >= current:
+                    continue  # as fresh as the pool's, the winner's own among them; a newer one waits for the next pass
+                proofs.append(_bring_up(source, link, seat.name, pool_name))
                 continue
             link.unlink()
             link.symlink_to(source)
             proofs.append(f"{seat.name} relinked to {pool_name}")
     return proofs
+
+
+def _bring_up(source: Path, path: Path, name: str, pool_name: str) -> str:
+    """Bring one home's older copy up to the pool's, while its program may be running and refreshing.
+
+    The pool's copy is swapped with the home's file in one exchange, so the program never finds the place empty. What
+    came out is then the file that was judged older, or a refresh the program wrote since: that one is swapped straight
+    back and kept, and the next pass puts it in the pool's place. Nothing is overwritten unseen.
+    """
+    try:
+        judged = path.stat()
+    except OSError:
+        return f"{name} copy unreadable; retained for the next pass"
+    tmp = path.with_name(f"{path.name}.qd-copy")
+    tmp.unlink(missing_ok=True)
+    shutil.copy2(source, tmp)
+    os.chmod(tmp, 0o600)
+    try:
+        _exchange(tmp, path)
+    except OSError as error:
+        tmp.unlink(missing_ok=True)
+        return f"{name} copy not brought up to {pool_name}: {os.strerror(error.errno)}; retained"
+    out = tmp.stat()
+    if (out.st_ino, out.st_dev, out.st_mtime_ns, out.st_size) != (judged.st_ino, judged.st_dev, judged.st_mtime_ns,
+                                                                  judged.st_size):
+        _exchange(tmp, path)  # the program wrote since it was judged: its file goes straight back
+        tmp.unlink()
+        return f"{name} refreshed while its copy was brought up; its refresh kept for the next pass"
+    tmp.unlink()
+    return f"{name} copy brought up to {pool_name}"
+
+
+RENAME_EXCHANGE = 2
+_libc = None
+
+
+def _exchange(first: Path, second: Path) -> None:
+    """Swap two names in one directory atomically (renameat2 with RENAME_EXCHANGE): neither is ever absent."""
+    global _libc
+    if _libc is None:
+        _libc = ctypes.CDLL(None, use_errno=True)
+    at_cwd = -100
+    if _libc.renameat2(at_cwd, os.fsencode(first), at_cwd, os.fsencode(second), RENAME_EXCHANGE) != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code or errno.EIO))
 
 
 def _park(source: Path, parked: Path) -> Path | None:

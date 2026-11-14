@@ -392,7 +392,8 @@ def read_usage(service, pool, reader) -> Usage | None:
         return Usage((), datetime.now(timezone.utc), "native usage home is a link; ownership unknown", called=False)
     reconcile()  # never rebuild over a detached native refresh
     link = home / reader.credential_file
-    if link.exists() and not link.is_symlink():
+    if link.exists() and not link.is_symlink() and (not getattr(reader, "credential_copy", False)
+                                                    or reader.freshness(link) is None):
         return Usage((), datetime.now(timezone.utc), "native usage credential detached and unreadable", called=False)
     try:
         return reader.usage_in_home(pool, home)

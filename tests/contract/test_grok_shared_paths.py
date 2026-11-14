@@ -135,26 +135,27 @@ def test_seat_capture_fallback_passes_styles_only_for_an_opted_in_adapter(tmp_pa
 
 # -- the declared usage reader takes part in the one credential reseed --------------------------------
 
-def test_a_newer_usage_reader_refresh_reseeds_the_pool_and_is_relinked(tmp_path):
+def test_a_newer_usage_reader_refresh_reseeds_the_pool_and_its_copy_stands(tmp_path):
     ship, pool, source = grok_ship(tmp_path)
     link = reader_file(ship, pool)
     link.write_text(grant("reader", "2040-03-01T00:00:00Z"))
     proofs = credential.reseed(ship, [])
-    assert proofs[0].startswith(f"synthetic-plan reseeded from {READER}'s refresh")
-    assert proofs[1:] == [f"{READER} relinked to synthetic-plan"]
-    assert link.is_symlink() and link.resolve() == source.resolve()
+    assert len(proofs) == 1 and proofs[0].startswith(f"synthetic-plan reseeded from {READER}'s refresh")
+    assert not link.is_symlink() and link.read_bytes() == source.read_bytes()
     assert json.loads(source.read_text())["synthetic-grant"]["refresh_token"] == "reader"
+    assert credential.reseed(ship, []) == [], "a copy as fresh as the pool's is left alone on every later pass"
 
 
-def test_an_older_usage_reader_file_is_replaced_by_the_link_without_reseeding(tmp_path):
+def test_an_older_usage_reader_copy_is_brought_up_to_the_pool_without_reseeding(tmp_path):
     ship, pool, source = grok_ship(tmp_path)
     link = reader_file(ship, pool)
     link.write_text(grant("older", "2039-01-01T00:00:00Z"))
-    assert credential.reseed(ship, []) == [f"{READER} relinked to synthetic-plan"]
-    assert link.is_symlink() and json.loads(source.read_text())["synthetic-grant"]["refresh_token"] == "pool"
+    assert credential.reseed(ship, []) == [f"{READER} copy brought up to synthetic-plan"]
+    assert not link.is_symlink() and link.read_bytes() == source.read_bytes()
+    assert json.loads(source.read_text())["synthetic-grant"]["refresh_token"] == "pool"
 
 
-def test_an_unreadable_usage_reader_file_is_retained_while_a_seat_stub_is_relinked(tmp_path):
+def test_an_unreadable_usage_reader_file_is_retained_while_a_seat_stub_is_brought_up(tmp_path):
     ship, pool, source = grok_ship(tmp_path)
     link = reader_file(ship, pool)
     link.write_text("{}")
@@ -163,10 +164,10 @@ def test_an_unreadable_usage_reader_file_is_retained_while_a_seat_stub_is_relink
     (home / "auth.json").write_text("{}")
     worker = SimpleNamespace(name="worker", pool=pool, home=home, launched=lambda: SimpleNamespace(pool=pool.name))
     proofs = credential.reseed(ship, [worker])
-    assert proofs == ["worker relinked to synthetic-plan",
+    assert proofs == ["worker copy brought up to synthetic-plan",
                       f"{READER} credential unreadable; detached file retained for a human"]
     assert not link.is_symlink() and link.read_text() == "{}"
-    assert (home / "auth.json").is_symlink()
+    assert not (home / "auth.json").is_symlink() and (home / "auth.json").read_bytes() == source.read_bytes()
     assert json.loads(source.read_text())["synthetic-grant"]["refresh_token"] == "pool"
 
 
@@ -207,7 +208,8 @@ def test_native_read_reconciles_before_and_after_in_its_owned_home(tmp_path, mon
     expected = Usage((), SECOND)
 
     def read(self, read_pool, home):
-        events.append(("read", home, (home / "auth.json").is_symlink()))
+        copy = home / "auth.json"
+        events.append(("read", home, not copy.is_symlink() and copy.read_bytes() == source.read_bytes()))
         return expected
 
     monkeypatch.setattr(GrokHarness, "usage_in_home", read)
@@ -215,7 +217,8 @@ def test_native_read_reconciles_before_and_after_in_its_owned_home(tmp_path, mon
     assert quota.read_usage(usage_service(ship, logs), pool, GrokHarness()) is expected
     assert events == ["reseed", ("read", credential.usage_home(ship, pool), True), "reseed"]
     assert json.loads(source.read_text())["synthetic-grant"]["refresh_token"] == "reader"
-    assert ("credential", {"proof": f"{READER} relinked to synthetic-plan"}) in logs
+    assert any(kind == "credential" and fields["proof"].startswith(f"synthetic-plan reseeded from {READER}'s refresh")
+               for kind, fields in logs)
 
 
 def test_a_failed_native_read_still_reconciles_afterwards(tmp_path, monkeypatch, events):
@@ -340,7 +343,8 @@ def test_seat_launch_reads_the_selected_version_in_a_fresh_runtime_home(tmp_path
     assert not run["home"].exists() and not list(ship.runtime.glob("version-*")), "the fresh home is retired"
     launched = seat.launched()
     assert (launched.pane, launched.pid, launched.version, launched.harness) == ("%7", 1007, "8.6.4", "grok")
-    assert (seat.home / "auth.json").is_symlink() and (seat.home / "auth.json").resolve() == source.resolve()
+    copy = seat.home / "auth.json"
+    assert not copy.is_symlink() and copy.read_bytes() == source.read_bytes(), "the seat holds a copy, never a link"
     assert json.loads(source.read_text())["synthetic-grant"]["refresh_token"] == "pool"
 
 
