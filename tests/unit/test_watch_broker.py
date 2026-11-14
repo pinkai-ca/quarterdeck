@@ -54,13 +54,13 @@ def test_a_held_admission_lock_never_stalls_the_service(tmp_path: Path):
     fcntl.flock(held, fcntl.LOCK_EX)
     try:
         started = time.monotonic()
-        watch_broker.run(svc, SimpleNamespace(name='desk'))
+        watch_broker.run(svc, SimpleNamespace(name='desk', ship=SimpleNamespace(runtime=runtime)))
         assert time.monotonic() - started < watch_broker.WAIT + 1, 'bounded'
         assert [event for event, _ in svc.logged] == ['watch-broker-skipped']
         assert not watch_broker.offer_path(runtime, 'desk').exists(), 'nothing offered while skipped'
     finally:
         os.close(held)
-    watch_broker.run(svc, SimpleNamespace(name='desk'))
+    watch_broker.run(svc, SimpleNamespace(name='desk', ship=SimpleNamespace(runtime=runtime)))
     assert watch_broker.read_offer(runtime, 'desk') is not None, 'the next pass offers'
 
 
@@ -76,7 +76,7 @@ def test_a_held_attempts_lock_skips_the_seat_without_an_attempt(tmp_path: Path):
     fcntl.flock(held, fcntl.LOCK_EX)
     try:
         started = time.monotonic()
-        watch_broker.run(svc, SimpleNamespace(name='desk'))
+        watch_broker.run(svc, SimpleNamespace(name='desk', ship=SimpleNamespace(runtime=runtime)))
         assert time.monotonic() - started < watch_broker.WAIT + 1
         assert svc.logged[-1][0] == 'watch-broker-skipped'
     finally:
@@ -89,7 +89,7 @@ def test_only_an_offered_open_attempt_of_this_seat_is_closed_by_a_receipt(tmp_pa
     svc = service(runtime)
     armed(runtime, 'desk')
     message = svc.store.new('order', 'captain', 'desk', 'waiting')
-    watch_broker.run(svc, SimpleNamespace(name='desk'))
+    watch_broker.run(svc, SimpleNamespace(name='desk', ship=SimpleNamespace(runtime=runtime)))
     offer = watch_broker.read_offer(runtime, 'desk')
     assert offer['messages'] == [message.id] and len(offer['attempts']) == 1
     receipts = post.watch_file(runtime, 'desk').parent / watch_broker.RECEIPTS
@@ -98,12 +98,12 @@ def test_only_an_offered_open_attempt_of_this_seat_is_closed_by_a_receipt(tmp_pa
     (receipts / 'linked.json').symlink_to(tmp_path / 'elsewhere.json')
     name = offer['attempts'][0]
     (receipts / name).write_text(json.dumps(dict(format=1, attempt=name, message=message.id)))
-    watch_broker.run(svc, SimpleNamespace(name='desk'))
+    watch_broker.run(svc, SimpleNamespace(name='desk', ship=SimpleNamespace(runtime=runtime)))
     attempt, = svc.attempts.for_message(message.id)
     assert (attempt.result, attempt.detail) == ('watch', 'printed by qd inbox --wait')
     assert ('watch-receipt-ignored', dict(seat='desk', receipt='not-offered.json')) in svc.logged
     assert (receipts / 'linked.json').is_symlink(), 'a link is never read and is left where it is'
-    watch_broker.run(svc, SimpleNamespace(name='desk'))
+    watch_broker.run(svc, SimpleNamespace(name='desk', ship=SimpleNamespace(runtime=runtime)))
     assert watch_broker.read_offer(runtime, 'desk') is None, 'a settled offer is retired'
 
 
@@ -118,8 +118,8 @@ def test_a_held_lease_is_only_tested_and_never_delays_a_pass(tmp_path: Path):
         started = time.monotonic()
         for _ in range(20):
             assert watch_broker.lease_held(runtime, 'desk', 'a' * 32) is True
-            watch_broker.run(svc, SimpleNamespace(name='desk'))
-            watch_broker.run(svc, SimpleNamespace(name='office'))
+            watch_broker.run(svc, SimpleNamespace(name='desk', ship=SimpleNamespace(runtime=runtime)))
+            watch_broker.run(svc, SimpleNamespace(name='office', ship=SimpleNamespace(runtime=runtime)))
         assert time.monotonic() - started < 2, 'forty passes over held leases, none waiting on them'
         assert watch_broker.read_offer(runtime, 'office') is not None
     finally:
@@ -132,14 +132,14 @@ def test_a_receipts_folder_that_is_a_link_is_never_entered(tmp_path: Path):
     svc = service(runtime)
     armed(runtime, 'desk')
     svc.store.new('order', 'captain', 'desk', 'waiting')
-    watch_broker.run(svc, SimpleNamespace(name='desk'))
+    watch_broker.run(svc, SimpleNamespace(name='desk', ship=SimpleNamespace(runtime=runtime)))
     name = watch_broker.read_offer(runtime, 'desk')['attempts'][0]
     outside = tmp_path / 'outside'
     outside.mkdir()
     (outside / name).write_text(json.dumps(dict(format=1, attempt=name)))
     (outside / 'precious.json').write_text('keep me')
     (post.watch_file(runtime, 'desk').parent / watch_broker.RECEIPTS).symlink_to(outside)
-    watch_broker.run(svc, SimpleNamespace(name='desk'))
+    watch_broker.run(svc, SimpleNamespace(name='desk', ship=SimpleNamespace(runtime=runtime)))
     assert sorted(p.name for p in outside.iterdir()) == sorted([name, 'precious.json']), 'nothing outside is removed'
     attempt, = svc.attempts.for_message(watch_broker.read_offer(runtime, 'desk')['messages'][0])
     assert attempt.result is None, 'a claim reached through a link closes nothing'
@@ -156,3 +156,13 @@ def test_an_oversized_or_linked_request_is_no_claim(tmp_path: Path):
     elsewhere.write_text(json.dumps(dict(format=1, generation='a' * 32, lease=[0, 0])))
     request.symlink_to(elsewhere)
     assert watch_broker.request(runtime, 'desk') is None
+
+
+def test_a_human_seat_without_a_brokered_watch_is_not_touched(tmp_path: Path):
+    """No request, no offer, no receipt: the step returns before any lock or log, so open seats are as before."""
+    runtime = tmp_path / 'runtime'
+    svc = service(runtime)
+    svc.store.new('order', 'captain', 'desk', 'waiting')
+    watch_broker.run(svc, SimpleNamespace(name='desk', ship=SimpleNamespace(runtime=runtime)))
+    assert svc.logged == [] and not (runtime / 'post' / 'admission').exists()
+    assert svc.attempts.for_message(svc.store.all()[0].id) == []

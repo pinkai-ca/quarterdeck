@@ -247,6 +247,10 @@ def run(service, seat) -> None:
     Every lock taken here is one a jail can see, so each wait is bounded: past it this seat is skipped this pass,
     logged, and tried again on the next. The waiting seat itself locks nothing the service waits on.
     """
+    runtime = seat.ship.runtime
+    if (request(runtime, seat.name) is None and not offer_path(runtime, seat.name).exists()
+            and not (seat_folder(runtime, seat.name) / RECEIPTS).exists()):
+        return  # no brokered watch, no offer, no receipt: nothing to serve, and no lock taken
     try:
         _run(service, seat)
     except post.LockBusy as busy:
@@ -254,7 +258,7 @@ def run(service, seat) -> None:
 
 
 def _run(service, seat) -> None:
-    runtime, name = service.runtime, seat.name
+    runtime, name = seat.ship.runtime, seat.name
     with post.admission(runtime, name, wait=WAIT):
         offer = read_offer(runtime, name)
         _settle(service, name, offer)
@@ -281,11 +285,11 @@ def _run(service, seat) -> None:
 def _settle(service, name: str, offer: dict | None) -> None:
     """Close what the seat's receipts claim. The folder and each receipt are walked without following a link: a
     receipts folder that is a link is never entered, and nothing outside the seat's own folder is read or removed."""
-    seat = _folder_fd(seat_folder(service.runtime, name))
+    seat = _folder_fd(seat_folder(service.store.dir.parent.parent, name))
     if seat is None:
         return
     try:
-        folder = _folder_fd(seat_folder(service.runtime, name) / RECEIPTS, seat)
+        folder = _folder_fd(seat_folder(service.store.dir.parent.parent, name) / RECEIPTS, seat)
     finally:
         os.close(seat)
     if folder is None:
@@ -297,7 +301,7 @@ def _settle(service, name: str, offer: dict | None) -> None:
 
 
 def _settle_in(service, name: str, offer: dict | None, folder: int) -> None:
-    where = seat_folder(service.runtime, name) / RECEIPTS
+    where = seat_folder(service.store.dir.parent.parent, name) / RECEIPTS
     offered = set(offer['attempts']) if offer is not None else set()
     with os.scandir(folder) as entries:
         names = [(entry.name, entry.is_file(follow_symlinks=False)) for entry in entries]
@@ -312,7 +316,7 @@ def _settle_in(service, name: str, offer: dict | None, folder: int) -> None:
         attempt = None
         if (isinstance(data, dict) and data.get('format') == 1 and data.get('attempt') == entry
                 and entry in offered):
-            attempt = _attempt(service.runtime, entry)
+            attempt = _attempt(service.store.dir.parent.parent, entry)
         if attempt is not None and attempt.seat == name and attempt.result is None:
             service.attempts.close(attempt, 'watch', 'printed by qd inbox --wait', wait=WAIT)
             service.log('watch-receipt', seat=name, message=attempt.message)
