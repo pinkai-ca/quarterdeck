@@ -180,42 +180,46 @@ def _read_nofollow(parent_fd, name, path, limit=None):
     """Bytes of one regular file in an already opened directory. A link is a hold.
 
     Anything that is not a regular file is refused from the lstat, before the open.
-    ``limit`` refuses a larger file before the open as well.
+    ``limit`` refuses a larger file before the open as well. A stable read whose
+    name was atomically replaced by another regular file starts over, at most
+    three reads in all. An in-place change is still refused.
     """
-    try:
+    stamp = lambda item: (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns, item.st_ctime_ns)
+    for attempt in range(3):
         info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-    except FileNotFoundError:
-        raise
-    if stat.S_ISLNK(info.st_mode):
-        _link_held(path)
-    if not stat.S_ISREG(info.st_mode):
-        raise NotRegular('post path is not a regular file')
-    if limit is not None and info.st_size > limit:
-        raise ShipError('post path exceeds its read limit')
-    try:
-        descriptor = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC,
-                             dir_fd=parent_fd)
-    except OSError as error:
-        if error.errno == errno.ELOOP:
+        if stat.S_ISLNK(info.st_mode):
             _link_held(path)
-        raise
-    try:
-        before = os.fstat(descriptor)
-        if not stat.S_ISREG(before.st_mode):
+        if not stat.S_ISREG(info.st_mode):
             raise NotRegular('post path is not a regular file')
-        if limit is not None and before.st_size > limit:
+        if limit is not None and info.st_size > limit:
             raise ShipError('post path exceeds its read limit')
-        with os.fdopen(descriptor, 'rb', closefd=False) as stream:
-            data = stream.read() if limit is None else stream.read(limit)
-        after = os.fstat(descriptor)
-        current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-        stamp = lambda item: (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns, item.st_ctime_ns)
-        if (stamp(before) != stamp(after) or stamp(after) != stamp(current)
-                or stat.S_ISLNK(current.st_mode) or len(data) != after.st_size):
-            raise ShipError('post path changed during its read')
-        return data
-    finally:
-        os.close(descriptor)
+        try:
+            descriptor = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                 dir_fd=parent_fd)
+        except OSError as error:
+            if error.errno == errno.ELOOP:
+                _link_held(path)
+            raise
+        try:
+            before = os.fstat(descriptor)
+            if not stat.S_ISREG(before.st_mode):
+                raise NotRegular('post path is not a regular file')
+            if limit is not None and before.st_size > limit:
+                raise ShipError('post path exceeds its read limit')
+            with os.fdopen(descriptor, 'rb', closefd=False) as stream:
+                data = stream.read() if limit is None else stream.read(limit)
+            after = os.fstat(descriptor)
+            current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            if (stamp(before) != stamp(after) or len(data) != after.st_size
+                    or not stat.S_ISREG(current.st_mode)
+                    or (limit is not None and current.st_size > limit)):
+                raise ShipError('post path changed during its read')
+            if stamp(after) == stamp(current):
+                return data
+            if (after.st_dev, after.st_ino) == (current.st_dev, current.st_ino) or attempt == 2:
+                raise ShipError('post path changed during its read')
+        finally:
+            os.close(descriptor)
 
 
 def _exists_nofollow(path):
