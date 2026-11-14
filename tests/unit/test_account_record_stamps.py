@@ -146,7 +146,7 @@ def test_rechecking_identical_turns_does_not_rewrite_them(tmp_path, monkeypatch)
     assert writes(trace) == []
 
 
-@pytest.mark.parametrize('kind', ['unrelated', 'later', 'affected'])
+@pytest.mark.parametrize('kind', ['unrelated', 'later', 'closing-later', 'affected'])
 def test_restart_only_replays_records_affected_by_a_post(tmp_path, monkeypatch, kind):
     w = world(tmp_path, monkeypatch, records=('one', 'two'))
     other = SimpleNamespace(**{**vars(w.seat), 'name': 'synthetic-other-seat-q',
@@ -156,11 +156,19 @@ def test_restart_only_replays_records_affected_by_a_post(tmp_path, monkeypatch, 
     owned = list(w.owned.values())
     monkeypatch.setattr(w.svc, 'resolved_seats', lambda: [w.seat, other])
     monkeypatch.setattr(record_owner, 'records', lambda seat: [owned[0] if seat is w.seat else owned[1]])
+    if kind == 'closing-later':
+        w.svc.store.write(Message('synthetic-claimed-order', 'order', 'synthetic-operator',
+                                  w.seat.name, AT - timedelta(seconds=2), 'synthetic work'))
+        w.svc.store.write(Message('synthetic-claim', 'ack', w.seat.name, 'synthetic-operator',
+                                  AT - timedelta(seconds=1), 'synthetic claim', re='synthetic-claimed-order'))
     w.svc.account_records()
     inputs = list(w.input_reads)
     message = Message('synthetic-added-message', 'order', 'synthetic-operator',
                       'synthetic-unrelated-seat' if kind == 'unrelated' else w.seat.name,
                       AT + timedelta(seconds=30 if kind == 'later' else 1), 'synthetic work')
+    if kind == 'closing-later':
+        message = replace(message, kind='report', sender=w.seat.name, to='synthetic-operator',
+                          at=AT + timedelta(seconds=30), re='synthetic-claimed-order')
     w.svc.store.write(message)
     restart(w)
     before = w.svc.ledger.db.total_changes
