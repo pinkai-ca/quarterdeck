@@ -8,7 +8,7 @@ import shutil
 
 import pytest
 
-from quarterdeck import drill
+from quarterdeck import drill, human_wake
 
 
 @pytest.fixture
@@ -27,7 +27,8 @@ def test_the_drill_passes_every_check(private_socket):
     assert "service killed mid-delivery, recovered" in text
     assert "caught submitted open attempt before record acceptance" in text
     assert "in the record 1 time(s); submissions 1;" in text
-    assert "desk never typed into · box ''" in text  # law: one-door
+    assert any(f"desk box has only permitted input · box {box!r}" in text
+               for box in ('', human_wake.LINE))  # law: one-door
     assert "briefed with its open order" in text  # law: context-is-cache
     assert lines[-1] == f"all passed of {len(lines) - 1} checks"
     assert not os.environ.get("QD_SHIP")

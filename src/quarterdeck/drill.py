@@ -20,7 +20,7 @@ from datetime import datetime
 from contextlib import nullcontext
 from pathlib import Path
 
-from . import harness as harnesses, input_receipt, lifecycle, post, seat as seatmod, service, ship as shipmod, standing, watch
+from . import harness as harnesses, human_wake, input_receipt, lifecycle, post, seat as seatmod, service, ship as shipmod, standing, watch
 from .post import Attempts, Store
 from .pending import journals
 from .harness.synthetic_control import Rendezvous, events
@@ -124,11 +124,12 @@ class Drill:
                              for o in orders.values()), self.patience * 2)
         for (sender, to), order in orders.items():
             report = self.store.closing_report(order)
-            if report is not None:
+            attempts = self.attempts.for_message(order.id)
+            if report is not None and not any(a.accepted for a in attempts):
                 # The global wait may expire just before this report appears.
                 # Give its receipt a bounded settlement window of its own.
                 wait_for(lambda: any(a.accepted for a in self.attempts.for_message(order.id)), self.patience)
-            attempts = self.attempts.for_message(order.id)
+                attempts = self.attempts.for_message(order.id)
             results = [a.result for a in attempts if a.accepted]
             ok = report is not None and len(results) == 1
             how = f"{results[0]}" if results else "never delivered"
@@ -140,7 +141,8 @@ class Drill:
         for seat in self.seats():
             if seat.session.human:
                 screen = seat.harness.screen(self.tmux.capture(seat.pane().id)) if seat.pane() else None
-                self.check(f"{label}: {seat.name} never typed into", screen is not None and screen.box == "",
+                self.check(f"{label}: {seat.name} box has only permitted input",
+                           screen is not None and screen.box in ('', human_wake.LINE),
                            f"box {screen.box!r}" if screen else "no screen")
 
     def play_human_seat(self, name: str, orders: list[post.Message]) -> None:

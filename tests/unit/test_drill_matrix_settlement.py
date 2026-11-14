@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import drill, post
+from quarterdeck import drill, human_wake, post
 
 
 def matrix(tmp_path, monkeypatch, *, settles=True, duplicate=False, result=None):
@@ -75,3 +75,29 @@ def test_matrix_receipt_timeout_is_bounded_and_names_actual_attempt_state(tmp_pa
         assert f"attempts {[result or 'unfinished']}" in check.detail
         assert 'closed by rep-' in check.detail
     assert exercise.checks[-1].passed
+
+
+@pytest.mark.parametrize('box,present,permitted', [
+    ('', True, True),
+    (human_wake.LINE, True, True),
+    (human_wake.LINE + ' ', True, False),
+    (human_wake.LINE + '\n', True, False),
+    (human_wake.LINE + '\nordinary message', True, False),
+    (' ' + human_wake.LINE, True, False),
+    (human_wake.LINE[:-1], True, False),
+    ('ordinary draft', True, False),
+    (None, True, False),
+    ('', False, False),
+])
+def test_matrix_human_box_allows_only_empty_or_exact_fixed_waking_line(tmp_path, box, present, permitted):
+    screen = SimpleNamespace(box=box) if present else None
+    seat = SimpleNamespace(name='desk', session=SimpleNamespace(human=True),
+                           pane=lambda: SimpleNamespace(id='%synthetic'),
+                           harness=SimpleNamespace(screen=lambda _: screen))
+    exercise = drill.Drill(SimpleNamespace(runtime=tmp_path, seats={}),
+                           SimpleNamespace(capture=lambda _: 'synthetic frame'), patience=0.1)
+    exercise.seats = lambda: [seat]
+    exercise.matrix('synthetic')
+    check = exercise.checks[-1]
+    assert check.name == 'synthetic: desk box has only permitted input'
+    assert check.passed is permitted

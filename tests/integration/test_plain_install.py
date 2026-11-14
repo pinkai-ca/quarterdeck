@@ -15,6 +15,8 @@ import zipfile
 
 import pytest
 
+from quarterdeck import human_wake
+
 pytest_plugins = ("tests.shared_install",)
 
 from tests.integration.test_upgrade_resources import RESOURCE_ROOTS, ROOT, archive, environment, git
@@ -184,8 +186,10 @@ def test_wheel_installed_laws_and_fake_drydock(scratch, private_socket_root, cap
                      'round 2: every order closed · 6 of 6',
                      'caught submitted open attempt before record acceptance',
                      'in the record 1 time(s); submissions 1;',
-                     "desk never typed into · box ''", 'briefed with its open order'):
+                     'briefed with its open order'):
         assert evidence in drill_text, drill_text
+    assert any(f"desk box has only permitted input · box {box!r}" in drill_text
+               for box in ('', human_wake.LINE)), drill_text
     assert not list(Path(env['TMPDIR']).glob('qd-drill-*'))
     assert set(private_socket_root.glob('qd-pt-*')) - namespaces_before == set(), 'its own drill left no namespace'
 
