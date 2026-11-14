@@ -237,8 +237,9 @@ JAIL_PROBE = textwrap.dedent(r'''
                 pass
     seen['held_under_post'] = len(held)
     seen['locks_folder'] = sorted(os.listdir(os.path.join(runtime, 'locks')))
-    with open(os.path.join(work, 'held.json'), 'w') as stream:
+    with open(os.path.join(work, 'held.json.tmp'), 'w') as stream:  # whole, then renamed: never read half-written
         json.dump(seen, stream)
+    os.replace(os.path.join(work, 'held.json.tmp'), os.path.join(work, 'held.json'))
     deadline = time.monotonic() + 120
     while not os.path.exists(os.path.join(work, 'done')) and time.monotonic() < deadline:
         time.sleep(0.02)
@@ -274,11 +275,16 @@ def test_a_jail_cannot_hold_the_filing_lock_and_the_host_still_files_while_it_ho
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
     closed: list = []
     try:
+        seen = None
         deadline = time.monotonic() + 60
-        while not (workspace / 'held.json').exists() and child.poll() is None and time.monotonic() < deadline:
-            time.sleep(0.02)
-        assert (workspace / 'held.json').exists(), child.communicate(timeout=10)
-        seen = json.loads((workspace / 'held.json').read_text())
+        while seen is None and time.monotonic() < deadline:
+            try:
+                seen = json.loads((workspace / 'held.json').read_text())  # only once it parses whole
+            except (FileNotFoundError, json.JSONDecodeError):
+                if child.poll() is not None:
+                    break
+                time.sleep(0.02)
+        assert seen is not None, child.communicate(timeout=10)
         worker = threading.Thread(target=lambda: closed.append(check.closing_report(seat, store, order)), daemon=True)
         worker.start()
         worker.join(30)
