@@ -55,7 +55,7 @@ def _folders(paths):
 
 def _replace_file(path: Path, text: str):
     """Publish a whole index or completion record, without a storage sync."""
-    post_dir.replace_bytes(path, text.encode('utf-8'), sync=False)
+    post_dir.replace_bytes(path, text.encode('utf-8'))
 
 
 def move(source: Path, destination: Path) -> bool:

@@ -344,7 +344,19 @@ def read_text(path, *, encoding: str | None = None, limit: int | None = None) ->
     return read_bytes(path, limit=limit).decode(encoding or locale.getpreferredencoding(False))
 
 
-def replace_bytes(path, data: bytes, *, sync: bool = True, mode: int = 0o666) -> None:
+def replace_bytes(path, data: bytes, *, mode: int = 0o666) -> None:
+    """Replace whole without a storage sync, through the held directory walk."""
+    _replace_bytes(path, data, law_record=False, mode=mode)
+
+
+def _replace_law_bytes(path, data: bytes) -> None:
+    """The initial attempt's fixed law writer; never an ordinary write option."""
+    if not under_post(path):
+        raise ValueError('law post record is outside runtime/post')
+    _replace_bytes(path, data, law_record=True, mode=0o666)
+
+
+def _replace_bytes(path, data: bytes, *, law_record: bool, mode: int) -> None:
     """Put data at path through a random exclusive temporary in the held parent directory.
 
     A link at the parent, or at the final name when that name is looked up, is a
@@ -363,8 +375,6 @@ def replace_bytes(path, data: bytes, *, sync: bool = True, mode: int = 0o666) ->
                     if written <= 0:
                         raise OSError('post write incomplete')
                     view = view[written:]
-                if sync:
-                    os.fsync(descriptor)
             finally:
                 os.close(descriptor)
             os.replace(temporary, path)
@@ -392,13 +402,13 @@ def replace_bytes(path, data: bytes, *, sync: bool = True, mode: int = 0o666) ->
                 if written <= 0:
                     raise OSError('post write incomplete')
                 view = view[written:]
-            if sync:
+            if law_record:
                 os.fsync(descriptor)
         finally:
             os.close(descriptor)
         os.replace(temporary, name, src_dir_fd=parent, dst_dir_fd=parent)
         temporary = None
-        if sync:
+        if law_record:
             os.fsync(parent)
     finally:
         if temporary is not None:

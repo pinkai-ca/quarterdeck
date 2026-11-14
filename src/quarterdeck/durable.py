@@ -18,6 +18,10 @@ from pathlib import Path
 def replace_file(path: Path, text: str, *, encoding: str | None = None) -> None:
     """Put ``text`` at ``path`` whole, as ``Path.write_text`` would encode it unless told otherwise, without a storage sync."""
     data = text.encode(encoding or locale.getpreferredencoding(False))
+    from . import post_dir
+    if post_dir.under_post(path):
+        post_dir.replace_bytes(path, data)
+        return
     # A name of its own, so two writers never share (or rename away) one temporary;
     # it never ends in a reader's suffix, and a cut can only leave it unread beside the file.
     temporary = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
@@ -40,13 +44,11 @@ def replace_file(path: Path, text: str, *, encoding: str | None = None) -> None:
 def _replace_law_record(path: Path, text: str, *, encoding: str | None = None) -> None:
     """Put ``text`` at ``path`` whole, as ``Path.write_text`` would encode it unless told otherwise, durably."""
     data = text.encode(encoding or locale.getpreferredencoding(False))
-    from .post_dir import replace_bytes, under_post
-    if under_post(path):
-        # The same exclusive temporary and rename, opened from the post directory
-        # so a link under runtime/post is a hold and is not followed. The folder
-        # sync stays here, where a caller that records durability can see it.
-        replace_bytes(path, data, sync=True)
-        sync_folder(path.parent)
+    from . import post_dir
+    if post_dir.under_post(path):
+        # law: one-door -- retain the initial attempt through the same held
+        # directory walk, with exactly one file sync and one parent sync.
+        post_dir._replace_law_bytes(path, data)
         return
     # A name of its own, so two writers never share (or rename away) one temporary;
     # it never ends in a reader's suffix, and a cut can only leave it unread beside the file.
@@ -70,14 +72,8 @@ def _replace_law_record(path: Path, text: str, *, encoding: str | None = None) -
 def sync_folder(folder: Path) -> None:
     """Make the folder's entries, such as a rename into it, last a power cut."""
     from .post_dir import open_directory, under_post
-    if under_post(folder):
-        descriptor = open_directory(folder, create=False)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-        return
-    descriptor = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    descriptor = (open_directory(folder, create=False) if under_post(folder) else
+                  os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC))
     try:
         os.fsync(descriptor)
     finally:
