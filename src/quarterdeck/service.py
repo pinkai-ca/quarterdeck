@@ -1287,7 +1287,8 @@ class Service:
                         stable = stamp == (owned.name, record_fingerprint(record))
                     except OSError:
                         stable = False
-                    if stable and state.turns is not None and state.turn_open is not None:
+                    # Empty records retain ordinary read/error checks: no measured turn was accounted.
+                    if stable and turns and state.turns is not None and state.turn_open is not None:
                         checkpoints[record] = checkpoint
                 except OSError as error:
                     message = str(error)

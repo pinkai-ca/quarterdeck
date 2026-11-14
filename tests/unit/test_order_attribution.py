@@ -215,7 +215,14 @@ def test_service_revisits_unchanged_retired_record_on_new_post_and_restart(tmp_p
     svc.ledger.close()
     svc=Service(ship,SimpleNamespace())
     svc.account()
-    assert calls==[path,path] and svc.ledger.rollup('order')[0].key==root.id
+    assert calls==[path] and svc.ledger.rollup('order')[0].key==root.id, 'unchanged restart reuses certified input evidence'
+    assert measurement_snapshot(svc.ledger)==before
+    # Related historical evidence still invalidates the certificate after restart.
+    other=message(svc.store,'ord-another',to='other')
+    message(svc.store,'ans-another','answer','retired','issuer',16,other.id)
+    svc.account()
+    assert calls==[path,path] and svc.ledger.rollup('order')[0].key=='[shared]'
+    assert set(svc.ledger.attributions.details()[0]['orders'])=={root.id,other.id}
     assert measurement_snapshot(svc.ledger)==before
     svc.ledger.close()
 
