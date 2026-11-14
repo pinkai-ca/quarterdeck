@@ -224,12 +224,12 @@ class GrokHarness(Harness):
     answer_seconds = 5.0  # measured: the training question was gone within one second of the press
     fresh_versions = frozenset({"1.0.77", "1.0.70"})  # M1 to M3 and M5: the composer after the press, before any turn
     keys = Keys(submit="Enter", interrupt="C-c")
-    reads_usage = True
+    reads_usage = background_usage = True
     private_usage_home = True
     private_version_home = True
     styled_screen = True
     record_time_resolution = 1.0
-    usage_interval = 300
+    usage_interval = 1800  # unattended native ACP billing; conservative half-hour cadence
     headline_window = (None, "7d")
     human_tools = ("ask_user_question",)
     human_tool_policy = "ask_user_question is removed outside human sessions."

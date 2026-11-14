@@ -407,7 +407,8 @@ def refresh_declared(service) -> None:
         if pool.kind != "subscription":
             continue
         reader = harnesses.native_for(pool.provider)
-        if not reader.background_usage or not service.ledger.quota.due(pool.name, datetime.now(timezone.utc), reader.usage_interval):
+        if (not reader.background_usage or held(service, pool.name)
+                or not service.ledger.quota.due(pool.name, datetime.now(timezone.utc), reader.usage_interval)):
             continue
         key = reader.shared_usage_key(pool)
         if reader.usage_from_records is not None:
