@@ -14,7 +14,6 @@ import sqlite3
 import shlex
 import shutil
 import stat
-import tempfile
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -215,6 +214,8 @@ def _restore(previous: str | None) -> None:
         os.environ["TMUX_TMPDIR"] = previous
 
 
+SYSTEM_TMP = Path('/tmp')  # what every jail replaces with its own; TMPDIR may name a folder a jail is given
+
 def open_private(ship_parent: Path) -> Tmux:
     """A creator-owned server. An inherited ``TMUX_TMPDIR`` is not where it is created."""
     places: list[Path] = []
@@ -224,7 +225,7 @@ def open_private(ship_parent: Path) -> Tmux:
     places.append(ship_parent)
     # Last, a private folder of this user's own under the system's temporary folder: never the project's work/,
     # which jails see through the workspaces bound from it.
-    private = Path(tempfile.gettempdir()) / f"qd-live-tmux-{os.getuid()}"
+    private = SYSTEM_TMP / f"qd-live-tmux-{os.getuid()}"  # the system's own, never TMPDIR's
     try:
         private.mkdir(mode=0o700, exist_ok=True)
         info = private.lstat()

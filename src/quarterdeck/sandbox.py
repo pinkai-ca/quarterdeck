@@ -491,21 +491,29 @@ def listening_sockets() -> list[Path]:
 
 
 def sockets_masked(jail: Jail) -> list[str]:
-    """A system daemon's listening socket the jail would still show, with /dev/null bound over it.
+    """Every listening socket the jail would still show, with /dev/null bound over it so a connect fails.
 
-    /run, /tmp and /dev are the jail's own and every home is empty inside, which takes most sockets out of sight.
-    What remains is a daemon's socket elsewhere under the read-only root (a snap's own run folder, for one). Those
-    are stable while the machine runs, so each is masked by name as the jail is built. Sockets that come and go,
-    under the homes, /tmp, /run, /dev or /mnt, are never masked here: a mount over one that vanished before the
-    launch would stop the launch. A folder bound into the jail from a home should hold no socket; giving each
-    seat folders of its own keeps it so.
+    A path socket ignores the jail's own network. /run, /tmp, /dev, /mnt and the homes are emptied inside, and so are
+    the covers (other ships' runtimes, test-run folders) and the runtime fence. A socket is masked when the deepest
+    mount over it is one that shows it: a folder bound back from a home, the workspace, the seat's own folders or the
+    root itself (a daemon's socket in a snap's run folder, for one). The sockets are those listening as the jail is
+    built; the launch follows within the same moment, so one that vanishes in between is rare, and stops the launch
+    rather than opening anything.
     """
     hidden = [Path('/run'), Path('/tmp'), Path('/dev'), Path('/proc'), Path('/mnt'), Path('/home'),
-              Path(os.path.expanduser('~')), jail.home]
+              Path(os.path.expanduser('~')), jail.home, jail.runtime, jail.runtime / 'tmux', jail.runtime / LOCKS,
+              *getattr(jail, 'foreign_runtimes', ()), *fleet_roots(jail.ship_folder)]  # the fleet: an empty fence
+    shown = [jail.workspace, jail.ship_folder, jail.seat_folder, *jail.read_only, *jail.writable,
+             *(jail.runtime / name for name in RUNTIME_SHOWN)]
+
+    def depth(path: Path, roots: list[Path]) -> int:
+        return max((len(root.parts) for root in roots if path == root or path.is_relative_to(root)), default=-1)
+
     args = []
     for path in listening_sockets():
-        if any(path == root or path.is_relative_to(root) for root in hidden):
-            continue
+        covered, bound = depth(path, hidden), depth(path, shown)
+        if covered >= 0 and covered >= bound:
+            continue  # the deepest mount over it empties it: not in sight
         try:
             if not stat.S_ISSOCK(path.lstat().st_mode):
                 continue
