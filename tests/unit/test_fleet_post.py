@@ -258,8 +258,7 @@ def test_discovery_includes_fixed_office_in_both_directions(pair, monkeypatch, t
     folder = tmp_path / 'office'
     folder.mkdir()
     (folder / 'ship.toml').write_text('[ship]\nname="Office display"\n')
-    # The separate office predecessor supplies kind; this pins the shared API
-    # without duplicating its parser/schema change in the transport branch.
+    # Override the loaded kind while preserving the shared ship API.
     office = SimpleNamespace(**{**vars(shipmod.load(folder)), 'kind': 'office'})
     load = shipmod.load
     monkeypatch.setattr(shipmod, 'load', lambda path: office if path == folder else load(path))
