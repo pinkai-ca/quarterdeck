@@ -58,12 +58,17 @@ FRAMEWORK_TOOLS = ("qd", "node")  # what a seat's program needs beside itself: q
 def seats_hidden(argv: object) -> bool | None:
     """Whether a saved managed launch hides sibling seats; malformed evidence is unknown.
 
-    The jail is the outer command, including on launches made before a sync.
+    The jail is the outer command, including on launches made before a sync; behind an endpoint seat's relay, the
+    jail is the command the relay starts.
     Reading one's own launch needs no access to another seat or to the host's pids.
     """
     if (not isinstance(argv, (list, tuple)) or not argv or not argv[0]
             or any(not isinstance(arg, str) for arg in argv)):
         return None
+    if list(argv[1:4]) == ['-I', '-m', 'quarterdeck.endpoint_relay'] and '--' in argv:
+        argv = argv[list(argv).index('--') + 1:]  # an endpoint seat's jail runs behind its relay
+        if not argv:
+            return None
     return Path(argv[0]).name == PROGRAM
 
 
@@ -91,6 +96,7 @@ class Jail:
     declarations: tuple[Path, ...] = ()  # peer ship files only, under otherwise empty read-only folders
     post_view: Path | None = None  # the seat's own view of the post, bound read-only in the post's place
     foreign_runtimes: tuple[Path, ...] = ()  # other ships' runtimes inside a bound folder, each an empty tmpfs
+    endpoint: str | None = None  # the pool's model endpoint, relayed into the jail's own network; None: no way out
 
 
 def git_identity(workspace: Path) -> tuple[tuple[str, str], ...]:
@@ -148,8 +154,32 @@ def inside_foreign_runtime(folder: Path, ship: Ship) -> Path | None:
     return None
 
 
+def endpoint_parts(endpoint: str) -> tuple[str, int, str | None]:
+    """The host and port a jail's relay carries, and the name its hosts file maps to the jail's loopback.
+
+    A name is resolved by the relay outside; inside, the jail's hosts file sends it to the forwarder on loopback, so
+    TLS still checks the real name. An address must be loopback: no other address exists inside the jail.
+    """
+    import ipaddress
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(endpoint)
+    if parts.scheme not in ('http', 'https') or not parts.hostname:
+        raise ShipError(f'endpoint {endpoint!r}: a jailed seat reaches an http or https endpoint by host and port')
+    port = parts.port or (443 if parts.scheme == 'https' else 80)
+    try:
+        address = ipaddress.ip_address(parts.hostname)
+    except ValueError:
+        name = None if parts.hostname == 'localhost' else parts.hostname
+        return parts.hostname, port, name
+    if not address.is_loopback:
+        raise ShipError(f'endpoint {endpoint!r}: a jail has only its own loopback, so an endpoint by address must be '
+                        'on loopback; name a remote endpoint by its host name, which the jail relays')
+    return parts.hostname, port, None
+
+
 def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspace: Path, program: str, path: str,
-         home: Path | None = None) -> Jail:
+         home: Path | None = None, endpoint: str | None = None) -> Jail:
     """The jail for one seat, or a refusal naming what would lift it."""
     if not available():
         raise ShipError(f"{seat_name}: sandboxed, and {PROGRAM} is not on the PATH; install bubblewrap, or set sandbox = false on the seat")
@@ -198,8 +228,10 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
     proof = ensure_check_proof_folder(ship.runtime, seat_name)  # a link is refused here, before any bind
     from . import post_view
     view = post_view.refresh(ship.runtime, seat_name)  # what of the post the seat may see, current at its launch
+    if endpoint is not None:
+        endpoint_parts(endpoint)  # refused here, before anything starts, when the jail could not reach it
     jail = Jail(home, seat_home, seat_folder, workspace, ship.folder, ship.runtime, tuple(folders),
-                (drop, proof), git_identity(workspace), declarations, view, foreign)
+                (drop, proof), git_identity(workspace), declarations, view, foreign, endpoint)
     if covered := covering(jail):
         what, folder = covered
         raise ShipError(f"{seat_name}: sandboxed with the operator home at {home}, and {what} {folder} is that home or "
@@ -455,6 +487,14 @@ def command(jail: Jail, argv: list[str]) -> list[str]:
     args = [PROGRAM, "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
             "--size", str(TMP_BYTES), "--tmpfs", "/tmp"]
     args += session_hidden()
+    relay = None
+    if jail.endpoint is not None:
+        from . import endpoint_relay
+
+        relay = endpoint_relay.folder_for(jail.seat_folder)
+        # The relay's folder, made by the relay before the jail starts, inside the jail's own /run; and its hosts file.
+        args += ["--bind", str(relay), endpoint_relay.INSIDE_FOLDER,
+                 "--ro-bind", str(relay / endpoint_relay.HOSTS), "/etc/hosts"]
     # The operator's home is an empty tmpfs placed in depth order like every other mount: after any folder that
     # contains it, which it then covers again, and before the folders inside it that are bound back.
     mounts: list[tuple[str, Path]] = [("--tmpfs", jail.home)]
@@ -537,4 +577,15 @@ def command(jail: Jail, argv: list[str]) -> list[str]:
     # The launch's TMPDIR may name a filesystem the jail mounts read-only; the program
     # uses the jail's own /tmp for scratch, including spooled tool output.
     args += ["--setenv", "TMPDIR", "/tmp", "--setenv", "TMP", "/tmp", "--setenv", "TEMP", "/tmp"]
-    return args + ["--setenv", "HOME", str(jail.seat_home), "--unshare-pid", "--die-with-parent", "--", *argv]
+    # A network of its own, loopback only: no abstract socket, no outside listener and no other host is reachable.
+    args += ["--setenv", "HOME", str(jail.seat_home), "--unshare-pid", "--unshare-net", "--die-with-parent"]
+    if relay is None:
+        return args + ["--", *argv]
+    from . import endpoint_relay
+
+    host, port, name = endpoint_parts(jail.endpoint)
+    python = os.path.realpath(sys.executable)  # the machine's own interpreter, which every jail sees read-only
+    inside = [python, "-I", "-c", endpoint_relay.INSIDE, f"{endpoint_relay.INSIDE_FOLDER}/{endpoint_relay.SOCKET}",
+              str(port), "--", *argv]
+    return [sys.executable, "-I", "-m", "quarterdeck.endpoint_relay", str(relay), host, str(port), name or "", "--",
+            *args, "--", *inside]

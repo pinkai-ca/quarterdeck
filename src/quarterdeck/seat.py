@@ -657,7 +657,9 @@ class Seat:
             if jailed:
                 from . import sandbox  # the sandbox reads the ship and the standing orders, so it is imported here, not above
 
-                jail = sandbox.plan(self.ship, self.name, self.folder, self.home, self.ship.cwd_of(self.spec), launch.argv[0], path)
+                endpoint = pool.endpoint if pool.kind == 'endpoint' else None  # its one way out, relayed in
+                jail = sandbox.plan(self.ship, self.name, self.folder, self.home, self.ship.cwd_of(self.spec), launch.argv[0], path,
+                                    endpoint=endpoint)
                 argv = sandbox.command(jail, argv)
             return launch, argv
 

@@ -78,7 +78,7 @@ def test_the_command_hides_the_home_binds_the_workspace_writable_and_the_ship_re
     assert args[12:12 + len(session)] == session, "the desktop session's /run and the shared scratch are hidden first"
     after = 12 + len(session)
     assert args[after:after + 4] == ["--size", str(sandbox.HOME_BYTES), "--tmpfs", str(home)], "the operator's home is an empty, bounded tmpfs before anything under it is bound back"
-    assert args[-9:] == ["--setenv", "HOME", str(runtime / "seats" / "w" / "home"), "--unshare-pid", "--die-with-parent", "--", "pi", "--model", "m"]
+    assert args[-10:] == ["--setenv", "HOME", str(runtime / "seats" / "w" / "home"), "--unshare-pid", "--unshare-net", "--die-with-parent", "--", "pi", "--model", "m"]
     text = " ".join(args)
     workspace, ship, seats, seat, post = (text.index(f"--bind {home / 'dev' / 'project'} "), text.index(f"--ro-bind {ship_folder} "),
                                          text.index(f"--tmpfs {runtime} "), text.index(f"--bind {runtime / 'seats' / 'w'} "),
