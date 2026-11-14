@@ -14,7 +14,7 @@ def item(identifier):
 
 def test_repeated_full_and_short_lookups_index_one_listing_once(tmp_path, monkeypatch):
     store = post.Store(tmp_path)
-    messages = [item(f'ord-20320101-{number:04d}-issuer-{number:04x}') for number in range(30)]
+    messages = [item(f'ord-synthetic-{number:04d}-{number:04x}') for number in range(30)]
     for message in messages:
         store.write(message)
     refs = [(message.id, message.short) for message in messages]
@@ -36,7 +36,7 @@ def test_repeated_full_and_short_lookups_index_one_listing_once(tmp_path, monkey
 
 def test_new_listing_refreshes_the_index_and_preserves_short_ambiguity(tmp_path):
     store, publisher = post.Store(tmp_path), post.Store(tmp_path)
-    first, second = item('ord-20320101-0000-issuer-cafe'), item('ord-20320101-0001-issuer-cafe')
+    first, second = item('ord-first-cafe'), item('ord-second-cafe')
     publisher.write(first)
     assert store.get(first.short) == first
     publisher.write(second)
@@ -56,7 +56,7 @@ def test_one_reference_that_is_also_the_full_id_names_one_message(tmp_path):
 
 def test_index_follows_the_existing_presentation_snapshot(tmp_path):
     store, publisher = post.Store(tmp_path), post.Store(tmp_path)
-    first, second = item('ord-20320101-0000-issuer-0001'), item('ord-20320101-0001-issuer-0002')
+    first, second = item('ord-first-0001'), item('ord-second-0002')
     publisher.write(first)
     with post.reading_pass():
         assert store.get(first.id) == first
