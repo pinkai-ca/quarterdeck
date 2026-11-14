@@ -85,6 +85,8 @@ def journal_kind(runtime: Path, path: Path) -> str | None:
         return None
     if len(parts) == 4 and parts[:2] == ('post', 'pending'):
         return 'pending'
+    if len(parts) == 3 and parts[:2] == ('post', 'attempts'):
+        return 'attempt'
     if len(parts) == 3 and parts[0] == 'seats' and parts[2] == 'human-wake.json':
         return 'human wake'
     return None
@@ -133,6 +135,8 @@ def inflight(runtime: Path, expected: dict | None) -> dict | None:
     if (relative.is_absolute() or not confined(runtime, runtime / relative)
             or data.get('kind', 'pending') != journal_kind(runtime, runtime / relative)):
         return None
+    if data.get('kind') == 'attempt' and not data['before_paste']:
+        return None
     return data
 
 
@@ -156,6 +160,16 @@ def finish(runtime: Path, expected: dict | None, *, forced: bool | None) -> str:
     if read is None:
         return "delivery journal unreadable or too large for bounded stop annotation; left unchanged"
     journal, _ = read
+    if data.get('kind') == 'attempt':
+        # This grants stop grace, never a delivery receipt or permission to resend.
+        # A process crash here leaves the ordinary unjournaled-attempt rules in charge.
+        from .post import Attempt
+        try:
+            Attempt(**journal, path=path)
+        except (TypeError, ValueError):
+            return "delivery attempt unreadable; left unchanged"
+        pointer_path(runtime).unlink()
+        return "delivery stopped before journal; attempt retained for receipt reconciliation"
     wake = data.get('kind') == 'human wake'
     if not isinstance(journal, dict):
         return "delivery journal identity unknown; left unchanged"
@@ -273,6 +287,13 @@ class Stop:
     def reserve(self) -> dict:
         return dict(service_owner=self.owner, delivery_token=uuid.uuid4().hex)
 
+    def opened(self, attempt):
+        if journal_kind(self.runtime, attempt.path) != 'attempt' or not confined(self.runtime, attempt.path):
+            raise RuntimeError("delivery attempt is not a confined regular runtime file")
+        data = dict(version=1, owner=self.owner, token=uuid.uuid4().hex, kind='attempt',
+                    before_paste=True, journal=attempt.path.relative_to(self.runtime).as_posix())
+        durable.replace_file(pointer_path(self.runtime), json.dumps(data) + "\n")
+
     def publish(self, proof):
         if not confined(self.runtime, proof.path):
             raise RuntimeError("delivery journal is not a confined regular runtime file")
@@ -327,6 +348,11 @@ def prepared(proof):
         _controller.publish(proof)
 
 
+def opened(runtime, attempt):
+    if _controller is not None and _controller.runtime == runtime and _controller.delivering:
+        _controller.opened(attempt)
+
+
 def requested() -> bool:
     return _controller is not None and _controller.requested
 
@@ -346,6 +372,10 @@ def transaction_scope(service):
         yield
     finally:
         owner.delivering = previous
+        if not previous and not owner.requested:
+            active = inflight(owner.runtime, owner.owner)
+            if active is not None and active.get('kind') == 'attempt':
+                pointer_path(owner.runtime).unlink(missing_ok=True)
         if owner.requested and not previous:
             raise SystemExit(0)
 

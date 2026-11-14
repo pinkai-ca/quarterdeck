@@ -159,3 +159,43 @@ def test_stop_already_requested_cannot_enter_a_new_write_unit(tmp_path):
         with pytest.raises(SystemExit):
             with shutdown.transaction_scope(SimpleNamespace(runtime=tmp_path)):
                 pytest.fail('a new write began after the requested stop')
+
+
+def test_open_attempt_publishes_grace_before_a_journal_exists(tmp_path):
+    from types import SimpleNamespace
+    from quarterdeck import post
+
+    runtime = tmp_path / 'runtime'
+    store = post.Store(runtime)
+    message = store.new('order', 'ship', 'synthetic-open-seat-zzzz', 'synthetic opening exercise')
+    with shutdown.Stop(runtime).installed():
+        with shutdown.transaction_scope(SimpleNamespace(runtime=runtime)):
+            attempt = post.Attempts(runtime).open(message, message.to, None, None, None)
+            original = attempt.path.read_bytes()
+            active = shutdown.inflight(runtime, shutdown.owner(runtime))
+            assert active['kind'] == 'attempt' and active['before_paste']
+            assert active['journal'] == attempt.path.relative_to(runtime).as_posix()
+            assert not (runtime / 'post/pending' / message.to / attempt.path.name).exists()
+        assert not shutdown.pointer_path(runtime).exists()
+    assert attempt.path.read_bytes() == original
+
+
+def test_prejournal_stop_retains_the_attempt_for_receipt_reconciliation(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from quarterdeck import post
+
+    runtime = tmp_path / 'runtime'
+    message = post.Store(runtime).new('order', 'ship', 'synthetic-open-seat-zzzz', 'synthetic opening exercise')
+    with shutdown.Stop(runtime).installed():
+        expected = shutdown.owner(runtime)
+        with pytest.raises(SystemExit):
+            with shutdown.transaction_scope(SimpleNamespace(runtime=runtime)):
+                attempt = post.Attempts(runtime).open(message, message.to, None, None, None)
+                original = attempt.path.read_bytes()
+                shutdown._controller.signal()
+                assert shutdown.requested()
+        assert shutdown.inflight(runtime, expected)['kind'] == 'attempt'
+    monkeypatch.setattr(shutdown, 'process_gone', lambda _: True)
+    assert 'retained for receipt reconciliation' in shutdown.annotate(runtime, expected, forced=False)
+    assert not shutdown.pointer_path(runtime).exists()
+    assert attempt.path.read_bytes() == original

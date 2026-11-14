@@ -56,3 +56,53 @@ def test_sigterm_during_preflight_stops_within_ordinary_grace(world, monkeypatch
     assert not servicectl.locked(runtime)
     assert Attempts(runtime).for_message(message.id) == []
     assert world.journal() is None
+
+
+POST_ATTEMPT = r'''
+from quarterdeck import post
+original_open = post.Attempts.open
+after_open_used = False
+def open_before_journal(self, *args, **kwargs):
+    global after_open_used
+    attempt = original_open(self, *args, **kwargs)
+    if phase == 'after-attempt-open' and not after_open_used:
+        after_open_used = True
+        (runtime / 'phase-hit').touch()
+        while not shutdown.requested():
+            time.sleep(.005)
+        (runtime / 'term-seen').touch()
+        while not (runtime / 'phase-release').exists():
+            time.sleep(.005)
+    return attempt
+post.Attempts.open = open_before_journal
+'''
+
+
+def test_stop_after_attempt_open_waits_for_the_write_unit(world, monkeypatch):
+    monkeypatch.setattr(phases, 'DRIVER', phases.DRIVER.replace(
+        'loaded = ship.load(folder)', POST_ATTEMPT + '\nloaded = ship.load(folder)'))
+    world.start('after-attempt-open')
+    message = world.post()
+    runtime = world.ship.runtime
+    phases.wait_for(lambda: (runtime / 'phase-hit').exists())
+    active = shutdown.inflight(runtime, shutdown.owner(runtime))
+    assert active['kind'] == 'attempt'
+    assert world.journal() is None
+    thread, results, errors = phases.stopping(lambda: servicectl.stop(runtime))
+    try:
+        phases.wait_for(lambda: (runtime / 'term-seen').exists())
+        time.sleep(shutdown.ORDINARY_GRACE + .15)
+        assert thread.is_alive(), 'the pre-journal write unit must receive delivery grace'
+        assert servicectl.locked(runtime)
+    finally:
+        (runtime / 'phase-release').touch()
+        thread.join(timeout=10)
+    assert not thread.is_alive() and not errors
+    assert 'service stopped' in results[0] and 'killed' not in results[0]
+    assert 'delivery boundary' in results[0] and 'limit 30s' in results[0]
+    journal = world.journal()
+    assert journal['phase'] == 'cancelled'
+    attempt, = Attempts(runtime).for_message(message.id)
+    assert attempt.result is None, 'stop must not invent a transport result'
+    assert journal['attempts'] == [attempt.path.name]
+    assert not shutdown.pointer_path(runtime).exists()

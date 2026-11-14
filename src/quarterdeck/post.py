@@ -868,6 +868,8 @@ class Attempts:
             data = {k: v for k, v in asdict(attempt).items() if k != "path"}
             # law: one-door -- retain the initial attempt before typing, never type twice.
             durable._replace_law_record(attempt.path, json.dumps(data, indent=2) + "\n")
+            from . import shutdown
+            shutdown.opened(self.dir.parent.parent, attempt)
         return attempt
 
     def close(self, attempt: Attempt, result: str, detail: str = "") -> Attempt:
