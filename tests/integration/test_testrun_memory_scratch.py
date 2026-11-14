@@ -14,9 +14,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.integration.testrun_synthetic import (WAIT_TEST, admin_entries, make, result, results, scratch, start,
-                                               started_marker, tool, wait_for)
-from tests.testrunner import scratch as storage
+from tests.integration.testrun_synthetic import (WAIT_TEST, add_worktree, admin_entries, make, result, results,
+                                               scratch, start, started_marker, tool, wait_for, working_paths)
+from tests.testrunner import procs as storage_procs, scratch as storage
 
 HOLDING = '''
 import os, pathlib, time
@@ -207,10 +207,11 @@ def test_another_changes_absent_memory_run_is_left_alone(tmp_path, cleanup_memor
     cleanup_memory(Path(newest['working_storage']['path']).parent.parent)
 
 
-def test_a_kept_memory_run_sends_the_next_run_to_disk(tmp_path, cleanup_memory):
+def test_a_kept_memory_run_keeps_its_reservation_and_the_next_run_takes_memory_beside_it(tmp_path, cleanup_memory):
     hold = tmp_path / 'hold'
     hold.write_text('hold')
     project, worktree = make(tmp_path, {'test_wait.py': HOLDING.format(hold=str(hold))})
+    own_roots(project, cleanup_memory)
     process = start('run', '--target', str(worktree), '-n', '0', cwd=project)
     marker = wait_for(lambda: started_marker(project))
     run = marker.parent.parent.name
@@ -225,9 +226,226 @@ def test_a_kept_memory_run_sends_the_next_run_to_disk(tmp_path, cleanup_memory):
     commit(worktree, 'finish')
     nxt = tool('run', '--target', str(worktree), '-n', '0', cwd=project)
     assert nxt.returncode == 0, nxt.stdout + nxt.stderr
-    assert 'working files on disk' in nxt.stdout and 'memory reservations of runs' in nxt.stdout
-    assert result(project)['working_storage']['kind'] == 'disk'
+    assert 'working files on disk' not in nxt.stdout
+    assert result(project)['working_storage']['kind'] in ('tmpfs', 'ramfs')
     assert run in scratch(project), 'the kept run is untouched'
+    assert (project / '.testruns' / 'results' / run / 'storage.json').exists(), 'and keeps its reservation'
+
+
+# -- several runs in memory at once ---------------------------------------------------------------------------------
+
+
+WRITES = 'def test_writes(tmp_path):\n    (tmp_path / "x").write_text("x" * 4096)\n'
+NO_ROOM = 'no writable executable tmpfs/ramfs has room for a 4 GiB reservation plus the 8 GiB margin'
+
+
+def own_roots(project, cleanup_memory):
+    """This synthetic project's memory root under every candidate base: admission may make one in each it tries."""
+    for base in storage.candidates():
+        for named in {project, project.resolve()}:
+            cleanup_memory(base / storage.project_name(named))
+
+
+def markers(project):
+    return [path / 'tmp' / 'started' for path in working_paths(project) if (path / 'tmp' / 'started').exists()]
+
+
+def holding(project, worktree, hold, *, kill=True, live=False):
+    """One run of ``worktree`` holding its test in memory; its runner is killed unless not ``kill``, and its
+    test is stopped too unless ``live``."""
+    hold.write_text('hold')
+    known = set(markers(project))
+    process = start('run', '--target', str(worktree), '-n', '0', cwd=project)
+    marker = wait_for(lambda: next((path for path in markers(project) if path not in known), None))
+    folder = marker.parent.parent
+    run = folder.name
+    record = json.loads((project / '.testruns' / 'results' / run / 'storage.json').read_text())
+    assert record['kind'] in ('tmpfs', 'ramfs'), 'the run is in memory'
+    root = Path(record['base']) / record['root']
+    assert folder == root / 'runs' / run
+    state = json.loads((folder / 'state.json').read_text())
+    if kill:
+        process.kill()
+        process.wait()
+        if not live:
+            stop_groups(state)
+            hold.unlink()
+    return SimpleNamespace(project=project, run=run, folder=folder, root=root, record=record, state=state,
+                           hold=hold, process=process, marker=marker,
+                           storage=(project / '.testruns' / 'results' / run / 'storage.json').read_bytes())
+
+
+def untouched(case):
+    assert case.folder.is_dir() and case.marker.exists(), f'{case.run}: its memory scratch stands'
+    assert (case.project / '.testruns' / 'results' / case.run / 'storage.json').read_bytes() == case.storage, \
+        f'{case.run}: its reservation stands'
+
+
+def alive(state):
+    return any(storage_procs.group_members(pgid) for pgid, _ in state['groups'])
+
+
+def memory_devices():
+    """Each memory filesystem among the candidates a tool run of this test sees, by device: a base and its free bytes."""
+    found = {}
+    for base in storage.candidates():
+        try:
+            fd = os.open(base, os.O_RDONLY | os.O_DIRECTORY)
+        except OSError:
+            continue
+        try:
+            if storage.filesystem(fd):
+                space = os.fstatvfs(fd)
+                found.setdefault(os.fstat(fd).st_dev, (base, space.f_bavail * space.f_frsize))
+        finally:
+            os.close(fd)
+    return found
+
+
+def promise(project, device, base, bound):
+    """A standing reservation of the project on ``device``: admission charges its recorded bound in full."""
+    from tests.testrunner.layout import RESULTS, Root, new_run_id, write_json
+    run = new_run_id()
+    root = Root(project)
+    try:
+        fd = root.child(RESULTS, run)
+        try:
+            write_json(fd, storage.RECORD, {'run': run, 'base': str(base), 'root': 'qd-standing-promise',
+                                            'identity': [device, 1, os.getuid()], 'kind': 'tmpfs',
+                                            'boot': storage_procs.boot_id(), 'bound_bytes': bound})
+        finally:
+            os.close(fd)
+    finally:
+        root.close()
+    return project / '.testruns' / 'results' / run / storage.RECORD
+
+
+def no_room(project):
+    """Every memory device the tool sees is promised beyond its free space."""
+    return [promise(project, device, base, free + storage.BOUND) for device, (base, free) in memory_devices().items()]
+
+
+def test_two_runs_hold_memory_at_once_and_each_retires_only_its_own(tmp_path, cleanup_memory):
+    first_hold, second_hold = tmp_path / 'hold-first', tmp_path / 'hold-second'
+    project, worktree = make(tmp_path, {'test_wait.py': HOLDING.format(hold=str(first_hold))})
+    own_roots(project, cleanup_memory)
+    first = holding(project, worktree, first_hold, live=True)  # its runner died; its test still runs in memory
+    cleanup_memory(first.root)
+    other = add_worktree(project, 'other', {'test_wait.py': HOLDING.format(hold=str(second_hold))})
+    second = holding(project, other, second_hold, kill=False)  # a live run beside it
+    assert second.folder != first.folder and second.root == first.root, 'each its own run folder in one root'
+    assert alive(first.state) and alive(second.state), 'both tests run in memory at once'
+    second_hold.unlink()
+    out, err = second.process.communicate(timeout=120)
+    assert second.process.returncode == 0, out + err
+    assert 'working files on disk' not in out, 'the second run took memory beside the first'
+    assert not second.folder.exists(), 'the second run retired its own scratch'
+    assert not (project / '.testruns' / 'results' / second.run / 'storage.json').exists(), 'and its reservation'
+    untouched(first)
+    assert alive(first.state), "the first run's test was never touched"
+    stop_groups(first.state)
+    first_hold.unlink()
+    retired = tool('retire', first.run, cwd=project)
+    assert retired.returncode == 0, retired.stdout + retired.stderr
+    assert not first.folder.exists() and not (project / '.testruns' / 'results' / first.run / 'storage.json').exists()
+    assert result(project, project / '.testruns' / 'results' / second.run)['outcome']['status'] == 'passed'
+
+
+def test_a_dead_runs_reservation_is_retired_alone_while_its_peers_stays(tmp_path, cleanup_memory):
+    first_hold, second_hold = tmp_path / 'hold-first', tmp_path / 'hold-second'
+    project, worktree = make(tmp_path, {'test_wait.py': HOLDING.format(hold=str(first_hold))})
+    own_roots(project, cleanup_memory)
+    first = holding(project, worktree, first_hold)
+    cleanup_memory(first.root)
+    other = add_worktree(project, 'other', {'test_wait.py': HOLDING.format(hold=str(second_hold))})
+    second = holding(project, other, second_hold)
+    untouched(first)
+    retired = tool('retire', first.run, cwd=project)
+    assert retired.returncode == 0, retired.stdout + retired.stderr
+    assert not first.folder.exists() and not (project / '.testruns' / 'results' / first.run / 'storage.json').exists()
+    untouched(second)
+    assert tool('retire', second.run, cwd=project).returncode == 0
+    assert not second.folder.exists()
+
+
+def test_a_third_run_falls_back_to_disk_with_its_one_line_when_the_room_is_gone(tmp_path, cleanup_memory):
+    first_hold, second_hold = tmp_path / 'hold-first', tmp_path / 'hold-second'
+    project, worktree = make(tmp_path, {'test_wait.py': HOLDING.format(hold=str(first_hold))})
+    own_roots(project, cleanup_memory)
+    first = holding(project, worktree, first_hold)
+    cleanup_memory(first.root)
+    second = holding(project, add_worktree(project, 'other', {'test_wait.py': HOLDING.format(hold=str(second_hold))}),
+                     second_hold)
+    standing = no_room(project)
+    third = add_worktree(project, 'third', {'test_writes.py': WRITES})
+    done = tool('run', '--target', str(third), '-n', '0', cwd=project)
+    assert done.returncode == 0, done.stdout + done.stderr
+    lines = [line for line in done.stdout.splitlines() if 'working files' in line]
+    assert len(lines) == 1 and 'working files on disk' in lines[0] and NO_ROOM in lines[0], done.stdout
+    assert result(project)['working_storage']['kind'] == 'disk'
+    untouched(first)
+    untouched(second)
+    for path in standing:
+        path.unlink()  # the stand-in promises are this test's own records
+    for case in (first, second):
+        assert tool('retire', case.run, cwd=case.project).returncode == 0
+        assert not case.folder.exists()
+
+
+RACE = """
+import json, os, sys, time
+from pathlib import Path
+from tests.testrunner import scratch
+from tests.testrunner.layout import Root
+project, run, go = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
+root = Root(project)
+while not go.exists():
+    time.sleep(0.001)
+print(json.dumps(scratch.prepare(root, run)), flush=True)
+"""
+
+
+def test_admission_under_the_lock_never_promises_the_last_room_twice(tmp_path, cleanup_memory):
+    import subprocess
+    import sys
+    from tests.conftest import ROOT
+    from tests.testrunner.layout import new_run_id
+    project, _ = make(tmp_path, {'test_writes.py': WRITES})
+    own_roots(project, cleanup_memory)
+    devices = memory_devices()
+    slack = 2 * 1024 ** 3  # room for this one admission and half a bound more: never for two
+    rounds = 3
+    device, (base, free) = max(devices.items(), key=lambda item: item[1][1])
+    if free < storage.BOUND + storage.MARGIN + slack + rounds * storage.BOUND + storage.BOUND:
+        pytest.skip('the largest memory filesystem has too little room to stage the race')
+    for other, (other_base, other_free) in devices.items():
+        if other != device:
+            promise(project, other, other_base, other_free + storage.BOUND)
+    winners = []
+    for number in range(rounds):
+        free = memory_devices()[device][1]
+        last = promise(project, device, base, free - storage.BOUND - storage.MARGIN - slack - len(winners) * storage.BOUND)
+        go = tmp_path / f'go-{number}'
+        runs = [new_run_id(), new_run_id()]
+        racers = [subprocess.Popen([sys.executable, '-I', '-c', f'import sys; sys.path.insert(0, {str(ROOT)!r}); exec({RACE!r})',
+                                    str(project), run, str(go)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                  for run in runs]
+        go.write_text('go')
+        outcomes = []
+        for racer in racers:
+            out, err = racer.communicate(timeout=60)
+            assert racer.returncode == 0, out + err
+            outcomes.append(json.loads(out.strip().splitlines()[-1]))
+        kinds = sorted(outcome['kind'] for outcome in outcomes)
+        assert kinds == ['disk', 'tmpfs'], f'round {number}: the last room went to exactly one: {outcomes}'
+        won = next(outcome for outcome in outcomes if outcome['kind'] == 'tmpfs')
+        assert NO_ROOM in next(outcome for outcome in outcomes if outcome['kind'] == 'disk')['reason']
+        cleanup_memory(Path(won['base']) / won['root'])
+        winners.append(won['run'])
+        last.unlink()
+    assert sorted(winners) == sorted(set(winners))
+    for run in winners:
+        assert (project / '.testruns' / 'results' / run / 'storage.json').exists(), 'each winner holds its promise'
 
 
 # -- jail and bounds -----------------------------------------------------------------------------------------------

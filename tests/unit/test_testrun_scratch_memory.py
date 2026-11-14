@@ -17,8 +17,17 @@ def project(tmp_path, monkeypatch):
     (project / '.gitignore').write_text('.testruns/\n')
     memory = tmp_path / 'memory'
     memory.mkdir()
+    # Selection and admission both see only this stand-in memory folder, never the machine's real memory.
     monkeypatch.setattr(scratch, 'choose', lambda: (memory, 'tmpfs'))
+    monkeypatch.setattr(scratch, 'choices', lambda bound=scratch.BOUND: iter([(memory, 'tmpfs')]))
     monkeypatch.setattr(scratch, 'filesystem', lambda fd: 'tmpfs')
+    device, measure = memory.stat().st_dev, os.fstatvfs
+
+    def room(fd):  # ample room on the stand-in's device, measured truthfully elsewhere
+        if os.fstat(fd).st_dev == device:
+            return SimpleNamespace(f_bavail=64 * 1024 ** 3, f_frsize=1, f_flag=0)
+        return measure(fd)
+    monkeypatch.setattr(os, 'fstatvfs', room)
     root = Root(project)
     try:
         yield root
@@ -51,10 +60,11 @@ def test_selection_uses_first_memory_candidate_with_space(monkeypatch, tmp_path)
 
 def test_no_usable_memory_is_a_disk_fallback(project, monkeypatch, capsys):
     monkeypatch.setattr(scratch, 'choose', lambda: None)
+    monkeypatch.setattr(scratch, 'choices', lambda bound=scratch.BOUND: iter(()))
     run = new_run_id()
     result = scratch.prepare(project, run)
     assert result['kind'] == 'disk'
-    assert '4 GiB free' in result['reason']
+    assert 'room for a 4 GiB reservation plus the 8 GiB margin' in result['reason']
     assert scratch.path(project, run) == project.path / RUNS / run
     assert scratch.record(project, run) is None
     assert 'working files on disk' in capsys.readouterr().out
@@ -233,19 +243,28 @@ def test_plain_pytest_falls_back_to_the_project_disk_without_memory(tmp_path):
     assert 'pytest: working files on disk: no writable executable tmpfs/ramfs has 4 GiB free' in output
 
 
-def test_outstanding_memory_scratch_keeps_the_next_run_on_disk(project, capsys):
+def test_an_outstanding_memory_run_leaves_the_next_its_own_reservation_and_each_retires_only_its_own(project, capsys):
     run, selected, state = make_run(project)
-    next_run = new_run_id()
-    assert scratch.prepare(project, next_run)['kind'] == 'disk'
-    assert scratch.path(project, run).is_dir()
-    assert scratch.pending(project) == [run]
-    assert 'one memory run per project' in capsys.readouterr().out
+    later, later_selected, later_state = make_run(project)
+    assert (selected['kind'], later_selected['kind']) == ('tmpfs', 'tmpfs')
+    assert scratch.path(project, run) != scratch.path(project, later)
+    assert scratch.pending(project) == sorted([run, later])
+    assert 'working files on disk' not in capsys.readouterr().out
+    (scratch.path(project, later) / 'still-working').write_text('kept')
     parent = scratch.parent(project, run)
     try:
         outcome = clean.retire_run(project, parent, run, state)
     finally:
         os.close(parent)
     assert clean.discard_records(project, run, state, outcome)['outcome'] == 'complete'
+    assert not scratch.path(project, run).exists() and scratch.pending(project) == [later]
+    assert (scratch.path(project, later) / 'still-working').read_text() == 'kept', 'the peer is untouched'
+    parent = scratch.parent(project, later)
+    try:
+        outcome = clean.retire_run(project, parent, later, later_state)
+    finally:
+        os.close(parent)
+    assert clean.discard_records(project, later, later_state, outcome)['outcome'] == 'complete'
 
 
 def test_empty_files_and_directories_are_charged_for_metadata(tmp_path):
