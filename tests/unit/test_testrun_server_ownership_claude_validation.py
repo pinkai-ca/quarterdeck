@@ -33,7 +33,7 @@ OTHER_RUN = '20260101-010101-b2d4'
 
 def alive(pid):
     fields = procs.stat_fields(pid)
-    return fields is not None and fields[0] != 'Z'
+    return fields is not None and fields[0] not in procs.EXITED
 
 
 def held(outcome, reason):

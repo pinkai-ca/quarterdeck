@@ -7,6 +7,11 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+# The states of a process that has exited: Z, a zombie until it is reaped, and X (x before Linux 4.14) for the
+# instant of its reaping, after which /proc no longer shows it. Each is read as ended, never as live; a process caught
+# between Z and its disappearance is still one that has exited.
+EXITED = frozenset({'Z', 'X', 'x'})
+
 
 def boot_id() -> str:
     return Path('/proc/sys/kernel/random/boot_id').read_text().strip()
@@ -42,7 +47,7 @@ def group_members(pgid: int) -> list[int]:
     members = []
     for pid in _ours():
         fields = stat_fields(pid)
-        if fields and len(fields) > 2 and fields[0] != 'Z' and fields[2] == str(pgid):
+        if fields and len(fields) > 2 and fields[0] not in EXITED and fields[2] == str(pgid):
             members.append(pid)
     return members
 
@@ -52,7 +57,7 @@ def session_groups(sid: int) -> list[int]:
     groups = set()
     for pid in _ours():
         fields = stat_fields(pid)
-        if fields and len(fields) > 3 and fields[0] != 'Z' and fields[3] == str(sid):
+        if fields and len(fields) > 3 and fields[0] not in EXITED and fields[3] == str(sid):
             groups.add(int(fields[2]))
     return sorted(groups)
 

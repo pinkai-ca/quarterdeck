@@ -56,7 +56,7 @@ time.sleep(120)
         assert process.poll() is not None
         assert procs.session_groups(process.pid) == []
         fields = procs.stat_fields(child)
-        assert fields is None or fields[0] == 'Z'
+        assert fields is None or fields[0] in procs.EXITED
     finally:
         for group in procs.session_groups(process.pid):
             try:
@@ -114,7 +114,8 @@ def test_recorded_server_retires_and_memory_can_be_selected_again(monkeypatch, p
             outcome = sessions.retire(root, run_id)
             assert outcome['outcome'] == 'complete', outcome
             assert not folder.exists()
-            assert procs.stat_fields(pid) is None or procs.stat_fields(pid)[0] == 'Z'
+            fields = procs.stat_fields(pid)  # one read: a zombie reaped between two reads shows Z, then X
+            assert fields is None or fields[0] in procs.EXITED
             monkeypatch.setenv('TMPDIR', str(project))
             selected = scratch.prepare(root, '20260101-010102-abcd')
             assert storage_kind(storage, selected['kind']), selected
@@ -230,7 +231,7 @@ def test_tool_stopped_during_test_cleans_server_and_next_run_uses_memory(monkeyp
             assert storage_kind(storage, result['working_storage']['kind']), result['working_storage']
             assert not Path(result['working_storage']['path']).exists(), 'the stopped run left no scratch'
             fields = procs.stat_fields(server_pid)
-            assert fields is None or fields[0] == 'Z'
+            assert fields is None or fields[0] in procs.EXITED
             ready.unlink()
             next_run = subprocess.run([*command, 'tests/test_done.py'], env=env, cwd=project,
                                       capture_output=True, text=True, timeout=60)
@@ -313,7 +314,7 @@ def test_server_ownership_holds_with_several_runs_in_memory_at_once(storage):
 
         def alive(pid):
             fields = procs.stat_fields(pid)
-            return fields is not None and fields[0] != 'Z'
+            return fields is not None and fields[0] not in procs.EXITED
 
         try:
             start('a', project)

@@ -55,7 +55,7 @@ def legacy(container, where, data, run, budget):
                     environment = Path(f'/proc/{pid}/environ').read_bytes().split(b'\0')
                 except (OSError, ValueError, subprocess.TimeoutExpired):
                     raise Refused(f'{path / name}: legacy server process/run ownership unproved; held') from None
-                if (found.returncode or not fields or fields[0] == 'Z'
+                if (found.returncode or not fields or fields[0] in procs.EXITED
                         or f'TESTRUNS_RUN={run}'.encode() not in environment
                         or f'{OWNER}={nonce}'.encode() not in environment
                         or identity(os.stat(name, dir_fd=descriptor, follow_symlinks=False)) != identity(entry)):
@@ -159,7 +159,7 @@ def ended(birth):
         if Path(f"/proc/{birth['pid']}").exists():
             raise Refused('recorded private server process is unreadable; held')
         return True
-    return fields[0] == 'Z' or fields[19] != birth['start']
+    return fields[0] in procs.EXITED or fields[19] != birth['start']
 
 
 def endpoint(descriptor, name, birth):

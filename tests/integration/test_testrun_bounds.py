@@ -8,7 +8,7 @@ import tempfile
 
 import pytest
 
-from tests.testrunner import resources
+from tests.testrunner import procs, resources
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -217,7 +217,7 @@ def test_synthetic_wait():
     except FileNotFoundError:
         pass
     else:
-        assert fields[0] == 'Z', 'owned synthetic child survived timeout termination'
+        assert fields[0] in procs.EXITED, 'owned synthetic child survived timeout termination'
 
 
 # A clock of the run's own that leaps once, at a chosen moment: the bounds read it, real time does not pass.
