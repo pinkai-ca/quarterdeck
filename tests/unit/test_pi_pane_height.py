@@ -52,7 +52,7 @@ def test_an_unmeasured_version_is_named_without_claiming_a_height(version):
     door, screen, original, _, _ = display(version=version)
     shown = door._reading(screen)
     assert shown.diagnostic == ''
-    assert shown.display_reason == f'pi {version or "(version unknown)"}: input box not found'
+    assert shown.display_reason == f'unknown dialog: pi {version or "(version unknown)"}: input box not found'
     assert replace(shown, display_reason='') == original
 
 
@@ -61,7 +61,7 @@ def test_a_taller_unknown_frame_names_the_actual_launch_version():
     screen = door.harness.screen(frame(4))
     door._base_reading = lambda captured: Reading(False, f'unknown dialog: {captured.unknown}', 'needs a human')
     shown = door._reading(screen)
-    assert shown.display_reason == 'pi 0.79.0: input box not found'
+    assert shown.display_reason == 'unknown dialog: pi 0.79.0: input box not found'
     assert shown.diagnostic == ''
     assert '0.74.2' not in str(shown)
 

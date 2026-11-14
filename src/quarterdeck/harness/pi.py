@@ -468,6 +468,9 @@ class PiHarness(EndpointHarness):
     def box_columns(self, pane_width: int) -> int | None:
         return pane_width - 1  # the box spans the pane from the first column; the last column stays clear
 
+    def missing_box_known(self, screen: Screen) -> bool:
+        return screen.unknown == 'pi input box not found' and bool(screen.shows.get('model'))
+
     def minimum_pane_rows(self, text: str, pane_width: int, version: str | None) -> int | None:
         """0.79.0: four chrome rows; the editor shows max(5, floor(0.3 * pane rows)) text rows.
 

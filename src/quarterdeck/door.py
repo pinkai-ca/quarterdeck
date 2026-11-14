@@ -206,7 +206,7 @@ class Door:
         pane = self.captured_pane
         rows = getattr(pane, 'height', None)
         if (not heights or screen is None or screen.box is not None or screen.interruption is not None
-                or screen.unknown != 'pi input box not found' or not screen.shows.get('model')
+                or not self.harness.missing_box_known(screen)
                 or pane is None or getattr(pane, 'dead', None) is not False or type(rows) is not int or rows <= 0):
             return '', ''
         try:
@@ -219,7 +219,7 @@ class Door:
                 or getattr(launched, 'pane', None) != pane_id or getattr(launched, 'pid', None) != pid):
             return '', ''
         label = f'{self.harness.display_name} {version or "(version unknown)"}'
-        display = f'{label}: {screen.unknown.removeprefix(self.harness.display_name + " ")}' if screen.unknown else ''
+        display = f'unknown dialog: {label}: {screen.unknown.removeprefix(self.harness.display_name + " ")}' if screen.unknown else ''
         if (height := heights.get(version)) is None or rows >= height:
             return display, ''
         return 'input box needs a taller pane', f'pane {rows} rows; {label} draws its box from {height} rows'

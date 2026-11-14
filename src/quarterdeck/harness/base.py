@@ -477,6 +477,10 @@ class Harness(ABC):
         """A measured pane bound for this payload and version, separate from text-only row bounds."""
         return None
 
+    def missing_box_known(self, screen: Screen) -> bool:
+        """An otherwise recognized screen whose missing box can get a geometry diagnostic."""
+        return False
+
     def minimum_box_rows(self, text: str, pane_width: int) -> int | None:
         """Diagnostic only; the ordinary Box comparator still decides whether the whole paste is shown."""
         if not self.box_geometry_known:
