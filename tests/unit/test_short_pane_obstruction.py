@@ -15,6 +15,7 @@ from quarterdeck.harness.claude import ClaudeHarness
 from quarterdeck.harness.opencode import OpenCodeHarness
 from quarterdeck.harness.antigravity import AntigravityHarness
 from quarterdeck.harness.grok import GrokHarness
+from quarterdeck.harness.fake import FakeHarness
 
 TEXT = '\n'.join(f'invented line {n:02}: ' + 'plain synthetic words ' * 2 for n in range(22))
 REASON = 'pane too short: at least 22 rows needed for the unfolded message (16 available); enlarge the pane'
@@ -32,14 +33,14 @@ def test_row_bound_does_not_invent_unknown_layout_or_count_discardable_spaces(te
     assert Box(text).minimum_rows(columns) == expected
 
 
-@pytest.mark.parametrize('adapter', [CodexHarness(), PiHarness(), ClaudeHarness(), OpenCodeHarness(), GrokHarness()])
+@pytest.mark.parametrize('adapter', [CodexHarness(), PiHarness(), ClaudeHarness(), OpenCodeHarness(), GrokHarness(), AntigravityHarness()])
 def test_only_declared_adapter_text_columns_support_the_lower_bound(adapter):
     assert adapter.minimum_box_rows(TEXT, 100) == 22
     assert adapter.minimum_box_rows('a\tb', 100) is None
 
 
 def test_adapter_without_declared_text_columns_keeps_unknown():
-    assert AntigravityHarness().minimum_box_rows(TEXT, 100) is None
+    assert FakeHarness().minimum_box_rows(TEXT, 100) is None
 
 
 def frame(program, content, height):
