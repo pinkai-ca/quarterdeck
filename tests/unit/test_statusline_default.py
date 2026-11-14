@@ -48,9 +48,9 @@ def test_declared_subscriptions_use_generic_ledger_windows():
     assert [r["used"] for r in rows] == [10, 20, 30, 40, 50]
     text = plain("\n".join(line.draw(500, {}, "sample-seat", {}, rows)))
     for name in list(pools)[:5]:
-        assert name in text
-    assert "● sample-1" in text and "sample interval" in text
-    assert all("reset 1h" in plain(line.cell(row, 3)) for row in rows)
+        assert line.label(name) in text and name not in text
+    assert "● 1" in text and "sample interval" not in text
+    assert all(" · 1h" in plain(line.cell(row, 3)) and "reset " not in plain(line.cell(row, 3)) for row in rows)
 
 
 def test_unknown_window_and_missing_pool_are_never_zero():
@@ -58,7 +58,7 @@ def test_unknown_window_and_missing_pool_are_never_zero():
     rows = line.allowances(cache([window("sample-unread", None)]), ship, None)
     assert all(r["used"] is None for r in rows)
     text = plain("\n".join(line.draw(80, {}, "sample-seat", {}, rows)))
-    assert text.count("unknown") == 2 and "0%" not in text
+    assert text.count("not read") == 2 and "0%" not in text
 
 
 @pytest.mark.parametrize("value", [True, float("nan"), float("inf"), -0.1, 1.1, "0.0"])
@@ -80,7 +80,7 @@ def test_blocking_window_and_provider_wall_lead_without_name_guessing():
     windows[1].update(wall=True, window="native bucket")
     rows = line.allowances(cache(windows), {"pools": {"sample": {}}}, None)
     assert rows[0]["used"] == 30 and rows[0]["span"] == "native bucket"
-    assert "WALL" in plain(line.cell(rows[0], 3))
+    assert "back in " in plain(line.cell(rows[0], 3))
 
 
 def test_stale_reading_is_named_and_expired_reset_is_not_a_new_zero():
@@ -88,14 +88,14 @@ def test_stale_reading_is_named_and_expired_reset_is_not_a_new_zero():
     w.update(resets_at=(datetime.now(timezone.utc) - timedelta(hours=1)).isoformat())
     row = line.allowances(cache([w]), {"pools": {"sample": {}}}, None)[0]
     text = plain(line.cell(row, 3))
-    assert "60%" in text and "last known" in text and "reset passed" in text
+    assert "60%?" in text and "reset passed" in text
 
 
 def test_narrow_screen_keeps_every_subscription():
     ship = {"pools": {f"sample-{n}": {} for n in range(10)}}
     rows = line.allowances(cache([]), ship, None)
     text = plain("\n".join(line.draw(25, {}, "sample-seat", {}, rows)))
-    assert all(name in text for name in ship["pools"])
+    assert all(line.label(name) + " not read" in text for name in ship["pools"])
 
 
 def test_identity_uses_session_facts():
@@ -130,7 +130,7 @@ def test_display_only_writes_inside_ship_runtime_and_never_waits_for_qd(tmp_path
     monkeypatch.setattr(line, "renew_in_background", renewals.append)
     line.main()
     text = plain(capsys.readouterr().out)
-    assert "ship ledger unavailable" in text and "sample unknown" in text
+    assert "ship ledger unavailable" in text and "Sample not read" in text
     assert renewals == [ship / "runtime/statusline/readings.json"]
     assert not (tmp_path / "outside").exists()
     assert sorted(p.name for p in ship.iterdir()) == ["runtime", "ship.toml"]
@@ -155,7 +155,7 @@ def test_refresh_keeps_only_display_fields_and_retains_failed_reading(tmp_path, 
     assert later["windows"] == first["windows"] and later["ledger_at"] == first["ledger_at"]
     assert later["ledger_unavailable"] is True
     row = line.allowances(later, {"pools": {"sample": {}}}, None)[0]
-    assert "last known" in plain(line.cell(row, 3))
+    assert "40%?" in plain(line.cell(row, 3))
 
 
 def test_lock_releases_after_reader_exit_without_deleting_old_lockfile(tmp_path, monkeypatch):

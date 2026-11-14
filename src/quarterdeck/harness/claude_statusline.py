@@ -12,10 +12,13 @@ import os
 from pathlib import Path
 import re
 import shutil
+import struct
 import subprocess
 import sys
+import termios
 import time
 import tomllib
+import unicodedata
 from datetime import datetime
 
 LEDGER_TTL = 30      # seconds a reading of the allowances is shown before another is asked for
@@ -23,6 +26,7 @@ SEATS_TTL = 120      # seconds before asking again which subscription each seat 
 MARGIN = 4           # columns Claude Code keeps for itself beside the line
 BAND = 260           # the widest the line is drawn: past this, spreading only pulls the figures apart
 BAR = 8              # cells in an allowance's bar
+WHO = 52             # align subscription columns where the identity fits this band
 OLD = 240            # seconds after which a reading the background could not renew is marked as old
 WARN = 75
 
@@ -142,35 +146,61 @@ def readable(window: dict) -> bool:
             and seconds_until(window.get("resets_at")) is not None)
 
 
-def allowances(cache: dict, ship: dict, own_pool: str | None) -> list[dict]:
-    """One bar per declared subscription. The tightest blocking window leads.
+def label(pool: str) -> str:
+    """The ship's subscription label: the part after its first hyphen, title-cased."""
+    return pool.split("-", 1)[-1].replace("-", " ").title()
 
-    All window names and scopes come from the ledger. A partial collection stays
-    visibly partial, even when its known window happens to read zero.
+
+def allowances(cache: dict, ship: dict, own_pool: str | None) -> list[dict]:
+    """A total and an unambiguous ledger-reported grouped constraint, without model-name guesses.
+
+    A grouped-only reading remains a known constraint, not an invented whole allowance.
+    Multiple groups do not prove which model's limit belongs on this seat's notch.
     """
     rows = []
-    for name, spec in (ship.get("pools") or {}).items():
+    declared = ship.get("pools") or {}
+    providers = list(dict.fromkeys((spec or {}).get("provider", "") for spec in declared.values()))
+    names = sorted(declared, key=lambda name: (providers.index((declared[name] or {}).get("provider", "")), name))
+    now = time.time()
+    unavailable = bool(cache.get("ledger_unavailable")) or now - cache.get("ledger_at", 0) > OLD
+
+    def leading(windows):
+        return max(windows, key=lambda w: (bool(w.get("wall")), w["used"]), default=None)
+
+    def stale(window):
+        return unavailable or not window.get("current") or seconds_until(window.get("resets_at")) <= 0
+
+    for name in names:
+        spec = declared[name] or {}
         kind = (cache.get("pools") or {}).get(name)
         if kind in ("key", "endpoint") or "endpoint" in spec or "api_key" in spec:
             continue
         windows = [w for w in cache.get("windows") or [] if w.get("pool") == name]
         known = [w for w in windows if readable(w)]
         blocking = [w for w in known if w.get("blocks") is not False]
-        top = max(blocking or known, key=lambda w: (bool(w.get("wall")), w["used"]), default=None)
+        whole = [w for w in known if not w.get("group")]
+        top = leading([w for w in whole if w.get("blocks") is not False] or whole or blocking or known)
+        grouped = [w for w in blocking if w.get("group")]
+        groups = {w["group"] for w in grouped}
+        single = leading(grouped) if whole and len(groups) == 1 else None
         rows.append({"pool": name, "own": name == own_pool,
                      "used": top["used"] * 100 if top else None,
                      "span": " / ".join(str(top[k]) for k in ("group", "window") if top.get(k)) if top else "",
                      "resets": seconds_until(top.get("resets_at")) if top else None,
-                     "wall": any(w.get("wall") for w in windows),
-                     "unknown": len(known) < len(windows),
-                     "stale": bool(top) and (not top.get("current") or seconds_until(top.get("resets_at")) <= 0
-                                             or bool(cache.get("ledger_unavailable"))
-                                             or time.time() - cache.get("ledger_at", 0) > OLD)})
+                     "wall": bool(top.get("wall")) if top else any(w.get("wall") for w in windows),
+                     "observed_wall": any(w.get("wall") for w in windows),
+                     "whole": bool(whole),
+                     "unknown": len(known) < len(windows) or bool(known) and (not whole or len(groups) > 1),
+                     "stale": bool(top) and stale(top),
+                     "model": ({"used": single["used"] * 100,
+                                "resets": seconds_until(single.get("resets_at")),
+                                "wall": bool(single.get("wall")), "stale": stale(single)} if single else None)})
     return rows
 
 
 def width(text: str) -> int:
-    return len(ANSI.sub("", text))
+    return sum(0 if unicodedata.combining(char) else 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
+               for char in ANSI.sub("", text))
 
 
 def tone(used: float | None, wall: bool = False) -> str:
@@ -184,27 +214,43 @@ def percent(used: float) -> str:
 
 
 def cell(row: dict, detail: int) -> str:
-    mark = f"{PINK}●{RESET} " if row["own"] else ""
-    name = f"{BOLD if row['own'] else ''}{row['pool']}{RESET}"
+    mark = f"{PINK}●{RESET} " if row["own"] else "  "
+    name = f"{BOLD if row['own'] else ''}{label(row['pool'])}{RESET}"
     if row["used"] is None:
-        return f"{mark}{name} {DIM}unknown{RESET}" + (f" {RED}WALL{RESET}" if row["wall"] else "")
+        return f"{mark}{name} {DIM}not read{RESET}" + (f" {RED}WALL{RESET}" if row["wall"] else "")
+    single = row.get("model")
+    tighter = single if single and (single["wall"] and not row["wall"]
+                                   or single["wall"] == row["wall"] and single["used"] > row["used"]) else None
+    selected = tighter or row
+    spent = selected["wall"] or selected["used"] >= 100
+    unplaced_wall = row.get("observed_wall") and not spent
     hue = tone(row["used"], row["wall"])
+    unknown = f"{DIM} + unknown{RESET}" if row["unknown"] else ""
+    if detail == 0:
+        old = f"{DIM}?{RESET}" if selected.get("stale") else ""
+        wall = f" {RED}WALL{RESET}" if unplaced_wall or spent and selected["used"] < 100 else ""
+        return f"{mark}{name} {tone(selected['used'], spent)}{percent(selected['used'])}{RESET}{old}{unknown}{wall}"
     bar = ""
-    if detail >= 2:
+    if detail >= 2 and row.get("whole", True):
         filled = min(BAR, max(1 if row["used"] >= 1 else 0, round(row["used"] / 100 * BAR)))
-        bar = f"{hue}" + "━" * filled + f"{FAINT}" + "─" * (BAR - filled) + f"{RESET} "
+        track = [(hue, "━") if at < filled else (FAINT, "─") for at in range(BAR)]
+        if single:
+            at = min(BAR - 1, max(0, round(single["used"] / 100 * BAR) - 1))
+            track[at] = (tone(single["used"], single["wall"]), "╋" if at < filled else "╂")
+        bar = "".join(colour + glyph for colour, glyph in track) + f"{RESET} "
     figure = f"{hue}{percent(row['used'])}{RESET}"
-    if detail >= 1 and row["span"]:
-        figure += f"{DIM} {row['span']}{RESET}"
     if row["stale"]:
-        figure += f"{DIM} last known{RESET}"
-    if row["unknown"]:
-        figure += f"{DIM} + unknown{RESET}"
-    if row["wall"]:
-        figure += f" {RED}WALL{RESET}"
-    text = f"{mark}{name} {bar}{figure}"
-    if detail >= 3 and row["resets"] is not None:
-        text += SEP + f"{DIM}reset {left(row['resets']) if row['resets'] > 0 else 'passed'}{RESET}"
+        figure += f"{DIM}?{RESET}"
+    if tighter:
+        old = "?" if tighter.get("stale") else ""
+        figure += f" {DIM}({RESET}{tone(tighter['used'], tighter['wall'])}{percent(tighter['used'])}{RESET}{DIM}{old}){RESET}"
+    text = f"{mark}{name} {bar}{figure}{unknown}"
+    resets = selected["resets"]
+    if detail >= 3 and resets is not None and not unplaced_wall:
+        when = ('back in ' if spent else '') + left(resets) if resets > 0 else 'reset passed'
+        text += SEP + f"{RED if spent else DIM}{when}{RESET}"
+    if unplaced_wall or spent and selected["used"] < 100 and (detail < 3 or resets is None):
+        text += f" {RED}WALL{RESET}"
     return text
 
 
@@ -240,13 +286,20 @@ def spread(cells: list[str], room: int, least: int = 3, most: int = 8, lead: int
 
 
 def draw(columns: int, seat: dict, name: str, session: dict, rows: list[dict]) -> list[str]:
-    """Shed decoration, then wrap: never drop subscriptions to fit the screen."""
+    """The ship's one/two rows; retain every subscription when narrower screens need more."""
     room = max(20, min(columns - MARGIN, BAND))
     who = identity(seat, name, session, 2)
     for detail in (3, 2):
-        one = spread([who, *(cell(r, detail) for r in rows)], room, least=3, lead=2)
-        if one:
-            return [one]
+        for first in (who + " " * max(0, WHO - width(who)), who):
+            one = spread([first, *(cell(r, detail) for r in rows)], room, least=3, lead=2)
+            if one:
+                return [one]
+    who = next((text for text in (identity(seat, name, session, d) for d in (2, 1, 0)) if width(text) <= room),
+               identity(seat, name, session, 0))
+    for detail in (3, 2, 1, 0):
+        below = spread([cell(row, detail) for row in rows], room, least=2, most=6)
+        if below:
+            return [who, below]
     lines = [who]
     for row in rows:
         text = next((cell(row, d) for d in (3, 2, 1, 0) if width(cell(row, d)) <= room), cell(row, 0))
@@ -259,7 +312,16 @@ def draw(columns: int, seat: dict, name: str, session: dict, rows: list[dict]) -
 
 def columns_of_terminal() -> int:
     forced = os.environ.get("QD_STATUSLINE_WIDTH") or os.environ.get("COLUMNS", "")
-    return int(forced) if forced.isdigit() and int(forced) else 120
+    if forced.isdigit() and int(forced):
+        return int(forced)
+    try:
+        with open("/dev/tty") as tty:
+            columns = struct.unpack("hh", fcntl.ioctl(tty, termios.TIOCGWINSZ, b"\0" * 4))[1]
+        if columns:
+            return columns
+    except (OSError, struct.error):
+        pass
+    return 120
 
 
 def main() -> None:
