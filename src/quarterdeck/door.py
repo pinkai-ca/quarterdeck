@@ -672,7 +672,13 @@ class Door:
     def matches(self, box, screen: Screen) -> bool:
         pane = self.seat.pane()
         columns = self.harness.box_columns(pane.width) if pane else None
-        return box.matches(screen.box, columns, self.harness.wrap_slack)
+        if box.matches(screen.box, columns, self.harness.wrap_slack):
+            return True
+        scroll = self.harness.box_scroll
+        height = getattr(pane, 'height', None)
+        return bool(scroll and self.harness.box_geometry_known and type(height) is int
+                    and screen.box is not None and 0 < len(screen.box.splitlines()) <= height
+                    and scroll.matches(box, screen.box, columns, self.harness.wrap_slack))
 
     def box_shows(self, box, seconds: float = BOX_SECONDS) -> Screen | None:
         """The screen once the box shows the paste as the program folds it, or the last screen seen."""

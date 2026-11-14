@@ -1,0 +1,8 @@
+{
+  "version": "0.166.0",
+  "width": 112,
+  "height": 24,
+  "payload": "Row 01: synthetic composer input row.TEST\nRow 02: synthetic composer input row.\nRow 03: synthetic composer input row.\nRow 04: synthetic composer input row.\nRow 05: synthetic composer input row.\nRow 06: synthetic composer input row.\nRow 07: synthetic composer input row.\nRow 08: synthetic composer input row.\nRow 09: synthetic composer input row.\nRow 10: synthetic composer input row.\nRow 11: synthetic composer input row.\nRow 12: synthetic composer input row.\nRow 13: synthetic composer input row.\nRow 14: synthetic composer input row.\nRow 15: synthetic composer input row.\nRow 16: synthetic composer input row.\nRow 17: synthetic composer input row.\nRow 18: synthetic composer input row.\nRow 19: synthetic composer input row.\nRow 20: synthetic composer input row.\nRow 21: synthetic composer input row.\nRow 22: synthetic composer input row.",
+  "visible_rows": 12,
+  "capture": "Codex 0.166.0 synthetic input layout\n› Row 11: synthetic composer input row.                                                                        ↑\n  Row 12: synthetic composer input row.\n  Row 13: synthetic composer input row.\n  Row 14: synthetic composer input row.\n  Row 15: synthetic composer input row.\n  Row 16: synthetic composer input row.\n  Row 17: synthetic composer input row.\n  Row 18: synthetic composer input row.\n  Row 19: synthetic composer input row.\n  Row 20: synthetic composer input row.\n  Row 21: synthetic composer input row.\n  Row 22: synthetic composer input row.\n\n  Synthetic-Model low · /synthetic/workspace · input measurement\n"
+}

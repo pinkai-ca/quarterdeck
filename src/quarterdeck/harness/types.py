@@ -544,6 +544,53 @@ def _box_matches(text: str, shown: str, columns: int | None = None, slack: int =
     return False
 
 
+def _wrapped_line(line: str, columns: int, slack: int, *, textwrap_ascii: bool,
+                  pi_word_wrap: bool) -> list[str] | None:
+    """Derive established first-fit rows, retaining input whitespace inside a row."""
+    width = _cells(line)
+    if width is None:
+        return None
+    if width <= columns - slack:
+        return [line]
+    if pi_word_wrap:
+        return _pi_wrap(line, columns)
+    # Short lines above need no line-break knowledge. Wrapped lines must have
+    # established classes; indentation wrapping has not been measured here.
+    if line.startswith(' ') or any(_line_class(char) is None for char in line):
+        return None
+    stops = (_textwrap_breaks(line) if textwrap_ascii else
+             sorted({match.end() for match in re.finditer(' +', line)} | {len(line)}))
+    fragments = []
+    start = 0
+    for stop in stops:
+        chunk, start = line[start:stop], stop
+        word = chunk.rstrip(' ')
+        spaces = chunk[len(word):]
+        pieces, piece, cells = [], '', 0
+        for char in word:
+            size = _cells(char)
+            if size is None or size > columns:
+                return None
+            if cells + size > columns:
+                pieces.append(piece)
+                piece, cells = '', 0
+            piece += char
+            cells += size
+        pieces.append(piece)
+        fragments.extend((part, '') for part in pieces[:-1])
+        fragments.append((pieces[-1], spaces))
+    rows, row, spaces = [], '', ''
+    for word, following in fragments:
+        candidate = row + spaces + word
+        if row and _cells(candidate) > columns - slack:
+            rows.append(row)
+            row = word
+        else:
+            row = candidate
+        spaces = following
+    return rows + [row]
+
+
 @dataclass(frozen=True)
 class Box:
     """How a program may show ``text`` in its box: whole, or folded to a placeholder naming this paste's size.
@@ -556,6 +603,27 @@ class Box:
     folded: str | None = None
     textwrap_ascii: bool = False
     pi_word_wrap: bool = False
+
+    def wrapped_rows(self, columns: int | None, slack: int = 0) -> list[str] | None:
+        """A measured row layout for a scrolled comparison, or unknown.
+
+        This is independent of which viewport the program exposes. Whole and
+        folded comparisons retain their existing rules, including Unicode
+        layouts for which a complete row reconstruction is not established.
+        """
+        if type(columns) is not int or columns < 1 or not 0 <= slack < columns:
+            return None
+        lines = self.text.rstrip('\n').split('\n')
+        if any(line.endswith(' ') for line in lines):
+            return None  # required trailing spaces cannot be separated from painted padding
+        rows = []
+        for line in lines:
+            wrapped = _wrapped_line(line, columns, slack, textwrap_ascii=self.textwrap_ascii,
+                                    pi_word_wrap=self.pi_word_wrap)
+            if wrapped is None:
+                return None
+            rows.extend(wrapped)
+        return rows if self.matches('\n'.join(rows), columns, slack) else None
 
     def minimum_rows(self, columns: int | None) -> int | None:
         """A lower bound, not a renderer or a whole-message comparison.
@@ -577,6 +645,60 @@ class Box:
         if _box_matches(self.text, shown, columns, slack, self.textwrap_ascii, self.pi_word_wrap):
             return True
         return bool(self.folded) and re.fullmatch(self.folded, shown.strip()) is not None
+
+
+@dataclass(frozen=True)
+class BoxScroll:
+    """An adapter's measured scroll mark and fixed viewport position.
+
+    A gutter mark occupies the cell immediately outside the text columns.
+    A row mark occupies its own row; a named ``hidden`` group also binds the
+    number of omitted visual rows. Raw Screen.box is never rewritten.
+    """
+
+    mark: str
+    anchor: str
+    placement: str = 'gutter'
+    marker_row: str = 'first'
+
+    def matches(self, box: Box, shown: str | None, columns: int | None, slack: int = 0) -> bool:
+        if (shown is None or type(columns) is not int or columns < 1
+                or self.anchor not in ('top', 'bottom') or self.marker_row not in ('first', 'last')):
+            return False
+        visible = shown.rstrip('\n').split('\n')
+        index = 0 if self.marker_row == 'first' else len(visible) - 1
+        marked = visible[index]
+        if self.placement == 'gutter':
+            # Find the cell boundary, including established wide characters;
+            # the native mark must be outside the entire text area.
+            at, cells = 0, 0
+            while at < len(marked) and cells < columns:
+                size = _cells(marked[at])
+                if size is None:
+                    return False
+                cells += size
+                at += 1
+            if cells != columns:
+                return False
+            marker = re.fullmatch(self.mark, marked[at:])
+            visible[index] = marked[:at]
+        elif self.placement == 'row':
+            marker = re.fullmatch(self.mark, marked.rstrip(' '))
+            visible.pop(index)
+        else:
+            return False
+        if marker is None or not visible:
+            return False
+        if any(len(row) - len(row.rstrip(' ')) > columns + 1 for row in visible):
+            return False
+        expected = box.wrapped_rows(columns, slack)
+        if expected is None or len(visible) >= len(expected):
+            return False  # a scroll mark must name an actual partial viewport
+        hidden = marker.groupdict().get('hidden')
+        if hidden is not None and int(hidden) != len(expected) - len(visible):
+            return False
+        window = expected[:len(visible)] if self.anchor == 'top' else expected[-len(visible):]
+        return [row.rstrip(' ') for row in visible] == window
 
 
 @dataclass(frozen=True)

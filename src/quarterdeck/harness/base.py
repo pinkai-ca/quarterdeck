@@ -24,7 +24,7 @@ from ..ship import Pool, SeatSpec
 
 from .json_record import RecordError, entries, when
 from .home import credential, key_environment, merged, ship_template
-from .types import Box, Control, ControlAnswer, ControlContext, Credential, Input, Interruption, Join, Keys, Launch, PasteClearRule, Screen, State, Tokens, ToolCall, Turn
+from .types import Box, BoxScroll, Control, ControlAnswer, ControlContext, Credential, Input, Interruption, Join, Keys, Launch, PasteClearRule, Screen, State, Tokens, ToolCall, Turn
 from .capabilities import (DefaultMetadata, EffortCapability, reject_default_overrides,
                            reject_unclassified_overrides, validate_selection)
 
@@ -471,6 +471,7 @@ class Harness(ABC):
         pass
 
     box_geometry_known = False  # adapters opt in only with an established text-column declaration
+    box_scroll: BoxScroll | None = None  # no partial viewport without a measured native mark and anchor
     minimum_pane_heights: dict[str, int] = {}  # measured empty-box heights, by installed version; diagnostic only
 
     def minimum_pane_rows(self, text: str, pane_width: int, version: str | None) -> int | None:

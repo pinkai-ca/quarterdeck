@@ -20,7 +20,7 @@ from datetime import date, datetime, time, timezone
 from pathlib import Path
 
 from .json_record import JsonLinesReader, input_reader, input_rows, records_matching
-from .types import Inputs, PasteClearRule
+from .types import BoxScroll, Inputs, PasteClearRule, _cells
 from . import codex_usage
 
 from ..ship import Pool, SeatSpec, literal
@@ -35,6 +35,18 @@ INPUT_IGNORED = ('token_usage_record', 'world_state')
 
 class EditorBox(Box):
     """0.166.0 inserts an editor row when a logical line ends at the right edge."""
+
+    def wrapped_rows(self, columns, slack=0):
+        rows = []
+        lines = self.text.rstrip('\n').split('\n')
+        for index, line in enumerate(lines):
+            wrapped = Box(line, textwrap_ascii=True).wrapped_rows(columns, slack)
+            if wrapped is None:
+                return None
+            rows.extend(wrapped)
+            if index < len(lines) - 1 and _cells(wrapped[-1]) == columns:
+                rows.append('')  # the same measured editor row the whole comparison requires
+        return rows if self.matches('\n'.join(rows), columns, slack) else None
 
     def matches(self,shown,columns=None,slack=0):
         lines=self.text.rstrip('\n').split('\n')
@@ -627,6 +639,9 @@ def config_text(config: dict) -> str:
 
 class CodexHarness(Harness):
     box_geometry_known = True  # box_columns below declares the established text area
+    # 0.166.0: after paste, the composer shows the bottom rows. Its up-arrow
+    # occupies the first visible row's one reserved right cell, outside the text.
+    box_scroll = BoxScroll(mark='↑', anchor='bottom')
 
     def model_identity(self, value: str | None, *, version: str | None = None) -> str | None:
         # 0.166.0's footer displays the native id in title case (GPT-6-Astra).
