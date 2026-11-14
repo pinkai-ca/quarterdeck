@@ -25,7 +25,7 @@ What the framework itself guarantees, enforced in code and tests. A rule nothing
 
 ## Post
 
-- `post-is-files` Messages are immutable files addressed to seats by name, whatever program a seat runs. The service renders inboxes and delivers each message once, in full, through the seat's door or its watch. A message the door types a second time keeps its id, and the seat reads the two as one message.
+- `post-is-files` Messages are immutable files addressed to seats by name, whatever program a seat runs. A seat of another ship is addressed by that ship's name and the seat's own name; a message reaches the other ship as the same file. The service renders inboxes and delivers each message once, in full, through the seat's door or its watch. A message the door types a second time keeps its id, and the seat reads the two as one message.
 - `open-until-closed` An order stays open until its addressee reports on it. Acknowledgments claim; they never close and never wake.
 - `events-not-clocks` No seat is asked to poll. The service wakes seats on arrivals and retries withheld deliveries on one tick.
 - `can-post` Every seat can run `qd post` from its launch: the adapter grants it through the program's own permissions and sandbox, and `qd check` proves it by posting once.

@@ -38,6 +38,7 @@ def status_line(facts, alerts: list[str]) -> str:
     parts += getattr(facts, 'pane_obstructions', ())
     # A link that stops the post must keep the path it names.
     parts += getattr(facts, 'post_held', ())
+    parts += getattr(facts, 'post_waits', ())
     # A held delivery's available cure must survive the abbreviated status line.
     parts += [line for line in facts.pending if '; qd submit ' in line]
     parts += getattr(facts, 'request_waits', ())

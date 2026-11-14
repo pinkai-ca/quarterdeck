@@ -4,6 +4,40 @@ A page of [the design](../DESIGN.md).
 
 ## 7. Post
 
+### Across ships
+
+A cross-ship address is `seat@ship`, where the ship is its project folder name. The fixed
+`<project>/office/`, when declared as kind `office`, has the reserved address `office`.
+`fleet.peers(ship)` derives this index from declarations and direct non-template folders under
+`<project>/ships/`; it is shared with office/raise, never another configuration file. A standalone
+ship discovers only itself. Local addresses and existing immutable message files stay unchanged.
+
+Each service writes only its own runtime. A sender publishes an immutable offer under its own
+`post/outbound/<destination>/<id>.json`, binding the source bytes, size, digest and required ancestry.
+Only the addressee's service fetches it, reading the offer and source files read-only and verifying
+unchanged regular-file identity and exact bytes before publishing in its own `post/store/`.
+`fleet_post` durably publishes local import provenance before each copy, uses no-clobber publication,
+syncs the file and directory, and then writes its own `post/fetched/<source>/<id>.json` receipt.
+An equal existing file completes the same fetch after a crash; a conflicting file is retained and
+reported. The sender reads that receipt and matching destination bytes read-only. A down ship has
+not fetched: the sender retains the offer and names the waiting destination and age in status.
+Unchanged ticks do not rewrite or sync completed offers and copies.
+
+Imported ancestry is context, not another delivery request. Addressed import markers make only the
+intended post eligible for the ordinary local Attempts/door/watch. Import receipts never claim seat
+delivery. Local read views project this ship's qualified party names to bare names and qualify foreign
+legacy ancestors by their recorded origin, without rewriting message bytes. Replies retain `re` and
+travel the same way; acknowledgments never wake or close, and only the addressee's report closes an
+order. A report to a silent sink also returns as context to its order's origin. Thread/inbox and
+accounting readers share those same local identities, so equal bare names on different ships do not
+become the same participant. All ancestry required by `qd thread` is fetched with the message.
+
+The message JSON and local receipt schemas are unchanged. Cross-ship import/offer evidence is new;
+older programs do not understand qualified routing. Do not downgrade a participating service while
+cross-ship messages are pending. Forwarding old addresses is a separate change, and this transport
+does not move an office or edit any live ship declaration.
+
+
 For a ship declaring `una`, the service observes the framework checkout's local
 `refs/remotes/origin/main`. The first reading establishes a baseline; each later
 observed tip change starts a twenty-minute deadline. Further changes collect in

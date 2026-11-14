@@ -737,6 +737,17 @@ def cmd_post(args: argparse.Namespace) -> str:
     to = args.to or (store.get(args.re).sender if args.re else None)
     if not to:
         raise ShipError(f"a {args.kind} needs --to <seat>" + (" or --re <message>" if args.kind != "order" else ""))
+    if '@' in to:
+        from . import fleet_post
+        recipient, destination = fleet_post.validate_target(ship, to)
+        if destination == ship.folder.name:
+            to = recipient
+        else:
+            message = store.new(args.kind, sender, to, body, re=args.re, subject=args.subject,
+                                due=args.due, speed=args.speed)
+            note = ('claims; an ack wakes nobody' if args.kind == 'ack'
+                    else 'waiting for the addressee ship to fetch it')
+            return f'{message.short} to {to} · stored · {note}'
     if to.lower() == ship.operator.lower():
         to = ship.operator.lower()
     if to in ship.groups:

@@ -257,7 +257,7 @@ def select(store: post.Store, seat: str, extra: Iterable[post.Message] = (), *,
     """
     messages = store.all()
     by_id = {message.id: message for message in messages}
-    roots = tuple(message for message in messages if message.to == seat and store.is_open(message))
+    roots = tuple(store.open_for(seat))
     root_ids = {message.id for message in roots}
     children: dict[str, list[post.Message]] = {}
     for message in messages:

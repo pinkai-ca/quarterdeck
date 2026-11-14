@@ -146,7 +146,8 @@ class Store:
             return message
         message = self.prepare(kind, sender, to, body, **fields)
         self.write(message)
-        return message
+        from .fleet_post import local_view
+        return local_view(self.dir.parent.parent, message)
 
     def prepare(self, kind: str, sender: str, to: str, body: str, **fields) -> Message:
         """Construct an immutable intent before publication, without changing its format."""
@@ -156,6 +157,8 @@ class Store:
             raise ShipError(f"no speed {fields['speed']!r}; --now or --interrupt")
         if fields.get("re"):
             fields["re"] = self.get(fields["re"]).id
+        from .fleet_post import wire_parties
+        sender, to = wire_parties(self.dir.parent.parent, sender, to)
         at = now()
         message = Message(self._new_id(kind, sender, at), kind, sender, to, at, body, **fields)
         return message
@@ -169,16 +172,18 @@ class Store:
 
     def write(self, message: Message) -> Path:
         runtime = self.dir.parent.parent
-        names = {message.to}
+        from .fleet_post import local_view
+        viewed = local_view(runtime, message)
+        names = {viewed.to}
         if message.kind == 'report' and message.re:
             # A closing report is by the order's addressee, regardless of report recipient.
-            names.add(message.sender)
+            names.add(viewed.sender)
         with ExitStack() as held:
             for name in sorted(names):
                 held.enter_context(admission(runtime, name))
             from . import compaction
-            compaction.protect_closure(runtime, message)
-            compaction.admitting(runtime, message)
+            compaction.protect_closure(runtime, viewed)
+            compaction.admitting(runtime, viewed)
             return self._write(message)
 
     def _write(self, message: Message) -> Path:
@@ -216,13 +221,21 @@ class Store:
                     or not cached_at <= started <= checked):
                 with os.scandir(self.dir) as entries:
                     paths = [self.dir / entry.name for entry in entries if entry.name.endswith('.json')]
-                messages = sorted((Message.from_json(p.read_text()) for p in paths), key=lambda m: (m.at, m.id))
+                from .fleet_post import local_view
+
+                def read(path):
+                    data = path.read_bytes()
+                    return local_view(self.dir.parent.parent, Message.from_json(data.decode('utf-8')), data=data)
+
+                messages = sorted((read(p) for p in paths), key=lambda m: (m.at, m.id))
                 replies: dict[str, list[Message]] = {}
                 for message in messages:
                     if message.re:
                         replies.setdefault(message.re, []).append(message)
                 self._cache = (stamp, messages, replies)
                 finished = time.time_ns()
+                # Certify only a listing begun after the entire timestamp bucket.
+                # An unsafe listing must be refreshed even when its stamp has aged.
                 if max(info.st_mtime_ns, info.st_ctime_ns) + POST_TIMESTAMP_TICK_NS < started <= checked <= finished:
                     self._cache_at = started
             else:
@@ -240,15 +253,18 @@ class Store:
             if (self._cache is None or self._cache[0] != stamp or cached_at is None
                     or not cached_at <= started <= checked):
                 paths = post_dir.json_paths(self.dir)
+                from .fleet_post import local_view
+
                 messages = []
                 for path in paths:
                     try:
-                        text = post_dir.read_text(path)
+                        data = post_dir.read_bytes(path)
                     except ShipError as error:
                         if str(error) == 'post path is not a regular file':
                             continue  # unread; a special file is not a message
                         raise
-                    messages.append(Message.from_json(text))
+                    messages.append(local_view(self.dir.parent.parent,
+                                               Message.from_json(data.decode('utf-8')), data=data))
                 messages.sort(key=lambda m: (m.at, m.id))
                 replies: dict[str, list[Message]] = {}
                 for message in messages:
@@ -280,7 +296,8 @@ class Store:
         return found[0]
 
     def for_seat(self, seat: str) -> list[Message]:
-        return [m for m in self.all() if m.to == seat]
+        from .fleet_post import context_only
+        return [m for m in self.all() if m.to == seat and not context_only(self.dir.parent.parent, m.id)]
 
     def replies(self, message: Message) -> list[Message]:
         return list(self._loaded()[1].get(message.id, []))

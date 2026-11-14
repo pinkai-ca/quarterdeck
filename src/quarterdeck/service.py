@@ -203,7 +203,7 @@ class Service:
 
     def _tick_steps(self):
         # Operational duties keep their order and never wait behind the slice.
-        for step in (self.server_recovery, self.reconcile, self.groups, self.cascades, self.inboxes, self.recoveries, self.refusals, self.answers, self.looks, self.deliveries, self.follow, self.requests, self.compactions, self.person_quiet, self.fresh_after_order,
+        for step in (self.server_recovery, self.reconcile, self.groups, self.cascades, self.fleet_post, self.inboxes, self.recoveries, self.refusals, self.answers, self.looks, self.deliveries, self.follow, self.requests, self.compactions, self.person_quiet, self.fresh_after_order,
                      self.rebrief, self.push_reminders, self.credentials, self.authentications, self.model_differences, self.failover, self.account, self.refresh_usage, self.retire_post):
             self.heartbeat()  # before every step: a slow delivery or usage read reads as busy, never as dead
             try:
@@ -570,6 +570,18 @@ class Service:
             self.withheld[(attempt.message, seat.name)] = screen.text if screen else ""
         self.log("delivery", seat=seat.name, messages=[message.id], speed=speed, result=delivery.result, detail=detail)
         return f"{message.short} to {seat.name} · {delivery.result}: {detail}"
+
+    def fleet_post(self) -> None:
+        from . import fleet_post
+        errors = fleet_post.run(self.ship, self.store)
+        path = self.runtime / 'post' / 'transport-holds.json'
+        if errors:
+            text = json.dumps(errors, sort_keys=True) + '\n'
+            if not path.exists() or path.read_text() != text:
+                from . import durable
+                durable.replace_file(path, text)
+        else:
+            path.unlink(missing_ok=True)
 
     def inboxes(self) -> None:
         for name in self.ship.seats:
