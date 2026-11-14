@@ -242,3 +242,42 @@ print(json.dumps(dict(reached=reached, there=os.path.exists(sys.argv[1]))))
     finally:
         server.close()
         shutil.rmtree(short, ignore_errors=True)
+
+
+def test_a_socket_in_a_folder_bound_through_a_link_refuses_inside(drydock: Path, tmp_path: Path):
+    """bwrap binds a link's target at the link's path: the socket shows there inside, and is masked there."""
+    short = Path(tempfile.mkdtemp(prefix='qdml-', dir='/dev/shm'))
+    real = short / 'real-tools'
+    (real / 'bin').mkdir(parents=True)
+    (real / 'bin' / 'stand-in').write_text('#!/bin/sh\n')
+    (real / 'bin' / 'stand-in').chmod(0o755)
+    (real / 'servers').mkdir()
+    home = short / 'home'
+    home.mkdir()
+    (home / 'tools').symlink_to(real)  # the program's folder, reached through a link under the home
+    server = socket.socket(socket.AF_UNIX)
+    server.bind(str(real / 'servers' / 's'))
+    server.listen(4)
+    try:
+        ship = shipmod.load(drydock)
+        shipmod.fence(ship)
+        own = own_seat(ship)
+        (tmp_path / 'work').mkdir()
+        path = os.pathsep.join([str(home / 'tools' / 'bin'), str(Path(sys.executable).parent), '/usr/bin', '/bin'])
+        jail = sandbox.plan(ship, 'worker-1', own, own / 'home', tmp_path / 'work', 'stand-in', path, home=home)
+        assert home / 'tools' in jail.read_only, 'bound by the link'
+        probe = r"""
+import json, os, socket, sys
+probe = socket.socket(socket.AF_UNIX)
+try:
+    probe.connect(sys.argv[1])
+    reached = True
+except OSError:
+    reached = False
+print(json.dumps(dict(reached=reached, there=os.path.exists(sys.argv[1]))))
+"""
+        seen = run_probe(jail, probe, str(home / 'tools' / 'servers' / 's'), path=path)
+        assert seen == dict(reached=False, there=True), seen
+    finally:
+        server.close()
+        shutil.rmtree(short, ignore_errors=True)

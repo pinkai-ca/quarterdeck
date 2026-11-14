@@ -463,3 +463,21 @@ def test_a_jailed_seat_on_a_provider_pool_is_refused_and_an_endpoint_pool_still_
     jail = plan(pool=local, endpoint=local.endpoint)
     assert jail.endpoint == local.endpoint
     assert plan(pool=Pool("fake", "synthetic"), synthetic=True).endpoint is None, "a synthetic program needs no network"
+
+
+@pytest.mark.parametrize('through_a_link', [False, True])
+def test_plan_refuses_to_bind_the_operators_ssh_folder(tmp_path: Path, drydock: Path, monkeypatch, through_a_link):
+    """Its connection-sharing sockets give a server's session to anything that reaches them: no jail binds ~/.ssh."""
+    ship = shipmod.load(drydock)
+    home = tmp_path / "home"
+    path = install(home)
+    (home / "work").mkdir()
+    (home / ".ssh" / "bin").mkdir(parents=True)
+    entry = home / ".ssh" / "bin"
+    if through_a_link:
+        (home / "keys").symlink_to(home / ".ssh")
+        entry = home / "keys" / "bin"
+    monkeypatch.setattr(sandbox, "available", lambda: True)
+    seat = ship.runtime / "seats" / "w"
+    with pytest.raises(ShipError, match=r"is the operator's ~/.ssh or lies inside it"):
+        sandbox.plan(ship, "w", seat, seat / "home", home / "work", "pi", f"{entry}{os.pathsep}{path}", home=home)
