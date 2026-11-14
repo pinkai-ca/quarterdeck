@@ -34,6 +34,10 @@ class NotRegular(ShipError):
     """
 
 
+class ReadLimit(ShipError):
+    """The regular file exceeds the caller's bounded read."""
+
+
 def _plain_name(name):
     return (isinstance(name, str) and name not in ('', '.', '..')
             and '/' not in name and '\\' not in name and '\x00' not in name)
@@ -206,7 +210,7 @@ def _read_nofollow(parent_fd, name, path, limit=None):
         if not stat.S_ISREG(info.st_mode):
             raise NotRegular('post path is not a regular file')
         if limit is not None and info.st_size > limit:
-            raise ShipError('post path exceeds its read limit')
+            raise ReadLimit('post path exceeds its read limit')
         try:
             descriptor = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC,
                                  dir_fd=parent_fd)
@@ -219,16 +223,17 @@ def _read_nofollow(parent_fd, name, path, limit=None):
             if not stat.S_ISREG(before.st_mode):
                 raise NotRegular('post path is not a regular file')
             if limit is not None and before.st_size > limit:
-                raise ShipError('post path exceeds its read limit')
+                raise ReadLimit('post path exceeds its read limit')
             with os.fdopen(descriptor, 'rb', closefd=False) as stream:
                 data = stream.read() if limit is None else stream.read(limit)
             after = os.fstat(descriptor)
             current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            if limit is not None and (after.st_size > limit or current.st_size > limit):
+                raise ReadLimit('post path exceeds its read limit')
             # Torn: the bytes read are not one whole version of the file. Refused at once, as is a name that is
             # no longer a regular file or is over the limit.
             if (len(data) != after.st_size or content(before) != content(after)
-                    or not stat.S_ISREG(current.st_mode)
-                    or (limit is not None and current.st_size > limit)):
+                    or not stat.S_ISREG(current.st_mode)):
                 raise ShipError(changed)
             if stamp(before) == stamp(after) == stamp(current):
                 return data
@@ -407,7 +412,7 @@ def read_bytes(path, limit: int | None = None) -> bytes:
         with path.open('rb') as stream:
             data = stream.read(limit + 1)
         if len(data) > limit:
-            raise ShipError('post path exceeds its read limit')
+            raise ReadLimit('post path exceeds its read limit')
         return data
     parent, name = _open_parent(path, create=False)
     try:

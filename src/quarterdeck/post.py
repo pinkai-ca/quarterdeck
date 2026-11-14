@@ -464,6 +464,8 @@ class Store:
 # -- drop folders ------------------------------------------------------------------------
 
 # A seat writes a new message only here. The service files it and is the one that sets the sender.
+DROP_MAX_BYTES = 1024 * 1024
+DROP_SIZE_REASON = "drop exceeds size limit"
 DROP_HOLD_REASONS = (
     "from names another seat",
     "not a regular file",
@@ -484,6 +486,7 @@ DROP_HOLD_REASONS = (
     "group publication refused",
     "group publication I/O error",
     "group journal malformed",
+    DROP_SIZE_REASON,
 )
 
 
@@ -543,14 +546,17 @@ def _regular(path: Path) -> bool:
     return found is not None and stat.S_ISREG(found)
 
 
-def _read_regular(path: Path) -> str | None:
+def _read_regular(path: Path, *, limit: int | None = None) -> str | None:
     """The text of a regular file, or None when the name is missing, a link or not a regular file.
 
     The post folder's no-follow read: a link is never read through, and a name swapped during
-    the read is refused.
+    the read is refused. A caller's size-limit refusal propagates as ReadLimit so the drop
+    filing door can record its fixed folder hold.
     """
     try:
-        return post_dir.read_text(path)
+        return post_dir.read_text(path, limit=limit)
+    except post_dir.ReadLimit:
+        raise
     except (OSError, ShipError):
         return None
 
@@ -889,7 +895,10 @@ def _drop_steps(store: Store, ship=None, *, seats: frozenset[str] | None = None,
             if f"{path.stem}.group.json" in names:
                 continue  # the group pass owns a root that still has its intent
             try:
-                text = _read_regular(path)
+                text = _read_regular(path, limit=DROP_MAX_BYTES)
+            except post_dir.ReadLimit:
+                hold(folder, DROP_SIZE_REASON)
+                continue
             except UnicodeDecodeError:
                 hold(folder, "not a message")
                 continue

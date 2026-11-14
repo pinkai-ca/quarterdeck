@@ -225,7 +225,10 @@ def staged_steps(ship: Ship, store: post.Store):
             continue
         for file in files:
             with post.admission(ship.runtime, '@groups'):
-                reason = _file_intent(ship, store, name, root_dir / name / file)
+                try:
+                    reason = _file_intent(ship, store, name, root_dir / name / file)
+                except post_dir.ReadLimit:
+                    reason = post.DROP_SIZE_REASON
             yield (folder_name, reason) if reason else None
 
 
@@ -253,7 +256,7 @@ def _file_intent(ship: Ship, store: post.Store, seat: str, path: Path) -> str | 
         if post_dir.gone(path):
             return None
         return 'not a regular file'
-    text = post._read_regular(path)
+    text = post._read_regular(path, limit=post.DROP_MAX_BYTES)
     if text is None:
         if post_dir.gone(path):
             return None
@@ -323,7 +326,7 @@ def _file_intent(ship: Ship, store: post.Store, seat: str, path: Path) -> str | 
 def _staged_root(store: post.Store, drop_root: Path, stored: Path, root_id: str):
     """The root message and, when it is still a drop, the exact bytes to file."""
     if post._regular(drop_root):
-        text = post._read_regular(drop_root)
+        text = post._read_regular(drop_root, limit=post.DROP_MAX_BYTES)
         if text is None:
             return None, None
         try:
