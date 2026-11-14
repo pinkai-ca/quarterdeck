@@ -369,7 +369,7 @@ def listening_sockets() -> list[Path]:
         # Num RefCount Protocol Flags Type St Inode Path: a listening socket has __SO_ACCEPTCON (0x10000) set.
         if len(fields) < 8 or not int(fields[3], 16) & 0x10000 or not fields[7].startswith('/'):
             continue
-        found.append(Path(fields[7]))
+        found.append(Path(os.path.realpath(fields[7])))  # /var/run leads to /run: judge the real place
     return sorted(set(found))
 
 
