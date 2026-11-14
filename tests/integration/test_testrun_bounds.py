@@ -169,6 +169,13 @@ def test_actual_limits(case, pytestconfig):
     assert 'allocation refused within this test process' in done.stdout
 
 
+# The tool's wall covers setup as well as pytest (time_limit: "Setup and pytest deadline"). On a loaded runner the
+# checkout, the environment and collection took the whole of an 8 s wall on GitHub, before pytest started or before
+# the synthetic test reached its marker. The wall must leave room for setup and still fall inside the synthetic sleep.
+WALL = 30
+SLEEP = 300
+
+
 def test_wall_timeout_stops_its_own_running_pytest_group(synthetic_project):
     project, commit = synthetic_project
     marker = project / 'synthetic-child-pid'
@@ -176,18 +183,19 @@ def test_wall_timeout_stops_its_own_running_pytest_group(synthetic_project):
 import subprocess, sys, time
 from pathlib import Path
 def test_synthetic_wait():
-    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep({SLEEP})"])
     Path({str(marker)!r}).write_text(str(child.pid))
-    time.sleep(60)
+    time.sleep({SLEEP})
 ''')
     commit()
-    done = command(['timeout', '--kill-after=10s', '75s', 'prlimit', '--as=8589934592', sys.executable,
+    done = command(['timeout', '--kill-after=10s', f'{WALL + 70}s', 'prlimit', '--as=8589934592', sys.executable,
                     '-I', str(ROOT / 'tests/testrun.py'), 'run', '--target', str(project), '-n', '0',
-                    '--timeout', '8', 'tests/test_wait.py'], cwd=ROOT, timeout=80)
+                    '--timeout', str(WALL), 'tests/test_wait.py'], cwd=ROOT, timeout=WALL + 85)
     result, report, _ = run_result(project, done)
     assert done.returncode == 3 and result['outcome']['status'] == 'timeout'
-    assert result['outcome']['pytest_exit'] is not None
-    assert 'time limit of 8.0 s' in report
+    assert result['outcome']['pytest_exit'] is not None, f'setup took the whole {WALL} s wall: pytest never started'
+    assert f'time limit of {WALL}.0 s' in report
+    assert marker.exists(), f'the synthetic test never started within the {WALL} s wall'
     pid = int(marker.read_text())
     try:
         fields = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
