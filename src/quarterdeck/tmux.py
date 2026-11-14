@@ -23,6 +23,12 @@ SOCKET_LIMIT = 108  # bytes in a Unix socket's path (sun_path), its terminating 
 CUTOVER = "qd down, then qd up, moves it to its own; the default server itself is left running"
 SHUTDOWN_WAIT = 10.0  # seconds a private server may take to end after its kill-server on a loaded machine
 TERM_AFTER = 3.0  # then its own recorded server, identity proved again, is asked once to end by its pid
+# How long one tmux client command to a private server may go unanswered. A stopped (SIGSTOP) or hung server accepts
+# the client's connection and never replies, so without a bound the client, and the namespace lock held around it,
+# would wait forever. A healthy private server answers in milliseconds even under the suite's four test slots; the
+# namespace lock already treats a holder still there after EXCLUSIVE_WAIT (2 s) as stuck, and this bound is five times
+# that, so no healthy command on a busy machine reaches it.
+PRIVATE_COMMAND_WAIT = 10.0
 
 
 def socket_bytes(path) -> int:
@@ -46,6 +52,11 @@ class TmuxFormatError(TmuxError):
 
 class PrivateTmuxError(TmuxError):
     """Private ownership or lock uncertainty is never evidence of a missing server/pane."""
+
+
+class TmuxUnanswered(PrivateTmuxError):
+    """A private server that did not answer one client command within PRIVATE_COMMAND_WAIT: stopped or hung, never
+    evidence that it is gone. The client, this process's own child, is ended; the server is not signalled."""
 
 
 @dataclass(frozen=True)
@@ -382,7 +393,12 @@ class Tmux:
         # -u: a client without a UTF-8 locale prints a format's tabs as "_"; -u keeps them whatever the locale.
         command = ['tmux', '-u', *address, *args]
         env = dict(os.environ, **{OWNER: self._owned.nonce}) if start else None
-        done = subprocess.run(command, input=stdin, capture_output=True, text=True, env=env)
+        bound = PRIVATE_COMMAND_WAIT if self._private else None
+        try:
+            done = subprocess.run(command, input=stdin, capture_output=True, text=True, env=env, timeout=bound)
+        except subprocess.TimeoutExpired:
+            raise TmuxUnanswered(f"tmux {args[0]}: private server did not answer within {bound:g} s "
+                                 "(stopped or hung); retained") from None
         if done.returncode:
             raise TmuxError(f"tmux {args[0]}: {done.stderr.strip() or done.returncode}")
         return done.stdout
