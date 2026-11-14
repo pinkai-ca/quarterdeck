@@ -134,9 +134,16 @@ class Service:
         self.status_checked: float | None = None
         from .structure_outcome import Passes
         self.structure_passes = Passes()
+        self.earlier_installer: tuple[int, str] | None = None  # an earlier-code installer that started this service
+        self.legacy_lock: int | None = None  # the earlier service lock, held for that installer until it exits
 
     def run(self) -> None:
         self.lock = acquire_lock(self.runtime)  # one service per ship, for its whole life
+        from . import install
+        if install.EARLIER_INSTALLER is not None:
+            # Started by an installer of the earlier code, which sees a service only at the lock's earlier place.
+            self.earlier_installer = install.EARLIER_INSTALLER
+            self.legacy_lock = servicectl.hold_legacy(self.runtime)
         servicectl.acknowledge(self.runtime, self.copy_identity, self.copy_start_token)
         self.log("start", pid=os.getpid())
         from .shutdown import Stop
@@ -191,8 +198,20 @@ class Service:
             self.log("tmux", socket=found.socket, was=self.tmux.socket)
             self.tmux = found
 
+    def release_earlier_installer(self) -> None:
+        """Once the earlier-code installer that started this service has exited, its lock's earlier place goes."""
+        if getattr(self, 'legacy_lock', None) is None:
+            return
+        pid, start = self.earlier_installer
+        if servicectl.process_start(pid) == start:
+            return
+        servicectl.release_legacy(self.runtime, self.legacy_lock)
+        self.legacy_lock = None
+        self.log("earlier-installer-done", pid=pid)
+
     def tick(self) -> None:
         """One pass: the ship file read afresh, then every duty, each failing alone."""
+        self.release_earlier_installer()
         try:
             stamp = ship_file_stamp(self.ship)  # before the read: a write during it reads as a change later
             self.ship = shipmod.load(self.ship.folder)  # law: ship-file

@@ -111,6 +111,45 @@ def _retire_legacy(runtime: Path) -> None:
         os.close(descriptor)
 
 
+def hold_legacy(runtime: Path) -> int:
+    """Hold the service lock's earlier place as well, for an installer of the earlier code that started this service.
+
+    That installer confirms its service by the earlier place alone (``runtime/service.lock``), and rolls back a
+    service it cannot see. So the service it started holds that place too, without waiting, until the installer has
+    exited. Held by anything else, the start is refused, as the earlier lock's holder is refused at any start.
+    """
+    legacy = legacy_lock_path(runtime)
+    try:
+        descriptor = os.open(legacy, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    except OSError as error:
+        raise ShipError(f"the earlier service lock {legacy} cannot be opened ({error.strerror}); retained") from None
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ShipError(f"the earlier service lock {legacy} is not a regular file; retained")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ShipError(f"a service of the earlier code, or a seat that can see it, holds {legacy}; "
+                            "stop that service (or that seat) and start again") from None
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def release_legacy(runtime: Path, descriptor: int) -> None:
+    """Let the earlier place go once its installer has exited: the file is removed while still held, then closed."""
+    legacy = legacy_lock_path(runtime)
+    try:
+        held, current = os.fstat(descriptor), os.lstat(legacy)
+        if (held.st_dev, held.st_ino) == (current.st_dev, current.st_ino):
+            legacy.unlink()
+    except FileNotFoundError:
+        pass
+    finally:
+        os.close(descriptor)
+
+
 def _held(path: Path) -> bool | None:
     """True when a process holds the lock, False when it is free, None when there is no such file."""
     try:

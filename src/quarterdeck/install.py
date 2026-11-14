@@ -13,6 +13,7 @@ import fcntl
 import hashlib
 import json
 import os
+import stat
 import re
 import shlex
 import shutil
@@ -275,9 +276,12 @@ def install_lock_path(runtime: Path) -> Path:
     return ship_locks.path(runtime, 'install.lock')
 
 
+LEGACY_INSTALL_LOCK = 'install.lock'  # the lock's earlier place, directly under the runtime
+
+
 def _retire_legacy_install_lock(runtime: Path) -> None:
     """The lock's earlier place: held by a copy of the earlier code, it refuses; free, it is removed."""
-    legacy = runtime / 'install.lock'
+    legacy = runtime / LEGACY_INSTALL_LOCK
     try:
         descriptor = os.open(legacy, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
     except FileNotFoundError:
@@ -845,12 +849,15 @@ def bootstrap_service(ship: Ship, argv: list[str]) -> None:
     token = os.environ.get('QD_COPY_START')
     if (pending and pending.get('phase') in ('target_ready', 'restored')
             and token and token == pending.get('token')
-            and _parent_holds_install_lock(ship, pending)):
+            and (holding := _parent_holds_install_lock(ship, pending))):
         selected = data.get('current')
         if (not running_from(ship.runtime / 'venv/bin')
                 or copy_state.usable(ship.runtime / 'venv', selected)
                 or LOADED_COPY != {key: selected.get(key) for key in ('commit', 'instance', 'package_digest')}):
             raise ShipError('authorized service startup has unknown live identity; no service constructed')
+        if holding == 'earlier':
+            global EARLIER_INSTALLER
+            EARLIER_INSTALLER = (pending['owner_pid'], pending['owner_start'])
         return  # the live parent owns the install lock and will confirm/finalize startup
     changed = False
     with install_lock(ship):
@@ -873,21 +880,74 @@ def bootstrap_service(ship: Ship, argv: list[str]) -> None:
         os.execv(str(selected.qd), [str(selected.qd), *argv])
 
 
-def _parent_holds_install_lock(ship: Ship, pending: dict) -> bool:
+# The installer of the earlier code that started this service, as its journal recorded it: (process, start). Set
+# only by an authorized startup it activated; the service then holds the earlier service lock until it has exited.
+EARLIER_INSTALLER: tuple[int, str] | None = None
+
+
+def _parent_holds_install_lock(ship: Ship, pending: dict) -> str | None:
+    """Which installer that recorded this activation still runs and still holds its install lock: ``'current'``,
+    ``'earlier'`` (a copy of the earlier code, at the lock's earlier place), or None.
+
+    The installer is known by what it recorded before it started this copy: its process and that process's start in
+    the journal, and the start token it passed (checked by the caller). Its lock lies at this code's place, or, when
+    the installer is a copy of the earlier code activating this one, at the earlier place, ``runtime/install.lock``:
+    that installer holds it for its whole operation and releases it only after confirming this startup. At the
+    earlier place only the recorded installer itself counts, as the kernel names the holder (/proc/locks): any other
+    holder, or a list that cannot be read, is not accepted here, and the caller then takes the lock itself and
+    refuses an earlier-code holder there.
+    """
     pid = pending.get('owner_pid')
     if (type(pid) is not int or pending.get('owner_start') is None
             or servicectl.process_start(pid) != pending['owner_start']):
-        return False
+        return None
+    if _held(install_lock_path(ship.runtime)):
+        return 'current'
+    if _flock_holder(ship.runtime / LEGACY_INSTALL_LOCK) == pid:
+        return 'earlier'
+    return None
+
+
+def _flock_holder(path: Path) -> int | None:
+    """The process that holds an exclusive flock on this very file, as the kernel lists it in /proc/locks; None
+    when nobody holds one, the file is a link or absent, or the list cannot be read."""
     try:
-        with install_lock_path(ship.runtime).open('rb') as handle:
+        info = os.lstat(path)
+        with open('/proc/locks') as listing:
+            lines = listing.read().splitlines()
+    except OSError:
+        return None
+    if not stat.S_ISREG(info.st_mode):
+        return None
+    identity = f'{os.major(info.st_dev):02x}:{os.minor(info.st_dev):02x}:{info.st_ino}'
+    holders = set()
+    for line in lines:
+        fields = line.split()
+        if fields and fields[1:2] == ['->']:
+            continue  # a waiter, not a holder
+        if len(fields) >= 6 and fields[1:4] == ['FLOCK', 'ADVISORY', 'WRITE'] and fields[5] == identity:
             try:
-                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                return True
-            fcntl.flock(handle, fcntl.LOCK_UN)
+                holders.add(int(fields[4]))
+            except ValueError:
+                return None
+    return holders.pop() if len(holders) == 1 else None
+
+
+def _held(path: Path) -> bool:
+    """Whether a lock file is held now, tested without waiting and without following a link."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
     except OSError:
         return False
-    return False
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(descriptor)
 
 
 def _run(argv: list[str], doing: str, timeout: float | None = None, **kwargs) -> subprocess.CompletedProcess:
