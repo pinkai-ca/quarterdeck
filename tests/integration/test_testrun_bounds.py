@@ -112,12 +112,22 @@ import sys, time
 from pathlib import Path
 sys.dont_write_bytecode = True
 sys.path.insert(0, sys.argv[1])
+import signal
 from testrunner import cli, run
-run.FINALIZATION_SECONDS = 0.3
+# The tool's own finalisation budget, unchanged: no runner's work before cleanup comes near it. Inside cleanup the
+# stall reads the alarm the tool armed (armed, not yet fired), then leaps that alarm's clock so it fires now, while
+# the stall holds: the tool's own handler takes the emergency path inside cleanup, and no real budget is waited out.
 def stall(*args):
-    Path(sys.argv[2], "cleanup-entered").touch()
-    time.sleep(60)
+    remaining, _ = signal.getitimer(signal.ITIMER_REAL)
+    Path(sys.argv[2], "cleanup-entered").write_text(repr([time.monotonic(), remaining, run.FINALIZATION_SECONDS]))
+    signal.setitimer(signal.ITIMER_REAL, 0.001)
+    time.sleep(60)  # held until the alarm interrupts it; never outlasted
 run.clean.retire_run = stall
+timeout = run.Runner.on_finalization_timeout
+def fired(self, number, frame):
+    Path(sys.argv[2], "timeout-fired").write_text(repr(time.monotonic()))
+    return timeout(self, number, frame)
+run.Runner.on_finalization_timeout = fired
 files = [Path(sys.argv[1]) / "testrun.py", *sorted((Path(sys.argv[1]) / "testrunner").glob("*.py"))]
 raise SystemExit(cli.main(["run", "--target", sys.argv[2], "-n", "0", "--timeout", "60"], files))
 '''
@@ -132,7 +142,10 @@ raise SystemExit(cli.main(["run", "--target", sys.argv[2], "-n", "0", "--timeout
     assert '1 passed' in records[0].with_name('report.md').read_text()
     assert emergency['outcome'] == 'finalization-timeout' and emergency['scratch_retained']
     assert Path(emergency['scratch']).is_dir()
-    assert (project / 'cleanup-entered').exists()
+    entered, remaining, budget = json.loads((project / 'cleanup-entered').read_text())
+    fired = float((project / 'timeout-fired').read_text())
+    assert 0 < remaining <= budget, 'cleanup began under the armed finalisation budget, not yet fired'
+    assert entered < fired, 'the budget fired inside cleanup, after the first result was written'
     assert 'first result and remaining scratch retained' in done.stderr
 
 
