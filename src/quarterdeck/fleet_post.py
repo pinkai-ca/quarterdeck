@@ -8,6 +8,8 @@ receipt stands in for the local door/watch's receipt.
 from __future__ import annotations
 
 from dataclasses import replace
+import ctypes
+import errno
 import hashlib
 import json
 import os
@@ -15,7 +17,6 @@ from pathlib import Path
 import secrets
 import stat
 
-from . import durable
 from .fleet import peers
 from .ship import ShipError
 
@@ -63,15 +64,27 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def _rename_new(temporary, path):
+    """Linux's atomic rename without replacement; never an exists/replace race."""
+    library = ctypes.CDLL(None, use_errno=True)
+    rename = getattr(library, 'renameat2', None)
+    if rename is None:
+        raise OSError(errno.ENOSYS, 'atomic no-clobber rename is unavailable')
+    rename.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+    rename.restype = ctypes.c_int
+    if rename(-100, os.fsencode(temporary), -100, os.fsencode(path), 1) != 0:
+        number = ctypes.get_errno()
+        raise OSError(number, os.strerror(number), str(path))
+
+
 def publish(path, data):
-    """Durable no-clobber publication. An equal existing file is the same intent."""
+    """Atomic no-clobber publication, without syncs. Equal bytes are the same intent."""
     missing, parent = [], path.parent
     while not parent.exists():
         missing.append(parent)
         parent = parent.parent
     for folder in reversed(missing):
         folder.mkdir(exist_ok=True)
-        durable.sync_folder(folder.parent)
     if path.exists():
         if stable_bytes(path) != data:
             raise ShipError(f'post transport conflict at {path.name}; retained')
@@ -79,16 +92,14 @@ def publish(path, data):
     temporary = path.with_name('.' + path.name + '.' + secrets.token_hex(8) + '.tmp')
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
     try:
-        with os.fdopen(descriptor, 'wb', closefd=False) as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(descriptor)
+        view = memoryview(data)
+        while view:
+            view = view[os.write(descriptor, view):]
         try:
-            os.link(temporary, path)
+            _rename_new(temporary, path)
         except FileExistsError:
             if stable_bytes(path) != data:
                 raise ShipError(f'post transport conflict at {path.name}; retained') from None
-        durable.sync_folder(path.parent)
     finally:
         os.close(descriptor)
         temporary.unlink(missing_ok=True)
@@ -103,7 +114,16 @@ def prepare_outbound(runtime):
     directory = runtime / 'post' / 'outbound'
     if not directory.exists():
         directory.mkdir(parents=True, exist_ok=True)
-        durable.sync_folder(directory.parent)
+
+
+def replace_status(path, text):
+    """A disposable local status file, atomically replaced without a sync."""
+    temporary = path.with_name('.' + path.name + '.' + secrets.token_hex(8) + '.tmp')
+    try:
+        temporary.write_text(text)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def import_path(runtime, identifier):
@@ -199,6 +219,9 @@ def _chain(ship, message):
         seen.add(message.id)
         raw, data = _source(ship, message.id)
         imported = provenance(ship.runtime, message.id)
+        _ownership(ship, message.id, imported['origin'] if imported else ship.folder.name,
+                   raw, data, root=not chain)
+        _refusal_clear(ship, raw, imported['origin'] if imported else ship.folder.name)
         chain.append(dict(id=message.id, origin=imported['origin'] if imported else ship.folder.name,
                           size=len(data), sha256=digest(data)))
         if not raw.re:
@@ -212,6 +235,32 @@ def offer(ship, message, target):
     path = ship.runtime / 'post' / 'outbound' / target / (message.id + '.json')
     publish(path, encoded(value))
     return value
+
+
+def _refusal_clear(ship, message, origin):
+    """A refused ancestor holds its descendant; no refused words cross as context."""
+    from . import refusal
+    recipient, name = address(message.to, origin)
+    destination = peers(ship).get(name)
+    if destination is None:
+        raise ShipError('ancestor refusal evidence unavailable; descendant retained')
+    try:
+        excluded = refusal.excluded(destination.runtime, recipient)
+    except refusal.JournalError:
+        raise ShipError('ancestor refusal evidence unreadable; descendant retained') from None
+    if message.id in excluded:
+        raise ShipError('refused ancestor; descendant retained without copying its words')
+
+
+def _ownership(source, identifier, origin, message, data, *, root):
+    if address(message.sender, origin)[1] != origin:
+        raise ShipError('message author and claimed origin differ')
+    imported = provenance(source.runtime, identifier)
+    if imported:
+        if root or imported.get('origin') != origin or imported.get('sha256') != digest(data):
+            raise ShipError('foreign-origin posts cross only as verified imported context')
+    elif origin != source.folder.name or address(message.sender, origin)[1] != source.folder.name:
+        raise ShipError('a ship offers as origin only the posts it authored')
 
 
 def export(ship, store):
@@ -254,10 +303,13 @@ def _offer(source, target, path):
             or value['files'][-1]['id'] != value['message']):
         raise ShipError('post transport offer is incomplete')
     files = []
-    for entry in value['files']:
+    for index, entry in enumerate(value['files']):
         if not component(entry['origin']):
             raise ShipError('post transport origin is invalid')
         message, data = _source(source, entry['id'])
+        _ownership(source, entry['id'], entry['origin'], message, data,
+                   root=index == len(value['files']) - 1)
+        _refusal_clear(source, message, entry['origin'])
         if len(data) != entry['size'] or digest(data) != entry['sha256']:
             raise ShipError('post transport offer no longer matches its source')
         files.append((entry, message, data))
@@ -306,8 +358,6 @@ def fetch(ship, source, path):
                 if is_direct:
                     publish(ship.runtime / 'post' / 'addressed' / (raw.id + '.json'),
                             encoded(dict(format=1, id=raw.id, sha256=entry['sha256'])))
-                # Recover publication cut before its directory sync, before acknowledging it.
-                durable.sync_folder(local.parent)
         publish(receipt_path(ship, source.folder.name, message.id), encoded(value))
     return message.id
 

@@ -579,8 +579,7 @@ class Service:
             fleet_post.prepare_outbound(self.runtime)
             text = json.dumps(errors, sort_keys=True) + '\n'
             if not path.exists() or path.read_text() != text:
-                from . import durable
-                durable.replace_file(path, text)
+                fleet_post.replace_status(path, text)
         else:
             path.unlink(missing_ok=True)
 

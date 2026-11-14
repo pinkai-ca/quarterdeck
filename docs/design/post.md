@@ -16,12 +16,12 @@ Each service writes only its own runtime. A sender publishes an immutable offer 
 `post/outbound/<destination>/<id>.json`, binding the source bytes, size, digest and required ancestry.
 Only the addressee's service fetches it, reading the offer and source files read-only and verifying
 unchanged regular-file identity and exact bytes before publishing in its own `post/store/`.
-`fleet_post` durably publishes local import provenance before each copy, uses no-clobber publication,
-syncs the file and directory, and then writes its own `post/fetched/<source>/<id>.json` receipt.
+`fleet_post` atomically publishes local import provenance before each copy, uses no-clobber publication,
+and then writes its own `post/fetched/<source>/<id>.json` receipt.
 An equal existing file completes the same fetch after a crash; a conflicting file is retained and
 reported. The sender reads that receipt and matching destination bytes read-only. A down ship has
 not fetched: the sender retains the offer and names the waiting destination and age in status.
-Unchanged ticks do not rewrite or sync completed offers and copies.
+Publication requests no file or directory sync. Unchanged ticks do not rewrite completed offers and copies.
 
 Imported ancestry is context, not another delivery request. Addressed import markers make only the
 intended post eligible for the ordinary local Attempts/door/watch. Import receipts never claim seat
@@ -37,6 +37,8 @@ older programs do not understand qualified routing. Do not downgrade a participa
 cross-ship messages are pending. Forwarding old addresses is a separate change, and this transport
 does not move an office or edit any live ship declaration.
 
+
+A refused ancestor holds its descendant on the sender and fetch paths: no refused words travel as context. Unknown or unreadable refusal evidence holds too. Each offered origin belongs to its authoring ship; a foreign ancestor crosses only as context backed by its import provenance. A jailed sender sees peer declarations through read-only files in otherwise empty, read-only ship folders; peer homes and runtimes stay hidden.
 
 For a ship declaring `una`, the service observes the framework checkout's local
 `refs/remotes/origin/main`. The first reading establishes a baseline; each later

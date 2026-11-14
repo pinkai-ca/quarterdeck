@@ -62,6 +62,7 @@ class Jail:
     read_only: tuple[Path, ...] = ()  # the program's own folders under the operator's home, bound back
     writable: tuple[Path, ...] = ()  # the post store, and the check's proof folder when there is one
     environment: tuple[tuple[str, str], ...] = ()  # set inside the jail: the git identity a commit from the seat carries
+    declarations: tuple[Path, ...] = ()  # peer ship files only, under otherwise empty read-only folders
 
 
 def git_identity(workspace: Path) -> tuple[tuple[str, str], ...]:
@@ -101,8 +102,10 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
                if f != workspace and workspace not in f.parents and ship.folder not in f.parents and f != ship.folder]
     post_dir.ensure_directory(ship.runtime / "post")  # bound writable, so it must exist before the launch, first post or not
     (ship.runtime / "tmux").mkdir(mode=0o700, exist_ok=True)  # hidden inside: the mount needs its place in the read-only ship
+    from .fleet import declaration_files
+    declarations = tuple(file for file in declaration_files(ship) if file.parent != ship.folder)
     jail = Jail(home, seat_home, seat_folder, workspace, ship.folder, ship.runtime, tuple(folders),
-                (ship.runtime / "post", ship.runtime / "check"), git_identity(workspace))
+                (ship.runtime / "post", ship.runtime / "check"), git_identity(workspace), declarations)
     if covered := covering(jail):
         what, folder = covered
         raise ShipError(f"{seat_name}: sandboxed with the operator home at {home}, and {what} {folder} is that home or "
@@ -196,9 +199,13 @@ def command(jail: Jail, argv: list[str]) -> list[str]:
     mounts += [("--bind", jail.workspace), ("--ro-bind", jail.ship_folder),
                ("--tmpfs", jail.runtime / "seats"), ("--private-tmpfs", jail.runtime / "tmux"), ("--bind", jail.seat_folder)]
     mounts += [("--bind-try", folder) for folder in jail.writable]
+    mounts += [("--declaration", file) for file in getattr(jail, 'declarations', ())]
     # Parents first: a child mount is never hidden by its parent's. At the home's own path the tmpfs comes last.
     for flag, folder in sorted(mounts, key=lambda m: (len(m[1].parts), str(m[1]), m == ("--tmpfs", jail.home))):
-        if flag == "--private-tmpfs":
+        if flag == '--declaration':
+            args += ['--tmpfs', str(folder.parent), '--ro-bind', str(folder), str(folder),
+                     '--remount-ro', str(folder.parent)]
+        elif flag == "--private-tmpfs":
             args += ["--perms", "0700", "--tmpfs", str(folder)]
         else:
             args += [flag, str(folder)] if flag == "--tmpfs" else [flag, str(folder), str(folder)]
