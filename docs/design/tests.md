@@ -60,3 +60,8 @@ not a live native renderer or provider. No independently established clipped-bou
 form is available, so no unnumbered height diagnosis is inferred from an unknown box.
 
 **An unread box.** Where the reader finds no box after a paste, outside a human's session, the failed-paste journal also keeps the screen it read as `paste_screen`: the reader's own reason, the screen's last 120 rows cut to 320 characters each and 24,000 in all, and the count of rows cut. Anything shaped like a credential is masked first. The blind reason names the reading and says the screen is kept. It is evidence for a person and nothing else: nothing reads it back to decide, clear or resend, and saving it can fail without changing the outcome. Grok's `VTE_VERSION` hint row was found this way.
+
+
+### Minimal live check
+
+`qd check PROGRAM --minimal` explicitly selects one short write-line-and-report task. It uses the existing guarded door, delivery receipt and ended-record-turn checks, including observed model confirmation when `--model ID` is given. It omits the deliberately long folding payload and the separate human-session wake probe. The output names minimal check mode, and its outcomes live under `runtime/minimal-checks/`; it does not write the ordinary full-check proven marker. Plain `qd check PROGRAM` keeps the full check and its existing proof. The daily scheduler and its operations-owned timer are separate from this first minimal-mode checkpoint.

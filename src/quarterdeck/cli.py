@@ -195,6 +195,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = verb("check", cmd_check, "prove the installed version of a program live, on a throwaway seat (spends tokens)")
     p.add_argument("harness", choices=[n for n in harnesses.NAMES if not harnesses.get(n).synthetic])
     p.add_argument("--model", metavar="ID", help="launch the throwaway seat on this model; require observed confirmation")
+    p.add_argument("--minimal", action="store_true",
+                   help="minimal live check: one short task and report (spends tokens)")
     p = verb("doctor", cmd_doctor, "is this machine ready to run the ship: tmux, git, programs, sign-ins, folders, the service, disk")
     p.add_argument("--fix", action="store_true",
                    help="hand the failures to a throwaway seat on the first pool whose program runs, then check again (spends tokens)")
@@ -865,6 +867,8 @@ def cmd_ledger(args: argparse.Namespace) -> Reading:
 def cmd_check(args: argparse.Namespace) -> list[str]:
     ship = load_ship(args)
     options = {"model": args.model} if getattr(args, "model", None) is not None else {}
+    if getattr(args, 'minimal', False):
+        options['minimal'] = True
     checks = check.check(ship, args.harness, Tmux.for_ship(ship), **options)
     args.exit_code = 0 if all(c.passed is not False for c in checks) else 1
     return [str(c) for c in checks]

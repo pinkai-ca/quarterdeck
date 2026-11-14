@@ -6,7 +6,9 @@ once: launch, an open door, a message long enough to fold in any program's box, 
 matched as the program shows it, submitted and found in the record, and one task the check
 can verify without reading prose: write a named file with a given line, and post a report
 on the order. When everything holds the version is marked proven in the runtime. It spends
-real tokens and runs only when asked.
+real tokens and runs only when asked. The explicit minimal mode keeps the same task, delivery and
+record confirmation, omits the deliberate folding and human-session wake probes, and never marks the
+full check proven.
 """
 
 from __future__ import annotations
@@ -85,18 +87,21 @@ def interruptible():
             signal.signal(number, handler)
 
 
-def check(ship: Ship, name: str, tmux: Tmux, *, model: str | None = None) -> list[Check]:
+def check(ship: Ship, name: str, tmux: Tmux, *, model: str | None = None,
+          minimal: bool = False) -> list[Check]:
     if model is not None and not model.strip():
         raise ShipError("check --model requires a nonempty model identifier")
+    runtime = ship.runtime / 'minimal-checks' if minimal else ship.runtime
     harness = harnesses.get(name)
-    check_outcome.publish(ship.runtime, name, check_outcome.event('unknown', reason='incomplete'))
+    check_outcome.publish(runtime, name, check_outcome.event('unknown', reason='incomplete'))
     version = None
     try:
         with interruptible():
-            checks, version = _check(ship, name, tmux, harness, model)
+            checks, version = (_check(ship, name, tmux, harness, model, minimal=True)
+                               if minimal else _check(ship, name, tmux, harness, model))
     except BaseException as error:
         reason = 'interrupted' if isinstance(error, (KeyboardInterrupt, SystemExit)) else 'unclassified'
-        check_outcome.publish(ship.runtime, name, check_outcome.event('unknown', version, reason))
+        check_outcome.publish(runtime, name, check_outcome.event('unknown', version, reason))
         raise
     failures = [c for c in checks if c.passed is False]  # a step not applicable is no failure
     question = next((c.reason for c in failures if isinstance(c, ProbeCheck)
@@ -106,11 +111,14 @@ def check(ship: Ship, name: str, tmux: Tmux, *, model: str | None = None) -> lis
         observed = check_outcome.event('unknown', version, 'unclassified')
     else:
         observed = check_outcome.event('failed' if failures else 'passed', version, reason)
-    check_outcome.publish(ship.runtime, name, observed)
+    check_outcome.publish(runtime, name, observed)
+    if minimal:
+        checks.insert(0, Check('minimal check mode', True, 'one short write-line task and report'))
     return checks
 
 
-def _check(ship: Ship, name: str, tmux: Tmux, harness, model: str | None = None) -> tuple[list[Check], str | None]:
+def _check(ship: Ship, name: str, tmux: Tmux, harness, model: str | None = None,
+           *, minimal: bool = False) -> tuple[list[Check], str | None]:
     pool = next((p for p in ship.pools.values() if harness.accepts(p) is None), None)
     if pool is None:
         return [ProbeCheck('pool', False, f'no compatible declared pool for {name}', 'pool')], None
@@ -131,13 +139,19 @@ def _check(ship: Ship, name: str, tmux: Tmux, harness, model: str | None = None)
                     model_mode=like.model_mode if like else None, effort_mode=like.effort_mode if like else None)
     orders: list[post.Message] = []
     with temporary_seat(ship, tmux, spec, orders, "qd check", installed_version=version, check_inbox=True) as seat:
-        checks += probe(seat.ship, seat, orders, requested_model=model) if model is not None else probe(seat.ship, seat, orders)
+        options = {'requested_model': model} if model is not None else {}
+        if minimal:
+            options['minimal'] = True
+        checks += probe(seat.ship, seat, orders, **options)
         if selected is not None:
             launched = seat.launched()
             ran = launched is not None and str(selected) in launched.argv
             checks.append(ProbeCheck("the seat ran the program doctor shows", ran,
                                      f"{selected} in launch.json" if ran else f"{selected} not in the seat's launch", 'program'))
     if not all(c.passed is True for c in checks):
+        return checks, version
+    if minimal:
+        checks.append(Check('minimal: launch, task and ended turn proved', True))
         return checks, version
     inapplicable = harness.waking_inapplicability
     if inapplicable is not None:
@@ -206,7 +220,18 @@ def _probe_record_check(seat: Seat, requested_model: str | None, ended: bool) ->
                       f"record-observed {state.model if state and state.model else '?'}", 'record')
 
 
-def probe(ship: Ship, seat: Seat, orders: list[post.Message] | None = None, *, requested_model: str | None = None) -> list[Check]:
+def _task_body(proof_file: Path, proof_line: str, *, minimal: bool = False) -> str:
+    body = (f"Write the file {proof_file} containing exactly one line: {proof_line}\n"
+            f"Then post your report on this order with the body: written")
+    if minimal:
+        return body
+    laws = (standing.FRAMEWORK_DIR / "laws.md").read_text().strip()
+    return body + ("\n\nThe rest of this order is the laws you already run under, repeated so that the message is long "
+                   f"enough to fold in your box; nothing in it changes the task.\n\n{laws}")
+
+
+def probe(ship: Ship, seat: Seat, orders: list[post.Message] | None = None, *, requested_model: str | None = None,
+          minimal: bool = False) -> list[Check]:
     checks: list[Check] = []
     proof_line = f"qd-check-{secrets.token_hex(4)}"
     proof_file = ship.runtime / "check" / f"{seat.name}.txt"
@@ -235,12 +260,9 @@ def probe(ship: Ship, seat: Seat, orders: list[post.Message] | None = None, *, r
     except OSError:
         before_turns = 0  # a minimum bound only; the later receipt and ended task are still required
     store, attempts = post.Store(ship.runtime), post.Attempts(ship.runtime)
-    laws = (standing.FRAMEWORK_DIR / "laws.md").read_text().strip()
     order = store.new("order", "ship", seat.name,
-                      f"Write the file {proof_file} containing exactly one line: {proof_line}\n"
-                      f"Then post your report on this order with the body: written\n\n"
-                      f"The rest of this order is the laws you already run under, repeated so that the message is long "
-                      f"enough to fold in your box; nothing in it changes the task.\n\n{laws}", subject="qd check")
+                      _task_body(proof_file, proof_line, minimal=minimal),
+                      subject="qd check minimal" if minimal else "qd check")
     if orders is not None:
         orders.append(order)
     text = post.typed([order])
