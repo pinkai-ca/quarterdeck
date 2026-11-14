@@ -13,7 +13,7 @@ Quarterdeck runs AI coding agents as one crew, called a ship. The fourteen laws 
 | `context-is-cache` | A seat may be relaunched at any time and the ship loses nothing it sent. |
 | `record-first` | A seat is read from its record first and its screen second. |
 | `nothing-waits-silently` | Anything withheld, walled or waiting on a human shows in every status line. |
-| `post-is-files` | Messages are immutable files addressed to seats by name. |
+| `post-is-files` | Messages are immutable files addressed to seats by name, on this ship or another. |
 | `open-until-closed` | An order stays open until its addressee reports on it. |
 | `events-not-clocks` | No seat is asked to poll. |
 | `can-post` | Every seat can post from its launch, and `qd check` proves it. |
