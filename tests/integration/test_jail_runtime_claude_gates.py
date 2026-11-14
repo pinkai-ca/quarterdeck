@@ -22,6 +22,13 @@ import pytest
 
 from quarterdeck import cascade_runtime, ledger as ledgermod, post, post_view, sandbox, ship as shipmod, watch_broker
 
+
+def clean_path() -> str:
+    """A clean PATH for a planned jail: this checkout's interpreter and the system's, never a running ship's
+    runtime that the test's own shell may have first on its PATH (a seat's shell does)."""
+    return os.pathsep.join([str(Path(sys.executable).parent), '/usr/bin', '/bin'])
+
+
 SECRET = 'synthetic-sign-in-never-inside'
 
 
@@ -127,7 +134,7 @@ def test_a_jail_sees_only_what_a_seat_needs_of_the_runtime_and_every_tmpfs_is_bo
     own = runtime / 'seats' / seat
     (own / 'home').mkdir(parents=True, exist_ok=True)
     home = Path.home()
-    jail = sandbox.plan(ship, seat, own, own / 'home', workspace, '/usr/bin/python3', os.environ['PATH'], home=home)
+    jail = sandbox.plan(ship, seat, own, own / 'home', workspace, '/usr/bin/python3', clean_path(), home=home)
     env = {key: value for key, value in os.environ.items() if not key.startswith(('QD_', 'TMUX'))}
     env.update(QD_PROBE_HOME=str(home))
     child = subprocess.Popen(sandbox.command(jail, [sys.executable, '-c', PROBE, str(runtime), str(workspace)]),

@@ -20,6 +20,13 @@ from .progress import service_progress
 from .waiting import wait_for
 
 
+
+def clean_path() -> str:
+    """A clean PATH for a planned jail: this checkout's interpreter and the system's, never a running ship's
+    runtime that the test's own shell may have first on its PATH (a seat's shell does)."""
+    return os.pathsep.join([str(Path(sys.executable).parent), '/usr/bin', '/bin'])
+
+
 def make_ship(project: Path, name: str) -> shipmod.Ship:
     folder = project / 'ships' / name
     shutil.copytree(ROOT / 'ships' / 'drydock', folder)
@@ -195,7 +202,7 @@ def test_a_ship_raised_after_the_jail_launched_is_absent_inside_it(tmp_path):
     workspace.mkdir()
     own = left.runtime / 'seats' / 'worker-1'
     (own / 'home').mkdir(parents=True)
-    jail = sandbox.plan(left, 'worker-1', own, own / 'home', workspace, sys.executable, os.environ['PATH'], home=home)
+    jail = sandbox.plan(left, 'worker-1', own, own / 'home', workspace, sys.executable, clean_path(), home=home)
     probe = '''
 import fcntl, json, os, sys, time
 from pathlib import Path
@@ -301,7 +308,7 @@ def test_an_office_raised_after_the_launch_under_a_project_seen_read_only_inside
     (own / 'home').mkdir(parents=True)
     office = project / 'office'
     assert not office.exists()
-    path = os.pathsep.join([os.environ['PATH'], str(project)])  # the project is bound back, as the checkout is
+    path = os.pathsep.join([clean_path(), str(project)])  # the project is bound back, as the checkout is
     jail = sandbox.plan(alpha, 'hand-1', own, own / 'home', workspace, sys.executable, path, home=home)
     assert project in jail.read_only, 'the project is seen read-only inside, as the framework checkout is'
     assert office.is_dir() and not any(office.iterdir()), 'plan made the missing office folder, empty'
@@ -365,7 +372,7 @@ def test_the_forum_reviewer_writes_its_work_folder_and_nothing_else_of_its_ship(
     assert work == forum_folder / 'work'
     own = forum.runtime / 'seats' / seat.name
     (own / 'home').mkdir(parents=True)
-    jail = sandbox.plan(forum, seat.name, own, own / 'home', work, sys.executable, os.environ['PATH'], home=home)
+    jail = sandbox.plan(forum, seat.name, own, own / 'home', work, sys.executable, clean_path(), home=home)
     probe = '''
 import json, sys
 from pathlib import Path
