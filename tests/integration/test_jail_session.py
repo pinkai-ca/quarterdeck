@@ -106,7 +106,9 @@ def test_no_path_socket_outside_is_reachable_and_the_endpoint_still_answers(dryd
     operator_home = Path(pwd.getpwuid(os.getuid()).pw_dir)  # the real home, as a launch hides it, not the run's own HOME
     # A clean PATH: the interpreter's own folder and the system's, never a running ship's runtime from this shell.
     path = os.pathsep.join([str(Path(sys.executable).parent), '/usr/bin', '/bin'])
-    jail = sandbox.plan(ship, 'worker-1', own, own / 'home', workspace, sys.executable, path, home=operator_home)
+    base = endpoint.rsplit('/v1/', 1)[0] + '/v1'  # the seat's declared endpoint, relayed into the jail's own network
+    jail = sandbox.plan(ship, 'worker-1', own, own / 'home', workspace, sys.executable, path, home=operator_home,
+                        endpoint=base)
     outside = listening()
     paths = [item['address'] for item in outside if not item['address'].startswith('@')]
     env = dict(os.environ, DBUS_SESSION_BUS_ADDRESS='unix:path=/run/user/%d/bus' % os.getuid(), DISPLAY=':0',
