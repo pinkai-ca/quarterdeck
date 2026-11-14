@@ -70,7 +70,7 @@ def test_the_command_hides_the_home_binds_the_workspace_writable_and_the_ship_re
     jail = sandbox.Jail(home=home, seat_home=runtime / "seats" / "w" / "home", seat_folder=runtime / "seats" / "w",
                         workspace=home / "dev" / "project", ship_folder=ship_folder, runtime=runtime,
                         read_only=(home / ".local" / "bin", home / ".opencode"),
-                        writable=(runtime / "post" / "drop" / "w", runtime / "check"))
+                        writable=(runtime / "post" / "drop" / "w", runtime / "check" / "w"))
     args = sandbox.command(jail, ["pi", "--model", "m"])
     assert args[:12] == ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--size", str(sandbox.TMP_BYTES), "--tmpfs", "/tmp"]
     assert args[12:14] == ["--tmpfs", str(home)], "the operator's home is an empty tmpfs before anything under it is bound back"
@@ -83,6 +83,7 @@ def test_the_command_hides_the_home_binds_the_workspace_writable_and_the_ship_re
     assert ship < post, "only the seat's drop folder is writable inside the read-only ship folder"
     binds = [args[i + 1] for i, arg in enumerate(args[:-1]) if arg == "--bind-try"]
     assert str(runtime / "post" / "drop" / "w") in binds and str(runtime / "post") not in binds
+    assert str(runtime / "check" / "w") in binds and str(runtime / "check") not in binds
     hidden = text.index(f"--perms 0700 --tmpfs {runtime / 'tmux'}")
     assert ship < hidden, "the ship's own tmux server is hidden inside the read-only ship folder, by an empty private tmpfs"
     assert f"--ro-bind-try {home / '.local' / 'bin'} {home / '.local' / 'bin'}" in text and f"--ro-bind-try {home / '.opencode'} " in text

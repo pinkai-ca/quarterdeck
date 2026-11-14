@@ -66,7 +66,7 @@ class Jail:
     ship_folder: Path  # read-only, the other seats hidden
     runtime: Path
     read_only: tuple[Path, ...] = ()  # the program's own folders under the operator's home, bound back
-    writable: tuple[Path, ...] = ()  # the post store, and this seat's own check proof folder
+    writable: tuple[Path, ...] = ()  # this seat's own drop folder and its own check proof folder
     environment: tuple[tuple[str, str], ...] = ()  # set inside the jail: the git identity a commit from the seat carries
     declarations: tuple[Path, ...] = ()  # peer ship files only, under otherwise empty read-only folders
 

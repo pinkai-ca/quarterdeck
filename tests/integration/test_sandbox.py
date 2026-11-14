@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from quarterdeck import post, sandbox, seat as seatmod, ship as shipmod
+from quarterdeck import check, post, sandbox, seat as seatmod, ship as shipmod
 from quarterdeck.door import Door
 from quarterdeck.tmux import Tmux
 
@@ -193,7 +193,8 @@ values = dict(
     admission=write(post_dir / "admission" / "planted"),
     attempts=write(post_dir / "attempts" / "planted.json"),
     inbox=write(post_dir / "inbox" / "desk.md"),
-    check=write(check / "worker-1.txt", "qd-check"),
+    check=write(check / "worker-1" / "worker-1.txt", "qd-check"),
+    shared_check=write(check / "planted.txt"),
     good=copied,
     foreign=write(drop / (foreign + ".json"), message(foreign, "order", "captain", "FOREIGN")),
     mismatch=write(drop / (mismatch + ".json"), message(mismatch, "order", "worker-1", "MISMATCH")),
@@ -214,7 +215,7 @@ print(json.dumps(values))
         capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stderr
     values = json.loads(result.stdout)
-    refused = ("store_new", "store_edit", "store_replace", "other_drop", "admission", "attempts", "inbox")
+    refused = ("store_new", "store_edit", "store_replace", "other_drop", "admission", "attempts", "inbox", "shared_check")
     assert not any(values[name] for name in refused), values
     assert values["check"] and values["good"] and values["foreign"] and values["mismatch"]
     assert values["report"] and values["ack"] and values["link"]
@@ -225,7 +226,9 @@ print(json.dumps(values))
     assert store.is_open(victim) and store.closing_report(victim) is None
     assert store.claimed("desk", post.now()) is None
     assert outside.read_text() == "UNTOUCHED" and (drop / "linked.json").is_symlink()
-    assert (ship.runtime / "check" / "worker-1.txt").read_text() == "qd-check"
+    assert jail.writable == (drop, ship.runtime / "check" / "worker-1")
+    assert (ship.runtime / "check" / "worker-1" / "worker-1.txt").read_text() == "qd-check"
+    assert not (ship.runtime / "check" / "planted.txt").exists()
     assert ("drop/worker-1", "from names another seat") in fresh
     assert ("drop/worker-1", "not a regular file") in fresh
     assert (drop / f"{foreign}.json").is_file()
@@ -382,28 +385,36 @@ def test_another_seats_check_folder_is_not_writable_from_the_jail(tmp_path: Path
     kept = "other-seat-proof-kept"
     (other / "other.txt").write_text(kept)
     jail = sandbox.plan(ship, "worker", own, own / "home", workspace, "/usr/bin/python3", "/usr/bin", home=home)
-    assert jail.writable == (ship.runtime / "post", ship.runtime / "check" / "worker")
+    drop = ship.runtime / "post" / "drop" / "worker"
+    assert jail.writable == (drop, ship.runtime / "check" / "worker")
+    proof_file = sandbox.check_proof_file(ship.runtime, "worker")
+    assert proof_file == ship.runtime / "check" / "worker" / "worker.txt"
+    line = "qd-check-synthetic"
     probe = (
-        "import json, sys\nfrom pathlib import Path\nown, other = map(Path, sys.argv[1:])\n"
-        "def write(path):\n"
+        "import json, sys\nfrom pathlib import Path\nown, other, proof, line = sys.argv[1:]\n"
+        "own, other, proof = Path(own), Path(other), Path(proof)\n"
+        "def write(path, text='planted'):\n"
         "    try:\n"
         "        path.parent.mkdir(parents=True, exist_ok=True)\n"
-        "        path.write_text('planted')\n"
+        "        path.write_text(text)\n"
         "        return True\n"
         "    except OSError:\n"
         "        return False\n"
-        "print(json.dumps(dict(own=write(own / 'worker.txt'), other=write(other / 'other.txt'),"
-        " sibling=write(other.parent / 'planted.txt'))))\n")
+        "print(json.dumps(dict(own=write(own / 'scratch.txt'), other=write(other / 'other.txt'),"
+        " sibling=write(other.parent / 'planted.txt'), proof=write(proof, line + '\\n'))))\n")
     result = subprocess.run(sandbox.command(jail, ["/usr/bin/python3", "-c", probe,
-                                                   str(ship.runtime / "check" / "worker"), str(other)]),
+                                                   str(ship.runtime / "check" / "worker"), str(other),
+                                                   str(proof_file), line]),
                             capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stderr
     values = json.loads(result.stdout)
-    assert values == {"own": True, "other": False, "sibling": False}
+    assert values == {"own": True, "other": False, "sibling": False, "proof": True}
     assert (other / "other.txt").read_text() == kept
     assert kept not in result.stdout and kept not in result.stderr
-    assert (ship.runtime / "check" / "worker" / "worker.txt").read_text() == "planted"
+    assert (ship.runtime / "check" / "worker" / "scratch.txt").read_text() == "planted"
     assert not (ship.runtime / "check" / "planted.txt").exists()
+    # What qd check asks the jailed program to write, it reads back outside and finds matched.
+    assert check.proof_verdict(proof_file, line) == (True, "matched")
 
 
 def test_a_jailed_post_to_an_up_recipient_does_not_call_hidden_state_down(drydock: Path, tmux: Tmux, tmp_path: Path):
