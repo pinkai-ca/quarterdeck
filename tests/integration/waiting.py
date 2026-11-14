@@ -49,8 +49,12 @@ def await_drop(text: str, *, seconds: float = 15) -> str:
 
     def ready():
         try:
-            store.get(short)
+            message = store.get(short)
         except ShipError:
+            return None
+        # The drop is removed only after the store write, and a group's copies with it.
+        folder = runtime / "post" / "drop" / message.sender
+        if (folder / f"{message.id}.json").exists() or (folder / f"{message.id}.group.json").exists():
             return None
         return True
 
