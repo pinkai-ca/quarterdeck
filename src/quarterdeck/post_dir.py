@@ -11,6 +11,7 @@ the kind is the lstat and the open never follows.
 
 from __future__ import annotations
 
+import ctypes
 import errno
 import locale
 import os
@@ -154,16 +155,38 @@ def _open_parent(path, *, create):
     return _descend(root, directories, create=create), name
 
 
-def _read_nofollow(parent_fd, name, path):
-    """Bytes of one regular file in an already opened directory. A link is a hold."""
+def _rename_noreplace(source, destination, source_fd, destination_fd):
+    """renameat2 with RENAME_NOREPLACE. An existing name is left where it is."""
+    library = ctypes.CDLL(None, use_errno=True)
+    rename = getattr(library, 'renameat2', None)
+    if rename is None:
+        raise OSError(errno.ENOSYS, 'atomic no-clobber rename is unavailable')
+    rename.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+    rename.restype = ctypes.c_int
+    if rename(source_fd, os.fsencode(source), destination_fd, os.fsencode(destination), 1) != 0:
+        number = ctypes.get_errno()
+        raise OSError(number, os.strerror(number))
+
+
+def _read_nofollow(parent_fd, name, path, limit=None):
+    """Bytes of one regular file in an already opened directory. A link is a hold.
+
+    Anything that is not a regular file is refused from the lstat, before the open.
+    ``limit`` refuses a larger file before the open as well.
+    """
     try:
         info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
     except FileNotFoundError:
         raise
     if stat.S_ISLNK(info.st_mode):
         _link_held(path)
+    if not stat.S_ISREG(info.st_mode):
+        raise ShipError('post path is not a regular file')
+    if limit is not None and info.st_size > limit:
+        raise ShipError('post path exceeds its read limit')
     try:
-        descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent_fd)
+        descriptor = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC,
+                             dir_fd=parent_fd)
     except OSError as error:
         if error.errno == errno.ELOOP:
             _link_held(path)
@@ -172,8 +195,10 @@ def _read_nofollow(parent_fd, name, path):
         before = os.fstat(descriptor)
         if not stat.S_ISREG(before.st_mode):
             raise ShipError('post path is not a regular file')
+        if limit is not None and before.st_size > limit:
+            raise ShipError('post path exceeds its read limit')
         with os.fdopen(descriptor, 'rb', closefd=False) as stream:
-            data = stream.read()
+            data = stream.read() if limit is None else stream.read(limit)
         after = os.fstat(descriptor)
         current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
         stamp = lambda item: (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns, item.st_ctime_ns)
@@ -294,29 +319,36 @@ def directory_names(directory):
     return names
 
 
-def read_bytes(path) -> bytes:
+def read_bytes(path, limit: int | None = None) -> bytes:
+    """The file's bytes. ``limit`` refuses a larger regular file before reading it."""
     path = Path(path)
     if not under_post(path):
-        return path.read_bytes()
+        if limit is None:
+            return path.read_bytes()
+        with path.open('rb') as stream:
+            data = stream.read(limit + 1)
+        if len(data) > limit:
+            raise ShipError('post path exceeds its read limit')
+        return data
     parent, name = _open_parent(path, create=False)
     try:
-        return _read_nofollow(parent, name, path)
+        return _read_nofollow(parent, name, path, limit)
     finally:
         os.close(parent)
 
 
-def read_text(path, *, encoding: str | None = None) -> str:
+def read_text(path, *, encoding: str | None = None, limit: int | None = None) -> str:
     path = Path(path)
-    if not under_post(path):
+    if not under_post(path) and limit is None:
         return path.read_text() if encoding is None else path.read_text(encoding=encoding)
-    return read_bytes(path).decode(encoding or locale.getpreferredencoding(False))
+    return read_bytes(path, limit=limit).decode(encoding or locale.getpreferredencoding(False))
 
 
 def replace_bytes(path, data: bytes, *, sync: bool = True, mode: int = 0o666) -> None:
     """Put data at path through a random exclusive temporary in the held parent directory.
 
-    A link at the parent or at the final name is a hold. The final name is replaced
-    only when it is absent or a regular file, so a link is not removed.
+    A link at the parent, or at the final name when that name is looked up, is a
+    hold and is left in place. The temporary is then replaced onto the final name.
     """
     path = Path(path)
     if not under_post(path):
@@ -422,12 +454,16 @@ def remove(path) -> None:
 
 
 def rename(source, destination) -> None:
-    """Rename one real file to an absent name. A link at either name is a hold."""
+    """Rename one real file onto an absent name. A link at either name is a hold.
+
+    The rename itself refuses to replace an existing name.
+    """
     source, destination = Path(source), Path(destination)
     if not under_post(source) and not under_post(destination):
-        if destination.exists():
-            raise ShipError('post destination already exists; both names retained')
-        os.rename(source, destination)
+        try:
+            _rename_noreplace(source, destination, -100, -100)  # AT_FDCWD
+        except FileExistsError:
+            raise ShipError('post destination already exists; both names retained') from None
         return
     source_parent, source_name = _open_parent(source, create=False)
     try:
@@ -437,14 +473,15 @@ def rename(source, destination) -> None:
             if stat.S_ISLNK(info.st_mode):
                 _link_held(source)
             try:
-                dest_info = os.stat(dest_name, dir_fd=dest_parent, follow_symlinks=False)
-            except FileNotFoundError:
-                dest_info = None
-            if dest_info is not None:
-                if stat.S_ISLNK(dest_info.st_mode):
+                _rename_noreplace(source_name, dest_name, source_parent, dest_parent)
+            except FileExistsError:
+                try:
+                    dest_info = os.stat(dest_name, dir_fd=dest_parent, follow_symlinks=False)
+                except FileNotFoundError:
+                    dest_info = None
+                if dest_info is not None and stat.S_ISLNK(dest_info.st_mode):
                     _link_held(destination)
-                raise ShipError('post destination already exists; both names retained')
-            os.rename(source_name, dest_name, src_dir_fd=source_parent, dst_dir_fd=dest_parent)
+                raise ShipError('post destination already exists; both names retained') from None
         finally:
             os.close(dest_parent)
     finally:

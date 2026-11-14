@@ -9,10 +9,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import stat
+import threading
+from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import durable, pending, post, post_dir
+from quarterdeck import durable, pane_obstruction as pane_meta, pending, post, post_dir, ship as shipmod, watch
 from quarterdeck.ship import ShipError
 
 
@@ -207,3 +209,117 @@ def test_file_link_is_not_replaced(tmp_path):
         durable.replace_file(link, '{}\n')
     held(caught.value, link)
     assert snapshot(target) == before and link.is_symlink()
+
+
+def at_once(action):
+    """Run action. It must finish within two seconds; a blocked open fails the test."""
+    box = []
+
+    def run():
+        try:
+            box.append((None, action()))
+        except Exception as error:
+            box.append((error, None))
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(2)
+    assert not thread.is_alive()
+    error, value = box[0]
+    if error is not None:
+        raise error
+    return value
+
+
+def opened_names(monkeypatch, name):
+    seen = []
+    real_open = os.open
+
+    def counted(path, flags, *args, **kwargs):
+        if Path(os.fsdecode(path)).name == name:
+            seen.append(name)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, 'open', counted)
+    return seen
+
+
+def test_a_fifo_at_the_pending_marker_is_unread_without_opening(tmp_path, monkeypatch):
+    runtime = runtime_of(tmp_path)
+    directory = runtime / 'post' / 'pending' / 'captain'
+    directory.mkdir(parents=True)
+    marker = directory / pane_meta.NAME
+    os.mkfifo(marker)
+    seen = opened_names(monkeypatch, marker.name)
+    seat = SimpleNamespace(ship=SimpleNamespace(runtime=runtime), name='captain')
+    assert at_once(lambda: pane_meta.reading(seat)) is None
+    assert seen == [] and marker.is_fifo()
+
+
+def test_a_fifo_in_the_store_is_unread_and_a_real_message_remains(tmp_path, monkeypatch):
+    runtime = runtime_of(tmp_path)
+    message = post.Store(runtime).new('order', 'desk', 'captain', 'Ordinary body.')
+    fifo = runtime / 'post' / 'store' / 'fifo.json'
+    os.mkfifo(fifo)
+    seen = opened_names(monkeypatch, fifo.name)
+    found = at_once(lambda: post.Store(runtime).all())
+    assert [item.id for item in found] == [message.id]
+    assert seen == [] and fifo.is_fifo()
+    with pytest.raises(ShipError, match='post path is not a regular file'):
+        at_once(lambda: post_dir.read_bytes(fifo))
+
+
+def test_rename_refuses_an_existing_name_and_a_link(tmp_path):
+    runtime = runtime_of(tmp_path)
+    target = outside_of(tmp_path)
+    folder = runtime / 'post' / 'pending'
+    folder.mkdir()
+    source = folder / 'one.json'
+    source.write_text('one')
+    destination = folder / 'two.json'
+    destination.write_text('two')
+    with pytest.raises(ShipError, match='post destination already exists'):
+        post_dir.rename(source, destination)
+    assert source.read_text() == 'one' and destination.read_text() == 'two'
+    link = folder / 'link.json'
+    link.symlink_to(target / 'kept.txt')
+    before = (target / 'kept.txt').read_bytes()
+    with pytest.raises(ShipError) as caught:
+        post_dir.rename(source, link)
+    held(caught.value, link)
+    assert source.read_text() == 'one' and link.is_symlink() and (target / 'kept.txt').read_bytes() == before
+    source_link = folder / 'source.json'
+    source_link.symlink_to(target / 'kept.txt')
+    with pytest.raises(ShipError) as caught:
+        post_dir.rename(source_link, folder / 'fresh.json')
+    held(caught.value, source_link)
+    assert source_link.is_symlink() and not (folder / 'fresh.json').exists()
+
+
+def declared_ship(folder: Path):
+    (folder / 'ship.toml').write_text('[ship]\ncode="checkout"\nname="synthetic"\n')
+    ship = shipmod.load(folder)
+    ship.runtime.mkdir(parents=True)
+    (ship.runtime / 'post').mkdir()
+    return ship
+
+
+def test_a_store_link_is_named_on_the_status_line(tmp_path):
+    ship = declared_ship(tmp_path)
+    target = outside_of(tmp_path)
+    link = ship.runtime / 'post' / 'store'
+    link.symlink_to(target, target_is_directory=True)
+    line = watch.facts(ship, SimpleNamespace()).line()
+    assert f'{post_dir.LINK_HELD}{link}' in line
+
+
+def test_an_imports_link_is_named_on_the_status_line(tmp_path):
+    ship = declared_ship(tmp_path)
+    target = outside_of(tmp_path)
+    (ship.runtime / 'post' / 'store').mkdir()
+    link = ship.runtime / 'post' / 'imports'
+    link.symlink_to(target, target_is_directory=True)
+    message = post.Store(ship.runtime).new('order', 'desk', 'captain', 'Still listed.')
+    line = watch.facts(ship, SimpleNamespace()).line()
+    assert f'{post_dir.LINK_HELD}{link}' in line
+    assert post.Store(ship.runtime).get(message.id).body == 'Still listed.'

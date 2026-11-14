@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from . import accounting_health, acts, check_outcome, credential, idle, ledger, move_hold, server_recovery, pending as pending_delivery, post, program_use, providers, quota, record_owner, recovery, request_queue, servicectl as service
+from . import accounting_health, acts, check_outcome, credential, idle, ledger, move_hold, server_recovery, pending as pending_delivery, post, post_dir, program_use, providers, quota, record_owner, recovery, request_queue, servicectl as service
 from .door import Door, Reading
 from .harness.capabilities import selection_label
 from .harness import reading_scope
@@ -307,7 +307,7 @@ def service_state(runtime: Path) -> str:
 @reading_scope.reading_pass()
 @record_owner.reader_pass()
 def status_reading(ship: Ship, tmux: Tmux) -> dict:
-    store = post.Store(ship.runtime)
+    store, post_held = _post_listing(ship, post.Store(ship.runtime))
     requests = request_queue.pending(ship.runtime)
     selected = seats(ship, tmux, False)
     programs, program_error = program_use.collect(ship, selected)
@@ -316,7 +316,7 @@ def status_reading(ship: Ship, tmux: Tmux) -> dict:
             "programs": programs, "programs_error": program_error,
             "check_outcomes": outcomes[0], "check_outcome_errors": outcomes[1],
             "open_orders": [m for m in store.all() if m.kind == "order" and store.is_open(m)],
-            "requests": requests, "facts": facts(ship, tmux, check_reading=outcomes),
+            "requests": requests, "facts": facts(ship, tmux, store=store, post_held=post_held, check_reading=outcomes),
             "usage": headline_readings(ship), **providers.identities(ship)}
     try:
         book = ledger.Ledger.reading(ship.runtime / 'ledger.sqlite')
@@ -523,6 +523,7 @@ class Facts:
     check_unknown: list[str] = field(default_factory=list)
     model_mismatches: list[str] = field(default_factory=list)
     pane_obstructions: list[str] = field(default_factory=list)  # preserve named geometry diagnostics on overflow
+    post_held: list[str] = field(default_factory=list)  # a link that stops the store or imports, by path
 
     def line(self) -> str:  # law: nothing-waits-silently
         parts = ["SERVICE DOWN" if self.service == "down" else f"service {self.service}"]
@@ -544,6 +545,7 @@ class Facts:
         parts += self.turn_errors
         parts += self.sign_in_failures
         parts += self.pane_obstructions
+        parts += self.post_held
         parts += self.group_held
         parts += self.cascade_held
         parts += self.structure_waiting
@@ -719,12 +721,85 @@ def limit_state(ship: Ship, selected: list[Seat | UnresolvedSeat]):
         return [], ["held seats unknown; ledger unreadable"], []
 
 
+class _HeldStore:
+    """No messages, once a link hold has already stopped the real listing."""
+
+    def __init__(self, store):
+        self.dir = store.dir
+
+    def all(self):
+        return []
+
+    def for_seat(self, seat):
+        return []
+
+    def open_for(self, seat):
+        return []
+
+    def replies(self, message):
+        return []
+
+    def is_open(self, message):
+        return False
+
+    def claimed(self, seat, before):
+        return None
+
+    def get(self, ref):
+        raise ShipError(f'no message {ref!r} in {self.dir}')
+
+    def closing(self, message):
+        return message
+
+    def closing_report(self, order):
+        return None
+
+
+def _imports_hold(runtime) -> str | None:
+    """A link at imports/, named, or None when that directory is absent or real."""
+    import os
+    try:
+        descriptor = post_dir.open_directory(runtime / 'post' / 'imports', create=False)
+    except FileNotFoundError:
+        return None
+    except ShipError as error:
+        text = str(error)
+        return text if text.startswith(post_dir.LINK_HELD) else None
+    except OSError:
+        return None
+    os.close(descriptor)
+    return None
+
+
+def _post_listing(ship, store):
+    """The store listing, and every link hold that stopped it or imports/."""
+    holds = []
+    try:
+        store.all()
+    except ShipError as error:
+        text = str(error)
+        if not text.startswith(post_dir.LINK_HELD):
+            raise
+        holds.append(text)
+        store = _HeldStore(store)
+    extra = _imports_hold(ship.runtime)
+    if extra and extra not in holds:
+        holds.append(extra)
+    return store, holds
+
+
 @post.reading_pass()
 @reading_scope.reading_pass()
 def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tuple[str, str]] | None = None,
-          *, store=None, attempts=None, request_rows: list[dict] | None = None, check_reading=None) -> Facts:
+          *, store=None, attempts=None, request_rows: list[dict] | None = None, check_reading=None,
+          post_held=None) -> Facts:
     """Everything the status line says; cheap enough for tmux to ask every few seconds."""
     store = post.Store(ship.runtime) if store is None else store
+    if post_held is None:
+        if isinstance(store, post.Store):
+            store, post_held = _post_listing(ship, store)
+        else:
+            post_held = []
     attempts = post.Attempts(ship.runtime) if attempts is None else attempts
     records = attempts.all()
     latest = attempts.latest(attempts=records)
@@ -830,6 +905,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         turn_errors=turn_errors,
         sign_in_failures=sign_in_failures,
         pane_obstructions=pane_obstructions,
+        post_held=list(post_held),
         group_held=group_post.holds(ship.runtime),
         cascade_held=cascade_runtime.holds(ship.runtime),
         structure_waiting=structure_outcome.waits(ship, selected),

@@ -240,8 +240,16 @@ class Store:
             if (self._cache is None or self._cache[0] != stamp or cached_at is None
                     or not cached_at <= started <= checked):
                 paths = post_dir.json_paths(self.dir)
-                messages = sorted((Message.from_json(post_dir.read_text(p)) for p in paths),
-                                  key=lambda m: (m.at, m.id))
+                messages = []
+                for path in paths:
+                    try:
+                        text = post_dir.read_text(path)
+                    except ShipError as error:
+                        if str(error) == 'post path is not a regular file':
+                            continue  # unread; a special file is not a message
+                        raise
+                    messages.append(Message.from_json(text))
+                messages.sort(key=lambda m: (m.at, m.id))
                 replies: dict[str, list[Message]] = {}
                 for message in messages:
                     if message.re:

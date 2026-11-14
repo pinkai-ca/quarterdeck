@@ -34,8 +34,10 @@ def _read(path: Path, limit: int | None = None):
         except (OSError, ValueError, UnicodeError, RecursionError):
             return None
     try:
-        raw = post_dir.read_bytes(path)
-    except ShipError:
+        raw = post_dir.read_bytes(path, limit=limit)
+    except ShipError as error:
+        if str(error) in ('post path is not a regular file', 'post path exceeds its read limit'):
+            return None
         raise
     except (OSError, RecursionError):
         return None
