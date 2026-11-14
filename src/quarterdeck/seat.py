@@ -123,8 +123,9 @@ def program_path() -> str:
 def prepare_program_path(ship: Ship, *, bin_dir: Path | None = None, synthetic: bool = False) -> str:
     """Publish only the framework commands in a ship-owned PATH folder, before launching."""
     source = bin_dir or qd_bin()
-    from .sandbox import ship_runtime_of
-    elsewhere = ship_runtime_of(source.resolve())
+    # No import here: during an upgrade this runs while another copy's modules may be the ones on disk.
+    elsewhere = next((folder for folder in (source.resolve(), *source.resolve().parents)
+                      if folder.name == 'runtime' and (folder.parent / 'ship.toml').is_file()), None)
     own = ship.runtime / 'venv' / 'bin'
     if (elsewhere is not None and elsewhere.resolve() != ship.runtime.resolve()
             and (own / 'qd').is_file() and os.access(own / 'qd', os.X_OK)):
