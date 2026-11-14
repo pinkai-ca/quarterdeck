@@ -153,7 +153,7 @@ def source_repo(ship: Ship | None = None) -> Path:
     if framework(executing):
         return executing
     # A project's office is at its top, while crews are under ships/.
-    parent = (ship.folder.parent if ship is not None and ship.kind == 'office'
+    parent = (ship.folder.parent if ship is not None and getattr(ship, 'kind', 'crew') == 'office'
               else ship.folder.parent.parent if ship is not None else None)
     candidates = {parent.resolve()} if parent is not None and framework(parent) else set()
     if len(candidates) == 1:
