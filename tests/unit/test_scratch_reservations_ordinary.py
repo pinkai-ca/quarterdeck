@@ -129,3 +129,17 @@ def test_each_sampler_measures_its_own_run(capacity):
     assert [monitor.peak['files'] for monitor in monitors] == [1, 1]
     assert monitors[0].peak['file_bytes'] < monitors[1].peak['file_bytes']
     assert all(monitor.bound == scratch.BOUND for monitor in monitors)
+
+
+def test_capacity_fallback_leaves_unused_candidate_bases_empty(capacity, monkeypatch):
+    root, free = capacity
+    first = new_run_id()
+    assert scratch.prepare(root, first)['kind'] == 'tmpfs'
+    bases = [root.project.parent / name for name in ('another-memory-base', 'last-memory-base')]
+    for base in bases:
+        base.mkdir()
+    monkeypatch.setattr(scratch, 'candidates', lambda: bases)
+    free.bytes = scratch.BOUND + scratch.MARGIN
+    assert scratch.prepare(root, new_run_id())['kind'] == 'disk'
+    assert all(list(base.iterdir()) == [] for base in bases)
+    assert scratch.pending(root) == [first]

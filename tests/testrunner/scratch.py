@@ -223,12 +223,17 @@ def prepare(root, run):
             raise Refused(f'run {run}: already has a memory reservation; retained')
         # Selection, the fresh free-space check, and publishing the promise share this lock.
         for base, kind in choices(BOUND + MARGIN):
-            where, fd = memory_root(root.project, base)
+            # Capacity fallback must not create an unused project root in this candidate.
+            base_fd = os.open(base, DIRECTORY)
             try:
-                space = os.fstatvfs(fd)
-                promised = reserved(root, os.fstat(fd).st_dev)
+                space = os.fstatvfs(base_fd)
+                promised = reserved(root, os.fstat(base_fd).st_dev)
                 if space.f_bavail * space.f_frsize < BOUND + MARGIN + promised:
                     continue
+            finally:
+                os.close(base_fd)
+            where, fd = memory_root(root.project, base)
+            try:
                 from . import procs
                 data = {'run': run, 'base': str(base), 'root': where.name,
                         'identity': identity(os.fstat(fd)), 'kind': kind,
