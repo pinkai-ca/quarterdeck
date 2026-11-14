@@ -20,6 +20,20 @@ ships. A desk role in a human session means the office still lives in that ship:
 both commands name it and refuse, without writing or starting a second office.
 Moving that office is the person's step after forwarding has been proven.
 
+`raise_ship.py` owns `qd raise <kind> <name>` for default, forum, cascade and
+shuttle. It reads the office's pool declarations, renders and validates the complete
+template proposal, and hashes all files and the destination. Pool mapping names
+declaration references only; no credential is read or copied. A new desk proposal
+records a request and returns its summary and a person-shell approval command.
+Only the person can answer; a crew seat cannot raise a ship. Requests and successive
+exact yes/no answers live under `office/runtime/raise/<name>/`, serialized by a
+per-name lock. The desk may reuse the latest exact yes. A changed proposal asks
+again. A matching ship resumes without edits; no existing ship is overwritten.
+Creation commits only the selected template files and runtime ignore in the new
+ship's own repository, then uses ordinary up to start its crew and service. A failed
+launch retains the declaration and consent. The folder name is the fleet address;
+fleet discovery needs no registration write or second configuration.
+
 `qd setup` asks, in order, what the crew calls the person (Admiral), ship name,
 office (Office), workspace, then desk, captain and engineering: display name,
 harness, model and effort. Suggestions come from the default template and adapter

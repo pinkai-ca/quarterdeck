@@ -63,6 +63,7 @@ quarterdeck/                       the project folder: the framework repository
   src/quarterdeck/
     cli.py         the qd command
     setup.py       office initialization and guided crew creation/reruns, with replaceable machine and live-operation seams
+    raise_ship.py  exact template proposals, person-shell approval records in the office runtime, and crew creation/launch
     setup_answers.py   one flags/file/terminal answer model, edits and explicit acceptance
     setup_proposal.py  read-only setup proposals and their shared text/JSON summary
     ship.py        ship.toml -> Ship: crew/office kind, sessions, seats, roles, pools, optional groups and cascade; the line editor; the fence

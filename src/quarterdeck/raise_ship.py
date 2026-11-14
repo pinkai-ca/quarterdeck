@@ -66,7 +66,8 @@ class Proposal:
 
 def proposal(args: argparse.Namespace, office: ships.Ship) -> Proposal:
     """Read and validate a complete template and pool references, without writes."""
-    if args.kind not in KINDS or not ships.valid_name(args.name) or args.name in ships.TEMPLATES:
+    if (args.kind not in KINDS or not ships.valid_name(args.name)
+            or "@" in args.name or args.name in ships.TEMPLATES):
         raise ShipError("choose default, forum, cascade or shuttle and a new non-template ship folder name")
     folder = office.folder.parent / "ships" / args.name
     if folder.parent.is_symlink() or folder.is_symlink():

@@ -26,7 +26,21 @@ If an existing project ship already declares a desk in a human session, init and
 
 To open the desk, run `.venv/bin/qd --ship office attach`. Tell the desk what you want to work on. Declaring further office seats is your choice: add them to `office/ship.toml` with a role such as counsel or communications and a session with `human = true`, then bring each up by name. Rerunning init starts only the desk, even if other declared seats are marked up.
 
-`qd setup` remains the crew wizard. When no office exists, its first step runs init and returns with the desk ready; a later setup keeps the wizard for a project crew. The desk's command for raising a project ship is a separate part of the fleet work; this change does not provide that command.
+`qd setup` remains the crew wizard. When no office exists, its first step runs init and returns with the desk ready; a later setup keeps the wizard for a project crew.
+
+## Ask the desk for a project ship
+
+The desk selects a kind (`default`, `forum`, `cascade` or `shuttle`) and the office pools it will use, then runs `qd raise`. Declare those pools in `office/ship.toml` first. A template pool can use an office pool of the same name, or be mapped explicitly:
+
+```sh
+qd raise shuttle mission --pool anthropic=claude --pool openai=codex --workspace /path/to/project
+```
+
+The command shows the complete declaration and the files to copy. A new proposal from the desk stays pending and starts nothing; it prints the command for you to approve or decline in your own shell, where `QD_SEAT` is absent. Use that command with `--accept yes` or `--accept no`. From your shell, `qd raise` can also ask directly. The exact answer is kept in the office's ignored runtime. Only the office desk or you can raise a ship; a crew seat cannot answer for you or raise one itself.
+
+An approved proposal copies the complete template to `ships/mission`, creates its own git repository, commits its declaration, orders and cards, and brings up its declared crew and service. Its folder name, `mission`, is its fleet address. Discovery reads that declaration; raising adds no routing configuration or separate fleet list. Without `--workspace`, the crew works in the Quarterdeck project folder. `--model SEAT=MODEL` replaces a template's example model; the cascade and forum examples require this for their placeholder models. Pool mapping copies declaration references, never credentials; key pools use `env:NAME` references.
+
+The desk can reuse an exact approved proposal. Repeating it resumes the matching ship without edits or a second set of panes. If the template, selected pools or other declaration details change, a new proposal needs your answer. Raise never overwrites an existing ship: retain a differing ship and choose a new name. If launch fails, its committed declaration and your answer remain for a retry after the underlying program or sign-in is ready. The new office command does not move any existing office.
 
 ## A project ship of your own
 
