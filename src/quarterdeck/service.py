@@ -432,6 +432,16 @@ class Service:
             return False  # an unresolved or unconfirmed launch is not a seat that can take the alarm
 
     def deliver(self, seat: Seat, messages: list[post.Message], resend: bool = False) -> str:
+        from . import lifecycle
+
+        try:
+            with lifecycle.claim(self.runtime, seat.name):
+                return self._deliver_claimed(seat, messages, resend)
+        except lifecycle.Busy as error:
+            return str(error)
+
+    def _deliver_claimed(self, seat: Seat, messages: list[post.Message], resend: bool = False) -> str:
+        """One seat's batch, with its existing lifecycle claim already held."""
         if resend:
             from . import paste_refusal
             door = Door(seat)
@@ -445,15 +455,25 @@ class Service:
         ordered = sorted(messages, key=lambda message: latest.get(message.id) == "withheld")
         lines = []
         for message in ordered:
-            lines.append(self._deliver(seat, message, resend))
+            lines.append(self._deliver_current(seat, message, resend))
             reading = Door(seat).reading()
             if not reading.open and reading.clears != "dismissable":
                 break  # an occupied or uncertain door holds every remaining item
         return "\n".join(lines)
 
-    @shutdown.transaction
     def _deliver(self, seat: Seat, message: post.Message, resend: bool = False) -> str:
         """One isolated transport, journaled before typing."""
+        from . import lifecycle
+
+        try:
+            with lifecycle.claim(self.runtime, seat.name):
+                return self._deliver_current(seat, message, resend)
+        except lifecycle.Busy as error:
+            return str(error)
+
+    @shutdown.transaction
+    def _deliver_current(self, seat: Seat, message: post.Message, resend: bool = False) -> str:
+        """The caller owns the same seat claim as every lifecycle transition."""
         door = Door(seat)
         speed = message.speed
         reading = door.reading()
@@ -465,10 +485,16 @@ class Service:
             reserved, transitioning = compaction.withheld(self.runtime, seat.name)
             if transitioning or message.id in reserved:
                 return f"{seat.name}: compaction handoff/transition reserved; held for successor"
-            launched = seat.launched()
-            attempt = self.attempts.open(message, seat.name, launched.pane, launched.pid, launched.at)
+            bound = pending_delivery.current_identity(seat)
+            if bound is None:
+                return f'{seat.name}: current pane/process/launch unproved; message waits unread'
+            attempt = self.attempts.open(message, seat.name, bound['pane'], bound['pid'], bound['launch'])
             text = post.typed([message], second=(message.id,) if resend else ())  # a resend says it is one
-            proof = pending_delivery.Proof.begin(seat, attempt, text, before_paste=True)
+            try:
+                proof = pending_delivery.Proof.begin(seat, attempt, text, before_paste=True)
+            except pending_delivery.NoCurrentLaunch as error:
+                self.attempts.close(attempt, 'withheld', 'launch ended before reservation; no input typed')
+                return str(error)
         delivery = door.deliver(text, speed, proof=proof)
         if proof:
             proof.finish(delivery.result)

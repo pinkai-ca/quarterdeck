@@ -24,6 +24,7 @@ from . import input_receipt
 from .harness import closed_record
 from .harness.json_record import RecordError
 from .harness.types import Screen
+from .ship import ShipError
 
 if TYPE_CHECKING:
     from .door import Door
@@ -45,6 +46,26 @@ def identity(seat: Seat) -> dict[str, str | int | None]:
     launch, pane = seat.launched(), seat.pane()
     return {"pane": pane.id if pane else None, "pid": pane.pid if pane else None,
             "launch": launch.at if launch else None, "harness": seat.harness.name}
+
+
+class NoCurrentLaunch(ShipError):
+    """No complete current identity exists to reserve a paste against."""
+
+
+def current_identity(seat: Seat) -> dict[str, str | int] | None:
+    """A complete snapshot from Seat.pane's existing owned-pane view."""
+    launch = seat.launched()
+    bound = identity(seat)
+    try:
+        if (launch is None or not isinstance(bound['pane'], str) or not bound['pane']
+                or type(bound['pid']) is not int or bound['pid'] <= 0
+                or not isinstance(bound['launch'], str)
+                or datetime.fromisoformat(bound['launch']).tzinfo is None
+                or seat.launched() != launch):
+            return None
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return bound
 
 
 def inspection(seat: Seat, reason: str, attempts: Sequence[str] = ()) -> str:
@@ -89,15 +110,22 @@ class Proof:
 
     @classmethod
     def begin(cls, seat: Seat, attempt: post.Attempt, text: str, *, before_paste: bool = False) -> Proof:
+        bound = current_identity(seat)
+        if (bound is None or attempt.seat != seat.name
+                or (attempt.pane, attempt.pid, attempt.launched_at)
+                != (bound['pane'], bound['pid'], bound['launch'])):
+            raise NoCurrentLaunch(f'{seat.name}: current pane/process/launch unproved; no delivery journal opened')
         path = seat.ship.runtime / "post" / "pending" / seat.name / attempt.path.name
         record = seat.record()
+        if current_identity(seat) != bound:
+            raise NoCurrentLaunch(f'{seat.name}: launch changed before reservation; no delivery journal opened')
         proof = cls(path, {})
         original = min(a.at for a in post.Attempts(seat.ship.runtime).for_message(attempt.message))
         from .shutdown import BEFORE_PASTE, prepare, prepared
         boundary = {"paste_boundary": BEFORE_PASTE} if before_paste else {}
         if before_paste:
             boundary.update(prepare(proof))
-        proof.save(seat=seat.name, identity=identity(seat), at=original,
+        proof.save(seat=seat.name, identity=bound, at=original,
                    since=post.now().isoformat(), payload=text, phase="prepared",
                    record=str(record) if record else None, shown=None,
                    attempts=[attempt.path.name], **boundary)
@@ -456,53 +484,74 @@ def reconcile(service: Service) -> set[Path]:
             service.hold_selection(error)
             paths.update(a.path for a in attempts.values() if a.seat == name)
             continue  # neither uncertainty nor receipt evidence is changed under a guessed selection
-        proofs, errors = journals(seat)
-        if errors:
-            # Attempts without journals cannot reconstruct this seat's unreadable evidence.
-            # Other intact journals (including this seat's) still get their receipts.
+        from . import lifecycle
+        try:
+            with lifecycle.claim(service.runtime, name):
+                paths.update(_reconcile_claimed(service, seat, attempts))
+        except lifecycle.Busy:
             paths.update(a.path for a in attempts.values() if a.seat == name)
-            service.log("error", step="reconcile", seat=name, error=inspection(seat, "pending journal unreadable; never resent"), files=errors)
-        for proof in proofs:
-            if any(n not in attempts for n in proof.data["attempts"]):
-                paths.update(a.path for a in attempts.values() if a.seat == name)
-                service.log("error", step="reconcile", seat=name, error=inspection(seat, "pending attempt receipt missing; never resent", proof.data["attempts"]))
-                continue
-            from .receipt_refresh import recover, unfinished
-            if unfinished(proof.data):
-                paths.update(attempts[n].path for n in proof.data['attempts'])
-                recover(service, proof)
-                continue  # unfinished positive intents never enter transport/absence recovery
-            from .shutdown import confined, never_pasted
-            if never_pasted(proof.data) and confined(service.runtime, proof.path):
-                proof.save(phase="cancelled", resolution="attested prepared reservation; no paste began; eligible for ordinary delivery")
-            phase = proof.data["phase"]
-            carried = [attempts[n] for n in proof.data["attempts"]]
-            if phase not in TERMINAL and all(any(a.message == old.message and a.seat == old.seat
-                    and a.result == "launch" and a.launched_at != old.launched_at and a.when >= old.when
-                    for a in attempts.values()) for old in carried):
-                proof.save(phase="carried", resolution="carried by a later explicit launch; old submission unconfirmed")
-                phase = "carried"
-            result = "delivered" if phase == "delivered" else None
-            if phase not in TERMINAL:
-                result = proof.confirmed(seat)
-                if (not result and not any(a.result in ("delivered", "launch", "watch", *post.UNSETTLED) for a in carried)
-                        and closed_record.not_in_closed_record(seat, proof)):
-                    proof.save(phase=closed_record.PHASE, resolution=closed_record.DETAIL)
-                    phase = closed_record.PHASE
-            if result:
-                proof.finish(result)
-            for filename in proof.data["attempts"]:
-                attempt = attempts[filename]
-                paths.add(attempt.path)
-                if phase == closed_record.PHASE:
-                    if attempt.result != closed_record.PHASE:
-                        service.attempts.close(attempt, closed_record.PHASE, closed_record.DETAIL)
-                elif result and attempt.result != result:
-                    service.attempts.close(attempt, result, "exact payload found in owned record after paste")
-                elif attempt.result is None:
-                    recovered = {"submitted": "pending", "queued": "queued", "cancelled": "withheld", "withheld":"withheld", "abandoned": "abandoned",
-                                 "unacted": "unacted", "uncertain": "uncertain"}.get(proof.data["phase"], "blind")
-                    service.attempts.close(attempt, recovered, "recovered durable paste/submit phase; never resent")
+        except (OSError, ShipError) as error:
+            paths.update(a.path for a in attempts.values() if a.seat == name)
+            service.log('error', step='reconcile', seat=name, error=str(error))
+    return paths
+
+
+def _reconcile_claimed(service: Service, seat: Seat, attempts: dict[str, post.Attempt]) -> set[Path]:
+    """One seat's journal work; the lifecycle claim excludes retirement writers."""
+    name, paths = seat.name, set()
+    proofs, errors = journals(seat)
+    if errors:
+        from .pending_lifecycle import retire_missing_identity
+        retired = retire_missing_identity(service.runtime, name, errors, attempts)
+        for updated in retired.values():
+            attempts.update((a.path.name, a) for a in updated)
+        errors = [filename for filename in errors if filename not in retired]
+    if errors:
+        # Attempts without journals cannot reconstruct this seat's unreadable evidence.
+        # Other intact journals (including this seat's) still get their receipts.
+        paths.update(a.path for a in attempts.values() if a.seat == name)
+        service.log("error", step="reconcile", seat=name, error=inspection(seat, "pending journal unreadable; never resent"), files=errors)
+    for proof in proofs:
+        if any(n not in attempts for n in proof.data["attempts"]):
+            paths.update(a.path for a in attempts.values() if a.seat == name)
+            service.log("error", step="reconcile", seat=name, error=inspection(seat, "pending attempt receipt missing; never resent", proof.data["attempts"]))
+            continue
+        from .receipt_refresh import recover, unfinished
+        if unfinished(proof.data):
+            paths.update(attempts[n].path for n in proof.data['attempts'])
+            recover(service, proof)
+            continue  # unfinished positive intents never enter transport/absence recovery
+        from .shutdown import confined, never_pasted
+        if never_pasted(proof.data) and confined(service.runtime, proof.path):
+            proof.save(phase="cancelled", resolution="attested prepared reservation; no paste began; eligible for ordinary delivery")
+        phase = proof.data["phase"]
+        carried = [attempts[n] for n in proof.data["attempts"]]
+        if phase not in TERMINAL and all(any(a.message == old.message and a.seat == old.seat
+                and a.result == "launch" and a.launched_at != old.launched_at and a.when >= old.when
+                for a in attempts.values()) for old in carried):
+            proof.save(phase="carried", resolution="carried by a later explicit launch; old submission unconfirmed")
+            phase = "carried"
+        result = "delivered" if phase == "delivered" else None
+        if phase not in TERMINAL:
+            result = proof.confirmed(seat)
+            if (not result and not any(a.result in ("delivered", "launch", "watch", *post.UNSETTLED) for a in carried)
+                    and closed_record.not_in_closed_record(seat, proof)):
+                proof.save(phase=closed_record.PHASE, resolution=closed_record.DETAIL)
+                phase = closed_record.PHASE
+        if result:
+            proof.finish(result)
+        for filename in proof.data["attempts"]:
+            attempt = attempts[filename]
+            paths.add(attempt.path)
+            if phase == closed_record.PHASE:
+                if attempt.result != closed_record.PHASE:
+                    service.attempts.close(attempt, closed_record.PHASE, closed_record.DETAIL)
+            elif result and attempt.result != result:
+                service.attempts.close(attempt, result, "exact payload found in owned record after paste")
+            elif attempt.result is None:
+                recovered = {"submitted": "pending", "queued": "queued", "cancelled": "withheld", "withheld":"withheld", "abandoned": "abandoned",
+                             "unacted": "unacted", "uncertain": "uncertain"}.get(proof.data["phase"], "blind")
+                service.attempts.close(attempt, recovered, "recovered durable paste/submit phase; never resent")
     return paths
 
 
@@ -617,6 +666,16 @@ def _looked_before(seat: Seat, message: post.Message, attempts: Sequence[post.At
 
 
 def one_look(service: Service, seat: Seat, attempts: Sequence[post.Attempt] | None = None) -> list[str]:
+    from . import lifecycle
+
+    try:
+        with lifecycle.claim(seat.ship.runtime, seat.name):
+            return _one_look_claimed(service, seat, attempts)
+    except lifecycle.Busy:
+        return []
+
+
+def _one_look_claimed(service: Service, seat: Seat, attempts: Sequence[post.Attempt] | None = None) -> list[str]:
     """Look once at the seat's deliveries the door could not confirm, from the attempts the pass holds."""
     from . import idle
     from .door import Door
@@ -669,7 +728,7 @@ def one_look(service: Service, seat: Seat, attempts: Sequence[post.Attempt] | No
                        phase="cancelled", resolution=RETYPED)
             for name in data["attempts"]:
                 service.attempts.close(known[name], "blind", RETYPED)
-            proof_line = service.deliver(seat, [message], resend=True)
+            proof_line = service._deliver_claimed(seat, [message], resend=True)
             # The second delivery's journal is named by its new attempt: only this message's journals are listed.
             folder = seat.ship.runtime / "post" / "pending" / seat.name
             for path in sorted(folder.glob(f"{message.id}-*.json")):
@@ -707,6 +766,16 @@ def _submit_candidate(door: Door, screen: Screen | None, pane: Pane | None,
 
 
 def submit(service: Service, seat: Seat) -> str:
+    from . import lifecycle
+
+    try:
+        with lifecycle.claim(seat.ship.runtime, seat.name):
+            return _submit_claimed(service, seat)
+    except lifecycle.Busy as error:
+        return str(error)
+
+
+def _submit_claimed(service: Service, seat: Seat) -> str:
     """qd submit: Enter on the box only when it holds exactly one of the seat's pending messages."""
     from .door import Door
     if seat.session.human:

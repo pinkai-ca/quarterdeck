@@ -612,6 +612,20 @@ Legacy preparation, recovery reservations and every ambiguous paste/submission r
 
 The footer reads `qd --json ledger` and `qd --json status` in a detached background process, through the ordinary qd entry point and installed-copy selection. It makes no provider request itself. Its disposable `runtime/statusline/readings.json` keeps only window display facts, pool kinds and seat-to-pool names; a process-held lock serializes renewal. Ledger attempts are throttled to thirty seconds and seat-pool attempts to two minutes, including failures. A failed renewal retains the last measurement and labels it last known. A missing ship or ledger reading is named, and an unread window is unknown, never zero. Every declared subscription gets a cell; endpoint and key pools do not. The largest measured blocking window leads its bar, with provider wall evidence taking precedence; if none blocks, the largest measured window leads. Names, groups, reset and freshness come from ledger windows without model-family or provider-name rules. Unread sibling windows remain visible as `+ unknown`. The line sheds decoration and wraps all subscriptions at narrow widths, and uses Claude's `COLUMNS` environment for terminal width.
 
+Ordinary delivery and a seat's lifecycle share one nonblocking claim for that seat. Its delivery batch,
+receipt reconciliation, one look and explicit submit hold the claim only for that seat's work; another
+seat's delivery cannot delay its relaunch. A paste reservation requires a complete matching pane, process
+and launch. A missing or changed binding leaves the message unread, without a delivery journal.
+
+Before retirement discards a launch, its unresolved ordinary journals retain that launch's existing
+one-record join. The final join is checked again after the program ends. An exact positive receipt in
+that record settles the journal; ordinary reconciliation finishes its attempts. Neither a new launch
+nor a different record supplies missing historical evidence. The service separately retires intact
+ordinary legacy journals whose only defect is null identity fields: the original bytes stay in a
+`retired` subfolder, unresolved matching attempts become unknown and never resent, and one durable
+service-log entry records the retirement. Separately owned recovery, receipt-refresh and paste-cleanup
+evidence and malformed journals remain held. Readers and strict journal validation do not repair them.
+
 ## 7. Post
 
 Saving a delivery proof compares its newly merged, serialized JSON against the
@@ -1132,8 +1146,10 @@ quarterdeck/                       the project folder: the framework repository
     tmux.py        the only module that runs tmux
     tmux_socket.py   private endpoint ownership and namespace locking; no native command execution
     seat.py        seat identity, lifecycle and controls: up, down, restart, fresh, stop, set
+    lifecycle.py   shared seat-transition claim for lifecycle and ordinary delivery
     door.py        the one typing path: clear, type, check, submit, confirm; three speeds; the wall it reads
     pending.py delivery_record.py   durable paste evidence and historical receipts
+    pending_lifecycle.py   service-only null-identity retirement and exact old-launch record links
     pane_obstruction.py   one bounded short-pane reason marker and its named journal, with writer-owned expiry
     receipt_refresh.py   service-owned framework-revision receipt-refresh progress
     human_wake.py  one fixed human-seat wake per watch episode, using Door and the existing Proof/receipt

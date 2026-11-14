@@ -486,6 +486,31 @@ class Attempts:
             self._write(replace(current, result=result, detail=detail))
             return True
 
+    def settle_missing_identity(self, expected: list[Attempt], detail: str) -> list[Attempt] | None:
+        """Retire only matching legacy uncertainty; another verdict is never overwritten."""
+        unresolved = {None, 'pending', 'blind', 'typed', 'queued', 'withheld', 'cancelled'}
+        terminal = {'delivered', 'watch', 'launch', 'abandoned', 'not-in-closed-record', *UNSETTLED}
+        with self._locked():
+            updated, writes = [], []
+            for original in expected:
+                if original.path.parent != self.dir:
+                    return None
+                current = Attempt(**json.loads(original.path.read_text()), path=original.path)
+                if (current.message, current.seat, current.at, current.pane, current.pid, current.launched_at) != (
+                        original.message, original.seat, original.at, original.pane, original.pid, original.launched_at):
+                    return None
+                if current.result in terminal:
+                    updated.append(current)
+                elif current == original and current.result in unresolved:
+                    target = replace(current, result='abandoned', detail=detail)
+                    updated.append(target)
+                    writes.append(target)
+                else:
+                    return None
+            for current in writes:
+                self._write(current)
+        return updated
+
     def settle_closed_receipt(self, expected: list[Attempt], intent=None) -> str:
         """Complete only a saved positive closed-record decision, never generic close.
 
