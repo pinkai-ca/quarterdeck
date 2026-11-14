@@ -392,6 +392,32 @@ def test_a_third_run_falls_back_to_disk_with_its_one_line_when_the_room_is_gone(
         assert not case.folder.exists()
 
 
+def test_a_disk_fallback_leaves_no_memory_root_under_any_candidate_base(tmp_path, cleanup_memory):
+    """A real tool run on real tmpfs that finds no room makes no qd-<uid>-* root of its project in any base it
+    weighed. Other seats' runs make roots of their own in the same bases meanwhile, so the gate looks for this
+    synthetic project's own root by name, as admission would name it."""
+    project, worktree = make(tmp_path, {'test_writes.py': WRITES})
+    own_roots(project, cleanup_memory)  # a regression's empty roots are still removed
+    names = {storage.project_name(named) for named in (project, project.resolve())}
+    bases = storage.candidates()
+    devices = memory_devices()
+    if not devices:
+        pytest.skip('no memory filesystem among the candidates: nothing to fall back from')
+
+    def roots():
+        return sorted(str(base / name) for base in bases for name in names if os.path.lexists(base / name))
+    assert roots() == [], 'a fresh synthetic project has no memory root yet'
+    standing = no_room(project)
+    done = tool('run', '--target', str(worktree), '-n', '0', cwd=project)
+    assert done.returncode == 0, done.stdout + done.stderr
+    lines = [line for line in done.stdout.splitlines() if 'working files' in line]
+    assert len(lines) == 1 and 'working files on disk' in lines[0] and NO_ROOM in lines[0], done.stdout
+    assert result(project)['working_storage']['kind'] == 'disk'
+    assert roots() == [], 'the fallback left an empty memory root in a base it passed over'
+    for path in standing:
+        path.unlink()
+
+
 RACE = """
 import json, os, sys, time
 from pathlib import Path
