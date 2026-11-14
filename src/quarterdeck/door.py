@@ -834,7 +834,7 @@ class Door:
         if proof and shutdown.requested():
             return Delivery("pending", "submitted once before service stop; record confirmation remains pending")
         if speed == "now" and shown.working is True and self.harness.keys.send_now:
-            current = self.screen()
+            current = self.activity_screen()
             if reason := self.adapter_obstruction(current):
                 return Delivery("blind", f"{reason}; input already submitted; no further key sent")
             if current is None or current.working is None or (proof and not proof.same_launch(self.seat)):
@@ -949,6 +949,16 @@ class Door:
         columns = self.harness.box_columns_for_screen(pane.width, screen)
         return held_box_matches(box.text, self.harness.box_comparison(screen, pane.width), columns, pane.width)
 
+    def activity_screen(self, seconds: float = BOX_SECONDS) -> Screen | None:
+        """Wait through a redraw, without acting on an unreadable intermediate frame."""
+        deadline = _clock() + seconds
+        while True:
+            screen = self.screen()
+            if (screen is not None and (screen.working is not None or self.adapter_obstruction(screen))
+                    or _clock() >= deadline):
+                return screen
+            _sleep(SETTLE_SECONDS)
+
     def box_shows(self, box, seconds: float = PASTE_SHOWN_SECONDS) -> Screen | None:
         """The screen once the box shows the paste as the program folds it, or the last screen seen.
 
@@ -960,8 +970,8 @@ class Door:
         foreign = None
         while True:
             screen = self.screen()
-            if screen is None or screen.working is None:
-                outcome = "activity unknown"
+            if screen is not None and self.adapter_obstruction(screen):
+                outcome = "adapter obstruction"
                 break
             if screen is not None and self.matches(box, screen):
                 outcome = "shown"
@@ -993,7 +1003,7 @@ class Door:
 
     def submit(self, pane_id: str) -> str | None:
         """Enter, or a raw carriage return when the pane is in copy mode, which swallows keys."""
-        current = self.screen()
+        current = self.activity_screen()
         if reason := self.adapter_obstruction(current):
             return reason
         if current is None or current.working is None:
