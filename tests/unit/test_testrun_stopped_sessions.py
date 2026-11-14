@@ -97,7 +97,8 @@ def test_recorded_server_retires_and_memory_can_be_selected_again(monkeypatch, p
                 if server._owned.socket_fd is not None:
                     os.close(server._owned.socket_fd)
                     server._owned.socket_fd = None
-                os.close(server._owned.namespace.directory)
+                if not server._owned.namespace.closed:
+                    os.close(server._owned.namespace.directory)
             os.close(descriptor)
             root.close()
 

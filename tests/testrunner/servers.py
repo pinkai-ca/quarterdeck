@@ -199,15 +199,22 @@ def stop(descriptor, path, birth, budget):
             env.pop('TMUX', None)
             env.pop('TMUX_PANE', None)
             command = ['tmux', '-S', str(path), '-N', '-f', '/dev/null']
-            query = subprocess.run([*command, 'display-message', '-p', '#{pid} #{' + OWNER + '}'],
-                                   env=env, capture_output=True, text=True, timeout=2)
-            if query.returncode or query.stdout.strip() != f"{birth['pid']} {birth['owner']}":
-                raise Refused('private server birth identity no longer agrees; held')
-            verify()
-            endpoint(descriptor, name, birth)
-            guard = '#{&&:#{==:#{pid},%s},#{==:#{%s},%s}}' % (birth['pid'], OWNER, birth['owner'])
-            subprocess.run([*command, 'if-shell', '-F', guard, 'kill-server'], env=env,
-                           capture_output=True, timeout=2, check=False)
+            try:
+                query = subprocess.run([*command, 'display-message', '-p', '#{pid} #{' + OWNER + '}'],
+                                       env=env, capture_output=True, text=True, timeout=2)
+            except subprocess.TimeoutExpired:
+                query = None
+            if query is not None and not query.returncode and query.stdout.strip() == f"{birth['pid']} {birth['owner']}":
+                verify()
+                endpoint(descriptor, name, birth)
+                guard = '#{&&:#{==:#{pid},%s},#{==:#{%s},%s}}' % (birth['pid'], OWNER, birth['owner'])
+                try:
+                    subprocess.run([*command, 'if-shell', '-F', guard, 'kill-server'], env=env,
+                                   capture_output=True, timeout=2, check=False)
+                except subprocess.TimeoutExpired:
+                    pass  # only the proved process/socket death below can authorize removal
+            # A server already shutting down may have stopped answering. Send nothing further;
+            # wait for the same recorded process and endpoint to be proved dead, or hold.
         deadline = time.monotonic() + 2
         while True:
             budget.check(path)
