@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 from contextlib import contextmanager
@@ -11,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.testrunner import layout, resources, sessions, scratch, servers
+from tests.testrunner import layout, owned, resources, sessions, scratch, servers
 
 OPENBLAS_AT_IMPORT = os.environ.get('OPENBLAS_NUM_THREADS')
 ROOT = Path(__file__).resolve().parent.parent
@@ -74,6 +75,7 @@ def pytest_configure(config):
     # Native tmux must not infer the caller's live server or pane.
     os.environ.pop('TMUX', None)
     os.environ.pop('TMUX_PANE', None)
+    config._qd_synthetic_memory_checks = set()
     if os.environ.get('TESTRUNS_RUN'):
         return
     folder = plain_temp()
@@ -104,7 +106,6 @@ def pytest_sessionstart(session):
     config = session.config
     if not hasattr(config, 'workerinput'):
         config._qd_memory_roots_before = memory_roots()
-        config._qd_memory_root_own = scratch.project_name(socket_parent().parent.parent)
     monitor = getattr(config, '_qd_scratch_monitor', None)
     if monitor is not None and not hasattr(config, 'workerinput'):
         config._qd_scratch_observer = scratch.PlainMonitor(monitor.paths[0], monitor.paths[1:])
@@ -112,6 +113,10 @@ def pytest_sessionstart(session):
 
 @pytest.hookimpl(trylast=True)
 def pytest_sessionfinish(session, exitstatus):
+    if hasattr(session.config, 'workerinput'):
+        session.config.workeroutput['qd_synthetic_memory_checks'] = sorted(
+            session.config._qd_synthetic_memory_checks)
+        return
     observer = getattr(session.config, '_qd_scratch_observer', None)
     refusals = []
     if observer is not None:
@@ -125,17 +130,21 @@ def pytest_sessionfinish(session, exitstatus):
     if before is not None:
         try:
             after = memory_roots()
-            own = session.config._qd_memory_root_own
             reporter = session.config.pluginmanager.get_plugin('terminalreporter')
             if reporter:
                 reporter.write_line(f'pytest shared-memory roots: before={len(before)}, after={len(after)}; '
-                                    'only the project root is exempt; census removes nothing')
-            new = sorted(name for name, identity in after.items()
-                         if name != own and before.get(name) != identity)
-            if new:
-                refusals.append('new shared-memory roots remain after the suite: '
-                                + ', '.join('/dev/shm/' + name for name in new)
-                                + '; reported only, nothing removed')
+                                    'synthetic projects checked separately; census removes nothing')
+            remaining = []
+            for value in sorted(session.config._qd_synthetic_memory_checks):
+                path = Path(value)
+                try:
+                    path.lstat()
+                except FileNotFoundError:
+                    continue
+                remaining.append(value)
+            if remaining:
+                refusals.append('synthetic project memory roots remain after the suite: '
+                                + ', '.join(remaining) + '; reported only, nothing removed')
         except OSError as error:
             refusals.append(f'cannot complete shared-memory root census: {error}')
     if refusals:
@@ -153,6 +162,90 @@ def pytest_report_header(config):
         startup += '; required: set OPENBLAS_NUM_THREADS=1 before starting pytest; setting it now is too late'
     working = f'pytest working files: {getattr(config, "_qd_scratch_path", os.environ.get("TMPDIR"))}'
     return [working, f'test memory limit: RLIMIT_AS soft=hard={config._qd_memory_limit} bytes (children inherit)', startup]
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_testnodedown(node, error):
+    node.config._qd_synthetic_memory_checks.update(
+        node.workeroutput.get('qd_synthetic_memory_checks', []))
+
+
+class SyntheticMemoryRoots:
+    """Derived roots of this test's temporary projects, never roots found by a shared-folder scan."""
+
+    def __init__(self, tmp_path, checks):
+        self.tmp_path = tmp_path
+        self.checks = checks
+        self.bases = set(scratch.candidates()) | {tmp_path}
+
+    def projects(self):
+        projects, local_roots = set(), []
+        primary = self.tmp_path / 'p'
+        if primary.is_dir() and not primary.is_symlink():
+            projects.add(primary)
+        for folder, dirs, files in os.walk(self.tmp_path, followlinks=False):
+            path = Path(folder)
+            if '.testruns' in dirs:
+                projects.add(path)
+            if 'pyvenv.cfg' in files:
+                dirs[:] = []  # installed environments contain no separate synthetic projects
+                continue
+            for name in dirs:
+                if name.startswith(f'qd-{os.getuid()}-'):
+                    local_roots.append(path / name)
+            dirs[:] = [name for name in dirs if name not in ('.git', '.testruns')
+                       and not name.startswith(f'qd-{os.getuid()}-')]
+        names = {scratch.project_name(project) for project in projects}
+        for root in local_roots:
+            if root.name in names:
+                self.bases.add(root.parent)
+        return projects
+
+    def finish(self):
+        failures = []
+        for project in sorted(self.projects()):
+            name = scratch.project_name(project)
+            for base in sorted(self.bases):
+                path = base / name
+                self.checks.add(str(path))
+                try:
+                    info = path.lstat()
+                except FileNotFoundError:
+                    continue
+                try:
+                    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+                            or stat.S_IMODE(info.st_mode) != 0o700):
+                        raise layout.Refused(f'{path}: synthetic memory root is not our private plain directory')
+                    where, descriptor = scratch.memory_root(project, base, create=False)
+                    try:
+                        expected = layout.identity(os.fstat(descriptor))
+                        if layout.identity(info) != expected:
+                            raise layout.Refused(f'{path}: synthetic memory root changed before teardown')
+                        parent = os.open(base, layout.DIRECTORY)
+                        try:
+                            owned.remove(parent, name, expected, where)
+                        finally:
+                            os.close(parent)
+                    finally:
+                        os.close(descriptor)
+                except (OSError, layout.Refused) as error:
+                    failures.append(str(error))
+        if failures:
+            pytest.fail('synthetic memory cleanup held: ' + '; '.join(failures))
+
+
+@pytest.fixture(autouse=True)
+def synthetic_memory_roots(tmp_path, request):
+    roots = SyntheticMemoryRoots(tmp_path, request.config._qd_synthetic_memory_checks)
+    yield roots
+    roots.finish()
+
+
+@pytest.fixture
+def monkeypatch(synthetic_memory_roots):
+    """Undo test patches before exact-root teardown uses filesystem and scratch functions."""
+    with pytest.MonkeyPatch.context() as patch:
+        yield patch
 
 
 @pytest.fixture(autouse=True)
