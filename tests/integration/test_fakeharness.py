@@ -11,6 +11,7 @@ import pytest
 
 from quarterdeck.harness.fake import FakeHarness
 from quarterdeck.harness.json_record import RecordError
+from quarterdeck.harness.synthetic_control import Rendezvous
 from quarterdeck.ship import Pool, SeatSpec
 from quarterdeck.tmux import Tmux
 
@@ -169,25 +170,29 @@ def test_an_unknown_dialog_is_reported_not_dismissed(tmux: Tmux, tmp_path: Path)
 
 
 def test_a_program_that_queues_takes_a_message_mid_turn(tmux: Tmux, tmp_path: Path):
-    seat = Seat(tmux, tmp_path, steps="3", step_seconds="0.6")
-    seat.send("first")
-    wait_for(lambda: seat.screen().working)
-    seat.send("second")
-    screen = wait_for(lambda: showing(seat, lambda s: s.queued))
-    assert screen.working and screen.queued == 1
-    assert seat.harness.state(seat.record()).queued == ("second",)
+    seat = Seat(tmux, tmp_path, steps="3", step_seconds="0.01")
+    with Rendezvous(seat.home, "step", "first", seconds=8) as working:
+        seat.send("first")
+        wait_for(working.reached)
+        wait_for(lambda: seat.screen().working)
+        seat.send("second")
+        screen = wait_for(lambda: showing(seat, lambda s: s.queued))
+        assert screen.working and screen.queued == 1
+        assert seat.harness.state(seat.record()).queued == ("second",)
     wait_for(lambda: seat.harness.state(seat.record()).turns == 2, seconds=15)
     assert [t.input for t in seat.harness.turns(seat.record())] == ["first", "second"]
 
 
 def test_a_program_that_does_not_queue_refuses_mid_turn(tmux: Tmux, tmp_path: Path):
-    seat = Seat(tmux, tmp_path, queues=False, steps="3", step_seconds="0.5")
+    seat = Seat(tmux, tmp_path, queues=False, steps="3", step_seconds="0.01")
     assert not seat.harness.queues_while_working(seat.spec)
-    seat.send("first")
-    wait_for(lambda: seat.screen().working)
-    seat.send("second")
-    time.sleep(0.3)
-    assert seat.screen().box == "" and seat.screen().queued == 0
+    with Rendezvous(seat.home, "step", "first", seconds=8) as working:
+        seat.send("first")
+        wait_for(working.reached)
+        wait_for(lambda: seat.screen().working)
+        seat.send("second")
+        time.sleep(0.3)
+        assert seat.screen().box == "" and seat.screen().queued == 0
     wait_for(lambda: not seat.screen().working, seconds=15)
     assert [t.input for t in seat.harness.turns(seat.record())] == ["first"]
 
