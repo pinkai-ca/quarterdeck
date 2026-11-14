@@ -251,12 +251,38 @@ def test_the_live_checks_private_server_falls_back_outside_the_project(monkeypat
 
     def private(place):
         tried.append(Path(place))
-        if Path(place) != Path(tempfile.gettempdir()) / f'qd-live-tmux-{os.getuid()}':
+        if Path(place) != Path('/tmp') / f'qd-live-tmux-{os.getuid()}':
             raise TmuxError('synthetic: not here')
         return 'server'
 
     monkeypatch.setattr(daily_live, 'memory_root', lambda: None)
     monkeypatch.setattr(daily_live.Tmux, 'private', staticmethod(private))
     assert daily_live.open_private(blocked / 'ship-parent') == 'server'
-    assert tried[-1] == Path(tempfile.gettempdir()) / f'qd-live-tmux-{os.getuid()}'
+    assert tried[-1] == Path('/tmp') / f'qd-live-tmux-{os.getuid()}'
     assert all(standing.PROJECT_DIR / 'work' not in (place, *place.parents) for place in tried)
+
+
+def test_the_live_checks_last_place_is_the_systems_tmp_whatever_tmpdir_says(monkeypatch, tmp_path):
+    """TMPDIR may name a folder a jail is given; the private servers stay in the system's own /tmp."""
+    import tempfile
+    from quarterdeck.tmux import TmuxError
+
+    bound = tmp_path / 'bound-folder'
+    bound.mkdir()
+    monkeypatch.setenv('TMPDIR', str(bound))
+    monkeypatch.setattr(tempfile, 'tempdir', None)
+    blocked = tmp_path / 'file'
+    blocked.write_text('not a folder')
+    tried = []
+
+    def private(place):
+        tried.append(Path(place))
+        if Path(place).parent != Path('/tmp'):
+            raise TmuxError('synthetic: not here')
+        return 'server'
+
+    monkeypatch.setattr(daily_live, 'memory_root', lambda: None)
+    monkeypatch.setattr(daily_live.Tmux, 'private', staticmethod(private))
+    assert daily_live.open_private(blocked / 'ship-parent') == 'server'
+    assert tried[-1] == Path('/tmp') / f'qd-live-tmux-{os.getuid()}'
+    assert not any(bound in (place, *place.parents) for place in tried)

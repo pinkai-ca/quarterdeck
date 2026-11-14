@@ -205,3 +205,40 @@ print(json.dumps(dict(reached=reached, runs=sorted(os.listdir(runs)) if os.path.
     finally:
         server.close()
         shutil.rmtree(short, ignore_errors=True)
+
+
+def test_a_listening_socket_in_any_folder_bound_from_a_home_refuses_inside(drydock: Path, tmp_path: Path):
+    """Not only .testruns: a test server's socket anywhere in a folder bound back from the home is masked."""
+    short = Path(tempfile.mkdtemp(prefix='qdsm-', dir='/dev/shm'))
+    home = short / 'home'
+    tools = home / 'tools'
+    (tools / 'bin').mkdir(parents=True)
+    (tools / 'bin' / 'stand-in').write_text('#!/bin/sh\n')
+    (tools / 'bin' / 'stand-in').chmod(0o755)
+    (tools / 'servers').mkdir()
+    server = socket.socket(socket.AF_UNIX)
+    server.bind(str(tools / 'servers' / 's'))
+    server.listen(4)
+    try:
+        ship = shipmod.load(drydock)
+        shipmod.fence(ship)
+        own = own_seat(ship)
+        (tmp_path / 'work').mkdir()
+        path = os.pathsep.join([str(tools / 'bin'), str(Path(sys.executable).parent), '/usr/bin', '/bin'])
+        jail = sandbox.plan(ship, 'worker-1', own, own / 'home', tmp_path / 'work', 'stand-in', path, home=home)
+        assert tools in jail.read_only, "the program's folder under the home is bound back"
+        probe = r"""
+import json, os, socket, sys
+probe = socket.socket(socket.AF_UNIX)
+try:
+    probe.connect(sys.argv[1])
+    reached = True
+except OSError:
+    reached = False
+print(json.dumps(dict(reached=reached, there=os.path.exists(sys.argv[1]))))
+"""
+        seen = run_probe(jail, probe, str(tools / 'servers' / 's'), path=path)
+        assert seen == dict(reached=False, there=True), seen
+    finally:
+        server.close()
+        shutil.rmtree(short, ignore_errors=True)
