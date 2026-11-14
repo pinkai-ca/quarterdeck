@@ -26,10 +26,29 @@ def remember_launch(folder: Path, record: Path, launched) -> None:
             stream.write(json.dumps(event) + "\n")
 
 
+def canonical_launch(event):
+    """One join, with omitted price and harness meaning the same as null."""
+    if not isinstance(event, dict) or not isinstance(event.get('record'), str):
+        return None
+    return {'record': event['record'], 'at': event.get('at'), 'pool': event.get('pool'),
+            'harness': event.get('harness'), 'price': event.get('price')}
+
+
+def owning_launch_evidence(events, record: str) -> str:
+    """The launches joined to this record. A seat's current launch is not one of them unless it names this record."""
+    owned = []
+    for event in events:
+        item = canonical_launch(event)
+        if item is not None and item['record'] == record and item not in owned:
+            owned.append(item)
+    return json.dumps(owned, sort_keys=True)
+
+
 class Provenance:
     def __init__(self, db, create: bool = True):
         self.db = db
         self.sources = {}
+        self.launch_events = {}
         if create:  # a reading opens the book read-only and makes no table
             db.execute("""CREATE TABLE IF NOT EXISTS record_launches (
                 record TEXT NOT NULL, at TEXT NOT NULL, seat TEXT NOT NULL, pool TEXT NOT NULL,
@@ -74,12 +93,17 @@ class Provenance:
                    "harness": launch_reader(launched), "price": getattr(launched, "price", None)}
                   if current is not None and launched is not None else None)
         stamp = (record_fingerprint(path), json.dumps(active, sort_keys=True))
-        if self.sources.get(path) == stamp:
+        if self.sources.get(path) == stamp and path in self.launch_events:
             return path, stamp, None
         events = [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path.is_file() else []
         if active is not None:
             events.append(active)
+        self.launch_events[path] = events
         return path, stamp, events
+
+    def owning_launch(self, path: Path, record: Path) -> str:
+        """Checkpoint key for the launches joined to ``record``, from the events ``prepare`` just read."""
+        return owning_launch_evidence(self.launch_events.get(path, ()), str(record))
 
     def sync(self, seat, current: Path | None, launched, *, commit: bool = True, prepared=None) -> set[Path]:
         """Import the journal and current proven join, even if record bytes have not changed."""

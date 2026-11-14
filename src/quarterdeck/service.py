@@ -1397,12 +1397,14 @@ class Service:
                         continue
                 try:
                     stamp = (owned.name, record_fingerprint(record))
-                    evidence = (stamp, owned.reason, record_fingerprint(record_owner.registry(seat.home.parent)), prepared[1])
-                    # New launch/price evidence must be reconciled even if record bytes stand still.
+                    # The launches joined to this record. A down seat or a newer launch of another record does not move it.
+                    launch = self.ledger.provenance.owning_launch(prepared[0], record)
+                    evidence = (stamp, owned.reason, record_fingerprint(record_owner.registry(seat.home.parent)), launch)
+                    # New launch/price evidence for this record must be reconciled even if its bytes stand still.
                     if marks.get(record) == stamp and prepared[2] is None:
                         continue
                     checkpoint = self.ledger.accounting_evidence(
-                        seat.name, stamp, owned.reason, prepared[1], reader_keys.get(owned.name))
+                        seat.name, stamp, owned.reason, launch, reader_keys.get(owned.name))
                     if checkpoint is not None and self.ledger.accounted(record, checkpoint):
                         marks[record] = stamp
                         continue

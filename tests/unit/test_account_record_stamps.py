@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from datetime import timedelta
+import json
 import os
 import sqlite3
 from types import SimpleNamespace
@@ -36,6 +37,95 @@ def test_second_start_reads_no_unchanged_turns_and_writes_nothing(tmp_path, monk
     assert w.reads == w.paths
     assert w.input_reads == inputs
     assert writes(trace) == []
+
+
+def _launch(at, pool='synthetic-pool-q'):
+    return SimpleNamespace(at=at, pool=pool, harness='fake', price=None, pane='%1', pid=1,
+                           resume=None, argv=['fake'], version=None)
+
+
+def _rows(db, table):
+    return db.execute(f'SELECT * FROM {table}').fetchall()
+
+
+def _old_business(db, current, finished):
+    keys = (str(current), str(finished))
+    turns = db.execute(
+        'SELECT record, turn, seat, pool, written, cost FROM turns WHERE record IN (?,?) ORDER BY record, turn',
+        keys).fetchall()
+    costs = db.execute(
+        'SELECT record, turn, recorded_cost, cost_basis, valid FROM turn_costs WHERE record IN (?,?) ORDER BY record, turn',
+        keys).fetchall()
+    tools = db.execute(
+        'SELECT record, turn, name, seconds, failed FROM tool_calls WHERE record IN (?,?) ORDER BY record, turn, name',
+        keys).fetchall()
+    return turns, costs, tools
+
+
+def test_finished_records_stay_when_the_seat_is_down_or_relaunched(tmp_path, monkeypatch):
+    """A checkpoint follows the launch joined to the record, not the seat's current one."""
+    w = world(tmp_path, monkeypatch, records=('current-q', 'finished-q'))
+    current, finished = w.paths
+    old_at = (AT - timedelta(hours=2)).isoformat()
+    current_at = (AT - timedelta(minutes=1)).isoformat()
+    w.journal.write_text(''.join(json.dumps(row) + '\n' for row in (
+        dict(record=str(finished), at=old_at, pool='synthetic-pool-q', harness='fake'),
+        dict(record=str(current), at=current_at, pool='synthetic-pool-q', harness='fake', price=None),
+    )))
+    w.seat.launched = lambda: _launch(current_at)
+    w.seat.record = lambda: current
+    w.svc.account_records()
+    assert w.reads == [current, finished]
+    restart(w)
+    w.seat.launched = lambda: None
+    trace = []
+    w.svc.ledger.db.set_trace_callback(trace.append)
+    kept = {table: _rows(w.svc.ledger.db, table) for table in ('turns', 'turn_costs', 'tool_calls')}
+    w.svc.account_records()
+    assert w.reads == [current, finished], 'a down seat re-reads no finished record'
+    assert writes(trace) == []
+    assert {table: _rows(w.svc.ledger.db, table) for table in kept} == kept
+    # A newer launch joins a different record. The two older records stay checkpointed.
+    fresh = current.with_name('fresh-q')
+    fresh.write_text('synthetic fresh-q first revision')
+    relaunched_at = AT.isoformat()
+    w.journal.write_text(w.journal.read_text() + json.dumps(dict(
+        record=str(fresh), at=relaunched_at, pool='synthetic-pool-r', harness='fake', price=None)) + '\n')
+    w.sources[fresh] = (replace(w.sources[current][0]), [turn(0)])
+    w.inputs[fresh] = []
+    w.owned[fresh] = record_owner.Owned(fresh, 'fake', w.owned[current].reader)
+    w.seat.launched = lambda: _launch(relaunched_at, 'synthetic-pool-r')
+    w.seat.record = lambda: fresh
+    restart(w)
+    before = _old_business(w.svc.ledger.db, current, finished)
+    w.svc.account_records()
+    assert w.reads == [current, finished, fresh]
+    assert _old_business(w.svc.ledger.db, current, finished) == before
+    # Whitespace in the journal is not a new launch.
+    restart(w)
+    w.journal.write_text(w.journal.read_text() + '\n')
+    seen = list(w.reads)
+    w.svc.account_records()
+    assert w.reads == seen
+
+
+def test_a_price_joined_to_one_record_rereads_only_that_record(tmp_path, monkeypatch):
+    w = world(tmp_path, monkeypatch, records=('current-q', 'finished-q'))
+    current, finished = w.paths
+    old_at = (AT - timedelta(hours=2)).isoformat()
+    current_at = (AT - timedelta(minutes=1)).isoformat()
+    rows = [
+        dict(record=str(finished), at=old_at, pool='synthetic-pool-q', harness='fake'),
+        dict(record=str(current), at=current_at, pool='synthetic-pool-q', harness='fake', price=None),
+    ]
+    w.journal.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+    w.seat.launched = lambda: _launch(current_at)
+    w.svc.account_records()
+    rows[0]['price'] = {'synthetic-model-q': 1}
+    w.journal.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+    restart(w)
+    w.svc.account_records()
+    assert w.reads == [current, finished, finished]
 
 
 def test_grown_record_rechecks_all_its_turns_and_writes_only_the_new_one(tmp_path, monkeypatch):
@@ -76,7 +166,9 @@ def test_new_or_missing_evidence_requires_reading(tmp_path, monkeypatch, change)
         keys['fake'] = ['synthetic changed reader implementation']
         monkeypatch.setattr(reader_stamp, 'readers', lambda root=None: keys)
     elif change == 'launch':
-        w.journal.write_text(w.journal.read_text() + '\n')
+        event = json.loads(w.journal.read_text())
+        event['price'] = {'synthetic-model-q': 1}
+        w.journal.write_text(json.dumps(event) + '\n')
     elif change == 'missing':
         w.svc.ledger.db.execute('DELETE FROM record_accounting')
         w.svc.ledger.db.commit()

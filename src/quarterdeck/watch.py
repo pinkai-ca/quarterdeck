@@ -266,7 +266,8 @@ def accounted_history(book, seat):
             key = reader_keys.get(item.name)
             if key is None:
                 return False
-            evidence = book.accounting_evidence(seat.name, stamp, item.reason, prepared[1], key)
+            launch = book.provenance.owning_launch(prepared[0], item.path)
+            evidence = book.accounting_evidence(seat.name, stamp, item.reason, launch, key)
             if not book.accounted(item.path, evidence):
                 return False
         return True
