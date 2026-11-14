@@ -138,7 +138,11 @@ def hold_legacy(runtime: Path) -> int:
 
 
 def release_legacy(runtime: Path, descriptor: int) -> None:
-    """Let the earlier place go once its installer has exited: the file is removed while still held, then closed."""
+    """Let the earlier place go once its installer has exited: the file is removed while still held, then closed.
+
+    Any failure but the file's absence is raised with the descriptor still open and the lock still held, so the
+    caller can try again on its next pass with the same descriptor.
+    """
     legacy = legacy_lock_path(runtime)
     try:
         held, current = os.fstat(descriptor), os.lstat(legacy)
@@ -146,8 +150,7 @@ def release_legacy(runtime: Path, descriptor: int) -> None:
             legacy.unlink()
     except FileNotFoundError:
         pass
-    finally:
-        os.close(descriptor)
+    os.close(descriptor)
 
 
 def _held(path: Path) -> bool | None:

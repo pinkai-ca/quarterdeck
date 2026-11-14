@@ -226,9 +226,14 @@ class Service:
         if getattr(self, 'legacy_lock', None) is None:
             return
         pid, start = self.earlier_installer
-        if servicectl.process_start(pid) == start:
-            return
-        servicectl.release_legacy(self.runtime, self.legacy_lock)
+        try:
+            if servicectl.process_start(pid) == start:
+                return
+            servicectl.release_legacy(self.runtime, self.legacy_lock)
+        except Exception as error:  # outside the steps' guard: a failure here must not stop the service
+            self.log("error", step="release_earlier_installer", error="earlier-installer release failed",
+                     kind=type(error).__name__, detail=str(error))
+            return  # the lock is still held; the next pass tries again
         self.legacy_lock = None
         self.log("earlier-installer-done", pid=pid)
 
