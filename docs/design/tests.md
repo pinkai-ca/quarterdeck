@@ -21,6 +21,8 @@ Repository checks also guard runtime-content exclusion and ignored runtimes, law
 
 The synthetic drill sends every seat to every other, crashes/recovers the service mid-delivery, then explicitly starts fresh and repeats. Human-session traffic uses its watch and the guarded waking line. Its generated drydock leaves automatic after-order fresh unset so it cannot race the drill's own transitions.
 
+The matrix waits for both closing reports and accepted attempts. A report observed after that global wait also gets one bounded receipt-settlement window before its row is judged. Every row names the final observed attempt states; a report alone never proves delivery, and duplicate acceptances still fail.
+
 Crash delivery requires the public fresh receipt, one delivered attempt and one native acceptance. A timed dequeue/input echo for one enqueue counts once by original acceptance time; different enqueue times/direct acceptances count separately. Stale, untimed and merely queued evidence proves no delivery. Synthetic submission counts independently detect identical same-timestamp enqueues; the live drill has no such counter.
 
 Fresh proves an open order in the new conversation's first input. It may be carried without prior old-conversation acceptance when unattempted or its old attempt is terminal. Blind remains unconfirmed, not a receipt. Active typing/confirmation settles first under lifecycle coordination. Busy readiness may retry before starting; a begun fresh never repeats. Output distinguishes delivery-first from carriage, and prints failures before passes to preserve them in clipped logs.

@@ -122,13 +122,20 @@ class Drill:
         # receipt. Wait for both observable facts, keeping the exact-once check.
         wait_for(lambda: all(not self.store.is_open(o) and any(a.accepted for a in self.attempts.for_message(o.id))
                              for o in orders.values()), self.patience * 2)
-        closed = all(not self.store.is_open(o) for o in orders.values())
         for (sender, to), order in orders.items():
             report = self.store.closing_report(order)
-            results = [a.result for a in self.attempts.for_message(order.id) if a.accepted]
+            if report is not None:
+                # The global wait may expire just before this report appears.
+                # Give its receipt a bounded settlement window of its own.
+                wait_for(lambda: any(a.accepted for a in self.attempts.for_message(order.id)), self.patience)
+            attempts = self.attempts.for_message(order.id)
+            results = [a.result for a in attempts if a.accepted]
             ok = report is not None and len(results) == 1
             how = f"{results[0]}" if results else "never delivered"
-            self.check(f"{label}: {sender} → {to}", ok, f"delivered once by {how}; closed by {report.short if report else 'nobody'}")
+            states = [a.result or 'unfinished' for a in attempts]
+            self.check(f"{label}: {sender} → {to}", ok,
+                       f"delivered once by {how}; attempts {states}; closed by {report.short if report else 'nobody'}")
+        closed = all(not self.store.is_open(o) for o in orders.values())
         self.check(f"{label}: every order closed", bool(closed), f"{sum(not self.store.is_open(o) for o in orders.values())} of {len(orders)}")
         for seat in self.seats():
             if seat.session.human:
