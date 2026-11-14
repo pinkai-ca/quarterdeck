@@ -123,6 +123,12 @@ def program_path() -> str:
 def prepare_program_path(ship: Ship, *, bin_dir: Path | None = None, synthetic: bool = False) -> str:
     """Publish only the framework commands in a ship-owned PATH folder, before launching."""
     source = bin_dir or qd_bin()
+    from .sandbox import ship_runtime_of
+    elsewhere = ship_runtime_of(source.resolve())
+    own = ship.runtime / 'venv' / 'bin'
+    if (elsewhere is not None and elsewhere.resolve() != ship.runtime.resolve()
+            and (own / 'qd').is_file() and os.access(own / 'qd', os.X_OK)):
+        source = own  # raised from another ship's shell: this ship's seats run this ship's own installed qd
     commands = ship.runtime / 'bin'
     commands.mkdir(parents=True, exist_ok=True)
     names = ['qd', *(['qd-fakeharness'] if synthetic else [])]

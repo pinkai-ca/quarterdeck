@@ -41,8 +41,8 @@ HIDDEN_BYTES = 1024 * 1024  # every other tmpfs inside is a fence or a hidden fo
 RUNTIME_SHOWN = ('.git', 'bin', 'venv', 'venv.prev', 'installed.json', 'service.heartbeat')
 # Of the briefs, only the seat's own: every seat's brief lies in that folder, the counsel's included.
 RUN_BYTES = 16 * 1024 * 1024  # the jail's own /run: a private runtime folder and the resolver's file, nothing more
-SCRATCH_BYTES = 16 * 1024 * 1024  # an empty /mnt/scratch: the machine's shared scratch is hidden
-SCRATCH = Path('/mnt/scratch')
+MNT_BYTES = 16 * 1024 * 1024  # an empty /mnt: the operator's own disks and the machine's shared scratch are hidden
+MNT = Path('/mnt')
 # Ways into the operator's desktop session that a program finds by its environment; none is passed into a jail.
 SESSION_VARIABLES = ('DBUS_SESSION_BUS_ADDRESS', 'DISPLAY', 'WAYLAND_DISPLAY', 'SSH_AUTH_SOCK', 'GPG_AGENT_INFO',
                      'XAUTHORITY')
@@ -90,6 +90,7 @@ class Jail:
     environment: tuple[tuple[str, str], ...] = ()  # set inside the jail: the git identity a commit from the seat carries
     declarations: tuple[Path, ...] = ()  # peer ship files only, under otherwise empty read-only folders
     post_view: Path | None = None  # the seat's own view of the post, bound read-only in the post's place
+    foreign_runtimes: tuple[Path, ...] = ()  # other ships' runtimes inside a bound folder, each an empty tmpfs
 
 
 def git_identity(workspace: Path) -> tuple[tuple[str, str], ...]:
@@ -107,6 +108,44 @@ def git_identity(workspace: Path) -> tuple[tuple[str, str], ...]:
             value = ""
         found += [(variable, value) for variable in variables if value]
     return tuple(found)
+
+
+def ship_runtime_of(folder: Path) -> Path | None:
+    """The ship runtime a folder is or lies inside: a folder named runtime beside a ship.toml."""
+    for candidate in (folder, *folder.parents):
+        if candidate.name == 'runtime' and (candidate.parent / 'ship.toml').is_file():
+            return candidate
+    return None
+
+
+def held_runtimes(folder: Path, depth: int = 3) -> list[Path]:
+    """Ship runtimes inside a folder, looked for a few levels down: a ship folder, or a ships/ folder of them."""
+    found = []
+    if (folder / 'ship.toml').is_file() and (folder / 'runtime').is_dir() and not (folder / 'runtime').is_symlink():
+        found.append(folder / 'runtime')
+    if depth <= 0:
+        return found
+    try:
+        entries = [Path(entry.path) for entry in os.scandir(folder)
+                   if entry.is_dir(follow_symlinks=False) and entry.name != 'runtime'
+                   and not (entry.name.startswith('.') and entry.name != '.venv')]
+    except OSError:
+        return found
+    for entry in entries:
+        found += held_runtimes(entry, depth - 1)
+    return found
+
+
+def inside_foreign_runtime(folder: Path, ship: Ship) -> Path | None:
+    """Another ship's runtime that the folder is, or lies inside. Such a folder is never bound into a jail.
+
+    Every seat of a ship has its own runtime/bin first on PATH, so a ship raised or checked from such a shell finds
+    that runtime on its PATH. Bound back, it would show that ship's post, its seats and its live tmux socket.
+    """
+    inside = ship_runtime_of(folder)
+    if inside is not None and inside.resolve() != ship.runtime.resolve():
+        return inside
+    return None
 
 
 def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspace: Path, program: str, path: str,
@@ -137,8 +176,19 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
                             f"{inside}; a jailed seat may work inside its ship's folder only in {own_work}. Give the "
                             f"seat a working directory there, or outside {inside}")
     programs = (program, *FRAMEWORK_TOOLS)
+    qd = shutil.which('qd', path=path)
+    if qd is not None and (elsewhere := ship_runtime_of(Path(os.path.realpath(qd)))) is not None \
+            and elsewhere.resolve() != ship.runtime.resolve():
+        raise ShipError(f"{seat_name}: sandboxed, and its qd resolves to {os.path.realpath(qd)}, inside another ship's "
+                        f"runtime ({elsewhere}); no jail binds another ship's runtime, so the seat could not post. "
+                        "Run qd from this ship's own installed copy, or from the framework's checkout")
     folders = [f for f in (*program_folders(programs, path, home), *hidden_folders(programs, path, home))
-               if f != workspace and workspace not in f.parents and ship.folder not in f.parents and f != ship.folder]
+               if f != workspace and workspace not in f.parents and ship.folder not in f.parents and f != ship.folder
+               and inside_foreign_runtime(f, ship) is None]  # never another ship's runtime, nor a folder inside one
+    # A folder bound back that holds another ship's runtime (the framework's checkout holds every ship's) keeps it
+    # covered by an empty tmpfs; this ship's own runtime is shown as always, with its seats and tmux hidden.
+    foreign = tuple(sorted({runtime for folder in (*folders, workspace) for runtime in held_runtimes(folder)
+                            if runtime.resolve() != ship.runtime.resolve()}, key=lambda r: (len(r.parts), str(r))))
     drop = ship.runtime / "post" / "drop" / seat_name
     post_dir.ensure_directory(drop)  # the one writable post folder, so it must exist before the launch
     (ship.runtime / "tmux").mkdir(mode=0o700, exist_ok=True)  # hidden inside: the mount needs its place in the read-only ship
@@ -149,7 +199,7 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
     from . import post_view
     view = post_view.refresh(ship.runtime, seat_name)  # what of the post the seat may see, current at its launch
     jail = Jail(home, seat_home, seat_folder, workspace, ship.folder, ship.runtime, tuple(folders),
-                (drop, proof), git_identity(workspace), declarations, view)
+                (drop, proof), git_identity(workspace), declarations, view, foreign)
     if covered := covering(jail):
         what, folder = covered
         raise ShipError(f"{seat_name}: sandboxed with the operator home at {home}, and {what} {folder} is that home or "
@@ -345,15 +395,17 @@ def session_hidden() -> list[str]:
     A read-only mount does not stop a socket connect, so /run is an empty tmpfs: the session bus and the user
     manager, the keyring, gpg and ssh agents, wayland, the system bus and every other daemon's socket there are
     gone. Only the resolver's file is bound back, read-only, when /etc/resolv.conf leads into /run, and a private,
-    empty runtime folder is made for the program. /mnt/scratch, the machine's shared scratch, is an empty tmpfs.
+    empty runtime folder is made for the program. /mnt, the operator's own disks and the machine's shared
+    scratch, is an empty tmpfs; what a seat is given under it is bound back after.
     """
     args = ["--size", str(RUN_BYTES), "--tmpfs", "/run"]
     resolver = Path(os.path.realpath('/etc/resolv.conf'))
     if resolver.is_relative_to('/run') and resolver.is_file() and not resolver.is_symlink():
         args += ["--ro-bind", str(resolver), str(resolver)]
     args += ["--perms", "0700", "--dir", str(runtime_dir())]
-    if SCRATCH.is_dir() and not SCRATCH.is_symlink():
-        args += ["--size", str(SCRATCH_BYTES), "--tmpfs", str(SCRATCH)]
+    if MNT.is_dir() and not MNT.is_symlink():
+        # Before every other mount, so a workspace or a program's folder under /mnt is still bound back after it.
+        args += ["--size", str(MNT_BYTES), "--tmpfs", str(MNT)]
     return args
 
 
@@ -430,6 +482,7 @@ def command(jail: Jail, argv: list[str]) -> list[str]:
                    if (jail.post_view / "transient" / name).exists()]
     mounts += [("--bind-try", folder) for folder in jail.writable]
     mounts += [("--declaration", file) for file in getattr(jail, 'declarations', ())]
+    mounts += [("--tmpfs", runtime) for runtime in getattr(jail, 'foreign_runtimes', ())]
 
     def mount_key(mount):
         flag, folder = mount
