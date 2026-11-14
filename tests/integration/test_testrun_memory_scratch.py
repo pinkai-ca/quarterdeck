@@ -304,20 +304,10 @@ def memory_devices():
 
 def promise(project, device, base, bound):
     """A standing reservation of the project on ``device``: admission charges its recorded bound in full."""
-    from tests.testrunner.layout import RESULTS, Root, new_run_id, write_json
-    run = new_run_id()
+    from tests.testrunner.layout import RESULTS, Root, reserve_run_id, write_json
     root = Root(project)
     try:
-        parent = root.child(RESULTS)
-        try:
-            while True:
-                try:
-                    os.mkdir(run, mode=0o700, dir_fd=parent)
-                    break  # a newly reserved directory, never another promise's record
-                except FileExistsError:
-                    run = new_run_id()
-        finally:
-            os.close(parent)
+        run = reserve_run_id(root)
         fd = root.child(RESULTS, run, create=False)
         try:
             write_json(fd, storage.RECORD, {'run': run, 'base': str(base), 'root': 'qd-standing-promise',
@@ -333,8 +323,11 @@ def promise(project, device, base, bound):
 def test_standing_promises_keep_both_devices_when_a_candidate_id_collides(tmp_path, monkeypatch):
     from tests.testrunner import layout
     project, _ = make(tmp_path, {})
-    candidates = iter(('20200101-000000-abcd', '20200101-000000-abcd', '20200101-000000-bcde'))
-    monkeypatch.setattr(layout, 'new_run_id', lambda: next(candidates))
+    candidates = iter(('abcd', 'abcd', 'bcde'))
+    real_token_hex = layout.secrets.token_hex
+    monkeypatch.setattr(layout.secrets, 'token_hex',
+                        lambda count: next(candidates) if count == 2 else real_token_hex(count))
+    monkeypatch.setattr(layout, 'time', SimpleNamespace(strftime=lambda fmt: '20200101-000000'))
     first = promise(project, 11, tmp_path, storage.BOUND)
     original = first.read_bytes()
     second = promise(project, 22, tmp_path, storage.BOUND * 2)
@@ -474,7 +467,7 @@ def test_admission_under_the_lock_never_promises_the_last_room_twice(tmp_path, c
     import subprocess
     import sys
     from tests.conftest import ROOT
-    from tests.testrunner.layout import new_run_id
+    from tests.testrunner.layout import Root, reserve_run_id
     project, _ = make(tmp_path, {'test_writes.py': WRITES})
     own_roots(project, cleanup_memory)
     devices = memory_devices()
@@ -491,7 +484,11 @@ def test_admission_under_the_lock_never_promises_the_last_room_twice(tmp_path, c
         free = memory_devices()[device][1]
         last = promise(project, device, base, free - storage.BOUND - storage.MARGIN - slack - len(winners) * storage.BOUND)
         go = tmp_path / f'go-{number}'
-        runs = [new_run_id(), new_run_id()]
+        root = Root(project)
+        try:
+            runs = [reserve_run_id(root), reserve_run_id(root)]
+        finally:
+            root.close()
         racers = [subprocess.Popen([sys.executable, '-I', '-c', f'import sys; sys.path.insert(0, {str(ROOT)!r}); exec({RACE!r})',
                                     str(project), run, str(go)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                   for run in runs]

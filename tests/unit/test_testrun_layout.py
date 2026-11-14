@@ -277,3 +277,37 @@ def test_a_link_in_place_of_the_memory_root_is_refused(memory, tmp_path):
             scratch.memory_root(tmp_path, base, name=name)
     finally:
         (base / name).unlink()
+
+
+def test_reserved_run_ids_retry_a_repeated_random_candidate_without_touching_evidence(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    root = layout.Root(project(tmp_path))
+    candidates = iter(('abcd', 'abcd', 'abcd', 'bcde'))
+    real_token_hex = layout.secrets.token_hex
+    monkeypatch.setattr(layout.secrets, 'token_hex',
+                        lambda count: next(candidates) if count == 2 else real_token_hex(count))
+    monkeypatch.setattr(layout, 'time', SimpleNamespace(strftime=lambda fmt: '20200101-000000'))
+    try:
+        first = layout.reserve_run_id(root)
+        evidence = root.path / layout.RESULTS / first / 'result.json'
+        evidence.write_text('first result')
+        second = layout.reserve_run_id(root)
+        assert first == '20200101-000000-abcd' and second == '20200101-000000-bcde'
+        assert evidence.read_text() == 'first result'
+        assert sorted(os.listdir(root.path / layout.RESULTS)) == [first, second]
+        assert os.stat(root.path / layout.RESULTS / second).st_mode & 0o777 == 0o700
+    finally:
+        root.close()
+
+
+def test_slot_notes_follow_the_reserved_run_in_every_held_slot(tmp_path):
+    root = layout.Root(project(tmp_path))
+    slot = layout.Slot(root)
+    try:
+        slot.acquire({'verb': 'run', 'run': None}, count=2)
+        run = layout.reserve_run_id(root)
+        slot.describe({'verb': 'run', 'run': run})
+        assert slot.holder().count('run ' + run) == 2
+    finally:
+        slot.release()
+        root.close()

@@ -31,6 +31,8 @@ Both soft/hard per-process `RLIMIT_AS` are lowered to 8 GiB or a tighter inherit
 
 ### Results, storage and cleanup
 
+Run IDs reserve a fresh mode-0700 result directory with an exclusive create, retrying random-name collisions before any record is written. Standing memory promises use the same reservation, so records for different devices cannot overwrite each other. A run reserves its ID after acquiring its slots and publishes that ID in every held slot.
+
 Every ending retains `results/<run>/{result.json,report.md,failures/NNN.txt}` with complete failing output. Evidence includes target tip/tree, tool hashes, exact command, versions/safe settings, manifests and separate wrapper/pytest/signal/cleanup exits. Counts require every expected terminal item and collection marker from every known worker; partial collection says unknown expected count and retains observed items. Malformed plugin/version evidence becomes named incompleteness rather than losing finalization. Nothing is automatically retried.
 
 Memory scratch is preferred from TMPDIR, /dev/shm, /tmp, only on writable executable tmpfs/ramfs. A project-root flock covers fresh space measurement and saved reservations. Admission requires 4 GiB per run plus an 8 GiB margin and all outstanding same-device project reservations. Kept/crashed runs keep their full reservation until exact retirement. Insufficient capacity produces one disk-fallback line; unknown storage refuses. A mode-0700 `qd-<uid>-<project-hash>` root and saved device/inode/owner token bind removal. A one-second sampler stops a run exceeding 4 GiB or with unreadable measurement, including a conservative per-entry allowance. This sampling is not an exact quota or a lock against unrelated writers.

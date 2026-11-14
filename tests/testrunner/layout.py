@@ -235,6 +235,21 @@ def new_run_id() -> str:
     return time.strftime('%Y%m%d-%H%M%S') + '-' + secrets.token_hex(2)
 
 
+def reserve_run_id(root: Root) -> str:
+    """Reserve a fresh result directory exclusively; a random candidate is never ownership."""
+    parent = root.child(RESULTS)
+    try:
+        while True:
+            run = new_run_id()
+            try:
+                os.mkdir(run, mode=0o700, dir_fd=parent)
+            except FileExistsError:
+                continue
+            return run
+    finally:
+        os.close(parent)
+
+
 def run_name(run: str) -> str:
     if not re.fullmatch(r'\d{8}-\d{6}-[0-9a-f]{4}', run):
         raise Refused(f'{run!r} is not a run id (yyyymmdd-hhmmss-xxxx)')
@@ -286,11 +301,7 @@ class Slot:
                     if len(acquired) == count:
                         self.selected, self.fd = acquired[0]
                         self.held = [entry[1] for entry in acquired]
-                        for index, fd in acquired:
-                            os.ftruncate(fd, 0)
-                            os.pwrite(fd, json.dumps({**note, 'slot': index + 1, 'slots': count,
-                                                     'pid': os.getpid(),
-                                                     'since': time.strftime('%Y-%m-%dT%H:%M:%S%z')}).encode(), 0)
+                        self.describe(note)
                         return
             finally:
                 if len(acquired) < count:
@@ -304,6 +315,15 @@ class Slot:
                               f'{"waited " + str(int(wait)) + " s; " if wait else ""}'
                               'try again when one ends, or pass --wait SECONDS')
             time.sleep(0.5)
+
+    def describe(self, note: dict) -> None:
+        """Publish the current run identity in every slot this caller already holds."""
+        for index, fd in enumerate(self.fds):
+            if fd in self.held:
+                os.ftruncate(fd, 0)
+                os.pwrite(fd, json.dumps({**note, 'slot': index + 1, 'slots': len(self.held),
+                                         'pid': os.getpid(),
+                                         'since': time.strftime('%Y-%m-%dT%H:%M:%S%z')}).encode(), 0)
 
     def release(self) -> None:
         try:

@@ -24,7 +24,7 @@ import sys
 import time
 
 from . import clean, environment, evidence, gitops, jail, owned, procs, report, resources, scratch as storage, sessions, usersite
-from .layout import RESULTS, RUNS, RUN_SOCKETS, SOCKETS, Refused, Root, RunGuard, Slot, git_environment, identity, new_run_id, write_json
+from .layout import RESULTS, RUNS, RUN_SOCKETS, SOCKETS, Refused, Root, RunGuard, Slot, git_environment, identity, reserve_run_id, write_json
 
 GRACE = 15.0
 SETUP_SECONDS = 600.0  # setup's own bound, the slot wait not counted; --timeout bounds pytest alone
@@ -291,7 +291,7 @@ class Runner:
                 change = None if (target.main_checkout or target.branch is None) else target.branch
                 root = Root(target.project)
                 slot = self.slot = Slot(root)
-                self.run = new_run_id()
+                self.run = None
             waiting = time.monotonic()  # the wait for a slot is governed by --wait alone, outside both bounds
             note = {'verb': 'run', 'run': self.run, 'change': change, 'seat': os.environ.get('QD_SEAT')}
             if self.selection['slots'] == 1:
@@ -304,6 +304,8 @@ class Runner:
                     signal.signal(number, self.on_signal)
                 for line in clean.recover(root, change):
                     print(line)
+                self.run = reserve_run_id(root)
+                slot.describe({**note, 'run': self.run})
                 self.run_guard = RunGuard(root, self.run, create=True)
                 self.run_guard.acquire()
                 if change:
