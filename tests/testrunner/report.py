@@ -78,9 +78,9 @@ def selection_label(selected: dict | None) -> str:
     if not selected:
         return 'unrecorded selection'
     if selected['name'] == 'fast':
-        return 'fast: unit, contract'
+        return 'fast: ' + ', '.join(path.removeprefix('tests/') for path in selected['targets'])
     if selected['name'] == 'whole':
-        return 'whole'
+        return 'whole' + (f' ({selected["reason"]})' if selected.get('reason') else '')
     return 'targets: ' + ', '.join(selected['targets'])
 
 

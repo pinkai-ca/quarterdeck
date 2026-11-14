@@ -58,8 +58,8 @@ class FinalizationTimeout(BaseException):
     """Escape cleanup error handlers; the remaining scratch and first result must stay."""
 
 
-def selection(args) -> dict:
-    """Resolve a declared lane or named targets without observing or starting a test."""
+def selection(args, top: Path) -> dict:
+    """Resolve a lane against the target project, without starting a test or changing files."""
     targets = list(args.targets)
     lane = getattr(args, 'lane', None)
     if lane is not None and targets:
@@ -67,20 +67,28 @@ def selection(args) -> dict:
     name = 'targets' if targets else (lane or 'fast')
     if name not in ('fast', 'whole', 'targets'):
         raise Refused('the test selection must be fast, whole or named targets')
-    if not targets:
-        targets = ['tests/unit', 'tests/contract'] if name == 'fast' else ['tests']
+    reason = None
+    if name == 'fast':
+        targets = [path for path in ('tests/unit', 'tests/contract') if (top / path).exists()]
+        if not targets:
+            name, reason = 'whole', 'no tests/unit or tests/contract'
+            # The old project-wide pytest discovery, including projects with tests at their root.
+    elif name == 'whole':
+        targets = ['tests']
     maximum = 16 if name == 'fast' else 8
     workers = maximum if args.workers is None else args.workers
     if not 0 <= workers <= maximum:
         raise Refused(f'-n takes 0 to {maximum} workers for {name}')
-    return {'name': name, 'targets': targets, 'workers': workers, 'slots': 2 if name == 'fast' else 1}
+    selected = {'name': name, 'targets': targets, 'workers': workers, 'slots': 2 if name == 'fast' else 1}
+    if reason:
+        selected['reason'] = reason
+    return selected
 
 
 class Runner:
     def __init__(self, args, runner_files: list[Path]):
         self.args = args
-        self.selection = selection(args)
-        args.workers = self.selection['workers']
+        self.selection = None  # resolve only once the run's target project is known
         self.runner_files = runner_files
         self.signal = None
         self.timed_out = False
@@ -232,13 +240,15 @@ class Runner:
     # -- the run --------------------------------------------------------------------------------------------
     def main(self) -> int:
         args = self.args
-        print('testrun: ' + report.selection_label(self.selection), flush=True)
         root = slot = None
         self.run_guard = None
         self.bound(SETUP_SECONDS, f'time limit of setup, {SETUP_SECONDS:g} s')
         try:
             with self.time_limit():
                 target = gitops.resolve(Path(args.target) if args.target else Path.cwd())
+                self.selection = selection(args, target.top)
+                args.workers = self.selection['workers']
+                print('testrun: ' + report.selection_label(self.selection), flush=True)
                 problems = gitops.dirty(target.top)
                 if problems:
                     shown = '\n  '.join(problems[:20]) + ('\n  ...' if len(problems) > 20 else '')

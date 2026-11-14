@@ -9,8 +9,9 @@ from tests.testrunner import cli, report, run
 from tests.testrunner.layout import Refused
 
 
-def chosen(*arguments):
-    return run.selection(cli.parser().parse_args(['run', *arguments]))
+def chosen(*arguments, top=None):
+    return run.selection(cli.parser().parse_args(['run', *arguments]),
+                         top if top is not None else Path(__file__).resolve().parents[2])
 
 
 @pytest.mark.parametrize('arguments', [(), ('--fast',)])
@@ -70,32 +71,95 @@ def test_lane_flags_are_mutually_exclusive():
 def test_selection_is_pure_and_direct_runner_callers_can_omit_lane():
     args = SimpleNamespace(targets=['tests/unit/example.py'], workers=2)
     before = deepcopy(args)
-    assert run.selection(args) == {
+    assert run.selection(args, Path(__file__).resolve().parents[2]) == {
         'name': 'targets', 'targets': ['tests/unit/example.py'], 'workers': 2, 'slots': 1,
     }
     assert vars(args) == vars(before)
 
 
-def test_runner_records_the_resolved_default_before_starting_any_process():
+def test_constructor_does_not_resolve_selection_before_the_project_is_known():
     args = cli.parser().parse_args(['run'])
     runner = run.Runner(args, [])
-    assert runner.selection == {'name': 'fast', 'targets': ['tests/unit', 'tests/contract'], 'workers': 16, 'slots': 2}
-    assert runner.args.workers == 16
+    assert runner.selection is None
+    assert runner.args.workers is None
+
+
+def test_bound_helpers_keep_the_minimal_argument_namespace_contract():
+    args = SimpleNamespace(timeout=1)
+    runner = run.Runner(args, [])
+    assert runner.args is args
+    assert runner.selection is None
+    assert vars(args) == {'timeout': 1}
 
 
 @pytest.mark.parametrize('arguments,label', [
     ((), 'fast: unit, contract'), (('--whole',), 'whole'),
     (('tests/unit/example.py',), 'targets: tests/unit/example.py'),
 ])
-def test_selection_is_the_first_line_before_setup(arguments, label, monkeypatch, capsys):
+def test_selection_is_the_first_line_after_resolution_before_setup(arguments, label, monkeypatch, capsys, tmp_path):
+    for name in ('unit', 'contract'):
+        (tmp_path / 'tests' / name).mkdir(parents=True)
+
     def before_setup(path):
         raise RuntimeError('synthetic stop before setup')
 
-    monkeypatch.setattr(run.gitops, 'resolve', before_setup)
+    monkeypatch.setattr(run.gitops, 'resolve', lambda path: SimpleNamespace(top=tmp_path))
+    monkeypatch.setattr(run.gitops, 'dirty', before_setup)
     runner = run.Runner(cli.parser().parse_args(['run', *arguments]), [])
     with pytest.raises(RuntimeError, match='synthetic stop before setup'):
         runner.main()
     assert capsys.readouterr().out.splitlines() == ['testrun: ' + label]
+    assert runner.selection == chosen(*arguments, top=tmp_path)
+    assert runner.args.workers == runner.selection['workers']
+
+
+@pytest.mark.parametrize('present', [('unit',), ('contract',), ('unit', 'contract')])
+@pytest.mark.parametrize('flag', [(), ('--fast',)])
+def test_fast_selects_only_the_available_standard_directories(tmp_path, present, flag):
+    for name in present:
+        (tmp_path / 'tests' / name).mkdir(parents=True)
+    selected = chosen(*flag, top=tmp_path)
+    assert selected == {
+        'name': 'fast', 'targets': ['tests/' + name for name in present], 'workers': 16, 'slots': 2,
+    }
+    assert report.selection_label(selected) == 'fast: ' + ', '.join(present)
+
+
+@pytest.mark.parametrize('flag', [(), ('--fast',)])
+def test_a_project_with_neither_standard_directory_uses_whole_discovery(tmp_path, flag):
+    (tmp_path / 'test_example.py').write_text('def test_example():\n    assert True\n')
+    selected = chosen(*flag, top=tmp_path)
+    assert selected == {
+        'name': 'whole', 'targets': [], 'workers': 8, 'slots': 1,
+        'reason': 'no tests/unit or tests/contract',
+    }
+    assert report.selection_label(selected) == 'whole (no tests/unit or tests/contract)'
+    argv = run.pytest_argv(Path('python'), Path('scratch'), selected['workers'], selected['targets'])
+    assert argv[-2:] == ['--dist', 'worksteal']
+
+
+def test_fallback_reason_is_the_first_line_and_in_the_recorded_selection(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(run.gitops, 'resolve', lambda path: SimpleNamespace(top=tmp_path))
+
+    def before_setup(path):
+        raise RuntimeError('synthetic stop before setup')
+
+    monkeypatch.setattr(run.gitops, 'dirty', before_setup)
+    runner = run.Runner(cli.parser().parse_args(['run']), [])
+    with pytest.raises(RuntimeError, match='synthetic stop before setup'):
+        runner.main()
+    assert capsys.readouterr().out.splitlines() == ['testrun: whole (no tests/unit or tests/contract)']
+    assert runner.selection['reason'] == 'no tests/unit or tests/contract'
+    assert runner.args.workers == 8
+
+
+def test_explicit_whole_and_named_paths_do_not_depend_on_standard_directories(tmp_path):
+    assert chosen('--whole', top=tmp_path) == {
+        'name': 'whole', 'targets': ['tests'], 'workers': 8, 'slots': 1,
+    }
+    assert chosen('example.py', top=tmp_path) == {
+        'name': 'targets', 'targets': ['example.py'], 'workers': 8, 'slots': 1,
+    }
 
 
 @pytest.mark.parametrize('arguments,label', [((), 'fast: unit, contract'), (('--whole',), 'whole')])

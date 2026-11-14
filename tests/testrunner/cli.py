@@ -14,13 +14,14 @@ def parser() -> argparse.ArgumentParser:
     top = argparse.ArgumentParser(prog='tests/testrun.py', description=__doc__)
     verbs = top.add_subparsers(dest='verb', required=True)
     p = verbs.add_parser('run', help='fast unit/contract tests by default; --whole for a signing run',
-                        description='Default: fast unit and contract tests at 16 workers. Signing runs explicitly '
+                        description='Default: existing tests/unit and tests/contract at 16 workers; with neither, '
+                                    'whole project discovery at 8 workers, with the reason printed. Signing runs explicitly '
                                     'choose --whole (every test, 8 workers). Four eight-worker slots: fast takes two '
                                     'together, whole/named takes one; bounds unchanged.')
-    p.add_argument('targets', nargs='*', help='named paths or node ids (8 workers by default); omit for fast')
+    p.add_argument('targets', nargs='*', help='named paths or node ids (8 workers by default); omit for fast where available')
     lanes = p.add_mutually_exclusive_group()
     lanes.add_argument('--fast', dest='lane', action='store_const', const='fast',
-                       help='unit and contract tests, 16 workers by default (the default lane)')
+                       help='existing unit/contract directories, 16 workers by default; neither: whole project at 8')
     lanes.add_argument('--whole', dest='lane', action='store_const', const='whole',
                        help='every test, 8 workers by default; required for a signing run')
     p.add_argument('--target', help='the worktree to test (default: the one the current directory is in)')
