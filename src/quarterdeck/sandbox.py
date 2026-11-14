@@ -265,6 +265,14 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
         endpoint_parts(endpoint)  # refused here, before anything starts, when the jail could not reach it
     jail = Jail(home, seat_home, seat_folder, workspace, ship.folder, ship.runtime, tuple(folders),
                 (drop, proof), git_identity(workspace), declarations, view, foreign, endpoint)
+    ssh = Path(os.path.realpath(home / '.ssh'))
+    for folder in (*jail.read_only, jail.workspace, *jail.writable):
+        real = Path(os.path.realpath(folder))
+        if real == ssh or real.is_relative_to(ssh):
+            # Its connection-sharing sockets give a server's session to anything that reaches them; no jail binds it.
+            raise ShipError(f"{seat_name}: sandboxed, and {folder} is the operator's ~/.ssh or lies inside it "
+                            f"({real}); no jail binds it, since its sockets and keys reach the operator's servers. "
+                            "Keep the seat's programs, PATH and working directory out of ~/.ssh")
     if covered := covering(jail):
         what, folder = covered
         raise ShipError(f"{seat_name}: sandboxed with the operator home at {home}, and {what} {folder} is that home or "
@@ -496,7 +504,8 @@ def sockets_masked(jail: Jail) -> list[str]:
     A path socket ignores the jail's own network. /run, /tmp, /dev, /mnt and the homes are emptied inside, and so are
     the covers (other ships' runtimes, test-run folders) and the runtime fence. A socket is masked when the deepest
     mount over it is one that shows it: a folder bound back from a home, the workspace, the seat's own folders or the
-    root itself (a daemon's socket in a snap's run folder, for one). The sockets are those listening as the jail is
+    root itself (a daemon's socket in a snap's run folder, for one). A folder bound through a link is matched by its
+    real path and masked at the path it has inside. The sockets are those listening as the jail is
     built; the launch follows within the same moment, so one that vanishes in between is rare, and stops the launch
     rather than opening anything.
     """
@@ -509,17 +518,27 @@ def sockets_masked(jail: Jail) -> list[str]:
     def depth(path: Path, roots: list[Path]) -> int:
         return max((len(root.parts) for root in roots if path == root or path.is_relative_to(root)), default=-1)
 
-    args = []
-    for path in listening_sockets():
-        covered, bound = depth(path, hidden), depth(path, shown)
-        if covered >= 0 and covered >= bound:
-            continue  # the deepest mount over it empties it: not in sight
-        try:
-            if not stat.S_ISSOCK(path.lstat().st_mode):
+    # A root may run through a link: bwrap binds the link's target at the link's path. So each root is matched by
+    # its real path, and a socket is judged, and masked, at every path it shows inside: its own real path, and each
+    # root as bound plus the socket's path relative to that root's real path.
+    roots = [(root, Path(os.path.realpath(root))) for root in (*hidden, *shown)]
+    args, masked = [], set()
+    for real in listening_sockets():
+        inside = {real}
+        for root, resolved in roots:
+            if real == resolved or real.is_relative_to(resolved):
+                inside.add(root / real.relative_to(resolved))
+        for path in sorted(inside):
+            covered, bound = depth(path, hidden), depth(path, shown)
+            if path in masked or covered >= 0 and covered >= bound:
+                continue  # the deepest mount over it empties it: not in sight there
+            try:
+                if not stat.S_ISSOCK(path.stat().st_mode):
+                    continue
+            except OSError:
                 continue
-        except OSError:
-            continue
-        args += ["--ro-bind", "/dev/null", str(path)]
+            masked.add(path)
+            args += ["--ro-bind", "/dev/null", str(path)]
     return args
 
 
