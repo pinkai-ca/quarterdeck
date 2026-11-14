@@ -154,7 +154,7 @@ def prepare(runtime, message):
         prepare_outbound(runtime)
 
 
-def receive(runtime, entry, raw, data, *, adopt=False):
+def receive(runtime, entry, raw, data, *, adopt=False, source=None):
     """Validate the route carried with this immutable file before making it visible."""
     from . import fleet_post as transport
     saved = entry.get('forward')
@@ -170,8 +170,19 @@ def receive(runtime, entry, raw, data, *, adopt=False):
         raise ShipError('forward provenance does not match the original post')
     for value in saved['via']:
         transport.address(value, entry['origin'])
-    if adopt and entry['origin'] == runtime.parent.name and not path(runtime, raw.id).exists():
-        if resolve(shipmod.load(runtime.parent), raw.to) != saved['via']:
-            raise ShipError('own forwarded ancestry differs from its declared route; retained')
+    # The first-address ship declares the route independently of the post's author.
+    # Reading that declaration also permits an author's first outbound offer before
+    # the declaring ship has ever fetched the file. No peer can invent its route.
+    from .fleet import peers
+    ship = shipmod.load(runtime.parent)
+    authority = peers(ship).get(origin)
+    if authority is None or resolve(authority, saved['from']) != saved['via']:
+        raise ShipError('forward route differs from the declaring ship; retained')
+    pinned = recorded(authority.runtime, raw.id)
+    publisher = source or ship.folder.name
+    if ((pinned is not None and pinned != saved)
+            or (publisher == origin and pinned != saved)
+            or (publisher not in (origin, entry['origin']) and pinned != saved)):
+        raise ShipError("forward route lacks the declaring ship's matching pin; retained")
     if adopt:
         transport.publish(path(runtime, raw.id), transport.encoded(saved))

@@ -362,8 +362,16 @@ def _ownership(source, identifier, origin, message, data, *, root):
         raise ShipError('message author and claimed origin differ')
     imported = provenance(source.runtime, identifier)
     if imported:
-        if root or imported.get('origin') != origin or imported.get('sha256') != digest(data):
+        if imported.get('origin') != origin or imported.get('sha256') != digest(data):
             raise ShipError('foreign-origin posts cross only as verified imported context')
+        if root:
+            # A declared forward is the sole exception to the imported-root hold.
+            # It keeps the author's origin and requires this ship's own exact pin.
+            from .forward_post import recorded, receive
+            saved = recorded(source.runtime, identifier)
+            if not saved or address(saved['from'], origin)[1] != source.folder.name:
+                raise ShipError('only the declaring ship forwards an imported root')
+            receive(source.runtime, dict(origin=origin, forward=saved), message, data)
     elif origin != source.folder.name or address(message.sender, origin)[1] != source.folder.name:
         raise ShipError('a ship offers as origin only the posts it authored')
 
@@ -464,7 +472,7 @@ def fetch(ship, source, path):
             is_direct = raw.id == message.id and direct
             metadata = dict(format=1, origin=entry['origin'], sha256=entry['sha256'], context=True)
             from .forward_post import receive
-            receive(ship.runtime, entry, raw, data, adopt=True)
+            receive(ship.runtime, entry, raw, data, adopt=True, source=source.folder.name)
             local = ship.runtime / 'post' / 'store' / (raw.id + '.json')
             imported = provenance(ship.runtime, raw.id)
             if imported:

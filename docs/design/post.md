@@ -57,6 +57,11 @@ Forwarded bytes retain the old `to` and original id. The receiver records the ro
 making the post eligible. Its view resolves that one recorded recipient to the new seat; the origin's
 view uses the same pinned recipient when matching the new seat's closing report. Return ancestry
 carries that route too, so a closing report reaches the original order without replacing its file.
+Every received route is checked against the first-address ship's own declaration and resolved
+trail, separately from the post author's origin. A saved pin at that declaring ship must match;
+when that ship forwards an imported root, its own matching pin is required. An author's first
+offer may resolve a peer's declaration before the peer has fetched the message. Other ships
+cannot supply a new route in that peer's name. Imported roots otherwise remain ineligible.
 `qd thread` prints the saved old and new addresses for messages its reader sent or received. Imported
 context alone never creates a delivery; an explicit addressed marker is required even when a route
 returns to a different seat on the origin ship and its original file is already there. Normal traffic
