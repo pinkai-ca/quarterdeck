@@ -133,7 +133,7 @@ class Store:
 
     def __init__(self, runtime: Path):
         self.dir = runtime / "post" / "store"
-        self._cache: tuple[tuple[int, ...], list[Message], dict[str, list[Message]]] | None = None
+        self._cache: tuple[tuple[object, ...], list[Message], dict[str, list[Message]]] | None = None
         self._cache_at: int | None = None
 
     def new(self, kind: str, sender: str, to: str, body: str, **fields) -> Message:

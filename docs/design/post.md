@@ -40,6 +40,26 @@ does not move an office or edit any live ship declaration.
 
 An ancestor authored by the destination is an id/hash reference only: sender and fetch verify its existing destination file, and fetch copies no ancestor bytes or metadata. A missing or differing file holds the descendant. Other refused ancestors hold their descendants on both paths; refused roots never become eligible and unreadable refusal evidence holds too. Each offered origin belongs to its authoring ship; a foreign ancestor crosses only as context backed by its import provenance. A jailed sender sees peer declarations through read-only files in otherwise empty, read-only ship folders; peer homes and runtimes stay hidden.
 
+`[forward]` maps retired local seat names to qualified addresses of another ship, for example
+`desk = "desk@office"`. The mapping can retain a name removed from `[seats]`; it cannot replace a
+group, operator or silent sink. Local dispatch stops using that old address as soon as its declaration
+is read. The sender resolves the declared route, retains its immutable `post/forwarded/<id>.json`
+record, and offers the original post with format-2 forwarding provenance. Unresolved old attempts
+hold the forwarding; their evidence is read, never cleared by transport. A loop, unknown destination
+or route changed after publication is retained with an operational hold. Each service still writes
+only its own runtime, including when reading an intermediate ship's old attempt evidence.
+
+Forwarded bytes retain the old `to` and original id. The receiver records the route locally before
+making the post eligible. Its view resolves that one recorded recipient to the new seat; the origin's
+view uses the same pinned recipient when matching the new seat's closing report. Return ancestry
+carries that route too, so a closing report reaches the original order without replacing its file.
+`qd thread` prints the saved old and new addresses for messages its reader sent or received. Imported
+context alone never creates a delivery; an explicit addressed marker is required even when a route
+returns to a different seat on the origin ship and its original file is already there. Normal traffic
+keeps format-1 offers. A service without forwarding support refuses format 2 rather than treating the
+old envelope as a delivered forwarded post. This declares routing only: an office move still needs
+the person's separate instruction and its offline proof.
+
 For a ship declaring `una`, the service observes the framework checkout's local
 `refs/remotes/origin/main`. The first reading establishes a baseline; each later
 observed tip change starts a twenty-minute deadline. Further changes collect in

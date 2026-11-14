@@ -392,6 +392,10 @@ def destinations(ship, store, message):
     from .forward_post import target as forwarded_target
     _, target = address(forwarded_target(ship, message), ship.folder.name)
     targets = {target} - {ship.folder.name}
+    if target == ship.folder.name:
+        from .forward_post import recorded
+        if recorded(ship.runtime, message.id) or address(message.to, ship.folder.name)[1] != ship.folder.name:
+            targets.add(target)  # a declared route can return to a different seat on its origin ship
     # A report closes its addressee's order even when addressed to the silent ship sink.
     if message.kind == 'report' and message.re:
         order = store.get(message.re)
@@ -527,13 +531,13 @@ def run(ship, store):
         # The store listing is the no-follow walk. A linked store is a hold, not a failed tick.
         errors = [_hold_line('outbound held', error)]
     for name, source in peers(ship).items():
-        if source.folder == ship.folder:
-            continue
         directory = source.runtime / 'post' / 'outbound' / ship.folder.name
         try:
             for path in post_dir.json_paths(directory):
                 try:
                     value, _ = _offer(source, ship.folder.name, path)
+                    if source.folder == ship.folder and value['format'] != 2:
+                        raise ShipError('only recorded forwarding routes have a local fetch')
                     if not fetched(source, ship, value):
                         fetch(ship, source, path)
                         store._cache = None

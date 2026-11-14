@@ -76,6 +76,17 @@ def test_forwarding_a_previously_fetched_message_preserves_the_original_origin(p
     assert json.loads(wire(left, order))['to'] == 'captain@beta'
 
 
+def test_a_forwarding_route_can_return_to_another_seat_on_its_origin_ship(pair):
+    left, right, source, destination = pair
+    right = forward(right, target='writer@alpha')
+    order = source.new('order', 'writer', 'captain@beta', 'Follow the declared terminal address.')
+    assert fleet.run(left, source) == []
+    assert source.get(order.id).to == 'writer'
+    assert source.open_for('writer')[0].id == order.id
+    assert len(source.all()) == 1 and destination.all() == []
+    assert json.loads(wire(left, order))['to'] == 'captain@beta'
+
+
 @pytest.mark.parametrize('table', ['[forward]\ncaptain=42', '[forward]\ncaptain="bare"',
                                   '[forward]\ncaptain="a@b@c"'])
 def test_forward_declaration_requires_a_qualified_target(pair, table):

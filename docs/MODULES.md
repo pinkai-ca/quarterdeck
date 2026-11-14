@@ -126,6 +126,7 @@ quarterdeck/                       the project folder: the framework repository
     post.py        messages: store, inbox, the typed form, the watch
     fleet.py       declaration-derived project office and sibling ship discovery, shared with raise
     fleet_post.py  sender-owned outbound offers and receiver-owned immutable fetches and receipts
+    forward_post.py pinned old-address routes, recorded recipient identity and return ancestry
     structure_outcome.py shared ended-turn association, in-memory service-pass grace and read-only derived waits
     group_post.py  declared fanout, fixed intents and member outcomes, current dead/held-limit observation, terminal notices and derived group holds
     thread_context.py   open-root amendment selection, context-only own questions and exact whole-input consumed-bundle matching
