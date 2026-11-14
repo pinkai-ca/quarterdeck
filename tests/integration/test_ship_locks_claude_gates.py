@@ -65,12 +65,26 @@ for folder, folders, files in os.walk(ship, followlinks=False):
 locks = os.path.join(ship, 'runtime', 'locks')
 report = dict(held=[path for _, path in held], lock_files=seen_locks,
               locks_folder=sorted(os.listdir(locks)) if os.path.isdir(locks) else None)
-with open(os.path.join(work, 'held.json'), 'w') as stream:
+with open(os.path.join(work, 'held.json.tmp'), 'w') as stream:  # whole, then renamed: never read half-written
     json.dump(report, stream)
+os.replace(os.path.join(work, 'held.json.tmp'), os.path.join(work, 'held.json'))
 deadline = time.monotonic() + 120
 while not os.path.exists(os.path.join(work, 'done')) and time.monotonic() < deadline:
     time.sleep(0.02)
 '''
+
+
+def wait_for_reading(path: Path, child: subprocess.Popen, seconds: float) -> dict:
+    """The probe's report, once it parses whole, within the bound; the jail's own output if it never does."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        try:
+            return json.loads(path.read_text())
+        except (FileNotFoundError, json.JSONDecodeError):
+            if child.poll() is not None:
+                break
+            time.sleep(0.02)
+    pytest.fail(f'the jailed probe gave no whole report within {seconds:g}s: {child.communicate(timeout=10)}')
 
 
 def descriptor_path(target) -> str | None:
@@ -138,11 +152,7 @@ def test_no_lock_the_ship_takes_can_be_held_from_a_jail_and_nothing_waits_on_one
     finished: list[float] = []
     failure: list[BaseException] = []
     try:
-        deadline = time.monotonic() + 60
-        while not (workspace / 'held.json').exists() and child.poll() is None and time.monotonic() < deadline:
-            time.sleep(0.02)
-        assert (workspace / 'held.json').exists(), child.communicate(timeout=10)
-        seen = json.loads((workspace / 'held.json').read_text())
+        seen = wait_for_reading(workspace / 'held.json', child, 60)
         assert seen['held'], 'the jail holds whatever it can open: the probe works'
 
         real = fcntl.flock
