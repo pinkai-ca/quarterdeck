@@ -40,6 +40,12 @@ HIDDEN_BYTES = 1024 * 1024  # every other tmpfs inside is a fence or a hidden fo
 # The post is shown as the seat's own view of it (post_view), never whole: see Jail.post_view.
 RUNTIME_SHOWN = ('.git', 'bin', 'venv', 'venv.prev', 'installed.json', 'service.heartbeat')
 # Of the briefs, only the seat's own: every seat's brief lies in that folder, the counsel's included.
+RUN_BYTES = 16 * 1024 * 1024  # the jail's own /run: a private runtime folder and the resolver's file, nothing more
+SCRATCH_BYTES = 16 * 1024 * 1024  # an empty /mnt/scratch: the machine's shared scratch is hidden
+SCRATCH = Path('/mnt/scratch')
+# Ways into the operator's desktop session that a program finds by its environment; none is passed into a jail.
+SESSION_VARIABLES = ('DBUS_SESSION_BUS_ADDRESS', 'DISPLAY', 'WAYLAND_DISPLAY', 'SSH_AUTH_SOCK', 'GPG_AGENT_INFO',
+                     'XAUTHORITY')
 HOPS = 20  # a chain of links longer than this is nobody's install
 # What the jail hides besides the operator's home: its own empty /tmp and its fresh /dev, whose /dev/shm is empty.
 # A folder the launch needs below one of them is bound back read-only, as one below the home is; the mount
@@ -328,10 +334,77 @@ def hidden_folders(programs: tuple[str, ...], path: str, home: Path) -> list[Pat
                   key=lambda f: (len(f.parts), str(f)))
 
 
+def runtime_dir() -> Path:
+    """The jail's own XDG_RUNTIME_DIR: the operator's path, empty and private inside."""
+    return Path('/run/user') / str(os.getuid())
+
+
+def session_hidden() -> list[str]:
+    """The operator's desktop session, out of the jail's reach.
+
+    A read-only mount does not stop a socket connect, so /run is an empty tmpfs: the session bus and the user
+    manager, the keyring, gpg and ssh agents, wayland, the system bus and every other daemon's socket there are
+    gone. Only the resolver's file is bound back, read-only, when /etc/resolv.conf leads into /run, and a private,
+    empty runtime folder is made for the program. /mnt/scratch, the machine's shared scratch, is an empty tmpfs.
+    """
+    args = ["--size", str(RUN_BYTES), "--tmpfs", "/run"]
+    resolver = Path(os.path.realpath('/etc/resolv.conf'))
+    if resolver.is_relative_to('/run') and resolver.is_file() and not resolver.is_symlink():
+        args += ["--ro-bind", str(resolver), str(resolver)]
+    args += ["--perms", "0700", "--dir", str(runtime_dir())]
+    if SCRATCH.is_dir() and not SCRATCH.is_symlink():
+        args += ["--size", str(SCRATCH_BYTES), "--tmpfs", str(SCRATCH)]
+    return args
+
+
+def listening_sockets() -> list[Path]:
+    """Path sockets that some process listens on, from the kernel's own table (what ``ss -xl`` lists)."""
+    found = []
+    try:
+        lines = Path('/proc/net/unix').read_text().splitlines()[1:]
+    except OSError:
+        return found
+    for line in lines:
+        fields = line.split()
+        # Num RefCount Protocol Flags Type St Inode Path: a listening socket has __SO_ACCEPTCON (0x10000) set.
+        if len(fields) < 8 or not int(fields[3], 16) & 0x10000 or not fields[7].startswith('/'):
+            continue
+        found.append(Path(fields[7]))
+    return sorted(set(found))
+
+
+def sockets_masked(jail: Jail) -> list[str]:
+    """A listening socket the jail would still show, with /dev/null bound over it so a connect fails.
+
+    Most sockets are already out of sight: /run, /tmp and /dev are the jail's own, and the operator's home is
+    empty but for what is bound back. This covers the rest, as found when the jail is built, wherever a mount
+    would show one: the bound-back folders, the workspace, the ship, or the root itself.
+    """
+    hidden = [Path('/run'), Path('/tmp'), Path('/dev'), Path('/proc'), SCRATCH, jail.home,
+              jail.runtime / 'seats', jail.runtime / 'tmux', jail.runtime / LOCKS]
+    shown = [jail.workspace, jail.ship_folder, jail.seat_folder, *jail.read_only, *jail.writable]
+
+    def depth(path: Path, roots: list[Path]) -> int:
+        return max((len(root.parts) for root in roots if path == root or path.is_relative_to(root)), default=-1)
+
+    args = []
+    for path in listening_sockets():
+        if depth(path, hidden) >= depth(path, shown) and depth(path, hidden) >= 0:
+            continue  # under a mount the jail empties, and no deeper mount shows it again
+        try:
+            if not stat.S_ISSOCK(path.lstat().st_mode):
+                continue
+        except OSError:
+            continue
+        args += ["--ro-bind", "/dev/null", str(path)]
+    return args
+
+
 def command(jail: Jail, argv: list[str]) -> list[str]:
     """The ``bwrap`` command line around a program's own."""
     args = [PROGRAM, "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
             "--size", str(TMP_BYTES), "--tmpfs", "/tmp"]
+    args += session_hidden()
     # The operator's home is an empty tmpfs placed in depth order like every other mount: after any folder that
     # contains it, which it then covers again, and before the folders inside it that are bound back.
     mounts: list[tuple[str, Path]] = [("--tmpfs", jail.home)]
@@ -404,6 +477,10 @@ def command(jail: Jail, argv: list[str]) -> list[str]:
             args += [flag, str(folder), str(folder)]
     for folder in fenced:  # after every mount inside it, which needed its mount point made there
         args += ['--remount-ro', str(folder)]
+    args += sockets_masked(jail)
+    for variable in SESSION_VARIABLES:
+        args += ["--unsetenv", variable]
+    args += ["--setenv", "XDG_RUNTIME_DIR", str(runtime_dir())]
     for variable, value in jail.environment:
         args += ["--setenv", variable, value]
     # The launch's TMPDIR may name a filesystem the jail mounts read-only; the program
