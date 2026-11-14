@@ -1,7 +1,8 @@
 """Ephemeral working storage; durable ownership and test evidence stay in .testruns/results.
 
 Linux statfs establishes the filesystem type. Names such as /tmp never establish that a folder is
-in memory. Each run has its own reservation, including a crashed or kept run.
+in memory. The CI child deliberately models a disk-only filesystem view; the controller admits actual
+memory through a separate physical observer. Each run has its own reservation, including a crashed or kept run.
 """
 from __future__ import annotations
 
@@ -24,7 +25,7 @@ MEMORY_TYPES = {0x01021994: 'tmpfs', 0x858458f6: 'ramfs'}
 RECORD = 'storage.json'
 
 
-def filesystem(fd):
+def physical_filesystem(fd):
     # statfs starts with a native long f_type; an oversized aligned buffer holds the Linux structure.
     libc = ctypes.CDLL(None, use_errno=True)
     buffer = (ctypes.c_long * 64)()
@@ -34,6 +35,11 @@ def filesystem(fd):
     return MEMORY_TYPES.get(buffer[0] & 0xffffffff)
 
 
+def filesystem(fd):
+    # The CI child models a disk-only runner, including its own synthetic temporary folders.
+    return None if os.environ.get(CI_DISK_ENV) == '1' else physical_filesystem(fd)
+
+
 def project_name(project):
     digest = hashlib.sha256(os.fsencode(project)).hexdigest()[:16]
     return f'qd-{os.getuid()}-{digest}'
@@ -41,34 +47,22 @@ def project_name(project):
 
 def candidates(environ=None):
     environ = os.environ if environ is None else environ
-    # CI's inherited TMPDIR is the logical drive path, physically inside outer memory scratch.
-    # An explicitly supplied environment, or a patched candidates() provider, keeps its own candidates.
-    temporary = None if environ is os.environ and environ.get(CI_DISK_ENV) == '1' else environ.get('TMPDIR')
-    return list(dict.fromkeys(Path(p).absolute() for p in (temporary, '/dev/shm', '/tmp') if p))
+    return list(dict.fromkeys(Path(p).absolute() for p in (environ.get('TMPDIR'), '/dev/shm', '/tmp') if p))
 
 
 CI_DISK_ENV = 'TESTRUNS_CI_DISK'  # the CI runner reports no eligible memory filesystem
 
 
-def available_bytes(path, descriptor, *, physical=False):
-    space = os.fstatvfs(descriptor)
-    if (not physical and os.environ.get(CI_DISK_ENV) == '1'
-            and path in (Path('/dev/shm'), Path('/tmp')) and filesystem(descriptor)):
-        return 0  # the hosted runner's real memory bases cannot cover the reservation
-    return space.f_bavail * space.f_frsize
-
-
 def choices(bound=BOUND, *, physical=False):
-    bases = candidates({'TMPDIR': os.environ.get('TMPDIR', '')}) if physical else candidates()
-    for path in bases:
+    for path in candidates():
         try:
             if path.resolve() != path or not os.access(path, os.W_OK | os.X_OK):
                 continue
             fd = os.open(path, DIRECTORY)
             try:
-                kind = filesystem(fd)
+                kind = physical_filesystem(fd) if physical else filesystem(fd)
                 space = os.fstatvfs(fd)
-                if kind and not space.f_flag & getattr(os, 'ST_NOEXEC', 8) and available_bytes(path, fd, physical=physical) >= bound:
+                if kind and not space.f_flag & getattr(os, 'ST_NOEXEC', 8) and space.f_bavail * space.f_frsize >= bound:
                     yield path, kind
             finally:
                 os.close(fd)
@@ -80,13 +74,14 @@ def choose(bound=BOUND):
     return next(choices(bound), None)
 
 
-def memory_root(project, base, *, create=True, name=None):
+def memory_root(project, base, *, create=True, name=None, physical=False):
     base = Path(base)
     if not base.is_absolute() or base.resolve() != base:
         raise Refused(f'{base}: memory storage base is not an absolute plain path')
     fd = os.open(base, DIRECTORY)
     try:
-        if not filesystem(fd):
+        kind = physical_filesystem(fd) if physical else filesystem(fd)
+        if not kind:
             raise Refused(f'{base}: recorded working storage is no longer tmpfs or ramfs')
         name = project_name(project) if name is None else name
         if not isinstance(name, str) or not name or '/' in name or '\0' in name or name in ('.', '..'):
@@ -248,7 +243,8 @@ def prepare(root, run, *, memory_required=False):
                     continue
             finally:
                 os.close(base_fd)
-            where, fd = memory_root(root.project, base)
+            where, fd = (memory_root(root.project, base, physical=True) if memory_required
+                         else memory_root(root.project, base))
             try:
                 from . import procs
                 data = {'run': run, 'base': str(base), 'root': where.name,

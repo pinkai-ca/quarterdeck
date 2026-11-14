@@ -1,10 +1,11 @@
 """Ordinary CI selection, command and declared disk-layout behavior."""
 import os
+import sys
 from pathlib import Path
 
 import pytest
 
-from tests.testrunner import cli, environment, run, scratch
+from tests.testrunner import cli, environment, run, scratch, usersite
 
 
 def test_ci_layout_is_orthogonal_to_explicit_whole_and_author_fast(tmp_path):
@@ -73,26 +74,42 @@ def test_nested_default_tool_environment_retains_the_ci_no_room_constraint(tmp_p
     assert scratch.plain(tmp_path) is None
 
 
-def test_ci_default_candidates_model_real_bases_but_explicit_candidates_keep_their_folder(tmp_path, monkeypatch):
+def test_ci_disk_view_keeps_a_tests_explicit_filesystem_standin(tmp_path, monkeypatch):
     monkeypatch.setenv(scratch.CI_DISK_ENV, '1')
     monkeypatch.setenv('TMPDIR', str(tmp_path))
-    assert scratch.candidates() == [Path('/dev/shm'), Path('/tmp')]
-    assert scratch.candidates({'TMPDIR': str(tmp_path)})[0] == tmp_path
+    assert scratch.candidates()[0] == tmp_path
     monkeypatch.setattr(scratch, 'candidates', lambda: [tmp_path])
     monkeypatch.setattr(scratch, 'filesystem', lambda descriptor: 'tmpfs')
     assert list(scratch.choices(bound=1)) == [(tmp_path, 'tmpfs')]
 
 
-@pytest.mark.parametrize('base', ['/dev/shm', '/tmp'])
-def test_ci_only_real_bases_have_simulated_no_room_while_physical_admission_is_real(base, tmp_path, monkeypatch):
+def test_ci_filesystem_view_is_disk_for_each_folder_but_physical_observation_stays_real(tmp_path, monkeypatch):
+    first, second = tmp_path / 'first', tmp_path / 'second'
+    first.mkdir()
+    second.mkdir()
+    monkeypatch.setattr(scratch, 'physical_filesystem', lambda descriptor: 'tmpfs')
     monkeypatch.setenv(scratch.CI_DISK_ENV, '1')
-    monkeypatch.setattr(scratch, 'filesystem', lambda descriptor: 'tmpfs')
-    fd = os.open(tmp_path, scratch.DIRECTORY)
+    for path in (first, second):
+        fd = os.open(path, scratch.DIRECTORY)
+        try:
+            assert scratch.filesystem(fd) is None
+            assert scratch.physical_filesystem(fd) == 'tmpfs'
+        finally:
+            os.close(fd)
+    monkeypatch.delenv(scratch.CI_DISK_ENV)
+    fd = os.open(first, scratch.DIRECTORY)
     try:
-        actual = os.fstatvfs(fd)
-        expected = actual.f_bavail * actual.f_frsize
-        assert scratch.available_bytes(Path(base), fd) == 0
-        assert scratch.available_bytes(Path(base), fd, physical=True) == expected
-        assert scratch.available_bytes(tmp_path, fd) == expected
+        assert scratch.filesystem(fd) == 'tmpfs'
     finally:
         os.close(fd)
+
+
+def test_ci_nested_resolution_keeps_the_carried_userbase_without_a_normal_run_flag(tmp_path, monkeypatch):
+    declared = tmp_path / 'declared-base'
+    monkeypatch.setenv('HOME', str(tmp_path / 'replaced-home'))
+    monkeypatch.setenv('TESTRUNS_USERBASE', str(declared))
+    monkeypatch.setenv(scratch.CI_DISK_ENV, '1')
+    monkeypatch.delenv('TESTRUNS_RUN', raising=False)
+    found = usersite.resolve(sys.executable)
+    assert Path(found['base']) == declared
+    assert Path(found['site']).is_relative_to(declared)

@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 
 from tests.testrunner import layout, scratch
@@ -24,7 +25,13 @@ def test_actual_checkout_has_its_own_git_common_directory():
 
 def test_actual_test_temp_is_inside_that_checkout_and_inherits_its_git_context(tmp_path):
     assert tmp_path.is_relative_to(ROOT / '.testruns/t')
-    assert scratch.in_memory(tmp_path) is True  # physical storage; the runner's drive layout is simulated
+    fd = os.open(tmp_path, scratch.DIRECTORY)
+    try:
+        assert scratch.physical_filesystem(fd) in ('tmpfs', 'ramfs')
+        assert scratch.filesystem(fd) is None
+    finally:
+        os.close(fd)
+    assert scratch.in_memory(tmp_path) is False  # the code under test sees the runner's disk world
     assert Path(os.environ['TMPDIR']) == tmp_path
     assert Path(git(tmp_path, 'rev-parse', '--show-toplevel')) == ROOT
 
@@ -52,7 +59,13 @@ def test_logical_disk_fallback_stays_on_physical_memory_and_uses_the_genuine_rea
         choice = scratch.prepare(root, '20000101-000000-abcd')
         assert choice['kind'] == 'disk'
         assert Path(choice['path']).is_relative_to(project / '.testruns')
-        assert scratch.in_memory(Path(choice['path'])) is True
+        fd = os.open(project, scratch.DIRECTORY)
+        try:
+            assert scratch.physical_filesystem(fd) in ('tmpfs', 'ramfs')
+            assert scratch.filesystem(fd) is None
+        finally:
+            os.close(fd)
+        assert scratch.in_memory(Path(choice['path'])) is False
         assert choice['reason'] == ('no writable executable tmpfs/ramfs has room for a 4 GiB reservation '
                                     'plus the 8 GiB margin and outstanding reservations')
     finally:
@@ -66,3 +79,26 @@ def test_ordinary_private_server_still_starts_and_ends_without_normal_registry_v
         assert identity.id.startswith('$')
     finally:
         assert tmux.close() is True
+
+
+def test_nested_tool_uses_the_activated_checkout_python_and_can_start_xdist(tmp_path):
+    ordinary = ROOT / '.venv/bin/python3'
+    assert Path(shutil.which('python3')) == ordinary
+    project = tmp_path / 'nested-ordinary-project'
+    project.mkdir()
+    (project / 'test_sample.py').write_text('import xdist\ndef test_sample():\n    assert xdist.__version__\n')
+    for args in (['init', '-q'], ['add', 'test_sample.py'],
+                 ['-c', 'user.name=Synthetic Author', '-c', 'user.email=author@example.invalid',
+                  'commit', '-qm', 'Synthetic ordinary test']):
+        subprocess.run(['git', '-C', str(project), *args], check=True, timeout=10)
+    result = subprocess.run([str(ordinary), '-I', str(ROOT / 'tests/testrun.py'), 'run',
+                             '--target', str(project), '-n', '2', '--timeout', '60', 'test_sample.py'],
+                            cwd=project, capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stdout + result.stderr
+    results = list((project / '.testruns/results').glob('*/result.json'))
+    assert len(results) == 1
+    evidence = json.loads(results[0].read_text())
+    assert evidence['tools']['ordinary_python3']['path'] == str(ordinary)
+    assert evidence['tools']['run_venv']['xdist'] is not None
+    assert evidence['evidence']['counts']['passed'] == 1
+    assert evidence['cleanup']['outcome'] == 'complete'

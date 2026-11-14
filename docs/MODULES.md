@@ -168,7 +168,8 @@ quarterdeck/                       the project folder: the framework repository
 
                    CI layout: testrunner/run.py gitops.py environment.py scratch.py clean.py;
                    evidence_plugin.py evidence.py report.py measure session layout and outcomes;
-                   sessions.py servers.py accept the trusted CI plugin's explicit run context
+                   sessions.py servers.py accept the trusted CI plugin's explicit run context;
+                   usersite.py carries the resolved tool base through CI nested runs
     unit/test_ci_lane_options.py  ordinary CI/fast/whole command and declared disk-policy cases
     integration/ci_layout_ordinary_probe.py  explicitly selected ordinary real-mode Git/temp/environment observations
     integration/ci_layout_probe.py test_testrun_ci_layout_gates.py test_testrun_ci_layout_corrections.py

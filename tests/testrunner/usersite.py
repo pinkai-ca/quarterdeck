@@ -53,7 +53,8 @@ def resolve(python: str) -> dict:
     """The user site as the ordinary interpreter computes it, in the caller's environment (HOME untouched), or,
     for a run started inside a run, at the base the outer run carried."""
     env = dict(os.environ)
-    if env.get('TESTRUNS_RUN') and env.get('TESTRUNS_USERBASE'):  # a run inside a run: HOME is already replaced
+    if (env.get('TESTRUNS_RUN') or env.get('TESTRUNS_CI_DISK') == '1') and env.get('TESTRUNS_USERBASE'):
+        # CI omits TESTRUNS_RUN, but HOME is already replaced there too.
         env['PYTHONUSERBASE'] = env['TESTRUNS_USERBASE']
     # -s: the asking interpreter computes the user site and processes nothing in it
     done = subprocess.run([python, '-s', '-B', '-c', RESOLVE], capture_output=True, text=True, timeout=60, env=env)
