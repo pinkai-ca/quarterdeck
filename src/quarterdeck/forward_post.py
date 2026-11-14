@@ -75,6 +75,11 @@ def projected(runtime, message, *, open_obligation=False):
             return replace(message, to=target if destination == here else saved['to'])
         return message
     target = declared(runtime).get(message.to) if open_obligation else None
+    if target:
+        from . import compaction
+        reserved, transition = compaction.withheld(runtime, message.to)
+        if message.id in reserved or transition:
+            return message
     return replace(message, to=target) if target else message
 
 

@@ -44,7 +44,11 @@ An ancestor authored by the destination is an id/hash reference only: sender and
 `desk = "desk@office"`. The mapping can retain a name removed from `[seats]`; it cannot replace a
 group, operator or silent sink. Local dispatch stops using that old address as soon as its declaration
 is read. The sender resolves the declared route, retains its immutable `post/forwarded/<id>.json`
-record, and offers the original post with format-2 forwarding provenance. Unresolved old attempts
+record, and offers the original post with format-2 forwarding provenance. Only open orders and
+questions cross to the new address; settled messages and acknowledgments keep their original
+recipient. Closure is decided before applying a declaration, so an old closing report keeps its
+order closed. A reserved compaction handoff and an active successor transition stay at the old
+seat, including its local view. Unresolved old attempts
 hold the forwarding; their evidence is read, never cleared by transport. A loop, unknown destination
 or route changed after publication is retained with an operational hold. Each service still writes
 only its own runtime, including when reading an intermediate ship's old attempt evidence.

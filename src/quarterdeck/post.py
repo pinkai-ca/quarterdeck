@@ -245,16 +245,18 @@ class Store:
                         replies.setdefault(message.re, []).append(message)
                 # Decide openness before projecting declarations: an old closing report
                 # must keep its order closed, and settled history keeps its old address.
-                from .forward_post import projected
-                messages = [projected(self.dir.parent.parent, m, open_obligation=(
-                    m.kind in ("order", "question") and not any(
-                        r.kind == ("report" if m.kind == "order" else "answer")
-                        and (m.kind != "order" or r.sender == m.to)
-                        for r in replies.get(m.id, ())))) for m in messages]
-                replies = {}
-                for message in messages:
-                    if message.re:
-                        replies.setdefault(message.re, []).append(message)
+                from .forward_post import declared, projected
+                routes = declared(self.dir.parent.parent)
+                if routes:
+                    messages = [projected(self.dir.parent.parent, m, open_obligation=(
+                        m.kind in ("order", "question") and not any(
+                            r.kind == ("report" if m.kind == "order" else "answer")
+                            and (m.kind != "order" or r.sender == m.to)
+                            for r in replies.get(m.id, ())))) if m.to in routes else m for m in messages]
+                    replies = {}
+                    for message in messages:
+                        if message.re:
+                            replies.setdefault(message.re, []).append(message)
                 self._cache = (stamp, messages, replies)
                 finished = time.time_ns()
                 # Certify only a listing begun after the entire timestamp bucket.
@@ -308,16 +310,18 @@ class Store:
                         replies.setdefault(message.re, []).append(message)
                 # Decide openness before projecting declarations: an old closing report
                 # must keep its order closed, and settled history keeps its old address.
-                from .forward_post import projected
-                messages = [projected(self.dir.parent.parent, m, open_obligation=(
-                    m.kind in ("order", "question") and not any(
-                        r.kind == ("report" if m.kind == "order" else "answer")
-                        and (m.kind != "order" or r.sender == m.to)
-                        for r in replies.get(m.id, ())))) for m in messages]
-                replies = {}
-                for message in messages:
-                    if message.re:
-                        replies.setdefault(message.re, []).append(message)
+                from .forward_post import declared, projected
+                routes = declared(self.dir.parent.parent)
+                if routes:
+                    messages = [projected(self.dir.parent.parent, m, open_obligation=(
+                        m.kind in ("order", "question") and not any(
+                            r.kind == ("report" if m.kind == "order" else "answer")
+                            and (m.kind != "order" or r.sender == m.to)
+                            for r in replies.get(m.id, ())))) if m.to in routes else m for m in messages]
+                    replies = {}
+                    for message in messages:
+                        if message.re:
+                            replies.setdefault(message.re, []).append(message)
                 self._cache = (stamp, messages, replies)
                 finished = time.time_ns()
                 # Certify only a listing begun after the entire timestamp bucket.
