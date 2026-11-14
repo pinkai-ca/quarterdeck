@@ -242,6 +242,13 @@ def test_service_holds_unresolved_selection_and_continues_healthy_receipts_and_r
         assert svc.account_driver.active
         assert svc.ledger.db.execute('SELECT count(*) FROM turns WHERE seat=?', ('healthy',)).fetchone()[0] == 0
     resume()
+    from tests.integration.waiting import wait_for
+
+    def accounted():
+        svc.tick()
+        return svc.ledger.db.execute('SELECT count(*) FROM turns WHERE seat=?', ('healthy',)).fetchone()[0] == 2
+
+    wait_for(accounted, seconds=60)
     assert svc.ledger.db.execute('SELECT count(*) FROM turns WHERE seat=?', ('healthy',)).fetchone()[0] == 2
     holds = [json.loads(line) for line in svc.log_path.read_text().splitlines() if json.loads(line)['event'] == 'held']
     assert holds and all(row['seat'] == 'worker' and 'saved pool missing' in row['error'] for row in holds)
