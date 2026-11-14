@@ -238,3 +238,27 @@ def test_a_reader_beside_a_writer_that_replaces_whole_is_never_refused(tmp_path:
         stop.set()
         thread.join(timeout=5)
     assert reads > 1000 and refused == [], refused[:3]
+
+
+def move_away(path):
+    """As the retirement moves a finished attempt: one rename of the same file into another folder."""
+    retired = path.parent.parent / 'retired' / path.name
+    retired.parent.mkdir(parents=True, exist_ok=True)
+    path.rename(retired)
+
+
+def test_a_file_moved_away_during_the_read_reads_as_gone_never_as_changed(tmp_path: Path, monkeypatch):
+    path = tmp_path / 'runtime' / 'post' / 'attempts' / 'attempt.json'
+    path.parent.mkdir(parents=True)
+    path.write_bytes(ORIGINAL)
+    done = act_after_first_fstat(monkeypatch, path, move_away)
+    with pytest.raises(FileNotFoundError):
+        post_dir.read_bytes(path)
+    assert done and (tmp_path / 'runtime' / 'post' / 'retired' / 'attempt.json').read_bytes() == ORIGINAL
+
+
+def test_a_name_gone_before_the_read_is_missing_not_changed(tmp_path: Path):
+    path = tmp_path / 'runtime' / 'post' / 'attempts' / 'attempt.json'
+    path.parent.mkdir(parents=True)
+    with pytest.raises(FileNotFoundError):
+        post_dir.read_bytes(path)
