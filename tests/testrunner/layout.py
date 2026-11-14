@@ -242,7 +242,7 @@ def run_name(run: str) -> str:
 
 
 class Slot:
-    """One of four exclusive run slots, each permitting at most eight pytest workers."""
+    """One or more of four eight-worker slots, acquired without holding a partial set while waiting."""
 
     def __init__(self, root: Root):
         self.root, self.fds, self.selected, self.held = root, [], None, []
@@ -270,21 +270,37 @@ class Slot:
             holders.append(f'slot {index + 1}: {note or "unknown holder"}')
         return '; '.join(holders)
 
-    def acquire(self, note: dict, wait: float = 0.0) -> None:
+    def acquire(self, note: dict, wait: float = 0.0, *, count: int = 1) -> None:
+        if type(count) is not int or not 1 <= count <= SLOT_COUNT:
+            raise Refused(f'a run needs 1 to {SLOT_COUNT} test slots')
         deadline = time.monotonic() + max(wait, 0.0)
         while True:
-            for index, fd in enumerate(self.fds):
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    continue
-                self.fd, self.selected, self.held = fd, index, [fd]
-                os.ftruncate(fd, 0)
-                os.pwrite(fd, json.dumps({**note, 'slot': index + 1, 'pid': os.getpid(),
-                                         'since': time.strftime('%Y-%m-%dT%H:%M:%S%z')}).encode(), 0)
-                return
+            acquired = []
+            try:
+                for index, fd in enumerate(self.fds):
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        continue
+                    acquired.append((index, fd))
+                    if len(acquired) == count:
+                        self.selected, self.fd = acquired[0]
+                        self.held = [entry[1] for entry in acquired]
+                        for index, fd in acquired:
+                            os.ftruncate(fd, 0)
+                            os.pwrite(fd, json.dumps({**note, 'slot': index + 1, 'slots': count,
+                                                     'pid': os.getpid(),
+                                                     'since': time.strftime('%Y-%m-%dT%H:%M:%S%z')}).encode(), 0)
+                        return
+            finally:
+                if len(acquired) < count:
+                    # An unsuccessful attempt holds nothing while it waits for the complete set.
+                    for index, fd in acquired:
+                        fcntl.flock(fd, fcntl.LOCK_UN)
             if time.monotonic() >= deadline:
-                raise Refused(f'all {SLOT_COUNT} test slots are busy: {self.holder()}; '
+                reason = (f'all {SLOT_COUNT} test slots are busy' if count == 1 else
+                          f'{count} free test slots are needed together')
+                raise Refused(f'{reason}: {self.holder()}; '
                               f'{"waited " + str(int(wait)) + " s; " if wait else ""}'
                               'try again when one ends, or pass --wait SECONDS')
             time.sleep(0.5)

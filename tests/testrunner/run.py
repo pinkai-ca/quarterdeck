@@ -73,7 +73,7 @@ def selection(args) -> dict:
     workers = maximum if args.workers is None else args.workers
     if not 0 <= workers <= maximum:
         raise Refused(f'-n takes 0 to {maximum} workers for {name}')
-    return {'name': name, 'targets': targets, 'workers': workers}
+    return {'name': name, 'targets': targets, 'workers': workers, 'slots': 2 if name == 'fast' else 1}
 
 
 class Runner:
@@ -263,7 +263,11 @@ class Runner:
                 slot = self.slot = Slot(root)
                 self.run = new_run_id()
             waiting = time.monotonic()  # the wait for a slot is governed by --wait alone, outside both bounds
-            slot.acquire({'verb': 'run', 'run': self.run, 'change': change, 'seat': os.environ.get('QD_SEAT')}, args.wait)
+            note = {'verb': 'run', 'run': self.run, 'change': change, 'seat': os.environ.get('QD_SEAT')}
+            if self.selection['slots'] == 1:
+                slot.acquire(note, args.wait)
+            else:
+                slot.acquire(note, args.wait, count=self.selection['slots'])
             self.deadline += time.monotonic() - waiting
             with self.time_limit():
                 for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):

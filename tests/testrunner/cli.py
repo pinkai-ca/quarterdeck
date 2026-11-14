@@ -15,7 +15,8 @@ def parser() -> argparse.ArgumentParser:
     verbs = top.add_subparsers(dest='verb', required=True)
     p = verbs.add_parser('run', help='fast unit/contract tests by default; --whole for a signing run',
                         description='Default: fast unit and contract tests at 16 workers. Signing runs explicitly '
-                                    'choose --whole (every test, 8 workers). Four slots, one per run; bounds unchanged.')
+                                    'choose --whole (every test, 8 workers). Four eight-worker slots: fast takes two '
+                                    'together, whole/named takes one; bounds unchanged.')
     p.add_argument('targets', nargs='*', help='named paths or node ids (8 workers by default); omit for fast')
     lanes = p.add_mutually_exclusive_group()
     lanes.add_argument('--fast', dest='lane', action='store_const', const='fast',
@@ -31,7 +32,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--memory-mib', type=resources.memory_mib, default=resources.DEFAULT_MEMORY_MIB,
                    help=f'per-process address-space cap, at most {resources.DEFAULT_MEMORY_MIB} MiB (default)')
     p.add_argument('--wait', type=float, default=0.0,
-                   help='seconds to wait for one of four run slots, outside both time bounds (default: refuse at once)')
+                   help='seconds to wait for the required slots together (fast: two, whole/named: one of four), outside both time bounds (default: refuse at once)')
     p.add_argument('--jail', action='store_true',
                    help='run the target\'s code inside bubblewrap, built by this copy of the tool: for a change '
                         'from outside the crew')
