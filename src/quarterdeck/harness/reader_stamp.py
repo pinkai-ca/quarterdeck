@@ -106,6 +106,16 @@ CONTROL_ONLY = {
 }
 
 
+# Exact computed calls: module, enclosing scope, expression and reason. A
+# classification covers this call, not every dynamic import in its module.
+_ADAPTER_FACTORY = (
+    'harness/__init__.py', '_adapter_class',
+    'importlib.import_module(f".{module_name}", __package__)',
+    'the fixed MODULES registry selects an adapter; each harness reader set hashes its selected adapter and delegated readers',
+)
+COMPUTED_IMPORTS = {name: (_ADAPTER_FACTORY,) for name in MODULES}
+
+
 def files_stamp(modules, root=None):
     """Unknown/unreadable code grants no reuse; never hash paths or mtimes."""
     root = Path(root) if root is not None else Path(__file__).parent.parent

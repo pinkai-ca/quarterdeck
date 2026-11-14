@@ -168,10 +168,62 @@ def _prefixes(root, dotted):
     return found
 
 
+def _call_kind(node):
+    if isinstance(node.func, ast.Name) and node.func.id in ('import_module', '__import__'):
+        return node.func.id
+    if (isinstance(node.func, ast.Attribute) and node.func.attr == 'import_module'
+            and isinstance(node.func.value, ast.Name) and node.func.value.id == 'importlib'):
+        return 'import_module'
+    return None
+
+
+def _argument(call, position, keyword):
+    return (call.args[position] if len(call.args) > position else
+            next((item.value for item in call.keywords if item.arg == keyword), None))
+
+
+def _literal_call_module(call, reader, kind):
+    name = _argument(call, 0, 'name')
+    if not isinstance(name, ast.Constant) or not isinstance(name.value, str):
+        return None
+    dotted = name.value
+    if kind == '__import__':
+        level = _argument(call, 4, 'level')
+        if level is not None and (not isinstance(level, ast.Constant) or level.value != 0):
+            return None  # relative __import__ depends on its globals, not just the file's package
+    if not dotted.startswith('.'):
+        return dotted
+    package = _argument(call, 1, 'package')
+    if isinstance(package, ast.Name) and package.id == '__package__':
+        base = _package_of(reader)
+    elif isinstance(package, ast.Constant) and isinstance(package.value, str):
+        base = package.value
+    else:
+        return None  # a literal relative name with a computed package is still unresolved
+    level = len(dotted) - len(dotted.lstrip('.'))
+    parts = base.split('.')
+    if level > len(parts):
+        return None
+    return '.'.join([*parts[:len(parts) - level + 1], dotted[level:]]).rstrip('.')
+
+
+def _scope(node, parents):
+    names = []
+    while (node := parents.get(node)) is not None:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.append(node.name)
+    return '.'.join(reversed(names)) or '<module>'
+
+
+def _expression_key(text):
+    return ast.dump(ast.parse(text, mode='eval').body, include_attributes=False)
+
+
 def quarterdeck_modules_imported(root, reader):
-    """Every quarterdeck module an import or from-import loads, at any nesting."""
+    """Static imports and literal import calls, plus unresolved computed calls."""
     tree = ast.parse((root / reader).read_text())
-    found = []
+    parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+    found, computed = [], []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             targets = []
@@ -189,20 +241,37 @@ def quarterdeck_modules_imported(root, reader):
                 for path in _prefixes(root, child):
                     if path not in targets:
                         targets.append(path)
+        elif isinstance(node, ast.Call) and (kind := _call_kind(node)):
+            dotted = _literal_call_module(node, reader, kind)
+            if dotted is None:
+                computed.append((node.lineno, _scope(node, parents), ast.unparse(node)))
+                continue
+            targets = _prefixes(root, dotted)
         else:
             continue
         statement = ast.unparse(node)
         for path in targets:
             found.append((path, node.lineno, statement))
-    return found
+    return found, computed
 
 
-def imports_outside(root, readers, allowed):
+def imports_outside(root, readers, allowed, classified=()):
+    calls = set()
+    for module, scope, expression, reason in classified:
+        assert module in readers and scope
+        assert isinstance(reason, str) and reason.strip()
+        call = ast.parse(expression, mode='eval').body
+        assert isinstance(call, ast.Call) and _call_kind(call)
+        calls.add((module, scope, _expression_key(expression)))
     problems = []
     for reader in readers:
-        for imported, lineno, statement in quarterdeck_modules_imported(root, reader):
+        imports, computed = quarterdeck_modules_imported(root, reader)
+        for imported, lineno, statement in imports:
             if imported not in allowed:
                 problems.append(f'{reader}:{lineno} imports {imported} ({statement})')
+        for lineno, scope, statement in computed:
+            if (reader, scope, _expression_key(statement)) not in calls:
+                problems.append(f'{reader}:{lineno} computed import in {scope} ({statement})')
     return problems
 
 
@@ -219,6 +288,7 @@ def test_a_reader_import_outside_its_set_is_named_beside_it():
     root = Path(reader_stamp.__file__).parent.parent
     assert set(reader_stamp.LAUNCH_ONLY) == set(reader_stamp.MODULES)
     assert set(reader_stamp.CONTROL_ONLY) == set(reader_stamp.MODULES)
+    assert set(reader_stamp.COMPUTED_IMPORTS) == set(reader_stamp.MODULES)
     problems = []
     for name, modules in reader_stamp.MODULES.items():
         launch = _named_beside(reader_stamp.LAUNCH_ONLY[name])
@@ -226,7 +296,7 @@ def test_a_reader_import_outside_its_set_is_named_beside_it():
         for module in launch | control:
             assert (root / module).is_file(), module
         allowed = set(modules) | launch | control
-        for problem in imports_outside(root, modules, allowed):
+        for problem in imports_outside(root, modules, allowed, reader_stamp.COMPUTED_IMPORTS[name]):
             problems.append(f'{name}: {problem}')
     assert problems == []
 
@@ -255,3 +325,45 @@ def test_the_import_walker_catches_a_planted_out_of_set_import(tmp_path):
     assert sorted(imported) == ['harness/stray.py', 'outside.py', 'planted.py']
     assert all(problem.startswith('harness/reader.py:') for problem in problems)
     assert all('kept' not in problem and 'launch_mod' not in problem for problem in problems)
+
+
+@pytest.mark.parametrize('call', [
+    "import_module('quarterdeck.planted')",
+    "importlib.import_module('quarterdeck.planted')",
+    "__import__('quarterdeck.planted')",
+    "import_module(name='quarterdeck.planted')",
+    "importlib.import_module('.planted', 'quarterdeck')",
+    "import_module('..planted', __package__)",
+])
+def test_literal_dynamic_imports_check_the_planted_module(tmp_path, call):
+    root = tmp_path / 'quarterdeck'
+    (root / 'harness').mkdir(parents=True)
+    (root / 'planted.py').write_text('')
+    (root / 'harness/reader.py').write_text('def nested():\n    ' + call + '\n')
+    problems = imports_outside(root, ['harness/reader.py'], {'harness/reader.py'})
+    assert len(problems) == 1
+    assert problems[0].startswith('harness/reader.py:2 imports planted.py (')
+    assert call.split('(', 1)[0] in problems[0]
+    assert imports_outside(root, ['harness/reader.py'], {'harness/reader.py', 'planted.py'}) == []
+
+
+@pytest.mark.parametrize('call', ['import_module(module_name)',
+                                 'importlib.import_module(module_name)', '__import__(module_name)'])
+def test_a_computed_import_needs_its_exact_call_classified_with_a_reason(tmp_path, call):
+    (tmp_path / 'reader.py').write_text('def nested():\n    ' + call + '\n')
+    problems = imports_outside(tmp_path, ['reader.py'], {'reader.py'})
+    assert len(problems) == 1
+    assert problems[0] == f'reader.py:2 computed import in nested ({call})'
+    classified = [('reader.py', 'nested', call, 'fictional fixed registry owns this selection')]
+    assert imports_outside(tmp_path, ['reader.py'], {'reader.py'}, classified) == []
+    # Classification of one call cannot hide another expression in the same scope.
+    with (tmp_path / 'reader.py').open('a') as stream:
+        stream.write('    ' + call.replace('module_name', 'other_name') + '\n')
+    problems = imports_outside(tmp_path, ['reader.py'], {'reader.py'}, classified)
+    assert len(problems) == 1 and problems[0].startswith('reader.py:3 computed import in nested (')
+
+
+def test_a_literal_relative_call_with_a_computed_package_remains_unresolved(tmp_path):
+    (tmp_path / 'reader.py').write_text("import_module('.example', package_name)\n")
+    assert imports_outside(tmp_path, ['reader.py'], {'reader.py'}) == [
+        "reader.py:1 computed import in <module> (import_module('.example', package_name))"]
