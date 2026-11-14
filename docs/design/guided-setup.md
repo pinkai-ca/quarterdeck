@@ -15,6 +15,11 @@ The first `qd setup` initializes this office and returns; after an office exists
 setup retains the crew wizard below. There is no office alias, alternate path or
 additional routing configuration.
 
+Before creating an office, init and first-time setup read the project's existing
+ships. A desk role in a human session means the office still lives in that ship:
+both commands name it and refuse, without writing or starting a second office.
+Moving that office is the person's step after forwarding has been proven.
+
 `qd setup` asks, in order, what the crew calls the person (Admiral), ship name,
 office (Office), workspace, then desk, captain and engineering: display name,
 harness, model and effort. Suggestions come from the default template and adapter

@@ -191,3 +191,32 @@ def test_init_never_replaces_an_existing_non_office_folder(office_project):
     assert (folder / "note.txt").read_text() == "keep me"
     assert list(folder.iterdir()) == [folder / "note.txt"]
     assert not calls
+
+
+@pytest.mark.parametrize("verb", ["init", "setup"])
+def test_an_existing_persons_desk_requires_an_explicit_office_move(office_project, capsys, verb):
+    project, calls = office_project
+    (project / "ships").mkdir()
+    text, orders, _ = setup.template("default")
+    legacy = ship.create(project / "ships" / "established", text, orders)
+    legacy.runtime.mkdir()
+    (legacy.runtime / "keep.txt").write_text("Existing office records stay here.\n")
+    before = {p.relative_to(legacy.folder): p.read_bytes()
+              for p in legacy.folder.rglob("*") if p.is_file()}
+    assert cli.main([verb]) == 2
+    refusal = capsys.readouterr().err
+    assert "office still lives in ship established" in refusal
+    assert "person's step once forwarding is proven" in refusal
+    assert not (project / "office").exists()
+    assert not calls
+    assert before == {p.relative_to(legacy.folder): p.read_bytes()
+                      for p in legacy.folder.rglob("*") if p.is_file()}
+
+
+def test_a_crew_without_a_persons_desk_does_not_prevent_first_office(office_project):
+    project, calls = office_project
+    (project / "ships").mkdir()
+    text, orders, _ = setup.template("shuttle")
+    ship.create(project / "ships" / "mission", text, orders)
+    initialize()
+    assert len(calls) == 1 and calls[0].kind == "office"

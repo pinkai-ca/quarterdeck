@@ -186,6 +186,22 @@ def office_folder(project: Path) -> Path:
     return folder
 
 
+def refuse_embedded_office(project: Path) -> None:
+    """An existing person's desk is moved explicitly, never by first-time setup."""
+    for name in ships.candidates(project):
+        folder = project / "ships" / name
+        try:
+            current = ships.load(folder)
+        except ShipError as error:
+            raise ShipError(f"cannot establish whether {folder} still holds the office: {error}; "
+                            "resolve its declaration before creating an office") from None
+        if any(seat.role == "desk" and current.session_of(seat).human
+               for seat in current.seats.values()):
+            raise ShipError(f"the office still lives in ship {name} at {folder}; "
+                            "moving it is the person's step once forwarding is proven; "
+                            "init and setup leave that ship untouched and create no second office")
+
+
 def init_office(args: argparse.Namespace, *, operations: Operations | None = None, start: bool = True) -> list[str]:
     """Copy only the office declarations, commit them, then use normal up for its desk."""
     operations = operations or Operations()
@@ -194,6 +210,8 @@ def init_office(args: argparse.Namespace, *, operations: Operations | None = Non
         raise ShipError("qd init initializes the project's office, not --ship; run it without --ship")
     folder = office_folder(project)
     lines = []
+    if not (folder / "ship.toml").exists():
+        refuse_embedded_office(project)
     if not folder.exists():
         if not folder.parent.is_dir():
             raise ShipError(f"office parent {folder.parent} must already exist; create it before qd init")

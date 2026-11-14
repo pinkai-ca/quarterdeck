@@ -22,6 +22,8 @@ This copies the tracked office template to `office/`, at the top of the project,
 
 The office is always the real `office/` folder at the project top. It has no alternate location or alias. Neither init nor setup moves an existing ship's office seats or messages.
 
+If an existing project ship already declares a desk in a human session, init and first-time setup name that ship and refuse to create a second office. The office still lives there. Moving it is your step once forwarding has been proven; these commands leave its declaration and records untouched.
+
 To open the desk, run `.venv/bin/qd --ship office attach`. Tell the desk what you want to work on. Declaring further office seats is your choice: add them to `office/ship.toml` with a role such as counsel or communications and a session with `human = true`, then bring each up by name. Rerunning init starts only the desk, even if other declared seats are marked up.
 
 `qd setup` remains the crew wizard. When no office exists, its first step runs init and returns with the desk ready; a later setup keeps the wizard for a project crew. The desk's command for raising a project ship is a separate part of the fleet work; this change does not provide that command.
