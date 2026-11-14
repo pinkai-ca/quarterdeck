@@ -84,12 +84,23 @@ class Door:
         if hasattr(self.seat, 'read_pane'):
             found = self.seat.read_pane()
             self.captured_pane = found[0] if found else None
-            return self.harness.screen(found[1]) if found else None
+            return self.known(self.harness.screen(found[1])) if found else None
         pane = self.seat.pane()
         if pane is None or pane.dead:
             return None
         self.captured_pane = pane
-        return self.harness.screen(self.tmux.capture(pane.id))
+        return self.known(self.harness.screen(self.tmux.capture(pane.id)))
+
+    def known(self, screen: Screen | None) -> Screen | None:
+        """A composer the adapter knows only as fresh reads as the measured empty idle composer where this
+        launch's own evidence settles its question: the framework's recorded press that cleared it, or the
+        adapter's own seed named in the launch record and marked in the home. Without that evidence it stays
+        unknown, so every reader of the door's capture, the human waking line's included, sees one reading.
+        The measured form draws nothing under its footer, no working sign: it reads not working."""
+        if screen is not None and screen.fresh is not None and (
+                self.answered_and_cleared(screen.fresh) or self.seeded(screen.fresh)):
+            return replace(screen, box="", unknown=None, fresh=None, working=False)  # the measured form, in its own launch
+        return screen
 
     def echoes(self) -> tuple[str, ...]:
         """The inputs the transcript shows, read with scrollback, since a long message's echo reaches above the screen."""
@@ -176,8 +187,7 @@ class Door:
                 return Reading(False, *self._question(screen))
             return Reading(False, screen.interruption.name,
                            "dismissable" if screen.interruption.dismissable else "needs a human")
-        if screen.fresh is not None and self.answered_and_cleared(screen.fresh):
-            screen = replace(screen, box="", unknown=None, fresh=None)  # the measured form, in its own launch
+        screen = self.known(screen)
         if screen.unknown is not None:
             return Reading(False, f"unknown dialog: {screen.unknown}", "needs a human")
         if screen.starting:
@@ -282,6 +292,11 @@ class Door:
         return (launched is not None and launched.version in self.harness.fresh_versions
                 and any(item.get("question") == question and item.get("outcome") == "cleared"
                         for item in launched.answered or ()))
+
+    def seeded(self, question: str) -> bool:
+        """This launch's record and its home carry the adapter's own evidence that ``question`` was settled before launch."""
+        launched = self.seat.launched()
+        return launched is not None and self.harness.seeded_acknowledgement(question, launched, getattr(self.seat, 'home', None))
 
     def _question(self, screen: Screen) -> tuple[str, str]:
         """A question the framework answers: once per launch, on a screen that reads not working with its box read;

@@ -310,6 +310,28 @@ class GrokHarness(Harness):
     answers_questions = True  # its first-run training question, answered opt out by the ship's orders
     answer_seconds = 5.0  # measured: the training question was gone within one second of the press
     fresh_versions = frozenset({"1.0.77", "1.0.70"})  # M1 to M3 and M5: the composer after the press, before any turn
+    # Measured 13 November on 1.0.77 (worker5): a home seeded with the acknowledgement starts with no
+    # question, straight to that same fresh composer, frame for frame. 1.0.70 was not measured seeded.
+    seeded_versions = frozenset({"1.0.77"})
+
+    def seeded_acknowledgement(self, question: str, launched, home: Path | None) -> bool:
+        """The training question was settled before launch by the framework's own seed, never by a guess.
+
+        Both marks are needed: the launch record's notice ends with the seed's evidence, written only when the
+        account's cached opt-out read true at this launch, and the home still holds the framework's seed record
+        with the config's acknowledgement equal to it. A native acknowledgement with no seed record, a seed
+        withdrawn since, or the notice's words alone (a workspace inventory can carry any name) are not enough.
+        """
+        if (question != grok_screen.TRAINING_QUESTION.name or home is None
+                or launched.version not in self.seeded_versions
+                or (launched.notice or "").rsplit("; ", 1)[-1] != PRIVACY_ACK_NOTICE):
+            return False
+        try:
+            seed = privacy_seed_record(home)
+        except ShipError:
+            return False
+        kept = program_privacy(home / "config.toml")
+        return seed is not None and kept is not None and kept["privacy_banner_acked"] == seed["privacy_banner_acked"]
     keys = Keys(submit="Enter", interrupt="C-c")
     reads_usage = background_usage = True
     private_usage_home = True

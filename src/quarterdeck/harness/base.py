@@ -311,6 +311,11 @@ class Harness(ABC):
     answer_seconds: float | None = None  # measured clearance bound; None uses the Door's default
     # Versions whose composer drawn just after that question is answered has been measured (see Screen.fresh).
     fresh_versions: frozenset[str] = frozenset()
+
+    def seeded_acknowledgement(self, question: str, launched, home: Path | None) -> bool:
+        """The launch record and the home both carry this adapter's own mark that ``question`` was settled before
+        the program started, on a version whose composer in that case is measured. None by default."""
+        return False
     # How long after its launch a program may take to draw its input box. Within it a frame with no box,
     # no dialog and no unknown layout is the program still starting, not an obstruction.
     start_seconds: float = 60.0
