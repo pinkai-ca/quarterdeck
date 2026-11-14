@@ -10,8 +10,8 @@ import sys
 import time
 
 from . import evidence, gitops, owned, procs, report, sessions, scratch as storage
-from .layout import (CHANGES, DIRECTORY, KEEPS, RESULTS, RETIREMENTS, RUNS, RUN_SOCKETS, SOCKETS, Refused, Root, Slot, change_file,
-                     identity, read_json, run_name, write_json)
+from .layout import (CHANGES, DIRECTORY, KEEPS, RESULTS, RETIREMENTS, RUNS, RUN_SOCKETS, SOCKETS, Refused, Root, RunGuard, RunBusy, Slot, change_file,
+                     identity, read_json, run_active, run_name, write_json)
 
 
 def now() -> str:
@@ -22,6 +22,7 @@ def now() -> str:
 def register(root: Root, target, run: str) -> None:
     fd = root.child(CHANGES)
     try:
+        fcntl.flock(fd, fcntl.LOCK_EX)  # brief registration update; peers must not lose a run
         name = change_file(target.branch) + '.json'
         data = read_json(fd, name, root.path / CHANGES / name)
         worktree_id = identity(os.lstat(target.top))
@@ -190,14 +191,20 @@ def retire(args) -> int:
               file=sys.stderr)
         return FINALIZATION_EXIT
     finally:
-        if acquired:
-            slot.release()
-        else:
-            os.close(slot.fd)
+        slot.release()
         root.close()
 
 
 def retire_within(root: Root, run: str) -> int:
+    guard = RunGuard(root, run)
+    try:
+        guard.acquire()
+        return _retire_within(root, run)
+    finally:
+        guard.release()
+
+
+def _retire_within(root: Root, run: str) -> int:
     where = storage.path(root, run)
     results = runs = scratch = lock = None
     try:
@@ -325,74 +332,87 @@ def recover(root: Root, change: str | None) -> list[str]:
         pending = storage.pending(root, errors=errors)
         lines.extend(errors.values())
         for name in sorted(set(os.listdir(runs_fd)) | set(pending)):
-            if name in errors:
-                continue
+            guard = None
             try:
                 run_name(name)
-                fd = storage.child(root, name, create=False)
-            except FileNotFoundError:
-                record_fd = root.child(RESULTS, name, create=False)
-                try:
-                    state = read_json(record_fd, "ownership.json", root.path / RESULTS / name / "ownership.json")
-                finally:
-                    os.close(record_fd)
-                if state and state.get("change") != change:
-                    lines.append(f"run {name}: memory scratch absent; only its own change recovers its records")
-                    continue
-                if state:
-                    if kept(root, name):
-                        lines.append(f"run {name}: kept by note; left alone")
-                        continue
-                    try:
-                        require_gone(state, storage.path(root, name))
-                    except Refused as refused:
-                        lines.append(f'run {name}: left alone ({refused})')
-                        continue
-                    finish_abandoned(root, name, state)
-                    cleanup = retire_run(root, runs_fd, name, state)
-                    retirement_result(root, name, cleanup)
-                    cleanup = discard_records(root, name, state, cleanup)
-                    retirement_result(root, name, cleanup)
-                    lines.append(f"run {name}: absent memory scratch retired; cleanup {cleanup['outcome']}")
-                else:
-                    storage.discard(root, name)
-                    lines.append(f"run {name}: memory setup never created scratch; storage reservation retired")
-                continue
-            except Refused as refused:
-                lines.append(f'runs/{name}: left alone ({refused})')
+                guard = RunGuard(root, name)
+                guard.acquire()
+            except (Refused, OSError) as refused:
+                if guard is not None:
+                    guard.release()
+                lines.append(f'run {name}: left alone ({refused})')
                 continue
             try:
-                state = read_json(fd, 'state.json', storage.path(root, name) / 'state.json')
-                if state is None or state.get('change') != change:
-                    owner = 'unknown' if state is None else state.get('change')
-                    lines.append(f'run {name} of change {owner} has scratch left; only its own change recovers it')
-                    continue
-                if kept(root, name):
-                    lines.append(f'run {name}: kept by note; left alone')
-                    continue
-                lock = try_lock(fd)
-                if lock is None:
-                    lines.append(f'run {name}: live (its lock is held by a run process); left alone')
+                if name in errors:
                     continue
                 try:
+                    run_name(name)
+                    fd = storage.child(root, name, create=False)
+                except FileNotFoundError:
+                    record_fd = root.child(RESULTS, name, create=False)
                     try:
-                        require_gone(state, storage.path(root, name))
-                    except Refused as refused:
-                        lines.append(f'run {name}: left alone ({refused})')
+                        state = read_json(record_fd, "ownership.json", root.path / RESULTS / name / "ownership.json")
+                    finally:
+                        os.close(record_fd)
+                    if state and state.get("change") != change:
+                        lines.append(f"run {name}: memory scratch absent; only its own change recovers its records")
                         continue
-                    lines.append(f'recovering abandoned run {name} of change {change}: removing '
-                                 f'{storage.path(root, name)} {state["scratch"]} and Git admin {state.get("admin")}')
-                    finish_abandoned(root, name, state)
-                    record(root, name, state)
-                    cleanup = retire_run(root, runs_fd, name, state)
-                    cleanup = discard_records(root, name, state, cleanup)
-                    lines.append(f'run {name}: abandoned · cleanup {cleanup["outcome"]} '
-                                 f'{cleanup.get("removed", {})} {cleanup.get("reason", "")}'.rstrip())
+                    if state:
+                        if kept(root, name):
+                            lines.append(f"run {name}: kept by note; left alone")
+                            continue
+                        try:
+                            require_gone(state, storage.path(root, name))
+                        except Refused as refused:
+                            lines.append(f'run {name}: left alone ({refused})')
+                            continue
+                        finish_abandoned(root, name, state)
+                        cleanup = retire_run(root, runs_fd, name, state)
+                        retirement_result(root, name, cleanup)
+                        cleanup = discard_records(root, name, state, cleanup)
+                        retirement_result(root, name, cleanup)
+                        lines.append(f"run {name}: absent memory scratch retired; cleanup {cleanup['outcome']}")
+                    else:
+                        storage.discard(root, name)
+                        lines.append(f"run {name}: memory setup never created scratch; storage reservation retired")
+                    continue
+                except Refused as refused:
+                    lines.append(f'runs/{name}: left alone ({refused})')
+                    continue
+                try:
+                    state = read_json(fd, 'state.json', storage.path(root, name) / 'state.json')
+                    if state is None or state.get('change') != change:
+                        owner = 'unknown' if state is None else state.get('change')
+                        lines.append(f'run {name} of change {owner} has scratch left; only its own change recovers it')
+                        continue
+                    if kept(root, name):
+                        lines.append(f'run {name}: kept by note; left alone')
+                        continue
+                    lock = try_lock(fd)
+                    if lock is None:
+                        lines.append(f'run {name}: live (its lock is held by a run process); left alone')
+                        continue
+                    try:
+                        try:
+                            require_gone(state, storage.path(root, name))
+                        except Refused as refused:
+                            lines.append(f'run {name}: left alone ({refused})')
+                            continue
+                        lines.append(f'recovering abandoned run {name} of change {change}: removing '
+                                     f'{storage.path(root, name)} {state["scratch"]} and Git admin {state.get("admin")}')
+                        finish_abandoned(root, name, state)
+                        record(root, name, state)
+                        cleanup = retire_run(root, runs_fd, name, state)
+                        cleanup = discard_records(root, name, state, cleanup)
+                        lines.append(f'run {name}: abandoned · cleanup {cleanup["outcome"]} '
+                                     f'{cleanup.get("removed", {})} {cleanup.get("reason", "")}'.rstrip())
+                    finally:
+                        if lock not in (None, -1):
+                            os.close(lock)
                 finally:
-                    if lock not in (None, -1):
-                        os.close(lock)
+                    os.close(fd)
             finally:
-                os.close(fd)
+                guard.release()
     finally:
         os.close(runs_fd)
     return lines
@@ -446,6 +466,7 @@ def clean_within(root: Root, args) -> int:
     changes_fd = root.child(CHANGES)
     name = change_file(change)
     try:
+        fcntl.flock(changes_fd, fcntl.LOCK_EX)  # exclude registration while this change is retired
         data = read_json(changes_fd, name + '.json', root.path / CHANGES / (name + '.json'))
         if data is None:
             raise Refused(f'change {change} is not registered (no run of it was made by this tool); nothing touched')
@@ -457,8 +478,8 @@ def clean_within(root: Root, args) -> int:
             raise Refused('main and the project checkout are never cleaned')
         for line in recover(root, change):
             print(line)
-        leftover = [run['run'] for run in data['runs'] if (storage.path(root, run['run'])).exists()
-                    and not kept(root, run['run'])]
+        leftover = [run['run'] for run in data['runs'] if run_active(root, run['run']) or ((storage.path(root, run['run'])).exists()
+                    and not kept(root, run['run']))]
         if leftover:
             raise Refused(f'runs {leftover} of {change} still have scratch (live or held); nothing more touched')
         tip = gitops.git(project, 'rev-parse', '--verify', '-q', f'refs/heads/{branch}', check=False).strip() or None

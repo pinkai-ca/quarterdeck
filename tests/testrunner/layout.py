@@ -1,4 +1,4 @@
-"""The fixed layout under ``<project>/.testruns/``, its authority, atomic control state and the one slot.
+"""The fixed layout under ``<project>/.testruns/``, its authority, atomic control state and four run slots.
 
 Authority over the folder comes from derivation, never from what the folder says about itself: the project
 is the parent of the target's Git common directory, the root is ``<project>/.testruns``, and every component
@@ -8,6 +8,7 @@ without following links. Identities recorded in control state are consistency ch
 from __future__ import annotations
 
 import errno
+from contextlib import contextmanager
 import fcntl
 import json
 import os
@@ -29,7 +30,8 @@ RESULTS = 'results'  # retained evidence: result.json, report.md, failures/
 RETIREMENTS = 'retirements'  # explicit retirement command results; the original test evidence stays byte-identical
 CHANGES = 'changes'  # durable control state: registrations and clean journals
 KEEPS = 'keeps'      # durable control state: explicit keep notes
-SLOT = 'slot.lock'
+SLOT = 'slot.lock'  # first slot retains the original name for older tool copies
+SLOT_COUNT = 4
 DIRECTORY = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 
 
@@ -240,41 +242,125 @@ def run_name(run: str) -> str:
 
 
 class Slot:
-    """The one exclusive slot every real run, clean and recovery holds, its holder written inside it."""
+    """One of four exclusive run slots, each permitting at most eight pytest workers."""
 
     def __init__(self, root: Root):
-        self.root = root
-        self.fd = os.open(SLOT, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=root.fd)
-        info = os.fstat(self.fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
-            os.close(self.fd)
-            raise Refused(f'{root.path / SLOT} is not this user\'s regular file; nothing touched')
+        self.root, self.fds, self.selected, self.held = root, [], None, []
+        try:
+            for index in range(SLOT_COUNT):
+                name = SLOT if index == 0 else f'slot-{index + 1}.lock'
+                fd = os.open(name, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=root.fd)
+                self.fds.append(fd)
+                info = os.fstat(fd)
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+                    raise Refused(f'{root.path / name} is not this user\'s regular file; nothing touched')
+            self.fd = self.fds[0]
+        except BaseException:
+            self.release()
+            raise
 
     def holder(self) -> str:
-        try:
-            data = json.loads(os.pread(self.fd, 4096, 0) or b'{}')
-        except ValueError:
-            return 'unknown holder (unreadable slot note)'
-        return ', '.join(f'{key} {data[key]}' for key in ('verb', 'run', 'change', 'seat', 'pid', 'since') if key in data) \
-            or 'unknown holder'
+        holders = []
+        for index, fd in enumerate(self.fds):
+            try:
+                data = json.loads(os.pread(fd, 4096, 0) or b'{}')
+                note = ', '.join(f'{key} {data[key]}' for key in ('verb', 'run', 'change', 'seat', 'pid', 'since') if key in data)
+            except (ValueError, TypeError):
+                note = 'unreadable holder note'
+            holders.append(f'slot {index + 1}: {note or "unknown holder"}')
+        return '; '.join(holders)
 
     def acquire(self, note: dict, wait: float = 0.0) -> None:
         deadline = time.monotonic() + max(wait, 0.0)
         while True:
-            try:
-                fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                if time.monotonic() >= deadline:
-                    raise Refused(f'the test slot is busy: {self.holder()}; '
-                                  f'{"waited " + str(int(wait)) + " s; " if wait else ""}'
-                                  'try again when it ends, or pass --wait SECONDS') from None
-                time.sleep(0.5)
-        os.ftruncate(self.fd, 0)
-        os.pwrite(self.fd, json.dumps({**note, 'pid': os.getpid(), 'since': time.strftime('%Y-%m-%dT%H:%M:%S%z')}).encode(), 0)
+            for index, fd in enumerate(self.fds):
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    continue
+                self.fd, self.selected, self.held = fd, index, [fd]
+                os.ftruncate(fd, 0)
+                os.pwrite(fd, json.dumps({**note, 'slot': index + 1, 'pid': os.getpid(),
+                                         'since': time.strftime('%Y-%m-%dT%H:%M:%S%z')}).encode(), 0)
+                return
+            if time.monotonic() >= deadline:
+                raise Refused(f'all {SLOT_COUNT} test slots are busy: {self.holder()}; '
+                              f'{"waited " + str(int(wait)) + " s; " if wait else ""}'
+                              'try again when one ends, or pass --wait SECONDS')
+            time.sleep(0.5)
 
     def release(self) -> None:
         try:
-            os.ftruncate(self.fd, 0)
+            for fd in self.held:
+                os.ftruncate(fd, 0)
         finally:
-            os.close(self.fd)  # closing the descriptor releases the lock, also through failure
+            for fd in self.fds:
+                os.close(fd)
+            self.fds, self.selected, self.held = [], None, []
+
+
+class RunBusy(Refused):
+    """This exact run is still using or retiring its own control directory."""
+
+
+class RunGuard:
+    """A stable existing result-directory lock; no new file or cleanup authority."""
+
+    def __init__(self, root: Root, run: str, *, create=False):
+        self.run = run_name(run)
+        self.fd = root.child(RESULTS, self.run, create=create)
+
+    def acquire(self) -> None:
+        try:
+            fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RunBusy(f'run {self.run}: active or being retired; left alone') from None
+
+    def release(self) -> None:
+        os.close(self.fd)
+
+
+def run_active(root: Root, run: str) -> bool:
+    try:
+        guard = RunGuard(root, run)
+    except FileNotFoundError:
+        return False
+    try:
+        try:
+            guard.acquire()
+        except RunBusy:
+            return True
+        return False
+    finally:
+        guard.release()
+
+
+@contextmanager
+def all_slots(root: Root, wait: float = 0.0):
+    """A nonsharing live-proof part holds all four slots, and releases them on leaving this context."""
+    pool = Slot(root)
+    deadline = time.monotonic() + max(wait, 0.0)
+    try:
+        while True:
+            acquired = []
+            for fd in pool.fds:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired.append(fd)
+                except BlockingIOError:
+                    break
+            if len(acquired) == SLOT_COUNT:
+                pool.held = acquired
+                for fd in acquired:
+                    os.ftruncate(fd, 0)
+                    os.pwrite(fd, json.dumps({'verb': 'live-proof', 'all_slots': True, 'pid': os.getpid()}).encode(), 0)
+                yield
+                return
+            # No partial reservation is held while waiting for peers to finish.
+            for fd in acquired:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            if time.monotonic() >= deadline:
+                raise Refused(f'all four test slots are needed for this proof part; {pool.holder()}')
+            time.sleep(0.5)
+    finally:
+        pool.release()

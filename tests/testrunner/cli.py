@@ -20,7 +20,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--timeout', type=float, default=3600.0, help='seconds before the run is stopped (default 3600)')
     p.add_argument('--memory-mib', type=resources.memory_mib, default=resources.DEFAULT_MEMORY_MIB,
                    help=f'per-process address-space cap, at most {resources.DEFAULT_MEMORY_MIB} MiB (default)')
-    p.add_argument('--wait', type=float, default=0.0, help='seconds to wait for a busy slot (default: refuse at once)')
+    p.add_argument('--wait', type=float, default=0.0, help='seconds to wait for one of four run slots (default: refuse at once)')
     p.add_argument('--jail', action='store_true',
                    help='run the target\'s code inside bubblewrap, built by this copy of the tool: for a change '
                         'from outside the crew')

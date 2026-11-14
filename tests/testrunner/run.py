@@ -1,6 +1,6 @@
 """``testrun.py run``: one run of a clean committed target, in fresh owned scratch, with a fixed ending.
 
-Stages: refuse a dirty target; hold the slot; recover this change's abandoned runs; make the run folder and
+Stages: refuse a dirty target; hold one of four slots; recover this change's abandoned runs; make the run folder and
 its lock; check out the exact commit detached; make a venv on the ordinary ``python3`` with the system's
 read-only test tools; install the checkout editable with no index; prove the imports; compile the run's own
 code and make its package folders read-only; run pytest in its own session with the evidence plugin; then
@@ -21,7 +21,7 @@ import sys
 import time
 
 from . import clean, environment, evidence, gitops, jail, owned, procs, report, resources, scratch as storage, sessions, usersite
-from .layout import RESULTS, RUNS, RUN_SOCKETS, SOCKETS, Refused, Root, Slot, git_environment, identity, new_run_id, write_json
+from .layout import RESULTS, RUNS, RUN_SOCKETS, SOCKETS, Refused, Root, RunGuard, Slot, git_environment, identity, new_run_id, write_json
 
 GRACE = 15.0
 FINALIZATION_SECONDS = 60.0
@@ -175,7 +175,8 @@ class Runner:
         self.console.flush()
         process = subprocess.Popen([str(part) for part in argv], cwd=cwd, env=env, stdin=subprocess.DEVNULL,
                                    stdout=self.console, stderr=subprocess.STDOUT, start_new_session=True,
-                                   pass_fds=(self.lock,),
+                                   pass_fds=tuple([self.lock] + ([self.slot.fd] if getattr(self, "slot", None) else [])
+                                                  + ([self.run_guard.fd] if getattr(self, "run_guard", None) else [])),
                                    preexec_fn=partial(resources.apply_memory, self.args.memory_mib)
                                    if title == 'pytest' else None)
         try:
@@ -199,7 +200,7 @@ class Runner:
     def main(self) -> int:
         args = self.args
         root = slot = None
-        acquired = False
+        self.run_guard = None
         try:
             with self.time_limit():
                 target = gitops.resolve(Path(args.target) if args.target else Path.cwd())
@@ -224,14 +225,15 @@ class Runner:
                         raise Refused(str(refused)) from None
                 change = None if (target.main_checkout or target.branch is None) else target.branch
                 root = Root(target.project)
-                slot = Slot(root)
+                slot = self.slot = Slot(root)
                 self.run = new_run_id()
                 slot.acquire({'verb': 'run', 'run': self.run, 'change': change, 'seat': os.environ.get('QD_SEAT')}, args.wait)
-                acquired = True
                 for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
                     signal.signal(number, self.on_signal)
                 for line in clean.recover(root, change):
                     print(line)
+                self.run_guard = RunGuard(root, self.run, create=True)
+                self.run_guard.acquire()
                 if change:
                     clean.register(root, target, self.run)  # a refusal here leaves nothing made
             self.storage = storage.prepare(root, self.run)
@@ -240,11 +242,10 @@ class Runner:
             print(f'testrun: timeout before test setup: {stopped}; no test result claimed', file=sys.stderr)
             return EXIT['timeout']
         finally:
+            if self.run_guard is not None:
+                self.run_guard.release()
             if slot is not None:
-                if acquired:
-                    slot.release()
-                else:
-                    os.close(slot.fd)  # never truncate another holder's note
+                slot.release()
             if root is not None:
                 root.close()
 
