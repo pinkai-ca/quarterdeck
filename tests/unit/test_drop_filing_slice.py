@@ -105,7 +105,7 @@ def test_first_and_later_service_duties_file_post_before_the_next_duty(tmp_path,
     svc = service.Service(ship, SimpleNamespace())
     # No other duties or native work run in this boundary test.
     names = ('server_recovery', 'reconcile', 'groups', 'cascades', 'fleet_post', 'inboxes',
-             'recoveries', 'refusals', 'answers', 'looks', 'deliveries', 'follow', 'requests',
+             'views', 'recoveries', 'refusals', 'answers', 'looks', 'jailed_watches', 'deliveries', 'follow', 'requests',
              'compactions', 'person_quiet', 'fresh_after_order', 'rebrief', 'push_reminders',
              'credentials', 'authentications', 'model_differences', 'failover', 'account',
              'refresh_usage', 'pool_forecasts', 'retire_post', 'heartbeat', 'status_due', 'drain_accounting')
