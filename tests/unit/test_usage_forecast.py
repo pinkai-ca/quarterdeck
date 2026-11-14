@@ -3,6 +3,7 @@
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -38,6 +39,31 @@ def test_three_hour_rate_and_exhaustion_are_measured_from_endpoints(book):
     assert result.warning and result.resets_at == RESET
     assert '20.0%/h over 3.0h (5 readings)' in result.describe(detail=True)
     assert 'sample: spent by' in result.describe()
+
+
+def test_reconstructed_grok_ramp_predicts_the_recorded_spent_endpoint(book):
+    # Only the 11% reading and the later spent endpoint were retained. This is
+    # an explicitly reconstructed steady ramp, not a recorded intermediate
+    # series. The fixture keeps relative times/fractions and a shifted epoch,
+    # without accounts, records, seats, native payloads or actual timestamps.
+    source = Path(__file__).parents[1] / 'fixtures' / 'usage_forecast' / 'reconstructed_weekly_ramp.json'
+    fixture = json.loads(source.read_text())
+    assert fixture['kind'] == 'steady reconstruction from two recorded Grok readings'
+    first, last = fixture['endpoints']
+    elapsed = last['elapsed_seconds']
+    used = first['used']
+    rate_per_second = (last['used'] - used) / elapsed
+    reset = AT + timedelta(seconds=fixture['reset_after_first_seconds'])
+    record(book, [(hours, used + rate_per_second * hours * 3600) for hours in (0, .5, 1)], reset=reset)
+    result, = forecast.collect(book, AT + timedelta(hours=1))
+    assert result.warning
+    assert result.rate_per_hour == pytest.approx(.17972737982835)
+    assert abs((result.spent_at - (AT + timedelta(seconds=elapsed))).total_seconds()) < .001
+    assert 4.9 < (result.spent_at - AT).total_seconds() / 3600 < 5
+    assert result.spent_at < reset
+    # The first point alone cannot forecast. Once an hour's evidence exists,
+    # the ramp gives nearly four hours' warning before the reconstructed wall.
+    assert (result.spent_at - result.read_at) > timedelta(hours=3.9)
 
 
 def test_three_hour_window_ignores_older_slower_spending(book):

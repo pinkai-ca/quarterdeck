@@ -68,11 +68,11 @@ class Forecast:
         spent = self.spent_at.astimezone()
         reset = self.resets_at.astimezone()
         text = (f'{self.pool}: spent by {spent:%d %b %H:%M} at this rate '
-                f'(reset {reset:%d %b %H:%M})')
+                f'(reset {reset:%d %b %H:%M}) · {self.rate_per_hour:.1%}/h')
         if detail:
             hours = (self.read_at - self.first_at).total_seconds() / 3600
-            text += (f' · {self.window}, {self.rate_per_hour:.1%}/h over {hours:.1f}h '
-                     f'({self.samples} readings); warning only')
+            text += (f' over {hours:.1f}h ({self.samples} readings); '
+                     f'{self.window}; warning only')
         return text
 
 

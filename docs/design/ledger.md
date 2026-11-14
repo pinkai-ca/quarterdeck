@@ -87,6 +87,8 @@ The rate is the measured fraction increase divided by elapsed hours, using endpo
 
 The earliest weekly exhaustion forecast per declared subscription pool appears with rate, span and sample count in `qd ledger`. If exhaustion falls before that window's reset, every session's status line names the pool, local exhaustion time and reset, retaining those words when other alerts overflow. The service saves fixed immutable report intents to declared systems recipients once per pool/reset, before publication; restart, a changed estimate and a temporary clear do not rearm that week's notification. A later week can notify again. These are warnings only: they establish no wall, move no seat and change no destination eligibility. No forecast is emitted for unknown or insufficient history.
 
+The regression fixtures include ordinary synthetic steady, bursty, flat, discontinuous and scoped series. A Grok ramp is explicitly a steady reconstruction from two retained readings, not a claim that intermediate observations survived. It contains only fractions and relative elapsed/reset times, shifted to an invented epoch; interpolated points test the estimator without introducing account data or claiming that the forecast actually ran that night.
+
 ### Attribution
 
 Turns roll up by seat and order. `turn_attribution` stores verified message/time/bound evidence, roots and verdict beside stable turn/tool tables. Ingestion marks attribution pending; it cannot certify from `turn.input` alone. Replay never rewrites measurements, tools, prices or launch provenance merely to change attribution. Older readers retain their older attribution behavior.
