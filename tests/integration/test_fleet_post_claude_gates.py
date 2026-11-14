@@ -155,7 +155,9 @@ def test_a_jailed_seat_posts_to_another_ship_and_reads_nothing_of_it_beyond_its_
     workspace.mkdir()
     own = left.runtime / 'seats' / 'worker-1'
     (own / 'home').mkdir(parents=True)
-    jail = sandbox.plan(left, 'worker-1', own, own / 'home', workspace, sys.executable, os.environ['PATH'], home=home)
+    # A clean PATH: this checkout's interpreter and the system's, never a running ship's runtime from the test's shell.
+    path = os.pathsep.join([str(Path(sys.executable).parent), '/usr/bin', '/bin'])
+    jail = sandbox.plan(left, 'worker-1', own, own / 'home', workspace, sys.executable, path, home=home)
     probe = '''
 import json, sys
 from pathlib import Path
