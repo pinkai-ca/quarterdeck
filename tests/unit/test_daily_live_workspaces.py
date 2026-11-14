@@ -53,22 +53,27 @@ cwd = "../project"
     origin = load(origin_folder)
     scratch = tmp_path / 'scratch'
     seen = []
+    workspaces = []
 
     def check_copy(folder):
         copied = load(Path(folder))
         assert copied.folder != origin.folder
         assert copied.workspace.is_dir()
-        assert copied.workspace.is_relative_to(copied.folder)
+        assert copied.workspace.is_relative_to(copied.folder.parent)
+        assert copied.workspace == copied.folder.parent / 'workspace'
+        assert not copied.workspace.is_relative_to(copied.folder)
         assert copied.workspace != copied.folder
         assert set(copied.seats) == set(origin.seats)
         for seat in copied.seats.values():
             cwd = copied.cwd_of(seat)
-            assert cwd.is_dir() and cwd.is_relative_to(copied.folder)
+            assert cwd.is_dir() and cwd.is_relative_to(copied.folder.parent)
+            assert not cwd.is_relative_to(copied.folder)
             assert cwd not in (project, origin.folder)
             assert seat.cwd == copied.workspace
         assert copied.workspace not in (project, origin.folder)
         assert copied.seat('default').harness == 'fake'
         seen.append(copied.folder)
+        workspaces.append(copied.workspace)
 
     def private(parent):
         # Workspace preparation precedes even opening the private server.
@@ -87,6 +92,7 @@ cwd = "../project"
     assert result.exit_code == 0 and result.retained is None
     assert len(seen) == 2 and seen[0] == seen[1]
     assert not seen[0].exists() and not Path(result.place).exists()
+    assert not any(workspace.exists() for workspace in workspaces)
     assert origin.file.read_text() == declaration
     assert sorted(origin.folder.iterdir()) == [origin.file]
     assert list(project.iterdir()) == []

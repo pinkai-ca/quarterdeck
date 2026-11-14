@@ -271,7 +271,8 @@ def _release(tmux: Tmux | None, parent: Path | None) -> str | None:
 def invoke(origin: Ship, program: str, root: Path, qd: str) -> CheckRun:
     """``qd check PROGRAM --minimal`` with every copied seat's workspace inside the throwaway.
 
-    The originating project is never the copy's working directory. Remove the copy and its server afterward.
+    The workspace sits beside the copied ship, outside its folder and away from the originating project.
+    Remove both with the throwaway and its server afterward.
     """
     parent = root / f"qd-daily-live-{secrets.token_hex(8)}"
     parent.mkdir(parents=True, exist_ok=False)
@@ -285,7 +286,7 @@ def invoke(origin: Ship, program: str, root: Path, qd: str) -> CheckRun:
         shutil.copytree(origin.folder, folder, symlinks=True,
                         ignore=shutil.ignore_patterns("runtime", ".git", "__pycache__"))
         copied = shipmod.load(folder)
-        workspace = folder / 'check-workspace'
+        workspace = parent / 'workspace'
         workspace.mkdir(mode=0o700)  # a fresh writable folder, never the originating workspace
         declaration = shipmod.edit(copied.file.read_text(), 'ship', 'workspace', str(workspace))
         for name in copied.seats:
