@@ -3,6 +3,8 @@
 from datetime import timedelta
 from dataclasses import replace
 import json
+import os
+import signal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -178,9 +180,40 @@ def test_selection_write_failure_cannot_destroy_the_only_current_launch(migrated
     assert not (r.worker.folder/'pool').exists()
 
 
-def test_service_holds_unresolved_selection_and_continues_healthy_receipts_and_requests(migrated):
+@pytest.fixture
+def selection_service(migrated, monkeypatch, request):
+    """Own the accounting child, optionally stopped before its first planning job."""
+    from quarterdeck import accounting_slices
+
+    svc = Service(migrated.ship, migrated.tmux)
+    start = accounting_slices.Driver.start
+    if request.param:
+        def paused(driver, service):
+            start(driver, service)
+            os.kill(driver.process.pid, signal.SIGSTOP)
+            assert os.WIFSTOPPED(os.waitpid(driver.process.pid, os.WUNTRACED)[1])
+        monkeypatch.setattr(accounting_slices.Driver, 'start', paused)
+        monkeypatch.setattr(accounting_slices, 'BUDGET', 0.03)
+
+    def resume():
+        driver = getattr(svc, 'account_driver', None)
+        if driver is not None and driver.process is not None:
+            os.kill(driver.process.pid, signal.SIGCONT)
+        monkeypatch.setattr(accounting_slices.Driver, 'start', start)
+
+    try:
+        yield svc, resume, bool(request.param)
+    finally:
+        resume()
+        if driver := getattr(svc, 'account_driver', None):
+            driver.close()
+        svc.ledger.close()
+
+
+@pytest.mark.parametrize('selection_service', [False, True], indirect=True, ids=['ordinary', 'paused-child'])
+def test_service_holds_unresolved_selection_and_continues_healthy_receipts_and_requests(migrated, selection_service):
     r = migrated
-    svc = Service(r.ship, r.tmux)
+    svc, resume, delayed = selection_service
     bad = svc.store.new('order', 'issuer', 'worker', 'Synthetic uncertain submission')
     attempt = svc.attempts.open(bad, 'worker', '%1', r.worker.launched().pid, r.worker.launched().at)
     proof = pending.Proof.begin(r.worker, attempt, post.typed([bad]))
@@ -205,8 +238,11 @@ def test_service_holds_unresolved_selection_and_continues_healthy_receipts_and_r
     assert held.exists() and not held.with_suffix('.done').exists()
     assert not done.exists() and done.with_suffix('.done').exists()
     assert svc.store.is_open(bad) and not r.launches
+    if delayed:
+        assert svc.account_driver.active
+        assert svc.ledger.db.execute('SELECT count(*) FROM turns WHERE seat=?', ('healthy',)).fetchone()[0] == 0
+    resume()
     assert svc.ledger.db.execute('SELECT count(*) FROM turns WHERE seat=?', ('healthy',)).fetchone()[0] == 2
     holds = [json.loads(line) for line in svc.log_path.read_text().splitlines() if json.loads(line)['event'] == 'held']
     assert holds and all(row['seat'] == 'worker' and 'saved pool missing' in row['error'] for row in holds)
     assert 'worker' in watch.line(r.ship, r.tmux) and 'saved pool missing' in watch.line(r.ship, r.tmux)
-    svc.ledger.close()
