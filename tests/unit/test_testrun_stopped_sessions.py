@@ -153,25 +153,31 @@ def tool_project(project):
     return tests
 
 
-# The tool itself on a machine with no memory to give: this checkout's copy, its storage choice refusing every
-# candidate, so the run falls back to disk exactly as on GitHub's runner. The runner's files are the same as the
-# plain command's.
-DISK_TOOL = '''import sys
+# The tool itself, this checkout's copy, run through a driver where a case asks the run something of its own: on a
+# machine with no memory to give, its storage choice refuses every candidate, so the run falls back to disk exactly as
+# on GitHub's runner; and where a stopped test ignores SIGINT on purpose, the tool's stop grace (production 15 s) is
+# shortened for that run alone, since the escalation it then makes is the proof, not the grace's length. The runner's
+# files are the same as the plain command's.
+TOOL = '''import sys
 sys.dont_write_bytecode = True
 from pathlib import Path
 here = Path(sys.argv[1])
 sys.path.insert(0, str(here))
-from testrunner import cli, scratch
-scratch.choices = lambda bound=scratch.BOUND: iter(())
+from testrunner import cli, run, scratch
+if sys.argv[2] == 'disk':
+    scratch.choices = lambda bound=scratch.BOUND: iter(())
+if sys.argv[3] != '-':
+    run.GRACE = float(sys.argv[3])
 files = [here / "testrun.py", *sorted((here / "testrunner").glob("*.py"))]
-sys.exit(cli.main(sys.argv[2:], files))
+sys.exit(cli.main(sys.argv[4:], files))
 '''
+STOP_GRACE = 1.0  # seconds: the stop grace for runs whose test ignores SIGINT, so the tool always escalates
 
 
-def tool(storage):
-    """The command that starts this checkout's test tool, with its storage as the case asks."""
-    if storage == 'disk':
-        return [sys.executable, '-I', '-c', DISK_TOOL, str(SOURCE / 'tests')]
+def tool(storage, grace=None):
+    """The command that starts this checkout's test tool, with its storage as the case asks, and its stop grace."""
+    if storage == 'disk' or grace is not None:
+        return [sys.executable, '-I', '-c', TOOL, str(SOURCE / 'tests'), storage, '-' if grace is None else str(grace)]
     return [sys.executable, '-I', str(SOURCE / 'tests/testrun.py')]
 
 
@@ -204,7 +210,7 @@ def test_tool_stopped_during_test_cleans_server_and_next_run_uses_memory(monkeyp
                      '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'synthetic tests']):
             subprocess.run(['git', '-C', str(project), *argv], check=True, capture_output=True)
         env = tool_env(project)
-        command = [*tool(storage), 'run', '--target', str(project), '-n', '0', '--timeout', '180']
+        command = [*tool(storage, STOP_GRACE), 'run', '--target', str(project), '-n', '0', '--timeout', '180']
         process = subprocess.Popen([*command, 'tests/test_pause.py'], env=env, cwd=project,
                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         try:
@@ -279,7 +285,8 @@ def test_server_ownership_holds_with_several_runs_in_memory_at_once(storage):
 
         def start(name, target):
             processes[name] = subprocess.Popen(
-                [*tool(storage), 'run', '--target', str(target), '-n', '0', '--timeout', '180', 'tests/test_hold.py'],
+                [*tool(storage, STOP_GRACE), 'run', '--target', str(target), '-n', '0', '--timeout', '180',
+                 'tests/test_hold.py'],
                 env=env, cwd=project, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             deadline = time.monotonic() + 60
             while not ready[name].exists() and processes[name].poll() is None and time.monotonic() < deadline:
