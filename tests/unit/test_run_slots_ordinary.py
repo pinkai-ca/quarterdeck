@@ -19,7 +19,7 @@ def root_at(folder):
     return root
 
 
-def holding(folder, name, entered, release, waiting=None):
+def holding(folder, name, entered, release, waiting=None, ready=None):
     root = root_at(folder)
     pool = layout.Slot(root)
     if waiting is not None:
@@ -31,6 +31,9 @@ def holding(folder, name, entered, release, waiting=None):
     try:
         pool.acquire({'run': name}, wait=15)
         entered.put((name, pool.selected))
+        entered.close()
+        entered.join_thread()
+        ready.set()
         if not release.wait(15):
             raise AssertionError('synthetic holder was not released')
     finally:
@@ -44,8 +47,9 @@ def holders(tmp_path):
     entered = context.Queue()
     workers = []
     def start(name, waiting=None):
-        stop = context.Event()
-        p = context.Process(target=holding, args=(str(tmp_path), name, entered, stop, waiting))
+        stop, ready = context.Event(), context.Event()
+        p = context.Process(target=holding, args=(str(tmp_path), name, entered, stop, waiting, ready))
+        p.slot_ready = ready
         p.start()
         workers.append((p, stop))
         return p, stop
@@ -90,6 +94,7 @@ def test_a_dead_run_returns_only_its_slot(holders):
         start(f'synthetic-run-{i}')
     first = dict(entered.get(timeout=10) for _ in range(4))
     dead, stop = workers[0]
+    assert dead.slot_ready.wait(10), "its shared queue writer is finished before this holder is terminated"
     dead.terminate()
     dead.join(5)
     assert dead.exitcode is not None
