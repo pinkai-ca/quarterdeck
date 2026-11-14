@@ -309,10 +309,11 @@ class Service:
         for seat in self.resolved_seats():
             if seat.session.human:
                 from . import human_wake, turn_failure
-                from .auth_failure import status as authentication_status
+                from .auth_failure import status as authentication_status, waiting as authentication_waiting
                 phase = 'ownership'
                 try:
-                    if seat.is_up and not (recovery.held(seat) or authentication_status(seat)
+                    signin = authentication_status(seat)  # a sign-in failure the waking line may cure reads as waiting
+                    if seat.is_up and not (recovery.held(seat) or signin and not authentication_waiting(signin)
                                            or turn_failure.obstruction(seat, self.store)):
                         phase = 'pass'
                         human_wake.run(seat)

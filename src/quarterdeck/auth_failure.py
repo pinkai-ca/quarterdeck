@@ -1,4 +1,11 @@
-"""Recorded sign-in failures: visible readings and bounded guarded resumes per failed episode.
+"""Recorded sign-in failures: the next delivery first, then bounded guarded resumes per failed episode.
+
+While the pool's sign-in reads valid, a crew seat whose latest turn alone failed at sign-in takes its next
+message through the door as usual: the measured program reads its sign-in file again for a new request (its
+refused-request handler drops its cached sign-in and reads the store again, and a changed file is adopted by
+its modification time). The failed turn's input stays in the conversation it sends. Only a second sign-in
+failure in a row, or the renewal window passing with no message, holds the door and brings the guarded
+resume, and only a resume that does not cure it needs attention.
 
 Native syntax belongs to the adapter. Credential values never enter this module's
 journal: it retains only stable file generations and consumed attempts' times.
@@ -18,6 +25,70 @@ MAX_ATTEMPTS = 3
 RETRY_SECONDS = 60
 WINDOW_SECONDS = 15 * 60
 WAITING = 'sign-in: waiting for the renewed pass'
+DELIVERING = 'pool sign-in valid; its next message is delivered'
+HUMAN_WAKING = 'pool sign-in valid; the waking line goes once'
+
+
+def failed_in_a_row(state) -> int:
+    """How many ended turns in a row, newest first, failed at sign-in."""
+    count = 0
+    for turn in reversed(tuple(getattr(state, 'completed_turns', None) or ())):
+        failure = getattr(turn, 'failure', None)
+        if failure is None or failure.kind != AUTHENTICATION:
+            break
+        count += 1
+    return count
+
+
+def first_failure(seat, state=None, now=None) -> bool:
+    """A crew seat whose latest turn alone failed at sign-in, within the renewal window, while its pool's sign-in
+    reads valid: the door delivers its next message as usual instead of holding it. The failed turn's own input
+    stays in the conversation the program sends with that request. Past the window, with no message having come,
+    the guarded resume decides as before, so nothing waits silently."""
+    if seat.session.human or not seat.is_up:
+        return False
+    now = now or datetime.now(timezone.utc)
+    try:
+        if state is None:
+            record = seat.record()
+            state = seat.harness.state(record) if record is not None else None
+    except OSError:
+        return False
+    failure = getattr(state, 'failure', None)
+    if failure is None or failure.kind != AUTHENTICATION or failed_in_a_row(state) != 1:
+        return False
+    at = failure.at
+    if at is None or at.tzinfo is None or not 0 <= (now - at).total_seconds() < WINDOW_SECONDS:
+        return False
+    return pool_observation(seat, now)[0] == 'valid'
+
+
+def wakeable(seat, state, now=None) -> bool:
+    """For the waking line, from the record the wake already reads: the latest turn alone failed at sign-in inside
+    the program while the pool's sign-in reads valid. Any other failure, or a second in a row, keeps the hold."""
+    failure = getattr(state, 'failure', None)
+    return (failure is not None and failure.kind == AUTHENTICATION and failed_in_a_row(state) == 1
+            and pool_observation(seat, now)[0] == 'valid')
+
+
+def human_wakeable(seat, now=None) -> bool:
+    """A seat in the person's session whose latest failure, by the service's published metadata and never its
+    conversation, is a sign-in failure while its pool's sign-in reads valid, and into which no waking line went
+    before that failure: the fixed waking line may go to it once, on today's terms (human_wake decides the rest).
+    A waking line typed before the failure means the waking turn itself failed: it is named, and nothing more."""
+    if not seat.session.human or not seat.is_up:
+        return False
+    failure = current(seat)
+    if failure is None or failure.at is None or failure.at.tzinfo is None:
+        return False
+    from . import human_wake
+    try:
+        proof = human_wake.load(seat)
+        if proof is not None and proof.data['phase'] != 'cancelled' and datetime.fromisoformat(proof.data['at']) <= failure.at:
+            return False
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return False  # unknown wake evidence keeps the hold
+    return pool_observation(seat, now)[0] == 'valid'
 
 
 def current(seat):
@@ -90,7 +161,11 @@ def detail(seat, failure=None):
                  'pool sign-in validity unknown; needs attention' if state == 'unknown' else
                  'pool sign-in valid')
     if seat.session.human:
+        if state == 'valid' and human_wakeable(seat, now):
+            return HUMAN_WAKING
         return pool_note + '; human session needs attention; no automatic relaunch'
+    if first_failure(seat, now=now):
+        return DELIVERING
     try:
         attempt = _attempt(seat)
         if _decision(seat, failure, attempt, observation, now) != 'attention':
@@ -107,7 +182,7 @@ def detail(seat, failure=None):
 
 def waiting(reason):
     """A fixed operational reading, shared by status and alarm routing only."""
-    return reason == f'{AUTHENTICATION}; {WAITING}'
+    return reason in (f'{AUTHENTICATION}; {WAITING}', f'{AUTHENTICATION}; {DELIVERING}', f'{AUTHENTICATION}; {HUMAN_WAKING}')
 
 
 def status(seat):
@@ -150,8 +225,10 @@ def run(service):
     for seat in service.resolved_seats():
         if seat.session.human:
             continue
+        step = 'the resume journal'
         try:
             attempt = _attempt(seat)
+            step = "the seat's record"
             record = seat.record()
             state = seat.harness.state(record) if record is not None else None
             failure = getattr(state, 'failure', None)
@@ -168,6 +245,9 @@ def run(service):
                         durable.sync_folder(_path(seat).parent)
                 continue
             now = datetime.now(timezone.utc)
+            step = "the pool's sign-in reading"
+            if first_failure(seat, state, now):
+                continue  # the next delivery comes first; a second sign-in failure brings the resume
             observation = pool_observation(seat, now)
             decision = _decision(seat, failure, attempt, observation, now)
             if decision == 'attention':
@@ -176,6 +256,7 @@ def run(service):
             if decision == 'wait' or not seat.is_up or state.turn_open is not False:
                 continue
             _, stamp, _ = observation
+            step = 'the resume journal write'
             path = _path(seat)
             path.parent.mkdir(parents=True, exist_ok=True)
             durable.sync_folder(path.parent.parent)  # retain the new attempt-directory entry across a power cut
@@ -183,13 +264,26 @@ def run(service):
             attempts = (attempt['attempts'] if attempt else []) + [latest]
             durable.replace_file(path, json.dumps(dict(format=1, **latest, attempts=attempts)) + '\n')
             # Consume before the existing lifecycle path, including across process failure.
+            step = 'the relaunch'
+            service.request_wait = None
             proof = service.relaunch(seat, True)
             service.log('authentication', seat=seat.name,
                         proof=(f'{seat.name}: renewed pool sign-in; relaunch with resume ({len(attempts)}/{MAX_ATTEMPTS}) · {proof}'
-                               if proof is not None else f'{seat.name}: sign-in resume held by existing lifecycle checks'))
+                               if proof is not None else f'{seat.name}: sign-in resume held by {held_by(service)}'))
             if proof is None:
                 service.needs_human(seat)
-        except (OSError, ValueError, TypeError, AttributeError, ShipError):
-            # Do not report raw credential/record/state contents as an alarm or proof.
-            service.log('authentication', seat=seat.name, proof=f'{seat.name}: sign-in recovery held; needs attention')
+        except (OSError, ValueError, TypeError, AttributeError, ShipError) as error:
+            # Do not report raw credential/record/state contents as an alarm or proof: the check and the error's kind only.
+            service.log('authentication', seat=seat.name,
+                        proof=f'{seat.name}: sign-in recovery held by {step} ({type(error).__name__}); needs attention')
             service.needs_human(seat)
+
+
+def held_by(service) -> str:
+    """The check that held a relaunch, as the service recorded it: its name and its reason."""
+    wait = getattr(service, 'request_wait', None)
+    if not wait:
+        return 'an unnamed lifecycle check'
+    dimension, reason = wait
+    check = 'the recovery hold' if dimension == 'recovery' else f'the idle proof ({dimension})'
+    return f'{check}: {reason}'

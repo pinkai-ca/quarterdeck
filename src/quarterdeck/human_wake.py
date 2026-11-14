@@ -404,7 +404,9 @@ def eligible(seat, screen=NO_SCREEN, proof=None) -> str | None:
         if state.turn_open is not False or state.pending_tools != () or state.queued != ():
             return 'human wake waiting for recorded work to end'
         if state.failure:
-            return 'human wake recorded turn error; person must intervene'
+            from .auth_failure import wakeable
+            if not wakeable(seat, state):  # a single sign-in failure while the pool's sign-in reads valid alone wakes
+                return 'human wake recorded turn error; person must intervene'
         if proof is not None:
             if reason := prior_receipt(seat, joined.record, datetime.fromisoformat(proof.data['since']), proof):
                 return reason

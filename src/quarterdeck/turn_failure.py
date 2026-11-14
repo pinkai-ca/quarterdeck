@@ -131,7 +131,9 @@ def obstruction(seat: Seat, store: post.Store | None = None) -> str | None:
 
     A refused conversation holds the door whatever is open, since the next message would be typed into
     the conversation its provider refused; any other error holds it only while an order or question is
-    open to the seat, so its alarm goes out (law: nothing-waits-silently).
+    open to the seat, so its alarm goes out (law: nothing-waits-silently). A first sign-in failure while
+    the pool's sign-in reads valid holds nothing (auth_failure.first_failure; for the person's seat, whose door
+    types only the fixed waking line, auth_failure.human_wakeable); a second in a row holds.
     """
     failure = current(seat)
     if failure is None:
@@ -139,6 +141,10 @@ def obstruction(seat: Seat, store: post.Store | None = None) -> str | None:
     if failure.kind == REFUSAL:
         from . import refusal
         return f"{describe(failure)}; {refusal.state_note(seat)}"
+    if failure.kind == AUTHENTICATION:
+        from . import auth_failure
+        if auth_failure.first_failure(seat) or auth_failure.human_wakeable(seat):
+            return None  # its next message, or for the person's seat the one fixed waking line, runs as usual
     store = store or post.Store(seat.ship.runtime)
     if not any(m.kind in ('order', 'question') for m in store.open_for(seat.name)):
         return None

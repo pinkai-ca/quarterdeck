@@ -118,7 +118,7 @@ def test_held_lifecycle_check_is_not_retried(tmp_path, monkeypatch):
     auth_failure.run(service)
     auth_failure.run(service)
     service.relaunch.assert_called_once_with(seat, True)
-    assert 'held by existing lifecycle checks' in service.log.call_args.kwargs['proof']
+    assert 'held by an unnamed lifecycle check' in service.log.call_args.kwargs['proof']
 
 
 def test_failed_resume_call_stays_consumed(tmp_path, monkeypatch):
