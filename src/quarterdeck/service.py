@@ -740,7 +740,11 @@ class Service:
                 return acts.press(self, seat, str(data["choice"]), data.get("caller"))
             return acts.type_line(self, seat, str(data["line"]), data.get("caller"))
         if kind == "control":
-            return self.control(self.seat(data["seat"]), data["name"], str(data["value"]))
+            # The CLI may write the declaration after this pass loaded its ship.
+            # A control kept across passes must start from that current declaration.
+            declared = shipmod.load(self.ship.folder)
+            seat = Seat(declared, declared.seat(data["seat"]), self.tmux)
+            return self.control(seat, data["name"], str(data["value"]))
         if kind == "relaunch":
             return self.relaunch_request(data)
         if kind == "select":  # the seats failover acts on: a seat whose selection is unknown is held, not guessed

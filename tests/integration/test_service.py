@@ -103,6 +103,16 @@ def test_controls_go_through_the_service_by_slash_command(ship: shipmod.Ship, tm
     assert "model      --model <value>        /model {value}     screen" in table
 
 
+def test_controls_use_the_declaration_written_after_the_service_pass_loaded(ship, tmux, capsys, monkeypatch):
+    from .control_dispatch_forcing import force_edit_between_load_and_dispatch
+
+    force_edit_between_load_and_dispatch(monkeypatch)
+    test_controls_go_through_the_service_by_slash_command(ship, tmux, capsys)
+    assert (ship.runtime / "declaration-race-loaded").read_text() == "fake-1"
+    observed = json.loads((ship.runtime / "declaration-race-observed").read_text())
+    assert observed == {"started_from": "fake-2", "continued_from": "fake-2"}
+
+
 def test_stop_and_resend_are_requests_to_the_service(ship: shipmod.Ship, tmux: Tmux, capsys):
     text = (ship.folder / "ship.toml").read_text().replace('step_seconds = "0.05"', 'steps = "6"\nstep_seconds = "0.5"', 1)
     (ship.folder / "ship.toml").write_text(text)
