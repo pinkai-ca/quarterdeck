@@ -880,7 +880,7 @@ class Seat:
         """Whether a turn is open: from the record first, from the screen when its state is unknown.
 
         A screen that cannot show it, or a pane that cannot be read, answers True. A saved launch whose
-        pane identity cannot be found answers None; a seat with no launch, or a known dead pane, is off.
+        pane is absent is off, as is a known dead pane.
         Every caller holds on True or None, never treating unseen activity as idle (law: record-first).
         """
         try:
@@ -888,7 +888,7 @@ class Seat:
         except (OSError, TmuxError):
             return True
         if pane is None:
-            return None if self.launched() is not None else False
+            return False
         if pane.dead:
             return False
         try:
