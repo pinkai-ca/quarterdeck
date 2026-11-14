@@ -179,9 +179,14 @@ class Ledger:
             return
         from . import ledger_recovery
         with ledger_recovery.opening(path) as recovered:
-            self._initialize(path)
-            if recovered:
-                self.begin_catchup('ledger rebuilt from malformed database')
+            try:
+                self._initialize(path)
+                if recovered:
+                    self.begin_catchup('ledger rebuilt from malformed database')
+            except BaseException:
+                if hasattr(self, 'db'):
+                    self.db.close()
+                raise
 
     def _initialize(self, path):
         self.db = sqlite3.connect(path)

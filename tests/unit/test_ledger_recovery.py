@@ -131,6 +131,11 @@ def test_interrupted_quarantine_keeps_every_file_and_a_repeated_open_finishes(tm
         name = path.name + suffix
         originals[name] = ('synthetic bytes ' + suffix).encode()
         (tmp_path / name).write_bytes(originals[name])
+    # Isolate the archive boundary from SQLite's handling of arbitrary synthetic
+    # sidecars. The real SQLite corruption detector is exercised above.
+    check = ledger_recovery.check
+    monkeypatch.setattr(ledger_recovery, 'check',
+        lambda p: False if p.exists() and p.read_bytes() == BROKEN else check(p))
     real, steps = Path.rename, []
     class Interrupted(BaseException):
         pass
