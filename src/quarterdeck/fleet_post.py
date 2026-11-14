@@ -17,6 +17,7 @@ from pathlib import Path
 import secrets
 import stat
 
+from . import post_dir
 from .fleet import peers
 from .ship import ShipError
 
@@ -42,8 +43,35 @@ def owner(runtime):
     return folder.name if (folder / 'ship.toml').is_file() else None
 
 
+def _hold_line(label, error):
+    """Ordinary holds keep the exception type. A refused link also names its folder."""
+    reason = str(error)
+    if reason.startswith(post_dir.LINK_HELD):
+        return f'{label} ({type(error).__name__}): {reason}'
+    return f'{label} ({type(error).__name__})'
+
+
 def stable_bytes(path):
-    """One complete regular file, with unchanged descriptor and directory identity."""
+    """One complete regular file, with unchanged descriptor and directory identity.
+
+    A path under runtime/post is read by the shared directory walk and does not follow a link.
+    """
+    path = Path(path)
+    if not post_dir.under_post(path):
+        return _stable_following(path)
+    try:
+        return post_dir.read_bytes(path)
+    except ShipError as error:
+        text = str(error)
+        if text == 'post path is not a regular file':
+            raise ShipError('post transport source is not a regular file') from None
+        if text == 'post path changed during its read':
+            raise ShipError('post transport source changed during its read') from None
+        raise
+
+
+def _stable_following(path):
+    """The read outside runtime/post: the final name is not followed."""
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         before = os.fstat(descriptor)
@@ -64,7 +92,7 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def _rename_new(temporary, path):
+def _rename_new(temporary, path, source_fd=-100, destination_fd=-100):
     """Linux's atomic rename without replacement; never an exists/replace race."""
     library = ctypes.CDLL(None, use_errno=True)
     rename = getattr(library, 'renameat2', None)
@@ -72,13 +100,63 @@ def _rename_new(temporary, path):
         raise OSError(errno.ENOSYS, 'atomic no-clobber rename is unavailable')
     rename.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
     rename.restype = ctypes.c_int
-    if rename(-100, os.fsencode(temporary), -100, os.fsencode(path), 1) != 0:
+    if rename(source_fd, os.fsencode(temporary), destination_fd, os.fsencode(path), 1) != 0:
         number = ctypes.get_errno()
         raise OSError(number, os.strerror(number), str(path))
 
 
 def publish(path, data):
-    """Atomic no-clobber publication, without syncs. Equal bytes are the same intent."""
+    """Atomic no-clobber publication, without syncs. Equal bytes are the same intent.
+
+    Under runtime/post, missing parents are real directories opened by the shared
+    walk. A link on the way is a hold and is not followed or removed.
+    """
+    path = Path(path)
+    if not post_dir.under_post(path):
+        _publish_following(path, data)
+        return
+    name = path.name
+    if name in ('', '.', '..') or any(c in name for c in '/\\\x00'):
+        raise ShipError(f'invalid post path component {name!r}')
+    parent = post_dir.open_directory(path.parent, create=True)
+    try:
+        _publish_at(parent, name, data, path)
+    finally:
+        os.close(parent)
+
+
+def _publish_at(parent_fd, name, data, path):
+    try:
+        info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        info = None
+    if info is not None and stat.S_ISLNK(info.st_mode):
+        raise ShipError(f'{post_dir.LINK_HELD}{path}')
+    if info is not None:
+        if stable_bytes(path) != data:
+            raise ShipError(f'post transport conflict at {name}; retained')
+        return
+    temporary = '.' + name + '.' + secrets.token_hex(8) + '.tmp'
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600,
+                         dir_fd=parent_fd)
+    try:
+        view = memoryview(data)
+        while view:
+            view = view[os.write(descriptor, view):]
+        try:
+            _rename_new(temporary, name, parent_fd, parent_fd)
+        except FileExistsError:
+            if stable_bytes(path) != data:
+                raise ShipError(f'post transport conflict at {name}; retained') from None
+    finally:
+        os.close(descriptor)
+        try:
+            os.unlink(temporary, dir_fd=parent_fd)
+        except FileNotFoundError:
+            pass
+
+
+def _publish_following(path, data):
     missing, parent = [], path.parent
     while not parent.exists():
         missing.append(parent)
@@ -285,13 +363,13 @@ def export(ship, store):
     errors = []
     for message in store.all():
         # Only locally authored posts produce offers; imported copies do not bounce.
-        if provenance(ship.runtime, message.id):
-            continue
         try:
+            if provenance(ship.runtime, message.id):
+                continue
             for target in destinations(ship, store, message):
                 offer(ship, message, target)
         except (OSError, ValueError, KeyError, ShipError) as error:
-            errors.append(f'{post.short_of(message.id)}: outbound held ({type(error).__name__})')
+            errors.append(_hold_line(f'{post.short_of(message.id)}: outbound held', error))
     return errors
 
 
@@ -365,7 +443,7 @@ def fetch(ship, source, path):
             if imported:
                 if imported != metadata:
                     raise ShipError('post transport origin conflicts with existing import')
-            elif local.exists():
+            elif post_dir.exists(local):
                 # A returned ancestor belongs to this ship and needs no import metadata.
                 if entry['origin'] != ship.folder.name or stable_bytes(local) != data:
                     raise ShipError('post transport conflicts with an existing local message')
@@ -414,22 +492,26 @@ def fetched(source, destination, value):
 
 def run(ship, store):
     """One service tick: offer local outbound, fetch peers, retain safe operational holds."""
-    errors = export(ship, store)
+    try:
+        errors = export(ship, store)
+    except (OSError, ShipError) as error:
+        # The store listing is the no-follow walk. A linked store is a hold, not a failed tick.
+        errors = [_hold_line('outbound held', error)]
     for name, source in peers(ship).items():
         if source.folder == ship.folder:
             continue
         directory = source.runtime / 'post' / 'outbound' / ship.folder.name
         try:
-            for path in sorted(directory.glob('*.json')):
+            for path in post_dir.json_paths(directory):
                 try:
                     value, _ = _offer(source, ship.folder.name, path)
                     if not fetched(source, ship, value):
                         fetch(ship, source, path)
                         store._cache = None
                 except (OSError, ValueError, KeyError, TypeError, ShipError) as error:
-                    errors.append(f'{name}: incoming post held ({type(error).__name__})')
-        except OSError as error:
-            errors.append(f'{name}: outbound unreadable ({type(error).__name__})')
+                    errors.append(_hold_line(f'{name}: incoming post held', error))
+        except (OSError, ShipError) as error:
+            errors.append(_hold_line(f'{name}: outbound unreadable', error))
     return sorted(set(errors))
 
 
