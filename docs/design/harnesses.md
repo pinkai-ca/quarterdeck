@@ -132,7 +132,9 @@ existing model-difference journal's active flag, including an older display-case
 Pi and OpenCode retain literal native model IDs; OpenCode's combined model/endpoint footer
 is not exposed as an identity. Antigravity's identity hook reuses its existing measured
 ID/display-name table, also used by its requested-model checks.
-Grok's measured `Grok 4.7` footer proves no unique native ID, so its display-name grammar
+Grok 1.0.77 launches with the listed model ID `grok-4.7`. Its usage/billing key
+`grok-4.7-build` is not a model ID to launch. The measured `Grok 4.7` footer proves
+no unique native ID (the record may echo that usage/billing key), so its display-name grammar
 yields unknown identity while native record IDs stay literal. The running model comes
 from `user_message_chunk._meta.modelId` or a native model configuration update;
 `usage.modelUsage` keys stay on the accounted turns as billing identifiers and never

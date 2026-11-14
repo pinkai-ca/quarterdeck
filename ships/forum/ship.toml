@@ -58,7 +58,7 @@ session = "forum"
 role = "reviewer"
 harness = "grok"
 pool = "grok"
-model = "grok-4.7-build"
+model = "grok-4.7"
 effort = "high"
 
 [seats.reviewer-4]
