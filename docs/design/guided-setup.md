@@ -29,6 +29,21 @@ Only the person can answer; a crew seat cannot raise a ship. Requests and succes
 exact yes/no answers live under `office/runtime/raise/<name>/`, serialized by a
 per-name lock. The desk may reuse the latest exact yes. A changed proposal asks
 again. A matching ship resumes without edits; no existing ship is overwritten.
+At a new yes, the same process walks its live `/proc` ancestry, reading each pid,
+parent pid and start time, and compares pid/start identities with every recorded
+program in the project's ships' `runtime/seats/*/launch.json`, including the office.
+Unreadable or changing ancestry or an unreadable launch inventory refuses the yes.
+The yes is acted on in that process, without a queued approval or service handoff.
+Dropping the seat environment does not change the process's ancestry.
+
+Known limit: the reusable answer record is the person's consent, not a security
+boundary against a hostile seat running as the same Unix user. A seat can write
+that record by hand. The consent gate for a manually written answer remains a
+named known limit; the live ancestry check addresses the separate process-origin
+gate. Reusing an exact earlier yes remains part of asking first the first time.
+A stronger consent store, such as a keyring or a root-owned file, is later work;
+this change claims no such protection.
+
 Creation commits only the selected template files and runtime ignore in the new
 ship's own repository, then uses ordinary up to start its crew and service. A failed
 launch retains the declaration and consent. The folder name is the fleet address;

@@ -23,6 +23,74 @@ from .ship import ShipError
 KINDS = ("default", "forum", "cascade", "shuttle")
 
 
+def process_ancestry(pid: int, *, proc: Path = Path("/proc")) -> tuple[tuple[int, str, int], ...]:
+    """Read each Linux process identity and parent through the observed root."""
+    chain, seen = [], set()
+    try:
+        while pid:
+            if pid in seen or len(seen) >= 4096:
+                raise ValueError("cyclic or excessive ancestry")
+            seen.add(pid)
+            text = (proc / str(pid) / "stat").read_text()
+            identity, tail = text.rsplit(")", 1)
+            if int(identity.split("(", 1)[0].strip()) != pid:
+                raise ValueError("process identity changed")
+            fields = tail.split()
+            parent, start = int(fields[1]), fields[19]
+            if parent < 0 or not start.isdecimal():
+                raise ValueError("invalid process identity")
+            chain.append((pid, start, parent))
+            pid = parent
+    except (OSError, UnicodeError, ValueError, IndexError) as error:
+        raise ShipError(f"cannot read the approving process's ancestry ({type(error).__name__}); "
+                        "no yes accepted; use a readable person-owned shell") from None
+    if not chain:
+        raise ShipError("cannot read an empty approving process ancestry; no yes accepted")
+    return tuple(chain)
+
+
+def recorded_programs(project: Path) -> set[tuple[int, str]]:
+    """Read only current seat launch identities, including the separate office."""
+    def entries(folder):
+        try:
+            return sorted(folder.iterdir())
+        except FileNotFoundError:
+            return []
+
+    programs = set()
+    try:
+        folders = [project / "office", *[p for p in entries(project / "ships") if p.is_dir()]]
+        for folder in folders:
+            for seat in entries(folder / "runtime" / "seats"):
+                if not seat.is_dir():
+                    continue
+                path = seat / "launch.json"
+                try:
+                    data = json.loads(path.read_text())
+                except FileNotFoundError:
+                    continue  # no recorded program at this seat
+                pid, start = data.get("pid"), data.get("start")
+                if type(pid) is not int or pid <= 0 or not isinstance(start, str) or not start.isdecimal():
+                    raise ValueError("unreadable launch process identity")
+                programs.add((pid, start))
+    except (OSError, UnicodeError, ValueError, AttributeError) as error:
+        raise ShipError(f"cannot read the project's recorded seat programs ({type(error).__name__}); "
+                        "no yes accepted; retain the launch records for inspection") from None
+    return programs
+
+
+def require_person_process(project: Path) -> None:
+    """Check live ancestry at a new yes; cached consent remains a known trust limit."""
+    pid = os.getpid()
+    before = process_ancestry(pid)
+    programs = recorded_programs(project)
+    after = process_ancestry(pid)
+    if before != after:
+        raise ShipError("the approving process's ancestry changed; no yes accepted; ask again from the person's shell")
+    if any((ancestor, start) in programs for ancestor, start, _ in after):
+        raise ShipError("a recorded seat program owns this process ancestry; only the person's own shell can answer yes")
+
+
 def arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("kind", choices=KINDS)
     parser.add_argument("name", help="the new folder name and fleet address")
@@ -207,6 +275,8 @@ def run(args: argparse.Namespace, *, operations: setup.Operations | None = None,
                 if response not in ("yes", "no"):
                     raise ShipError("answer yes or no; no ship was raised")
             if response is not None:
+                if response == "yes":
+                    require_person_process(office.folder.parent)
                 answer = records / f"{draft.digest}.answer-{len(answers) + 1:08d}.json"
                 write_once(answer, {"format": 1, "digest": draft.digest, "answer": response, "by": "person"})
                 approved = response == "yes"
