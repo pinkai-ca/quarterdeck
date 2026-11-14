@@ -1,4 +1,4 @@
-"""The fixed layout's authority, its atomic control state, the one slot, and owned removal: anchored, never
+"""The fixed layout's authority, its atomic control state, the four run slots, and owned removal: anchored, never
 following a link, refusing what is not the recorded tree."""
 import os
 from pathlib import Path
@@ -74,19 +74,29 @@ def test_control_state_of_an_unknown_format_or_malformed_is_refused(tmp_path):
         root.close()
 
 
-def test_the_slot_refuses_at_once_and_names_its_holder(tmp_path):
+def test_four_slots_admit_four_and_a_fifth_refuses_at_once_naming_every_holder(tmp_path):
     root = layout.Root(project(tmp_path))
-    first, second = layout.Slot(root), layout.Slot(root)
+    holders = [layout.Slot(root) for _ in range(layout.SLOT_COUNT)]
+    fifth = layout.Slot(root)
     try:
-        first.acquire({'verb': 'run', 'run': '20261111-120000-abcd', 'change': 'feature', 'seat': 'synthetic'})
-        with pytest.raises(layout.Refused, match='busy: verb run, run 20261111-120000-abcd, change feature'):
-            second.acquire({'verb': 'clean'})
+        for index, slot in enumerate(holders):
+            slot.acquire({'verb': 'run', 'run': f'20261111-12000{index}-abcd', 'change': f'feature-{index}', 'seat': 'synthetic'})
+        assert sorted(slot.selected for slot in holders) == [0, 1, 2, 3], 'each holds a slot of its own'
+        assert holders[0].selected == 0 and (root.path / layout.SLOT).exists(), 'slot.lock, the original name, is first'
+        with pytest.raises(layout.Refused) as refused:
+            fifth.acquire({'verb': 'clean'})
+        assert f'all {layout.SLOT_COUNT} test slots are busy' in str(refused.value)
+        for index in range(layout.SLOT_COUNT):
+            assert f'run 20261111-12000{index}-abcd, change feature-{index}' in str(refused.value), 'every holder named'
         with pytest.raises(layout.Refused, match='waited 1 s'):
-            second.acquire({'verb': 'clean'}, wait=1)
-        first.release()
-        second.acquire({'verb': 'clean'})
+            fifth.acquire({'verb': 'clean'}, wait=1)
+        freed = holders[2].selected
+        holders[2].release()
+        fifth.acquire({'verb': 'clean'})
+        assert fifth.selected == freed, 'the fifth takes exactly the slot that came free'
     finally:
-        second.release()
+        for slot in (*holders, fifth):
+            slot.release()
         root.close()
 
 

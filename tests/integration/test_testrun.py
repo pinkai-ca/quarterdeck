@@ -230,21 +230,28 @@ def test_a_dirty_target_is_refused_before_anything_is_made(tmp_path):
     assert not (project / '.testruns').exists()
 
 
-def test_a_busy_slot_refuses_and_names_its_holder(tmp_path):
+def test_four_busy_slots_refuse_a_run_naming_every_holder_and_a_freed_slot_admits_it(tmp_path):
     from tests.testrunner import layout
     project, worktree = make(tmp_path, {})
     root = layout.Root(project)
-    slot = layout.Slot(root)
-    slot.acquire({'verb': 'synthetic-holder', 'seat': 'synthetic'})
+    holders = [layout.Slot(root) for _ in range(layout.SLOT_COUNT)]
     try:
+        for index, slot in enumerate(holders):
+            slot.acquire({'verb': 'synthetic-holder', 'seat': f'synthetic-{index}'})
         done = tool('run', '--target', str(worktree), cwd=project)
-        assert done.returncode == 2 and 'busy: verb synthetic-holder' in done.stderr
+        assert done.returncode == 2 and f'all {layout.SLOT_COUNT} test slots are busy' in done.stderr
+        assert all(f'verb synthetic-holder, seat synthetic-{index}' in done.stderr for index in range(layout.SLOT_COUNT))
         done = tool('run', '--target', str(worktree), '--wait', '1', cwd=project)
         assert done.returncode == 2 and 'waited 1 s' in done.stderr
+        assert results(project) == [], 'a refused run makes nothing'
+        holders[1].release()
+        done = tool('run', '--target', str(worktree), '-n', '0', cwd=project)
+        assert done.returncode == 0, done.stdout + done.stderr
+        assert len(results(project)) == 1, 'three held, the fourth admits the run'
     finally:
-        slot.release()
+        for slot in holders:
+            slot.release()
         root.close()
-    assert results(project) == []
 
 
 def test_the_run_owns_its_startup_bytecode_for_isolated_children(tmp_path):
