@@ -15,6 +15,8 @@ import venv
 
 import pytest
 
+pytest_plugins = ("tests.shared_install",)
+
 from quarterdeck.harness import claude_statusline as line
 from quarterdeck import resources
 from quarterdeck.harness.claude import ClaudeHarness

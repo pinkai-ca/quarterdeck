@@ -15,6 +15,8 @@ import zipfile
 
 import pytest
 
+pytest_plugins = ("tests.shared_install",)
+
 from tests.integration.test_upgrade_resources import RESOURCE_ROOTS, ROOT, archive, environment, git
 from tests.testrunner import layout
 

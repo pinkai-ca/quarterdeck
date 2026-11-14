@@ -13,7 +13,6 @@ from pathlib import Path
 import pytest
 
 from tests.testrunner import layout, owned, resources, sessions, scratch, servers
-from tests.shared_install import shared_wheel, shared_wheel_install, shared_legacy_install
 
 OPENBLAS_AT_IMPORT = os.environ.get('OPENBLAS_NUM_THREADS')
 ROOT = Path(__file__).resolve().parent.parent

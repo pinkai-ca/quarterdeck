@@ -18,6 +18,8 @@ import zipfile
 
 import pytest
 
+pytest_plugins = ("tests.shared_install",)
+
 ROOT = Path(__file__).resolve().parents[2]
 # The real historical installer has no forum/cascade copy or target-resource helper.
 PREDECESSOR = '5f0f54510c3f65cc05cb2921f79bcb0ec520067d'
