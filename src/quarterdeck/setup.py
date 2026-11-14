@@ -551,7 +551,7 @@ def run(args: argparse.Namespace, *, operations: Operations | None = None,
         conversation.say(f"{row} · {sign_in}")
     while True:
         proposal = setup_proposal.build(conversation, operations, text, orders, defaults, available,
-                                        include_desk=office is None)
+                                        include_desk=office is None, project_office=office)
         if initialize_office:
             proposal = setup_proposal.separate_office(proposal, office_path)
         elif office is not None and any(seat.role == "desk" for seat in proposal.ship.seats.values()):

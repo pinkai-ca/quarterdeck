@@ -98,7 +98,8 @@ def keep_unchanged(c, ship: Ship) -> None:
         raise ShipError("answer programs changes a kept ship; choose existing=update")
 
 
-def build(conversation, operations, text: str, orders: str, defaults: dict, available: dict, *, include_desk: bool = True) -> Proposal:
+def build(conversation, operations, text: str, orders: str, defaults: dict, available: dict, *, include_desk: bool = True,
+          project_office: Ship | None = None) -> Proposal:
     """Build/validate in memory. No create, update, readiness or native-version operation is allowed here."""
     from . import setup, ship as ships
     c = conversation
@@ -124,7 +125,8 @@ def build(conversation, operations, text: str, orders: str, defaults: dict, avai
     name = c.ask("name", "Ship name", existing.name if existing else "aurora")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.: -]*", name):
         raise ShipError("answer name must start with a letter or digit and contain a plain ship name")
-    saved_office = existing.session_of(existing.seat("desk")).title if existing and "desk" in existing.seats else "Office"
+    saved_office = (project_office.session_of(project_office.seat("desk")).title if project_office else
+                    existing.session_of(existing.seat("desk")).title if existing and "desk" in existing.seats else "Office")
     office = c.ask("office", "Office name", saved_office)
     for char in (".", ":"):
         if char in office:
@@ -317,7 +319,7 @@ def build(conversation, operations, text: str, orders: str, defaults: dict, avai
     proposed_text = existing.file.read_text() if existing else text
     if not existing:
         if not include_desk:
-            proposed_text = without_tables(proposed_text, ("seats.desk", "sessions.office"))
+            proposed_text = crew_template(proposed_text)
         proposed_text = setup.new_text(proposed_text, edits)
     else:
         setup.preview_update(existing, edits)
@@ -344,6 +346,12 @@ def without_tables(text: str, tables) -> str:
     return "\n".join(lines) + "\n"
 
 
+def crew_template(text: str) -> str:
+    text = without_tables(text, ("seats.desk", "sessions.office"))
+    return ("# The crew takes orders from the project's office desk (desk@office).\n"
+            + "[ship]" + text.split("[ship]", 1)[1])
+
+
 def separate_office(proposal: Proposal, office_folder: Path) -> Proposal:
     """Move the accepted desk declaration and its pools to the single office."""
     from . import setup, ship as ships
@@ -365,7 +373,7 @@ def separate_office(proposal: Proposal, office_folder: Path) -> Proposal:
             office_text = ships.edit(office_text, f"pools.{name}", key, value)
     office = ships._from_text(office_text, office_folder)
     setup.validate_declaration(office)
-    crew_text = without_tables(proposal.text, ("seats.desk", "sessions.office"))
+    crew_text = crew_template(proposal.text)
     used = {pool for name, seat in proposal.ship.seats.items() if name != "desk" for pool in seat.pools}
     crew_text = without_tables(crew_text, tuple(f"pools.{name}" for name in proposal.ship.pools if name not in used))
     crew = ships._from_text(crew_text, proposal.ship.folder)

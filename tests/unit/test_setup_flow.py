@@ -706,6 +706,8 @@ def test_combined_setup_preserves_the_desk_fallback_choices(answers, tmp_path):
 @pytest.mark.parametrize("mode", ["new", "keep", "update"])
 def test_existing_office_crew_wizard_never_adds_a_desk(answers, tmp_path, mode):
     text, orders, _ = setup.template("office")
+    text = ship.edit(text, "sessions.office", "title", "Custom Office")
+    answers["office"] = "Custom Office"
     office = ship.create(tmp_path / "office", text, orders)
     before = office.file.read_bytes()
     answers.update(check="no", start="no")
