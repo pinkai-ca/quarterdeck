@@ -319,7 +319,10 @@ def test_an_imports_link_is_named_on_the_status_line(tmp_path):
     (ship.runtime / 'post' / 'store').mkdir()
     link = ship.runtime / 'post' / 'imports'
     link.symlink_to(target, target_is_directory=True)
-    message = post.Store(ship.runtime).new('order', 'desk', 'captain', 'Still listed.')
     line = watch.facts(ship, SimpleNamespace()).line()
     assert f'{post_dir.LINK_HELD}{link}' in line
-    assert post.Store(ship.runtime).get(message.id).body == 'Still listed.'
+    with pytest.raises(ShipError) as caught:
+        post.Store(ship.runtime).new('order', 'desk', 'captain', 'Still listed.')
+    held(caught.value, link)
+    line = watch.facts(ship, SimpleNamespace()).line()
+    assert f'{post_dir.LINK_HELD}{link}' in line
