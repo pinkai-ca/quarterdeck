@@ -54,13 +54,25 @@ def test_repeated_fresh_and_down_end_program_jail_descendants_and_windows(drydoc
     workspace = tmp_path / 'workspace'
     workspace.mkdir()
     program = workspace / 'owned-tree.py'
-    program.write_text('import subprocess,sys,time\n'
+    program.write_text('import os,subprocess,sys,time\n'
+                       'from pathlib import Path\n'
                        'child=subprocess.Popen([sys.executable,"-c","import time;time.sleep(300)"])\n'
-                       'print("owned tree ready",flush=True)\ntime.sleep(300)\n')
+                       'print("owned tree ready",flush=True)\n'
+                       'Path(os.environ["QD_FAKE_HOME"],"synthetic-ready").write_text(os.environ["QD_FAKE_STARTUP_TOKEN"])\n'
+                       'time.sleep(300)\n')
     ship = shipmod.load(drydock)
     spec = replace(ship.seat('worker-1'), cwd=workspace, sandbox=True)
     seat = seatmod.Seat(ship, spec, tmux)
-    monkeypatch.setattr(seat.harness, 'launch', lambda *a, **kw: Launch((__import__('sys').executable, str(program))))
+
+    def owned_tree(spec, pool, home, brief, resume, first):
+        """The owned tree acknowledges its launch as the fake program does, once its child runs: the launch's watch
+        for a program that dies at once ends on that acknowledgement, never on its whole window."""
+        token = __import__('uuid').uuid4().hex
+        seat.harness._startup_token = token
+        return Launch((__import__('sys').executable, str(program)),
+                      {'QD_FAKE_HOME': str(home), 'QD_FAKE_STARTUP_TOKEN': token})
+
+    monkeypatch.setattr(seat.harness, 'launch', owned_tree)
     previous = {}
     counts = []
     for index in range(3):

@@ -211,6 +211,9 @@ def test_a_seat_a_killed_check_left_is_named_in_the_status_line_and_qd_down_remo
 
 def test_a_program_that_outlives_qd_down_keeps_its_home_and_its_name_until_it_has_ended(world, monkeypatch):
     ship, server = world
+    # The stubborn program never ends while down watches it, so down's watch runs its whole window whatever its
+    # length: shortened for this test alone. What is proved, still ending and the launch kept, does not depend on it.
+    monkeypatch.setattr(seatmod, "PROCESS_END_SECONDS", 0.2)
     name, program = leaked(ship, server, stubborn=True)
     proof = seatmod.down_leftover_check(ship, server, name)
     assert "still ending" in proof and f"qd down {name} again" in proof
