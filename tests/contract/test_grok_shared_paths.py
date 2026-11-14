@@ -273,20 +273,24 @@ def routed(monkeypatch):
 def test_a_live_seat_read_goes_through_the_orchestrator(tmp_path, routed):
     ship, pool, source = grok_ship(tmp_path)
     service = SimpleNamespace(ship=ship, usage_hold={}, usage_read={},
-                              ledger=SimpleNamespace(quota=SimpleNamespace(last_attempt=lambda name: None)))
+                              ledger=SimpleNamespace(quota=SimpleNamespace(
+                                  last_attempt=lambda name: None, due=lambda name, now, interval: True)))
     seat = SimpleNamespace(harness=GrokHarness(), pool=pool)
     quota.refresh(service, seat, True, SimpleNamespace(pool=pool.name))
+    assert routed == [], "a live Grok seat uses the paced background reading"
+    quota.refresh_declared(service)
     assert routed == [(pool.name, "grok")]
 
 
 def test_a_destination_check_goes_through_the_orchestrator(tmp_path, monkeypatch, routed):
     ship, pool, source = grok_ship(tmp_path)
     monkeypatch.setattr(quota, "model_scope", lambda seat, name, **kwargs: None)
-    monkeypatch.setattr(quota, "cached_open", lambda *args: True)
     service = SimpleNamespace(ship=ship, usage_hold={}, log=lambda *args, **kwargs: None,
                               ledger=SimpleNamespace(usage_known=lambda name, scope: False,
                                                      quota=SimpleNamespace(due=lambda name, now, interval: True)))
-    assert Service.known_open(service, SimpleNamespace(name="worker"), pool.name) is True
+    assert Service.known_open(service, SimpleNamespace(name="worker"), pool.name) is False
+    assert routed == [], "an unread destination stays unknown without a synchronous Grok call"
+    quota.refresh_declared(service)
     assert routed == [(pool.name, "grok")]
 
 
