@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.testrunner import layout, resources, sessions, scratch
+from tests.testrunner import layout, resources, sessions, scratch, servers
 
 OPENBLAS_AT_IMPORT = os.environ.get('OPENBLAS_NUM_THREADS')
 ROOT = Path(__file__).resolve().parent.parent
@@ -163,6 +163,22 @@ def socket_container(parent, prefix, *, record=False):
                 pytest.fail(detail)
         finally:
             os.close(descriptor)
+
+
+@pytest.fixture(scope='session', autouse=True)
+def record_private_servers(private_socket_root):
+    """Persist creator-verified births for interrupted-run cleanup, without changing production code."""
+    from quarterdeck.tmux_socket import OwnedSocket
+
+    original = OwnedSocket.record
+
+    def record(owner, held, query):
+        original(owner, held, query)
+        servers.record(owner)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(OwnedSocket, 'record', record)
+        yield
 
 
 @pytest.fixture(scope='session', autouse=True)

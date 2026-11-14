@@ -47,6 +47,16 @@ def group_members(pgid: int) -> list[int]:
     return members
 
 
+def session_groups(sid: int) -> list[int]:
+    """Live groups in a step's own session, including children which changed their group."""
+    groups = set()
+    for pid in _ours():
+        fields = stat_fields(pid)
+        if fields and len(fields) > 3 and fields[0] != 'Z' and fields[3] == str(sid):
+            groups.add(int(fields[2]))
+    return sorted(groups)
+
+
 def users_of(folder: Path) -> tuple[list[dict], int]:
     """This user's processes whose working directory, program or root lies in ``folder``."""
     folder = folder.resolve()

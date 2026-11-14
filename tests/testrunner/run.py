@@ -129,32 +129,41 @@ class Runner:
             raise Stop(f'time limit of {self.args.timeout} s')
 
     def stop_group(self, process):
-        """SIGINT, then SIGTERM, then SIGKILL to the step's own session, each after a grace period."""
+        """Wait for the whole step session, even when its shell has already exited."""
         for number in (signal.SIGINT, signal.SIGTERM, signal.SIGKILL):
-            try:
-                os.killpg(process.pid, number)
-            except ProcessLookupError:
+            groups = procs.session_groups(process.pid)
+            if not groups:
+                process.poll()
                 return
-            try:
-                process.wait(GRACE)
-                return
-            except subprocess.TimeoutExpired:
-                continue
+            for pgid in groups:
+                try:
+                    os.killpg(pgid, number)
+                except ProcessLookupError:
+                    pass
+            deadline = time.monotonic() + GRACE
+            while procs.session_groups(process.pid) and time.monotonic() < deadline:
+                process.poll()  # reap the shell without confusing its exit with the session ending
+                time.sleep(.05)
+        if procs.session_groups(process.pid):
+            raise Refused('stopped step still has live session members; retained for recovery')
+        process.poll()
 
     def sweep(self, pgid: int) -> int:
         """Members left in a finished step's own group: ours by construction (its session, this boot, the run
         lock held); terminated, then killed. Returns how many there were."""
-        left = procs.group_members(pgid)
+        groups = procs.session_groups(pgid)
+        left = [pid for group in groups for pid in procs.group_members(group)]
         if left:
             for number in (signal.SIGTERM, signal.SIGKILL):
-                try:
-                    os.killpg(pgid, number)
-                except ProcessLookupError:
-                    break
+                for group in procs.session_groups(pgid):
+                    try:
+                        os.killpg(group, number)
+                    except ProcessLookupError:
+                        pass
                 deadline = time.monotonic() + 5
-                while procs.group_members(pgid) and time.monotonic() < deadline:
+                while procs.session_groups(pgid) and time.monotonic() < deadline:
                     time.sleep(0.1)
-                if not procs.group_members(pgid):
+                if not procs.session_groups(pgid):
                     break
         return len(left)
 

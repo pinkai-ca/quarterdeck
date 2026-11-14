@@ -1,7 +1,7 @@
 """Per-run records of session containers, never an inventory of the shared socket anchor.
 
-Only empty recorded containers are retired here. A live or unfamiliar namespace is retained; this tool
-has no authority to kill its server, adopt its endpoint, or recursively erase its contents.
+Only recorded containers and creator-recorded private servers are retired here. Unrecorded or
+unfamiliar endpoints are retained, never adopted or recursively erased.
 """
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import stat
 
-from . import owned
+from . import owned, servers
 from .layout import RESULTS, ROOT_NAME, RUN_SOCKETS, SOCKETS, Root, Refused, identity, read_json, run_name, write_json
 
 RECORD_ENV = 'TESTRUN_SESSION_RECORDS'
@@ -129,6 +129,11 @@ def retire(root: Root, run: str, *, budget=None) -> dict:
                 descriptor = owned._open_exact(anchor, name, record['identity'], where, record['owner'])
                 if os.fstat(descriptor).st_dev != root.device:
                     raise Refused(f'{where}: session filesystem differs; retained')
+                births = servers.legacy(descriptor, where, record, run, budget)
+                if births != record.get('servers', {}):
+                    record['servers'] = births
+                    write_json(records, filename, record)  # persist every legacy proof before sending a signal
+                servers.retire(descriptor, where, record, budget)
                 # The native tmux subdirectory is removable only when empty, never by a recursive walk.
                 native = f'tmux-{os.getuid()}'
                 try:

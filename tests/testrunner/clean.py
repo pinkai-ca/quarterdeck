@@ -312,7 +312,7 @@ def require_gone(state: dict, where: Path) -> None:
     if pid and (actual_start is not None and actual_start == start or actual_start is None
                 and Path(f'/proc/{pid}').exists()):
         raise Refused(f'{where}: recorded runner is live or uninspectable; nothing removed')
-    if any(procs.group_members(pgid) for pgid, _ in state.get('groups', [])):
+    if any(procs.group_members(pgid) or procs.session_groups(pgid) for pgid, _ in state.get('groups', [])):
         raise Refused(f'{where}: recorded group still has live processes; held, never signalled')
 
 
