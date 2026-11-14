@@ -167,3 +167,41 @@ def test_the_service_survives_a_failed_release_and_tries_again_next_pass(ship, p
     svc.release_earlier_installer()  # the next pass
     assert svc.legacy_lock is None and not legacy.exists()
     assert [e for e in events() if e['event'] == 'earlier-installer-done']
+
+
+def _service_holding_for(ship, installer: tuple[int, str]):
+    from types import SimpleNamespace
+    from quarterdeck.service import Service
+
+    svc = Service(ship, SimpleNamespace())
+    svc.earlier_installer = installer
+    svc.legacy_lock = servicectl.hold_legacy(ship.runtime)
+    return svc
+
+
+def _done(svc) -> list[dict]:
+    import json
+    lines = svc.log_path.read_text().splitlines() if svc.log_path.exists() else []
+    return [event for event in map(json.loads, lines) if event['event'] == 'earlier-installer-done']
+
+
+def test_the_earlier_service_lock_goes_on_the_first_pass_after_its_installer_has_exited(ship, processes):
+    installer = processes()
+    svc = _service_holding_for(ship, (installer.pid, installer.start))
+    legacy = servicectl.legacy_lock_path(ship.runtime)
+    svc.release_earlier_installer()  # a pass while the installer runs
+    assert svc.legacy_lock is not None and servicectl._held(legacy) is True and not _done(svc)
+    installer.close()  # its pid is gone: no reading, which never equals the recorded start
+    assert servicectl.process_start(installer.pid) is None
+    svc.release_earlier_installer()  # the next pass
+    assert svc.legacy_lock is None and not legacy.exists()
+    assert [event['pid'] for event in _done(svc)] == [installer.pid]
+
+
+def test_the_earlier_service_lock_goes_when_the_installers_pid_runs_another_process(ship, processes):
+    other = processes()  # the recorded pid, reused by a process with another start
+    assert other.start is not None
+    svc = _service_holding_for(ship, (other.pid, str(int(other.start) - 1)))
+    svc.release_earlier_installer()
+    assert svc.legacy_lock is None and not servicectl.legacy_lock_path(ship.runtime).exists()
+    assert [event['pid'] for event in _done(svc)] == [other.pid]
