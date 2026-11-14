@@ -7,13 +7,13 @@ import time
 
 import pytest
 
-from quarterdeck import accounting_slices, record_owner, service
+from quarterdeck import accounting_slices, quota, record_owner, service, watch
 from quarterdeck.accounting_slices import Driver
 from quarterdeck.harness.fake import FakeHarness
 from quarterdeck.harness.synthetic_record import ClaudeShape
 from quarterdeck.ledger import Ledger
 from quarterdeck.service import Service
-from quarterdeck.ship import Ship
+from quarterdeck.ship import Pool, Ship
 
 
 def world(tmp_path, monkeypatch, count=1):
@@ -96,6 +96,61 @@ def test_dead_child_retries_without_counting_partial_work_twice(tmp_path, monkey
         finish(driver, svc)
         assert svc.ledger.ingested(record) == 20
         assert svc.ledger.db.execute('SELECT COUNT(*) FROM tool_calls').fetchone() == (20,)
+    finally:
+        driver.close()
+        svc.ledger.close()
+
+
+def test_deliveries_and_spent_pool_move_do_not_wait_for_backlog(tmp_path, monkeypatch):
+    svc, seat, _, _ = world(tmp_path, monkeypatch, 300)
+    steps = ('server_recovery', 'reconcile', 'groups', 'cascades', 'inboxes', 'recoveries', 'refusals',
+             'answers', 'looks', 'refresh_usage', 'follow', 'requests', 'compactions', 'person_quiet',
+             'fresh_after_order', 'rebrief', 'credentials', 'authentications', 'model_differences')
+    for name in steps:
+        monkeypatch.setattr(svc, name, lambda: None)
+    svc.status_due = lambda: None
+    moved, delivered = [], []
+    svc.deliveries = lambda: delivered.append(time.monotonic())
+    svc.not_idle = lambda seat: None
+    svc.ship.pools.update({name: Pool(name, 'synthetic', endpoint='http://synthetic.invalid')
+                           for name in ('spent', 'available')})
+    seat.ship, seat.pool, seat.is_up = svc.ship, svc.ship.pools['spent'], True
+    seat.spec = SimpleNamespace(pools=('spent', 'available'))
+    seat.failover_to = lambda target: moved.append((target, time.monotonic(), svc.account_driver.active))
+    monkeypatch.setattr(service.recovery, 'held', lambda seat: None)
+    monkeypatch.setattr(quota, 'current_walled', lambda seat, book: True)
+    monkeypatch.setattr(accounting_slices, 'BUDGET', 0.02)
+    svc._accounting_tick = True
+    start = time.monotonic()
+    try:
+        svc._tick_steps()
+        assert len(delivered) == len(moved) == 1
+        target, at, backlog = moved[0]
+        assert delivered[0] - start < 0.1
+        assert target == 'available' and backlog
+        assert at - delivered[0] < 0.5
+        assert svc.ledger.catching_up()
+        assert str(watch.tokens_today(seat)) == 'unknown'
+        assert not svc.ledger.db.in_transaction
+    finally:
+        svc.account_driver.close()
+        svc.ledger.close()
+
+
+def test_changed_reader_identity_discards_old_plans_then_retries(tmp_path, monkeypatch):
+    svc, seat, record, _ = world(tmp_path, monkeypatch, 20)
+    driver = Driver()
+    try:
+        driver.step(svc)
+        # A new registration changes the source binding after the child snapshot.
+        with record_owner.registry(seat.home.parent).open('a') as stream:
+            stream.write('\n')
+        finish(driver, svc)
+        assert svc.ledger.catching_up()
+        assert svc.ledger.ingested(record) == 0
+        finish(driver, svc)
+        assert svc.ledger.ingested(record) == 20
+        assert not svc.ledger.catching_up()
     finally:
         driver.close()
         svc.ledger.close()

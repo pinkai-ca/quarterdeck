@@ -181,15 +181,17 @@ def worker():
                     names = {seat.name} | {row[0] for row in book.db.execute(
                         'SELECT DISTINCT seat FROM turns WHERE record=?', (str(item.path),))}
                     context(item.path, sorted(names))
-                    _, notices, human = service.account_records(source_records={seat.name: [item]}, source_screens={},
+                    observations, notices, human = service.account_records(source_records={seat.name: [item]}, source_screens={},
                                                                source_walls=walls, replay=False, process_table=table)
                     for event, data in notices:
                         send(('notice', event, data))
-                    for person, record, state, _, stamp in human:
+                    for reading in human:
+                        person, record, state, inputs, stamp = reading
                         failure = replace(state.failure, inputs=()) if state.failure else None
                         send(('human', person.name, str(record), failure, stamp))
+                        del person, record, state, inputs, failure, stamp, reading
                     release(item.path)
-                    del notices, human, _
+                    del notices, human, observations
             last_attribution = [None]
             def attribution_context(record, names):
                 if last_attribution[0] is not None:
@@ -221,6 +223,7 @@ class Driver:
         self.ready = deque()
         self.events = deque()
         self.inventory = None
+        self.observations = None
         self.seats, self.screens = [], []
         self.active = False
         self.started = None
@@ -335,9 +338,19 @@ class Driver:
                         break
                 if self.inventory is not None:
                     return
+                self.observations = iter(self.screens)
+            if self.observations is not None:
                 with service.ledger.record_pass() as book:
-                    for seat, screen, launch in self.screens:
+                    while time.monotonic() < deadline:
+                        try:
+                            seat, screen, launch = next(self.observations)
+                        except StopIteration:
+                            self.observations = None
+                            break
                         quota.observe_screen(book, seat, screen, launch, commit=False)
+                if self.observations is not None:
+                    return
+                self.screens = []
                 names = {item['name'] for item in self.seats} | {
                     row[0] for row in service.ledger.db.execute('SELECT DISTINCT seat FROM turns')}
                 self.identities = {name: self.identity(service.runtime, name) for name in names}
@@ -392,7 +405,7 @@ class Driver:
                     service.log('accounting-caught-up', seconds=time.monotonic() - self.started)
         except Exception as error:
             self.close()
-            self.active, self.inventory = False, None
+            self.active, self.inventory, self.observations = False, None, None
             self.incoming.clear()
             self.outgoing.clear()
             self.ready.clear()
