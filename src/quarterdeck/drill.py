@@ -224,7 +224,9 @@ class Drill:
                 if seat.session.human and (not current or not current[-1].accepted):
                     reason = "pending order has no settled delivery attempt"
                     return None
-                if current and not current[-1].accepted and current[-1].result not in {'withheld', 'cancelled'}:
+                # Blind closes the transport, not receipt acceptance. Journals
+                # and fresh's lifecycle claim still exclude in-flight work.
+                if current and not current[-1].accepted and current[-1].result not in {'withheld', 'cancelled', 'blind'}:
                     reason = f"pending order delivery is {current[-1].result or 'unfinished'}"
                     return None
                 if any(a.seat == seat.name and a.result is None for a in attempts):
@@ -237,6 +239,7 @@ class Drill:
                 if any(p.data["phase"] in {"prepared", "pasting", "submitting", "submitted"} for p in proofs):
                     reason = "a delivery is still being typed or confirmed"
                     return None
+                was_blind = bool(current and current[-1].result == 'blind')
             except (OSError, ValueError, TypeError):
                 reason = "delivery evidence is unreadable"
                 return None
@@ -254,6 +257,7 @@ class Drill:
                 prior = [a for a in self.attempts.for_message(order.id) if a.seat == seat.name
                          and (launched is None or a.launched_at != launched.at)]
                 mode = ("delivered first" if any(a.accepted for a in prior) else
+                        "carried after finished blind attempt" if was_blind else
                         f"carried after settled {prior[-1].result}" if prior else "carried unattempted")
             except (OSError, ValueError, TypeError):
                 mode = "carried; prior delivery evidence unreadable"
