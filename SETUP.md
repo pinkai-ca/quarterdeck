@@ -29,7 +29,7 @@ Ask in this order, a question or two at a time. Offer a suggestion with each, so
 2. **The ship's name.** Suggest two or three.
 3. **The office's name**: the tmux session they will work from. Suggest `Office`. Neither name may hold a `.` or a `:`, which tmux does not take.
 4. **The project**: the folder the crew works in.
-5. **The crew.** Three to begin with: a desk, the agent they talk to; a captain, who turns their word into orders and reviews the work; an engineer, who builds it. For each:
+5. **The desk and the crew.** The desk is the agent they talk to, and it sits in their office. The crew is a captain, who turns their word into orders and reviews the work, and an engineer, who builds it. For each of the three:
    - a name: the default ship's are Maeve, Picard and Geordi;
    - a harness, from those installed;
    - a model and an effort. `qd --json controls --harness <name>` gives the efforts that harness takes, where they are measured, and a model and an effort to suggest. No suggestion is checked against their account: say so when you offer one.
@@ -100,7 +100,8 @@ Three answers are your person's, and each is asked on its own:
 
 Add all three to the file, each as `"yes"` or `"no"`, and run the command once more. Setup then:
 
-- writes the ship under `ships/` in the checkout, commits it, and marks it as your person's default ship;
+- makes their office first: `office/` in the checkout, with a git repository of its own, and starts the desk there;
+- writes the ship under `ships/`, commits it, and marks it as your person's default ship;
 - reads whether each harness is ready. A missing sign-in is shown with that harness's own sign-in command: tell your person, and never run it for them;
 - runs the checks and brings the crew up, where they said yes. Where they said no, setup prints the command that continues from there.
 
@@ -108,7 +109,7 @@ A refusal names its reason and what would lift it: report it to your person as s
 
 ## 6. Hand over
 
-After a start, setup's last lines name the command that opens their desk, `Desk access: qd --ship <folder> attach office`, and a first order to type there. `qd attach` alone does the same from any folder, since the ship is their default.
+Setup's office lines name the command that opens their desk, `Desk access: qd --ship <office folder> attach office`, and end with `Office ready; tell the desk what you want to work on.` From the folder they cloned, `.venv/bin/qd --ship office attach` opens the same desk. `qd attach` alone opens the crew's ship, their default ship, and not the office.
 
 A desk on Claude Code, Codex, Grok Build, OpenCode or pi is woken by the ship with the desk's first waiting message. A desk on another harness hears the crew only after the desk has taken a turn: your person starts by typing to it.
 

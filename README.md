@@ -38,7 +38,7 @@ Your agent asks, and you choose:
 
 - **Your name and your office's**: what the crew calls you, and the name of the office you work from.
 - **Your ship**: its name, and your project, the folder the crew works in.
-- **Your crew.** Three to begin with: a desk that you talk to, a captain who turns what you say into orders and reviews the work, and an engineer who builds it. Each gets a name, a harness, a model and an effort.
+- **Your desk and your crew.** The desk is the agent you talk to, and it sits in your office. The crew is a captain, who turns what you say into orders and reviews the work, and an engineer, who builds it. Each of the three gets a name, a harness, a model and an effort.
 - **What each harness runs on**: a subscription you are signed in to, an API key, or a local model.
 
 It shows you the whole ship before it writes anything:
@@ -66,7 +66,7 @@ Then it checks the machine, and brings the crew up when you say so.
 **3. Move into your office.**
 
 ```sh
-qd attach
+qd --ship office attach  # opens your office, where the desk is
 ```
 
 Your desk is there. Say what you want in plain words, and the desk gives the crew its orders and tells you when the work is done.
@@ -92,14 +92,14 @@ Either let the setup command ask you:
 qd setup
 ```
 
-It asks the same questions in your terminal, with a suggestion for every one but your project's folder: on a harness you are already signed in to, name the folder, press Enter at the rest, and you have a working ship. It shows you the whole ship, writes it and brings the crew up.
+It asks the same questions in your terminal, with a suggestion for every one but your project's folder: on a harness you are already signed in to, name the folder, press Enter at the rest, and you have a working ship. It shows you the whole ship, makes your office with its desk, writes the ship and brings the crew up.
 
 Or write the ship's file yourself: [A ship of your own](docs/SHIPS.md#a-project-ship-of-your-own) goes through it step by step, and ends with the crew up.
 
 **3. Move into your office.**
 
 ```sh
-qd attach
+qd --ship office attach  # opens your office, where the desk is
 ```
 
 Your desk is there. [How to use it](#how-to-use-it) has what to say to it, and the commands you can use beside it.
