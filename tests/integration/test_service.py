@@ -432,10 +432,15 @@ def test_an_ack_wakes_nobody_and_a_resend_to_the_office_goes_to_its_watch(ship: 
     service_progress(ship)
     assert post.Attempts(ship.runtime).all() == [], "an ack is never typed into the captain's pane"  # law: open-until-closed
     assert captain.record() is None, "and the captain was never woken"
+    # Filing and the waking line share one tick. The service stays down until the blind attempt
+    # exists, so that tick cannot type into the desk (law: one-door).
+    service.stop(ship.runtime)
     question = qd(capsys, "post", "question", "--to", "desk", "for the desk").split(" ")[0]
     store, attempts = post.Store(ship.runtime), post.Attempts(ship.runtime)
+    post.file_drops(store)
     message = store.get(question)
     attempts.close(attempts.open(message, "desk", None, None, None), "blind", "a watch that died mid-print")
+    service.start(ship)
     proof = qd(capsys, "post", "resend", question)
     assert proof.startswith(f"{question} re-offered to desk's watch") and "no watch is armed yet" in proof
     assert attempts.undelivered(store, "desk") == [message], "offered to the watch again"
