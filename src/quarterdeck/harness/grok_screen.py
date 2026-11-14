@@ -49,6 +49,11 @@ HINT_STATES = {
     ("Shift+Tab:mode", "Ctrl+c:cancel", "Ctrl+b:send to bg", "Ctrl+x:shortcuts"): True,
     # At 80 columns the working draft drops Ctrl+x, while retaining cancel.
     ("Enter:queue", "Alt+Enter:newline", "Shift+Tab:mode", "Ctrl+c:cancel"): True,
+    # At 256 columns the same working draft also draws Ctrl+x and a chip whose text is
+    # "Enter Enter:send now". Measured on 14 November from a crew pane's paste screen.
+    # The chip is drawn; the immediate send-now action stays unproved.
+    ("Enter:queue", "Alt+Enter:newline", "Shift+Tab:mode", "Ctrl+c:cancel",
+     "Enter Enter:send now", "Ctrl+x:shortcuts"): True,
     ("Enter:send now", "Shift+Tab:mode", "Ctrl+c:cancel", "Ctrl+b:send to bg"): True,
     ("Enter:send now", "Shift+Tab:mode", "Ctrl+c:cancel", "Ctrl+;:queue"): True,
 }

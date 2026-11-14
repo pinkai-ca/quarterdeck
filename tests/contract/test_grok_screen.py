@@ -304,6 +304,59 @@ def test_unmeasured_working_hint_stays_unknown(old, new):
     assert screen.box is None
 
 
+# The 14 November crew paste, at a 256-column pane. Private words are replaced with
+# equal-width synthetic text. The composer frame, the empty interior, the footer and
+# the hint row are the captured bytes.
+WIDE_DRAFT = (
+    "Synthetic wide pane one. Synthetic wide pane on",
+    "Synthetic wide pane two. Synthetic wide pane two. Synthetic wide pane two. "
+    "Synthetic wide pane two. Synthetic wide pane two. Synthetic wide pane two. "
+    "Synthetic wide pane two. Synthetic wide pane two. Synthetic wide pane two. "
+    "Synthetic wide pane",
+    "Synthetic wide pane three. Synthetic wide pane three. Synthetic wide pane three. "
+    "Synthetic wide pane three. Synthetic wide pane three. Synthetic wide pane three. "
+    "Synthetic wide pane three. Sy",
+    "Synthetic wide pane four. Synthet",
+)
+WIDE_HINT = (
+    "  Enter:queue  │  Alt+Enter:newline  │  Shift+Tab:mode  │  Ctrl+c:cancel  │  "
+    "Enter Enter:send now  │  Ctrl+x:shortcuts"
+)
+
+
+def test_measured_wide_working_draft_hint_reads_the_box():
+    """A 256-column working draft draws Ctrl+x and the send-now chip, and the box is still the draft."""
+    adapter = GrokHarness()
+    native = fixture("working-draft-256")
+    rows = native.split("\n")
+    assert rows[-1] == "" and len(rows[-2]) == 256
+    assert rows[-2].startswith(WIDE_HINT) and set(rows[-2][len(WIDE_HINT):]) == {" "}
+    assert rows[0].startswith("  ╭") and rows[0].endswith("╮  ") and len(rows[0]) == 256
+    assert rows[5].strip(" │") == ""  # the captured empty interior, borders only
+    assert "Grok 4.7 (high) · always-approve" in rows[6]
+    body = [row[len("  │ ❯ " if i == 0 else "  │   "):-3].rstrip(" ") for i, row in enumerate(rows[1:5])]
+    assert tuple(body) == WIDE_DRAFT
+    screen = adapter.screen(native)
+    assert screen.unknown is None and screen.interruption is None
+    assert screen.working is True
+    assert screen.shows == {"model": "Grok 4.7", "effort": "high"}
+    assert adapter.keys.send_now is None
+    assert adapter.box_columns(256) == 246
+    assert adapter.box("\n".join(WIDE_DRAFT) + "\n").matches(screen.box, adapter.box_columns(256))
+
+
+@pytest.mark.parametrize("old,new", [
+    ("Enter:queue", "Enter:steer"),
+    ("Enter Enter:send now", "Enter Enter:send later"),
+    ("Ctrl+x:shortcuts", "Ctrl+x:other"),
+])
+def test_unmeasured_wide_working_hint_stays_blind(old, new):
+    native = fixture("working-draft-256")
+    assert native.count(old) == 1
+    screen = GrokHarness().screen(native.replace(old, new, 1))
+    assert screen.unknown == "unmeasured Grok composer hint" and screen.box is None
+
+
 def test_transcript_working_words_do_not_replace_native_hint_evidence():
     text = "   ⠹ Responding… [stop]\nCtrl+c:cancel\n" + fixture("idle-mono")
     screen = GrokHarness().screen(text)
