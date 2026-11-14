@@ -33,9 +33,15 @@ def test_workspace_precedes_both_fleet_containers_and_their_child_mounts(tmp_pat
     jail = replace(jail, workspace=project/workspace)
     args = command(jail, ['synthetic-program'])
     writable = position(args, '--bind', jail.workspace, jail.workspace)
+    own = jail.workspace.is_relative_to(jail.ship_folder)
     for root in (project/'ships', project/'office'):
         fence = position(args, '--tmpfs', root)
-        assert writable < fence, 'the fleet is fenced after the writable workspace, even one inside it'
+        if own:  # a workspace in the jail's own ship: bound writable after that ship's read-only folder
+            assert fence < writable, 'a workspace of the ship\'s own is bound after the fence'
+        else:
+            assert writable < fence, 'the fleet is fenced after the writable workspace, even one inside it'
+    if own:
+        assert position(args, '--ro-bind', jail.ship_folder, jail.ship_folder) < writable
         assert ['--ro-bind', str(root), str(root)] not in [args[i:i+3] for i in range(len(args))] or root == jail.ship_folder
     own = max(i for i in range(len(args)) if args[i:i+3] == ['--ro-bind', str(jail.ship_folder), str(jail.ship_folder)])
     container = project/'office' if office else project/'ships'

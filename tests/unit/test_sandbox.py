@@ -345,3 +345,86 @@ def test_the_machines_python_and_pip_are_found_through_the_machine_path_never_a_
         if found:
             assert Path(found).parent.resolve() not in bins and not any(
                 Path(found).resolve().is_relative_to(b.parent) for b in bins if b.name == "bin"), (name, found)
+
+
+@pytest.mark.parametrize('place', ['ships/templates/example', 'ships/alpha/runtime/work', 'ships/beta', 'office', 'office/work'])
+def test_plan_refuses_a_workspace_inside_a_fleet_folder_by_path(tmp_path, monkeypatch, place):
+    """The jail fences ships/ and office/ empty after the workspace: a workspace inside one would be absent."""
+    project = tmp_path / 'project'
+    ship = shipmod.Ship(project / 'ships' / 'alpha', 'synthetic', 'operator', project, {}, {}, {})
+    workspace = project / place
+    workspace.mkdir(parents=True)
+    own = ship.runtime / 'seats' / 'worker'
+    monkeypatch.setattr(sandbox, 'available', lambda: True)
+    with pytest.raises(ShipError, match='inside the fleet folder') as caught:
+        sandbox.plan(ship, 'worker', own, own / 'home', workspace, '/usr/bin/python3', '/usr/bin', home=tmp_path / 'home')
+    root = project / place.split('/')[0]
+    assert f'at {workspace.resolve()}, inside the fleet folder {root}' in str(caught.value)
+    assert not (ship.runtime / 'post').exists(), 'refused before anything of the launch is made'
+
+
+@pytest.mark.parametrize('office', [False, True])
+def test_plan_makes_each_missing_fleet_folder_empty_so_the_jail_fences_it(tmp_path, monkeypatch, office):
+    project = tmp_path / 'project'
+    folder = project / 'office' if office else project / 'ships' / 'alpha'
+    folder.mkdir(parents=True)
+    ship = shipmod.Ship(folder, 'synthetic', 'operator', tmp_path / 'work', {}, {}, {}, kind='office' if office else 'crew')
+    (tmp_path / 'work').mkdir()
+    own = ship.runtime / 'seats' / 'worker'
+    monkeypatch.setattr(sandbox, 'available', lambda: True)
+    missing = project / ('ships' if office else 'office')
+    assert not missing.exists()
+    jail = sandbox.plan(ship, 'worker', own, own / 'home', tmp_path / 'work', '/usr/bin/python3', '/usr/bin', home=tmp_path / 'home')
+    assert missing.is_dir() and not missing.is_symlink() and not any(missing.iterdir())
+    args = sandbox.command(jail, ['synthetic-program'])
+    assert ['--tmpfs', str(missing)] in [args[i:i + 2] for i in range(len(args))]
+    assert ['--remount-ro', str(missing)] in [args[i:i + 2] for i in range(len(args))]
+
+
+@pytest.mark.parametrize('form', ['unwritable parent', 'dangling link', 'link to a folder', 'file'])
+def test_plan_refuses_a_fleet_folder_it_cannot_fence_by_path(tmp_path, monkeypatch, form):
+    project = tmp_path / 'project'
+    ship = shipmod.Ship(project / 'ships' / 'alpha', 'synthetic', 'operator', tmp_path / 'work', {}, {}, {})
+    ship.folder.mkdir(parents=True)
+    (tmp_path / 'work').mkdir()
+    office = project / 'office'
+    elsewhere = tmp_path / 'elsewhere'
+    if form == 'dangling link':
+        office.symlink_to(elsewhere)
+    elif form == 'link to a folder':
+        elsewhere.mkdir()
+        office.symlink_to(elsewhere)
+    elif form == 'file':
+        office.write_text('')
+    own = ship.runtime / 'seats' / 'worker'
+    monkeypatch.setattr(sandbox, 'available', lambda: True)
+    if form == 'unwritable parent':
+        real = Path.mkdir
+
+        def refuse(self, *args, **kwargs):
+            if self == office:
+                raise PermissionError(13, 'Permission denied')
+            return real(self, *args, **kwargs)
+        monkeypatch.setattr(Path, 'mkdir', refuse)
+    with pytest.raises(ShipError, match=f'the fleet folder {office}') as caught:
+        sandbox.plan(ship, 'worker', own, own / 'home', tmp_path / 'work', '/usr/bin/python3', '/usr/bin', home=tmp_path / 'home')
+    message = str(caught.value)
+    assert ('cannot be made (Permission denied)' in message) if form == 'unwritable parent' else ('not a real folder' in message)
+    assert not elsewhere.exists() or not any(elsewhere.iterdir()), 'nothing made through a link'
+
+
+def test_a_workspace_in_the_ships_own_folder_is_allowed_and_mounted_writable_after_that_folder(tmp_path, monkeypatch):
+    """The forum's reviewer works in the forum's own work folder: writable, while the rest of the ship stays read-only."""
+    project = tmp_path / 'project'
+    ship = shipmod.Ship(project / 'ships' / 'alpha', 'synthetic', 'operator', project, {}, {}, {})
+    workspace = ship.folder / 'work'
+    workspace.mkdir(parents=True)
+    own = ship.runtime / 'seats' / 'worker'
+    monkeypatch.setattr(sandbox, 'available', lambda: True)
+    jail = sandbox.plan(ship, 'worker', own, own / 'home', workspace, '/usr/bin/python3', '/usr/bin', home=tmp_path / 'home')
+    args = sandbox.command(jail, ['synthetic-program'])
+    windows = [args[i:i + 3] for i in range(len(args))]
+    ship_bind = windows.index(['--ro-bind', str(ship.folder), str(ship.folder)])
+    work_bind = windows.index(['--bind', str(workspace.resolve()), str(workspace.resolve())])
+    fence = [args[i:i + 2] for i in range(len(args))].index(['--tmpfs', str(project / 'ships')])
+    assert fence < ship_bind < work_bind, 'the workspace is bound writable after its ship\'s read-only folder'

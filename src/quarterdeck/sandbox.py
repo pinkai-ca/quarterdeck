@@ -9,7 +9,8 @@ the other seats' folders hidden; only that seat's drop folder writable, the rest
 store read-only, so ``qd post`` writes a drop and the service files it; and that seat's own check
 proof folder writable, never another seat's. In a project's ``ships/`` and
 ``office/``, which are empty and read-only inside, only the ship's own folder and its peers' ship files
-found at the launch are bound back, so a ship raised later is not there at all. The
+found at the launch are bound back, so a ship raised later is not there at all; a fleet folder missing at
+the launch is made first, empty, so it is fenced too, and a workspace inside one is refused. The
 program's home is the seat home. The operator's files, sign-ins and the other seats' records are not
 merely out of bounds but absent, so nothing the model does inside can read or change them.
 """
@@ -105,6 +106,17 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
                         'set workspace under [ship] to an existing project folder outside the ship folder, '
                         'for example workspace = "/path/to/your/project". '
                         'If this seat has its own cwd setting, change that to the project folder too.')
+    fleet = fleet_roots(ship.folder)
+    own_ship, own_runtime = ship.folder.resolve(), ship.runtime.resolve()
+    if inside := next((root for root in fleet if workspace.is_relative_to(root.resolve())), None):
+        # The one place in the fleet a workspace may lie: a folder of the jail's own ship, outside its runtime, such
+        # as the forum's work folder. It is bound writable after the ship's own read-only folder. Anywhere else the
+        # fence would leave it absent, or read-only, inside.
+        if not workspace.is_relative_to(own_ship) or workspace.is_relative_to(own_runtime):
+            raise ShipError(f"{seat_name}: sandboxed with its working directory at {workspace}, inside the fleet folder "
+                            f"{inside} and outside this ship's own folders; the jail fences that folder empty, so the "
+                            "working directory would be absent inside it. Give the seat a working directory outside "
+                            f"{inside}, or a folder of this ship's own outside its runtime")
     programs = (program, *FRAMEWORK_TOOLS)
     folders = [f for f in (*program_folders(programs, path, home), *hidden_folders(programs, path, home))
                if f != workspace and workspace not in f.parents and ship.folder not in f.parents and f != ship.folder]
@@ -122,7 +134,33 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
         raise ShipError(f"{seat_name}: sandboxed with the operator home at {home}, and {what} {folder} is that home or "
                         "contains it; bound inside the jail it would show the hidden home again, so it jails nothing. "
                         f"Keep {what} out of the home's own path: below the home, or elsewhere")
+    for folder in fleet:
+        fence_point(seat_name, folder)
     return jail
+
+
+def fence_point(seat_name: str, folder: Path) -> None:
+    """Make a missing fleet folder, empty, so the jail can fence it; refuse one that is not a real folder.
+
+    The fence is an empty tmpfs at the folder's own path, and bwrap can make that mount point only where the
+    jail can write. A folder missing at launch under a parent seen read-only inside (the root, or a folder
+    bound back such as the framework's own checkout) would get no fence, and a ship raised there later would
+    show inside. So the folder is made before the launch, and a launch that cannot make it is refused.
+    """
+    # law: one-folder
+    # The fence's empty mount point is inside the project, where the office's own
+    # declaration belongs; qd init accepts that empty folder.
+    try:
+        folder.mkdir()
+    except FileExistsError:
+        pass
+    except OSError as error:
+        raise ShipError(f"{seat_name}: sandboxed, and the fleet folder {folder} is missing and cannot be made "
+                        f"({error.strerror or type(error).__name__}); the jail fences it only where it exists, so a ship "
+                        f"raised there later would show inside. Create {folder} as an empty folder, then start the seat") from None
+    if folder.is_symlink() or not folder.is_dir():
+        raise ShipError(f"{seat_name}: sandboxed, and the fleet folder {folder} is not a real folder; the jail fences "
+                        f"only a real folder. Make {folder} a folder of the project, not a link or a file")
 
 
 def fleet_roots(ship_folder: Path) -> tuple[Path, ...]:
@@ -302,7 +340,10 @@ def command(jail: Jail, argv: list[str]) -> list[str]:
         # Fence the fleet after the writable workspace, even a workspace inside
         # it; then restore its children in parent-first order. The home's tmpfs
         # stays in that depth order, and last when the path is the same.
-        fleet = flag != '--workspace' and any(target.is_relative_to(root) for root in fleet_folders)
+        # A workspace in the jail's own ship folder (plan allows no other place in the fleet) is mounted in the
+        # fleet's depth order, after that folder's read-only bind, so it stays writable.
+        own = flag == '--workspace' and target.is_relative_to(jail.ship_folder)
+        fleet = (flag != '--workspace' or own) and any(target.is_relative_to(root) for root in fleet_folders)
         return fleet, len(target.parts), str(target), mount == ('--tmpfs', jail.home)
 
     fenced = []

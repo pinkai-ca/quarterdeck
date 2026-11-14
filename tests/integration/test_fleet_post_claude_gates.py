@@ -277,3 +277,113 @@ print(json.dumps(dict(seen, code=code)))
     assert post.file_drops(post.Store(left.runtime)) == [], "the jail's drop files as its own seat's"
     sent, = [m for m in post.Store(left.runtime).all() if m.body == 'From the fenced jail.']
     assert sent.to == 'captain@beta' and sent.sender == 'worker-1'
+
+
+@pytest.mark.skipif(not namespaces_allowed(), reason='bubblewrap is not installed, or cannot make a namespace here')
+def test_an_office_raised_after_the_launch_under_a_project_seen_read_only_inside_is_absent(tmp_path):
+    """A fleet folder missing at launch, under a project the jail binds back read-only, is made and fenced.
+
+    This ship's own layout: the project is the framework's checkout under the home, bound back read-only
+    because qd runs from it, and a hand works in a folder of its own. Without the made folder, bwrap could
+    make no mount point there, and an office raised later showed inside through the project's bind.
+    """
+    import time
+
+    home = tmp_path / 'operator-home'
+    project = home / 'project'
+    alpha = make_ship(project, 'alpha')
+    shipmod.fence(alpha)
+    workspace = home / 'work'
+    workspace.mkdir()
+    own = alpha.runtime / 'seats' / 'hand-1'
+    (own / 'home').mkdir(parents=True)
+    office = project / 'office'
+    assert not office.exists()
+    path = os.pathsep.join([os.environ['PATH'], str(project)])  # the project is bound back, as the checkout is
+    jail = sandbox.plan(alpha, 'hand-1', own, own / 'home', workspace, sys.executable, path, home=home)
+    assert project in jail.read_only, 'the project is seen read-only inside, as the framework checkout is'
+    assert office.is_dir() and not any(office.iterdir()), 'plan made the missing office folder, empty'
+    probe = '''
+import json, sys, time
+from pathlib import Path
+project, work = map(Path, sys.argv[1:3])
+deadline = time.monotonic() + 30
+while not (work / 'raised').exists() and time.monotonic() < deadline:
+    time.sleep(.02)
+def read(path):
+    try:
+        return path.read_text()
+    except OSError as error:
+        return type(error).__name__
+office = project / 'office'
+print(json.dumps(dict(
+    raised=(work / 'raised').exists(), project=sorted(p.name for p in project.iterdir()),
+    office=sorted(p.name for p in office.iterdir()) if office.is_dir() else None,
+    declaration=read(office / 'ship.toml'),
+    home=read(office / 'runtime' / 'seats' / 'desk' / 'home' / '.credentials.json'))))
+'''
+    env = {key: value for key, value in os.environ.items() if not key.startswith(('QD_', 'TMUX'))}
+    child = subprocess.Popen(sandbox.command(jail, [sys.executable, '-c', probe, str(project), str(workspace)]),
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+    try:
+        time.sleep(.4)  # the jail has launched; the office is raised outside it now
+        office.mkdir(exist_ok=True)
+        (office / 'ship.toml').write_text('[ship]\nname = "office"\n')
+        secret = 'synthetic-late-office-sign-in'
+        credentials = office / 'runtime' / 'seats' / 'desk' / 'home' / '.credentials.json'
+        credentials.parent.mkdir(parents=True)
+        credentials.write_text(secret)
+        (workspace / 'raised').write_text('')
+        out, err = child.communicate(timeout=60)
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=10)
+    reading = json.loads(out.strip().splitlines()[-1]) if out.strip() else {}
+    assert reading.get('raised'), (out, err)
+    assert 'office' in reading['project'] and 'ships' in reading['project'], 'the project itself is seen inside'
+    assert reading['office'] == [], 'the office raised after the launch is an empty folder inside'
+    assert reading['declaration'] == reading['home'] == 'FileNotFoundError'
+    assert secret not in out + err
+
+
+@pytest.mark.skipif(not namespaces_allowed(), reason='bubblewrap is not installed, or cannot make a namespace here')
+def test_the_forum_reviewer_writes_its_work_folder_and_nothing_else_of_its_ship(tmp_path):
+    """The forum's jailed reviewer works in the forum's own work folder: writable inside, the ship's declaration and the
+    rest of the fleet read-only or absent. Before, the fleet's fence covered that folder read-only."""
+    home = tmp_path / 'operator-home'
+    project = home / 'project'
+    forum_folder = project / 'ships' / 'forum'
+    shutil.copytree(ROOT / 'ships' / 'forum', forum_folder)
+    forum = shipmod.load(forum_folder)
+    shipmod.fence(forum)
+    beta = make_ship(project, 'beta')
+    seat = forum.seat('reviewer-4')
+    work = forum.cwd_of(seat)
+    assert work == forum_folder / 'work'
+    own = forum.runtime / 'seats' / seat.name
+    (own / 'home').mkdir(parents=True)
+    jail = sandbox.plan(forum, seat.name, own, own / 'home', work, sys.executable, os.environ['PATH'], home=home)
+    probe = '''
+import json, sys
+from pathlib import Path
+forum, work, beta = map(Path, sys.argv[1:4])
+def write(path):
+    try:
+        path.write_text('written inside')
+        return 'written'
+    except OSError as error:
+        return type(error).__name__
+print(json.dumps(dict(work=write(work / 'review.md'), declaration=write(forum / 'ship.toml'),
+                      beside=write(forum / 'planted.txt'), beta=(beta / 'runtime').exists(),
+                      beta_declaration=(beta / 'ship.toml').is_file())))
+'''
+    env = {key: value for key, value in os.environ.items() if not key.startswith(('QD_', 'TMUX'))}
+    result = subprocess.run(sandbox.command(jail, [sys.executable, '-c', probe, str(forum_folder), str(work), str(beta.folder)]),
+                            capture_output=True, text=True, timeout=60, env=env)
+    reading = json.loads(result.stdout.strip().splitlines()[-1]) if result.stdout.strip() else {}
+    assert reading.get('work') == 'written', (result.stdout, result.stderr)
+    assert (work / 'review.md').read_text() == 'written inside'
+    assert reading['declaration'] in ('OSError', 'PermissionError') and reading['beside'] in ('OSError', 'PermissionError'), reading
+    assert not (forum_folder / 'planted.txt').exists() and 'written inside' not in (forum_folder / 'ship.toml').read_text()
+    assert not reading['beta'], 'another ship\'s runtime stays absent'  # a template-named ship binds no peer declaration
