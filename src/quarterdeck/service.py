@@ -2037,7 +2037,7 @@ class Service:
             return False
         record = seat.record()
         if record is None:
-            return None  # a live launch without a record has no known activity baseline
+            return False  # follow needs a baseline before the first recorded turn
         mark = (record, record_fingerprint(record))
         if self.work_marks.get(seat.name) == mark:
             return self.working.get(seat.name)
