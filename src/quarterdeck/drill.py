@@ -19,7 +19,7 @@ from datetime import datetime
 from contextlib import nullcontext
 from pathlib import Path
 
-from . import harness as harnesses, input_receipt, post, seat as seatmod, service, ship as shipmod, standing, watch
+from . import harness as harnesses, input_receipt, lifecycle, post, seat as seatmod, service, ship as shipmod, standing, watch
 from .post import Attempts, Store
 from .pending import journals
 from .harness.synthetic_control import Rendezvous, events
@@ -205,20 +205,72 @@ class Drill:
                        f"caught submitted open attempt before record acceptance; attempts {results}; "
                        f"in the record {typed} time(s); submissions {submits}; {restarted}")
 
+    def fresh_after_delivery(self, seat: Seat, order: post.Message) -> tuple[str | None, str]:
+        """Wait on settled delivery evidence, then acquire fresh's ordinary entry claim."""
+        reason = "pending order has no settled delivery attempt"
+
+        def ready():
+            nonlocal reason
+            try:
+                attempts = self.attempts.all()
+                current = [a for a in attempts if a.message == order.id and a.seat == seat.name]
+                if seat.session.human and not (current and current[-1].accepted):
+                    # The same stand-in watch as the matrix, without closing the open order.
+                    arrived = post.wait(self.ship.runtime, seat.name, interval=0.1, stop_after=0)
+                    if arrived:
+                        post.printed(self.ship.runtime, arrived[1])
+                    attempts = self.attempts.all()
+                    current = [a for a in attempts if a.message == order.id and a.seat == seat.name]
+                if not current or not current[-1].accepted:
+                    reason = "pending order has no settled delivery attempt"
+                    return None
+                if any(a.seat == seat.name and a.result is None for a in attempts):
+                    reason = "a delivery attempt is still unfinished"
+                    return None
+                proofs, errors = journals(seat)
+                if errors:
+                    reason = "pending delivery evidence is unreadable"
+                    return None
+                if any(p.data["phase"] in {"prepared", "pasting", "submitting", "submitted"} for p in proofs):
+                    reason = "a delivery is still being typed or confirmed"
+                    return None
+            except (OSError, ValueError, TypeError):
+                reason = "delivery evidence is unreadable"
+                return None
+            try:
+                # Seat.fresh's Busy is its entry claim refusing before the transition body.
+                # Recheck every condition on the next pass; no started fresh is retried.
+                return (seat.fresh(),)
+            except lifecycle.Busy:
+                reason = "the delivery/lifecycle claim is still held"
+                return None
+
+        result = wait_for(ready, self.patience)
+        return (result[0], "") if result is not None else (None, reason)
+
     def fresh_all(self) -> None:
         """Every seat relaunched fresh receives its brief and an index of its open threads."""
         pending = {name: self.store.new("order", "ship", name, f"drill: still open for {name} across a fresh start")
                    for name in self.ship.seats}
-        time.sleep(1.5)  # let the service deliver them to the running seats first
+        freshened = set()
         for seat in self.seats():
-            proof = seat.fresh().splitlines()[-1]
+            proof, reason = self.fresh_after_delivery(seat, pending[seat.name])
+            if proof is None:
+                self.check(f"{seat.name} fresh", False,
+                           f"wait for {pending[seat.name].short} delivery/lifecycle settlement timed out: {reason}")
+                continue
+            freshened.add(seat.name)
+            proof = proof.splitlines()[-1]
             self.check(f"{seat.name} fresh", "· fresh ·" in proof and proof.endswith("indexed"), proof)
         for seat in self.seats():
-            record = wait_for(seat.record, self.patience)
-            first = wait_for(lambda: (seat.harness.turns(record) or [None])[0] if record else None, self.patience)
+            first = None
+            if seat.name in freshened:
+                record = wait_for(seat.record, self.patience)
+                first = wait_for(lambda: (seat.harness.turns(record) or [None])[0] if record else None, self.patience)
             carried = first is not None and pending[seat.name].id in first.input and "qd > briefed as" in first.input
             self.check(f"{seat.name} briefed with its open order", carried,
-                       first.input.splitlines()[0] if first else "no first turn")  # law: context-is-cache
+                       first.input.splitlines()[0] if first else
+                       "no first turn" if seat.name in freshened else "fresh not performed after delivery wait")  # law: context-is-cache
             self.store.new("report", seat.name, "ship", "closing the carried order", re=pending[seat.name].id)
         for seat in self.seats():
             wait_for(lambda: watch.reading(seat).door.open or seat.session.human, self.patience)
