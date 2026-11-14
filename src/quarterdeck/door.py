@@ -617,9 +617,13 @@ class Door:
     def _dismissal_ready(self, screen: Screen | None) -> bool:
         if screen is None:
             return False
-        if screen.working is not None:
+        if not getattr(self.harness, "dismissal_requires_activity", False):
             return True
         key = screen.interruption.key if screen.interruption is not None else None
+        if key == "Escape":
+            return screen.working is True
+        if screen.working is not None:
+            return True
         hook = self.adapter_hook('dismissal_key_without_activity')
         # Even an erroneous adapter declaration cannot authorize Escape on an
         # unknown turn. Only a measured startup choice's exact key may proceed.

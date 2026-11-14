@@ -193,6 +193,7 @@ class Harness(ABC):
     minimal_check_task: str | None = None  # opt-in task-only opening in an owned throwaway check
     screen_activity_before_record: bool = False  # opt-in, without changing another program's startup reading
     daily_live_hold_reason: str | None = None  # adapter-owned exclusion from unattended live checks
+    dismissal_requires_activity: bool = False  # opted-in programs cannot dismiss an unknown turn
     requires_deferred_opening: bool = False
     reads_usage: bool = False  # True where usage() reads the provider's windows; a pool of such a program is read before a move
     reads_queue_error: bool = False  # state() can report unresolved native queue identity to automatic status

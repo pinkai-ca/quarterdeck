@@ -30,6 +30,7 @@ class MuseHarness(Harness):
     daily_live_hold_reason = (
         "Muse was skipped: a check costs it about 3% of its week, so the Admiral decides about Muse"
     )
+    dismissal_requires_activity = True
     requires_deferred_opening = True
     effort_selectors = ("reasoning_effort",)
     efforts = EffortCapability("levels", ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"),
