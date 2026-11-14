@@ -18,8 +18,8 @@ in one exchange so a refresh that lands meanwhile is never lost (law: one-folder
 The service's pass is not fast enough alone: a renewal retires the token every other seat still
 holds, and they fail until the pool's file has it. So a dedicated watch in the service looks at
 each linked seat's credential name twice a second, and a name that stopped being a link reseeds
-at once. Every reseed, the watch's, the pass's and a seat's own at down, holds one lock file under
-the runtime, so two never install at once.
+at once. Every reseed that finds a detached name, the watch's, the pass's and a seat's own at down,
+holds one lock file in the runtime, so two never install at once.
 """
 
 from __future__ import annotations
@@ -91,9 +91,8 @@ def freshness(pool: Pool, path: Path) -> tuple[float, float] | None:
 @contextmanager
 def _reseeding(ship: Ship):
     """One reseed at a time across the service's pass, its watch and any ``qd`` process: a lock file under the runtime."""
-    folder = ship.runtime / "credentials"
-    folder.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(folder / "reseed.lock", os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
+    ship.runtime.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(ship.runtime / "credential-reseed.lock", os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX)
         yield
@@ -131,8 +130,11 @@ def detached_marks(names: list[Path]) -> frozenset[tuple[str, int, int, int]]:
 
 def reseed(ship: Ship, seats: list[Seat]) -> list[str]:
     """Reseed each pool from the newest seat that refreshed, then relink the detached seats; the proof lines."""
+    if not detached_marks([seat.home / source.name for seat in participants(ship, seats)
+                           if (source := pool_file(ship.pools[seat.pool])) is not None]):
+        return []  # every name still a link, or none there: nothing to install and no lock taken
     with _reseeding(ship):
-        return _reseed(ship, seats)
+        return _reseed(ship, seats)  # judged again under the lock: another reseed may have installed it meanwhile
 
 
 def _reseed(ship: Ship, seats: list[Seat]) -> list[str]:

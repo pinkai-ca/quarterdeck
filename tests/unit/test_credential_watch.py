@@ -142,8 +142,7 @@ def test_a_stub_left_by_a_lost_login_is_relinked_and_never_installed(crew):
 def test_every_reseed_waits_for_the_one_lock(crew):
     service, source = crew
     renew_by_replacement(service.ship.runtime / "seats" / "desk" / "home" / source.name, fake(RENEWED, 8 * 3600))
-    lock = service.ship.runtime / "credentials" / "reseed.lock"
-    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock = service.ship.runtime / "credential-reseed.lock"
     held = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
     fcntl.flock(held, fcntl.LOCK_EX)  # another process's reseed, holding the lock
     done = []
@@ -158,5 +157,5 @@ def test_every_reseed_waits_for_the_one_lock(crew):
 
 def test_a_program_whose_seats_hold_a_copy_is_left_to_the_pass(crew, monkeypatch):
     service, source = crew
-    monkeypatch.setattr(harnesses.native_for("anthropic"), "credential_copy", True, raising=False)
+    monkeypatch.setattr(type(harnesses.native_for("anthropic")), "credential_copy", True, raising=False)
     assert credential.linked_names(service.ship, service.resolved_seats()) == []
