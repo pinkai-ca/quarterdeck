@@ -8,6 +8,7 @@ so a process that dies leaves every event it had recorded.
 import json
 import os
 import sys
+import tempfile
 import time
 
 import pytest
@@ -45,7 +46,11 @@ class Recorder:
         plugins = sorted({f'{dist.project_name} {dist.version}'
                           for _, dist in session.config.pluginmanager.list_plugin_distinfo()})
         self.emit('start', plugin=PLUGIN_VERSION, pytest=pytest.__version__, xdist=xdist_version,
-                  python=sys.version.split()[0], executable=sys.executable, plugins=plugins)
+                  python=sys.version.split()[0], executable=sys.executable, plugins=plugins,
+                  layout={'cwd': os.getcwd(), 'TMPDIR': os.environ.get('TMPDIR'),
+                          'tempdir': tempfile.gettempdir(), 'testruns_run_present': 'TESTRUNS_RUN' in os.environ,
+                          'disk_only': os.environ.get('TESTRUNS_CI_DISK') == '1',
+                          'basetemp': _text(session.config.option.basetemp) or None})
 
     def pytest_collectreport(self, report):
         if report.failed or report.skipped:

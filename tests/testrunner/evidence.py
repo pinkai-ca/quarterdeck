@@ -108,6 +108,14 @@ def analyse(folder: Path, pytest_exit: int | None, *, parent_fd=None) -> dict:
     main = events.get('main', [])
     starts = [event for role in events.values() for event in role if event['kind'] == 'start']
     tools, plugins, metadata_problems = start_summaries(starts)
+    layouts = []
+    for event in starts:
+        if 'layout' not in event:
+            continue
+        if not isinstance(event['layout'], dict):
+            metadata_problems.append('malformed layout in start event: expected an object')
+        else:
+            layouts.append({**event['layout'], 'role': event['role']})
     finish = next((event for event in main if event['kind'] == 'finish'), None)
     node_sets = {}
     for event in main:
@@ -210,6 +218,7 @@ def analyse(folder: Path, pytest_exit: int | None, *, parent_fd=None) -> dict:
         'plugins': plugins,
         'collection': collection,
         'expected': len(expected) if collection_known else None,
+        'session_layouts': layouts,
         'deselected': len(deselected),
         'terminal': len(terminal & set(expected)),
         'missing': missing,

@@ -35,7 +35,9 @@ EXIT = {'passed': 0, 'failed': 1, 'refused': 2, 'timeout': 3, 'interrupted': 4, 
         'no-tests': 5}
 CLEANUP_HELD = 6
 PREFLIGHT = r'''
-import json, sys, sysconfig
+import importlib.util, json, sys, sysconfig
+# Match pytest's checkout-root import path while still requiring project code to resolve under src.
+sys.path.insert(0, sys.argv[1])
 out = {"python": sys.version.split()[0], "executable": sys.executable, "prefix": sys.prefix,
        "base_prefix": sys.base_prefix, "purelib": sysconfig.get_path("purelib"), "imports": {}}
 for name in ("pytest", "xdist", "execnet", "pip", "setuptools"):
@@ -44,8 +46,25 @@ for name in ("pytest", "xdist", "execnet", "pip", "setuptools"):
         out[name] = {"version": getattr(module, "__version__", None), "file": module.__file__}
     except ImportError:
         out[name] = None
-for name in sys.argv[1:]:
+for name in sys.argv[2:]:
     out["imports"][name] = __import__(name).__file__
+tests_spec = importlib.util.find_spec("tests")
+if tests_spec is None:
+    out["tests_import"] = {"form": "absent", "file": None, "paths": None, "spec_origin": None}
+else:
+    tests = __import__("tests")
+    spec = getattr(tests, "__spec__", None)
+    file = getattr(tests, "__file__", None)
+    paths = getattr(tests, "__path__", None)
+    origin = getattr(spec, "origin", None)
+    form = "unknown"
+    if spec is not None and spec.submodule_search_locations is not None:
+        if file is None and origin is None:
+            form = "namespace"
+        elif isinstance(file, str) and isinstance(origin, str):
+            form = "regular"
+    out["tests_import"] = {"form": form, "file": file,
+                           "paths": list(paths) if paths is not None else None, "spec_origin": origin}
 print(json.dumps(out))
 '''
 
@@ -88,6 +107,7 @@ def selection(args, top: Path) -> dict:
 class Runner:
     def __init__(self, args, runner_files: list[Path]):
         self.args = args
+        self.ci_layout = getattr(args, 'ci_layout', False)
         self.selection = None  # resolve only once the run's target project is known
         self.runner_files = runner_files
         self.signal = None
@@ -288,7 +308,8 @@ class Runner:
                 self.run_guard.acquire()
                 if change:
                     clean.register(root, target, self.run)  # a refusal here leaves nothing made
-            self.storage = storage.prepare(root, self.run)
+            self.storage = (storage.prepare(root, self.run, disk_only=True) if self.ci_layout
+                            else storage.prepare(root, self.run))
             return self.within(root, target, targets, change)
         except Stop as stopped:
             print(f'testrun: timeout before test setup: {stopped}; no test result claimed', file=sys.stderr)
@@ -321,7 +342,10 @@ class Runner:
         write_json(self.scratch_fd, 'state.json', self.state)
         clean.record(root, run, self.state)
         os.close(root.child(RESULTS, run, 'sessions'))
-        result = {'run': run, 'change': change, 'selection': self.selection, 'started': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
+        result = {'run': run, 'change': change, 'selection': self.selection,
+                  'mode': 'ci-layout' if self.ci_layout else 'isolated',
+                  'ci_full_invocation': bool(self.ci_layout and self.selection is not None and self.selection['name'] == 'whole'
+                                             and args.workers == 8), 'started': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
                   'target': {'top': str(target.top), 'project': str(target.project), 'head': target.head,
                              'tree': target.tree, 'branch': target.branch},
                   'working_storage': self.storage,
@@ -339,7 +363,9 @@ class Runner:
                 if self.python is None:
                     raise Refused('no python3 on the ordinary PATH')
                 self.user = usersite.resolve(self.python)  # before HOME is replaced
-                env, settings = environment.build(scratch, run, self.user['base'] if self.user['exists'] else None)
+                build_options = {'ci_layout': True} if self.ci_layout else {}
+                env, settings = environment.build(scratch, run, self.user['base'] if self.user['exists'] else None,
+                                                  **build_options)
                 env[sessions.RECORD_ENV] = str(root.path / RESULTS / run / 'sessions')
                 os.close(root.child(RUN_SOCKETS))
                 env['TMUX_TMPDIR'] = str(root.path / RUN_SOCKETS)
@@ -374,6 +400,12 @@ class Runner:
         self.console.close()
         console = (scratch / 'console.txt').read_text(encoding='utf-8', errors='replace')
         found = evidence.analyse(scratch / 'evidence', pytest_exit)
+        if self.ci_layout:
+            layout_problems = ci_layout_problems(found, checkout, args.workers)
+            result.setdefault('ci_layout', {})['session_verified'] = not layout_problems
+            if layout_problems:
+                found.update(complete=False, causes=[*layout_problems, *found['causes']],
+                             counts=dict.fromkeys(evidence.CATEGORIES))
         if note:
             found.update(complete=False, causes=[note, *found['causes']], counts=dict.fromkeys(evidence.CATEGORIES))
         status = 'refused' if self.storage_refused else decide(found, self.timed_out, self.signal)
@@ -455,43 +487,84 @@ class Runner:
               file=sys.stderr)
         return FINALIZATION_EXIT
 
-    def setup_and_test(self, target, targets, scratch, checkout, env, result):
-        hooks = ['-c', 'core.hooksPath=/dev/null'] if getattr(self.args, 'jail', False) else []
-        # Git derives the admin name from the checkout's basename. A run-specific basename avoids its
-        # checkout/checkout1 suffix allocation, so recovery knows the intended entry even if add is stopped.
-        admin = target.project / '.git' / 'worktrees' / checkout.name
-        if os.path.lexists(admin):
-            raise Refused(f'run checkout admin {admin} already exists; nothing started')
-        self.state.update(checkout=str(checkout), admin=str(admin), checkout_intent=1)
+    def independent_checkout(self, target, scratch, checkout, env):
+        """A complete local checkout with its own history/common directory and no borrowed objects."""
+        admin = checkout / '.git'
+        self.state.update(repository_kind='independent', checkout=str(checkout), admin=str(admin), checkout_intent=1)
         write_json(self.scratch_fd, 'state.json', self.state)
         clean.record(self.root, self.run, self.state)
-        if self.execute(['git', *hooks, '-C', target.project, 'worktree', 'add', '--detach', checkout, target.head],
-                        env=git_environment(), cwd=scratch, title='checkout') != 0:
-            raise Refused('git worktree add failed; see the console')
-        actual = gitops.git(checkout, 'rev-parse', '--absolute-git-dir').strip()
-        if actual != str(admin):
-            self.state['checkout_admin_mismatch'] = actual
+        ancestry = gitops.history(target.top, target.head, env=env)
+        steps = [(['git', '-c', 'init.templateDir=', 'init', '--quiet', checkout], 'init CI repository'),
+                 (['git', '-C', checkout, '-c', 'core.hooksPath=/dev/null', 'fetch', '--no-tags',
+                   '--no-auto-maintenance', '--no-write-fetch-head', str(target.project), target.head],
+                  'fetch exact target history'),
+                 (['git', '-C', checkout, '-c', 'core.hooksPath=/dev/null', 'checkout', '--quiet',
+                   '--detach', target.head], 'checkout CI commit')]
+        for argv, title in steps:
+            if self.execute(argv, env=env, cwd=scratch, title=title) != 0:
+                raise Refused(f'{title} failed; see the console')
+            self.state['checkout_identity'] = identity(os.lstat(checkout))
             write_json(self.scratch_fd, 'state.json', self.state)
             clean.record(self.root, self.run, self.state)
-            raise Refused(f'run checkout admin {actual} differs from intended {admin}; retained')
-        self.state.update(checkout_identity=identity(os.lstat(checkout)))
-        write_json(self.scratch_fd, 'state.json', self.state)
-        clean.record(self.root, self.run, self.state)
-        tree = gitops.git(checkout, 'rev-parse', 'HEAD^{tree}').strip()
-        result['checkout'] = {'path': str(checkout), 'tree': tree, 'admin': str(admin)}
+        actual = gitops.git(checkout, 'rev-parse', '--absolute-git-dir', env=env).strip()
+        common = gitops.git(checkout, 'rev-parse', '--path-format=absolute', '--git-common-dir', env=env).strip()
+        if (Path(actual) != admin or common != actual or admin.resolve() != admin or not admin.is_dir()
+                or (admin / 'objects/info/alternates').exists()):
+            raise Refused('CI repository does not have its own plain Git common directory and object store')
+        actual_history = gitops.history(checkout, target.head, env=env)
+        if actual_history != ancestry:
+            raise Refused('CI repository ancestry differs from the actual target history')
+        return admin, {'common_dir': common, 'history': actual_history, 'target_history': ancestry,
+                       'repository_kind': 'independent'}
+
+    def setup_and_test(self, target, targets, scratch, checkout, env, result):
+        repository = {}
+        if self.ci_layout:
+            admin, repository = self.independent_checkout(target, scratch, checkout, env)
+        else:
+            hooks = ['-c', 'core.hooksPath=/dev/null'] if getattr(self.args, 'jail', False) else []
+            # Git derives the admin name from the checkout's basename. A run-specific basename avoids its
+            # checkout/checkout1 suffix allocation, so recovery knows the intended entry even if add is stopped.
+            admin = target.project / '.git' / 'worktrees' / checkout.name
+            if os.path.lexists(admin):
+                raise Refused(f'run checkout admin {admin} already exists; nothing started')
+            self.state.update(checkout=str(checkout), admin=str(admin), checkout_intent=1)
+            write_json(self.scratch_fd, 'state.json', self.state)
+            clean.record(self.root, self.run, self.state)
+            if self.execute(['git', *hooks, '-C', target.project, 'worktree', 'add', '--detach', checkout, target.head],
+                            env=git_environment(), cwd=scratch, title='checkout') != 0:
+                raise Refused('git worktree add failed; see the console')
+            actual = gitops.git(checkout, 'rev-parse', '--absolute-git-dir').strip()
+            if actual != str(admin):
+                self.state['checkout_admin_mismatch'] = actual
+                write_json(self.scratch_fd, 'state.json', self.state)
+                clean.record(self.root, self.run, self.state)
+                raise Refused(f'run checkout admin {actual} differs from intended {admin}; retained')
+            self.state.update(checkout_identity=identity(os.lstat(checkout)))
+            write_json(self.scratch_fd, 'state.json', self.state)
+            clean.record(self.root, self.run, self.state)
+        verify_options = {'env': env} if self.ci_layout else {}
+        tree = gitops.git(checkout, 'rev-parse', 'HEAD^{tree}', **verify_options).strip()
+        head = gitops.git(checkout, 'rev-parse', 'HEAD', **verify_options).strip()
+        result['checkout'] = {'path': str(checkout), 'head': head, 'tree': tree, 'admin': str(admin), **repository}
         if getattr(self.args, 'jail', False):
             self.listed = jail.binds(scratch, user_site=self.user['site'] if self.user['exists'] else None,
                                      git_dir=target.project / '.git', admin=Path(admin))
             result['jail'] = jail.statement(listed=self.listed, env=self.env, timeout=self.args.timeout,
                                             memory_mib=self.args.memory_mib, tool=result['runner'])
-        if tree != target.tree:
-            raise Refused(f'run checkout tree {tree} differs from target tree {target.tree}')
+        if tree != target.tree or head != target.head:
+            raise Refused('run checkout HEAD/tree differs from the exact target')
         python = self.python
-        venv = scratch / 'venv'
+        venv = checkout / '.venv' if self.ci_layout else scratch / 'venv'
         if self.execute([python, '-m', 'venv', '--system-site-packages', '--without-pip', venv],
                         env=env, cwd=scratch, title='venv', jailed=True) != 0:
             raise Refused('making the run venv failed; see the console')
         vpython = venv / 'bin' / 'python'
+        if self.ci_layout:
+            env['PATH'] = str(venv / 'bin') + os.pathsep + env.get('PATH', '')
+            env['VIRTUAL_ENV'] = str(venv)
+            result['environment']['PATH'] = env['PATH']
+            result['environment']['fixed']['VIRTUAL_ENV'] = str(venv)
         if self.execute([vpython, '-I', '-m', 'pip', 'install', '--no-deps', '--no-build-isolation', '--no-index',
                          '-q', '-e', checkout], env=env, cwd=scratch, title='install', jailed=True) != 0:
             raise Refused('editable install of the run checkout failed (it needs pip and setuptools in the system '
@@ -505,14 +578,32 @@ class Runner:
                 scratch), capture_output=True, text=True, timeout=60, env=env, check=True).stdout))
             user['path_line'] = str(usersite.add_path_line(purelib, user['site']))
         packages = sorted(path.parent.name for path in (checkout / 'src').glob('*/__init__.py'))
-        proof = subprocess.run(self.jailed([vpython, '-I', '-c', PREFLIGHT, *packages], scratch), cwd=scratch, env=env,
+        proof = subprocess.run(self.jailed([vpython, '-I', '-c', PREFLIGHT, str(checkout), *packages], scratch), cwd=scratch, env=env,
                                capture_output=True, text=True, timeout=60)
         if proof.returncode != 0:
             raise Refused(f'import proof failed: {proof.stderr.strip()[-2000:]}')
         found = json.loads(proof.stdout)
-        for name, file in found['imports'].items():
-            if not Path(file).resolve().is_relative_to(checkout):
-                raise Refused(f'{name} imports from {file}, not from the run checkout; refusing to test another tree')
+        for name in packages:
+            file = found['imports'].get(name)
+            expected = checkout / 'src'
+            if not isinstance(file, str) or not Path(file).resolve().is_relative_to(expected):
+                raise Refused(f'{name} imports from {file}, not from {expected}; refusing to test another tree')
+        tests = found.get('tests_import', {})
+        expected = checkout / 'tests'
+        if (expected / '__init__.py').exists():
+            valid_tests = (tests.get('form') == 'regular'
+                           and all(isinstance(tests.get(key), str)
+                                   and Path(tests[key]).resolve().is_relative_to(expected)
+                                   for key in ('file', 'spec_origin')))
+        else:
+            paths = tests.get('paths')
+            valid_tests = (tests.get('form') == 'absent' or
+                           (tests.get('form') == 'namespace' and tests.get('file') is None
+                            and tests.get('spec_origin') is None and isinstance(paths, list) and bool(paths)
+                            and all(isinstance(path, str) and Path(path).resolve().is_relative_to(expected)
+                                    for path in paths)))
+        if not valid_tests:
+            raise Refused(f'tests import {tests} does not prove the required package form under {expected}')
         for name in ('pytest', 'xdist', 'execnet', 'pip', 'setuptools'):
             if found.get(name):
                 found[name]['origin'] = origin(found[name]['file'], venv, user)
@@ -545,8 +636,15 @@ class Runner:
         result['checkout']['readonly_package_dirs'] = readonly
         self.checkout_before = {'tracked': gitops.tracked_manifest(checkout, target.head),
                                 'extra': gitops.extra_manifest(checkout)}
-        argv = pytest_argv(vpython, scratch, self.args.workers, targets)
+        argv = pytest_argv(vpython, scratch, self.args.workers, targets, ci_layout=self.ci_layout)
         result['argv'] = [str(part) for part in argv]
+        if self.ci_layout:
+            result['ci_layout'] = {'pytest_cwd': str(checkout), 'testruns_run_present': 'TESTRUNS_RUN' in env,
+                                   'basetemp_override': False, 'expected_tmpdir': str(checkout / '.testruns' / 't'),
+                                   'socket_root': env['TMUX_TMPDIR'], 'disk_only': env.get(storage.CI_DISK_ENV) == '1',
+                                   'instrumentation': ['-p qd_testrun_evidence', 'TESTRUN_EVIDENCE', storage.CI_DISK_ENV]}
+            if 'TESTRUNS_RUN' in env:
+                raise Refused('CI pytest must not inherit TESTRUNS_RUN')
         self.state['stage'] = 'pytest'
         write_json(self.scratch_fd, 'state.json', self.state)
         self.bound(self.args.timeout, f'time limit of {self.args.timeout} s')  # pytest's own, from its start
@@ -554,12 +652,16 @@ class Runner:
         return self.execute(argv, env=env, cwd=checkout, title='pytest', jailed=True)
 
 
-def pytest_argv(vpython: Path, scratch: Path, workers: int, targets: list[str]) -> list:
+def pytest_argv(vpython: Path, scratch: Path, workers: int, targets: list[str], *, ci_layout: bool = False) -> list:
     """The runner owns pytest's scheduling and forwards each selected target unchanged."""
     argv = [vpython, '-m', 'pytest', '-q', '-rs', '-p', 'qd_testrun_evidence', '-p', 'no:cacheprovider',
             f'--basetemp={scratch / "tmp" / "b"}']
+    if ci_layout:
+        argv = [vpython, '-m', 'pytest', '-q', '-rs', '-p', 'qd_testrun_evidence']
     if workers:
-        argv += ['-n', str(workers), '--dist', 'worksteal']
+        argv += ['-n', str(workers)]
+        if not ci_layout:
+            argv += ['--dist', 'worksteal']
     return argv + targets
 
 
@@ -570,6 +672,23 @@ def origin(file: str, venv: Path, user: dict) -> str:
     if user.get('exists') and path.is_relative_to(Path(user['site']).resolve()):
         return 'user site'
     return 'system'
+
+
+def ci_layout_problems(found: dict, checkout: Path, workers: int) -> list[str]:
+    """CI layout is a measured session property, never an inference from the requested mode."""
+    layouts = found.get('session_layouts', [])
+    roles = {item['role'] for item in layouts}
+    expected = {'main', *(f'gw{number}' for number in range(workers))}
+    problems = []
+    if not expected.issubset(roles):
+        problems.append('CI layout session observations missing')
+    for item in layouts:
+        if (item.get('cwd') != str(checkout) or item.get('TMPDIR') != str(checkout / '.testruns' / 't')
+                or item.get('tempdir') != item.get('TMPDIR') or item.get('testruns_run_present') is not False
+                or item.get('disk_only') is not True
+                or (item['role'] == 'main' and item.get('basetemp') is not None)):
+            problems.append(f'CI layout session {item["role"]} differs from the requested checkout/temp/environment')
+    return problems
 
 
 def decide(found: dict, timed_out: bool, signalled) -> str:

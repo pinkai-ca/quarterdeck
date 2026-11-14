@@ -16,7 +16,7 @@ STRIP_PREFIXES = ('PYTHON', 'PIP_', 'PYTEST_', 'GIT_', 'XDG_')
 STRIP_NAMES = ('VIRTUAL_ENV', 'VIRTUAL_ENV_PROMPT', 'CONDA_PREFIX', 'CONDA_DEFAULT_ENV', '__PYVENV_LAUNCHER__',
                'TMUX', 'TMUX_PANE', 'TMUX_TMPDIR', 'TMPDIR', 'TEMP', 'TMP', 'HOME', 'QD_SHIP', 'QD_SEAT', 'QD_TMUX_SOCKET',
                'TESTRUN_EVIDENCE', 'TESTRUNS_RUN', 'TESTRUNS_USERBASE', 'TESTRUNS_MEMORY_MIB', 'TESTRUN_SESSION_RECORDS',
-               'TESTRUNS_JAILED', 'TESTRUNS_SOCKETS',
+               'TESTRUNS_JAILED', 'TESTRUNS_SOCKETS', 'TESTRUNS_CI_DISK',
                'OPENBLAS_NUM_THREADS')
 KEEP_GIT = ('GIT_CONFIG_NOSYSTEM',)  # nothing else of git's environment may redirect a test's repository
 
@@ -29,7 +29,7 @@ def owned_paths(scratch: Path) -> dict[str, Path]:
             'PIP_CACHE_DIR': home / '.cache' / 'pip', 'TESTRUN_EVIDENCE': scratch / 'evidence'}
 
 
-def build(scratch: Path, run: str, userbase: str | None = None) -> tuple[dict, dict]:
+def build(scratch: Path, run: str, userbase: str | None = None, *, ci_layout: bool = False) -> tuple[dict, dict]:
     stripped = sorted(name for name in os.environ
                       if (name.startswith(STRIP_PREFIXES) and name not in KEEP_GIT) or name in STRIP_NAMES)
     env = {name: value for name, value in os.environ.items() if name not in stripped}
@@ -38,7 +38,16 @@ def build(scratch: Path, run: str, userbase: str | None = None) -> tuple[dict, d
         path.mkdir(mode=0o700, parents=True, exist_ok=True)
         env[name] = str(path)
     fixed = {'PIP_NO_INDEX': '1', 'PIP_NO_INPUT': '1', 'PIP_DISABLE_PIP_VERSION_CHECK': '1',
-             'PYTHONNOUSERSITE': '1', 'TESTRUNS_RUN': run, 'OPENBLAS_NUM_THREADS': '1'}
+             'PYTHONNOUSERSITE': '1', 'OPENBLAS_NUM_THREADS': '1'}
+    if not ci_layout:
+        fixed['TESTRUNS_RUN'] = run
+    else:
+        # ci.yml's global identity belongs to this run's HOME, never the operator's configuration.
+        config = paths['HOME'] / '.gitconfig'
+        config.write_text('[user]\n\tname = Quarterdeck CI\n\temail = ci@example.invalid\n')
+        fixed.update(GIT_CONFIG_GLOBAL=str(config), GIT_CONFIG_NOSYSTEM='1', PIP_CONFIG_FILE='/dev/null')
+    if ci_layout or os.environ.get('TESTRUNS_CI_DISK') == '1':
+        fixed['TESTRUNS_CI_DISK'] = '1'  # inherited by nested default tool runs, like the runner's lack of room
     if userbase:
         fixed['TESTRUNS_USERBASE'] = userbase  # resolved before HOME was replaced; for a run inside this one only
     env.update(fixed)

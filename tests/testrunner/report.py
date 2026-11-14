@@ -95,6 +95,8 @@ def render(result: dict, console: str, failures: list[dict]) -> str:
            f'signal {outcome.get("signal")}, cleanup {result.get("cleanup", {}).get("outcome")}',
            f'- target: `{target["top"]}` branch `{target.get("branch")}` commit `{target["head"]}` tree `{target["tree"]}`',
            f'- change: `{result.get("change")}`',
+           f'- mode: `{result.get("mode", "isolated")}`; full CI-layout invocation: '
+           f'{result.get("ci_full_invocation", False)} (local tools; no hosted-runner or drill proof)',
            f'- run checkout: tree `{result.get("checkout", {}).get("tree")}` (equals target: '
            f'{result.get("checkout", {}).get("tree") == target["tree"]})',
            f'- runner: `{runner.get("checkout")}` HEAD `{runner.get("head")}` files match HEAD: {runner.get("matches_head")}',
@@ -145,6 +147,10 @@ def render(result: dict, console: str, failures: list[dict]) -> str:
         for key, value in manifests.items():
             out.append(f'- {name} {key}: `{json.dumps(value, sort_keys=True)}`')
     out += ['', '## Environment and tools', '']
+    for key in ('checkout', 'ci_layout'):
+        if key in result:
+            out.append(f'- {key}: `{json.dumps(result[key], sort_keys=True)}`')
+    out.append(f'- pytest session layouts: `{json.dumps(evidence.get("session_layouts", []), sort_keys=True)}`')
     for key, value in result.get('environment', {}).items():
         out.append(f'- {key}: `{json.dumps(value, sort_keys=True)}`')
     for key, value in result.get('tools', {}).items():

@@ -44,7 +44,12 @@ def candidates(environ=None):
     return list(dict.fromkeys(Path(p).absolute() for p in (environ.get('TMPDIR'), '/dev/shm', '/tmp') if p))
 
 
-def choices(bound=BOUND):
+CI_DISK_ENV = 'TESTRUNS_CI_DISK'  # the CI runner reports no eligible memory filesystem
+
+
+def choices(bound=BOUND, *, disk_only=False):
+    if disk_only or os.environ.get(CI_DISK_ENV) == '1':
+        return
     for path in candidates():
         try:
             if path.resolve() != path or not os.access(path, os.W_OK | os.X_OK):
@@ -217,12 +222,13 @@ def reserved(root, device):
     return total
 
 
-def prepare(root, run):
+def prepare(root, run, *, disk_only=False):
     with reservation_lock(root):
         if record(root, run) is not None:
             raise Refused(f'run {run}: already has a memory reservation; retained')
         # Selection, the fresh free-space check, and publishing the promise share this lock.
-        for base, kind in choices(BOUND + MARGIN):
+        available = choices(BOUND + MARGIN, disk_only=True) if disk_only else choices(BOUND + MARGIN)
+        for base, kind in available:
             # Capacity fallback must not create an unused project root in this candidate.
             base_fd = os.open(base, DIRECTORY)
             try:
@@ -248,6 +254,8 @@ def prepare(root, run):
             print(f'testrun: working files in {kind}: {where / RUNS / run} (4 GiB bound); results on disk', flush=True)
             return {**data, 'path': str(path(root, run)), 'sample_seconds': INTERVAL,
                     'metadata_allowance_per_entry': METADATA_ALLOWANCE}
+    if disk_only or os.environ.get(CI_DISK_ENV) == '1':
+        return disk_fallback(root, run, 'CI layout reports no memory filesystem with room for the reservation')
     return disk_fallback(root, run, 'no writable executable tmpfs/ramfs has room for a 4 GiB reservation '
                          'plus the 8 GiB margin and outstanding reservations')
 
@@ -364,6 +372,9 @@ def plain(project):
 
 
 def _plain(project):
+    if os.environ.get(CI_DISK_ENV) == '1':
+        print('pytest: CI disk layout reports no eligible memory storage', flush=True)
+        return None
     current = Path(os.environ.get('TMPDIR', '/'))
     if current.name == 't' and current.parent.name == project_name(project):
         where, fd = memory_root(project, current.parent.parent, create=False)

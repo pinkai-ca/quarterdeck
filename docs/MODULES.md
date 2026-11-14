@@ -165,6 +165,14 @@ quarterdeck/                       the project folder: the framework repository
   .testruns/       ignored: the test tool's registrations, run scratch, results and reports, and the native test sockets
   tests/           unit/ contract/ fixtures/ integration/; testrun.py and testrunner/, the test tool (standard library only)
     shared_install.py  worker-local session wheel/install fixtures; immutable seeds and writable relocated copies
+
+                   CI layout: testrunner/run.py gitops.py environment.py scratch.py clean.py;
+                   evidence_plugin.py evidence.py report.py measure session layout and outcomes
+    unit/test_ci_lane_options.py  ordinary CI/fast/whole command and declared disk-policy cases
+    integration/ci_layout_ordinary_probe.py  explicitly selected ordinary real-mode Git/temp/environment observations
+    integration/ci_layout_probe.py test_testrun_ci_layout_gates.py test_testrun_ci_layout_corrections.py
+    integration/test_testrun_tests_origin.py; unit/test_testrun_ci_layout.py test_testrun_ci_layout_gates.py
+                   supplied frozen CI verification modules; source/test bytes tracked separately
     unit/test_fast_lane_selection.py  ordinary pure lane, worker-default, first-line and report checks
     unit/test_fast_lane_slots.py  ordinary private-process atomic slot acquisition and return checks
     authentication_shapes.py   invented Claude authentication-error envelopes, using measured structural keys only

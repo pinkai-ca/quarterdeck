@@ -14,8 +14,9 @@ from .layout import Refused, git_environment
 MAIN = 'refs/heads/main'
 
 
-def git(cwd: Path, *args: str, check: bool = True) -> str:
-    done = subprocess.run(['git', '-C', str(cwd), *args], capture_output=True, env=git_environment())
+def git(cwd: Path, *args: str, check: bool = True, env: dict | None = None) -> str:
+    done = subprocess.run(['git', '-C', str(cwd), *args], capture_output=True,
+                          env=git_environment() if env is None else env)
     if check and done.returncode:
         raise Refused(f'git {" ".join(args)} in {cwd}: {done.stderr.decode(errors="replace").strip()}')
     return done.stdout.decode(errors='surrogateescape')
@@ -23,6 +24,14 @@ def git(cwd: Path, *args: str, check: bool = True) -> str:
 
 def ok(cwd: Path, *args: str) -> bool:
     return subprocess.run(['git', '-C', str(cwd), *args], capture_output=True, env=git_environment()).returncode == 0
+
+
+def history(top: Path, head: str, *, env: dict) -> dict:
+    """Complete real ancestry of this exact commit, independent of ref names or traversal ordering."""
+    if git(top, 'rev-parse', '--is-shallow-repository', env=env).strip() != 'false':
+        raise Refused('CI layout needs complete target history, not a shallow repository')
+    commits = sorted(git(top, 'rev-list', head, env=env).splitlines())
+    return {'commits': len(commits), 'sha256': hashlib.sha256(('\n'.join(commits) + '\n').encode()).hexdigest()}
 
 
 @dataclass(frozen=True)

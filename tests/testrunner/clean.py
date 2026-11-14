@@ -6,6 +6,7 @@ from __future__ import annotations
 import fcntl
 import os
 from pathlib import Path
+import stat
 import sys
 import time
 
@@ -67,19 +68,31 @@ def _retire_run(root: Root, runs_fd: int, run: str, state: dict) -> dict:
     if note:
         return {'outcome': 'kept', 'reason': note['reason'], 'scratch': str(storage.path(root, run))}
     admin = state.get('admin')
-    if admin:
+    independent = state.get('repository_kind') == 'independent'
+    if admin or independent:
         # The forced removal below must reach this run's own checkout only. state.json is read back from disk
         # on recovery, so before anything goes it must name what run.py made: the run's own checkout path and
         # an admin entry directly under the project's .git/worktrees. Otherwise nothing is touched.
         own = storage.path(root, run) / (f'checkout-{run}' if state.get('checkout_intent') == 1 else 'checkout')
         checkout = state.get('checkout')
-        if (checkout != str(own) or Path(admin).parent != root.project / '.git' / 'worktrees'
-                or (state.get('checkout_intent') == 1 and Path(admin).name != own.name)
-                or state.get('checkout_admin_mismatch')):
+        valid_admin = (admin == str(own / '.git') if independent else
+                       (Path(admin).parent == root.project / '.git' / 'worktrees'
+                        and (state.get('checkout_intent') != 1 or Path(admin).name == own.name)))
+        if checkout != str(own) or not valid_admin or state.get('checkout_admin_mismatch'):
             return {'outcome': 'held', 'scratch': str(storage.path(root, run)),
                     'reason': f'state.json names checkout {checkout} and Git admin {admin}, not this run\'s own '
                               f'{own} under {root.project / ".git" / "worktrees"}; nothing removed'}
-        if os.path.lexists(admin):
+        if independent and os.path.lexists(own):
+            if identity(os.lstat(own)) != state.get('checkout_identity'):
+                return {'outcome': 'held', 'reason': 'independent checkout identity changed; nothing removed'}
+            try:
+                info = os.lstat(own / '.git')
+            except OSError as error:
+                return {'outcome': 'held', 'reason': f'independent Git directory cannot be verified: {error}; '
+                                                    'nothing removed'}
+            if not stat.S_ISDIR(info.st_mode):
+                return {'outcome': 'held', 'reason': 'independent .git is not a real directory; nothing removed'}
+        if not independent and os.path.lexists(admin):
             path = Path(admin)
             backlink = path / 'gitdir'
             if path.is_symlink() or backlink.is_symlink() or backlink.read_text().strip() != str(own / '.git'):
@@ -100,7 +113,10 @@ def _retire_run(root: Root, runs_fd: int, run: str, state: dict) -> dict:
     cleanup['sessions'] = sessions.retire(root, run, budget=budget)
     if cleanup['sessions']['outcome'] == 'held':
         cleanup['outcome'] = 'held'
-    if admin and cleanup['outcome'] == 'complete':
+    if admin and independent and cleanup['outcome'] == 'complete':
+        cleanup['git_admin'] = {'path': admin, 'removed': not os.path.lexists(admin),
+                                'repository_kind': 'independent', 'external_admin': False}
+    elif admin and cleanup['outcome'] == 'complete':
         checkout = state['checkout']
         done = gitops.ok(root.project, 'worktree', 'remove', '--force', checkout)
         cleanup['git_admin'] = {'path': admin, 'removed': not os.path.lexists(admin), 'command_ok': done}
