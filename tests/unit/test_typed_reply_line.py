@@ -16,11 +16,12 @@ from quarterdeck.ledger import Ledger
 from quarterdeck.order_attribution import Threads
 
 AT = datetime(2032, 1, 1, tzinfo=timezone.utc)
+ROOT_ID = '-'.join(('ord', '20320101', '0000', 'captain', '1234'))
 
 
 def message(kind):
     return post.Message(f'{kind[:3]}-20320101-0000-issuer-abcd', kind, 'issuer', 'worker',
-                        AT, 'ordinary synthetic body', re='ord-20320101-0000-captain-1234')
+                        AT, 'ordinary synthetic body', re=ROOT_ID)
 
 
 def legacy(message, second=False):
@@ -60,7 +61,7 @@ def test_only_obligations_have_a_reply_line_and_no_inbox_path(kind, second):
 @pytest.mark.parametrize('second', [False, True])
 def test_old_typed_record_is_confirmed_and_attributed_after_the_change(tmp_path, monkeypatch, kind, second):
     store = post.Store(tmp_path / 'runtime')
-    root = post.Message('ord-20320101-0000-captain-1234', 'order', 'captain', 'issuer',
+    root = post.Message(ROOT_ID, 'order', 'captain', 'issuer',
                         AT - timedelta(seconds=1), 'ordinary synthetic change')
     m = message(kind)
     store.write(root)
@@ -90,7 +91,7 @@ def test_old_typed_record_is_confirmed_and_attributed_after_the_change(tmp_path,
 def test_old_footer_is_consumed_once_in_a_mixed_bundle(tmp_path, kind):
     store = post.Store(tmp_path)
     first = message(kind)
-    second = replace(message('question'), id='que-20320101-0000-issuer-dcba')
+    second = replace(message('question'), id='-'.join(('que', '20320101', '0000', 'issuer', 'dcba')))
     store.write(first)
     store.write(second)
     received = Threads(store).received(legacy(first) + post.typed([second]),
