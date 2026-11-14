@@ -20,7 +20,7 @@ from datetime import datetime
 from contextlib import nullcontext
 from pathlib import Path
 
-from . import harness as harnesses, human_wake, input_receipt, lifecycle, post, seat as seatmod, service, ship as shipmod, standing, watch
+from . import harness as harnesses, human_wake, inbox_watch, input_receipt, lifecycle, post, seat as seatmod, service, ship as shipmod, standing, watch
 from .post import Attempts, Store
 from .pending import journals
 from .harness.synthetic_control import Rendezvous, events
@@ -115,9 +115,10 @@ class Drill:
                 if sender != to:
                     body = f"drill {label}: {sender} to {to}\n$ qd post report --re {{this}} drill-done"
                     orders[(sender, to)] = self.store.new("order", sender, to, body, subject=f"drill {label}")
+        pending = list(orders.values())
         for name, spec in self.ship.seats.items():
             if self.ship.session_of(spec).human:
-                self.play_human_seat(name, [o for (_, to), o in orders.items() if to == name])
+                self.play_human_seat(name, [o for (_, to), o in orders.items() if to == name], pending)
         # A program can post its report before the service finishes writing its
         # receipt. Wait for both observable facts, keeping the exact-once check.
         wait_for(lambda: all(not self.store.is_open(o) and any(a.accepted for a in self.attempts.for_message(o.id))
@@ -147,20 +148,50 @@ class Drill:
                            screen is not None and screen.box in ('', human_wake.LINE),
                            f"box {screen.box!r}" if screen else "no screen")
 
-    def play_human_seat(self, name: str, orders: list[post.Message]) -> None:
-        """Stand in for the agent at a human-session seat: its watch prints the orders, it reports on each."""
-        printed, deadline = "", time.monotonic() + self.patience
-        while time.monotonic() < deadline and not all(o.short in printed for o in orders):
-            arrived = post.wait(self.ship.runtime, name, interval=0.1, stop_after=deadline - time.monotonic())
-            if arrived:
-                printed += arrived[0]
-                post.printed(self.ship.runtime, arrived[1])
+    def play_human_seat(self, name: str, orders: list[post.Message], pending: list[post.Message]) -> None:
+        """Stand in for the agent at a human-session seat: its watch prints the orders, it reports on each.
+
+        The watch stays armed until every order of the round is closed and this seat has nothing
+        waiting. A report is filed on the service's tick, after qd post has returned; leaving the
+        watch in that gap types the waking line into the desk (law: one-door).
+        """
+        runtime = self.ship.runtime
+        store, attempts = self.store, self.attempts
+        printed, reported, registration = "", set(), None
+
+        def retain(value):
+            nonlocal registration
+            registration = value
+
+        try:
+            registration = inbox_watch.register(runtime, name, on_registered=retain)
+            deadline = time.monotonic() + self.patience * 2
+            while time.monotonic() < deadline:
+                with post.admission(runtime, name):
+                    waiting = attempts.undelivered(store, name)
+                    opened = [attempts.open(message, name, None, None, None) for message in waiting]
+                if opened:
+                    printed += post.typed(waiting)
+                    post.printed(runtime, opened)
+                    for order in orders:
+                        if order.id not in reported and order.short in printed:
+                            store.new("report", name, order.sender, "drill-done", re=order.id)
+                            reported.add(order.id)
+                    continue
+                if (len(reported) == len(orders) and all(not store.is_open(order) for order in pending)
+                        and not attempts.undelivered(store, name)):
+                    break
+                time.sleep(0.1)
+        finally:
+            if registration is not None:
+                try:
+                    inbox_watch.retire(runtime, name, registration)
+                except Exception:
+                    post.watch_retirement_warning(post.watch_file(runtime, name), registration["generation"])
         for order in orders:
             received = order.short in printed
             self.check(f"{name} reached by its watch", received,
                        f"{order.short} " + ("printed by qd inbox --wait" if received else "not printed"))
-            if received:
-                self.store.new("report", name, order.sender, "drill-done", re=order.id)
 
     def crash_attempt(self, captain: Seat, order: post.Message, gate) -> bool:
         """This order is submitted durably, still open, and not yet in its record."""
