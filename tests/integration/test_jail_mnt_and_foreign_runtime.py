@@ -172,6 +172,8 @@ def test_a_listening_socket_under_a_bound_folders_test_runs_is_unreachable(drydo
     run = checkout / '.testruns' / 'r' / 'u-1'
     run.mkdir(parents=True)
     (checkout / 'bin').mkdir()
+    (checkout / 'bin' / 'stand-in').write_text('#!/bin/sh\n')  # a program installed in the checkout: its prefix is bound
+    (checkout / 'bin' / 'stand-in').chmod(0o755)
     (checkout / 'README').write_text('the checkout itself')
     server = socket.socket(socket.AF_UNIX)
     server.bind(str(run / 's'))
@@ -182,7 +184,8 @@ def test_a_listening_socket_under_a_bound_folders_test_runs_is_unreachable(drydo
         own = own_seat(ship)
         (tmp_path / 'work').mkdir()
         path = os.pathsep.join([str(checkout / 'bin'), str(Path(sys.executable).parent), '/usr/bin', '/bin'])
-        jail = sandbox.plan(ship, 'worker-1', own, own / 'home', tmp_path / 'work', sys.executable, path, home=HOME)
+        jail = sandbox.plan(ship, 'worker-1', own, own / 'home', tmp_path / 'work', 'stand-in', path, home=HOME)
+        assert checkout in jail.read_only, 'the checkout is bound back, as a program installed in it is'
         assert checkout / '.testruns' in jail.foreign_runtimes
         probe = r"""
 import json, os, socket, sys
