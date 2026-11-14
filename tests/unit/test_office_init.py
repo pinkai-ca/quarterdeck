@@ -29,8 +29,12 @@ def initialize():
     return setup.init_office(argparse.Namespace(ship=None))
 
 
-def test_init_copies_and_commits_the_office_then_starts_only_its_desk(office_project):
+@pytest.mark.parametrize('empty_office', [False, True])
+def test_init_copies_and_commits_the_office_then_starts_only_its_desk(office_project, empty_office):
+    # law: one-folder
     project, calls = office_project
+    if empty_office:
+        (project / 'office').mkdir()
     template = standing.project_dir() / "ships" / "office"
     before = {p.relative_to(template): p.read_bytes() for p in template.rglob("*") if p.is_file()}
     lines = initialize()
@@ -49,6 +53,30 @@ def test_init_copies_and_commits_the_office_then_starts_only_its_desk(office_pro
         assert (template / path).read_bytes() == content
     assert not (project / "ships").exists()
     assert (folder / ".gitignore").read_text() == "/runtime/\n"
+
+
+def test_empty_fleet_mountpoints_are_not_ships_or_peers(office_project):
+    from quarterdeck import fleet
+    project, calls = office_project
+    office = project/'office'
+    ships = project/'ships'
+    office.mkdir()
+    ships.mkdir()
+    assert ship.candidates(project) == []
+    setup.refuse_embedded_office(project)
+    for folder in (office, ships):
+        with pytest.raises(ship.ShipError, match='holds no ship.toml'):
+            ship.load(folder)
+    crew = ships/'alpha'
+    crew.mkdir()
+    (crew/'ship.toml').write_text('[ship]\nname="Synthetic crew"\n')
+    current = ship.load(crew)
+    assert fleet.declaration_files(current) == (crew/'ship.toml',)
+    assert set(fleet.peers(current)) == {'alpha'}
+    assert ship.candidates(project) == ['alpha']
+    setup.refuse_embedded_office(project)
+    assert list(office.iterdir()) == []
+    assert calls == []
 
 
 def test_existing_office_keeps_its_declaration_cards_and_person_declared_seats(office_project):

@@ -212,7 +212,7 @@ def init_office(args: argparse.Namespace, *, operations: Operations | None = Non
     lines = []
     if not (folder / "ship.toml").exists():
         refuse_embedded_office(project)
-    if not folder.exists():
+    if not folder.exists() or (folder.is_dir() and not any(folder.iterdir())):
         if not folder.parent.is_dir():
             raise ShipError(f"office parent {folder.parent} must already exist; create it before qd init")
         source = standing.project_dir() / "ships" / "office"
@@ -222,7 +222,14 @@ def init_office(args: argparse.Namespace, *, operations: Operations | None = Non
         except (OSError, UnicodeError) as error:
             raise ShipError(f"office template unavailable ({type(error).__name__}); install this version's packaged resources") from None
         ships._validate(ships._from_text(files["ship.toml"], folder))
-        folder.mkdir()  # exclusive, as for setup's crew declaration
+        # law: one-folder
+        # The fence's empty mount point is inside the project, where the office's
+        # own declaration belongs; accept only that empty folder, never its files.
+        try:
+            folder.mkdir()
+        except FileExistsError:
+            if folder.is_symlink() or not folder.is_dir() or any(folder.iterdir()):
+                raise ShipError(f"{folder} is not an empty office folder; leave its existing files untouched") from None
         for name, text in {**files, ".gitignore": "/runtime/\n"}.items():
             path = folder / name
             path.parent.mkdir(parents=True, exist_ok=True)

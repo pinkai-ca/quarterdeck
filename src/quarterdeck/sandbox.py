@@ -194,17 +194,42 @@ def command(jail: Jail, argv: list[str]) -> list[str]:
     # contains it, which it then covers again, and before the folders inside it that are bound back.
     mounts: list[tuple[str, Path]] = [("--tmpfs", jail.home)]
     mounts += [("--ro-bind-try", folder) for folder in jail.read_only]
+    project = (jail.ship_folder.parent.parent if jail.ship_folder.parent.name == 'ships'
+               else jail.ship_folder.parent if jail.ship_folder.name == 'office' else None)
+    fleet_folders = (project / 'ships', project / 'office') if project is not None else ()
     # The ship's own tmux server is hidden like the other seats: its socket folder is an empty private
     # tmpfs inside, so nothing in the jail reaches the server, by its path or any other way.
-    mounts += [("--bind", jail.workspace), ("--ro-bind", jail.ship_folder),
+    mounts += [("--workspace", jail.workspace)]
+    mounts += [("--fleet", folder) for folder in fleet_folders]
+    mounts += [("--ro-bind", jail.ship_folder),
                ("--tmpfs", jail.runtime / "seats"), ("--private-tmpfs", jail.runtime / "tmux"), ("--bind", jail.seat_folder)]
     mounts += [("--bind-try", folder) for folder in jail.writable]
     mounts += [("--declaration", file) for file in getattr(jail, 'declarations', ())]
-    # Parents first: a child mount is never hidden by its parent's. At the home's own path the tmpfs comes last.
-    for flag, folder in sorted(mounts, key=lambda m: (len(m[1].parts), str(m[1]), m == ("--tmpfs", jail.home))):
+
+    def mount_key(mount):
+        flag, folder = mount
+        target = folder.parent if flag == '--declaration' else folder
+        # Fence the fleet after the writable workspace, even a workspace inside
+        # it; then restore its children in parent-first order. The home's tmpfs
+        # stays in that depth order, and last when the path is the same.
+        fleet = flag != '--workspace' and any(target.is_relative_to(root) for root in fleet_folders)
+        return fleet, len(target.parts), str(target), mount == ('--tmpfs', jail.home)
+
+    for flag, folder in sorted(mounts, key=mount_key):  # a child mount is never hidden by its parent's
+        if flag == '--workspace':
+            flag = '--bind'
         if flag == '--declaration':
             args += ['--tmpfs', str(folder.parent), '--ro-bind', str(folder), str(folder),
                      '--remount-ro', str(folder.parent)]
+        elif flag == '--fleet':
+            if folder.exists():
+                args += ['--ro-bind', str(folder), str(folder)]
+            elif any(folder.parent.is_relative_to(root)
+                     for root in (jail.workspace, jail.seat_folder, *jail.writable)):
+                # law: one-folder
+                # This empty mount point stays inside the project; office/ is
+                # where the office's own declaration belongs.
+                args += ['--tmpfs', str(folder), '--remount-ro', str(folder)]
         elif flag == "--private-tmpfs":
             args += ["--perms", "0700", "--tmpfs", str(folder)]
         else:
