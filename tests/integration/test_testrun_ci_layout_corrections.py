@@ -12,8 +12,8 @@ import sys
 import pytest
 
 from tests.conftest import git
-from tests.integration.testrun_synthetic import (admin_entries, commit, controller_environment, make, result, scratch,
-                                                 start, started_marker, tool, wait_for)
+from tests.integration.testrun_synthetic import (admin_entries, commit, controller_environment, make, needs_ci_memory,
+                                                 result, scratch, start, started_marker, tool, wait_for)
 from tests.testrunner import clean
 
 
@@ -37,6 +37,7 @@ def test_a_package_that_resolves_outside_the_checkouts_source_is_refused(tmp_pat
     refused_before_pytest(project, 'synth')
 
 
+@needs_ci_memory
 def test_a_package_that_resolves_from_the_ci_venv_inside_the_checkout_is_refused(tmp_path):
     project, worktree = make(tmp_path, {})
     version = f'python{sys.version_info.major}.{sys.version_info.minor}'

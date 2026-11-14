@@ -10,8 +10,8 @@ from pathlib import Path
 import signal
 
 from tests.conftest import git
-from tests.integration.testrun_synthetic import (admin_entries, controller_environment, make, result, results, scratch,
-                                                 start, tool, wait_for, working_paths)
+from tests.integration.testrun_synthetic import (admin_entries, controller_environment, make, needs_ci_memory,
+                                                 result, results, scratch, start, tool, wait_for, working_paths)
 
 # What tests/conftest.py does for a plain pytest run, reduced to the synthetic project.
 CI_CONFTEST = '''
@@ -80,6 +80,7 @@ def only_the_fixed_ending(project):
     return run
 
 
+@needs_ci_memory
 def test_a_ci_layout_run_tests_the_target_in_an_independent_repository_and_touches_no_project_git(tmp_path):
     project, worktree = make(tmp_path, {'conftest.py': CI_CONFTEST, 'test_ci_session.py': CI_SESSION},
                               socket_stub=True)
@@ -113,6 +114,7 @@ def test_a_ci_layout_run_tests_the_target_in_an_independent_repository_and_touch
     assert 'mode: `ci-layout`' in (run / 'report.md').read_text()
 
 
+@needs_ci_memory
 def test_counts_are_withheld_when_the_measured_session_layout_is_not_cis(tmp_path):
     # Without the conftest's plain layout every session keeps the tool's own TMPDIR: an ordinary layout
     # cannot pass for a CI-layout run, however its tests end.
@@ -161,6 +163,7 @@ def ci_marker(project):
     return None
 
 
+@needs_ci_memory
 def test_an_abandoned_ci_layout_run_is_held_on_an_untrustworthy_state_and_recovered_on_its_own(tmp_path):
     hold = tmp_path / 'hold'
     hold.write_text('hold')

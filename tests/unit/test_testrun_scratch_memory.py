@@ -267,6 +267,52 @@ def test_an_outstanding_memory_run_leaves_the_next_its_own_reservation_and_each_
     assert clean.discard_records(project, later, later_state, outcome)['outcome'] == 'complete'
 
 
+def test_the_ci_layout_skip_fires_exactly_when_the_refusal_would(project, monkeypatch, tmp_path):
+    """The nested CI gates skip by name iff a fresh project would be refused, on the same measurement."""
+    from tests.integration import test_testrun_ci_layout_corrections as corrections
+    from tests.integration import test_testrun_ci_layout_gates as gates
+    from tests.integration import test_testrun_tests_origin as origin
+    from tests.integration.testrun_synthetic import skip_without_ci_memory
+
+    named = (
+        gates.test_a_ci_layout_run_tests_the_target_in_an_independent_repository_and_touches_no_project_git,
+        gates.test_counts_are_withheld_when_the_measured_session_layout_is_not_cis,
+        gates.test_an_abandoned_ci_layout_run_is_held_on_an_untrustworthy_state_and_recovered_on_its_own,
+        corrections.test_a_package_that_resolves_from_the_ci_venv_inside_the_checkout_is_refused,
+        origin.test_tests_from_outside_the_checkouts_tests_folder_refuses_before_pytest,
+    )
+    assert [fn.__ci_memory_skip__ for fn in named] == [skip_without_ci_memory] * len(named)
+    marks = [mark for mark in named[-1].pytestmark if mark.name == 'parametrize']
+    assert marks[0].kwargs['ids'] == ['regular-elsewhere', 'namespace-portion-elsewhere']
+
+    def no_room(bound=scratch.BOUND, physical=False):
+        assert physical is True and bound == scratch.BOUND + scratch.MARGIN
+        return iter(())
+
+    monkeypatch.setattr(scratch, 'choices', no_room)
+    assert scratch.eligible_memory(None, physical=True) is None
+    with pytest.raises(Refused) as refused:
+        scratch.prepare(project, new_run_id(), memory_required=True)
+    assert str(refused.value) == scratch.NO_CI_MEMORY
+    with pytest.raises(pytest.skip.Exception) as skipped:
+        skip_without_ci_memory()
+    assert skipped.value.msg == scratch.NO_CI_MEMORY
+
+    base = tmp_path / 'ci-base'
+    base.mkdir()
+
+    def room(bound=scratch.BOUND, physical=False):
+        assert physical is True and bound == scratch.BOUND + scratch.MARGIN
+        return iter([(base, 'tmpfs')])
+
+    monkeypatch.setattr(scratch, 'choices', room)
+    monkeypatch.setattr(scratch, 'physical_filesystem', lambda fd: 'tmpfs')
+    assert scratch.eligible_memory(project, physical=True) == (base, 'tmpfs')
+    skip_without_ci_memory()
+    selected = scratch.prepare(project, new_run_id(), memory_required=True)
+    assert selected['kind'] == 'tmpfs'
+
+
 def test_empty_files_and_directories_are_charged_for_metadata(tmp_path):
     (tmp_path / 'empty-file').touch()
     (tmp_path / 'empty-directory').mkdir()

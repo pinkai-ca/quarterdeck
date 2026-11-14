@@ -3,6 +3,7 @@ branch and a feature worktree, so a tool run under test has its own .testruns, s
 the real project's."""
 from __future__ import annotations
 
+import functools
 import json
 import os
 from pathlib import Path
@@ -12,9 +13,32 @@ import sys
 import textwrap
 import time
 
+import pytest
+
 from tests.conftest import ROOT, git
+from tests.testrunner import scratch
 
 TOOL = ROOT / 'tests' / 'testrun.py'
+
+
+def skip_without_ci_memory() -> None:
+    """Skip when a fresh project's CI run would refuse for lack of a memory reservation.
+
+    The measurement is ``prepare(..., memory_required=True)``: real tmpfs/ramfs with room
+    for the reservation and the margin, ignoring the child disk model.
+    """
+    if scratch.eligible_memory(None, physical=True) is None:
+        pytest.skip(scratch.NO_CI_MEMORY)
+
+
+def needs_ci_memory(fn):
+    """Mark one nested CI-layout gate. The skip carries the refusal's own reason."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        skip_without_ci_memory()
+        return fn(*args, **kwargs)
+    wrapper.__ci_memory_skip__ = skip_without_ci_memory
+    return wrapper
 PYPROJECT = '''[build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"

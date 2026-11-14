@@ -11,7 +11,8 @@ import pytest
 
 from tests.conftest import git
 from tests.integration.test_testrun_ci_layout_gates import CI_CONFTEST
-from tests.integration.testrun_synthetic import commit, controller_environment, make, result, scratch, tool
+from tests.integration.testrun_synthetic import (commit, controller_environment, make, needs_ci_memory, result,
+                                                 scratch, tool)
 
 SITE = Path('.venv') / 'lib' / f'python{sys.version_info.major}.{sys.version_info.minor}' / 'site-packages'
 
@@ -45,6 +46,7 @@ def test_a_regular_tests_package_imports_from_the_checkouts_own_tests_folder(tmp
     ('tests/__init__.py', 'regular package elsewhere'),
     ('tests/portion.py', 'namespace portion elsewhere'),
 ], ids=['regular-elsewhere', 'namespace-portion-elsewhere'])
+@needs_ci_memory
 def test_tests_from_outside_the_checkouts_tests_folder_refuses_before_pytest(tmp_path, shadow):
     relative, text = shadow
     project, worktree = make(tmp_path, {'conftest.py': CI_CONFTEST}, socket_stub=True)

@@ -23,6 +23,9 @@ INTERVAL = 1.0
 METADATA_ALLOWANCE = 4096  # conservative inode/dentry allowance per directory entry, including empty files
 MEMORY_TYPES = {0x01021994: 'tmpfs', 0x858458f6: 'ramfs'}
 RECORD = 'storage.json'
+NO_CI_MEMORY = (
+    'CI layout needs real memory working storage; no eligible memory reservation is free; no drive fallback'
+)
 
 
 def physical_filesystem(fd):
@@ -227,22 +230,36 @@ def reserved(root, device):
     return total
 
 
+def eligible_memory(root, *, physical):
+    """The first base ``prepare`` would reserve, or None. Creates nothing.
+
+    ``physical`` is the controller's real tmpfs/ramfs reading. The child disk model must not
+    hide a reservation the refusal itself can still take. A missing root is a fresh project:
+    it holds no outstanding reservation.
+    """
+    available = choices(BOUND + MARGIN, physical=True) if physical else choices(BOUND + MARGIN)
+    for base, kind in available:
+        # Capacity fallback must not create an unused project root in this candidate.
+        base_fd = os.open(base, DIRECTORY)
+        try:
+            space = os.fstatvfs(base_fd)
+            promised = 0 if root is None else reserved(root, os.fstat(base_fd).st_dev)
+            if space.f_bavail * space.f_frsize < BOUND + MARGIN + promised:
+                continue
+        finally:
+            os.close(base_fd)
+        return base, kind
+    return None
+
+
 def prepare(root, run, *, memory_required=False):
     with reservation_lock(root):
         if record(root, run) is not None:
             raise Refused(f'run {run}: already has a memory reservation; retained')
         # Selection, the fresh free-space check, and publishing the promise share this lock.
-        available = choices(BOUND + MARGIN, physical=True) if memory_required else choices(BOUND + MARGIN)
-        for base, kind in available:
-            # Capacity fallback must not create an unused project root in this candidate.
-            base_fd = os.open(base, DIRECTORY)
-            try:
-                space = os.fstatvfs(base_fd)
-                promised = reserved(root, os.fstat(base_fd).st_dev)
-                if space.f_bavail * space.f_frsize < BOUND + MARGIN + promised:
-                    continue
-            finally:
-                os.close(base_fd)
+        selected = eligible_memory(root, physical=memory_required)
+        if selected is not None:
+            base, kind = selected
             where, fd = (memory_root(root.project, base, physical=True) if memory_required
                          else memory_root(root.project, base))
             try:
@@ -261,7 +278,7 @@ def prepare(root, run, *, memory_required=False):
             return {**data, 'path': str(path(root, run)), 'sample_seconds': INTERVAL,
                     'metadata_allowance_per_entry': METADATA_ALLOWANCE}
     if memory_required:
-        raise Refused('CI layout needs real memory working storage; no eligible memory reservation is free; no drive fallback')
+        raise Refused(NO_CI_MEMORY)
     return disk_fallback(root, run, 'no writable executable tmpfs/ramfs has room for a 4 GiB reservation '
                          'plus the 8 GiB margin and outstanding reservations')
 
