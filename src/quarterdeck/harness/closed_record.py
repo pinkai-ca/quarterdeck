@@ -56,8 +56,7 @@ def not_in_closed_record(seat: 'Seat', proof: 'Proof') -> bool:
         if not isinstance(inputs, Inputs) or inputs.diagnostics()['total']:
             return False
         since = datetime.fromisoformat(data['at'])
-        forms = input_receipt.recorded_forms(reader, record, data['payload'], since)
-        ignoring = input_receipt.ignored(reader, record, data['payload'], since)
+        forms, ignoring = input_receipt.message_forms(reader, record, data['payload'], since)
         for item in inputs:
             if item.at is None:
                 return False

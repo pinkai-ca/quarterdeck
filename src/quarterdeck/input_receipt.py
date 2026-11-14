@@ -35,6 +35,29 @@ def same_input(recorded: str, forms: tuple[str, ...], ignoring: frozenset[str] =
     return any(same_text(without(recorded, ignoring), without(form, ignoring)) for form in forms)
 
 
+def message_forms(harness: Harness | None, record: Path | None, text: str | tuple[str, ...],
+                  since: datetime) -> tuple[tuple[str, ...], frozenset[str]]:
+    """The one rule every matcher reads a message by: each text as typed with the form the adapter measured its
+    program to record it in, and the characters it drops, ignored on both sides. Without a reader or a record,
+    the texts as typed alone.
+    """
+    texts = (text,) if isinstance(text, str) else tuple(text)
+    if harness is None or record is None:
+        return texts, frozenset()
+    forms = tuple(form for each in texts for form in recorded_forms(harness, record, each, since))
+    return forms, frozenset().union(*(ignored(harness, record, each, since) for each in texts))
+
+
+def read_forms(harness: Harness | None, record: Path | None, text: str | tuple[str, ...],
+               since: datetime) -> tuple[tuple[str, ...], frozenset[str]]:
+    """``message_forms`` for a matcher that names a message among others: a record it cannot read leaves the
+    texts as typed, as before the forms were read."""
+    try:
+        return message_forms(harness, record, text, since)
+    except (OSError, ValueError):
+        return message_forms(None, None, text, since)
+
+
 def confirmed(reader: str | Harness, record: Path, text: str | tuple[str, ...], since: datetime) -> str | None:
     """Exact fresh acceptance, queueing or consumption; untimed history proves nothing.
 
@@ -46,9 +69,7 @@ def confirmed(reader: str | Harness, record: Path, text: str | tuple[str, ...], 
         # Native precision affects only this comparison, never the saved attempt.
         since = datetime.fromtimestamp(floor(since.timestamp() / resolution) * resolution, since.tzinfo)
     queued = False
-    texts = (text,) if isinstance(text, str) else text
-    forms = tuple(form for each in texts for form in recorded_forms(harness, record, each, since))
-    ignoring = frozenset().union(*(ignored(harness, record, each, since) for each in texts))
+    forms, ignoring = message_forms(harness, record, text, since)
     for item in harness.inputs(record):
         if item.at is None or item.at < since or not same_input(item.text, forms, ignoring):
             continue

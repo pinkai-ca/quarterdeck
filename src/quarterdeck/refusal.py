@@ -121,8 +121,9 @@ def state_note(seat: Seat) -> str:
 
 
 def culprit(seat: Seat, failure: TurnFailure, launch: dict, store: post.Store,
-            attempts: post.Attempts) -> tuple[post.Message | None, str | None]:
-    """The one ship message the refused turn took, or why it cannot be named without guessing."""
+            attempts: post.Attempts, record: Path | None = None) -> tuple[post.Message | None, str | None]:
+    """The one ship message the refused turn took, or why it cannot be named without guessing. Each message is read
+    in the forms the receipt reads it in, from the seat's record."""
     if not failure.inputs:
         return None, 'the refused turn names no input'
     mine = [a for a in attempts.all() if a.seat == seat.name and a.launched_at == launch['at'] and a.pane is not None]
@@ -134,8 +135,10 @@ def culprit(seat: Seat, failure: TurnFailure, launch: dict, store: post.Store,
                 message = store.get(attempt.message)
             except ShipError:
                 continue
+            forms, ignoring = input_receipt.read_forms(getattr(seat, 'harness', None), record,
+                                                       post.delivered_forms(message), attempt.receipt_since)
             if (item.at is not None and item.at >= attempt.receipt_since
-                    and input_receipt.same_input(item.text, post.delivered_forms(message))):
+                    and input_receipt.same_input(item.text, forms, ignoring)):
                 found.add(message.id)
         if len(found) != 1:
             return None, ('an input of the refused turn is not one message the door typed on this launch'
@@ -228,7 +231,7 @@ def step(service: Service, seat: Seat) -> None:
              'stage': 'held', 'reason': None, 'successor': None}
     # A named refused message is quarantined and its sender told whether or not the fresh start may proceed;
     # what cannot be named is never quarantined on a guess (law: context-is-cache).
-    message, why = culprit(seat, failure, launch, service.store, service.attempts)
+    message, why = culprit(seat, failure, launch, service.store, service.attempts, record)
     if message is not None:
         event['quarantined'] = [{'message': message.id, 'sender': message.sender, 'kind': message.kind}]
         if message.sender in service.ship.seats:

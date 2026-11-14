@@ -151,23 +151,35 @@ def obstruction(seat: Seat, store: post.Store | None = None) -> str | None:
     return describe(failure)
 
 
+def _record(seat: Seat) -> Path | None:
+    """The seat's joined record, or None where it cannot be read: its messages are then read as typed alone."""
+    read = getattr(seat, 'record', None)
+    try:
+        return read() if read is not None else None
+    except (OSError, ValueError):
+        return None
+
+
 def unsettled(failure: TurnFailure) -> str | None:
     """unacted where the record proves no model output; uncertain where it cannot tell; else None."""
     return 'unacted' if failure.model_output is False else 'uncertain' if failure.model_output is None else None
 
 
 def matching(seat: Seat, failure: TurnFailure, store: post.Store, attempts: post.Attempts) -> list[post.Attempt]:
-    """This seat's latest attempts whose exact typed message is an input of the failed turn."""
+    """This seat's latest attempts whose typed message is an input of the failed turn, read in the forms the receipt
+    reads it in."""
     found = []
+    record = _record(seat)
     for attempt in attempts.all():
         if attempt.seat != seat.name or attempt.result not in ('delivered', 'queued'):
             continue
         try:
-            forms = post.delivered_forms(store.get(attempt.message))
+            typed = post.delivered_forms(store.get(attempt.message))
         except (OSError, KeyError, ValueError):
             continue
-        if any(item.at is not None and item.at >= attempt.receipt_since and input_receipt.same_input(item.text, forms)
-               for item in failure.inputs):
+        forms, ignoring = input_receipt.read_forms(getattr(seat, 'harness', None), record, typed, attempt.receipt_since)
+        if any(item.at is not None and item.at >= attempt.receipt_since
+               and input_receipt.same_input(item.text, forms, ignoring) for item in failure.inputs):
             found.append(attempt)
     latest = attempts.latest()
     return [a for a in found if latest.get(a.message) == a.result
