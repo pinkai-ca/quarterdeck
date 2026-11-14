@@ -52,7 +52,7 @@ def resolve(ship, value):
         if name not in fleet:
             raise ShipError(f'forward destination {name} unavailable; message retained')
         target_ship = fleet[name]
-        target = target_ship.forward.get(seat)
+        target = getattr(target_ship, 'forward', {}).get(seat)
         if target is None:
             if seat not in target_ship.seats and seat not in (target_ship.operator.lower(), 'ship'):
                 raise ShipError(f'forward destination {current} has no seat; message retained')
@@ -61,7 +61,7 @@ def resolve(ship, value):
     raise ShipError('forward route has a loop; message retained')
 
 
-def projected(runtime, message):
+def projected(runtime, message, *, open_obligation=False):
     """Only a saved route changes historical party identity; a declaration hides old dispatch now."""
     from .fleet_post import address, owner
     here = owner(runtime)
@@ -74,7 +74,7 @@ def projected(runtime, message):
             target, destination = address(saved['to'], here)
             return replace(message, to=target if destination == here else saved['to'])
         return message
-    target = declared(runtime).get(message.to)
+    target = declared(runtime).get(message.to) if open_obligation else None
     return replace(message, to=target) if target else message
 
 
@@ -101,19 +101,27 @@ def pin(ship, message):
         return saved
     if len(trail) == 1:
         return None
+    if not post.Store(ship.runtime).is_open(message):
+        return None
     from .fleet import peers
     fleet = peers(ship)
-    for old in trail[:-1]:
-        _, name = transport.address(old, ship.folder.name)
-        latest = post.Attempts(fleet[name].runtime).for_message(message.id)
+
+    def available(runtime, seat):
+        from . import compaction
+        reserved, transition = compaction.withheld(runtime, seat)
+        if message.id in reserved or transition:
+            raise ShipError('old address has a reserved successor handoff or transition; forwarding held')
+        latest = post.Attempts(runtime).for_message(message.id)
         if latest and latest[-1].result not in ('delivered', 'watch'):
             raise ShipError('old address has an unresolved delivery; forwarding held')
+
+    for old in trail[:-1]:
+        seat, name = transport.address(old, ship.folder.name)
+        available(fleet[name].runtime, seat)
     seat, origin = transport.address(raw.to, ship.folder.name)
     if origin == ship.folder.name:
         with post.admission(ship.runtime, seat):
-            latest = post.Attempts(ship.runtime).for_message(message.id)
-            if latest and latest[-1].result not in ('delivered', 'watch'):
-                raise ShipError('old address has an unresolved delivery; forwarding held')
+            available(ship.runtime, seat)
             saved = dict(format=1, id=message.id, sha256=transport.digest(data),
                          **{'from': trail[0], 'to': trail[-1], 'via': trail})
             transport.publish(path(ship.runtime, message.id), transport.encoded(saved))
@@ -124,11 +132,13 @@ def pin(ship, message):
     return saved
 
 
-def target(ship, message):
+def target(ship, message, store):
     saved = recorded(ship.runtime, message.id)
     if saved:
         return saved['to']
-    if '@' not in message.to and message.to not in ship.forward:
+    if not store.is_open(message):
+        return message.to
+    if '@' not in message.to and message.to not in getattr(ship, 'forward', {}):
         return message.to
     return resolve(ship, message.to)[-1]
 

@@ -147,7 +147,9 @@ class Store:
         message = self.prepare(kind, sender, to, body, **fields)
         self.write(message)
         from .fleet_post import local_view
-        return local_view(self.dir.parent.parent, message)
+        from .forward_post import projected
+        return projected(self.dir.parent.parent, local_view(self.dir.parent.parent, message),
+                         open_obligation=message.kind in ("order", "question"))
 
     def prepare(self, kind: str, sender: str, to: str, body: str, **fields) -> Message:
         """Construct an immutable intent before publication, without changing its format."""
@@ -241,6 +243,18 @@ class Store:
                 for message in messages:
                     if message.re:
                         replies.setdefault(message.re, []).append(message)
+                # Decide openness before projecting declarations: an old closing report
+                # must keep its order closed, and settled history keeps its old address.
+                from .forward_post import projected
+                messages = [projected(self.dir.parent.parent, m, open_obligation=(
+                    m.kind in ("order", "question") and not any(
+                        r.kind == ("report" if m.kind == "order" else "answer")
+                        and (m.kind != "order" or r.sender == m.to)
+                        for r in replies.get(m.id, ())))) for m in messages]
+                replies = {}
+                for message in messages:
+                    if message.re:
+                        replies.setdefault(message.re, []).append(message)
                 self._cache = (stamp, messages, replies)
                 finished = time.time_ns()
                 # Certify only a listing begun after the entire timestamp bucket.
@@ -289,6 +303,18 @@ class Store:
                     messages.append(message)
                 messages.sort(key=lambda m: (m.at, m.id))
                 replies: dict[str, list[Message]] = {}
+                for message in messages:
+                    if message.re:
+                        replies.setdefault(message.re, []).append(message)
+                # Decide openness before projecting declarations: an old closing report
+                # must keep its order closed, and settled history keeps its old address.
+                from .forward_post import projected
+                messages = [projected(self.dir.parent.parent, m, open_obligation=(
+                    m.kind in ("order", "question") and not any(
+                        r.kind == ("report" if m.kind == "order" else "answer")
+                        and (m.kind != "order" or r.sender == m.to)
+                        for r in replies.get(m.id, ())))) for m in messages]
+                replies = {}
                 for message in messages:
                     if message.re:
                         replies.setdefault(message.re, []).append(message)

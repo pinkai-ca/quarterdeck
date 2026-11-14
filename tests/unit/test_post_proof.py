@@ -11,7 +11,7 @@ from quarterdeck.tmux import TmuxError
 
 def declaration(tmp_path, *, human=False):
     spec = SimpleNamespace(session='crew', sandbox=False)
-    return SimpleNamespace(runtime=tmp_path, seats={'sender': spec, 'recipient': spec},
+    return SimpleNamespace(runtime=tmp_path, forward={}, seats={'sender': spec, 'recipient': spec},
                            seat=lambda name: spec, session_of=lambda spec: SimpleNamespace(human=human))
 
 

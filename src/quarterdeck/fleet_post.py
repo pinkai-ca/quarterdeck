@@ -258,7 +258,7 @@ def validate_target(ship, value):
     if target not in fleet:
         raise ShipError(f'no ship {target!r} in this project')
     destination = fleet[target]
-    if seat not in destination.seats and seat not in destination.forward and seat not in (destination.operator.lower(), 'ship'):
+    if seat not in destination.seats and seat not in getattr(destination, 'forward', {}) and seat not in (destination.operator.lower(), 'ship'):
         raise ShipError(f'no seat {seat!r} in ship {target}')
     return seat, target
 
@@ -379,7 +379,7 @@ def export(ship, store):
             if imported:
                 raw, _ = _source(ship, message.id)
                 seat, here = address(raw.to, imported['origin'])
-                if here != ship.folder.name or seat not in ship.forward:
+                if here != ship.folder.name or seat not in getattr(ship, 'forward', {}):
                     continue
             for target in destinations(ship, store, message):
                 offer(ship, message, target)
@@ -390,7 +390,7 @@ def export(ship, store):
 
 def destinations(ship, store, message):
     from .forward_post import target as forwarded_target
-    _, target = address(forwarded_target(ship, message), ship.folder.name)
+    _, target = address(forwarded_target(ship, message, store), ship.folder.name)
     targets = {target} - {ship.folder.name}
     if target == ship.folder.name:
         from .forward_post import recorded
@@ -560,7 +560,7 @@ def waiting(ship, store=None):
         if imported:
             raw, _ = _source(ship, message.id)
             seat, here = address(raw.to, imported['origin'])
-            if here != ship.folder.name or seat not in ship.forward:
+            if here != ship.folder.name or seat not in getattr(ship, 'forward', {}):
                 continue
         for target in destinations(ship, store, message):
             try:

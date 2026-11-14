@@ -95,6 +95,7 @@ def test_one_wake_failure_is_named_and_later_crew_deliveries_continue(monkeypatc
     message = SimpleNamespace(id='synthetic-order-zzzz')
     calls, logs, held = [], [], []
     service = Service.__new__(Service)
+    service.ship = SimpleNamespace(forward={})
     service.store = object()
     service.wake_errors = set()
     service.attempts = SimpleNamespace(latest=lambda: {}, undelivered=lambda *a, **kw: [message])
