@@ -674,7 +674,7 @@ class Door:
         columns = self.harness.box_columns(pane.width) if pane else None
         if box.matches(screen.box, columns, self.harness.wrap_slack):
             return True
-        scroll = self.harness.box_scroll
+        scroll = getattr(self.harness, 'box_scroll', None)
         height = getattr(pane, 'height', None)
         return bool(scroll and self.harness.box_geometry_known and type(height) is int
                     and screen.box is not None and 0 < len(screen.box.splitlines()) <= height

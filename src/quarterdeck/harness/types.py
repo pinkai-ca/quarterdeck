@@ -666,6 +666,9 @@ class BoxScroll:
                 or self.anchor not in ('top', 'bottom') or self.marker_row not in ('first', 'last')):
             return False
         visible = shown.rstrip('\n').split('\n')
+        widths = [_cells(row) for row in visible]
+        if any(width is None or width > columns + 1 for width in widths):
+            return False  # text plus the measured single reserved gutter cell
         index = 0 if self.marker_row == 'first' else len(visible) - 1
         marked = visible[index]
         if self.placement == 'gutter':
@@ -687,7 +690,7 @@ class BoxScroll:
             visible.pop(index)
         else:
             return False
-        if marker is None or not visible:
+        if marker is None or not marker.group() or not visible:
             return False
         if any(len(row) - len(row.rstrip(' ')) > columns + 1 for row in visible):
             return False
@@ -695,8 +698,12 @@ class BoxScroll:
         if expected is None or len(visible) >= len(expected):
             return False  # a scroll mark must name an actual partial viewport
         hidden = marker.groupdict().get('hidden')
-        if hidden is not None and int(hidden) != len(expected) - len(visible):
-            return False
+        if hidden is not None:
+            try:
+                if int(hidden) != len(expected) - len(visible):
+                    return False
+            except ValueError:
+                return False
         window = expected[:len(visible)] if self.anchor == 'top' else expected[-len(visible):]
         return [row.rstrip(' ') for row in visible] == window
 

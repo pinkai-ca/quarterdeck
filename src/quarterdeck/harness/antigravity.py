@@ -22,7 +22,7 @@ from pathlib import Path
 from ..ship import Pool, SeatSpec
 from .antigravity_quota import banner, fetch_usage, unknown
 from .antigravity_record import OWNED, _CACHE, _parse_usage, first_timestamp, inputs, read, records, session_id, state, turns
-from .base import Box, Control, Credential, Harness, Interruption, Join, Keys, Launch, Screen, ship_template, trimmed
+from .base import Box, BoxScroll, Control, Credential, Harness, Interruption, Join, Keys, Launch, Screen, ship_template, trimmed
 from .limits import Usage
 
 STATE_DIR = Path.home() / ".gemini" / "antigravity-cli"
@@ -76,6 +76,7 @@ class AntigravityHarness(Harness):
     screen_walls = True
     box_geometry_known = True
     wrap_slack = 1  # 1.5.9: words fit through 108/76 columns at pane widths 112/80; hard wraps use 109/77
+    box_scroll = BoxScroll(mark=r'↑ (?P<hidden>[1-9][0-9]*) more lines', anchor='bottom', placement='row')
     record_limits = ("cost is unknown unless the record states it; effort and child-turn counts are not exposed; "
                      "a step without a completion time leaves its duration unknown")
     keys = Keys(submit="Enter", send_now=("M-m",), interrupt="Escape")
