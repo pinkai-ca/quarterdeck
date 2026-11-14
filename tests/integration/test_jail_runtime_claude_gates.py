@@ -16,10 +16,11 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import cascade_runtime, ledger as ledgermod, post, post_view, sandbox, ship as shipmod
+from quarterdeck import cascade_runtime, ledger as ledgermod, post, post_view, sandbox, ship as shipmod, watch_broker
 
 SECRET = 'synthetic-sign-in-never-inside'
 
@@ -227,10 +228,12 @@ def jailed_qd(ship: shipmod.Ship, seat: str, tmp_path: Path):
     env.update(QD_SHIP=str(ship.folder), QD_SEAT=seat, PATH='/usr/bin:/bin')
     entry = 'import sys; sys.path.insert(0, sys.argv.pop(1)); from quarterdeck.cli import main; sys.exit(main(sys.argv[1:]))'
 
-    def run(*arguments: str, timeout: float = 60) -> subprocess.CompletedProcess:
+    def run(*arguments: str, timeout: float = 60, background: bool = False):
         argv = [sys.executable, '-I', '-c', entry, str(source), *arguments]
-        return subprocess.run(sandbox.command(jail, ['timeout', str(int(timeout)), *argv]), capture_output=True,
-                              text=True, env=env, timeout=timeout + 30)
+        command = sandbox.command(jail, ['timeout', str(int(timeout)), *argv])
+        if background:
+            return subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+        return subprocess.run(command, capture_output=True, text=True, env=env, timeout=timeout + 30)
     return jail, run
 
 
@@ -266,14 +269,30 @@ def test_every_command_a_jailed_seat_may_run_works_inside_the_runtime_fence(dryd
     assert filed == {('order', 'jailed order'), ('question', 'jailed question?'), ('ack', 'jailed ack'),
                      ('report', 'jailed report'), ('answer', 'jailed answer')}, filed
 
-    # The inbox watch, for a seat in a human's session. Inside a jail it writes its delivery attempt under the
-    # read-only post and is refused there; the runtime fence changes nothing of that (the same refusal on the stack
-    # below). It is the jailed wait's to mend, which moves that write into the seat's own folder. When that lands,
-    # this pin fails, and the watch joins the commands above.
-    store.new('order', 'captain', 'desk', 'Synthetic order for the watch.')
+    # The inbox watch, for a seat in a human's session, from inside its jail and its view of the post: it writes
+    # only in its own seat folder, and the service serves it (watch_broker), as each pass does, until it prints.
+    watched = store.new('order', 'captain', 'desk', 'Synthetic order for the watch.')
     _, desk = jailed_qd(ship, 'desk', tmp_path)
-    watch = desk('inbox', '--wait', timeout=20)
-    assert watch.returncode != 0 and "Read-only file system: 'attempts'" in watch.stderr, (watch.returncode, watch.stderr[-600:])
+    logged = []
+    broker = SimpleNamespace(store=store, attempts=post.Attempts(ship.runtime),
+                             log=lambda event, **data: logged.append((event, data)))
+    seat = SimpleNamespace(name='desk', ship=ship)
+    watch = desk('inbox', '--wait', timeout=60, background=True)
+    try:
+        deadline = time.monotonic() + 60
+        while watch.poll() is None and time.monotonic() < deadline:
+            watch_broker.run(broker, seat)
+            time.sleep(0.1)
+        out, err = watch.communicate(timeout=30)
+    finally:
+        if watch.poll() is None:
+            watch.kill()
+            watch.wait(timeout=10)
+    assert watch.returncode == 0, (watch.returncode, err[-600:], logged)
+    assert 'Synthetic order for the watch.' in out
+    watch_broker.run(broker, seat)  # the receipt the wait left in its own folder closes the attempt
+    attempt, = post.Attempts(ship.runtime).for_message(watched.id)
+    assert (attempt.seat, attempt.result) == ('desk', 'watch'), attempt
 
 
 @pytest.mark.skipif(not namespaces_allowed(), reason='bubblewrap is not installed, or cannot make a namespace here')

@@ -157,3 +157,31 @@ def test_the_service_removes_a_view_no_seat_should_have(tmp_path):
     late = store.new('order', 'captain', 'worker-1', 'late')
     views()
     assert (post_view.folder(runtime, 'worker-1') / 'store' / f'{late.id}.json').is_file()
+
+
+def test_the_view_shows_only_the_seats_own_attempts_its_standing_offer_names(tmp_path):
+    import json
+
+    from quarterdeck import durable, watch_broker
+
+    runtime = runtime_of(tmp_path)
+    store = post.Store(runtime)
+    attempts = post.Attempts(runtime)
+    offered = store.new('order', 'captain', 'desk', 'offered')
+    earlier = attempts.open(offered, 'desk', None, None, None)  # given before: qd inbox marks a second delivery
+    attempts.close(earlier, 'blind', 'synthetic')
+    now = attempts.open(offered, 'desk', None, None, None)
+    other = store.new('order', 'captain', 'worker-1', 'not the desk\'s')
+    attempts.open(other, 'worker-1', None, None, None)
+    unoffered = store.new('order', 'captain', 'desk', 'not offered')
+    attempts.open(unoffered, 'desk', None, None, None)
+    view = post_view.refresh(runtime, 'desk')
+    assert not (view / 'attempts').exists(), 'no offer, no attempts'
+    durable.replace_file(watch_broker.offer_path(runtime, 'desk'), json.dumps(dict(
+        format=1, seat='desk', generation='a' * 32, messages=[offered.id], attempts=[now.path.name])) + '\n')
+    post_view.refresh(runtime, 'desk')
+    assert sorted(p.name for p in (view / 'attempts').iterdir()) == sorted([earlier.path.name, now.path.name])
+    assert (view / 'watch-offers' / 'desk.json').is_file()
+    watch_broker.offer_path(runtime, 'desk').unlink()
+    post_view.refresh(runtime, 'desk')
+    assert not (view / 'attempts').exists() and not (view / 'watch-offers' / 'desk.json').exists()

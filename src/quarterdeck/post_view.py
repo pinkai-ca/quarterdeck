@@ -8,6 +8,8 @@ folder ``runtime/views/<seat>/post`` laid out as the post is, and the jail binds
   is copied once; a copy, never a hard link, since a link would share the store file's inode with the jail.
 - ``inbox/<seat>.md``: the seat's own inbox, as the service renders it.
 - the seat's own files of the post's per-seat folders (``PER_SEAT``), such as its watch offer, when they exist.
+- ``attempts/``, only while the seat's watch offer stands: the seat's own delivery attempts of the messages the offer
+  names, which its jailed wait and ``qd inbox`` read.
 - ``drop/<seat>/``: an empty mount point; the jail binds the seat's real drop there, writable.
 - ``transient/<seat>.lock`` and ``<seat>.check.json``, for a temporary check seat only: empty mount points over which
   the jail binds the seat's own real lease files, read-only. Its own jailed ``qd inbox`` proves the lease by their
@@ -16,7 +18,7 @@ folder ``runtime/views/<seat>/post`` laid out as the post is, and the jail binds
   new id the seat chooses never takes a short another seat's message holds.
 
 Nothing else of the post is there: no other seat's inbox or messages, no drop holds (whose reasons could tell a seat
-whether a message it cannot read exists), no attempts, journals or groups. The view is refreshed before the seat's
+whether a message it cannot read exists), no other attempts, no journals or groups. The view is refreshed before the seat's
 launch, on each service pass before deliveries, and in the door, so a message is in it before it is typed to the seat.
 
 A refresh opens only what is new. Beside the views, in ``runtime/views``, which no jail is shown, the index
@@ -109,8 +111,47 @@ def refresh(runtime: Path, seat: str, snapshot: Snapshot | None = None) -> Path:
                 placeholder.touch()
         elif placeholder.exists():
             placeholder.unlink()
+    _offered_attempts(runtime, seat, view)
     _write_if_changed(view / SHORTS, snapshot.shorts)
     return view
+
+
+def _offered_attempts(runtime: Path, seat: str, view: Path) -> None:
+    """A brokered watch's own delivery attempts, while its offer stands: the seat's attempts of the messages the
+    service's offer names, and nothing else of ``attempts/``. The jailed wait reads them to know its offer is still
+    open, and ``qd inbox`` to say a message given before is a second delivery. No offer, no attempts folder."""
+    from . import watch_broker
+    target = view / "attempts"
+    wanted: dict[str, str] = {}
+    offer = watch_broker.read_offer(runtime, seat)
+    if offer is not None:
+        messages = set(offer["messages"])
+        prefixes = tuple(f"{message}-" for message in messages)
+        source = runtime / "post" / "attempts"
+        try:
+            listed = post_dir.list_children(source) if prefixes else []
+        except FileNotFoundError:
+            listed = []
+        for name, mode in listed:
+            if not (name.endswith(".json") and name.startswith(prefixes) and stat.S_ISREG(mode)):
+                continue
+            try:
+                text = post_dir.read_text(source / name)
+                data = json.loads(text)
+            except (OSError, ValueError, ShipError):
+                continue
+            if isinstance(data, dict) and data.get("seat") == seat and data.get("message") in messages:
+                wanted[name] = text
+    if wanted:
+        target.mkdir(exist_ok=True)
+        for name, text in wanted.items():
+            _write_if_changed(target / name, text)
+    if target.is_dir():
+        for name in os.listdir(target):
+            if name not in wanted:
+                (target / name).unlink()
+        if not wanted:
+            target.rmdir()
 
 
 def seats(runtime: Path) -> list[str]:

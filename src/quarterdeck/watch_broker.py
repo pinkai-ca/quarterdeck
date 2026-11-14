@@ -301,6 +301,14 @@ def run(service, seat) -> None:
         _run(service, seat)
     except post.LockBusy as busy:
         service.log('watch-broker-skipped', seat=seat.name, reason=str(busy))
+    from . import post_view
+    if post_view.folder(runtime, seat.name).is_dir():
+        # A jailed wait reads its offer, and the attempts it names, from its view of the post: show them now,
+        # not at the next pass.
+        try:
+            post_view.refresh(runtime, seat.name)
+        except (OSError, ValueError, ShipError) as error:
+            service.log('error', step='jailed_watches', seat=seat.name, error=repr(error))
 
 
 def _run(service, seat) -> None:
