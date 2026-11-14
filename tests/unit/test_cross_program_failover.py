@@ -47,9 +47,9 @@ def running(tmp_path, monkeypatch, request):
     launches, created, reseeds = [], [], []
     original_reseed = credential.reseed
 
-    def reseed(ship, seats):
+    def reseed(ship, seats, **bounds):
         reseeds.extend((s.pool.name, s.harness.name, s.launched().pool) for s in seats if s.launched())
-        return original_reseed(ship, seats)
+        return original_reseed(ship, seats, **bounds)
 
     def open_window(argv, env, path):
         launches.append(argv)

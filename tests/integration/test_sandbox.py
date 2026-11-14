@@ -290,6 +290,7 @@ def test_an_ancestor_bound_into_the_jail_never_shows_or_reaches_the_home(kind):
         seat = root/'ship'/'runtime'/'seats'/'worker'
         (seat/'home').mkdir(parents=True)
         (root/'ship'/'runtime'/'tmux').mkdir(mode=0o700)  # what plan makes before a launch
+        (root/'ship'/'runtime'/'locks').mkdir(mode=0o700)
         (root/'work').mkdir()
         jail = sandbox.Jail(home=home, seat_home=seat/'home', seat_folder=seat, workspace=root/'work',
                             ship_folder=root/'ship', runtime=root/'ship'/'runtime',
@@ -328,6 +329,7 @@ def test_a_home_inside_a_fleet_folder_is_refused_and_stays_hidden(place):
         seat = runtime / 'seats' / 'worker'
         (seat / 'home').mkdir(parents=True)
         (runtime / 'tmux').mkdir(mode=0o700)
+        (runtime / 'locks').mkdir(mode=0o700)
         (runtime / 'post').mkdir()
         (project / 'office').mkdir(parents=True)
         (project / 'work').mkdir()
