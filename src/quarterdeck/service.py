@@ -631,16 +631,42 @@ class Service:
             path.unlink(missing_ok=True)
 
     def views(self) -> None:
-        """Each jailed seat's view of the post, after the inboxes and before any delivery types a message to it: a seat
-        whose launch made a view, or one the ship jails. One seat's failure never stops the others'."""
+        """Each jailed seat's view of the post, after the inboxes and before any delivery types a message to it, from
+        one snapshot of the store for the pass. A view no seat should have is removed: its seat is no longer declared
+        and its folder is gone, or is no longer jailed and is not still running in a jail. One seat's failure
+        never stops the others'."""
         from . import post_view
-        for name, spec in self.ship.seats.items():
+        try:
+            snapshot = post_view.Snapshot(self.runtime)
+        except Exception as error:
+            self.log("error", step="views", error=repr(error))
+            return
+        for name in post_view.seats(self.runtime):
             try:
-                if not (post_view.folder(self.runtime, name).is_dir() or self.ship.jailed(spec)):
-                    continue
-                post_view.refresh(self.runtime, name, self.store)
+                if not self._view_kept(name):
+                    post_view.remove(self.runtime, name)
+                    self.log("view-removed", seat=name)
             except Exception as error:
                 self.log("error", step="views", seat=name, error=repr(error))
+        for name, spec in self.ship.seats.items():
+            try:
+                if self.ship.jailed(spec) or post_view.folder(self.runtime, name).is_dir():
+                    post_view.refresh(self.runtime, name, snapshot)
+            except Exception as error:
+                self.log("error", step="views", seat=name, error=repr(error))
+
+    def _view_kept(self, name: str) -> bool:
+        spec = self.ship.seats.get(name)
+        if spec is None:
+            # A temporary seat (a check's) is undeclared: its folder stands from before its launch until its teardown
+            # proves its program ended, and while it stands the jail may hold the view. No lock is taken to know it.
+            return (self.runtime / "seats" / name).is_dir()
+        if self.ship.jailed(spec):
+            return True
+        seat = self.seat(name)
+        launched = seat.launched()
+        from . import sandbox
+        return launched is not None and sandbox.seats_hidden(launched.argv) is not False and seat.is_up
 
     def inboxes(self) -> None:
         for name in self.ship.seats:

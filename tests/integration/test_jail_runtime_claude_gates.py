@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from quarterdeck import cascade_runtime, ledger as ledgermod, post, sandbox, ship as shipmod
+from quarterdeck import cascade_runtime, ledger as ledgermod, post, post_view, sandbox, ship as shipmod
 
 SECRET = 'synthetic-sign-in-never-inside'
 
@@ -329,7 +329,13 @@ def test_a_jailed_seat_opens_only_the_post_it_is_party_to(drydock: Path, tmp_pat
         'own inbox': runtime / 'post' / 'inbox' / 'worker-1.md',
         'desk inbox': runtime / 'post' / 'inbox' / 'desk.md',
         'holds': holds / 'synthetic.json',
+        # The service's index of who sent and received every message, and any view's own folder, lie under
+        # runtime/views, which no jail is shown.
+        'index': runtime / 'views' / post_view.INDEX,
+        'desk view': runtime / 'views' / 'desk' / 'post' / 'store' / f'{theirs.id}.json',
     }
+    post_view.refresh(runtime, 'desk')
+    assert all(path.is_file() for name, path in paths.items() if name in ('index', 'desk view'))
     probe = ('import json, sys\nout = {}\nfor name, path in zip(sys.argv[1::2], sys.argv[2::2]):\n'
              '    try:\n        open(path).read(); out[name] = "read"\n'
              '    except OSError as error:\n        out[name] = type(error).__name__\nprint(json.dumps(out))')
@@ -338,7 +344,8 @@ def test_a_jailed_seat_opens_only_the_post_it_is_party_to(drydock: Path, tmp_pat
                           capture_output=True, text=True, timeout=60)
     seen = json.loads(done.stdout.strip().splitlines()[-1]) if done.stdout.strip() else {}
     assert seen == {'mine': 'read', 'theirs': 'FileNotFoundError', 'own inbox': 'read',
-                    'desk inbox': 'FileNotFoundError', 'holds': 'FileNotFoundError'}, (seen, done.stderr[-400:])
+                    'desk inbox': 'FileNotFoundError', 'holds': 'FileNotFoundError', 'index': 'FileNotFoundError',
+                    'desk view': 'FileNotFoundError'}, (seen, done.stderr[-400:])
     thread = run('thread', theirs.id)
     assert 'between two other seats' not in thread.stdout + thread.stderr
     reply = run('post', 'report', '--re', mine.id, 'done from the view')
