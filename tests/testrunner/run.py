@@ -175,8 +175,7 @@ class Runner:
         self.console.flush()
         process = subprocess.Popen([str(part) for part in argv], cwd=cwd, env=env, stdin=subprocess.DEVNULL,
                                    stdout=self.console, stderr=subprocess.STDOUT, start_new_session=True,
-                                   pass_fds=tuple([self.lock] + ([self.slot.fd] if getattr(self, "slot", None) else [])
-                                                  + ([self.run_guard.fd] if getattr(self, "run_guard", None) else [])),
+                                   pass_fds=(self.lock,),
                                    preexec_fn=partial(resources.apply_memory, self.args.memory_mib)
                                    if title == 'pytest' else None)
         try:
