@@ -163,3 +163,14 @@ def test_cleanup_checks_ownership_in_the_server_that_performs_the_kill(tmux: Tmu
         assert not other.has_session("Temporary")
     finally:
         assert other.close(), other.held
+
+
+def test_control_frame_reads_the_cursor_cell_in_the_same_bracket(tmux: Tmux, tmp_path: Path):
+    """The cursor's cell, 0-based (column, row), comes with the frame and its visibility, from one queue."""
+    tmux.new_session("Crew")
+    script = "printf 'top\\n  prompt'; printf '\\033[3;7H'; sleep 30"
+    pane = tmux.new_window("Crew", "worker-1", tmp_path, ["sh", "-c", script])
+    frame = wait_for(lambda: found if (found := tmux.read_control_frame(pane.id))
+                     and found.cursor == (6, 2) else None)
+    assert frame.pane.pid == pane.pid and frame.cursor_visible is True
+    assert "prompt" in frame.text

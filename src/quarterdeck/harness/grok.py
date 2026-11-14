@@ -490,6 +490,9 @@ class GrokHarness(Harness):
     def human_wake_box_margin(self, pane_width: int) -> int | None:
         return 10 if pane_width >= 14 else None
 
+    def empty_cell(self, screen: Screen) -> tuple[int, int] | None:
+        return grok_screen.empty_cell(screen)
+
     def box_columns(self, pane_width: int) -> int | None:
         # 1.0.77 fullscreen: margins, borders, prompt and one reserved cursor cell.
         # Native 80-column probes wrap 70/71/140 characters as 70, 70+1, 70+70.

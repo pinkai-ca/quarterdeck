@@ -84,12 +84,32 @@ class Door:
         if hasattr(self.seat, 'read_pane'):
             found = self.seat.read_pane()
             self.captured_pane = found[0] if found else None
-            return self.known(self.harness.screen(found[1])) if found else None
+            return self.known(self.padded(self.harness.screen(found[1]))) if found else None
         pane = self.seat.pane()
         if pane is None or pane.dead:
             return None
         self.captured_pane = pane
-        return self.known(self.harness.screen(self.tmux.capture(pane.id)))
+        return self.known(self.padded(self.harness.screen(self.tmux.capture(pane.id))))
+
+    def padded(self, screen: Screen | None) -> Screen | None:
+        """A composer whose one row is only padding, in a program that draws typed spaces like its padding,
+        reads empty only where the visible terminal cursor sits on the empty composer's first cell, as the adapter
+        names it. The cursor is read with a second frame in one bracket of identical readings; that frame must
+        read the same box with the cursor on that same cell. A person's typed spaces move the cursor, so they stay
+        text in the box and the human waking line is never typed after them. A cursor that cannot be read, hidden,
+        moving or elsewhere leaves the box as the reader read it."""
+        cell = self.harness.empty_cell(screen) if screen is not None else None
+        read = getattr(self.seat, 'read_control_frame', None)
+        if cell is None or read is None:
+            return screen
+        frame = read()
+        if (frame is None or frame.cursor_visible is not True or frame.cursor != cell
+                or (self.captured_pane is not None and frame.pane.pid != self.captured_pane.pid)):
+            return screen
+        again = self.harness.screen(frame.text)
+        if again.box != screen.box or again.working != screen.working or self.harness.empty_cell(again) != cell:
+            return screen
+        return replace(screen, box="")
 
     def known(self, screen: Screen | None) -> Screen | None:
         """A composer the adapter knows only as fresh reads as the measured empty idle composer where this

@@ -73,6 +73,8 @@ class ControlFrame:
     pane: Pane
     text: str
     cursor_visible: bool
+    # The terminal cursor's cell, 0-based (column, row) on the visible screen, read in the same bracket.
+    cursor: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -659,14 +661,15 @@ class Tmux:
         return (pane, text) if pane is not None else None
 
     def read_control_frame(self, pane_id: str) -> ControlFrame | None:
-        """Bracket one styled capture by identical identity/geometry/cursor-flag readings.
+        """Bracket one styled capture by identical identity/geometry/cursor readings.
 
-        Missing cursor visibility is unknown, never interpreted as a hidden cursor. This adds no
-        terminal action: the adapter decides whether the measured frame proves its control focus.
+        Missing cursor visibility is unknown, never interpreted as a hidden cursor. The cursor's cell is
+        read in the same bracket: a cursor that moved during the capture leaves the whole frame unread.
+        This adds no terminal action: the adapter decides what the measured frame proves.
         """
         if not pane_id.startswith('%') or not pane_id[1:].isascii() or not pane_id[1:].isdigit():
             return None
-        format_ = _FORMAT + '\t#{cursor_flag}'
+        format_ = _FORMAT + '\t#{cursor_x}\t#{cursor_y}\t#{cursor_flag}'
         output = self.run('display-message', '-p', '-t', pane_id, format_, ';',
                           'capture-pane', '-p', '-e', '-t', pane_id, '-S', '0', ';',
                           'display-message', '-p', '-t', pane_id, format_)
@@ -674,15 +677,20 @@ class Tmux:
         text, closing, after = rest.rstrip('\n').rpartition('\n')
         if not separator or not closing or before != after:
             return None
-        identity, field, cursor = before.rpartition('\t')
-        if not field or cursor not in ('0', '1') or identity.partition('\t')[0] != pane_id:
+        fields = before.rsplit('\t', 3)
+        if len(fields) != 4:
             return None
+        identity, column, row, cursor = fields
+        if cursor not in ('0', '1') or identity.partition('\t')[0] != pane_id:
+            return None
+        cell = ((int(column), int(row)) if column.isascii() and column.isdigit()
+                and row.isascii() and row.isdigit() else None)
         try:
             pane = _parse(identity)
         except (TmuxFormatError, ValueError, TypeError):
             # Keep the named failure, without persisting the raw pane identity row.
             raise TmuxFormatError('control frame identity is not in qd format; observation unknown') from None
-        return ControlFrame(pane, text + '\n', cursor == '1')
+        return ControlFrame(pane, text + '\n', cursor == '1', cell)
 
     def clients_attached(self, sessions: list[str]) -> bool | None:
         """Only a successful complete client listing can establish no presentation demand."""

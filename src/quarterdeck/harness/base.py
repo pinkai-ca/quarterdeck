@@ -473,6 +473,12 @@ class Harness(ABC):
         """Proved non-input columns for one waking row; unknown refuses waking."""
         return None
 
+    def empty_cell(self, screen: Screen) -> tuple[int, int] | None:
+        """Where the terminal cursor sits, 0-based (column, row), in this program's empty composer, for a box the
+        reader read as padding only: a program that draws typed spaces like its padding is read empty only with
+        the cursor there (the Door reads it). None, the default, leaves the box as the reader read it."""
+        return None
+
     def check_tool_evidence(self, record: Path) -> dict:
         """Private check-only call/results; adapters opt in to a bounded decoder."""
         return dict(status='unknown', reason='adapter tool call/results unsupported', pairs=[])

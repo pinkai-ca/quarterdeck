@@ -272,6 +272,25 @@ def read(text: str) -> Screen:
     return Screen(plain, box=box, working=working, shows=shows)
 
 
+PROMPT = "  │ ❯ "
+
+
+def empty_cell(screen: Screen) -> tuple[int, int] | None:
+    """The prompt's first cell in an ordinary composer whose one row is only padding.
+
+    Grok 1.0.77 draws typed spaces exactly as its padding, so the screen alone cannot tell them apart. Measured
+    on 13 November at 80 x 24 and 112 x 35: the visible terminal cursor sits at the prompt's first cell, column 6
+    of the prompt row, in the empty composer, and two typed spaces move it to column 8. The Door reads the box
+    empty only where the cursor, read with the frame, sits on this cell; anywhere else, or unread, the padding
+    stays text in the box.
+    """
+    if (screen.box is None or screen.box == "" or screen.box.strip(" ") or "\n" in screen.box
+            or screen.unknown is not None or screen.interruption is not None or screen.fresh is not None):
+        return None
+    rows = [index for index, row in enumerate(screen.text.split("\n")) if row.startswith(PROMPT)]
+    return (len(PROMPT), rows[0]) if len(rows) == 1 else None
+
+
 def question_cleared(text: str) -> bool:
     """After the click: none of the question's words remain, and the empty one-row composer is drawn.
 
