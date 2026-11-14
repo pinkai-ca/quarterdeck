@@ -31,7 +31,7 @@ def cache(home):
 def screen(warnings=True):
     rows = json.loads((FIXTURES / 'idle-mono.json').read_text())['lines']
     # Rebuild a fictional screen using only the measured native warning/footer words.
-    rows = [row.replace('(high)', '(low)') for row in rows]
+    rows = [row.replace(' Grok 4.7 (high)', '─ Grok 4.7 (low)') for row in rows]
     if warnings:
         rows[:0] = ['     ' + EFFORT_REFUSAL, '', '     ' + MODEL_REFUSAL, '']
     return GrokHarness().screen('\n'.join(rows))
