@@ -225,6 +225,34 @@ def characters(text: str) -> tuple[str, list[Style]] | None:
     return "".join(plain), styles
 
 
+SCROLLED = "Grok composer is scrolled; the full draft is not visible"
+
+
+def scrolled_composer(body: list[tuple[str, list[Style]]], right: int) -> bool:
+    """Only the captured 112/256-column, fifteen-row scrollbar, never draft text."""
+    if right not in (109, 253) or len(body) != 15:
+        return False
+    marked = False
+    for content, attributes in body:
+        if len(content) < 2 or not content.endswith(" ") or _cells(content[:-2]) != right - 8:
+            return False
+        index = len(content) - 2  # two cells inside the right border
+        char, style = content[index], attributes[index]
+        if char == " ":
+            if style != Style((225, 225, 225), (20, 20, 20), False):
+                return False
+        elif char in "▀▂▃▄█🮂🮃" and style == Style((60, 60, 65), (20, 20, 20), False):
+            marked = True
+        else:
+            return False
+        for position, (char, style) in enumerate(zip(content, attributes)):
+            if position != index and not char.isspace() and (
+                    style.faint or style.foreground != (225, 225, 225)
+                    or style.background != (20, 20, 20)):
+                return False
+    return marked
+
+
 def read(text: str) -> Screen:
     decoded = characters(text)
     if decoded is None:
@@ -269,6 +297,8 @@ def read(text: str) -> Screen:
         content = row[len(prefix):end]
         begin = offsets[index] + len(prefix)
         body.append((content, style[begin:begin + len(content)]))
+    if scrolled_composer(body, right):
+        return Screen(plain, box=None, unknown=SCROLLED, shows=shows)
     picker = (len(body) == 1 and body[0][0].startswith("/model ")
               and MODEL_PICKER.seen_in(plain)
               and any(re.fullmatch(r"  ─{8,}.*", row) for row in rows[:top]))

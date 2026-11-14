@@ -46,9 +46,33 @@ VIEWPORTS = json.loads((FIXTURES / 'scrolled-viewport.json').read_text())['sampl
 def test_each_scrolled_view_exposes_only_part_of_the_draft(sample):
     harness = GrokHarness()
     screen = harness.screen('\n'.join(sample['lines']) + '\n')
-    assert screen.box is None and screen.unknown
+    assert screen.box is None
+    assert screen.unknown == "Grok composer is scrolled; the full draft is not visible"
     assert not harness.box(sample['payload']).matches(screen.box, harness.box_columns(sample['width']))
     assert len([line for line in screen.text.split('\n') if line.startswith('  │')]) == 15
     assert ('Synthetic viewport header.' in screen.text) == sample['name'].endswith('-home')
     if 'viewport3' in sample['name']:
         assert ('Synthetic ending.' in screen.text) != sample['name'].endswith('-home')
+
+
+@pytest.mark.parametrize('change', ['glyph', 'foreground', 'background', 'faint', 'column', 'height'])
+def test_unmeasured_scrollbar_forms_keep_the_generic_unknown(change):
+    sample = next(s for s in VIEWPORTS if s['name'] == 'idle-viewport3-112')
+    text = '\n'.join(sample['lines']) + '\n'
+    if change == 'glyph':
+        text = text.replace('█', '▇')
+    elif change == 'foreground':
+        text = text.replace('60;60;65', '61;60;65')
+    elif change == 'background':
+        text = text.replace('60;60;65m', '60;60;65m\x1b[48;2;21;20;20m')
+    elif change == 'faint':
+        text = text.replace('60;60;65m', '60;60;65m\x1b[2m')
+    elif change == 'column':
+        text = text.replace('█\x1b[38;2;225;225;225m ', ' █\x1b[38;2;225;225;225m')
+    else:
+        rows = text.splitlines()
+        del rows[next(i for i, row in enumerate(rows) if '█' in row)]
+        text = '\n'.join(rows) + '\n'
+    screen = GrokHarness().screen(text)
+    assert screen.box is None and screen.unknown
+    assert screen.unknown != "Grok composer is scrolled; the full draft is not visible"
