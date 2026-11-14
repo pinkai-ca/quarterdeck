@@ -21,6 +21,7 @@ TEST_TICK = 0.1  # seconds: every test ship's declared [ship] tick, so the servi
 SOCKET_LIMIT = 107   # bytes of a Unix socket path, without its terminating zero
 SOCKET_MARGIN = 12   # kept free below the limit on the deepest socket path the suite generates
 SESSION_PREFIX = 'u-'  # the session's container under the anchor: short, so the margin holds
+SOCKET_CREATORS = {}  # diagnostic provenance only; grants no cleanup authority
 
 
 def socket_parent():
@@ -305,6 +306,15 @@ def socket_container(parent, prefix, *, record=False):
             folder.rmdir()
         except OSError as error:
             detail = f'test socket container retained: {folder}: {error}'
+            # Keep the first failure's contents/provenance before outer recorded
+            # cleanup retires this container. No entry is removed here.
+            try:
+                remaining = [(entry.name, stat.S_IFMT(entry.stat(follow_symlinks=False).st_mode),
+                              SOCKET_CREATORS.get(str(folder / entry.name)))
+                             for entry in os.scandir(descriptor)]
+                detail += f'; remaining entries (name, kind, creator): {remaining!r}'
+            except OSError:
+                detail += '; remaining entry metadata unavailable'
             if failure is not None:
                 failure.add_note(detail)
             else:
@@ -316,9 +326,14 @@ def socket_container(parent, prefix, *, record=False):
 @pytest.fixture(scope='session', autouse=True)
 def record_private_servers(private_socket_root):
     """Persist creator-verified births for interrupted-run cleanup, without changing production code."""
-    from quarterdeck.tmux_socket import OwnedSocket
+    from quarterdeck.tmux_socket import Namespace, OwnedSocket
 
     original = OwnedSocket.record
+    namespace_init = Namespace.__init__
+
+    def created(namespace, fallback):
+        namespace_init(namespace, fallback)
+        SOCKET_CREATORS[str(namespace.folder)] = os.environ.get('PYTEST_CURRENT_TEST', 'outside a test')
 
     def record(owner, held, query):
         original(owner, held, query)
@@ -326,6 +341,7 @@ def record_private_servers(private_socket_root):
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(OwnedSocket, 'record', record)
+        patch.setattr(Namespace, '__init__', created)
         yield
 
 
