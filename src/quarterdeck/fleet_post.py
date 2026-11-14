@@ -64,7 +64,7 @@ def stable_bytes(path):
     except post_dir.NotRegular:
         raise post_dir.NotRegular('post transport source is not a regular file') from None
     except ShipError as error:
-        if str(error) == 'post path changed during its read':
+        if str(error).startswith(post_dir.CHANGED):
             raise ShipError('post transport source changed during its read') from None
         raise
 

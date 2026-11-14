@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from contextlib import contextmanager
+import errno
 import fcntl
 import json
 import locale
@@ -423,6 +424,10 @@ def check_inbox_registration(runtime: Path, name: str, human: bool, *, enabled=F
     lock, marker = _check_paths(runtime, name)
     if type(human) is not bool:
         raise ValueError('unknown temporary human ownership')
+    # Published whole: the record is written into an exclusive temporary beside the marker and renamed onto the
+    # marker's name without replacing one (an existing marker refuses, as the exclusive create did). The lease's
+    # descriptor is the temporary's own, so the registration's identity is the published file's.
+    temporary = f'.{marker.name}.{secrets.token_hex(4)}.tmp'
     if post_dir.under_post(marker):
         parent, marker_name = post_dir._open_parent(marker, create=False)
         try:
@@ -431,30 +436,52 @@ def check_inbox_registration(runtime: Path, name: str, human: bool, *, enabled=F
                 post_dir._link_held(lock)
             if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                 raise ValueError('temporary check lock unknown')
-            descriptor = os.open(marker_name, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            descriptor = os.open(temporary, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
                                  0o600, dir_fd=parent)
-        finally:
+        except BaseException:
             os.close(parent)
+            raise
     else:
         info = lock.lstat()
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
             raise ValueError('temporary check lock unknown')
-        descriptor = os.open(marker, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        parent, marker_name = os.open(marker.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC), marker.name
+        try:
+            descriptor = os.open(temporary, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                 0o600, dir_fd=parent)
+        except BaseException:
+            os.close(parent)
+            raise
     published = False
     try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        registration = os.fstat(descriptor)
-        data = dict(format=1, operation='check', runtime=str(runtime.resolve()), seat=name,
-                    human=human, pid=os.getpid(), start=_owner_start(os.getpid()),
-                    lock=[info.st_dev, info.st_ino],
-                    registration=[registration.st_dev, registration.st_ino], token=secrets.token_hex(16))
-        raw = json.dumps(data, sort_keys=True) + '\n'
-        remaining = raw.encode('utf-8')
-        while remaining:
-            written = os.write(descriptor, remaining)
-            if written <= 0:
-                raise OSError('temporary check registration write incomplete')
-            remaining = remaining[written:]
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            registration = os.fstat(descriptor)
+            data = dict(format=1, operation='check', runtime=str(runtime.resolve()), seat=name,
+                        human=human, pid=os.getpid(), start=_owner_start(os.getpid()),
+                        lock=[info.st_dev, info.st_ino],
+                        registration=[registration.st_dev, registration.st_ino], token=secrets.token_hex(16))
+            raw = json.dumps(data, sort_keys=True) + '\n'
+            remaining = raw.encode('utf-8')
+            while remaining:
+                written = os.write(descriptor, remaining)
+                if written <= 0:
+                    raise OSError('temporary check registration write incomplete')
+                remaining = remaining[written:]
+            try:
+                post_dir._rename_noreplace(temporary, marker_name, parent, parent)
+            except OSError as error:
+                if error.errno == errno.EEXIST:
+                    raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(marker)) from None
+                raise
+        except BaseException:
+            try:
+                os.unlink(temporary, dir_fd=parent)
+            except FileNotFoundError:
+                pass
+            raise
+        finally:
+            os.close(parent)
         published = True
         yield
     finally:

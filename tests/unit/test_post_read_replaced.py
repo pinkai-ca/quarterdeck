@@ -153,3 +153,88 @@ def test_a_link_or_fifo_swapped_in_during_the_retry_is_refused(tmp_path: Path, m
     assert ORIGINAL.decode() not in str(error) and REPLACED.decode() not in str(error)
     assert target.read_bytes() == SECRET  # the target is untouched, and the swapped name is left in place
     assert path.is_symlink() if 'link' in case else stat.S_ISFIFO(path.lstat().st_mode)
+
+
+# A complete file renamed over the name while the reader holds the old one: the old file loses its last name,
+# which moves only its change time. The reader starts over and returns the new whole file. A change of the old
+# file's own bytes during the read is still refused, and the refusal names the path below runtime/post.
+
+def act_after_first_fstat(monkeypatch, path, act):
+    original = post_dir.os.fstat
+    done = []
+
+    def raced(descriptor, *args, **kwargs):
+        found = original(descriptor, *args, **kwargs)
+        if not done and stat.S_ISREG(found.st_mode) and found.st_ino == original_inode[0]:
+            done.append(True)
+            act(path)
+        return found
+
+    original_inode = [path.stat().st_ino]
+    monkeypatch.setattr(post_dir.os, 'fstat', raced)
+    return done
+
+
+def replace_whole(path):
+    temporary = path.with_name('complete-temporary')
+    temporary.write_bytes(REPLACED)
+    temporary.replace(path)
+
+
+def change_in_place(path):
+    with path.open('ab') as stream:
+        stream.write(b' and more')
+
+
+@pytest.mark.parametrize('limit', [None, 64])
+def test_a_whole_replacement_during_the_read_returns_the_new_file(tmp_path: Path, monkeypatch, limit):
+    path = tmp_path / 'runtime' / 'post' / 'attempts' / 'attempt.json'
+    path.parent.mkdir(parents=True)
+    path.write_bytes(ORIGINAL)
+    done = act_after_first_fstat(monkeypatch, path, replace_whole)
+    assert post_dir.read_bytes(path, limit=limit) == REPLACED
+    assert done
+
+
+def test_an_in_place_change_during_the_read_is_refused_and_names_the_path(tmp_path: Path, monkeypatch):
+    path = tmp_path / 'runtime' / 'post' / 'attempts' / 'attempt.json'
+    path.parent.mkdir(parents=True)
+    path.write_bytes(ORIGINAL)
+    act_after_first_fstat(monkeypatch, path, change_in_place)
+    with pytest.raises(ShipError) as caught:
+        post_dir.read_bytes(path)
+    assert str(caught.value) == 'post path changed during its read: attempts/attempt.json'
+    assert ORIGINAL.decode() not in str(caught.value)
+
+
+def test_a_reader_beside_a_writer_that_replaces_whole_is_never_refused(tmp_path: Path):
+    """Under load: one writer replaces the file whole, a thousand times a second; the reader is never refused."""
+    import time
+
+    path = tmp_path / 'runtime' / 'post' / 'attempts' / 'attempt.json'
+    post_dir.replace_bytes(path, ORIGINAL)
+    stop = threading.Event()
+
+    def writer():
+        index = 0
+        while not stop.is_set():
+            post_dir.replace_bytes(path, b'%d complete attempt ' % index * 64)
+            index += 1
+            time.sleep(0.001)
+
+    thread = threading.Thread(target=writer, daemon=True)
+    thread.start()
+    refused, reads = [], 0
+    try:
+        deadline = time.monotonic() + 1.5
+        while time.monotonic() < deadline:
+            try:
+                data = post_dir.read_bytes(path)
+                assert data.endswith(b'complete attempt ') or data == ORIGINAL, 'every read is one whole version'
+                reads += 1
+            except ShipError as error:
+                refused.append(str(error))
+    finally:
+        stop.set()
+        thread.join(timeout=5)
+    assert reads > 1000 and refused == [], refused[:3]

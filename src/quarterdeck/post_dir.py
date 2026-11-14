@@ -176,15 +176,29 @@ def _rename_noreplace(source, destination, source_fd, destination_fd):
         raise OSError(number, os.strerror(number))
 
 
+CHANGED = 'post path changed during its read'
+
+
+def _relative(path) -> str:
+    """The path below runtime/post, for a refusal that names its file."""
+    root, parts = _split_under_post(path)
+    return '/'.join(parts) if root is not None and parts else Path(path).name
+
+
 def _read_nofollow(parent_fd, name, path, limit=None):
     """Bytes of one regular file in an already opened directory. A link is a hold.
 
     Anything that is not a regular file is refused from the lstat, before the open.
-    ``limit`` refuses a larger file before the open as well. A stable read whose
-    name was atomically replaced by another regular file starts over, at most
-    three reads in all. An in-place change is still refused.
+    ``limit`` refuses a larger file before the open as well. A whole read whose
+    file was atomically replaced, during the read or after it, starts over, at
+    most three reads in all: the replacement moves only the old file's change
+    time. A torn read, or an in-place change of the bytes, size or modification
+    time of the file at the name, is still refused. The refusal names the path
+    below runtime/post, never the contents.
     """
     stamp = lambda item: (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns, item.st_ctime_ns)
+    content = lambda item: (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns)
+    changed = f'{CHANGED}: {_relative(path)}'  # the name, never the contents, so the next refusal points at its writer
     for attempt in range(3):
         info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
         if stat.S_ISLNK(info.st_mode):
@@ -210,14 +224,20 @@ def _read_nofollow(parent_fd, name, path, limit=None):
                 data = stream.read() if limit is None else stream.read(limit)
             after = os.fstat(descriptor)
             current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-            if (stamp(before) != stamp(after) or len(data) != after.st_size
+            # Torn: the bytes read are not one whole version of the file. Refused at once, as is a name that is
+            # no longer a regular file or is over the limit.
+            if (len(data) != after.st_size or content(before) != content(after)
                     or not stat.S_ISREG(current.st_mode)
                     or (limit is not None and current.st_size > limit)):
-                raise ShipError('post path changed during its read')
-            if stamp(after) == stamp(current):
+                raise ShipError(changed)
+            if stamp(before) == stamp(after) == stamp(current):
                 return data
-            if (after.st_dev, after.st_ino) == (current.st_dev, current.st_ino) or attempt == 2:
-                raise ShipError('post path changed during its read')
+            # The same file still at the name with other bytes or times: an in-place change. Refused.
+            if ((after.st_dev, after.st_ino) == (current.st_dev, current.st_ino)
+                    and content(after) != content(current)) or attempt == 2:
+                raise ShipError(changed)
+            # Whole, but replaced: a complete file renamed over the name during or after the read moves the old
+            # file's change time as it loses its name, which the name may still show for an instant. Read again.
         finally:
             os.close(descriptor)
 
