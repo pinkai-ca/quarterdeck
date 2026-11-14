@@ -206,7 +206,7 @@ class Drill:
                        f"in the record {typed} time(s); submissions {submits}; {restarted}")
 
     def fresh_after_delivery(self, seat: Seat, order: post.Message) -> tuple[str | None, str]:
-        """Wait on settled delivery evidence, then acquire fresh's ordinary entry claim."""
+        """Wait for active delivery to settle; an unread open order can be carried by fresh."""
         reason = "pending order has no settled delivery attempt"
 
         def ready():
@@ -221,8 +221,11 @@ class Drill:
                         post.printed(self.ship.runtime, arrived[1])
                     attempts = self.attempts.all()
                     current = [a for a in attempts if a.message == order.id and a.seat == seat.name]
-                if not current or not current[-1].accepted:
+                if seat.session.human and (not current or not current[-1].accepted):
                     reason = "pending order has no settled delivery attempt"
+                    return None
+                if current and not current[-1].accepted and current[-1].result not in {'withheld', 'cancelled'}:
+                    reason = f"pending order delivery is {current[-1].result or 'unfinished'}"
                     return None
                 if any(a.seat == seat.name and a.result is None for a in attempts):
                     reason = "a delivery attempt is still unfinished"
@@ -240,13 +243,24 @@ class Drill:
             try:
                 # Seat.fresh's Busy is its entry claim refusing before the transition body.
                 # Recheck every condition on the next pass; no started fresh is retried.
-                return (seat.fresh(),)
+                proof = seat.fresh()
             except lifecycle.Busy:
                 reason = "the delivery/lifecycle claim is still held"
                 return None
+            # A delivery can settle between the reading above and fresh's claim.
+            # Count prior acceptance after fresh, excluding this new launch's carriage.
+            try:
+                launched = seat.launched()
+                prior = [a for a in self.attempts.for_message(order.id) if a.seat == seat.name
+                         and (launched is None or a.launched_at != launched.at)]
+                mode = ("delivered first" if any(a.accepted for a in prior) else
+                        f"carried after settled {prior[-1].result}" if prior else "carried unattempted")
+            except (OSError, ValueError, TypeError):
+                mode = "carried; prior delivery evidence unreadable"
+            return proof, mode
 
         result = wait_for(ready, self.patience)
-        return (result[0], "") if result is not None else (None, reason)
+        return result if result is not None else (None, reason)
 
     def fresh_all(self) -> None:
         """Every seat relaunched fresh receives its brief and an index of its open threads."""
@@ -261,7 +275,7 @@ class Drill:
                 continue
             freshened.add(seat.name)
             proof = proof.splitlines()[-1]
-            self.check(f"{seat.name} fresh", "· fresh ·" in proof and proof.endswith("indexed"), proof)
+            self.check(f"{seat.name} fresh", "· fresh ·" in proof and proof.endswith("indexed"), f"{proof}; {reason}")
         for seat in self.seats():
             first = None
             if seat.name in freshened:
@@ -318,7 +332,8 @@ def run(ship: shipmod.Ship | None, keep: bool = False) -> tuple[bool, list[str]]
     try:
         checks = Drill(ship, tmux).run()
         passed = all(c.passed for c in checks)
-        lines = [str(c) for c in checks]
+        # A truncated installed-command log should name its failures before its passes.
+        lines = [str(c) for c in sorted(checks, key=lambda c: c.passed is not False)]
         lines.append(f"{'all' if passed else sum(not c.passed for c in checks)} {'passed' if passed else 'failed'} of {len(checks)} checks")
     finally:
         try:
