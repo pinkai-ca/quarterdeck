@@ -134,6 +134,24 @@ def test_first_setup_cli_has_no_project_workspace_question(office_project, monke
     assert not (project / "ships").exists()
 
 
+def test_first_setup_keeps_explicit_save_without_launch_consent(office_project):
+    project, calls = office_project
+    args = cli.build_parser().parse_args(["setup", "--start", "no"])
+    result = setup.first_step(args)
+    assert ship.load(project / "office").kind == "office"
+    assert not calls
+    assert "desk not started" in result[-1]
+
+
+def test_first_setup_keeps_explicit_decline_before_writing(office_project):
+    project, calls = office_project
+    args = cli.build_parser().parse_args(["setup", "--accept", "no"])
+    result = setup.first_step(args)
+    assert "no office changes" in result[0]
+    assert not (project / "office").exists()
+    assert not calls
+
+
 def test_init_never_replaces_an_existing_non_office_folder(office_project):
     project, calls = office_project
     folder = project / "office"

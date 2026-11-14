@@ -174,7 +174,7 @@ def office_folder(project: Path) -> Path:
     return folder
 
 
-def init_office(args: argparse.Namespace, *, operations: Operations | None = None) -> list[str]:
+def init_office(args: argparse.Namespace, *, operations: Operations | None = None, start: bool = True) -> list[str]:
     """Copy only the office declarations, commit them, then use normal up for its desk."""
     operations = operations or Operations()
     project = operations.project_folder().resolve()
@@ -210,6 +210,8 @@ def init_office(args: argparse.Namespace, *, operations: Operations | None = Non
     if not office.is_repository:
         raise ShipError(f"{folder} needs its own git repository; initialize and commit its declaration before qd init")
     ships._git(folder, "rev-parse", "--verify", "HEAD")
+    if not start:
+        return lines + ["Office saved; desk not started. Run qd init to start it."]
     result = operations.up_desk(office)
     lines.extend([result] if isinstance(result, str) else result)
     lines += [f"Desk access: {operations.access(office)}", "Office ready; tell the desk what you want to work on."]
@@ -221,7 +223,10 @@ def first_step(args: argparse.Namespace, *, operations: Operations | None = None
     operations = operations or Operations()
     folder = office_folder(operations.project_folder())
     if not (folder / "ship.toml").exists():
-        return init_office(argparse.Namespace(ship=None, office=None), operations=operations)
+        answers = read_answers(args) if hasattr(args, "answers") else {}
+        if answers.get("accept") == "no":
+            return ["Setup stopped before acceptance; no office changes were written."]
+        return init_office(argparse.Namespace(ship=None), operations=operations, start=answers.get("start") != "no")
     if ships.load(folder).kind != "office":
         raise ShipError(f"{folder} is not an office; resolve it before qd setup")
     return run(args, operations=operations)

@@ -22,6 +22,7 @@ def test_init_runs_a_synthetic_office_with_only_its_desk(tmp_path, monkeypatch, 
     (source / "ship.toml").write_text(text)
     monkeypatch.setattr(standing, "project_dir", lambda: resources)
     monkeypatch.setattr(setup.Operations, "project_folder", lambda _: project)
+    tmux.new_session("anchor")
     monkeypatch.setenv("QD_TMUX_SOCKET", str(tmux.socket))
     for key, value in {
         "GIT_AUTHOR_NAME": "Office Example", "GIT_AUTHOR_EMAIL": "office@example.invalid",
