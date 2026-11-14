@@ -47,9 +47,10 @@ def test_independent_repository_retirement_keeps_result_and_leaves_no_git_admin(
 
 def test_observed_layout_survives_analysis_and_readable_report(tmp_path):
     layout = {'cwd': '/owned/checkout', 'TMPDIR': '/owned/checkout/.testruns/t',
-              'tempdir': '/owned/checkout/.testruns/t', 'testruns_run_present': False, 'basetemp': None}
+              'tempdir': '/owned/checkout/.testruns/t', 'testruns_run_present': False,
+              'disk_only': True, 'registry_present': False, 'basetemp': None}
     events = [{'kind': 'start', 'role': 'main', 'plugin': 2, 'layout': layout},
-              {'kind': 'collected', 'role': 'main', 'nodeids': []},
+              {'kind': 'collected', 'role': 'main', 'nodeids': [], 'complete': True},
               {'kind': 'finish', 'role': 'main', 'exitstatus': 5}]
     (tmp_path / 'main.jsonl').write_text(''.join(json.dumps(event) + '\n' for event in events))
     found = evidence.analyse(tmp_path, 5)

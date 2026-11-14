@@ -20,6 +20,7 @@ TEMP = str(CHECKOUT / '.testruns' / 't')
 
 def session(role, **changes):
     layout = {'role': role, 'cwd': str(CHECKOUT), 'TMPDIR': TEMP, 'tempdir': TEMP, 'testruns_run_present': False,
+              'disk_only': True, 'registry_present': False,
               'basetemp': None if role == 'main' else f'{TEMP}/pytest-of-synthetic/pytest-0/popen-{role}'}
     layout.update(changes)
     return layout
@@ -49,6 +50,10 @@ def test_a_session_that_never_reported_its_layout_makes_the_evidence_incomplete(
     ('tempdir', '/owned/synthetic-run/tmp'),
     ('testruns_run_present', True),
     ('testruns_run_present', None),
+    ('disk_only', False),
+    ('disk_only', None),
+    ('registry_present', True),
+    ('registry_present', None),
 ])
 def test_each_departure_from_the_checkout_layout_is_named_for_its_session(role, field, value):
     layouts = [session('main'), session('gw0'), session('gw1')]
@@ -83,10 +88,11 @@ def built(tmp_path, monkeypatch, ci_layout):
 
 
 def test_the_default_environment_is_exactly_what_it_was(tmp_path, monkeypatch):
+    monkeypatch.delenv('TESTRUNS_CI_DISK', raising=False)
     scratch, env, record = built(tmp_path, monkeypatch, ci_layout=False)
     assert list(record['fixed'].items()) == [('PIP_NO_INDEX', '1'), ('PIP_NO_INPUT', '1'),
                                              ('PIP_DISABLE_PIP_VERSION_CHECK', '1'), ('PYTHONNOUSERSITE', '1'),
-                                             ('TESTRUNS_RUN', 'synthetic-run')]
+                                             ('OPENBLAS_NUM_THREADS', '1'), ('TESTRUNS_RUN', 'synthetic-run')]
     assert env['TESTRUNS_RUN'] == 'synthetic-run' and env['HOME'] == str(scratch / 'home')
     for name in ('GIT_CONFIG_GLOBAL', 'PIP_CONFIG_FILE', 'GIT_DIR', 'TMUX_TMPDIR'):
         assert name not in env and name in record['removed_names']
@@ -100,6 +106,7 @@ def test_the_ci_environment_carries_no_run_marker_and_only_its_own_git_identity(
     config = scratch / 'home' / '.gitconfig'
     assert env['GIT_CONFIG_GLOBAL'] == str(config) and env['GIT_CONFIG_NOSYSTEM'] == '1'
     assert env['PIP_CONFIG_FILE'] == '/dev/null' and env['HOME'] == str(scratch / 'home')
+    assert env['TESTRUNS_CI_DISK'] == '1' and record['fixed']['TESTRUNS_CI_DISK'] == '1'
     assert 'GIT_DIR' not in env and 'TMUX_TMPDIR' not in env
     read = subprocess.run(['git', 'config', '--global', '--list'], env=env, cwd=tmp_path, capture_output=True,
                           text=True, check=True).stdout.splitlines()
@@ -107,6 +114,14 @@ def test_the_ci_environment_carries_no_run_marker_and_only_its_own_git_identity(
     recorded = json.dumps(record)
     for value in OPERATOR.values():
         assert value not in recorded  # removed names are recorded, never their values
+
+
+def test_a_nested_default_environment_carries_an_inherited_disk_model(tmp_path, monkeypatch):
+    monkeypatch.setenv('TESTRUNS_CI_DISK', '1')
+    scratch, env, record = built(tmp_path, monkeypatch, ci_layout=False)
+    assert env['TESTRUNS_CI_DISK'] == '1' and record['fixed']['TESTRUNS_CI_DISK'] == '1'
+    assert record['fixed']['TESTRUNS_RUN'] == 'synthetic-run'
+    assert not (scratch / 'home' / '.gitconfig').exists()
 
 
 # -- complete history -------------------------------------------------------------------------------------------

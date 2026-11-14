@@ -62,6 +62,18 @@ def add_worktree(project: Path, branch: str, tests: dict[str, str]) -> Path:
     return worktree
 
 
+def controller_environment() -> dict:
+    """The environment an operator-started controller has.
+
+    A suite already running under ``--ci-layout`` carries the child disk model and the CI session context.
+    Those belong to pytest. The controller under test sets them for its own children and must not inherit them.
+    """
+    env = dict(os.environ)
+    env.pop('TESTRUNS_CI_DISK', None)
+    env.pop('TESTRUN_CI_SESSION_CONTEXT', None)
+    return env
+
+
 def tool(*args: str, cwd: Path, env: dict | None = None, timeout: float = 300) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, '-I', str(TOOL), *args], cwd=cwd, env=env or dict(os.environ),
                           capture_output=True, text=True, timeout=timeout)
@@ -107,8 +119,8 @@ def tool_at_phase(gate: str, *args: str, cwd: Path, timeout: float = 300,
     return done, float(leapt.group(1))
 
 
-def start(*args: str, cwd: Path) -> subprocess.Popen:
-    return subprocess.Popen([sys.executable, '-I', str(TOOL), *args], cwd=cwd, stdout=subprocess.PIPE,
+def start(*args: str, cwd: Path, env: dict | None = None) -> subprocess.Popen:
+    return subprocess.Popen([sys.executable, '-I', str(TOOL), *args], cwd=cwd, env=env, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True)
 
 

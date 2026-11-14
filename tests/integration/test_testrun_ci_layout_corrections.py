@@ -12,8 +12,8 @@ import sys
 import pytest
 
 from tests.conftest import git
-from tests.integration.testrun_synthetic import (admin_entries, commit, make, result, scratch, start, started_marker,
-                                                 tool, wait_for)
+from tests.integration.testrun_synthetic import (admin_entries, commit, controller_environment, make, result, scratch,
+                                                 start, started_marker, tool, wait_for)
 from tests.testrunner import clean
 
 
@@ -45,7 +45,8 @@ def test_a_package_that_resolves_from_the_ci_venv_inside_the_checkout_is_refused
     (shadow / '__init__.py').write_text('VALUE = "from the run venv"\n')
     git(worktree, 'add', '-f', '--', str(shadow / '__init__.py'))  # ignored path, tracked on purpose
     commit(worktree, 'synthetic package shadowed in the venv')
-    done = tool('run', '--ci-layout', '--target', str(worktree), '-n', '0', cwd=project)
+    done = tool('run', '--ci-layout', '--target', str(worktree), '-n', '0', cwd=project,
+                env=controller_environment())
     assert done.returncode != 0, done.stdout + done.stderr
     refused_before_pytest(project, 'synth')
 

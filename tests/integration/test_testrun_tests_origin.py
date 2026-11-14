@@ -11,7 +11,7 @@ import pytest
 
 from tests.conftest import git
 from tests.integration.test_testrun_ci_layout_gates import CI_CONFTEST
-from tests.integration.testrun_synthetic import commit, make, result, scratch, tool
+from tests.integration.testrun_synthetic import commit, controller_environment, make, result, scratch, tool
 
 SITE = Path('.venv') / 'lib' / f'python{sys.version_info.major}.{sys.version_info.minor}' / 'site-packages'
 
@@ -34,8 +34,11 @@ def test_a_regular_tests_package_imports_from_the_checkouts_own_tests_folder(tmp
     assert done.returncode == 0, done.stdout + done.stderr
     found = result(project)
     assert found['outcome']['status'] == 'passed' and found['evidence']['counts']['passed'] == 2
-    origin = Path(found['tools']['run_venv']['imports']['tests'])
+    imported = found['tools']['run_venv']['tests_import']
+    assert imported['form'] == 'regular'
+    origin = Path(imported['file'])
     assert origin == Path(found['checkout']['path']) / 'tests' / '__init__.py'
+    assert Path(imported['spec_origin']) == origin
 
 
 @pytest.mark.parametrize('shadow', [
@@ -48,12 +51,14 @@ def test_tests_from_outside_the_checkouts_tests_folder_refuses_before_pytest(tmp
     # Control: the in-checkout venv may hold tracked content of its own without any refusal.
     track_in_venv(worktree, 'synthetic_unrelated/__init__.py', 'VALUE = "unrelated"\n')
     commit(worktree, 'synthetic unrelated venv content')
-    control = tool('run', '--ci-layout', '--target', str(worktree), '-n', '0', cwd=project)
+    control = tool('run', '--ci-layout', '--target', str(worktree), '-n', '0', cwd=project,
+                   env=controller_environment())
     assert control.returncode == 0, control.stdout + control.stderr
     assert result(project)['outcome']['status'] == 'passed'
     track_in_venv(worktree, relative, f'# synthetic {text}\n')
     commit(worktree, f'synthetic {text}')
-    done = tool('run', '--ci-layout', '--target', str(worktree), '-n', '0', cwd=project)
+    done = tool('run', '--ci-layout', '--target', str(worktree), '-n', '0', cwd=project,
+                env=controller_environment())
     assert done.returncode != 0, done.stdout + done.stderr
     found = result(project)
     note = found['outcome']['note'] or ''
