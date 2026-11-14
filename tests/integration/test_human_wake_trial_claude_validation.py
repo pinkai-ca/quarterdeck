@@ -210,6 +210,8 @@ def test_a_seat_proved_down_has_no_wake_state_and_an_unreadable_launch_is_not_si
     desk = seatmod.Seat(ship, ship.seat('desk'), tmux)
     wait_for(lambda: box(desk, tmux) == '', seconds=30)
     qd(capsys, 'post', 'question', '--to', 'desk', 'Synthetic question while the service is down?')
+    # The service is down, so the drop waits. File it here; the service stays down.
+    post.file_drops(post.Store(ship.runtime))
     observing = 'human wake awaiting service observation'
     assert desk.is_up and human_wake.status(desk) == observing
     assert observing in qd(capsys, 'status') and observing in qd(capsys, 'watch', 'desk')

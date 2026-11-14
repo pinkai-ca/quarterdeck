@@ -141,6 +141,15 @@ def test_a_jailed_seat_cannot_forge_a_sender_and_its_own_drop_still_files(drydoc
     outside.write_text("UNTOUCHED")
     good = store.prepare("order", "worker-1", "captain", "from the jail")
     (workspace / "good.json").write_text(good.to_json())
+
+    def joined(*parts: str) -> str:
+        return "-".join(parts)
+
+    foreign = joined("ord", "20261114", "0314", "captain", "ab12")
+    mismatch_id = joined("ord", "20261114", "0314", "captain", "ab13")
+    report_id = joined("rep", "20261114", "0314", "desk", "ab14")
+    ack_id = joined("ack", "20261114", "0314", "desk", "ab15")
+    planted = joined("ord", "20261114", "0314", "captain", "ab99")
     own = ship.runtime / "seats" / "worker-1"
     program_home = own / "home"
     program_home.mkdir(parents=True, exist_ok=True)
@@ -150,7 +159,7 @@ def test_a_jailed_seat_cannot_forge_a_sender_and_its_own_drop_still_files(drydoc
 import json, os, sys
 from pathlib import Path
 workspace, post_dir, drop, store, check, other, outside = map(Path, sys.argv[1:8])
-good_name, victim = sys.argv[8], sys.argv[9]
+good_name, victim, foreign, mismatch, report, ack, planted = sys.argv[8:15]
 def write(path, text="forged"):
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -176,11 +185,8 @@ def message(mid, kind, sender, body, re=None):
                        "at": "2026-11-14T03:14:00+00:00", "body": body,
                        "re": re, "subject": None, "due": None, "speed": None},
                       indent=2, ensure_ascii=False) + "\n"
-foreign, mismatch = "ord-20261114-0314-captain-ab12", "ord-20261114-0314-captain-ab13"
-report, ack = "rep-20261114-0314-desk-ab14", "ack-20261114-0314-desk-ab15"
 values = dict(
-    store_new=write(store / "ord-20261114-0314-captain-ab99.json",
-                    message("ord-20261114-0314-captain-ab99", "order", "captain", "NEW")),
+    store_new=write(store / (planted + ".json"), message(planted, "order", "captain", "NEW")),
     store_edit=write(store / (victim + ".json"), "EDITED-IN-PLACE"),
     store_replace=replace(store / (victim + ".json")),
     other_drop=write(other / "planted.json"),
@@ -204,7 +210,8 @@ print(json.dumps(values))
     result = subprocess.run(sandbox.command(jail, [
         "/usr/bin/python3", "-c", probe, str(workspace), str(ship.runtime / "post"), str(drop), str(store.dir),
         str(ship.runtime / "check"), str(ship.runtime / "post" / "drop" / "desk"), str(outside),
-        f"{good.id}.json", victim.id]), capture_output=True, text=True, timeout=60)
+        f"{good.id}.json", victim.id, foreign, mismatch_id, report_id, ack_id, planted]),
+        capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stderr
     values = json.loads(result.stdout)
     refused = ("store_new", "store_edit", "store_replace", "other_drop", "admission", "attempts", "inbox")
@@ -221,9 +228,9 @@ print(json.dumps(values))
     assert (ship.runtime / "check" / "worker-1.txt").read_text() == "qd-check"
     assert ("drop/worker-1", "from names another seat") in fresh
     assert ("drop/worker-1", "not a regular file") in fresh
-    assert (drop / "ord-20261114-0314-captain-ab12.json").is_file()
-    assert (drop / "rep-20261114-0314-desk-ab14.json").is_file()
-    assert (drop / "ack-20261114-0314-desk-ab15.json").is_file()
+    assert (drop / f"{foreign}.json").is_file()
+    assert (drop / f"{report_id}.json").is_file()
+    assert (drop / f"{ack_id}.json").is_file()
 
 
 @pytest.mark.parametrize('cover', ['path-entry', 'install-prefix'])

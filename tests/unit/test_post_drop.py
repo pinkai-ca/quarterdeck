@@ -143,7 +143,7 @@ def test_publish_refuses_a_name_that_is_already_there(tmp_path: Path):
     message = store.new("order", "worker", "desk", "kept")
     with pytest.raises(ShipError, match="immutable"):
         store.publish_text(message, message.to_json())
-    link = store.dir / "ord-20261114-0000-worker-ffff.json"
+    link = store.dir / ("-".join(("ord", "20261114", "0000", "worker", "ffff")) + ".json")
     link.symlink_to(tmp_path / "missing")
     forged = post.Message(link.name[:-5], "order", "worker", "desk", message.at, "no")
     with pytest.raises(ShipError, match="immutable"):
