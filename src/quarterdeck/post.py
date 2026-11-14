@@ -628,7 +628,7 @@ def _remember(runtime: Path, current: set[tuple[str, str]], fresh: list[tuple[st
     fresh.append((folder, reason))
 
 
-def _sweep_holds(runtime: Path, current: set[tuple[str, str]]) -> None:
+def _sweep_holds(runtime: Path, current: set[tuple[str, str]], *, folders: frozenset[str] | None = None) -> None:
     folder = _hold_dir(runtime)
     try:
         children = post_dir.list_children(folder)
@@ -641,6 +641,8 @@ def _sweep_holds(runtime: Path, current: set[tuple[str, str]]) -> None:
             data = json.loads(post_dir.read_text(folder / name))
             key = (data.get("folder"), data.get("reason"))
         except (OSError, ShipError, ValueError, TypeError, AttributeError):
+            continue
+        if folders is not None and key[0] not in folders:
             continue
         if key not in current:
             try:
@@ -666,7 +668,35 @@ def _same_stored(store: Store, message: Message, text: str) -> str | None:
     return "same" if existing == text else "differs"
 
 
-def file_drops(store: Store, ship=None) -> list[tuple[str, str]]:
+def file_drops(store: Store, ship=None, *, seats: frozenset[str] | None = None,
+               service_absent: bool = False) -> list[tuple[str, str]]:
+    """One filing door, serialized for the service and a check's scoped fallback.
+
+    The fallback checks service ownership under the filing lock. A service starting
+    afterward uses this same lock, so it cannot race that pass. Busy filers yield
+    to the next ordinary pass; neither caller waits while holding another lock.
+    """
+    runtime = store.dir.parent.parent
+    path = runtime / 'post' / 'filing.lock'
+    descriptor = post_dir.open_lock(path, mode=0o600)
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return []
+        opened, current = os.fstat(descriptor), path.lstat()
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
+            raise ShipError('post filing lock identity changed; retained')
+        if service_absent:
+            from . import servicectl
+            if servicectl.alive(runtime):
+                return []
+        return _file_drops(store, ship, seats=seats)
+    finally:
+        os.close(descriptor)
+
+
+def _file_drops(store: Store, ship=None, *, seats: frozenset[str] | None = None) -> list[tuple[str, str]]:
     """File each seat's drops into the store. A refusal is held, named, and never deleted.
 
     Returns the holds recorded for the first time this pass, so the service logs each once.
@@ -678,6 +708,7 @@ def file_drops(store: Store, ship=None) -> list[tuple[str, str]]:
     root = store.dir.parent / "drop"
     current: set[tuple[str, str]] = set()
     fresh: list[tuple[str, str]] = []
+    folders = None if seats is None else frozenset({"drop", *(f"drop/{name}" for name in seats)})
 
     def hold(folder: str, reason: str) -> None:
         _remember(runtime, current, fresh, folder, reason)
@@ -688,22 +719,24 @@ def file_drops(store: Store, ship=None) -> list[tuple[str, str]]:
         found = None
         hold("drop", "drop unreadable")
     if found is None:
-        _sweep_holds(runtime, current)
+        _sweep_holds(runtime, current, folders=folders)
         return fresh
     if not stat.S_ISDIR(found):
         hold("drop", "drop folder is not a directory")
-        _sweep_holds(runtime, current)
+        _sweep_holds(runtime, current, folders=folders)
         return fresh
-    if ship is not None:
+    if ship is not None and seats is None:
         from . import group_post
         for folder, reason in group_post.file_staged(ship, store):
             hold(folder, reason)
     try:
-        seats = sorted(post_dir.list_children(root))
+        children = sorted(post_dir.list_children(root))
     except (OSError, ShipError):
         hold("drop", "drop unreadable")
         return fresh
-    for name, mode in seats:
+    for name, mode in children:
+        if seats is not None and name not in seats:
+            continue
         folder = f"drop/{name}"
         if not stat.S_ISDIR(mode):
             hold(folder, "drop folder is not a directory")
@@ -769,7 +802,7 @@ def file_drops(store: Store, ship=None) -> list[tuple[str, str]]:
                 hold(folder, "not a message")
                 continue
             _remove_drop(path)
-    _sweep_holds(runtime, current)
+    _sweep_holds(runtime, current, folders=folders)
     return fresh
 
 

@@ -288,6 +288,16 @@ def _task_body(proof_file: Path, proof_line: str, *, minimal: bool = False) -> s
                    f"enough to fold in your box; nothing in it changes the task.\n\n{laws}")
 
 
+def closing_report(seat: Seat, store: post.Store, order: post.Message) -> post.Message | None:
+    """File this owned check seat's report if no service owns filing, then read it.
+
+    Both ordinary and waking probes retain their original patience. Only the
+    current temporary seat's drop is selected; all admission stays in file_drops.
+    """
+    post.file_drops(store, seat.ship, seats=frozenset({seat.name}), service_absent=True)
+    return store.closing_report(order)
+
+
 def probe(ship: Ship, seat: Seat, orders: list[post.Message] | None = None, *, requested_model: str | None = None,
           minimal: bool = False) -> list[Check]:
     sandbox.ensure_check_proof_folder(ship.runtime, seat.name)  # a link refuses the check before any launch
@@ -362,7 +372,7 @@ def probe(ship: Ship, seat: Seat, orders: list[post.Message] | None = None, *, r
         if reason := account_question(door):
             checks.append(ProbeCheck('account-holder question', False, check_outcome.REASONS[reason][1], reason))
         return checks
-    closed = wait_for(lambda: store.closing_report(order), PATIENCE)
+    closed = wait_for(lambda: closing_report(seat, store, order), PATIENCE)
     checks.append(ProbeCheck("task: the report closed the order", closed is not None,
                              f"report {closed.short}: {closed.body[:40]!r}" if closed else "no report within the patience", 'report'))  # law: can-post
     checks.append(proof_check(proof_file, proof_line))
@@ -469,7 +479,7 @@ def _probe_wake(seat: Seat, orders: list[post.Message], observed: dict) -> list[
     read = wait_for(lambda: any(a.result == 'watch' for a in attempts.for_message(order.id)), PATIENCE) if armed else None
     checks.append(Check('human-session waking line: watch read the waiting message', bool(read),
                         'ordinary watch receipt' if read else 'waiting message has no watch receipt'))
-    report = wait_for(lambda: store.closing_report(order), PATIENCE) if read else None
+    report = wait_for(lambda: closing_report(seat, store, order), PATIENCE) if read else None
     checks.append(Check('human-session waking line: seat answered the message',
                         bool(report and report.body.strip() == token),
                         'answer closed the waiting order' if report and report.body.strip() == token else

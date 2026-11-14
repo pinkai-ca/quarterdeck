@@ -68,7 +68,8 @@ def test_check_waits_for_the_original_queued_input_and_counts_its_task_turn(setu
         match = re.search(r'Write the file (.+) containing exactly one line: (.+)\n', message.body)
         from pathlib import Path
         Path(match[1]).write_text(match[2]+'\n')
-        svc.store.new('report', seat.name, 'ship', 'written', re=message.id)
+        report = svc.store.prepare('report', seat.name, 'ship', 'written', re=message.id)
+        post.write_drop(svc.runtime, report)
         shape.end('Written'); live['working'] = False; events.append('task ended and reported')
 
     transitions = iter([opening_ended, take_input, answer] if receipt else [opening_ended])
