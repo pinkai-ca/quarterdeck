@@ -116,3 +116,54 @@ def test_the_earlier_service_lock_held_by_another_refuses_the_start(ship, proces
     processes(servicectl.legacy_lock_path(ship.runtime))
     with pytest.raises(shipmod.ShipError, match='earlier code'):
         servicectl.hold_legacy(ship.runtime)
+
+
+def _unlink_refused(monkeypatch, refused: Path) -> None:
+    """The earlier place's removal fails with PermissionError; every other path unlinks as usual."""
+    original = Path.unlink
+
+    def unlink(self, *args, **kwargs):
+        if self == refused:
+            raise PermissionError(13, 'Permission denied', str(self))
+        return original(self, *args, **kwargs)
+    monkeypatch.setattr(Path, 'unlink', unlink)
+
+
+def test_a_failed_release_of_the_earlier_service_lock_keeps_it_held_to_try_again(ship, monkeypatch):
+    descriptor = servicectl.hold_legacy(ship.runtime)
+    legacy = servicectl.legacy_lock_path(ship.runtime)
+    with monkeypatch.context() as patched:
+        _unlink_refused(patched, legacy)
+        with pytest.raises(PermissionError):
+            servicectl.release_legacy(ship.runtime, descriptor)
+    assert legacy.exists() and servicectl._held(legacy) is True, 'still held: the earlier installer is not misled'
+    servicectl.release_legacy(ship.runtime, descriptor)  # the same descriptor, still open
+    assert not legacy.exists()
+
+
+def test_the_service_survives_a_failed_release_and_tries_again_next_pass(ship, processes, monkeypatch):
+    from types import SimpleNamespace
+    import json
+    from quarterdeck.service import Service
+
+    installer = processes()
+    installer.close()  # the earlier installer has exited
+    svc = Service(ship, SimpleNamespace())
+    svc.earlier_installer = (installer.pid, installer.start)
+    svc.legacy_lock = servicectl.hold_legacy(ship.runtime)
+    legacy = servicectl.legacy_lock_path(ship.runtime)
+
+    def events() -> list[dict]:
+        return [json.loads(line) for line in svc.log_path.read_text().splitlines()] if svc.log_path.exists() else []
+
+    with monkeypatch.context() as patched:
+        _unlink_refused(patched, legacy)
+        svc.release_earlier_installer()  # must not raise: in tick() nothing would catch it
+    failed = [e for e in events() if e.get('step') == 'release_earlier_installer']
+    assert failed and failed[-1]['error'] == 'earlier-installer release failed'
+    assert failed[-1]['kind'] == 'PermissionError'
+    assert svc.legacy_lock is not None and servicectl._held(legacy) is True
+
+    svc.release_earlier_installer()  # the next pass
+    assert svc.legacy_lock is None and not legacy.exists()
+    assert [e for e in events() if e['event'] == 'earlier-installer-done']
