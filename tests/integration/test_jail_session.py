@@ -102,7 +102,10 @@ def test_no_path_socket_outside_is_reachable_and_the_endpoint_still_answers(dryd
     shipmod.fence(ship)
     own = ship.runtime / 'seats' / 'worker-1'
     (own / 'home').mkdir(parents=True, exist_ok=True)
-    jail = sandbox.plan(ship, 'worker-1', own, own / 'home', workspace, sys.executable, os.environ['PATH'])
+    import pwd
+    operator_home = Path(pwd.getpwuid(os.getuid()).pw_dir)  # the real home, as a launch hides it, not the run's own HOME
+    jail = sandbox.plan(ship, 'worker-1', own, own / 'home', workspace, sys.executable, os.environ['PATH'],
+                        home=operator_home)
     outside = listening()
     paths = [item['address'] for item in outside if not item['address'].startswith('@')]
     env = dict(os.environ, DBUS_SESSION_BUS_ADDRESS='unix:path=/run/user/%d/bus' % os.getuid(), DISPLAY=':0',
