@@ -308,7 +308,17 @@ def promise(project, device, base, bound):
     run = new_run_id()
     root = Root(project)
     try:
-        fd = root.child(RESULTS, run)
+        parent = root.child(RESULTS)
+        try:
+            while True:
+                try:
+                    os.mkdir(run, mode=0o700, dir_fd=parent)
+                    break  # a newly reserved directory, never another promise's record
+                except FileExistsError:
+                    run = new_run_id()
+        finally:
+            os.close(parent)
+        fd = root.child(RESULTS, run, create=False)
         try:
             write_json(fd, storage.RECORD, {'run': run, 'base': str(base), 'root': 'qd-standing-promise',
                                             'identity': [device, 1, os.getuid()], 'kind': 'tmpfs',
@@ -318,6 +328,25 @@ def promise(project, device, base, bound):
     finally:
         root.close()
     return project / '.testruns' / 'results' / run / storage.RECORD
+
+
+def test_standing_promises_keep_both_devices_when_a_candidate_id_collides(tmp_path, monkeypatch):
+    from tests.testrunner import layout
+    project, _ = make(tmp_path, {})
+    candidates = iter(('20200101-000000-abcd', '20200101-000000-abcd', '20200101-000000-bcde'))
+    monkeypatch.setattr(layout, 'new_run_id', lambda: next(candidates))
+    first = promise(project, 11, tmp_path, storage.BOUND)
+    original = first.read_bytes()
+    second = promise(project, 22, tmp_path, storage.BOUND * 2)
+    assert first != second and first.read_bytes() == original
+    assert json.loads(second.read_text())['identity'][0] == 22
+    root = layout.Root(project)
+    try:
+        assert storage.reserved(root, 11) == storage.BOUND
+        assert storage.reserved(root, 22) == storage.BOUND * 2
+        assert len(storage.pending(root)) == 2
+    finally:
+        root.close()
 
 
 def no_room(project):
