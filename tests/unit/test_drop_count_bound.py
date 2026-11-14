@@ -62,8 +62,8 @@ def test_groups_and_ordinary_drops_share_the_same_window(tmp_path, caller, monke
     listings = []
     listing = post_dir.list_children
     def observed(directory, **kwargs):
-        if Path(directory) == post.drop_dir(ship.runtime, 'lead'):
-            listings.append(kwargs.get('limit'))
+        if Path(directory) == post.drop_dir(ship.runtime, 'lead') and kwargs.get('limit') is not None:
+            listings.append(kwargs['limit'])
         return listing(directory, **kwargs)
     monkeypatch.setattr(post_dir, 'list_children', observed)
     for _ in range(4):
@@ -114,7 +114,7 @@ def test_sustained_budget_use_alerts_after_three_rounds_and_clears(tmp_path, cal
             writes.append(path)
         return replace_file(path, *args, **kwargs)
     monkeypatch.setattr(post.durable, 'replace_file', observed)
-    alert = f'post drop held: {folder}: {post.DROP_COUNT_REASON}'
+    alert = f'post drop waiting: {folder}: {post.DROP_COUNT_REASON}'
     for number in range(4):
         file(store, caller)
         assert (alert in post.drop_alarms(runtime)) == (number >= 2)

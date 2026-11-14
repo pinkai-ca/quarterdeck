@@ -663,8 +663,9 @@ def drop_alarms(runtime: Path) -> list[str]:
                     if type(rounds) is not int or not 1 <= rounds <= DROP_BACKLOG_ROUNDS:
                         lines.append("post drop held: drop-holds")
                         continue
-                    if rounds < DROP_BACKLOG_ROUNDS:
-                        continue
+                    if rounds >= DROP_BACKLOG_ROUNDS:
+                        lines.append(f"post drop waiting: {data['folder']}: {data['reason']}")
+                    continue
                 lines.append(f"post drop held: {data['folder']}: {data['reason']}")
                 continue
         except FileNotFoundError:
