@@ -29,7 +29,7 @@ HOME = Path(pwd.getpwuid(os.getuid()).pw_dir)
 QD = Path(sys.executable).parent / 'qd'
 
 
-def run(jail: sandbox.Jail, probe: str, *args: str, path: str) -> dict:
+def run_probe(jail: sandbox.Jail, probe: str, *args: str, path: str) -> dict:
     env = {key: value for key, value in os.environ.items() if not key.startswith(('QD_', 'TMUX'))}
     env['PATH'] = path
     result = subprocess.run(sandbox.command(jail, [sys.executable, '-I', '-c', probe, *args]), env=env,
@@ -59,7 +59,7 @@ workspace = sys.argv[1]
 open(os.path.join(workspace, 'written'), 'w').write('ok')
 print(json.dumps(dict(mnt=sorted(os.listdir('/mnt')), scratch=sorted(os.listdir('/mnt/scratch')))))
 """
-        seen = run(jail, probe, str(workspace), path=path)
+        seen = run_probe(jail, probe, str(workspace), path=path)
         assert seen['mnt'] == ['scratch'] and seen['scratch'] == [workspace.name], seen
         assert (workspace / 'written').read_text() == 'ok', 'the workspace under /mnt is still writable'
     finally:
@@ -75,7 +75,7 @@ def test_mnt_is_empty_inside_when_nothing_under_it_is_given(drydock: Path, tmp_p
     (tmp_path / 'work').mkdir()
     path = os.pathsep.join([str(Path(sys.executable).parent), '/usr/bin', '/bin'])
     jail = sandbox.plan(ship, 'worker-1', own, own / 'home', tmp_path / 'work', sys.executable, path, home=HOME)
-    seen = run(jail, "import json, os; print(json.dumps(sorted(os.listdir('/mnt'))))", path=path)
+    seen = run_probe(jail, "import json, os; print(json.dumps(sorted(os.listdir('/mnt'))))", path=path)
     assert seen == [], seen
 
 
@@ -144,7 +144,7 @@ print(json.dumps(dict(
     first=shutil.which('qd'),
 )))
 """
-    seen = run(jail, probe, str(other / 'runtime'), str(project), path=path)
+    seen = run_probe(jail, probe, str(other / 'runtime'), str(project), path=path)
     assert seen['runtime'] in (None, []), f"another ship's runtime shows inside: {seen['runtime']}"
     assert seen['secret'] is False and seen['socket'] is False
     assert seen['first'] == str(ship.runtime / 'bin' / 'qd'), 'the seat resolves its own ship\'s qd first'
@@ -162,3 +162,43 @@ def test_a_seat_whose_qd_lives_in_another_ships_runtime_is_refused(drydock: Path
     path = os.pathsep.join([str(venv), '/usr/bin', '/bin'])
     with pytest.raises(ShipError, match="inside another ship's runtime"):
         sandbox.plan(ship, 'worker-1', own, own / 'home', tmp_path / 'work', sys.executable, path, home=HOME)
+
+
+def test_a_listening_socket_under_a_bound_folders_test_runs_is_unreachable(drydock: Path, tmp_path: Path):
+    """A test run's live tmux server listens under a checkout's .testruns; a path socket ignores the jail's network.
+    A folder bound into the jail that holds .testruns shows it empty."""
+    short = Path(tempfile.mkdtemp(prefix='qdtr-', dir='/dev/shm'))
+    checkout = short / 'checkout'
+    run = checkout / '.testruns' / 'r' / 'u-1'
+    run.mkdir(parents=True)
+    (checkout / 'bin').mkdir()
+    (checkout / 'README').write_text('the checkout itself')
+    server = socket.socket(socket.AF_UNIX)
+    server.bind(str(run / 's'))
+    server.listen(4)
+    try:
+        ship = shipmod.load(drydock)
+        shipmod.fence(ship)
+        own = own_seat(ship)
+        (tmp_path / 'work').mkdir()
+        path = os.pathsep.join([str(checkout / 'bin'), str(Path(sys.executable).parent), '/usr/bin', '/bin'])
+        jail = sandbox.plan(ship, 'worker-1', own, own / 'home', tmp_path / 'work', sys.executable, path, home=HOME)
+        assert checkout / '.testruns' in jail.foreign_runtimes
+        probe = r"""
+import json, os, socket, sys
+runs, checkout = sys.argv[1], sys.argv[2]
+probe = socket.socket(socket.AF_UNIX)
+try:
+    probe.connect(os.path.join(runs, 'r', 'u-1', 's'))
+    reached = True
+except OSError:
+    reached = False
+print(json.dumps(dict(reached=reached, runs=sorted(os.listdir(runs)) if os.path.isdir(runs) else None,
+                      checkout=os.path.exists(os.path.join(checkout, 'README')))))
+"""
+        seen = run_probe(jail, probe, str(checkout / '.testruns'), str(checkout), path=path)
+        assert seen['reached'] is False and seen['runs'] in (None, []), seen
+        assert seen['checkout'] is True, 'the bound folder itself is still there'
+    finally:
+        server.close()
+        shutil.rmtree(short, ignore_errors=True)

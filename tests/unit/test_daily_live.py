@@ -237,3 +237,26 @@ def test_without_memory_the_throwaway_uses_the_scratch(tmp_path, monkeypatch):
     assert not Path(saved["socket"]).exists()
     assert "codex: not used that day; check passed" in message.body
     assert daily_live.MUSE_LINE in message.body
+
+
+def test_the_live_checks_private_server_falls_back_outside_the_project(monkeypatch, tmp_path):
+    """Never the project's work/ folder, which jails see through the workspaces bound from it."""
+    import tempfile
+    from quarterdeck import standing
+    from quarterdeck.tmux import TmuxError
+
+    blocked = tmp_path / 'file'
+    blocked.write_text('not a folder')
+    tried = []
+
+    def private(place):
+        tried.append(Path(place))
+        if Path(place) != Path(tempfile.gettempdir()) / f'qd-live-tmux-{os.getuid()}':
+            raise TmuxError('synthetic: not here')
+        return 'server'
+
+    monkeypatch.setattr(daily_live, 'memory_root', lambda: None)
+    monkeypatch.setattr(daily_live.Tmux, 'private', staticmethod(private))
+    assert daily_live.open_private(blocked / 'ship-parent') == 'server'
+    assert tried[-1] == Path(tempfile.gettempdir()) / f'qd-live-tmux-{os.getuid()}'
+    assert all(standing.PROJECT_DIR / 'work' not in (place, *place.parents) for place in tried)
