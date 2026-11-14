@@ -224,19 +224,25 @@ def local_view(runtime, message, *, data=None):
         raise ShipError('imported post differs from its immutable source; retained')
     origin = imported['origin'] if imported else here
     if imported is None and '@' not in message.sender and '@' not in message.to:
-        return message  # the existing local envelope and its read semantics stay unchanged
+        from .forward_post import projected
+        return projected(runtime, message)
 
     def view(value):
         seat, ship = address(value, origin)
         return seat if ship == here else f'{seat}@{ship}'
 
-    return replace(message, sender=view(message.sender), to=view(message.to))
+    from .forward_post import projected
+    return projected(runtime, replace(message, sender=view(message.sender), to=view(message.to)))
 
 
 def context_only(runtime, identifier):
     imported = provenance(runtime, identifier)
     if not imported or not imported['context']:
-        return False
+        from .forward_post import recorded
+        route = recorded(runtime, identifier)
+        if route is None or address(route['to'], owner(runtime))[1] != owner(runtime):
+            return False
+        imported = dict(sha256=route['sha256'])
     try:
         value = json.loads(stable_bytes(runtime / 'post' / 'addressed' / (identifier + '.json')))
     except FileNotFoundError:
@@ -317,14 +323,20 @@ def _chain(ship, message, target):
             entry['reference'] = True
         _refusal_clear(ship, raw, entry['origin'], reference=reference)
         chain.append(entry)
+        from .forward_post import recorded
+        if saved := recorded(ship.runtime, message.id):
+            chain[-1]['forward'] = saved
         if not raw.re:
             return list(reversed(chain))
         message, _ = _source(ship, raw.re)
 
 
 def offer(ship, message, target):
+    from .forward_post import pin
+    pin(ship, message)
     chain = _chain(ship, message, target)
-    value = dict(format=1, source=ship.folder.name, target=target, message=message.id, files=chain)
+    version = 2 if any('forward' in entry for entry in chain) else 1
+    value = dict(format=version, source=ship.folder.name, target=target, message=message.id, files=chain)
     path = ship.runtime / 'post' / 'outbound' / target / (message.id + '.json')
     publish(path, encoded(value))
     return value
@@ -361,10 +373,14 @@ def export(ship, store):
     from . import post
     errors = []
     for message in store.all():
-        # Only locally authored posts produce offers; imported copies do not bounce.
+        # Imported posts produce offers only through this ship's declared forward.
         try:
-            if provenance(ship.runtime, message.id):
-                continue
+            imported = provenance(ship.runtime, message.id)
+            if imported:
+                raw, _ = _source(ship, message.id)
+                seat, here = address(raw.to, imported['origin'])
+                if here != ship.folder.name or seat not in ship.forward:
+                    continue
             for target in destinations(ship, store, message):
                 offer(ship, message, target)
         except (OSError, ValueError, KeyError, ShipError) as error:
@@ -373,7 +389,8 @@ def export(ship, store):
 
 
 def destinations(ship, store, message):
-    _, target = address(message.to, ship.folder.name)
+    from .forward_post import target as forwarded_target
+    _, target = address(forwarded_target(ship, message), ship.folder.name)
     targets = {target} - {ship.folder.name}
     # A report closes its addressee's order even when addressed to the silent ship sink.
     if message.kind == 'report' and message.re:
@@ -390,7 +407,7 @@ def receipt_path(ship, source, identifier):
 
 def _offer(source, target, path):
     value = json.loads(stable_bytes(path))
-    if (value.get('format') != 1 or value.get('source') != source.folder.name
+    if (value.get('format') not in (1, 2) or value.get('source') != source.folder.name
             or value.get('target') != target or path.name != value.get('message', '') + '.json'
             or not isinstance(value.get('files'), list) or not value['files']
             or value['files'][-1]['id'] != value['message']):
@@ -411,6 +428,10 @@ def _offer(source, target, path):
         _refusal_clear(source, message, entry['origin'], reference=entry.get('reference', False))
         if len(data) != entry['size'] or digest(data) != entry['sha256']:
             raise ShipError('post transport offer no longer matches its source')
+        if 'forward' in entry and value['format'] != 2:
+            raise ShipError('forwarded posts need a version 2 offer')
+        from .forward_post import receive
+        receive(source.runtime, entry, message, data)
         files.append((entry, message, data))
     for previous, current in zip(files, files[1:]):
         if current[1].re != previous[1].id:
@@ -425,7 +446,8 @@ def fetch(ship, source, path):
     from . import post
     value, files = _offer(source, ship.folder.name, path)
     message = files[-1][1]
-    recipient, destination = address(message.to, files[-1][0]['origin'])
+    routed = files[-1][0].get('forward', {}).get('to', message.to)
+    recipient, destination = address(routed, files[-1][0]['origin'])
     direct = destination == ship.folder.name
     if direct and recipient not in ship.seats and recipient not in (ship.operator.lower(), post.SHIP):
         raise ShipError('post transport addressee is no longer declared')
@@ -437,6 +459,8 @@ def fetch(ship, source, path):
                 continue  # already owned here; publish neither ancestor bytes nor import metadata
             is_direct = raw.id == message.id and direct
             metadata = dict(format=1, origin=entry['origin'], sha256=entry['sha256'], context=True)
+            from .forward_post import receive
+            receive(ship.runtime, entry, raw, data, adopt=True)
             local = ship.runtime / 'post' / 'store' / (raw.id + '.json')
             imported = provenance(ship.runtime, raw.id)
             if imported:
@@ -476,12 +500,18 @@ def fetched(source, destination, value):
                 return False
             if entry['origin'] != destination.folder.name:
                 metadata = provenance(destination.runtime, entry['id'])
-                if metadata != dict(format=1, origin=entry['origin'], sha256=entry['sha256'], context=True):
+                expected = dict(format=1, origin=entry['origin'], sha256=entry['sha256'], context=True)
+                if metadata != expected:
+                    return False
+            if 'forward' in entry:
+                from .forward_post import recorded
+                if recorded(destination.runtime, entry['id']) != entry['forward']:
                     return False
         _, last = _source(destination, value['message'])
         from . import post
         root = post.Message.from_json(last.decode('utf-8'))
-        if address(root.to, value['files'][-1]['origin'])[1] == destination.folder.name:
+        routed = value['files'][-1].get('forward', {}).get('to', root.to)
+        if address(routed, value['files'][-1]['origin'])[1] == destination.folder.name:
             if context_only(destination.runtime, root.id):
                 return False
         return True
@@ -522,8 +552,12 @@ def waiting(ship, store=None):
     store = store or post.Store(ship.runtime)
     fleet, pending = peers(ship), {}
     for message in store.all():
-        if provenance(ship.runtime, message.id):
-            continue
+        imported = provenance(ship.runtime, message.id)
+        if imported:
+            raw, _ = _source(ship, message.id)
+            seat, here = address(raw.to, imported['origin'])
+            if here != ship.folder.name or seat not in ship.forward:
+                continue
         for target in destinations(ship, store, message):
             try:
                 path = ship.runtime / 'post' / 'outbound' / target / (message.id + '.json')

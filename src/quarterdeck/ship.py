@@ -141,6 +141,7 @@ class Ship:
     code: str | None = None
     carry_bytes: int = CARRY_BYTES  # first message and each index page, UTF-8 bytes; [ship] carry_bytes
     kind: str = "crew"  # an office has only the desk and the person's own seats
+    forward: dict[str, str] = field(default_factory=dict)
 
     @property
     def file(self) -> Path:
@@ -339,7 +340,19 @@ def _from_text(text: str, folder: Path) -> Ship:
         code=code,
         carry_bytes=_carry_bytes(head.get("carry_bytes", CARRY_BYTES)),
         kind=head.get("kind", "crew"),
+        forward=_forward(data.get('forward', {})),
     )
+
+
+def _forward(table):
+    if not isinstance(table, dict):
+        raise ShipError('forward must map old seat names to seat@ship addresses')
+    for name, target in table.items():
+        if (not valid_name(name) or '@' in name or not isinstance(target, str)
+                or len(target.split('@')) != 2
+                or not all(valid_name(part) and '@' not in part for part in target.split('@'))):
+            raise ShipError('forward must map old seat names to seat@ship addresses')
+    return dict(table)
 
 
 def _carry_bytes(value: object) -> int:
@@ -477,6 +490,12 @@ def _validate(ship: Ship) -> None:
                 "operations", "systems", "security", "lead", "reviewer", "orchestrator", "ring"}
         if any(seat.role in crew for seat in ship.seats.values()) or ship.groups or ship.cascade:
             raise ShipError('an office has no captain or crew, groups or cascade; declare only the desk and office seats')
+
+    for name, target in ship.forward.items():
+        if name in ship.groups or name in ('ship', ship.operator.lower()):
+            raise ShipError('forward names an old seat, not a group or silent sink')
+        if target.rsplit('@', 1)[1] == ship.folder.name:
+            raise ShipError('forward names a seat of another ship')
 
     for group in ship.groups.values():
         if group.name in ship.seats or group.name.lower() in (ship.operator.lower(), 'ship'):

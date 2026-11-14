@@ -22,6 +22,7 @@ class Thread:
     messages: tuple[post.Message, ...]  # those the reader sent or received, a refused one as its notice
     others: tuple[str, ...] = ()  # '<kind> <id>' of the thread's other messages: that they exist, nothing more
     continuations: tuple[str, ...] = ()  # delivered recovery continuations among messages, labelled when printed
+    forwards: tuple[str, ...] = ()
 
 
 def party(message: post.Message, seat: str) -> bool:
@@ -148,7 +149,13 @@ def whole(store: post.Store, reference: str, reader: str) -> Thread:
     others = tuple(f'{message.kind} {message.id}' for message in ordered if not party(message, reader))
     shown = tuple(post._shown(message, withheld) for message in mine)
     visible = [message for message, masked in zip(mine, shown) if masked is message]  # a refused one stays its notice
-    return Thread(root.id, requested.id, shown, others, delivered_continuations(store, reader, visible))
+    from .forward_post import recorded
+    forwards = []
+    for message in mine:
+        route = recorded(store.dir.parent.parent, message.id)
+        if route:
+            forwards.append(f"{message.short}: {route['from']} forwarded to {route['to']}")
+    return Thread(root.id, requested.id, shown, others, delivered_continuations(store, reader, visible), tuple(forwards))
 
 
 def render(thread: Thread) -> str:
@@ -157,6 +164,7 @@ def render(thread: Thread) -> str:
     if thread.others:
         head += f'; {len(thread.others)} more in it, named below by id only'
     parts = [head + '\n']
+    parts += [f'qd > {route}\n' for route in thread.forwards]
     for message in thread.messages:
         if message.id in thread.continuations:
             parts.append(CONTINUATION_LABEL + '\n')

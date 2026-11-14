@@ -761,7 +761,7 @@ def cmd_post(args: argparse.Namespace) -> str:
         return (f'{root.short} to group {to} · request to {root.to} · '
                 f'{len(copies)} body-identical copies stored · common id {root.id} · '
                 f'{delivery_note(ship, root.to)}')
-    if to not in ship.seats and to not in (ship.operator.lower(), post.SHIP):
+    if to not in ship.seats and to not in ship.forward and to not in (ship.operator.lower(), post.SHIP):
         raise ShipError(f"no seat {to!r} to address; declared: {', '.join(ship.seats)}, "
                         f"the operator {ship.operator.lower()}, or {post.SHIP} for the ship's own notices")
     message = store.new(args.kind, sender, to, body, re=args.re, subject=args.subject, due=args.due, speed=args.speed)
@@ -809,6 +809,8 @@ def _post_view_restricted(ship: shipmod.Ship) -> bool:
 
 
 def delivery_note(ship: shipmod.Ship, to: str) -> str:
+    if to in ship.forward:
+        return f'forwarded to {ship.forward[to]}; waiting for the addressee ship to fetch it'
     if to not in ship.seats:
         return "addressed to the operator; read it with qd inbox"
     if _post_view_restricted(ship):  # law: record-first

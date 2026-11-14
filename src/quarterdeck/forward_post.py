@@ -1,0 +1,162 @@
+"""Recorded forwarding routes; original posts and their addresses remain bytes."""
+
+from dataclasses import replace
+from functools import lru_cache
+import json
+from pathlib import Path
+import tomllib
+
+from . import ship as shipmod
+from .ship import ShipError
+
+
+@lru_cache(maxsize=64)
+def _declaration(folder, stamp):
+    data = tomllib.loads((Path(folder) / 'ship.toml').read_text())
+    return shipmod._forward(data.get('forward', {}))
+
+
+def declared(runtime):
+    path = runtime.parent / 'ship.toml'
+    try:
+        s = path.stat()
+    except FileNotFoundError:
+        return {}
+    return _declaration(str(path.parent), (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns))
+
+
+def path(runtime, identifier):
+    return runtime / 'post' / 'forwarded' / (identifier + '.json')
+
+
+def recorded(runtime, identifier):
+    from . import fleet_post as transport
+    imported = transport.provenance(runtime, identifier)
+    if imported and imported.get('forward'):
+        return imported['forward']
+    try:
+        return json.loads(transport.stable_bytes(path(runtime, identifier)))
+    except FileNotFoundError:
+        return None
+
+
+def resolve(ship, value):
+    from .fleet import peers
+    from .fleet_post import address
+    fleet, trail = peers(ship), []
+    seat, name = address(value, ship.folder.name)
+    current = f'{seat}@{name}'
+    while current not in trail:
+        trail.append(current)
+        seat, name = address(current, ship.folder.name)
+        if name not in fleet:
+            raise ShipError(f'forward destination {name} unavailable; message retained')
+        target_ship = fleet[name]
+        target = target_ship.forward.get(seat)
+        if target is None:
+            if seat not in target_ship.seats and seat not in (target_ship.operator.lower(), 'ship'):
+                raise ShipError(f'forward destination {current} has no seat; message retained')
+            return trail
+        current = target
+    raise ShipError('forward route has a loop; message retained')
+
+
+def projected(runtime, message):
+    """Only a saved route changes historical party identity; a declaration hides old dispatch now."""
+    from .fleet_post import address, owner
+    here = owner(runtime)
+    if here is None:
+        return message
+    saved = recorded(runtime, message.id)
+    if saved:
+        seat, name = address(message.to, here)
+        if f'{seat}@{name}' == saved['from']:
+            target, destination = address(saved['to'], here)
+            return replace(message, to=target if destination == here else saved['to'])
+        return message
+    target = declared(runtime).get(message.to)
+    return replace(message, to=target) if target else message
+
+
+def stamp(runtime):
+    """A route/declaration change invalidates an existing Store's derived views."""
+    result = []
+    for item in (runtime.parent / 'ship.toml', runtime / 'post' / 'forwarded'):
+        try:
+            s = item.stat()
+            result.append((s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns))
+        except FileNotFoundError:
+            result.append(None)
+    return tuple(result)
+
+
+def pin(ship, message):
+    from . import fleet_post as transport, post
+    raw, data = transport._source(ship, message.id)
+    trail = resolve(ship, raw.to)
+    saved = recorded(ship.runtime, message.id)
+    if saved:
+        if saved['via'] != trail or saved['sha256'] != transport.digest(data):
+            raise ShipError('forward route changed after publication; original route retained')
+        return saved
+    if len(trail) == 1:
+        return None
+    from .fleet import peers
+    fleet = peers(ship)
+    for old in trail[:-1]:
+        _, name = transport.address(old, ship.folder.name)
+        latest = post.Attempts(fleet[name].runtime).for_message(message.id)
+        if latest and latest[-1].result not in ('delivered', 'watch'):
+            raise ShipError('old address has an unresolved delivery; forwarding held')
+    seat, origin = transport.address(raw.to, ship.folder.name)
+    if origin == ship.folder.name:
+        with post.admission(ship.runtime, seat):
+            latest = post.Attempts(ship.runtime).for_message(message.id)
+            if latest and latest[-1].result not in ('delivered', 'watch'):
+                raise ShipError('old address has an unresolved delivery; forwarding held')
+            saved = dict(format=1, id=message.id, sha256=transport.digest(data),
+                         **{'from': trail[0], 'to': trail[-1], 'via': trail})
+            transport.publish(path(ship.runtime, message.id), transport.encoded(saved))
+    else:
+        saved = dict(format=1, id=message.id, sha256=transport.digest(data),
+                     **{'from': trail[0], 'to': trail[-1], 'via': trail})
+        transport.publish(path(ship.runtime, message.id), transport.encoded(saved))
+    return saved
+
+
+def target(ship, message):
+    saved = recorded(ship.runtime, message.id)
+    if saved:
+        return saved['to']
+    if '@' not in message.to and message.to not in ship.forward:
+        return message.to
+    return resolve(ship, message.to)[-1]
+
+
+def prepare(runtime, message):
+    if message.to in declared(runtime):
+        from .fleet_post import prepare_outbound
+        prepare_outbound(runtime)
+
+
+def receive(runtime, entry, raw, data, *, adopt=False):
+    """Validate the route carried with this immutable file before making it visible."""
+    from . import fleet_post as transport
+    saved = entry.get('forward')
+    if not saved:
+        return
+    seat, origin = transport.address(raw.to, entry['origin'])
+    if (saved.get('format') != 1 or saved.get('id') != raw.id
+            or saved.get('sha256') != transport.digest(data)
+            or saved.get('from') != f'{seat}@{origin}'
+            or not isinstance(saved.get('via'), list) or len(saved['via']) < 2
+            or saved['via'][0] != saved['from'] or saved['via'][-1] != saved.get('to')
+            or len(set(saved['via'])) != len(saved['via'])):
+        raise ShipError('forward provenance does not match the original post')
+    for value in saved['via']:
+        transport.address(value, entry['origin'])
+    if adopt and entry['origin'] == runtime.parent.name and not path(runtime, raw.id).exists():
+        if resolve(shipmod.load(runtime.parent), raw.to) != saved['via']:
+            raise ShipError('own forwarded ancestry differs from its declared route; retained')
+    if adopt:
+        transport.publish(path(runtime, raw.id), transport.encoded(saved))

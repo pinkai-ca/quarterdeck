@@ -192,6 +192,8 @@ class Store:
         if '@' in message.to:
             from .fleet_post import prepare_outbound
             prepare_outbound(self.dir.parent.parent)
+        from .forward_post import prepare
+        prepare(self.dir.parent.parent, message)
         path = self.dir / f"{message.id}.json"
         if post_dir.exists(path):
             raise ShipError(f"{message.id} exists; messages are immutable")  # law: post-is-files
@@ -219,7 +221,9 @@ class Store:
                 self._cache = None
                 return [], {}
             checked = time.time_ns()
-            stamp = (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns)
+            from .forward_post import stamp as forwarding_stamp
+            stamp = (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns,
+                     forwarding_stamp(self.dir.parent.parent))
             if (self._cache is None or self._cache[0] != stamp or cached_at is None
                     or not cached_at <= started <= checked):
                 with os.scandir(self.dir) as entries:
@@ -254,7 +258,9 @@ class Store:
         try:
             info = os.fstat(descriptor)
             checked = time.time_ns()
-            stamp = (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns)
+            from .forward_post import stamp as forwarding_stamp
+            stamp = (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns,
+                     forwarding_stamp(self.dir.parent.parent))
             if (self._cache is None or self._cache[0] != stamp or cached_at is None
                     or not cached_at <= started <= checked):
                 paths = post_dir.json_paths(self.dir)
