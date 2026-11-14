@@ -78,13 +78,15 @@ def test_groups_and_ordinary_drops_share_the_same_window(tmp_path, caller, monke
 
 
 @pytest.mark.parametrize('caller', ['full', 'slice'])
-def test_full_unfileable_window_is_named_immediately_and_following_seat_files(tmp_path, caller):
+@pytest.mark.parametrize('unfileable', ['skipped', 'bad'])
+def test_full_unfileable_window_is_named_immediately_and_following_seat_files(tmp_path, caller, unfileable):
     runtime = tmp_path / 'runtime'
     folder = post.drop_dir(runtime, 'first')
     folder.mkdir(parents=True)
     # Skipped group intent names without a group caller exercise a no-progress window.
     for number in range(post.DROP_MAX_FILES):
-        (folder / f'ordinary-{number}.group.json').write_text('{}')
+        suffix = '.group.json' if unfileable == 'skipped' else '.json'
+        (folder / f'ordinary-{number}{suffix}').write_text('ordinary non-message')
     store = post.Store(runtime)
     messages, paths = queue(store, 1, sender='z-last')
     file(store, caller)
@@ -163,3 +165,31 @@ def test_status_listing_stops_at_the_window_before_stat_without_message_reads(tm
     assert lines == []
     assert not (runtime / 'post/drop-holds').exists(), 'status must not publish round counters'
     assert all('ordinary-' not in line and 'private' not in line for line in lines)
+
+
+@pytest.mark.parametrize('caller', ['full', 'slice'])
+def test_group_root_waits_for_an_intent_outside_this_rounds_window(tmp_path, caller, monkeypatch):
+    template = Path(__file__).parents[2] / 'ships/forum/ship.toml'
+    (tmp_path / 'ship.toml').write_text(template.read_text())
+    ship = shipmod.load(tmp_path)
+    store = post.Store(ship.runtime)
+    root, _ = group_post.stage(ship, store, 'reviewers', 'lead', 'ordinary group task')
+    _, paths = queue(store, 127, sender='lead')
+    folder = post.drop_dir(ship.runtime, 'lead')
+    listing = post_dir.list_children
+    first = [True]
+    def selected(directory, **kwargs):
+        if Path(directory) == folder and kwargs.get('limit') == post.DROP_MAX_FILES and first[0]:
+            first[0] = False
+            entries = listing(directory)
+            return sorted((name, mode) for name, mode in entries if not name.endswith('.group.json'))
+        return listing(directory, **kwargs)
+    monkeypatch.setattr(post_dir, 'list_children', selected)
+    file(store, caller, ship)
+    assert root.id not in {message.id for message in store.all()}
+    assert (folder / (root.id + '.json')).exists()
+    assert (folder / (root.id + '.group.json')).exists()
+    assert not any(path.exists() for path in paths)
+    file(store, caller, ship)
+    assert store.get(root.id) == root
+    assert not list(folder.iterdir())
