@@ -299,6 +299,32 @@ class Slot:
             self.fds, self.selected, self.held = [], None, []
 
 
+def run_holds_slot(root: Root, run: str) -> bool:
+    """An older tool may not hold the new result-directory guard yet."""
+    for index in range(SLOT_COUNT):
+        name = SLOT if index == 0 else f'slot-{index + 1}.lock'
+        try:
+            fd = os.open(name, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=root.fd)
+        except FileNotFoundError:
+            continue
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+                raise Refused(f'{root.path / name}: not this user\'s regular slot file')
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                try:
+                    data = json.loads(os.pread(fd, 4096, 0))
+                except ValueError:
+                    continue
+                if isinstance(data, dict) and data.get('verb') == 'run' and data.get('run') == run:
+                    return True
+        finally:
+            os.close(fd)
+    return False
+
+
 class RunBusy(Refused):
     """This exact run is still using or retiring its own control directory."""
 
@@ -308,9 +334,12 @@ class RunGuard:
 
     def __init__(self, root: Root, run: str, *, create=False):
         self.run = run_name(run)
+        self.root, self.owner = root, create
         self.fd = root.child(RESULTS, self.run, create=create)
 
     def acquire(self) -> None:
+        if not self.owner and run_holds_slot(self.root, self.run):
+            raise RunBusy(f'run {self.run}: its run slot is still held; left alone')
         try:
             fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:

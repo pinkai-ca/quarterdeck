@@ -51,7 +51,8 @@ def holders(tmp_path):
         return p, stop
     yield context, entered, start, workers
     for p, stop in workers:
-        stop.set()
+        if p.is_alive():
+            stop.set()  # a terminated waiter may have died with its Event condition locked
     for p, stop in workers:
         p.join(5)
         if p.is_alive():
@@ -137,4 +138,24 @@ def test_result_directory_guards_are_per_run_and_cover_setup_before_state(tmp_pa
             first.release()
         second.release()
         competing.release()
+        root.close()
+
+
+def test_a_legacy_live_run_slot_holds_recovery_before_its_state_exists(tmp_path):
+    root = root_at(tmp_path)
+    run = '20000101-000000-0003'
+    pool = layout.Slot(root)
+    guard = layout.RunGuard(root, run, create=True)
+    try:
+        pool.acquire({'verb': 'run', 'run': run})
+        guard.acquire()
+        guard.release()
+        guard = None
+        assert layout.run_active(root, run), 'the old slot note plus its live lock is positive run evidence'
+        pool.release()
+        assert not layout.run_active(root, run)
+    finally:
+        if guard is not None:
+            guard.release()
+        pool.release()
         root.close()
