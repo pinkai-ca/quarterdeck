@@ -365,6 +365,7 @@ class Seat:
     def __init__(self, ship: Ship, spec: SeatSpec, tmux: Tmux, *, launching: bool = False):
         self.ship, self.spec, self.tmux = ship, spec, tmux
         self._declaration = replace(spec, human_session=self.session.human)
+        self.defer_opening = False  # service-owned seats advance the opening on later passes
         # A launch of a seat with no launch on file reads a saved choice the ship file no longer declares as
         # absent, so the declared order chooses (``launch_choice``); every other reader still refuses it.
         self._launching = launching and not trusted_files.path(ship.runtime, spec.name, trusted_files.LAUNCH).exists()
@@ -1240,7 +1241,7 @@ class Seat:
         if launch.deferred_opening is not None:
             from . import launch_opening
             try:
-                launch_opening.prepare(self, launched, launch.deferred_opening)
+                launch_opening.prepare(self, launched, launch.deferred_opening, carried=carried)
             finally:
                 # Even failed journal publication leaves the live pane owned,
                 # with a missing-journal hold rather than an unrecorded program.
@@ -1259,9 +1260,9 @@ class Seat:
             self.record()  # retain the resumed record's new pool boundary immediately
         self._survives(pane.id, launch.argv[0])
         if launch.deferred_opening is not None:
-            launched = launch_opening.deliver(self, launched)
+            launched = self._deliver_opening(launched)
         attempts = post.Attempts(self.ship.runtime)
-        for message in carried:
+        for message in (() if launch.deferred_opening is not None else carried):
             attempt = attempts.open(message, self.name, pane.id, pane.pid, launched.at)
             attempts.close(attempt, "launch", IN_HAND_LAUNCH_DETAIL if carriage.in_hand
                            else post_threads.INDEXED_LAUNCH_DETAIL)
@@ -1276,6 +1277,10 @@ class Seat:
         if started := getattr(self, "server_started", None):
             unchecked_note += f" · {started}"
         return f"{self.name} up in {pane.id} · {self.harness.name} {launched.version or ''} · provider {providers.display(pool.provider)} · pool {pool.name} · {how}{carried_note}{jail_note}{notice_note}{unchecked_note}"
+
+    def _deliver_opening(self, launched):
+        from . import launch_opening
+        return launched if self.defer_opening else launch_opening.deliver(self, launched)
 
     def _resume_target(self) -> resume_target.Target | None:
         from .record_location import retired

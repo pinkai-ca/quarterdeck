@@ -133,6 +133,7 @@ class Door:
         self.captured_pane = None
         self.human_wake = False
         self.opening_owner = None
+        self.observation_seconds = BOX_SECONDS
         self.since = datetime.now(timezone.utc)
 
     def screen(self) -> Screen | None:
@@ -916,7 +917,7 @@ class Door:
 
     def settled(self, seconds: float = BOX_SECONDS) -> Screen | None:
         """The screen once the program has stopped working, or the last screen seen."""
-        deadline = time.monotonic() + seconds
+        deadline = time.monotonic() + (self.observation_seconds if seconds is None else seconds)
         while True:
             screen = self.screen()
             if screen is None or screen.working is False or time.monotonic() > deadline:
@@ -949,9 +950,9 @@ class Door:
         columns = self.harness.box_columns_for_screen(pane.width, screen)
         return held_box_matches(box.text, self.harness.box_comparison(screen, pane.width), columns, pane.width)
 
-    def activity_screen(self, seconds: float = BOX_SECONDS) -> Screen | None:
+    def activity_screen(self, seconds: float | None = None) -> Screen | None:
         """Wait through a redraw, without acting on an unreadable intermediate frame."""
-        deadline = _clock() + seconds
+        deadline = _clock() + (self.observation_seconds if seconds is None else seconds)
         while True:
             screen = self.screen()
             if (screen is not None and (screen.working is not None or self.adapter_obstruction(screen))
@@ -959,13 +960,15 @@ class Door:
                 return screen
             _sleep(SETTLE_SECONDS)
 
-    def box_shows(self, box, seconds: float = PASTE_SHOWN_SECONDS) -> Screen | None:
+    def box_shows(self, box, seconds: float | None = None) -> Screen | None:
         """The screen once the box shows the paste as the program folds it, or the last screen seen.
 
         It waits for that event, reading only (nothing is typed, resent or cleared while it waits), and stops early
         on a box that cannot become the message, read so twice in a row, or at ``seconds`` for safety. A wait past
         BOX_SECONDS is logged with its length and the seat's program, so a program's slow draws are seen."""
         began = _clock()
+        if seconds is None:
+            seconds = 0 if self.observation_seconds == 0 else PASTE_SHOWN_SECONDS
         deadline = began + seconds
         foreign = None
         while True:

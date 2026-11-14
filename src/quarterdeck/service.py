@@ -317,7 +317,7 @@ class Service:
         # under its own name: the drain and the status work between duties too, so neither reads as the duty before.
         self.loop_stamp('drain')
         self._drain_between_duties()
-        for step in (self.server_recovery, self.relaunch_intents, self.reconcile, self.file_drops, self.groups, self.cascades, self.fleet_post, self.inboxes, self.views, self.recoveries, self.refusals, self.set_asides, self.answers, self.looks, self.jailed_watches, self.write_bound_floor, self.deliveries, self.follow, self.requests, self.fresh_handoffs, self.compactions, self.output_limits, self.person_quiet, self.fresh_after_order,
+        for step in (self.server_recovery, self.relaunch_intents, self.reconcile, self.file_drops, self.groups, self.cascades, self.fleet_post, self.inboxes, self.views, self.recoveries, self.refusals, self.set_asides, self.answers, self.looks, self.jailed_watches, self.write_bound_floor, self.launch_openings, self.deliveries, self.follow, self.requests, self.fresh_handoffs, self.compactions, self.output_limits, self.person_quiet, self.fresh_after_order,
                      self.rebrief, self.push_reminders, self.credentials, self.authentications, self.model_differences, self.failover, self.retire_hand_transcripts, self.account, self.refresh_usage, self.pool_forecasts, self.record_growth, self.retire_post):
             self.loop_stamp(step.__name__)  # a slow duty reads as busy, then stuck, never as ok; the beat thread
             self.heartbeat()  # proves only that the process is alive, never that this loop is moving
@@ -645,7 +645,9 @@ class Service:
             f.write(json.dumps({"at": datetime.now().astimezone().isoformat(timespec="seconds"), "event": event, **data}) + "\n")
 
     def seat(self, name: str) -> Seat:
-        return Seat(self.ship, self.ship.seat(name), self.tmux)
+        seat = Seat(self.ship, self.ship.seat(name), self.tmux)
+        seat.defer_opening = True
+        return seat
 
     def refresh_ship(self) -> None:
         """Read the service's own ship again when its file changed since this pass loaded it; else keep it."""
@@ -719,6 +721,7 @@ class Service:
                 from . import alarms
                 if alarms.path(self.runtime, seat.name, 'selection').exists():
                     alarms.notify(self, seat.name, seat.session.human, None, None, channel='selection')
+                seat.defer_opening = True
                 found.append(seat)
         return found
 
@@ -828,6 +831,20 @@ class Service:
                 watch_broker.run(self, seat)
             except Exception as error:
                 self.log('error', step='watch_broker', seat=seat.name, error=repr(error))
+
+    def launch_openings(self) -> None:
+        """Observe each reserved opening once; startup never sleeps in a service pass."""
+        from . import launch_opening, lifecycle
+        for seat in self.resolved_seats():
+            if not getattr(seat.harness, 'requires_deferred_opening', False) or not seat.is_up:
+                continue
+            try:
+                with lifecycle.claim(self.runtime, seat.name):
+                    launch_opening.advance(seat)
+            except lifecycle.Busy:
+                continue
+            except (ShipError, OSError, TmuxError) as error:
+                self.log('opening held', seat=seat.name, reason=str(error))
 
     def deliveries(self) -> None:
         with post.reader_scope(store=self.store, attempts=self.attempts):
@@ -1822,6 +1839,7 @@ class Service:
                         self.request_wait = (hold.dimension, hold.reason)
                     return None  # deferred-request answers/lifetime are separate; the reason is shared
         from . import relaunch_intent
+        seat.defer_opening = True
         with relaunch_intent.section(self, seat, 'relaunch', resume=resume):
             if resume:
                 proof = seat.restart()

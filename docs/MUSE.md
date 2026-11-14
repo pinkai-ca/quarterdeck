@@ -48,7 +48,11 @@ holds all input. The setting is named in the launch notice.
 Muse starts without a prompt. Its launch-opening journal is bound to pane,
 process and launch before publication; only that verified owner can bypass
 its own opening hold for one ordinary Door delivery. Carried attempts close
-only on exact confirmation. A failed or unconfirmed opening remains held,
+only on exact confirmation. The service publishes the reserved opening and returns;
+subsequent passes observe startup once, submit once through the Door without
+polling, then read the record once per pass. The CLI may wait for startup and
+confirmation. Both paths use the same journal; neither retries a transport.
+A failed or unconfirmed opening remains held,
 without retry or a second queue. Startup observation is bounded by the normal
 startup deadline.
 
@@ -143,8 +147,9 @@ it changes no crew brief or ordinary launch. Its native proof remains pending.
 
 The adapter's obstruction methods default to no action in every other harness.
 Unknown activity stays unknown through Door, watch, service and interrupt
-callers. A saved launch with no resolved owned pane reads unknown, while a
-known dead pane or a seat without a launch reads off. Relaunch and in-session
+callers. An absent pane reads off even if its last launch remains saved;
+an unreadable live pane still holds. The follow view starts from not working
+before a fresh launch's first record, so its first turn is shown. Relaunch and in-session
 controls require an explicit idle answer. Main's unread-screen journal evidence remains in front of the
 unknown-activity hold. Exact receipts retain the current launch's join
 provenance and every delivered form recognized by the shared receipt owner.
