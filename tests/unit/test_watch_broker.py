@@ -164,5 +164,5 @@ def test_a_human_seat_without_a_brokered_watch_is_not_touched(tmp_path: Path):
     svc = service(runtime)
     svc.store.new('order', 'captain', 'desk', 'waiting')
     watch_broker.run(svc, SimpleNamespace(name='desk', ship=SimpleNamespace(runtime=runtime)))
-    assert svc.logged == [] and not (runtime / 'post' / 'admission').exists()
+    assert svc.logged == [] and not watch_broker.offer_path(runtime, 'desk').exists()
     assert svc.attempts.for_message(svc.store.all()[0].id) == []

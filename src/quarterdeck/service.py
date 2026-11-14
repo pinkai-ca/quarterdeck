@@ -231,7 +231,7 @@ class Service:
     def _tick_steps(self):
         # Operational duties keep their order and never wait behind the slice.
         self.drain_accounting()
-        for step in (self.server_recovery, self.reconcile, self.file_drops, self.groups, self.cascades, self.fleet_post, self.inboxes, self.views, self.recoveries, self.refusals, self.answers, self.looks, self.deliveries, self.follow, self.requests, self.compactions, self.person_quiet, self.fresh_after_order,
+        for step in (self.server_recovery, self.reconcile, self.file_drops, self.groups, self.cascades, self.fleet_post, self.inboxes, self.views, self.recoveries, self.refusals, self.answers, self.looks, self.jailed_watches, self.deliveries, self.follow, self.requests, self.compactions, self.person_quiet, self.fresh_after_order,
                      self.rebrief, self.push_reminders, self.credentials, self.authentications, self.model_differences, self.failover, self.account, self.refresh_usage, self.pool_forecasts, self.retire_post):
             self.heartbeat()  # before every step: a slow delivery or usage read reads as busy, never as dead
             try:
@@ -407,6 +407,17 @@ class Service:
         from . import refusal
         refusal.run(self)
 
+    def jailed_watches(self) -> None:
+        """A jailed watch's attempts, opened and closed on its behalf; each seat alone, before the deliveries."""
+        from . import watch_broker
+        for seat in self.resolved_seats():
+            if not seat.session.human or seat.name in getattr(self.ship, 'forward', {}):
+                continue
+            try:
+                watch_broker.run(self, seat)
+            except Exception as error:
+                self.log('error', step='watch_broker', seat=seat.name, error=repr(error))
+
     def deliveries(self) -> None:
         with post.reader_scope(store=self.store, attempts=self.attempts):
             results = self.attempts.latest()
@@ -417,11 +428,6 @@ class Service:
                     from . import human_wake, turn_failure
                     from .auth_failure import status as authentication_status, waiting as authentication_waiting
                     phase = 'ownership'
-                    try:
-                        from . import watch_broker
-                        watch_broker.run(self, seat)  # a jailed watch's attempts, opened and closed on its behalf
-                    except Exception as error:
-                        self.log('error', step='watch_broker', seat=seat.name, error=repr(error))
                     try:
                         signin = authentication_status(seat)  # a sign-in failure the waking line may cure reads as waiting
                         if seat.is_up and not (recovery.held(seat) or signin and not authentication_waiting(signin)

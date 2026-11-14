@@ -95,7 +95,7 @@ def test_next_tick_follows_session_in_ship_file_both_ways_once(case, running):
         case.up.add(case.spec.name)
     # Exercise the real tick reload and rebrief; every unrelated duty is inert.
     for name in ('reconcile', 'file_drops', 'account', 'groups', 'cascades', 'fleet_post', 'inboxes', 'recoveries',
-                 'refusals', 'looks', 'deliveries', 'follow', 'requests', 'compactions',
+                 'refusals', 'looks', 'jailed_watches', 'deliveries', 'follow', 'requests', 'compactions',
                  'fresh_after_order', 'credentials', 'failover', 'heartbeat', 'status_due', 'retire_post', 'views'):
         setattr(service, name, lambda: None)
     service.structure_passes = SimpleNamespace(begin=lambda: None, finish=lambda: None)
