@@ -775,6 +775,9 @@ class Attempts:
             if cached is None or cached[0] != stamp:
                 path = self.dir / name
                 cached = stamp, Attempt(**json.loads(post_dir.read_text(path)), path=path)
+                # Retain parsed work even if a retirement slice ends mid-scan.
+                # Re-list and re-stat on every call; this cache is no snapshot.
+                self._cache[name] = cached
             current[name] = cached
         # A failed scan/read must propagate, never certify a partial snapshot.
         self._cache = current
