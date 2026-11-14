@@ -373,7 +373,7 @@ class Service:
     def deliveries(self) -> None:
         results = self.attempts.latest()
         for seat in self.resolved_seats():
-            if seat.name in self.ship.forward:
+            if seat.name in getattr(self.ship, 'forward', {}):
                 continue  # declared forwarding disables dispatch at the old address
             if seat.session.human:
                 from . import human_wake, turn_failure

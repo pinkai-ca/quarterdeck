@@ -258,7 +258,7 @@ def validate_target(ship, value):
     if target not in fleet:
         raise ShipError(f'no ship {target!r} in this project')
     destination = fleet[target]
-    if seat not in destination.seats and seat not in (destination.operator.lower(), 'ship'):
+    if seat not in destination.seats and seat not in destination.forward and seat not in (destination.operator.lower(), 'ship'):
         raise ShipError(f'no seat {seat!r} in ship {target}')
     return seat, target
 

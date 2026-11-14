@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from quarterdeck import fleet_post as fleet, post, post_threads, ship as shipmod
+from quarterdeck import cli, fleet_post as fleet, post, post_threads, ship as shipmod
 from tests.unit.test_fleet_post import pair, wire
 
 
@@ -85,6 +85,18 @@ def test_a_forwarding_route_can_return_to_another_seat_on_its_origin_ship(pair):
     assert source.open_for('writer')[0].id == order.id
     assert len(source.all()) == 1 and destination.all() == []
     assert json.loads(wire(left, order))['to'] == 'captain@beta'
+
+
+def test_cli_accepts_a_retired_name_qualified_by_its_old_ship(pair, monkeypatch, capsys):
+    left, right, source, destination = pair
+    right = forward(right, 'retired-seat', 'writer@alpha')
+    monkeypatch.delenv('QD_SEAT', raising=False)
+    assert cli.main(['--ship', str(left.folder), 'post', 'question', '--from', 'writer',
+                     '--to', 'retired-seat@beta', 'Reach the declared new address.']) == 0
+    capsys.readouterr()
+    fleet.run(left, source)
+    question, = source.for_seat('writer')
+    assert question.to == 'writer' and json.loads(wire(left, question))['to'] == 'retired-seat@beta'
 
 
 @pytest.mark.parametrize('table', ['[forward]\ncaptain=42', '[forward]\ncaptain="bare"',
