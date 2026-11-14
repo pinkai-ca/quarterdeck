@@ -481,3 +481,34 @@ def test_plan_refuses_to_bind_the_operators_ssh_folder(tmp_path: Path, drydock: 
     seat = ship.runtime / "seats" / "w"
     with pytest.raises(ShipError, match=r"is the operator's ~/.ssh or lies inside it"):
         sandbox.plan(ship, "w", seat, seat / "home", home / "work", "pi", f"{entry}{os.pathsep}{path}", home=home)
+
+
+def test_plan_refuses_an_ssh_folder_that_leads_outside_the_home(tmp_path: Path, drydock: Path, monkeypatch):
+    """The home's hiding covers ~/.ssh only where it lies: a link out of the home is refused."""
+    ship = shipmod.load(drydock)
+    home = tmp_path / "home"
+    path = install(home)
+    (home / "work").mkdir()
+    outside = tmp_path / "elsewhere" / "ssh"
+    outside.mkdir(parents=True)
+    (home / ".ssh").symlink_to(outside)
+    monkeypatch.setattr(sandbox, "available", lambda: True)
+    seat = ship.runtime / "seats" / "w"
+    with pytest.raises(ShipError, match=r"~/.ssh leads outside the home"):
+        sandbox.plan(ship, "w", seat, seat / "home", home / "work", "pi", path, home=home)
+
+
+def test_plan_refuses_a_bound_folder_that_holds_the_ssh_folders_target(tmp_path: Path, drydock: Path, monkeypatch):
+    """A folder the jail would bind that contains where ~/.ssh really lies is refused, whatever leads there."""
+    ship = shipmod.load(drydock)
+    home = tmp_path / "home"
+    path = install(home)
+    (home / "work").mkdir()
+    (home / "tools" / "keys").mkdir(parents=True)
+    (home / "tools" / "bin").mkdir()
+    (home / ".ssh").symlink_to(home / "tools" / "keys")  # inside the home, but within a folder the jail binds
+    monkeypatch.setattr(sandbox, "available", lambda: True)
+    seat = ship.runtime / "seats" / "w"
+    entry = os.pathsep.join([str(home / "tools"), path])
+    with pytest.raises(ShipError, match=r"holds the operator's ~/.ssh"):
+        sandbox.plan(ship, "w", seat, seat / "home", home / "work", "pi", entry, home=home)

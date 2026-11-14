@@ -266,8 +266,17 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
     jail = Jail(home, seat_home, seat_folder, workspace, ship.folder, ship.runtime, tuple(folders),
                 (drop, proof), git_identity(workspace), declarations, view, foreign, endpoint)
     ssh = Path(os.path.realpath(home / '.ssh'))
+    if os.path.lexists(home / '.ssh') and not ssh.is_relative_to(Path(os.path.realpath(home))):
+        # The home's hiding covers ~/.ssh only where it lies: a link out of the home would leave its keys and sockets
+        # wherever that place is shown.
+        raise ShipError(f"{seat_name}: sandboxed, and the operator's ~/.ssh leads outside the home ({ssh}); the jail "
+                        "hides ~/.ssh only as part of the home. Keep ~/.ssh a folder in the home, or run the seat open")
     for folder in (*jail.read_only, jail.workspace, *jail.writable):
         real = Path(os.path.realpath(folder))
+        if ssh.is_relative_to(real):
+            raise ShipError(f"{seat_name}: sandboxed, and {folder} ({real}) holds the operator's ~/.ssh ({ssh}); no "
+                            "jail binds it, since its sockets and keys reach the operator's servers. Keep the seat's "
+                            "programs, PATH and working directory away from it")
         if real == ssh or real.is_relative_to(ssh):
             # Its connection-sharing sockets give a server's session to anything that reaches them; no jail binds it.
             raise ShipError(f"{seat_name}: sandboxed, and {folder} is the operator's ~/.ssh or lies inside it "
