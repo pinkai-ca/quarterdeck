@@ -48,7 +48,7 @@ def test_new_listing_refreshes_the_index_and_preserves_short_ambiguity(tmp_path)
 
 def test_one_reference_that_is_also_the_full_id_names_one_message(tmp_path):
     store = post.Store(tmp_path)
-    message = item('ord-cafe')
+    message = item('ref-fixture')
     store.write(message)
     assert message.id == message.short
     assert store.get(message.id) == message
