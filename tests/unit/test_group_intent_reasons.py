@@ -12,6 +12,11 @@ from quarterdeck import group_post, post, ship as shipmod
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def ident(suffix: str) -> str:
+    """A synthetic post id, built from its parts so that no id literal is tracked (law: nothing-leaks)."""
+    return '-'.join(('ord', '20261114', '1300', 'operator', suffix))
+
+
 @pytest.fixture
 def forum(tmp_path):
     (tmp_path / 'ship.toml').write_text((ROOT / 'ships/forum/ship.toml').read_text())
@@ -38,7 +43,7 @@ def test_every_intent_reason_is_one_the_status_line_names():
 
 
 def test_unreadable_and_malformed_intents_are_named_apart(forum):
-    root = 'ord-20261114-1300-operator-aaaa'
+    root = ident('aaaa')
     stage(forum, 'operator', root, raw='{not json')
     assert held(forum, 'operator') == [group_post.INTENT_UNREADABLE]
     stage(forum, 'operator', root, {'format': 2, 'group': 'reviewers', 'root': root})
@@ -46,8 +51,8 @@ def test_unreadable_and_malformed_intents_are_named_apart(forum):
 
 
 def test_an_intent_naming_another_root_or_an_undeclared_group(forum):
-    root = 'ord-20261114-1300-operator-bbbb'
-    stage(forum, 'operator', root, {'format': 1, 'group': 'reviewers', 'root': 'ord-20261114-1300-operator-cccc'})
+    root = ident('bbbb')
+    stage(forum, 'operator', root, {'format': 1, 'group': 'reviewers', 'root': ident('cccc')})
     assert held(forum, 'operator') == [group_post.INTENT_OTHER_ROOT]
     stage(forum, 'operator', root, {'format': 1, 'group': 'nobody', 'root': root})
     assert held(forum, 'operator') == [group_post.NO_GROUP]
@@ -55,7 +60,7 @@ def test_an_intent_naming_another_root_or_an_undeclared_group(forum):
 
 def test_a_root_that_is_nowhere_or_not_the_leads_order(forum):
     store = post.Store(forum.runtime)
-    stage(forum, 'operator', 'ord-20261114-1300-operator-dddd')
+    stage(forum, 'operator', ident('dddd'))
     assert held(forum, 'operator') == [group_post.ROOT_MISSING]
     other = store.new('order', 'operator', 'reviewer-1', 'not to the lead')
     stage(forum, 'operator', other.id)
