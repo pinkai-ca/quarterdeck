@@ -202,7 +202,8 @@ def refuse_embedded_office(project: Path) -> None:
                             "init and setup leave that ship untouched and create no second office")
 
 
-def init_office(args: argparse.Namespace, *, operations: Operations | None = None, start: bool = True) -> list[str]:
+def init_office(args: argparse.Namespace, *, operations: Operations | None = None, start: bool = True,
+                declaration: str | None = None) -> list[str]:
     """Copy only the office declarations, commit them, then use normal up for its desk."""
     operations = operations or Operations()
     project = operations.project_folder().resolve()
@@ -221,6 +222,8 @@ def init_office(args: argparse.Namespace, *, operations: Operations | None = Non
             files = {name: (source / name).read_text() for name in names}
         except (OSError, UnicodeError) as error:
             raise ShipError(f"office template unavailable ({type(error).__name__}); install this version's packaged resources") from None
+        if declaration is not None:
+            files["ship.toml"] = declaration
         ships._validate(ships._from_text(files["ship.toml"], folder))
         # law: one-folder
         # The fence's empty mount point is inside the project, where the office's
@@ -537,12 +540,24 @@ def run(args: argparse.Namespace, *, operations: Operations | None = None,
     operations = operations or Operations()
     conversation = conversation or conversation_for(args)
     text, orders, defaults = template()
+    office_path = office_folder(operations.project_folder())
+    office = ships.load(office_path) if (office_path / "ship.toml").exists() else None
+    if office is not None and office.kind != "office":
+        raise ShipError(f"{office_path} is not an office; resolve it before qd setup")
+    if office is not None or initialize_office:
+        orders = orders.replace("through the desk.", "through the office's desk (desk@office).")
     available = operations.discover(defaults)
     for name, (row, sign_in) in available.items():
         conversation.say(f"{row} · {sign_in}")
     while True:
-        proposal = setup_proposal.build(conversation, operations, text, orders, defaults, available)
-        data = setup_proposal.summary(proposal.ship, setup_proposal.display_control, existing=proposal.existing)
+        proposal = setup_proposal.build(conversation, operations, text, orders, defaults, available,
+                                        include_desk=office is None)
+        if initialize_office:
+            proposal = setup_proposal.separate_office(proposal, office_path)
+        elif office is not None and any(seat.role == "desk" for seat in proposal.ship.seats.values()):
+            raise ShipError("this ship still holds a desk; move it explicitly before using the office's crew wizard")
+        data = setup_proposal.summary(proposal.ship, setup_proposal.display_control, existing=proposal.existing,
+                                      office=proposal.office or office)
         for note in validate_declaration(proposal.ship):
             conversation.say(note)
         accepted = conversation.review(lambda: setup_proposal.render_summary(data))
@@ -559,7 +574,7 @@ def run(args: argparse.Namespace, *, operations: Operations | None = None,
     if initialize_office:
         start_office = conversation.choice("start", "Start the office and crew? Opening briefs may spend turns. yes or no",
                                            ("yes", "no"), "yes")
-        office_lines = init_office(argparse.Namespace(ship=None), operations=operations, start=start_office == "yes")
+        office_lines = init_office(argparse.Namespace(ship=None), operations=operations, start=start_office == "yes", declaration=proposal.office_text)
         for line in office_lines:
             conversation.say(line)
     folder = proposal.ship.folder
@@ -620,6 +635,7 @@ def run(args: argparse.Namespace, *, operations: Operations | None = None,
     if (reading.data.get("service") != "ok" or {row.name for row in observed} != set(ship.seats)
             or any(row.activity.state in unavailable for row in observed)):
         raise ShipError(f"crew readiness is not confirmed by status; resolve the status reasons and rerun {rerun} --check yes --start yes")
-    return finish([f"Desk access: {operations.access(ship)} (desk window)",
+    desk_ship = ships.load(office_path) if office is not None or initialize_office else ship
+    return finish([f"Desk access: {operations.access(desk_ship)} (desk window)",
             'First order to type at the desk: "Read this workspace and propose one useful next change."',
             f"Status: qd --ship {shlex.quote(str(folder))} status"])

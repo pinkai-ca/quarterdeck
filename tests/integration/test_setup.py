@@ -90,7 +90,7 @@ def test_setup_cli_prepares_copy_only_after_check_and_start_consent(
     result = cli.main(["setup", "--answers", str(answers)])
     output = capsys.readouterr()
     assert result == (2 if install_fails else 0)
-    assert ship.load(folder).seat("desk").harness == "codex"
+    assert set(ship.load(folder).seats) == {"captain", "engineering"}
     assert ship._git(folder, "status", "--porcelain") == ""
     expected = ["readiness"]
     if check == "yes":

@@ -24,6 +24,8 @@ class Proposal:
     edits: list
     existing: Ship | None
     mode: str
+    office: Ship | None = None
+    office_text: str | None = None
 
 
 def suggested(control) -> tuple[str, str | None]:
@@ -96,10 +98,11 @@ def keep_unchanged(c, ship: Ship) -> None:
         raise ShipError("answer programs changes a kept ship; choose existing=update")
 
 
-def build(conversation, operations, text: str, orders: str, defaults: dict, available: dict) -> Proposal:
+def build(conversation, operations, text: str, orders: str, defaults: dict, available: dict, *, include_desk: bool = True) -> Proposal:
     """Build/validate in memory. No create, update, readiness or native-version operation is allowed here."""
     from . import setup, ship as ships
     c = conversation
+    roles = ROLES if include_desk else tuple(role for role in ROLES if role != "desk")
     project = operations.project_folder().resolve()
 
     def ship_folder(value):
@@ -147,12 +150,10 @@ def build(conversation, operations, text: str, orders: str, defaults: dict, avai
             if office != saved_office:
                 raise ShipError("answer office changes a kept ship; choose existing=update")
             setup.validate_declaration(existing)
-            if "desk" not in existing.seats:
-                raise ShipError("existing ship has no desk seat; add one before rerunning setup")
             return Proposal(existing, existing.file.read_text(), orders, [], existing, mode)
         if office != saved_office:
             raise ShipError("answer office changes an existing session title; edit the declaration and apply its session change explicitly before rerunning setup; nothing was written")
-        for key in ("office", "bridge"):
+        for key in (("office", "bridge") if include_desk else ("bridge",)):
             if key not in existing.sessions:
                 raise ShipError(f"existing ship has no {key} session; use its own arrangement rather than setup's default crew")
     else:
@@ -170,13 +171,13 @@ def build(conversation, operations, text: str, orders: str, defaults: dict, avai
         raise ShipError("no registered program found on PATH; install a supported program before rerunning setup")
     if len(candidates) == 1:
         hints = harness.get(candidates[0]).setup_metadata()
-        if hints.seat_limit is not None and hints.seat_limit < len(ROLES):
+        if hints.seat_limit is not None and hints.seat_limit < len(roles):
             count = "one" if hints.seat_limit == 1 else str(hints.seat_limit)
             raise ShipError(f"{hints.display_name} is limited to {count} declared seat in setup; choose other programs for the remaining roles")
     preferred = sorted(candidates, key=lambda program: ("credential present" not in available[program][1], program))[0]
     c.say("Model and effort suggestions have not been checked against your account.")
     seats = {}
-    for role in ROLES:
+    for role in roles:
         saved = existing.seats.get(role) if existing else None
         sample = defaults["seats"][role]
         fields = {"name": c.ask(f"seats.{role}.name", f"{ROLE_LABELS[role]} name", saved.display if saved else sample.get("persona", role))}
@@ -217,7 +218,7 @@ def build(conversation, operations, text: str, orders: str, defaults: dict, avai
     selected = list(dict.fromkeys([fields["harness"] for fields in seats.values()] + (candidates if c.supplied("programs") is not MISSING else [])))
     pools, served = setup.pool_answers(c, selected, defaults, operations=operations, existing=existing)
     names, edits = {}, [("ship", "name", name), ("ship", "operator", operator), ("ship", "workspace", str(workspace))]
-    if not existing and office != "Office":
+    if include_desk and not existing and office != "Office":
         edits.append(("sessions.office", "title", office))
     pool_harnesses = {}
     if existing:
@@ -315,6 +316,8 @@ def build(conversation, operations, text: str, orders: str, defaults: dict, avai
                       (table, "session", "office" if role == "desk" else "bridge")]
     proposed_text = existing.file.read_text() if existing else text
     if not existing:
+        if not include_desk:
+            proposed_text = without_tables(proposed_text, ("seats.desk", "sessions.office"))
         proposed_text = setup.new_text(proposed_text, edits)
     else:
         setup.preview_update(existing, edits)
@@ -326,6 +329,48 @@ def build(conversation, operations, text: str, orders: str, defaults: dict, avai
         if pool.endpoint:
             setup.safe_endpoint(pool.endpoint)
     return Proposal(proposed, proposed_text, orders, edits, existing, mode)
+
+
+def without_tables(text: str, tables) -> str:
+    """Remove complete declaration tables, including any nested settings."""
+    from . import ship as ships
+    lines, omit = [], False
+    for line in text.splitlines():
+        if match := ships._HEADER.match(line):
+            section = match.group(1).strip()
+            omit = any(section == table or section.startswith(table + ".") for table in tables)
+        if not omit:
+            lines.append(line)
+    return "\n".join(lines) + "\n"
+
+
+def separate_office(proposal: Proposal, office_folder: Path) -> Proposal:
+    """Move the accepted desk declaration and its pools to the single office."""
+    from . import setup, ship as ships
+    raw = tomllib.loads(proposal.text)
+    office_text, _, _ = setup.template("office")
+    office_text = without_tables(office_text, ("pools", "seats.desk"))
+    office_text = ships.edit(office_text, "ship", "operator", proposal.ship.operator)
+    office_text = ships.edit(office_text, "sessions.office", "title",
+                             proposal.ship.session_of(proposal.ship.seat("desk")).title)
+    desk = {**raw["seats"]["desk"], "session": "office"}
+    for key, value in desk.items():
+        if key == "settings":
+            for setting, answer in value.items():
+                office_text = ships.edit(office_text, "seats.desk.settings", setting, answer)
+        else:
+            office_text = ships.edit(office_text, "seats.desk", key, value)
+    for name in proposal.ship.seat("desk").pools:
+        for key, value in raw["pools"][name].items():
+            office_text = ships.edit(office_text, f"pools.{name}", key, value)
+    office = ships._from_text(office_text, office_folder)
+    setup.validate_declaration(office)
+    crew_text = without_tables(proposal.text, ("seats.desk", "sessions.office"))
+    used = {pool for name, seat in proposal.ship.seats.items() if name != "desk" for pool in seat.pools}
+    crew_text = without_tables(crew_text, tuple(f"pools.{name}" for name in proposal.ship.pools if name not in used))
+    crew = ships._from_text(crew_text, proposal.ship.folder)
+    setup.validate_declaration(crew)
+    return Proposal(crew, crew_text, proposal.orders, proposal.edits, proposal.existing, proposal.mode, office, office_text)
 
 
 def git_root(folder: Path, flag: str) -> Path | None:
@@ -379,7 +424,7 @@ def local_endpoint(url: str) -> bool:
         return False
 
 
-def summary(ship: Ship, display_control, *, existing: Ship | None = None) -> dict:
+def summary(ship: Ship, display_control, *, existing: Ship | None = None, office: Ship | None = None) -> dict:
     """Ordered summary fields for both plain text and JSON; control modes belong to the shared contract."""
     rows, runs, fallbacks = [], {}, {}
     unchecked = False
@@ -425,13 +470,27 @@ def summary(ship: Ship, display_control, *, existing: Ship | None = None) -> dic
                 runs[program].append(detail)
         if len(seat.pools) > 1:
             fallbacks[seat.name] = list(seat.pools)
-    office = ship.session_of(ship.seat("desk")).title
-    result = {"operator_name": ship.operator, "office_name": office, "ship_name": ship.name, "project_path": str(ship.workspace),
+    office_title = (office.session_of(office.seat("desk")).title if office else
+                    ship.session_of(ship.seat("desk")).title if "desk" in ship.seats else "Office")
+    result = {"operator_name": ship.operator, "office_name": office_title, "ship_name": ship.name, "project_path": str(ship.workspace),
               "seats": rows, "runs_on": {name: "; ".join(values) for name, values in runs.items()}}
     if unchecked:
         result["note"] = "The program's default is not checked against the account."
     if fallbacks:
         result["fallback_order"] = fallbacks
+    if office is not None:
+        office_data = summary(office, display_control)
+        result["seats"] = ([{**row, "location": "Office"} for row in office_data["seats"]]
+                           + [{**row, "location": "Ship"} for row in rows])
+        for program, detail in office_data["runs_on"].items():
+            if program not in result["runs_on"]:
+                result["runs_on"][program] = detail
+            elif detail != result["runs_on"][program]:
+                result["runs_on"][program] += "; " + detail
+        if "note" in office_data:
+            result["note"] = office_data["note"]
+        result.setdefault("fallback_order", {}).update(office_data.get("fallback_order", {}))
+        result["office_path"] = str(office.folder)
     return result
 
 
@@ -443,6 +502,10 @@ def render_summary(data: dict) -> list[str]:
     lines = [f"Operator name:  {data['operator_name']}", f"Office name:    {data['office_name']}", "",
              f"Ship name:      {data['ship_name']}", f"Project path:   {shown_project}"]
     fields, headings = ("seat", "name", "harness", "model", "effort"), ("Seat", "Name", "Harness", "Model", "Effort")
+    if "office_path" in data:
+        lines += [f"Office folder: {data['office_path']}",
+                  "The office holds your desk; the ship holds its crew. The captain takes orders from desk@office."]
+        fields, headings = ("location", *fields), ("Where", *headings)
     table = [headings] + [tuple(row[field] for field in fields) for row in data["seats"]]
     widths = [max(len(row[index]) for row in table) for index in range(len(fields))]
     lines.append("")

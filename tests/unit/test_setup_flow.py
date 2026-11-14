@@ -629,7 +629,7 @@ def test_first_setup_creates_and_starts_office_before_crew_from_one_conversation
         assert "scripted office started" in capsys.readouterr().out
     assert ship.load(tmp_path / "office").kind == "office"
     crew = ship.load(Path(answers["folder"]))
-    assert {seat.role for seat in crew.seats.values()} == {"desk", "captain", "engineering"}
+    assert {seat.role for seat in crew.seats.values()} == {"captain", "engineering"}
     assert operations.calls.index("office up") < operations.calls.index(("check", "codex")) < operations.calls.index("up")
 
 
@@ -658,3 +658,76 @@ def test_terminal_can_stop_at_office_without_crew_questions(answers, tmp_path, m
     assert prompts[1].startswith("Create this project's office")
     assert prompts[2].startswith("Start the office's desk")
     assert not Path(answers["folder"]).exists()
+
+
+@pytest.mark.parametrize("program", ["codex", "claude"])
+def test_combined_setup_writes_the_chosen_desk_only_to_the_office(answers, tmp_path, program):
+    answers.update(desk=program, programs="codex,claude",
+                   payment={"codex": "subscription", "claude": "subscription"},
+                   subscription_home={"codex": str(tmp_path / "codex"), "claude": str(tmp_path / "claude")},
+                   office="My Office", start="no", check="no",
+                   seats={"desk": {"name": "Chosen desk", "model": "chosen-model", "effort": "high"}})
+    lines = []
+    operations = ScriptedOperations()
+    setup.first_step(argparse.Namespace(json=False), operations=operations,
+                     conversation=setup.Conversation(answers, interactive=False, write=lines.append))
+    office = ship.load(tmp_path / "office")
+    desk = office.seat("desk")
+    assert (desk.display, desk.harness, desk.model, desk.effort, desk.pools) == (
+        "Chosen desk", program, "chosen-model", "high", (program,))
+    assert office.pool(program).config_dir == tmp_path / program
+    assert set(office.pools) == {program}
+    assert office.session_of(desk).human
+    assert office.session_of(desk).title == "My Office"
+    crew = ship.load(Path(answers["folder"]))
+    assert "desk" not in crew.seats and all(seat.role != "desk" for seat in crew.seats.values())
+    assert all(not session.human for session in crew.sessions.values())
+    assert "desk@office" in (crew.folder / "orders.md").read_text()
+    assert any("Office" in line and "Desk" in line and "Chosen desk" in line for line in lines)
+    assert any("Ship" in line and "Captain" in line for line in lines)
+    assert any("Ship" in line and "Engineer" in line for line in lines)
+
+
+def test_combined_setup_preserves_the_desk_fallback_choices(answers, tmp_path):
+    answers.update(programs="codex,claude", check="no", start="no",
+                   payment={"codex": "subscription", "claude": "subscription"},
+                   subscription_home={"codex": str(tmp_path / "codex"), "claude": str(tmp_path / "claude")},
+                   seats={"desk": {"model": "gpt-6-astra", "effort": "medium", "pools": ["codex", {
+                       "pool": "claude", "harness": "claude", "model": "claude-opus-5-5", "effort": "high"}]}})
+    setup.first_step(argparse.Namespace(json=False), operations=ScriptedOperations(),
+                     conversation=setup.Conversation(answers, interactive=False, write=lambda _: None))
+    office = ship.load(tmp_path / "office")
+    assert office.seat("desk").pools == ("codex", "claude")
+    fallback = office.seat("desk").for_pool("claude")
+    assert (fallback.harness, fallback.model, fallback.effort) == ("claude", "claude-opus-5-5", "high")
+    assert "desk" not in ship.load(Path(answers["folder"])).seats
+
+
+@pytest.mark.parametrize("mode", ["new", "keep", "update"])
+def test_existing_office_crew_wizard_never_adds_a_desk(answers, tmp_path, mode):
+    text, orders, _ = setup.template("office")
+    office = ship.create(tmp_path / "office", text, orders)
+    before = office.file.read_bytes()
+    answers.update(check="no", start="no")
+    args = argparse.Namespace(json=False)
+    def run(data):
+        return setup.first_step(args, operations=ScriptedOperations(),
+                                conversation=setup.Conversation(data, interactive=False, write=lambda _: None))
+    run(answers)
+    if mode != "new":
+        run({**answers, "existing": mode})
+    crew = ship.load(Path(answers["folder"]))
+    assert set(crew.seats) == {"captain", "engineering"}
+    assert not any(seat.role == "desk" for seat in crew.seats.values())
+    assert office.file.read_bytes() == before
+
+
+def test_combined_setup_access_points_to_the_office(answers, tmp_path, monkeypatch):
+    operations = ScriptedOperations()
+    monkeypatch.setattr(operations, "up_desk", lambda _: ["office started"])
+    seen = []
+    monkeypatch.setattr(operations, "access", lambda current: seen.append(current.folder) or str(current.folder))
+    result = setup.first_step(argparse.Namespace(json=False), operations=operations,
+                             conversation=setup.Conversation(answers, interactive=False, write=lambda _: None))
+    assert seen == [tmp_path / "office", tmp_path / "office"]
+    assert f"Desk access: {tmp_path / 'office'}" in result[0]
