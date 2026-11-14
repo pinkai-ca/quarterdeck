@@ -67,10 +67,15 @@ def controller_environment() -> dict:
 
     A suite already running under ``--ci-layout`` carries the child disk model and the CI session context.
     Those belong to pytest. The controller under test sets them for its own children and must not inherit them.
+    The suite's HOME is the outer run's scratch, so the controller is given the user base that run carried.
+    A real shell resolves its tools from that same base, including pytest-xdist.
     """
     env = dict(os.environ)
     env.pop('TESTRUNS_CI_DISK', None)
     env.pop('TESTRUN_CI_SESSION_CONTEXT', None)
+    base = env.get('TESTRUNS_USERBASE')
+    if base and 'PYTHONUSERBASE' not in env:
+        env['PYTHONUSERBASE'] = base
     return env
 
 
