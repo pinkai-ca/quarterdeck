@@ -374,23 +374,21 @@ def listening_sockets() -> list[Path]:
 
 
 def sockets_masked(jail: Jail) -> list[str]:
-    """A listening socket the jail would still show, with /dev/null bound over it so a connect fails.
+    """A system daemon's listening socket the jail would still show, with /dev/null bound over it.
 
-    Most sockets are already out of sight: /run, /tmp and /dev are the jail's own, and the operator's home is
-    empty but for what is bound back. This covers the rest, as found when the jail is built, wherever a mount
-    would show one: the bound-back folders, the workspace, the ship, or the root itself.
+    /run, /tmp and /dev are the jail's own and every home is empty inside, which takes most sockets out of sight.
+    What remains is a daemon's socket elsewhere under the read-only root (a snap's own run folder, for one). Those
+    are stable while the machine runs, so each is masked by name as the jail is built. Sockets that come and go,
+    under the homes, /tmp, /run, /dev or /mnt, are never masked here: a mount over one that vanished before the
+    launch would stop the launch. A folder bound into the jail from a home should hold no socket; giving each
+    seat folders of its own keeps it so.
     """
-    hidden = [Path('/run'), Path('/tmp'), Path('/dev'), Path('/proc'), SCRATCH, jail.home,
-              jail.runtime / 'seats', jail.runtime / 'tmux', jail.runtime / LOCKS]
-    shown = [jail.workspace, jail.ship_folder, jail.seat_folder, *jail.read_only, *jail.writable]
-
-    def depth(path: Path, roots: list[Path]) -> int:
-        return max((len(root.parts) for root in roots if path == root or path.is_relative_to(root)), default=-1)
-
+    hidden = [Path('/run'), Path('/tmp'), Path('/dev'), Path('/proc'), Path('/mnt'), Path('/home'),
+              Path(os.path.expanduser('~')), jail.home]
     args = []
     for path in listening_sockets():
-        if depth(path, hidden) >= depth(path, shown) and depth(path, hidden) >= 0:
-            continue  # under a mount the jail empties, and no deeper mount shows it again
+        if any(path == root or path.is_relative_to(root) for root in hidden):
+            continue
         try:
             if not stat.S_ISSOCK(path.lstat().st_mode):
                 continue
