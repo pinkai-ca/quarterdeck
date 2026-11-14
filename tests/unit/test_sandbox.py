@@ -443,3 +443,23 @@ def test_a_workspace_in_the_ships_own_folder_is_allowed_and_mounted_writable_aft
     work_bind = windows.index(['--bind', str(workspace.resolve()), str(workspace.resolve())])
     fence = [args[i:i + 2] for i in range(len(args))].index(['--tmpfs', str(project / 'ships')])
     assert fence < ship_bind < work_bind, 'the workspace is bound writable after its ship\'s read-only folder'
+
+
+def test_a_jailed_seat_on_a_provider_pool_is_refused_and_an_endpoint_pool_still_plans(tmp_path: Path, drydock: Path, monkeypatch):
+    """A jail has no network but its relayed endpoint, so a program that must reach its provider is refused at plan."""
+    from quarterdeck.ship import Pool
+
+    ship = shipmod.load(drydock)
+    home = tmp_path / "home"
+    path = install(home)
+    (home / "work").mkdir()
+    monkeypatch.setattr(sandbox, "available", lambda: True)
+    seat = ship.runtime / "seats" / "w"
+    plan = lambda **kw: sandbox.plan(ship, "w", seat, seat / "home", home / "work", "pi", path, home=home, **kw)
+    for pool in (Pool("claude", "anthropic", config_dir=tmp_path / "claude"), Pool("keyed", "anthropic", api_key="KEY")):
+        with pytest.raises(ShipError, match="a jailed seat has no network; only an endpoint pool's model is relayed in"):
+            plan(pool=pool)
+    local = Pool("local", "local", endpoint="http://127.0.0.1:8000/v1")
+    jail = plan(pool=local, endpoint=local.endpoint)
+    assert jail.endpoint == local.endpoint
+    assert plan(pool=Pool("fake", "synthetic"), synthetic=True).endpoint is None, "a synthetic program needs no network"

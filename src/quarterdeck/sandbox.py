@@ -179,10 +179,15 @@ def endpoint_parts(endpoint: str) -> tuple[str, int, str | None]:
 
 
 def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspace: Path, program: str, path: str,
-         home: Path | None = None, endpoint: str | None = None) -> Jail:
+         home: Path | None = None, endpoint: str | None = None, pool=None, synthetic: bool = False) -> Jail:
     """The jail for one seat, or a refusal naming what would lift it."""
     if not available():
         raise ShipError(f"{seat_name}: sandboxed, and {PROGRAM} is not on the PATH; install bubblewrap, or set sandbox = false on the seat")
+    if pool is not None and pool.kind != 'endpoint' and not synthetic:
+        # A jail has a network of its own, loopback only: a program that must reach its provider cannot run in one.
+        raise ShipError(f"{seat_name}: sandbox = true on pool {pool.name}, a {pool.kind} pool: a jailed seat has no "
+                        "network; only an endpoint pool's model is relayed in. Set sandbox = false on the seat, "
+                        "or give it an endpoint pool")
     home = (home or Path.home()).resolve()
     workspace = workspace.resolve()
     if home.is_relative_to(workspace):

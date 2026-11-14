@@ -659,7 +659,7 @@ class Seat:
 
                 endpoint = pool.endpoint if pool.kind == 'endpoint' else None  # its one way out, relayed in
                 jail = sandbox.plan(self.ship, self.name, self.folder, self.home, self.ship.cwd_of(self.spec), launch.argv[0], path,
-                                    endpoint=endpoint)
+                                    endpoint=endpoint, pool=pool, synthetic=self.harness.synthetic)
                 argv = sandbox.command(jail, argv)
             return launch, argv
 
