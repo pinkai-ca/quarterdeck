@@ -61,11 +61,10 @@ def stable_bytes(path):
         return _stable_following(path)
     try:
         return post_dir.read_bytes(path)
+    except post_dir.NotRegular:
+        raise post_dir.NotRegular('post transport source is not a regular file') from None
     except ShipError as error:
-        text = str(error)
-        if text == 'post path is not a regular file':
-            raise ShipError('post transport source is not a regular file') from None
-        if text == 'post path changed during its read':
+        if str(error) == 'post path changed during its read':
             raise ShipError('post transport source changed during its read') from None
         raise
 
@@ -76,7 +75,7 @@ def _stable_following(path):
     try:
         before = os.fstat(descriptor)
         if not stat.S_ISREG(before.st_mode):
-            raise ShipError('post transport source is not a regular file')
+            raise post_dir.NotRegular('post transport source is not a regular file')
         with os.fdopen(descriptor, 'rb', closefd=False) as stream:
             data = stream.read()
         after, current = os.fstat(descriptor), path.lstat()

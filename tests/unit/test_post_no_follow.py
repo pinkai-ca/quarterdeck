@@ -326,3 +326,42 @@ def test_an_imports_link_is_named_on_the_status_line(tmp_path):
     held(caught.value, link)
     line = watch.facts(ship, SimpleNamespace()).line()
     assert f'{post_dir.LINK_HELD}{link}' in line
+
+
+def test_a_fifo_at_an_imported_id_is_skipped(tmp_path, monkeypatch):
+    from quarterdeck.fleet_post import stable_bytes
+
+    runtime = runtime_of(tmp_path)
+    kept = post.Store(runtime).new('order', 'desk', 'captain', 'Ordinary body.')
+    blocked = post.Store(runtime).new('order', 'desk', 'captain', 'Blocked record.')
+    store = runtime / 'post' / 'store'
+    imports = runtime / 'post' / 'imports'
+    imports.mkdir()
+    store_fifo = store / 'imported.json'
+    os.mkfifo(store_fifo)
+    (imports / 'imported.json').write_text('{"origin": "peer"}\n')
+    record_fifo = imports / f'{blocked.id}.json'
+    os.mkfifo(record_fifo)
+    seen = opened_names(monkeypatch, store_fifo.name)
+    record_seen = opened_names(monkeypatch, record_fifo.name)
+    found = at_once(lambda: post.Store(runtime).all())
+    assert [item.id for item in found] == [kept.id]
+    # The imports record shares the store fifo's name and is a real file. One open is that record.
+    assert seen == [store_fifo.name] and record_seen == []
+    assert store_fifo.is_fifo() and record_fifo.is_fifo()
+    with pytest.raises(post_dir.NotRegular, match='post transport source is not a regular file'):
+        at_once(lambda: stable_bytes(store_fifo))
+    with pytest.raises(post_dir.NotRegular, match='post transport source is not a regular file'):
+        at_once(lambda: stable_bytes(record_fifo))
+
+
+def test_a_store_listing_error_is_named_on_the_status_line(tmp_path):
+    ship = declared_ship(tmp_path)
+    message = post.Store(ship.runtime).new('order', 'desk', 'captain', 'Ordinary body.')
+    imports = ship.runtime / 'post' / 'imports'
+    imports.mkdir()
+    (imports / f'{message.id}.json').write_text('{"origin": "peer", "sha256": "0"}\n')
+    line = watch.facts(ship, SimpleNamespace()).line()
+    assert 'imported post differs from its immutable source' in line
+    with pytest.raises(ShipError, match='imported post differs from its immutable source'):
+        post.Store(ship.runtime).all()

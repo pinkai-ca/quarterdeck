@@ -270,10 +270,8 @@ class Store:
                             data = stable_bytes(path)
                             message = local_view(self.dir.parent.parent,
                                                  Message.from_json(data.decode('utf-8')), data=data)
-                    except ShipError as error:
-                        if str(error) == 'post path is not a regular file':
-                            continue  # unread; a special file is not a message
-                        raise
+                    except post_dir.NotRegular:
+                        continue  # unread; a special file is not a message
                     messages.append(message)
                 messages.sort(key=lambda m: (m.at, m.id))
                 replies: dict[str, list[Message]] = {}

@@ -526,7 +526,7 @@ class Facts:
     check_unknown: list[str] = field(default_factory=list)
     model_mismatches: list[str] = field(default_factory=list)
     pane_obstructions: list[str] = field(default_factory=list)  # preserve named geometry diagnostics on overflow
-    post_held: list[str] = field(default_factory=list)  # a link that stops the store or imports, by path
+    post_held: list[str] = field(default_factory=list)  # an error that stops the store listing, or a link at imports
     post_waits: list[str] = field(default_factory=list)
 
     def line(self) -> str:  # law: nothing-waits-silently
@@ -778,15 +778,12 @@ def _imports_hold(runtime) -> str | None:
 
 
 def _post_listing(ship, store):
-    """The store listing, and every link hold that stopped it or imports/."""
+    """The store listing, and every error that stopped it, plus a link at imports/."""
     holds = []
     try:
         store.all()
     except ShipError as error:
-        text = str(error)
-        if not text.startswith(post_dir.LINK_HELD):
-            raise
-        holds.append(text)
+        holds.append(str(error))
         store = _HeldStore(store)
     extra = _imports_hold(ship.runtime)
     if extra and extra not in holds:

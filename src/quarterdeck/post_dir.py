@@ -26,6 +26,10 @@ _LINK_HELD = 'post link held at '
 LINK_HELD = _LINK_HELD
 
 
+class NotRegular(ShipError):
+    """The path is not a regular file. A listing skips this kind and no other."""
+
+
 def _plain_name(name):
     return (isinstance(name, str) and name not in ('', '.', '..')
             and '/' not in name and '\\' not in name and '\x00' not in name)
@@ -181,7 +185,7 @@ def _read_nofollow(parent_fd, name, path, limit=None):
     if stat.S_ISLNK(info.st_mode):
         _link_held(path)
     if not stat.S_ISREG(info.st_mode):
-        raise ShipError('post path is not a regular file')
+        raise NotRegular('post path is not a regular file')
     if limit is not None and info.st_size > limit:
         raise ShipError('post path exceeds its read limit')
     try:
@@ -194,7 +198,7 @@ def _read_nofollow(parent_fd, name, path, limit=None):
     try:
         before = os.fstat(descriptor)
         if not stat.S_ISREG(before.st_mode):
-            raise ShipError('post path is not a regular file')
+            raise NotRegular('post path is not a regular file')
         if limit is not None and before.st_size > limit:
             raise ShipError('post path exceeds its read limit')
         with os.fdopen(descriptor, 'rb', closefd=False) as stream:
