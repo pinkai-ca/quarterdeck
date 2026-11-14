@@ -1,5 +1,6 @@
 """Ordinary report filing by a check host, with and without a live service."""
 
+from dataclasses import replace
 import fcntl
 import os
 from types import SimpleNamespace
@@ -85,8 +86,8 @@ def test_repeated_filing_contention_is_on_every_status_line_until_progress(tmp_p
         for _ in range(2):
             facts = status()  # independent status readers, as in different sessions
             assert post.FILING_BUSY_REASON in facts.line()
-            facts.pending = ['synthetic wait ' * 30]
-            assert post.FILING_BUSY_REASON in facts.line()
+            crowded = replace(facts, pending=['synthetic wait ' * 30])
+            assert post.FILING_BUSY_REASON in crowded.line()
         assert check.closing_report(seat, store, order) is None
         assert (folder / 'filing-wait.json').read_bytes() == evidence
         assert drop.exists()
