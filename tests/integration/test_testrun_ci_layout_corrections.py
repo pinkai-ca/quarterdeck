@@ -66,7 +66,7 @@ def test_a_linked_runs_state_relabelled_independent_is_held_and_its_admin_entry_
     run = marker.parent.parent.name
     process.kill()
     process.wait()
-    state_file = project / '.testruns' / 'runs' / run / 'state.json'
+    state_file = marker.parent.parent / 'state.json'  # the run's own working storage, in memory or on disk
     state = json.loads(state_file.read_text())
     for pgid, _ in state['groups']:
         try:
