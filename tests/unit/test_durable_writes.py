@@ -1,6 +1,7 @@
-"""No-sync whole-file writers keep old or complete new data across process interruption.
+"""Whole-file writers keep old or complete new data across process interruption.
 
-The same writer scenarios remain. Both sync APIs fail if called; cuts before
+The same writer scenarios remain. Both sync APIs fail except for the initial
+attempt's named file and folder barriers; cuts before
 and after each rename leave a named target old or equal to the complete staged
 bytes. Power-loss persistence is deliberately not promised by the new default.
 """
@@ -26,9 +27,11 @@ class ProcessCrash(BaseException):
 
 
 class Disk:
-    def __init__(self, monkeypatch, cut_at: int | None = None):
+    def __init__(self, monkeypatch, cut_at: int | None = None, *, law_record=None):
         self.ops: list[str] = []
         self.intended = {}
+        self.syncs = []
+        real_sync = os.fsync
         real_replace, real_rename = os.replace, os.rename
         def step(name):
             if cut_at is not None and len(self.ops) == cut_at:
@@ -36,6 +39,18 @@ class Disk:
             self.ops.append(name)
         def forbidden_sync(_):
             pytest.fail('ordinary writer forced a storage sync')
+        def sync(descriptor):
+            if law_record is None:
+                forbidden_sync(descriptor)
+            actual = Path(os.readlink(f'/proc/self/fd/{descriptor}'))
+            if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+                assert actual == law_record.parent
+                kind = 'folder'
+            else:
+                assert actual.parent == law_record.parent and actual.name.startswith('.' + law_record.name + '.')
+                kind = 'file'
+            self.syncs.append(kind)
+            real_sync(descriptor)
         def renaming(real):
             def move(source, target, *args, **kwargs):
                 self.intended[os.fspath(target)] = Path(source).read_bytes()
@@ -44,7 +59,7 @@ class Disk:
                 step('after-rename')
                 return result
             return move
-        monkeypatch.setattr(os, 'fsync', forbidden_sync)
+        monkeypatch.setattr(os, 'fsync', sync)
         monkeypatch.setattr(os, 'fdatasync', forbidden_sync)
         monkeypatch.setattr(os, 'replace', renaming(real_replace))
         monkeypatch.setattr(os, 'rename', renaming(real_rename))
@@ -163,18 +178,20 @@ SCENARIOS = [post_new, ack_new_beside_posts, attempt_open, attempt_close, journa
 
 
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=lambda s: s.__name__)
-def test_process_interruption_keeps_old_or_complete_new_files_without_sync(tmp_path, monkeypatch, scenario):
+def test_process_interruption_keeps_old_or_complete_new_files_with_only_the_initial_attempt_synced(tmp_path, monkeypatch, scenario):
     def run(name, cut_at):
         base = tmp_path / name
         base.mkdir()
         with monkeypatch.context() as patch:
             targets, write, read = scenario(base, patch)
             old = {path: path.read_bytes() if path.exists() else None for path in targets}
-            disk = Disk(patch, cut_at)
+            disk = Disk(patch, cut_at, law_record=targets[0] if scenario is attempt_open else None)
             try:
                 write()
             except ProcessCrash:
                 pass
+            if cut_at is None:
+                assert disk.syncs == (['file', 'folder'] if scenario is attempt_open else [])
             seen = {path: disk.views(path, old[path]) for path in targets}
             exposed = []
             for path, views in seen.items():

@@ -539,7 +539,9 @@ class Attempts:
             number = max((int(p.stem.rsplit('-', 1)[1]) for p in history), default=0) + 1
             attempt = Attempt(message.id, seat, at.isoformat(timespec="microseconds"), pane, pid, launched_at,
                               path=self.dir / f"{message.id}-{number}.json")
-            self._write(attempt)
+            data = {k: v for k, v in asdict(attempt).items() if k != "path"}
+            # law: one-door -- retain the initial attempt before typing, never type twice.
+            durable._replace_law_record(attempt.path, json.dumps(data, indent=2) + "\n")
         return attempt
 
     def close(self, attempt: Attempt, result: str, detail: str = "") -> Attempt:

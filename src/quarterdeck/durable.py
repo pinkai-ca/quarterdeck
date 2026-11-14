@@ -3,7 +3,8 @@
 The temporary is closed before rename, so process interruption leaves the old
 file or the complete new one. A power cut may lose recent writes; the operating
 system decides when they reach storage. Ordinary replacements request no sync;
-the refusal quarantine and compaction transition record retain their barriers.
+the initial delivery attempt, refusal quarantine and compaction transition
+record retain their barriers.
 """
 
 from __future__ import annotations
@@ -34,8 +35,8 @@ def replace_file(path: Path, text: str, *, encoding: str | None = None) -> None:
         raise
 
 
-# The refusal quarantine and compaction transition record alone keep these
-# barriers: context-is-cache requires their claims to survive a power cut.
+# Three fixed records keep these barriers: the initial attempt for one-door,
+# and refusal quarantine and compaction transition claims for context-is-cache.
 def _replace_law_record(path: Path, text: str, *, encoding: str | None = None) -> None:
     """Put ``text`` at ``path`` whole, as ``Path.write_text`` would encode it unless told otherwise, durably."""
     data = text.encode(encoding or locale.getpreferredencoding(False))
