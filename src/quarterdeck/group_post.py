@@ -39,13 +39,27 @@ def _message(data: dict) -> post.Message:
 
 
 def _publish(store: post.Store, message: post.Message) -> None:
-    """A cut after publication reuses the exact intent, never another message id."""
+    """A cut after publication reuses the exact intent, never another message id.
+
+    A root already stored is compared as the store presents it: an order imported from another ship keeps its
+    wire form on disk (to ``lead@<this ship>``) while the intent, like every reader, holds the local view (to
+    ``lead``). Any other difference is refused as before.
+    """
     path = store.dir / f'{message.id}.json'
     if post_dir.exists(path):
-        if post.Message.from_json(post_dir.read_text(path)) != message:
+        if post.Message.from_json(post_dir.read_text(path)) != message and _viewed(store, message.id) != message:
             raise ShipError(f'group post {message.id} differs from its saved intent; retained')
     else:
         store.write(message)
+
+
+def _viewed(store: post.Store, identifier: str) -> post.Message | None:
+    """The stored message as every reader sees it (local parties, declared forwarding), or None."""
+    try:
+        found = store.get(identifier)
+    except ShipError:
+        return None
+    return found if found.id == identifier else None
 
 
 def _load(path: Path) -> dict:
