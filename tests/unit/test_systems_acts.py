@@ -404,3 +404,32 @@ def test_the_region_is_the_dialogs_top_frame_or_else_the_whole_screen(ship):
     live.update(screen=above + framed.replace("Limit reached", "Run the hooks?"), sent=[])
     line = svc.answer(dict(kind="press", seat="worker", choice="2. Not now", caller="spock"))
     assert "(the dialog's frame says 'Run')" in line and live["sent"] == []
+
+
+# -- La'an's second probe (runtime/seats/laan/d3-guard/probe2.py) -------------------------------------------------
+
+def test_a_benign_choice_that_skips_safety_checks_is_refused(ship):
+    svc, seat, live = ship
+    live["screen"] = "  Skip safety checks for this folder?\n\n  1. Skip\n  2. Cancel\n"
+    line = svc.answer(dict(kind="press", seat="worker", choice="1. Skip", caller="spock"))
+    assert line.startswith("refused: its screen reads as a question that widens a sandbox (the whole screen says 'safety')")
+    assert live["sent"] == []
+
+
+@pytest.mark.parametrize("word", ["safety", "security", "protection", "guardrails", "checks", "confirmation",
+                                  "warnings", "verification"])
+def test_the_words_of_a_lowered_guard_are_the_desks(word):
+    assert acts._kind(f"Turn off {word} here?") == ("widens a sandbox", word)
+
+
+@pytest.mark.parametrize("text", ["​/config", "please​ continue", "go on⁠", "﻿continue", "con­tinue"])
+def test_a_line_with_an_invisible_format_character_is_never_typed(ship, text):
+    svc, seat, live = ship
+    live["screen"] = "› \n\n  test low · /work\n"
+    line = svc.answer(dict(kind="type", seat="worker", line=text, caller="spock"))
+    assert "holds an invisible format character (U+" in line and line.startswith("refused:") and live["sent"] == []
+
+
+def test_a_fullwidth_command_start_is_read_as_the_command_it_shows():
+    from quarterdeck.harness.types import Screen
+    assert "starts with '/': a program command" in acts.guard(Screen("› \n", ""), line="／config")

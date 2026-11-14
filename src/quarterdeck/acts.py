@@ -51,6 +51,7 @@ KINDS = (
         rf"\ball{_S}future\b|\bdo{_S}you{_S}want{_S}to\b|\bwould{_S}you{_S}like{_S}to\b", re.I)),
     ("trusts a path or folder", re.compile(r"\btrust\w*", re.I)),
     ("widens a sandbox", re.compile(
+        r"\b(?:safe\w*|secur\w*|protect\w*|guard\w*|check\w*|confirm\w*|warn\w*|verif\w*)|"
         rf"sandbox|full[- ]?access|unrestricted|danger\w*|yolo|network{_S}access|"
         rf"outside{_S}(?:the|this){_S}(?:workspace|project|folder)|workspace[- ]write|read[- ]only|--dangerously|"
         rf"\b(?:sudo|root|admin\w*|elevat\w*|escalat\w*)\b|skip{_S}permissions|no{_S}restrictions|full{_S}auto", re.I)),
@@ -123,8 +124,14 @@ def guard(screen, choice: str | None = None, line: str | None = None) -> str | N
     if choice is not None and not benign(choice):
         return (f"the choice {choice!r} is not on the benign list ({', '.join(sorted(BENIGN))}); "
                 "any other answer is the desk's")
-    if line is not None and line.lstrip()[:1] in COMMAND_STARTS:
-        return f"the line {line!r} starts with {line.lstrip()[0]!r}: a program command, shell mode or reference"
+    if line is not None:
+        import unicodedata
+        hidden = sorted({f"U+{ord(c):04X}" for c in line if unicodedata.category(c) == "Cf"})
+        if hidden:
+            return f"the line {line!r} holds an invisible format character ({', '.join(hidden)})"
+        first = unicodedata.normalize("NFKC", line).lstrip()[:1]
+        if first and first in COMMAND_STARTS:
+            return f"the line {line!r} starts with {first!r}: a program command, shell mode or reference"
     own = choice if choice is not None else line
     if own is not None and (found := _kind(own)):
         return f"the {'choice' if choice is not None else 'line'} {own!r} {found[0]} ({found[1]!r})"
