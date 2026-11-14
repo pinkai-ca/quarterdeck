@@ -5,6 +5,8 @@ fixture names and closes.
 """
 
 import json
+import os
+import signal
 import time
 
 import pytest
@@ -12,6 +14,7 @@ import pytest
 from quarterdeck import servicectl, shutdown
 from quarterdeck.harness.synthetic_control import events
 from quarterdeck.post import Attempts
+from quarterdeck.ship import ShipError
 from . import test_service_shutdown as phases
 from .test_service_shutdown import MARKER, stopping, wait_for, world  # shared private fake program and owned teardown
 from .test_service_stop_preflight import PREFLIGHT
@@ -106,3 +109,86 @@ def test_stop_inside_the_write_unit_waits_then_restart_types_once(world, monkeyp
     else:
         assert journal['phase'] == 'submitted' and typed(world) <= 1
     restart_delivers_once(world, message)
+
+
+def stalled_after_open(world, monkeypatch):
+    monkeypatch.setattr(phases, 'DRIVER', phases.DRIVER.replace(
+        'loaded = ship.load(folder)', 'from quarterdeck import post\n' + OPENED + '\nloaded = ship.load(folder)'))
+    world.start('opened')
+    message = world.post()
+    runtime = world.ship.runtime
+    wait_for(lambda: (runtime / 'phase-hit').exists())
+    attempt, = Attempts(runtime).for_message(message.id)
+    assert world.journal() is None
+    assert shutdown.inflight(runtime, shutdown.owner(runtime))['kind'] == 'attempt'
+    return message, attempt
+
+
+def test_stop_after_open_stalled_past_ordinary_grace_waits_then_restart_types_once(world, monkeypatch):
+    message, _ = stalled_after_open(world, monkeypatch)
+    runtime = world.ship.runtime
+    thread, results, errors = stopping(lambda: servicectl.stop(runtime))
+    wait_for(lambda: (runtime / 'term-seen').exists() or not thread.is_alive())
+    time.sleep(shutdown.ORDINARY_GRACE + .5)
+    waited = thread.is_alive() and servicectl.locked(runtime)
+    (runtime / 'phase-release').touch()
+    thread.join(timeout=30)
+    assert not thread.is_alive() and not errors
+    assert waited, 'the stop did not wait past its ordinary grace for the write unit'
+    assert 'service stopped' in results[0] and 'killed' not in results[0]
+    assert 'limit 30s' in results[0]
+    assert not shutdown.pointer_path(runtime).exists()
+    attempt, = every_attempt_journalled(world, message)
+    assert world.journal()['phase'] == 'cancelled' and typed(world) == 0
+    restart_delivers_once(world, message)
+
+
+def latest(runtime, message):
+    # The test polls while the service rewrites the attempt; a read refused mid-rewrite is not yet an answer.
+    try:
+        return Attempts(runtime).latest().get(message.id)
+    except ShipError:
+        return None
+
+
+def kill_the_service(runtime):
+    pid = servicectl.read_heartbeat(runtime)[0]
+    os.kill(pid, signal.SIGKILL)
+    wait_for(lambda: not servicectl.locked(runtime))
+    return 'process death'
+
+
+@pytest.mark.parametrize('cut', ['killed-past-grace', 'process-death'])
+def test_forced_exit_before_the_journal_keeps_the_attempt_and_never_types_twice(world, monkeypatch, cut):
+    message, attempt = stalled_after_open(world, monkeypatch)
+    runtime = world.ship.runtime
+    kept = attempt.path.read_bytes()
+    if cut == 'killed-past-grace':
+        monkeypatch.setattr(shutdown, 'ORDINARY_GRACE', .1)
+        monkeypatch.setattr(shutdown, 'DELIVERY_GRACE', .3)
+        result = servicectl.stop(runtime)  # the stalled write unit never reaches its release
+        assert 'killed' in result and 'attempt retained' in result
+        assert not shutdown.pointer_path(runtime).exists()
+    else:
+        kill_the_service(runtime)
+        assert shutdown.pointer_path(runtime).exists()  # the dead owner's early pointer, for the next start
+    assert attempt.path.read_bytes() == kept
+    assert world.journal() is None and typed(world) == 0
+    world.start()
+    wait_for(lambda: servicectl.started(runtime))
+    # The next start clears the old owner's early pointer; any pointer now is the new owner's own.
+    current = shutdown.inflight(runtime, shutdown.owner(runtime))
+    assert not shutdown.pointer_path(runtime).exists() or current and current['journal'] != f'post/attempts/{attempt.path.name}'
+    followup = world.post('synthetic-followup-zzzz')
+    wait_for(lambda: latest(runtime, followup) == 'delivered', 60)
+    # The early pointer granted grace only: the attempt is reconciled by its receipt, never resent.
+    wait_for(lambda: latest(runtime, message) is not None, 60)
+    after, = Attempts(runtime).for_message(message.id)
+    assert after.path == attempt.path, 'the next service opened a second attempt'
+    before, now = json.loads(kept), json.loads(after.path.read_text())
+    assert {k: v for k, v in now.items() if k not in ('result', 'detail')} == \
+        {k: v for k, v in before.items() if k not in ('result', 'detail')}
+    assert after.result == 'blind' and 'resend' in after.detail
+    journals = (runtime / 'post/pending' / world.seat.name).glob('*.json')
+    assert not any(attempt.path.name in json.loads(j.read_text())['attempts'] for j in journals)
+    assert typed(world) == 0
