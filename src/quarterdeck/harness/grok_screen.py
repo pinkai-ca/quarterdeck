@@ -14,7 +14,9 @@ from .types import Interruption, Screen, _cells
 
 SGR = re.compile(r"\x1b\[([0-9;]*)m")
 FOOTER = re.compile(
-    r"^  ╰─+ (Grok [0-9.]+(?: Fast)?) \((low|medium|high|xhigh)\) · (always-approve) ─╯ *$"
+    # The remaining weekly allowance is optional native footer text, not a quota wall.
+    r"^  ╰─+ (?:Weekly limit left: (?:100|[1-9]?[0-9])% · )?"
+    r"(Grok [0-9.]+(?: Fast)?) \((low|medium|high|xhigh)\) · (always-approve) ─╯ *$"
 )
 MODEL_HINT = "<model> [window] [effort]"
 COMMANDS = Interruption("commands", r"┌─ Commands ─.*\[✗\].*┐", "Escape")

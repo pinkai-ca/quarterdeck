@@ -67,7 +67,7 @@ Explicit defaults omit native flags/generated selectors. Known conflicting templ
 
 ### Measured receipt and screen behavior
 
-The [door](door.md) owns transport and waking policy. Layout recognizes only supported forms. Tmux soft wraps are joined before parsing; padding, hard newlines and punctuation remain significant. Grok 1.0.77 uses styled rounded composer/footer/hint frames; the exact faint model-argument hint may be discarded only in its measured picker context. Unknown styles or hint tuples stay unknown. Indexed colors 16–255 decode as xterm cube/grey; system colors stay unknown.
+The [door](door.md) owns transport and waking policy. Layout recognizes only supported forms. Tmux soft wraps are joined before parsing; padding, hard newlines and punctuation remain significant. Grok 1.0.77 uses styled rounded composer/footer/hint frames; its optional `Weekly limit left: N%` footer field preserves the same composer reading and supplies no quota wall. The exact faint model-argument hint may be discarded only in its measured picker context. Unknown styles or hint tuples stay unknown. Indexed colors 16–255 decode as xterm cube/grey; system colors stay unknown.
 
 Claude Code 2.1.317 expands pasted tabs to four spaces and escapes an opening `<pasted_content` wrapper tag. Its measured hidden-format-character sanitizer is applied symmetrically, preserving native context exceptions. These projections require every version-bearing row since the attempt to name that version; missing/other versions grant no projection. No near match is accepted.
 
