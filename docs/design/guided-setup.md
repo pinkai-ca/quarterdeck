@@ -4,148 +4,33 @@ A page of [the design](../DESIGN.md).
 
 ## Guided setup
 
-The entry is `qd init`: it copies the tracked `ships/office/` template to the fixed
-`<project>/office/` directory and commits its declaration, orders and local desk card
-in a repository of its own. The office has `kind = "office"`, no captain or crew,
-only human sessions, and no required project workspace. Its ignored runtime,
-tmux server and service are independent of every project ship. Init uses ordinary
-`qd up desk`, preserving any existing office declaration and starting no other seat.
-It neither raises a project ship nor moves existing office seats or messages.
-The first `qd setup` initializes this office and returns; after an office exists,
-setup retains the crew wizard below. There is no office alias, alternate path or
-additional routing configuration.
+Setup turns explicit program/payment and crew choices into a validated declaration. It previews before writing, asks separately before spending turns and starting programs, and preserves existing ships unless an accepted update names its changes. The [office and ship-raising structure](structures.md#office-and-raising-a-ship) owns init, first-time office creation and reusable raise consent. Once an office exists, `qd setup` runs this crew wizard.
 
-Before creating an office, init and first-time setup read the project's existing
-ships. A desk role in a human session means the office still lives in that ship:
-both commands name it and refuse, without writing or starting a second office.
-Moving that office is the person's step after forwarding has been proven.
+### Proposal and acceptance
 
-`raise_ship.py` owns `qd raise <kind> <name>` for default, forum, cascade and
-shuttle. It reads the office's pool declarations, renders and validates the complete
-template proposal, and hashes all files and the destination. Pool mapping names
-declaration references only; no credential is read or copied. A new desk proposal
-records a request and returns its summary and a person-shell approval command.
-Only the person can answer; a crew seat cannot raise a ship. Requests and successive
-exact yes/no answers live under `office/runtime/raise/<name>/`, serialized by a
-per-name lock. The desk may reuse the latest exact yes. A changed proposal asks
-again. A matching ship resumes without edits; no existing ship is overwritten.
-At a new yes, the same process walks its live `/proc` ancestry, reading each pid,
-parent pid and start time, and compares pid/start identities with every recorded
-program in the project's ships' `runtime/seats/*/launch.json`, including the office.
-Unreadable or changing ancestry or an unreadable launch inventory refuses the yes.
-The yes is acted on in that process, without a queued approval or service handoff.
-Dropping the seat environment does not change the process's ancestry.
+The wizard asks for operator title, ship name, office title, workspace, then desk/captain/engineering names, harnesses, models and efforts. Suggestions come from templates/adapter metadata and do not prove account access. One program can supply a crew except Antigravity's one-seat restriction. Payment choices are subscription, key or local, with legacy endpoint accepted. Key answers name environment variables only. Endpoint operator, URL and model are explicit; model brands never identify payment/provider.
 
-Known limit: the reusable answer record is the person's consent, not a security
-boundary against a hostile seat running as the same Unix user. A seat can write
-that record by hand. The consent gate for a manually written answer remains a
-named known limit; the live ancestry check addresses the separate process-origin
-gate. Reusing an exact earlier yes remains part of asking first the first time.
-A stronger consent store, such as a keyring or a root-owned file, is later work;
-this change claims no such protection.
+New ships are direct valid nonhidden children of the checkout's `ships/`, regardless of workspace or display name. Existing ships may update an existing inside-project path. Outside paths refuse with an inside-project remedy. Setup uses the installer's source-repository resolver, including cwd/parents for an installed entry; without an identifiable checkout it asks to run from one. The parent must exist. It creates only the new ship's declaration, orders, runtime ignore and scoped first commit, never the person's project or an existing directory. Successful new creation marks that ship default; keep/update leaves the mark alone.
 
-Creation commits only the selected template files and runtime ignore in the new
-ship's own repository, then uses ordinary up to start its crew and service. A failed
-launch retains the declaration and consent. The folder name is the fleet address;
-fleet discovery needs no registration write or second configuration.
+Before writing, the full proposal shows operator/office, ship/project path, then Seat/Name/Harness/Model/Effort columns. Runs on describes subscription locations, key-variable names and endpoint URLs. Fallback and retained-seat fresh notes follow the table. Text abbreviates home paths; JSON keeps them complete. New Claude/Codex seats default to fresh_after_compactions=2; unchanged harnesses retain their setting/absence. Leaving a counting harness retains the ineffective key with a note, since the writer cannot remove it. Default orders require a self-addressed handoff before fresh.
 
-`qd setup` asks, in order, what the crew calls the person (Admiral), ship name,
-office (Office), workspace, then desk, captain and engineering: display name,
-harness, model and effort. Suggestions come from the default template and adapter
-metadata; a suggestion does not prove account access. One supported program can
-supply the whole crew, except Antigravity's one-seat limit. Next come each harness's
-payment and each seat's ordered fallback pools. Payment answers are `subscription`,
-`key`, `local`; flags and answers files also accept the legacy `endpoint` spelling.
-Keys are environment variable names only. Endpoint operator, URL and model are
-explicit facts; a model name never identifies its operator or subscription.
+Flags, one JSON answers file and ordered edits build the same proposal. File values merge with flags, followed by file/flag edits. Per-seat flags are `--seat ROLE.FIELD=VALUE`, edits `--edit FIELD=VALUE`; every edit needs acceptance again. Model/effort modes follow the [explicit-default contract](harnesses.md#selections-and-explicit-defaults). `/default` is a terminal action, never a literal model alias.
 
-The ship defaults to `<Quarterdeck project>/ships/<name>`, independently of its
-workspace. New ships must be direct children of `<Quarterdeck project>/ships`,
-with a valid nonhidden folder name; the folder name may differ from the display
-name. Other new folders refuse before acceptance with the reason and remedy.
-Existing ships may keep or update any existing path inside the Quarterdeck
-project. An outside folder refuses with the one-folder reason and an inside-folder remedy.
-The same `install.source_repo` resolver owns the checkout identity for installation
-and setup. An installed init/setup entry can identify the checkout from the current directory or its parents; without an identifiable checkout it refuses and asks to run from the Quarterdeck checkout. Its parent must exist. Setup creates only the ship folder,
-with validated
-`ship.toml`, `orders.md`, runtime `.gitignore`, and a scoped first Git commit;
-it never overwrites an existing directory or creates the person's project.
-After creation it marks that folder as the default through `ship.mark_default`
-and explains that qd acts on it when no ship is named. Existing keep/update runs
-leave the default mark alone. Setup itself never selects the existing default
-as its target; a rerun names its folder explicitly.
+Non-TTY or answers-file invocation never opens a dialogue. Missing fields refuse with exact flag/file remedies. `use_defaults=yes` accepts known suggestions only; accept/check/start still need answers. Unknown homes, credentials, URLs, operators or models are never invented.
 
-Before any write, the whole proposed ship is shown: operator and office names,
-a blank line, ship name and project path, a blank line, then five plain columns:
-Seat, Name, Harness, Model, Effort. The project path uses `~` under the person's
-home. A separate Runs on block describes subscriptions, key variable names and
-model URLs. Fallback orders and necessary retained-seat fresh-start notes appear
-beneath the table, never on its rows. JSON retains full paths and optional
-`fresh_after_compactions`/`fresh_start_note` fields after the five seat fields.
-New Claude Code and Codex seats default to `fresh_after_compactions = 2` without
-a visible note; other new seats have no threshold. Retained unchanged harnesses
-keep their explicit setting or absence. Moving into a counting harness adds 2;
-moving away retains the key with a no-effect note, since the shared writer cannot
-remove it. Default orders require a self-addressed handoff before a fresh start.
+### Checks, updates and launch
 
-Every answer is available as a flag or in one JSON answers file. File values merge
-with direct flags, followed by file edits and flag edits in order. Per-seat flags
-use `--seat ROLE.FIELD=VALUE`; `--edit FIELD=VALUE` and terminal edits rebuild the
-same proposal and require acceptance again. `ROLE` is desk, captain or engineering.
-`model_mode`/`effort_mode` use the shared named/program-default contract; `/default`
-is a terminal action, never a reinterpretation of a literal model name. Non-TTY
-never starts a dialogue: missing answers refuse by name with their flag/file
-remedy. Explicit `use_defaults=yes` takes known suggestions only; acceptance,
-check and start still require their own answers. No unknown home, URL, model,
-operator or key variable is silently invented.
+Acceptance precedes writes and readiness probes. Paid check and crew start are separate consents labeled as spending subscription turns; declining leaves the saved declaration and next command. Version/home/account uncertainty remains visible. Setup never signs in, buys or installs native programs. Account questions belong to the person. Informational sign-in hints are never executed.
 
-Acceptance precedes declaration writes and real readiness checks. Paid `check`
-and crew `start` are separate consents, each suggested yes interactively and
-labelled as spending turns on each program's subscription. An answers file never
-opens a dialogue, even in a terminal; it requires explicit `check` and `start`
-answers, including with `use_defaults=yes`. Declining either stops with the saved
-declaration and a concrete next step.
-Readiness refusals give the doctor's reason and exact setup rerun. Sign-in hints
-are informational, unknown unless documented, and never executed; installed
-version/home/account uncertainty remains visible. Native account questions stay
-with the person. Setup never signs in, buys, installs native programs or changes
-their settings. Before acceptance, PATH/metadata and credential-file presence may
-inform suggestions; native version/readiness probes wait. Model-listing reads are
-anonymous, direct, without redirects/proxies/auth: loopback URLs, or explicitly
-selected OpenRouter at its documented endpoint. Other remote URLs are not queried.
-A missing or ambiguous listing requires a named model; it never triggers key use.
+Before acceptance, PATH/metadata and credential presence may inform suggestions, but native version/readiness waits. Anonymous model listing is limited to loopback or explicitly selected documented OpenRouter endpoint, without redirects, proxies or authentication. Other remote URLs are not queried; missing/ambiguous models require an explicit choice, not a key request.
 
-Existing ships explicitly keep or update. Keep refuses changed answers. Updates
-use `qd set`'s validation, application, deferral and refusal path, preserving
-unrelated seats, pools and orders. Unsupported inline edits, named-to-default
-changes requiring key removal, and session-title changes refuse before writing,
-with the explicit declaration-edit remedy. Failed first commits require the
-person to resolve Git identity and commit before rerunning. After start consent, the existing `cmd_up` path prepares the installed copy and
-delegates launch to its proven executable before starting any seat. Successful starts
-show status, desk access and a first-order example; only actual readiness/proofs
-can establish a running crew. Checks select the ship's own server with
-`Tmux.for_ship(ship)`; desk access uses `qd --ship <folder> attach <session>`,
-so an existing ship's desk remains reachable even when another ship is default.
+Existing keep refuses changed answers. Update goes through set's validation/apply/defer/refuse path, preserving unrelated declarations and orders. Unsupported inline changes, removing named selectors and changing session titles refuse before writing with an explicit-edit remedy. Failed first commits require resolving Git identity and committing before rerun.
 
-Absent titles derive as Office for the person's session and `<ship> <Session>`
-for others; explicit titles remain authoritative. **Compatibility:** syncing a
-hand-made ship with omitted session titles applies these derived titles and
-renames its tmux sessions. Bring that ship down before syncing. Every tracked ship,
-including the operating ship, declares its titles explicitly.
+After start consent, ordinary up prepares/delegates to the ship's [installed copy](working.md#installed-copies-and-sync) before any seat. Only observed readiness/proofs establish a running crew. Checks use `Tmux.for_ship`; desk access names the ship explicitly so another default cannot redirect it. Derived session-title changes require taking a hand-made ship down before sync; explicit titles remain authoritative.
 
+### Answers format
 
-The stable JSON answers object uses these keys (flags use hyphens instead of
-underscores). Scalar text keys are `operator`, `name`, `office`, `workspace`,
-`folder`, `programs` (comma-separated registered names), `desk`, `captain`,
-`engineer`, `existing` (`keep|update`), and `use_defaults`, `accept`, `check`,
-`start`, `wait_for_sign_in` (`yes|no`). Program-keyed text objects are `payment`,
-`subscription_home`, `provider`, `key_env`, `endpoint`, `model`. The `seats`
-object is keyed by `desk`, `captain`, `engineering`; each accepts `name`,
-`harness`, `model`, `effort`, `model_mode`, `effort_mode`, and ordered `pools`.
-A pool choice is its name or an object with `pool`, `harness`, `model`, `effort`
-and the two mode keys. `edits` is an ordered list of `{"field": FIELD,
-"value": VALUE}` objects; acceptance/check/start are supplied separately.
-For example, after choosing an existing project and native sign-in directory:
+Scalar text keys are operator, name, office, workspace, folder, programs, desk, captain, engineer, existing (keep/update), use_defaults, accept, check, start and wait_for_sign_in (yes/no for consents). Program-keyed objects are payment, subscription_home, provider, key_env, endpoint and model. The seats object has desk/captain/engineering entries with name, harness, model, effort, model_mode, effort_mode and ordered pools. A pool is its name or an object with pool/harness/model/effort and modes. Edits are ordered field/value objects; consents are separate. Flags use hyphens instead of underscores.
 
 ```sh
 qd setup --answers crew-answers.json
@@ -157,13 +42,4 @@ qd setup --answers crew-answers.json
  "use_defaults":"yes","accept":"yes","check":"yes","start":"yes"}
 ```
 
-
-**Sync all project ships.** `qd sync --all [REF]` coordinates the existing safe-copy installer, one ship at a time. The typed checkout remains the controller; neither QD_SHIP nor a ship's installed copy selects the project operation. `--all --back` refuses before discovery, as rollback remains a single-ship operation. An explicit global `--ship` conflicts with `--all`. The compatible `upgrade` alias shares this parser and handler, including one alias notice in text and unchanged structured results. `--force` delegates to the existing per-ship force option.
-
-The coordinator resolves REF (HEAD by default) to one complete local commit before planning. `install.resolve_target` supplies the pinned repository/commit tuple to each call of the existing `install.upgrade` path through its optional `target` keyword. Immediately before each installer call, `Tmux.for_ship(ship)` selects that ship's server; the controller shares no tmux instance across ships. Archive, installation, proof, activation and restoration remain that same path; installer text never establishes success. No fetch or network request is added.
-
-Planning snapshots direct declarations under this project's ships folder. The tracked template names default, drydock, forum, cascade, shuttle and office are named once as passed over, without loading their declarations. Ships marked `code = "checkout"` are named once as passed over too. Other names, including practice and hidden ships with declarations, remain in scope. Crew folders sort by basename; the validated persistent default mark's ship is last if present. The shared `ship.default_ship(project)` reader alone interprets and validates an existing mark; only its `mark` source designates the last ship. Without a mark, multiple ships are synced in order without invoking default fallback or choosing one arbitrarily. Planning does not reread the mark or reorder a run.
-
-Each successful installer call is followed by an observation through the existing installed-copy selector. The first installer or observation failure stops the run; earlier ships remain synced and later ships are not tried. Their final copy observations are refreshed rather than assuming initial snapshots remain current during concurrent activity. Proof lines state each ship's disposition and complete observed commit: synced to, failed and still on, not tried and still on, or passed over with its reason. A changed copy is described as observed on its actual commit, and an unreadable/unusable copy as unknown; a reporting or post-activation error never falsely claims restoration. No fleet rollback or persistent fleet registry is introduced. The operation exits2 on failure.
-
-JSON exposes target, ok and ships. Each ship row contains its folder, disposition, initial before commit, observed commit, reason and ordinary installer proof lines; unknown commits are null. Ordinary dirty-source/historical notices are retained before the final per-ship dispositions. An empty set reports no project ships to sync and performs no ship operation. This composes on the reviewed default-ship predecessor and bypasses per-ship default selection for the project operation; synthetic tests prove the coordinator and CLI without syncing a live ship.
+Project-wide sync lives with the [installer](working.md#syncing-the-project), not setup's consent flow.
