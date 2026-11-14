@@ -48,8 +48,9 @@ record, and offers the original post with format-2 forwarding provenance. Only o
 questions cross to the new address; settled messages and acknowledgments keep their original
 recipient. Closure is decided before applying a declaration, so an old closing report keeps its
 order closed. A reserved compaction handoff and an active successor transition stay at the old
-seat, including its local view. Unresolved old attempts
-hold the forwarding; their evidence is read, never cleared by transport. A loop, unknown destination
+seat, including its local view. Old attempts with result `delivered`, `watch`, `launch`, `carried`
+or `abandoned` are resolved for forwarding. Every other result holds the forwarding. Transport
+reads that evidence without clearing it. A loop, unknown destination
 or route changed after publication is retained with an operational hold. Each service still writes
 only its own runtime, including when reading an intermediate ship's old attempt evidence.
 

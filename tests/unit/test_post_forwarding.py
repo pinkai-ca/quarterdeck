@@ -38,6 +38,29 @@ def test_old_bare_address_reaches_new_seat_once_and_report_closes_original(pair)
     assert len(source.all()) == len(destination.all()) == 2
 
 
+@pytest.mark.parametrize('result', ['delivered', 'watch', 'launch', 'carried', 'abandoned'])
+def test_resolved_old_attempt_forwards_open_message_once_with_its_exact_bytes(pair, result):
+    left, right, source, destination = pair
+    original = source.new('order', 'writer', 'captain', 'Forward this open obligation unchanged.')
+    raw = wire(left, original)
+    attempts = post.Attempts(left.runtime)
+    attempt = attempts.close(attempts.open(original, 'captain', None, None, None), result)
+    receipt = attempt.path.read_bytes()
+    left = forward(left)
+
+    for _ in range(2):
+        assert fleet.run(left, source) == []
+        assert fleet.run(right, destination) == []
+
+    received, = destination.open_for('writer')
+    assert received.id == original.id
+    assert destination.for_seat('writer') == [received]
+    assert len(destination.all()) == 1
+    assert wire(right, original) == raw == wire(left, original)
+    assert source.is_open(source.get(original.id))
+    assert attempt.path.read_bytes() == receipt
+
+
 def test_new_messages_to_an_old_name_need_no_live_old_seat(pair):
     left, right, source, destination = pair
     left = forward(left, 'retired-seat')

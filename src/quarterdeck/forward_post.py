@@ -117,7 +117,8 @@ def pin(ship, message):
         if message.id in reserved or transition:
             raise ShipError('old address has a reserved successor handoff or transition; forwarding held')
         latest = post.Attempts(runtime).for_message(message.id)
-        if latest and latest[-1].result not in ('delivered', 'watch'):
+        resolved = {'delivered', 'watch', 'launch', 'carried', 'abandoned'}
+        if latest and latest[-1].result not in resolved:
             raise ShipError('old address has an unresolved delivery; forwarding held')
 
     for old in trail[:-1]:
