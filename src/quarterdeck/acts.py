@@ -419,7 +419,9 @@ def type_line(service, seat, line: str, caller: str | None) -> str:
             return _finish(seat, act, "not submitted", f"the box showed {seen!r}, not the line; it stays for a look")
         if seat.launched() != launched:
             return _finish(seat, act, "not submitted", "the launch changed after the paste")
-        door.submit(pane.id)
+        door.before_submit = shown
+        if reason := door.submit(pane.id):
+            return _finish(seat, act, "not submitted", reason)
     except TmuxError as error:
         return _finish(seat, act, "not submitted", str(error))
     delivery = door.confirm(line, seconds=CONFIRM_SECONDS)

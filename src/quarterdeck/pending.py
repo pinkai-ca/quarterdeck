@@ -1091,6 +1091,20 @@ def one_look(service: Service, seat: Seat, attempts: Sequence[post.Attempt] | No
         return []
 
 
+def _submit_from_box(door, proof, pane, screen, *, at, saw):
+    """Reserve before Enter; only record submission after the Door actually sends it."""
+    previous = proof.data['phase']
+    proof.save(phase="submitting", shown=screen.box,
+               look=dict(at=at, outcome="submitting", saw=saw))
+    door.proof, door.before_submit = proof, screen
+    reason = door.submit(pane.id)
+    if reason:
+        proof.save(phase=previous, look=dict(at=at, outcome="not submitted", saw=saw, reason=reason))
+        return reason
+    proof.save(phase="submitted", look=dict(at=at, outcome="submitted", saw=saw))
+    return None
+
+
 def _one_look_claimed(service: Service, seat: Seat, attempts: Sequence[post.Attempt] | None = None) -> list[str]:
     """Look once at the seat's deliveries the door could not confirm, from the attempts the pass holds."""
     from . import idle
@@ -1148,9 +1162,9 @@ def _one_look_claimed(service: Service, seat: Seat, attempts: Sequence[post.Atte
         pane = seat.pane()
         if (seen is None and clear and pane is not None and screen.box
                 and door.held_matches(seat.harness.box(data["payload"]), screen)):
-            proof.save(look=dict(at=at, outcome="submitted", saw="its exact text in the box"),
-                       phase="submitted", shown=screen.box)
-            door.submit(pane.id)
+            if reason := _submit_from_box(door, proof, pane, screen, at=at, saw="its exact text in the box"):
+                done.append(f"{message.short} to {seat.name}: not submitted · {reason}")
+                continue
             done.append(f"{message.short} to {seat.name}: submitted from the box; the record confirms it")
             continue
         if seen is None and clear and screen.box == "" and idle.reading(seat)[1] is None:
@@ -1268,10 +1282,8 @@ def _submit_claimed(service: Service, seat: Seat) -> str:
         return refusal
     known = {a.path.name: a for a in service.attempts.all()}  # one load, on a request, never a pass
     message = _message_of(service, proof, known)
-    proof.save(phase="submitted", shown=screen.box,
-               look=dict(at=post.now().isoformat(), outcome="submitted", saw="qd submit"))
-    door.submit(pane.id)
-    door.proof = proof
+    if reason := _submit_from_box(door, proof, pane, screen, at=post.now().isoformat(), saw="qd submit"):
+        return f"{seat.name}: not submitted · {reason}"
     delivery = door.confirm(proof.data["payload"])
     proof.finish(delivery.result)
     if delivery.result in ("delivered", "queued"):
