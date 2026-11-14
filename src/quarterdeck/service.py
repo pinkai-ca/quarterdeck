@@ -25,6 +25,7 @@ from pathlib import Path
 
 from . import harness as harnesses
 from . import shutdown
+from . import reader_stamp
 from . import pending as pending_delivery, delivery_record
 from . import accounting_health, credential, durable, idle, install, machine, move_hold, post, presentation, quota, record_owner, recovery, servicectl, ship as shipmod, standing
 from .door import CONFIRM_SECONDS, Door
@@ -1352,6 +1353,7 @@ class Service:
         marks, errors = dict(self.read_marks), dict(self.account_errors)
         meters = deepcopy(self.meters)
         checkpoints = {}
+        reader_keys = reader_stamp.readers()
         for seat in self.resolved_seats():
             pane, launched = seat.pane(), seat.launched()
             live = pane is not None and not pane.dead
@@ -1392,8 +1394,8 @@ class Service:
                     # New launch/price evidence must be reconciled even if record bytes stand still.
                     if marks.get(record) == stamp and prepared[2] is None:
                         continue
-                    framework = getattr(self, 'status_framework', None)
-                    checkpoint = self.ledger.accounting_evidence(seat.name, stamp, owned.reason, prepared[1], framework)
+                    checkpoint = self.ledger.accounting_evidence(
+                        seat.name, stamp, owned.reason, prepared[1], reader_keys.get(owned.name))
                     if checkpoint is not None and self.ledger.accounted(record, checkpoint):
                         marks[record] = stamp
                         continue

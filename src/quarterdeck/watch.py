@@ -235,7 +235,7 @@ def tokens_today(seat: Seat | UnresolvedSeat) -> ledger.Count:
 
 def accounted_history(book, seat):
     """A zero is measured too, but only matching successful certificates prove it."""
-    from . import presentation
+    from . import reader_stamp
     try:
         if not book.db.execute('SELECT 1 FROM record_accounting LIMIT 1').fetchone():
             return False
@@ -248,12 +248,15 @@ def accounted_history(book, seat):
         except FileNotFoundError:
             current = None
         prepared = book.provenance.prepare(seat, current, seat.launched())
-        framework = presentation.framework_stamp()
+        reader_keys = reader_stamp.readers()
         for item in owned:
             if item.reader is None or item.transient:
                 return False
             stamp = item.name, record_fingerprint(item.path)
-            evidence = book.accounting_evidence(seat.name, stamp, item.reason, prepared[1], framework)
+            key = reader_keys.get(item.name)
+            if key is None:
+                return False
+            evidence = book.accounting_evidence(seat.name, stamp, item.reason, prepared[1], key)
             if not book.accounted(item.path, evidence):
                 return False
         return True
