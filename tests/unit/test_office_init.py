@@ -174,7 +174,7 @@ def test_first_setup_initializes_only_the_office_then_keeps_the_crew_wizard(offi
     project, calls = office_project
     wizard = []
     monkeypatch.setattr(setup, "run", lambda args, **kwargs: wizard.append(args) or ["crew wizard"])
-    args = cli.build_parser().parse_args(["setup"])
+    args = cli.build_parser().parse_args(["setup", "--accept", "yes", "--start", "yes"])
     result = setup.first_step(args)
     assert len(calls) == 1 and not wizard
     assert "Office ready" in result[-1]
@@ -185,7 +185,7 @@ def test_first_setup_initializes_only_the_office_then_keeps_the_crew_wizard(offi
 def test_first_setup_cli_has_no_project_workspace_question(office_project, monkeypatch, capsys):
     project, calls = office_project
     monkeypatch.setattr(setup, "run", lambda *_: pytest.fail("no crew wizard on first setup"))
-    assert cli.main(["setup"]) == 0
+    assert cli.main(["setup", "--accept", "yes", "--start", "yes"]) == 0
     assert len(calls) == 1
     assert "Office ready" in capsys.readouterr().out
     assert not (project / "ships").exists()
@@ -193,7 +193,7 @@ def test_first_setup_cli_has_no_project_workspace_question(office_project, monke
 
 def test_first_setup_keeps_explicit_save_without_launch_consent(office_project):
     project, calls = office_project
-    args = cli.build_parser().parse_args(["setup", "--start", "no"])
+    args = cli.build_parser().parse_args(["setup", "--accept", "yes", "--start", "no"])
     result = setup.first_step(args)
     assert ship.load(project / "office").kind == "office"
     assert not calls
@@ -231,7 +231,8 @@ def test_an_existing_persons_desk_requires_an_explicit_office_move(office_projec
     (legacy.runtime / "keep.txt").write_text("Existing office records stay here.\n")
     before = {p.relative_to(legacy.folder): p.read_bytes()
               for p in legacy.folder.rglob("*") if p.is_file()}
-    assert cli.main([verb]) == 2
+    consent = ["--accept", "yes", "--start", "yes"] if verb == "setup" else []
+    assert cli.main([verb, *consent]) == 2
     refusal = capsys.readouterr().err
     assert "office still lives in ship established" in refusal
     assert "person's step once forwarding is proven" in refusal

@@ -286,15 +286,20 @@ def first_step(args: argparse.Namespace, *, operations: Operations | None = None
         crew = choice == "yes"
     if crew:
         return run(args, operations=operations, conversation=conversation, initialize_office=True)
-    if conversation.interactive:
-        accepted = conversation.choice("accept", "Create this project's office? yes or no", ("yes", "no"))
-    else:
-        accepted = answers.get("accept")
+    declaration, _, _ = template("office")
+    office = ships._from_text(declaration, folder)
+    ships._validate(office)
+    conversation.say(f"Office proposal (not written): {folder}")
+    summary = setup_proposal.summary(office, setup_proposal.display_control)
+    for line in setup_proposal.render_summary(summary):
+        conversation.say(line)
+    accepted = conversation.choice("accept", "Create this project's office? yes or no", ("yes", "no"))
     if accepted == "no":
         return ["Setup stopped before acceptance; no office changes were written."]
-    start = (conversation.choice("start", "Start the office's desk? Opening its brief may spend turns. yes or no",
-                                 ("yes", "no"), "yes") if conversation.interactive else answers.get("start", "yes"))
-    return init_office(argparse.Namespace(ship=None), operations=operations, start=start != "no")
+    start = conversation.choice("start", "Start the office's desk? Opening its brief may spend turns. yes or no",
+                                ("yes", "no"))
+    return init_office(argparse.Namespace(ship=None), operations=operations, start=start == "yes",
+                       declaration=declaration)
 
 
 def program_list(value: str, available: dict) -> list[str]:
