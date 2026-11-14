@@ -217,7 +217,19 @@ def test_a_busy_service_reads_busy_not_dead_and_qd_down_still_stops_it(ship: shi
     assert proof == f"service killed · pid {pid} · it did not answer SIGTERM within 0.5s" and not service.alive(ship.runtime)
 
 
+def aged(attempts: post.Attempts, attempt: post.Attempt, seconds: float) -> None:
+    """Move an attempt's opening back, through the store's own locked write, keeping whatever it has since recorded."""
+    with attempts._locked():
+        current = post.Attempt(**json.loads(attempt.path.read_text()), path=attempt.path)
+        at = (current.when - timedelta(seconds=seconds)).isoformat(timespec="microseconds")
+        attempts._write(post.Attempt(**{**current.__dict__, "at": at}))
+
+
 def test_a_watch_attempt_is_judged_only_after_the_confirm_window(ship: shipmod.Ship, tmux: Tmux, capsys):
+    """The service's own window is the production one; the attempts cross it by their recorded age, not by a wait.
+
+    Within the window the service leaves an attempt to its watch; once the attempt is older than the window, the
+    service judges it: the watch's printed result stands, and an attempt no watch reported is blind."""
     qd(capsys, "up", "captain")
     store, attempts = post.Store(ship.runtime), post.Attempts(ship.runtime)
     question = store.new("question", "operator", "desk", "still printing")
@@ -226,12 +238,16 @@ def test_a_watch_attempt_is_judged_only_after_the_confirm_window(ship: shipmod.S
     assert (post.now() - opened.when).total_seconds() < CONFIRM_SECONDS
     assert attempts.for_message(question.id)[0].result is None, "left to the watch within the confirm window"
     post.printed(ship.runtime, [opened])
-    wait_for(lambda: (post.now() - opened.when).total_seconds() > CONFIRM_SECONDS)
+    aged(attempts, opened, CONFIRM_SECONDS)
+    assert (post.now() - attempts.for_message(question.id)[0].when).total_seconds() > CONFIRM_SECONDS
     service_progress(ship)
     assert attempts.for_message(question.id)[0].result == "watch", "the watch's own result stands"  # law: one-door
     lost = store.new("question", "operator", "desk", "the watch died")
-    attempts.open(lost, "desk", None, None, None)
-    wait_for(lambda: attempts.for_message(lost.id)[0].result == "blind", seconds=CONFIRM_SECONDS + 5)
+    unreported = attempts.open(lost, "desk", None, None, None)
+    service_progress(ship)
+    assert attempts.for_message(lost.id)[0].result is None, "an unreported attempt is also left within the window"
+    aged(attempts, unreported, CONFIRM_SECONDS)
+    wait_for(lambda: attempts.for_message(lost.id)[0].result == "blind", seconds=10)
 
 
 def test_a_restart_waits_for_the_turn_to_end(ship: shipmod.Ship, tmux: Tmux, capsys):

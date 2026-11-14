@@ -46,6 +46,31 @@ def holding(project, worktree, hold):
                            state=json.loads((folder / 'state.json').read_text()))
 
 
+def holding_at_once(project, worktrees):
+    """Live runs started together, one per ``(change, worktree, hold)``, each told by the change its state names."""
+    known = markers(project)
+    started = []
+    for change, worktree, hold in worktrees:
+        hold.write_text('hold')
+        started.append((change, hold, start('run', '--target', str(worktree), '-n', '0', cwd=project)))
+
+    def all_started():
+        new = markers(project) - known
+        return new if len(new) == len(worktrees) else None
+
+    found = wait_for(all_started)
+    by_change = {}
+    for marker in found:
+        state = json.loads((marker.parent.parent / 'state.json').read_text())
+        by_change[state['change']] = (marker, state)
+    cases = []
+    for change, hold, process in started:
+        marker, state = by_change[change]
+        cases.append(SimpleNamespace(run=marker.parent.parent.name, folder=marker.parent.parent, marker=marker,
+                                     process=process, hold=hold, state=state))
+    return cases
+
+
 def finish(case):
     case.hold.unlink()
     out, err = case.process.communicate(timeout=180)
@@ -84,10 +109,11 @@ def peers(tmp_path):
 
 def test_two_runs_at_once_each_recovering_and_retiring_only_its_own(peers):
     p = peers
-    first = holding(p.project, p.feature, p.tmp / 'hold-feature')
-    p.live.append(first)
-    second = holding(p.project, p.other, p.tmp / 'hold-other')
-    p.live.append(second)
+    # Both started together, so their setups overlap as well as their tests.
+    first, second = holding_at_once(p.project, [('feature', p.feature, p.tmp / 'hold-feature'),
+                                                ('other', p.other, p.tmp / 'hold-other')])
+    p.live.extend([first, second])
+    assert first.run != second.run and first.state['change'] == 'feature' and second.state['change'] == 'other'
     assert first.process.poll() is None and second.process.poll() is None, 'two live runs at once'
     # A run of the same change as a live run recovers nothing of it: its guard is held.
     # (only the base test: the change's own test would wait on the same hold)

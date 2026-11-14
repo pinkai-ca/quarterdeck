@@ -148,8 +148,10 @@ def test_an_abandoned_run_is_recovered_by_its_own_change_only(tmp_path):
     process.kill()  # the runner dies without its ending; its pytest session still holds the run lock
     process.wait()
     state = json.loads((marker.parent.parent / 'state.json').read_text())  # the run's own working storage
-    live = tool('run', '--target', str(worktree), '-n', '0', '--timeout', '5', cwd=project)
-    assert f'run {run}: live' in live.stdout
+    # Only the base test: the change's own test would wait on the same hold until a time limit ended it.
+    live = tool('run', '--target', str(worktree), '-n', '0', 'tests/test_base.py', cwd=project)
+    assert live.returncode == 0 and f'run {run}: live' in live.stdout, live.stdout + live.stderr
+    assert run in scratch(project) and marker.exists(), 'the live run is left alone'
     for pgid, _ in state['groups']:
         try:
             os.killpg(pgid, signal.SIGKILL)
@@ -197,10 +199,15 @@ def test_recovery_refuses_a_state_that_names_another_checkout_and_loses_nothing(
     own_admin = state['admin']
     tampered = [{**state, 'checkout': str(decoy)},
                 {**state, 'admin': str(tmp_path / 'elsewhere' / 'admin')}]
-    for bad in tampered:
+    # The first through a run, the second through clean: both recover by the same clean.recover under a slot
+    # before anything else; clean then refuses at the run's remaining scratch, with no test setup to pay for.
+    for bad, verb in zip(tampered, (('run', '--target', str(worktree), '-n', '0'), ('clean', '--change', 'feature'))):
         state_file.write_text(json.dumps(bad))
-        again = tool('run', '--target', str(worktree), '-n', '0', cwd=project)
-        assert again.returncode == 0, again.stdout + again.stderr
+        again = tool(*verb, cwd=project)
+        if verb[0] == 'run':
+            assert again.returncode == 0, again.stdout + again.stderr
+        else:
+            assert again.returncode == 2 and 'still have scratch' in again.stderr, again.stdout + again.stderr
         assert f'run {run}: abandoned · cleanup held' in again.stdout and 'nothing removed' in again.stdout
         assert (decoy / 'uncommitted.txt').read_text() == 'synthetic work in progress'
         assert str(decoy) in git_worktrees(project)
