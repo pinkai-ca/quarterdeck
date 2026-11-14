@@ -1,6 +1,6 @@
 # Ships
 
-A ship is a group of AI agents, with its orders and records: a folder under `ships/`, in the Quarterdeck folder you cloned. Each has its own service, runtime and tmux server. Each agent runs in a harness, a terminal coding program such as Claude Code or Codex. [The parts of Quarterdeck](PARTS.md) explains the other words.
+A ship is a group of AI agents, with the group's orders and records: a folder under `ships/`, in the Quarterdeck folder you cloned, or `office/`, beside `ships/`, for your office. Each ship has its own service, runtime and tmux server. Each agent runs in a harness, a terminal coding program such as Claude Code or Codex. [The parts of Quarterdeck](PARTS.md) explains the other words.
 
 ## Ships to start from
 
@@ -12,41 +12,46 @@ A ship is a group of AI agents, with its orders and records: a folder under `shi
 
 ## Start with your office
 
-From the Quarterdeck project folder, run:
+From the folder you cloned, make your office and open it:
 
 ```sh
 .venv/bin/qd init
+.venv/bin/qd --ship office attach  # opens the tmux session Office, where the desk is
 ```
 
-This copies the tracked office template to `office/`, at the top of the project, and commits the declaration, orders and local desk card in the office's own git repository. Its `runtime/` is ignored. The office gets its own service and tmux server; only the desk starts. The template uses Claude Code's existing sign-in and the program's model and effort defaults. If the program or sign-in needs attention, the office remains saved: edit its declaration or complete the program's sign-in, then rerun `qd init`. No live check is run by init.
+Tell the desk what you want to work on.
 
-The office is always the real `office/` folder at the project top. It has no alternate location or alias. Neither init nor setup moves an existing ship's office seats or messages.
+`qd init` copies the tracked office template, `ships/office/`, to `office/`, and commits the office's declaration, orders and desk card in a git repository of the office's own. That repository ignores `office/runtime/`. Then `qd init` starts the office's service and the desk. The desk runs on Claude Code, with the sign-in already in `~/.claude`, and with Claude Code's own default model and effort. `qd init` runs no live check.
 
-If an existing project ship already declares a desk in a human session, init and first-time setup name that ship and refuse to create a second office. The office still lives there. Moving it is your step once forwarding has been proven; these commands leave its declaration and records untouched.
+The office is saved before the desk starts. After you edit `office/ship.toml`, or sign in to the desk's harness, run `qd init` again: `qd init` keeps the saved office and starts the desk.
 
-To open the desk, run `.venv/bin/qd --ship office attach`. Tell the desk what you want to work on. Declaring further office seats is your choice: add them to `office/ship.toml` with a role such as counsel or communications and a session with `human = true`, then bring each up by name. Rerunning init starts only the desk, even if other declared seats are marked up.
+The office is always `office/`: a real folder, never a link, with no other place and no other name.
 
-`qd setup` remains the crew wizard. When no office exists, its first step runs init and returns with the desk ready; a later setup keeps the wizard for a project crew.
+Where one of your ships under `ships/` already has a desk in a session with `human = true`, your office lives in that ship. `qd init` and the first `qd setup` then name that ship, make no second office, and leave that ship's declaration and records untouched. Moving the office out of that ship is your step, once forwarding is proven: `qd init`, `qd setup` and `qd raise` move no office seat and no message out of an existing ship.
 
-## Ask the desk for a project ship
+Further office seats are yours to declare. Add each seat to `office/ship.toml` with a role such as counsel or communications, in a session with `human = true`, then bring each seat up with `.venv/bin/qd --ship office up <seat>`. `qd init`, run again, starts the desk alone, even with other office seats marked up.
 
-The desk selects a kind (`default`, `forum`, `cascade` or `shuttle`) and the office pools it will use, then runs `qd raise`. Declare those pools in `office/ship.toml` first. A template pool can use an office pool of the same name, or be mapped explicitly:
+While no office exists, `qd setup` runs `qd init`, and ends with the desk ready.
+
+## Ask your desk for a project ship
+
+The desk chooses the kind (`default`, `forum`, `cascade` or `shuttle`) and the office pools for the new ship, then runs `qd raise`. Declare those pools in `office/ship.toml` first. A template's pool takes the office pool of the same name, or the office pool that `--pool` maps the template's pool to, as in this proposal of a shuttle named `mission`:
 
 ```sh
 qd raise shuttle mission --pool anthropic=claude --pool openai=codex --workspace /path/to/project
 ```
 
-The command shows the complete declaration and the files to copy. A new proposal from the desk stays pending and starts nothing; it prints the command for you to approve or decline in your own shell, where `QD_SEAT` is absent. Use that command with `--accept yes` or `--accept no`. From your shell, `qd raise` can also ask directly. The exact answer is kept in the office's ignored runtime. Only the office desk or you can raise a ship; a crew seat cannot answer for you or raise one itself.
+A new proposal from the desk shows the complete declaration and the files to copy, and starts nothing. You answer in your own shell, outside every seat's harness, where `QD_SEAT` is not set. The desk's `qd raise` prints the command for your answer, ending in `--accept yes`: run that command as printed for yes, or with `--accept no` for no. In your shell, `qd raise` with no `--accept` asks you directly. `qd raise` keeps your answer to that exact proposal in `office/runtime/`. Only you and the office desk raise ships, and only you answer a proposal.
 
-For a new yes, the command also checks its live process ancestry against the recorded programs of all project ships and the office. Run it from your own shell, outside any agent program; unreadable ancestry refuses the answer. The command that accepts your yes performs the raise itself. Earlier exact answers can still be reused. These records express your consent and are writable by programs running as your Unix user; they do not protect against a hostile agent that edits them directly.
+For a new yes, `qd raise` reads the command's own process and every parent of that process. The yes counts when `qd raise` reads every one of those processes, and none is a seat program recorded in the office or in a ship under `ships/`. The run that takes your yes raises the ship. The answer records hold your consent, and are writable by every program running as your Unix user: the records are no guard against a hostile agent that edits the records.
 
-An approved proposal copies the complete template to `ships/mission`, creates its own git repository, commits its declaration, orders and cards, and brings up its declared crew and service. Its folder name, `mission`, is its fleet address. Discovery reads that declaration; raising adds no routing configuration or separate fleet list. Without `--workspace`, the crew works in the Quarterdeck project folder. `--model SEAT=MODEL` replaces a template's example model; the cascade and forum examples require this for their placeholder models. Pool mapping copies declaration references, never credentials; key pools use `env:NAME` references.
+With your yes, `qd raise` copies the complete template to `ships/mission`, makes `ships/mission` a git repository of its own, commits the ship's declaration, orders and cards, and brings up the ship's service and declared crew. The folder's name, `mission`, is the ship's fleet address. The fleet finds the ship by reading the ship's declaration: `qd raise` adds no routing configuration and no separate fleet list. Without `--workspace`, the crew works in the folder you cloned. `--model SEAT=MODEL` replaces the template's example model for that seat, and the cascade and forum templates need `--model` for each placeholder model. The new ship's pools copy the office pools' references, such as a sign-in folder, and never a credential. A key pool names the key's environment variable, as `env:NAME`.
 
-The desk can reuse an exact approved proposal. Repeating it resumes the matching ship without edits or a second set of panes. If the template, selected pools or other declaration details change, a new proposal needs your answer. Raise never overwrites an existing ship: retain a differing ship and choose a new name. If launch fails, its committed declaration and your answer remain for a retry after the underlying program or sign-in is ready. The new office command does not move any existing office.
+A yes stays on record for that exact proposal. The same `qd raise`, run again by the desk or by you, takes that yes and resumes the matching ship, without edits and without a second set of panes. `qd raise` commits the declaration and records your answer before the crew starts: after you install a harness or sign in to one, the same `qd raise` starts the crew. A change to the template, to the pools or to any other part of the declaration makes a new proposal, which waits for your answer. `qd raise` never overwrites a ship: where `ships/` already holds a different ship of that name, keep that ship and choose a new name.
 
 ## A project ship of your own
 
-After initializing the office, `qd setup` can write a project crew for you. To write a ship by hand, install Quarterdeck as the README's [Quick start](../README.md#quick-start) says, then run these steps from the folder you cloned, where `qd` is `.venv/bin/qd`.
+Once the office exists, `qd setup` is the crew wizard, and writes a project ship for you. To write a ship by hand, install Quarterdeck as the README's [Quick start](../README.md#quick-start) says, then run these steps from the folder you cloned, where `qd` is `.venv/bin/qd`.
 
 **1. Practise on stand-ins.** Optional, and spends nothing.
 

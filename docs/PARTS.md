@@ -2,8 +2,8 @@
 
 Quarterdeck, run as `qd`, runs AI coding agents from different companies as one crew.
 
-- **Ship.** A group of agents, with its orders and records, in a folder of its own. One file, `ship.toml`, names the tmux sessions, the seats in each, and every seat's role, harness, pool, model and persona (display name). Each ship has its own service, runtime and tmux server.
-- **Office.** The person's own working ship, one for the fleet: the desk and any office seats the person declares, with no captain or crew. Its declaration has `kind = "office"`; no project workspace is required. A project ship's captain takes its orders from the desk. Creating the office does not move any existing seat into it.
+- **Ship.** A group of agents, with the group's orders and records. One file, `ship.toml`, names the tmux sessions, the seats in each, and every seat's role, harness, pool, model and persona (display name). Each ship has a folder, a service, a runtime and a tmux server of its own.
+- **Office.** Your own ship, where you work: one office for the fleet, with the desk and any office seats you declare, and no captain or crew. The office's `ship.toml` has `kind = "office"`, and the office needs no project workspace. A project ship's captain takes orders from the desk. Creating the office moves no existing seat into the office.
 - **Seat.** One agent: one harness running in one tmux pane under one role, such as captain. Each seat has a home folder of its own, built from the ship's files and nothing of yours.
 - **Harness.** The terminal coding program a seat runs, such as Claude Code or Codex.
 - **Provider.** The company whose models or plans a pool uses, such as Anthropic or OpenAI.
