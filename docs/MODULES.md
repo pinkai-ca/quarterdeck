@@ -10,6 +10,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `compaction_alert.py` | an idle seat that is ready for a fresh start by hand: one report to the systems seats for each such reading, and a named alarm while no systems seat is up |
 | `cost_evidence.py` | a turn's cost evidence, kept beside the Ledger's turns |
 | `credential.py` | the one link a seat shares with its pool, reseeded and relinked on the tick |
+| `daily_live.py` | the daily live test: a minimal check of each program the day's readings do not show was used, and one report to the desk |
 | `doctor.py` | `qd doctor`, the installation checked and handed to a seat to fix |
 | `endpoint.py` | endpoint pools: what a server serves, the model a seat takes from it, the key beside it |
 | `fakeharness.py` | the entry point installed as `qd-fakeharness`, for the simulator under `harness/` |
@@ -148,6 +149,7 @@ quarterdeck/                       the project folder: the framework repository
     standing.py    standing orders: laws, the ship's orders, cards, the brief
     drill.py       the all-hands drill
     check.py       qd check: an installed program proven live on a throwaway seat
+    daily_live.py  the daily live test: minimal checks of programs unused that day, one report to the desk
     doctor.py      qd doctor: the installation checked, and the failures handed to a seat
     install.py     sync: live runtime/venv, one cp -a backup, proof, journaled recovery and back
     copy_state.py  standard-library-only declaration mode and read-only copy/proof selection

@@ -1,0 +1,217 @@
+"""The daily live test, with a fake clock and stand-in checks. No program is started."""
+
+import json
+import os
+import stat
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from quarterdeck import cli, daily_live, post
+from quarterdeck.ship import ShipError, load
+
+ZONE = timezone(timedelta(hours=-7))
+NOW = datetime(2026, 11, 14, 23, 0, tzinfo=ZONE)
+TODAY = datetime(2026, 11, 15, 6, 30, tzinfo=timezone.utc).isoformat()  # 23:30 the same civil day
+YESTERDAY = datetime(2026, 11, 14, 6, 30, tzinfo=timezone.utc).isoformat()
+
+SHIP = """\
+[ship]
+name = "daily"
+operator = "operator"
+code = "checkout"
+
+[pools.fake]
+provider = "synthetic"
+
+[sessions.office]
+title = "Office"
+human = true
+
+[seats.desk]
+session = "office"
+role = "desk"
+harness = "fake"
+pool = "fake"
+model = "fake-1"
+"""
+
+
+def reading(name, *, working=False, ended=None):
+    return {"harness": name, "working_now": working, "last_turn_ended": ended}
+
+
+def ship(folder: Path):
+    folder.mkdir()
+    (folder / "ship.toml").write_text(SHIP)
+    return load(folder)
+
+
+def test_a_program_used_on_the_clocks_civil_day_is_not_checked():
+    choices = daily_live.plan(
+        [reading("claude", ended=TODAY), reading("codex", working=True, ended=YESTERDAY),
+         reading("grok", ended=YESTERDAY), reading("pi", working=None, ended=YESTERDAY)],
+        history_error=None, day=NOW)
+    by_name = {choice.program: choice for choice in choices}
+    assert by_name["claude"].action == "skip" and by_name["claude"].use == "used"
+    assert by_name["codex"].action == "skip" and by_name["codex"].use == "used"
+    assert by_name["grok"].action == "check" and by_name["grok"].use == "unused"
+    assert by_name["pi"].action == "check" and by_name["pi"].use == "unknown"
+
+
+def test_unknown_history_is_checked_and_muse_is_skipped_by_name(tmp_path):
+    calls = []
+
+    def runner(origin, program, root, qd):
+        calls.append(program)
+        code = 1 if program == "grok" else 0
+        output = "synthetic failure" if code else "stood in"
+        return daily_live.CheckRun(program, code, output)
+
+    origin = ship(tmp_path / "daily")
+    message, failed = daily_live.run(
+        origin, now=NOW, history_error="program history unavailable",
+        readings=[reading("claude", working=False, ended=TODAY), reading("grok", working=False, ended=YESTERDAY),
+                  reading("Muse", working=True, ended=TODAY), reading("fake", working=False)],
+        runner=runner, scratch=tmp_path / "scratch")
+    assert calls == ["claude", "grok"]
+    assert failed is True
+    assert message.kind == "report" and message.sender == post.SHIP and message.to == "desk"
+    assert message.subject == "Daily live test"
+    assert message.body.startswith("Daily live test for 2026-11-14.\n")
+    assert "Readings: program history unavailable" in message.body
+    assert daily_live.MUSE_LINE in message.body
+    assert "claude: use unknown; check passed" in message.body
+    assert "grok: use unknown; check failed (exit 1)" in message.body
+    assert "synthetic failure" in message.body
+    assert "stood in" not in message.body
+    assert "fake: not a program a live check runs; not checked" in message.body
+    stored = post.Store(origin.runtime).all()
+    assert [item.id for item in stored] == [message.id]
+
+
+def test_zone_is_read_from_the_machines_localtime_link(monkeypatch):
+    def readlink(path):
+        if path == "/etc/localtime":
+            return "/usr/share/zoneinfo/Pacific/Honolulu"
+        raise OSError(path)
+
+    monkeypatch.setattr(os, "readlink", readlink)
+    assert daily_live.machine_zone().key == "Pacific/Honolulu"
+    monkeypatch.setattr(os, "readlink", lambda path: (_ for _ in ()).throw(OSError("not a link")))
+    assert daily_live.machine_zone() is not None
+    source = Path(daily_live.__file__).read_text()
+    assert "Vancouver" not in source
+
+
+def test_no_desk_is_refused(tmp_path):
+    folder = tmp_path / "daily"
+    folder.mkdir()
+    (folder / "ship.toml").write_text(SHIP.replace('role = "desk"', 'role = "worker"'))
+    try:
+        daily_live.run(load(folder), now=NOW, readings=[], runner=lambda *args: None)
+    except ShipError as error:
+        assert "one seat with role desk" in str(error)
+    else:
+        raise AssertionError("a ship with no desk was accepted")
+
+
+def test_units_match_the_morning_timer_and_install_nothing(tmp_path, monkeypatch):
+    origin = ship(tmp_path / "daily")
+    monkeypatch.setattr(cli, "load_ship", lambda args: origin)
+    monkeypatch.setattr(cli.daily_live, "installed_qd", lambda value: "/usr/bin/qd")
+    monkeypatch.setattr(cli.daily_live, "run", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("ran")))
+    args = cli.build_parser().parse_args(["daily-live", "--units"])
+    text = "\n".join(cli.cmd_daily_live(args))
+    assert cli.needs_ship(cli.build_parser().parse_args(["daily-live"]))
+    assert "OnCalendar=*-*-* 23:00:00" in text
+    assert "Persistent=true" in text
+    assert "Type=oneshot" in text
+    assert "TimeoutStartSec=infinity" in text
+    assert "UnsetEnvironment=QD_SEAT" in text
+    assert f"Environment=QD_SHIP={origin.folder}" in text
+    assert "ExecStart=/usr/bin/qd daily-live" in text
+    assert "WantedBy=timers.target" in text
+    assert not (tmp_path / ".config").exists()
+
+
+def _stub(path: Path) -> None:
+    path.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "place = sys.argv[sys.argv.index('--ship') + 1]\n"
+        "socket = os.environ.get('QD_TMUX_SOCKET')\n"
+        "Path(os.environ['DAILY_LIVE_RECORD']).write_text(json.dumps({\n"
+        "    'argv': sys.argv,\n"
+        "    'seat': os.environ.get('QD_SEAT'),\n"
+        "    'tmux': os.environ.get('TMUX'),\n"
+        "    'tmpdir': os.environ.get('TMUX_TMPDIR'),\n"
+        "    'socket': socket,\n"
+        "    'ship': os.environ.get('QD_SHIP'),\n"
+        "    'ship_exists': Path(place, 'ship.toml').is_file(),\n"
+        "    'socket_name': Path(socket).name if socket else None,\n"
+        "    'socket_parent_exists': Path(socket).parent.is_dir() if socket else False,\n"
+        "    'namespace_header': Path(socket).parent.joinpath('.qd-tmux-lock').read_text(errors='replace')[:40] if socket else None,\n"
+        "    'namespace_mode': oct(Path(socket).parent.stat().st_mode & 0o777) if socket else None,\n"
+        "}))\n"
+        "print('minimal check stood in')\n"
+    )
+    path.chmod(path.stat().st_mode | stat.S_IEXEC)
+
+
+def test_each_check_is_minimal_on_a_private_throwaway_that_is_removed(tmp_path, monkeypatch):
+    if daily_live.memory_root() is None:
+        import pytest
+        pytest.skip("no writable /dev/shm for a throwaway ship")
+    origin = ship(tmp_path / "daily")
+    stub = tmp_path / "qd-stub"
+    record = tmp_path / "record.json"
+    _stub(stub)
+    monkeypatch.setenv("DAILY_LIVE_RECORD", str(record))
+    monkeypatch.setenv("QD_SEAT", "worker2")
+    monkeypatch.setenv("TMUX", "/not-the-private-server,1,1")
+    before = os.environ.get("TMUX_TMPDIR")
+    result = daily_live.invoke(origin, "codex", daily_live.memory_root(), str(stub))
+    saved = json.loads(record.read_text())
+    assert result.exit_code == 0
+    assert result.retained is None
+    assert saved["argv"] == [str(stub), "--ship", saved["ship"], "check", "codex", "--minimal"]
+    assert saved["ship_exists"] is True
+    assert saved["seat"] is None and saved["tmux"] is None and saved["tmpdir"] is None
+    assert saved["socket_name"] == "s"
+    assert saved["socket_parent_exists"] is True
+    assert Path(saved["socket"]).parent.name.startswith("qd-pt-")
+    assert saved["namespace_header"].startswith("quarterdeck private tmux namespace")
+    assert saved["namespace_mode"] == "0o700"
+    assert str(daily_live.memory_root()) in saved["ship"]
+    assert not Path(saved["ship"]).exists()
+    assert not Path(result.place).exists()
+    assert not Path(saved["socket"]).parent.exists()
+    assert os.environ.get("TMUX_TMPDIR") == before
+    assert (origin.folder / "ship.toml").is_file()
+
+
+def test_without_memory_the_throwaway_uses_the_scratch(tmp_path, monkeypatch):
+    if daily_live.memory_root() is None:
+        import pytest
+        pytest.skip("private server still needs /dev/shm on a long scratch path")
+    origin = ship(tmp_path / "daily")
+    stub = tmp_path / "qd-stub"
+    record = tmp_path / "record.json"
+    scratch = tmp_path / "scratch"
+    _stub(stub)
+    monkeypatch.setenv("DAILY_LIVE_RECORD", str(record))
+    monkeypatch.setattr(daily_live, "ship_root", lambda path: path)
+    message, failed = daily_live.run(
+        origin, now=NOW, readings=[reading("codex", working=False, ended=YESTERDAY)],
+        scratch=scratch, qd=str(stub))
+    saved = json.loads(record.read_text())
+    assert failed is False
+    assert saved["argv"][-3:] == ["check", "codex", "--minimal"]
+    assert saved["ship"].startswith(str(scratch))
+    assert not Path(saved["ship"]).exists()
+    assert not scratch.joinpath(Path(saved["ship"]).relative_to(scratch).parts[0]).exists()
+    assert Path(saved["socket"]).parent.name.startswith("qd-pt-")
+    assert not Path(saved["socket"]).exists()
+    assert "codex: not used that day; check passed" in message.body
+    assert daily_live.MUSE_LINE in message.body

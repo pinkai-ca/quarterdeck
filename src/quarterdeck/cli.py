@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from . import (__version__, check, copy_state, doctor, drill, harness as harnesses, install, ledger, post, sandbox, seat as seatmod, service,
+from . import (__version__, check, copy_state, daily_live, doctor, drill, harness as harnesses, install, ledger, post, sandbox, seat as seatmod, service,
                ship as shipmod, standing, watch)
 from .output import Reading
 from . import output, ledger_reading
@@ -200,6 +200,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--model", metavar="ID", help="launch the throwaway seat on this model; require observed confirmation")
     p.add_argument("--minimal", action="store_true",
                    help="minimal live check: one short task and report (spends tokens)")
+    p = verb("daily-live", cmd_daily_live,
+             "check programs the ship did not use today, on throwaway ships, and report once to the desk")
+    p.add_argument("--units", action="store_true",
+                   help="print the user timer and service; install nothing")
     p = verb("doctor", cmd_doctor, "is this machine ready to run the ship: tmux, git, programs, sign-ins, folders, the service, disk")
     p.add_argument("--fix", action="store_true",
                    help="hand the failures to a throwaway seat on the first pool whose program runs, then check again (spends tokens)")
@@ -873,6 +877,15 @@ def cmd_ledger(args: argparse.Namespace) -> Reading:
         with book:
             data = ledger_reading.collect(book, ship, by=args.by, tools=args.tools)
     return Reading(data, ledger_reading.render)
+
+
+def cmd_daily_live(args: argparse.Namespace) -> list[str]:
+    ship = load_ship(args)
+    if args.units:
+        return daily_live.units(daily_live.installed_qd(ship), ship.folder).splitlines()
+    message, failed = daily_live.run(ship)
+    args.exit_code = 1 if failed else 0
+    return [f"{message.short} to {message.to} · stored", message.body.rstrip("\n")]
 
 
 def cmd_check(args: argparse.Namespace) -> list[str]:
