@@ -6,6 +6,7 @@ worker by its id) appends one JSON line per event to its own file in ``$TESTRUN_
 so a process that dies leaves every event it had recorded.
 """
 import json
+from contextlib import contextmanager
 import os
 import sys
 import tempfile
@@ -106,9 +107,13 @@ class Recorder:
 
     @pytest.hookimpl(hookwrapper=True, trylast=True)
     def pytest_fixture_setup(self, fixturedef, request):
-        outcome = yield
         if self.ci_sessions is not None and fixturedef.argname == 'private_socket_root':
-            self.ci_sessions.container(outcome.get_result(), request)
+            with self.ci_sessions.fixture_container(fixturedef) as containers:
+                outcome = yield
+                if containers != [outcome.get_result()]:
+                    raise RuntimeError('CI private socket fixture did not use its supported container scope')
+        else:
+            yield
 
 
 class CISessions:
@@ -128,7 +133,45 @@ class CISessions:
 
         self.patch.setattr(OwnedSocket, 'record', record)
 
+    @contextmanager
+    def fixture_container(self, fixturedef):
+        """Unmark inside the fixture's own container, after its child cleanup.
+
+        A request finalizer added after the fixture yields runs too early: its
+        native tmux folder still exists then. Enter the known container context
+        during setup, so its existing unwinding order retires children first,
+        releases our marker second, and removes the empty container last.
+        The temporary binding ends before any test body runs; CI's environment
+        and the target fixture's own cleanup/checks are unchanged.
+        """
+        namespace = getattr(fixturedef.func, '__globals__', {})
+        original = namespace.get('socket_container')
+        if not callable(original):
+            raise RuntimeError('CI private socket fixture has no supported container scope')
+        containers = []
+
+        @contextmanager
+        def registered(*args, **kwargs):
+            with original(*args, **kwargs) as folder:
+                release = self._container_release(folder)
+                containers.append(folder)
+                try:
+                    yield folder
+                finally:
+                    if release is not None:
+                        release()
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setitem(namespace, 'socket_container', registered)
+            yield containers
+
     def container(self, folder, request):
+        """Registration for a caller whose container has no pending child teardown."""
+        release = self._container_release(folder)
+        if release is not None:
+            request.addfinalizer(release)
+
+    def _container_release(self, folder):
         from pathlib import Path
         from _qd_testrun_ci_support import sessions
         from _qd_testrun_ci_support.layout import DIRECTORY
@@ -149,7 +192,7 @@ class CISessions:
             finally:
                 os.close(descriptor)
 
-        request.addfinalizer(release)
+        return release
 
     def finish(self):
         self.patch.undo()
