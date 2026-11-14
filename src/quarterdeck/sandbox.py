@@ -30,6 +30,15 @@ from .ship import Ship, ShipError
 
 PROGRAM = "bwrap"
 TMP_BYTES = 256 * 1024 * 1024  # a private /tmp lives in memory; this caps what a runaway write can take
+HOME_BYTES = 16 * 1024 * 1024  # the empty home stands in memory too; bounded, so a jailed seat cannot fill the machine
+HIDDEN_BYTES = 1024 * 1024  # every other tmpfs inside is a fence or a hidden folder, holding mount points only
+# What a jailed seat sees of its ship's runtime, read-only: the post (its own drop writable on top), its own brief, the
+# ship's own qd (bin, venv, the previous copy and the record that selects between them) and the service's heartbeat.
+# The rest of runtime/ is an empty folder inside: the ledger, the logs, the evidence, every sign-in a usage reader or a
+# parked credential holds, and whatever the runtime holds later. Its own seat folder and check folder are writable.
+# The runtime's own .git is the empty fence repository that keeps git run above it out; a jailed qd post checks it.
+RUNTIME_SHOWN = ('.git', 'post', 'bin', 'venv', 'venv.prev', 'installed.json', 'service.heartbeat')
+# Of the briefs, only the seat's own: every seat's brief lies in that folder, the counsel's included.
 HOPS = 20  # a chain of links longer than this is nobody's install
 # What the jail hides besides the operator's home: its own empty /tmp and its fresh /dev, whose /dev/shm is empty.
 # A folder the launch needs below one of them is bound back read-only, as one below the home is; the mount
@@ -330,9 +339,11 @@ def command(jail: Jail, argv: list[str]) -> list[str]:
     # access) would let it stop the service's pass.
     mounts += [("--workspace", jail.workspace)]
     mounts += [("--fleet", folder) for folder in fleet_folders]
-    mounts += [("--ro-bind", jail.ship_folder),
-               ("--tmpfs", jail.runtime / "seats"), ("--private-tmpfs", jail.runtime / "tmux"),
+    mounts += [("--ro-bind", jail.ship_folder), ("--runtime", jail.runtime),
+               ("--private-tmpfs", jail.runtime / "tmux"),
                ("--private-tmpfs", jail.runtime / LOCKS), ("--bind", jail.seat_folder)]
+    mounts += [("--ro-bind-try", jail.runtime / name) for name in RUNTIME_SHOWN]
+    mounts += [("--ro-bind-try", jail.runtime / "brief" / f"{jail.seat_folder.name}.md")]
     mounts += [("--bind-try", folder) for folder in jail.writable]
     mounts += [("--declaration", file) for file in getattr(jail, 'declarations', ())]
 
@@ -353,7 +364,7 @@ def command(jail: Jail, argv: list[str]) -> list[str]:
         if flag == '--workspace':
             flag = '--bind'
         if flag == '--declaration':
-            args += ['--tmpfs', str(folder.parent), '--ro-bind', str(folder), str(folder),
+            args += ['--size', str(HIDDEN_BYTES), '--tmpfs', str(folder.parent), '--ro-bind', str(folder), str(folder),
                      '--remount-ro', str(folder.parent)]
         elif flag == '--fleet':
             # The whole fleet folder is an empty tmpfs, never the folder itself: a ship raised there after
@@ -364,12 +375,18 @@ def command(jail: Jail, argv: list[str]) -> list[str]:
                 # law: one-folder
                 # A missing folder's empty mount point stays inside the project; office/ is
                 # where the office's own declaration belongs.
-                args += ['--tmpfs', str(folder)]
+                args += ['--size', str(HIDDEN_BYTES), '--tmpfs', str(folder)]
                 fenced.append(folder)
+        elif flag == '--runtime':
+            # The runtime is fenced like the fleet: empty, bounded, and read-only once what is shown is in place.
+            args += ['--size', str(HIDDEN_BYTES), '--tmpfs', str(folder)]
+            fenced.append(folder)
         elif flag == "--private-tmpfs":
-            args += ["--perms", "0700", "--tmpfs", str(folder)]
+            args += ["--perms", "0700", "--size", str(HIDDEN_BYTES), "--tmpfs", str(folder)]
+        elif flag == "--tmpfs":  # the operator's home, bounded like every tmpfs inside
+            args += ["--size", str(HOME_BYTES if folder == jail.home else HIDDEN_BYTES), "--tmpfs", str(folder)]
         else:
-            args += [flag, str(folder)] if flag == "--tmpfs" else [flag, str(folder), str(folder)]
+            args += [flag, str(folder), str(folder)]
     for folder in fenced:  # after every mount inside it, which needed its mount point made there
         args += ['--remount-ro', str(folder)]
     for variable, value in jail.environment:

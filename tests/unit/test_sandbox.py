@@ -73,18 +73,20 @@ def test_the_command_hides_the_home_binds_the_workspace_writable_and_the_ship_re
                         writable=(runtime / "post" / "drop" / "w", runtime / "check" / "w"))
     args = sandbox.command(jail, ["pi", "--model", "m"])
     assert args[:12] == ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--size", str(sandbox.TMP_BYTES), "--tmpfs", "/tmp"]
-    assert args[12:14] == ["--tmpfs", str(home)], "the operator's home is an empty tmpfs before anything under it is bound back"
+    assert args[12:16] == ["--size", str(sandbox.HOME_BYTES), "--tmpfs", str(home)], "the operator's home is an empty, bounded tmpfs before anything under it is bound back"
     assert args[-9:] == ["--setenv", "HOME", str(runtime / "seats" / "w" / "home"), "--unshare-pid", "--die-with-parent", "--", "pi", "--model", "m"]
     text = " ".join(args)
     workspace, ship, seats, seat, post = (text.index(f"--bind {home / 'dev' / 'project'} "), text.index(f"--ro-bind {ship_folder} "),
-                                         text.index(f"--tmpfs {runtime / 'seats'}"), text.index(f"--bind {runtime / 'seats' / 'w'} "),
+                                         text.index(f"--tmpfs {runtime} "), text.index(f"--bind {runtime / 'seats' / 'w'} "),
                                          text.index(f"--bind-try {runtime / 'post' / 'drop' / 'w'} "))
-    assert workspace < ship < seats < seat, "a deeper mount comes later, so the ship folder is read-only inside the writable workspace and this seat is writable inside the hidden seats"
+    assert workspace < ship < seats < seat, "a deeper mount comes later, so the ship folder is read-only inside the writable workspace and this seat is writable inside the hidden runtime"
+    assert text.index(f"--ro-bind-try {runtime / 'post'} ") < post, "the post is shown read-only, the seat's drop writable over it"
+    assert text.index(f"--remount-ro {runtime}") > post, "the runtime's fence is made read-only after everything inside it"
     assert ship < post, "only the seat's drop folder is writable inside the read-only ship folder"
     binds = [args[i + 1] for i, arg in enumerate(args[:-1]) if arg == "--bind-try"]
     assert str(runtime / "post" / "drop" / "w") in binds and str(runtime / "post") not in binds
     assert str(runtime / "check" / "w") in binds and str(runtime / "check") not in binds
-    hidden = text.index(f"--perms 0700 --tmpfs {runtime / 'tmux'}")
+    hidden = text.index(f"--perms 0700 --size {sandbox.HIDDEN_BYTES} --tmpfs {runtime / 'tmux'}")
     assert ship < hidden, "the ship's own tmux server is hidden inside the read-only ship folder, by an empty private tmpfs"
     assert f"--ro-bind-try {home / '.local' / 'bin'} {home / '.local' / 'bin'}" in text and f"--ro-bind-try {home / '.opencode'} " in text
     assert text.index(f"--ro-bind-try {home / '.opencode'} ") > args.index(str(home)), "bound back after the home is hidden"
@@ -325,9 +327,13 @@ def test_a_jailed_launch_runs_with_the_same_qd_only_path_and_sets_no_path_of_its
     assert f"PATH={path}" in words and words.index(f"PATH={path}") < words.index("bwrap")
     # The ship folder is bound back read-only; nothing deeper is mounted over the command folder or its parents.
     assert f"--ro-bind {ship.folder} {ship.folder}" in " ".join(args)
+    # Inside the runtime's fence the command folder is bound back read-only at its own path; nothing writable or
+    # hiding is laid over it or its parents beyond that fence.
+    assert f"--ro-bind-try {commands} {commands}" in " ".join(args)
     over = [args[i + 1] for i, word in enumerate(args) if word in ("--tmpfs", "--bind", "--bind-try", "--ro-bind-try")
             and i + 1 < len(args) and ship.folder in Path(args[i + 1]).parents
-            and (commands == Path(args[i + 1]) or Path(args[i + 1]) in commands.parents)]
+            and (commands == Path(args[i + 1]) or Path(args[i + 1]) in commands.parents)
+            and Path(args[i + 1]) != ship.runtime and not (word == "--ro-bind-try" and Path(args[i + 1]) == commands)]
     assert over == [], over
 
 

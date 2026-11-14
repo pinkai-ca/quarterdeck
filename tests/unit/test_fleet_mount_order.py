@@ -1,6 +1,7 @@
 """Ordinary command construction: inspect mount order without running a jail."""
 
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -106,4 +107,6 @@ def test_standalone_mounts_keep_parent_before_child_without_fleet_containers(tmp
                    seat_home=seat/'home', writable=(runtime/'post',), declarations=())
     args = command(jail, ['synthetic-program'])
     assert position(args, '--ro-bind', ship, ship) < position(args, '--bind', seat, seat)
-    assert '--ro-bind-try' not in args
+    shown = [args[i + 1] for i, word in enumerate(args) if word == '--ro-bind-try']
+    assert shown and all(Path(path).parent == runtime or Path(path) == runtime / 'brief' / f'{seat.name}.md'
+                         for path in shown), 'only what the runtime shows a jail, and the seat\'s own brief'

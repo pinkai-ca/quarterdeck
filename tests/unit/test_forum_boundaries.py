@@ -567,10 +567,12 @@ def test_a_jailed_reviewer_still_reaches_the_shared_post_folder_but_no_peer_seat
     assert ('--bind-try', str(drop), str(drop)) in triples
     assert ('--bind-try', str(runtime / 'post'), str(runtime / 'post')) not in triples
     assert ('--ro-bind', str(world.ship.folder), str(world.ship.folder)) in triples
-    assert ('--tmpfs', str(runtime / 'seats')) in [tuple(args[i:i + 2]) for i in range(len(args) - 1)]
+    # The runtime is an empty fence inside: the post is shown read-only, and the seat's own folder is mounted over it.
+    assert ('--tmpfs', str(runtime)) in [tuple(args[i:i + 2]) for i in range(len(args) - 1)]
+    assert ('--ro-bind-try', str(runtime / 'post'), str(runtime / 'post')) in triples
     assert ('--bind', str(folder), str(folder)) in triples
     assert not any(str(runtime / 'seats' / peer) in args for peer in ('lead', *MEMBERS[1:]))
-    assert args.index(str(runtime / 'seats')) < args.index(str(folder))  # own folder mounted over the tmpfs
+    assert args.index(str(runtime)) < args.index(str(folder))  # own folder mounted over the fence
 
 
 def test_the_template_jails_its_endpoint_reviewer_outside_the_ship_folder(tmp_path, monkeypatch):

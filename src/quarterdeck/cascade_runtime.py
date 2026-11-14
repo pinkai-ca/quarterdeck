@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import fcntl
+import errno
 import hashlib
 import json
 import os
 import re
 import stat
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 from . import durable, post, post_dir
@@ -45,10 +45,29 @@ def _parent(path: Path) -> int:
         raise
 
 
+def _lock_path(path: Path) -> Path:
+    """The exclusion's lock: the runtime is the folder above ring/ or post/, where cascade and group evidence lie."""
+    from . import ship_locks
+    absolute = Path(os.path.abspath(path))
+    runtime = absolute.parent.parent.parent
+    return ship_locks.hashed(runtime, 'cascade-files', str(absolute))
+
+
+@contextmanager
+def _exclusion(path: Path):
+    from . import ship_locks
+    try:
+        with ship_locks.held(_lock_path(path), 'cascade notes', wait=0):
+            yield
+    except ship_locks.Busy:
+        raise BlockingIOError(errno.EWOULDBLOCK, 'cascade evidence is held by another reader or writer') from None
+
+
 @contextmanager
 def checked_file(path: Path, *, append: bool = False):
     parent = _parent(path)
     descriptor = None
+    stack = ExitStack()
     try:
         flags = os.O_RDWR | os.O_APPEND | os.O_CREAT if append else os.O_RDONLY
         descriptor = os.open(path.name, flags | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
@@ -56,7 +75,11 @@ def checked_file(path: Path, *, append: bool = False):
         opened = os.fstat(descriptor)
         if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
             raise ShipError('cascade runtime file is not a single regular file')
-        fcntl.flock(descriptor, (fcntl.LOCK_EX if append else fcntl.LOCK_SH) | fcntl.LOCK_NB)
+        # Only the appender locks, and with a lock of the ship's own under runtime/locks, never the file itself: a
+        # jail sees the post's files and could hold them (flock needs no write access). Every file read here is
+        # published whole by rename, so a reader needs no lock and writes nothing. Busy stays an OSError.
+        if append:
+            stack.enter_context(_exclusion(path))
 
         def verify():
             current = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
@@ -71,6 +94,7 @@ def checked_file(path: Path, *, append: bool = False):
         yield descriptor, verify
         verify()
     finally:
+        stack.close()
         if descriptor is not None:
             os.close(descriptor)
         os.close(parent)
