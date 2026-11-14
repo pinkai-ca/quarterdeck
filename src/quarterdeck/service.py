@@ -1343,7 +1343,7 @@ class Service:
         quota.refresh_declared(self)
 
     def account_records(self, *, source_records=None, source_screens=None, source_walls=None,
-                        replay=True, process_table=None):
+                        replay=True, process_table=None, source_reader_keys=None):
         """Prepare and commit the pass; callers handle only its accounting outcome."""
         # A usage write whose commit was refused is completed first, never rolled back, so that no
         # record is read while its transaction stands; if it fails again the pass fails and is counted.
@@ -1353,7 +1353,7 @@ class Service:
         marks, errors = dict(self.read_marks), dict(self.account_errors)
         meters = deepcopy(self.meters)
         checkpoints = {}
-        reader_keys = reader_stamp.readers()
+        reader_keys = reader_stamp.readers() if source_reader_keys is None else source_reader_keys
         for seat in self.resolved_seats():
             pane, launched = seat.pane(), seat.launched()
             live = pane is not None and not pane.dead

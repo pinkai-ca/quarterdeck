@@ -101,3 +101,16 @@ def test_restart_outside_readers_reuses_all_and_changed_reader_rechecks_only_its
     w.svc.account_records()
     assert w.reads == [*w.paths, second]
     assert w.input_reads == [*prior_inputs, second]
+
+
+def test_streamed_record_passes_share_the_jobs_reader_keys(tmp_path, monkeypatch):
+    w = world(tmp_path, monkeypatch, records=('first', 'second'))
+    keys = reader_stamp.readers()
+    def unexpected():
+        raise AssertionError('a streamed record must not rehash the package')
+    monkeypatch.setattr(reader_stamp, 'readers', unexpected)
+    w.svc.account_records(source_reader_keys=keys, replay=False)
+    assert w.reads == w.paths
+    restart(w)
+    w.svc.account_records(source_reader_keys=keys, replay=False)
+    assert w.reads == w.paths

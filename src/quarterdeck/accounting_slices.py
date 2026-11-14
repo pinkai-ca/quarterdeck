@@ -23,6 +23,7 @@ from .attribution_cache import Attribution
 from .cost_evidence import CostEvidence
 from .door import Door
 from .harness import get
+from .harness import reader_stamp
 from .harness.sqlite_snapshot import snapshot
 from .harness.json_record import release
 from .harness.base import record_fingerprint
@@ -168,6 +169,7 @@ def worker():
                 sources[seat.name] = [record_owner.Owned(Path(path), name, get(name) if name else None, reason, transient)
                                       for path, name, reason, transient in item['sources']]
             table = machine.processes()
+            reader_keys = reader_stamp.readers()
             owners = {str(item.path): seat.name for seat in selected for item in sources[seat.name]}
             def context(record, names):
                 book.db.flush()
@@ -182,7 +184,8 @@ def worker():
                         'SELECT DISTINCT seat FROM turns WHERE record=?', (str(item.path),))}
                     context(item.path, sorted(names))
                     observations, notices, human = service.account_records(source_records={seat.name: [item]}, source_screens={},
-                                                               source_walls=walls, replay=False, process_table=table)
+                                                               source_walls=walls, replay=False, process_table=table,
+                                                               source_reader_keys=reader_keys)
                     for event, data in notices:
                         send(('notice', event, data))
                     for reading in human:
