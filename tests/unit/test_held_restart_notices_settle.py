@@ -132,8 +132,12 @@ def test_near_form_remains_deliverable(store, monkeypatch, change):
     assert message in post.Attempts(store.dir.parent.parent).undelivered(store, 'reader')
 
 
-def aged_clock(monkeypatch):
-    now = time.time_ns() + post.POST_TIMESTAMP_TICK_NS + 1_000_000
+def aged_clock(monkeypatch, *paths):
+    stamps = [time.time_ns()]
+    for path in paths:
+        info = path.stat()
+        stamps.extend((info.st_mtime_ns, info.st_ctime_ns))
+    now = max(stamps) + post.POST_TIMESTAMP_TICK_NS + 1_000_000_000
     monkeypatch.setattr(post_notices.time, 'time_ns', lambda: now)
 
 
@@ -154,6 +158,8 @@ def test_quiet_pass_reads_no_request_record_and_next_change_is_seen(store, monke
     assert len(calls) == 1
     finish(store, path, 'reader: request ended')
     assert len(calls) == 2  # one service-writer registry read, separate from delivery
+    # The newly written receipt must age before an unchanged reading can certify it.
+    aged_clock(monkeypatch, request_queue.notice_path(store.dir.parent.parent, 'reader'))
     calls.clear()
     assert message.id in store.settled_notices('reader')
     assert len(calls) == 1
