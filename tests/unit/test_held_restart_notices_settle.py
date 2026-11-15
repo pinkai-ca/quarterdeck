@@ -170,6 +170,10 @@ def test_quiet_pass_reads_no_request_record_and_next_change_is_seen(store, monke
 def test_young_or_unreadable_receipt_is_not_cached(store, monkeypatch):
     path, message = held(store, monkeypatch)
     finish(store, path)
+    # Pin the reading inside this receipt's tick regardless of machine load.
+    receipt_info = request_queue.notice_path(store.dir.parent.parent, 'reader').stat()
+    young = max(receipt_info.st_mtime_ns, receipt_info.st_ctime_ns)
+    monkeypatch.setattr(post_notices.time, 'time_ns', lambda: young)
     original = request_queue.notice_records
     calls = []
     monkeypatch.setattr(request_queue, 'notice_records', lambda *args: calls.append(args) or original(*args))
