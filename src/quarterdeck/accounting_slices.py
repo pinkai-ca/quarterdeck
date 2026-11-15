@@ -455,6 +455,10 @@ class Driver:
                 if seat is not None and str(seat.record()) == packet[2]:
                     publish(seat, Path(packet[2]), SimpleNamespace(failure=packet[3]), (), packet[4])
             elif packet[0] == 'done':
+                if self.scope is not None and self.completion:
+                    # A record job cannot supply a global completion, even if
+                    # it happens to name the seats of a held full-job retry.
+                    raise RuntimeError('scoped accounting plan contains a global completion')
                 self.valid(service, tuple(self.watched))
                 if self.invalid:
                     if self.scope is None:
