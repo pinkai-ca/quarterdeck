@@ -67,17 +67,31 @@ def tree(tmp_path, levels):
     return root, expected, token
 
 
+def tree_descriptors(root):
+    """Only descriptors into this test's tree, including directories already unlinked by retirement."""
+    root = os.path.realpath(root)
+    found = {}
+    with os.scandir('/proc/self/fd') as entries:
+        for entry in entries:
+            try:
+                target = os.readlink(entry.path)
+            except FileNotFoundError:
+                continue  # another task may close its own descriptor while this list is read
+            if target in (root, root + ' (deleted)') or target.startswith(root + os.sep):
+                found[entry.name] = target
+    return found
+
+
 def test_retirement_removes_a_tree_past_the_interpreters_recursion(tmp_path):
     root, expected, token = tree(tmp_path, 1500)
     parent = os.open(tmp_path, DIRECTORY)
-    before = len(os.listdir('/proc/self/fd'))
     try:
         result = owned.retire(parent, root.name, expected, root, token)
         assert result['outcome'] == 'complete', result
         assert result['removed'] == dict(files=2, dirs=1501, links=0,
                                         bytes=len(token) + len(b'synthetic bottom'))
         assert not root.exists()
-        assert len(os.listdir('/proc/self/fd')) == before
+        assert not tree_descriptors(root)
     finally:
         os.close(parent)
 
@@ -90,19 +104,19 @@ from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from tests.testrunner import owned, scratch
 from tests.testrunner.layout import DIRECTORY, Refused
+from tests.unit.test_testrun_open_files import tree_descriptors
 root = Path(sys.argv[2])
 resource.setrlimit(resource.RLIMIT_NOFILE, (64, resource.getrlimit(resource.RLIMIT_NOFILE)[1]))
 parent = os.open(root.parent, DIRECTORY)
-before = len(os.listdir('/proc/self/fd'))
 try:
     scratch.usage(root)
 except Refused as error:
     measurement = str(error)
 else:
     raise AssertionError('a tree deeper than the available descriptors was accepted')
-assert len(os.listdir('/proc/self/fd')) == before
+assert not tree_descriptors(root)
 result = owned.retire(parent, root.name, json.loads(sys.argv[3]), root, sys.argv[4])
-assert len(os.listdir('/proc/self/fd')) == before
+assert not tree_descriptors(root)
 os.close(parent)
 print(json.dumps(dict(measurement=measurement, retirement=result)))
 '''
