@@ -13,6 +13,7 @@ import json
 import hashlib
 from pathlib import Path
 import secrets
+import stat
 import time
 
 from . import durable, post_dir
@@ -26,7 +27,7 @@ JOURNALS = frozenset({'delivered', 'cancelled', 'abandoned', 'unacted'})
 BATCH = 1000
 SECONDS = 1.0
 HEARTBEAT = 0.1
-INTERVAL = 60.0
+INTERVAL = 300.0
 STALLED_AFTER = 300.0
 STATUS = 'retirement-status.json'
 PHASES = frozenset({'start', 'recovery', 'ledger catch-up', 'attempts read', 'store read', 'eligibility',
@@ -379,14 +380,15 @@ def reading(runtime):
         if path.stat().st_size > 4096:
             return 'retirement status unreadable'
         data = json.loads(path.read_text())
-        if (not isinstance(data, dict) or set(data) != {'format', 'since', 'phase'}
-                or type(data['format']) is not int or data['format'] != 1
+        if (not isinstance(data, dict) or set(data) != {'format', 'since', 'phase', 'misses'}
+                or type(data['format']) is not int or data['format'] != 2
+                or type(data['misses']) is not int or not 1 <= data['misses'] <= 2
                 or type(data['since']) not in (int, float) or data['phase'] not in PHASES):
             return 'retirement status unreadable'
         age = time.time() - data['since']
         if not 0 <= age < float('inf'):
             return 'retirement status unreadable'
-        return f"retirement stalled: {data['phase']}" if age >= STALLED_AFTER else None
+        return f"retirement stalled: {data['phase']}" if age >= STALLED_AFTER and data['misses'] >= 2 else None
     except FileNotFoundError:
         return None
     except (OSError, ValueError, TypeError, KeyError):
@@ -404,25 +406,45 @@ def _status(service, result, observation):
         return
     if not waiting and not path.exists():
         return  # no existing stall and no new evidence of one
-    since = time.time()
+    since, misses = time.time(), 0
     try:
         previous = json.loads(path.read_text())
         if reading(service.runtime) != 'retirement status unreadable':
-            since = previous['since']
+            since, misses = previous['since'], previous['misses']
     except (OSError, ValueError, TypeError, KeyError):
         pass
-    durable.replace_file(path, json.dumps(dict(format=1, since=since, phase=observation['phase'])) + '\n')
+    if result.get('held') != 'ledger catch-up':
+        misses = min(2, misses + 1)
+    durable.replace_file(path, json.dumps(dict(format=2, since=since, phase=observation['phase'],
+                                             misses=max(1, misses))) + '\n')
 
 
-def due(service):
+def activity_stamp(runtime):
+    """A few fixed directory observations for scheduling, never delivery evidence."""
+    found = []
+    for path in (runtime / 'post/store', runtime / 'post/attempts', runtime / 'requests'):
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            found.append(None)
+            continue
+        except OSError:
+            return None
+        if not stat.S_ISDIR(info.st_mode):
+            return None
+        found.append((info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns))
+    return tuple(found)
+
+
+def due(service, *, idle=False):
     now = time.monotonic()
-    if now < getattr(service, 'post_retirement_due', 0):
+    if not idle and now < getattr(service, 'post_retirement_due', 0):
         return
     result = None
     try:
         result = run(service, complete_reads=True)
     finally:
-        service.post_retirement_due = now + INTERVAL
+        service.post_retirement_due = time.monotonic() + INTERVAL
         observation = service.post_retirement_observation
         if result is None:
             result = {**getattr(service, 'post_retirement_counts', dict(attempts=0, journals=0)),

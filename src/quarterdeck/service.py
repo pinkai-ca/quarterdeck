@@ -212,6 +212,9 @@ class Service:
 
     def tick(self) -> None:
         """One pass: the ship file read afresh, then every duty, each failing alone."""
+        from . import post_retirement
+        self.pass_had_work = False
+        self.retirement_inputs = post_retirement.activity_stamp(self.runtime)
         self.release_earlier_installer()
         try:
             stamp = ship_file_stamp(self.ship)  # before the read: a write during it reads as a change later
@@ -264,7 +267,12 @@ class Service:
     def retire_post(self) -> None:
         """Move only finished, settled delivery files after accounting catch-up."""
         from . import post_retirement
-        post_retirement.due(self)
+        before = getattr(self, 'retirement_inputs', None)
+        driver = getattr(self, 'account_driver', None)
+        idle_pass = (getattr(self, 'pass_had_work', True) is False and before is not None
+                     and before == post_retirement.activity_stamp(self.runtime)
+                     and (driver is None or getattr(driver, 'active', None) is False))
+        post_retirement.due(self, idle=idle_pass)
 
     def status_due(self) -> None:
         now = time.monotonic()
@@ -312,6 +320,8 @@ class Service:
             self.accounting_health_error = None
 
     def log(self, event: str, **data) -> None:
+        if event != 'post-retired':
+            self.pass_had_work = True
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         with self.log_path.open("a") as f:
             f.write(json.dumps({"at": datetime.now().astimezone().isoformat(timespec="seconds"), "event": event, **data}) + "\n")
