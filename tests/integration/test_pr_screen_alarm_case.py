@@ -84,7 +84,8 @@ def test_an_obeyed_alarm_journal_and_a_forwarded_post_reach_no_seat(ship, tmux, 
     svc = service.Service(ship, tmux)
     results = pr_screen.run(ship.runtime, pr_screen.FixtureSource(FIXTURES, ['alarm-journal']), hands, outcomes,
                             seat_names=tuple(ship.seats),
-                            repository='owner/project', hand_names=('worker-1',), answer_seconds=0, poll=0.01)
+                            repository='owner/project', hand_names=('worker-1',), answer_seconds=0, poll=0.01,
+                            corpus=pr_screen.load_corpus(FIXTURES / 'planted-test-corpus.json'))
     assert [r['outcome'] for r in results] == ['flagged'], 'the search flags it, and the hand gave no answer'
 
     svc.file_drops()
@@ -92,7 +93,7 @@ def test_an_obeyed_alarm_journal_and_a_forwarded_post_reach_no_seat(ship, tmux, 
     reached = [m for m in svc.store.all() if 'SHRIKE' in m.body or m.id in ('ord-planted-alarm', 'rep-planted-alarm',
                                                                            'ord-forwarded-text')]
     assert reached == [], 'nothing the hand wrote reached any seat'
-    assert hands.calls == ['fresh', 'instruct', 'down']
+    assert hands.calls == ['fresh', 'instruct', 'down', 'fresh']
     held = list((ship.runtime / 'pr-screen' / 'held' / 'worker-1').iterdir())
     assert len(held) == 1, 'its forwarded post was moved aside while the hold stood, never filed'
 

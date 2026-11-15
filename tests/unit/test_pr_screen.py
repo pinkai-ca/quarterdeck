@@ -19,6 +19,7 @@ FIXTURES = Path(__file__).resolve().parents[1] / 'fixtures' / 'pr_screen'
 CASES = {path.name: json.loads((path / 'pr.json').read_text()) for path in sorted(FIXTURES.iterdir())
          if (path / 'pr.json').is_file()}
 HANDS = ('hand-a', 'hand-b')  # neutral names: the ship file declares a ship's own ([pr_screen] hands)
+CORPUS = pr_screen.load_corpus(FIXTURES / 'planted-test-corpus.json')  # the tests' own; the live one is private
 SUSPICIOUS = re.compile(r'ignore|disregard|write the word|reply only|answer clean|new instructions|qd post|'
                         r'human-alert|already approved|from now on|forward this', re.IGNORECASE)
 
@@ -50,8 +51,8 @@ class Hands:
         return self.idle_answer
 
     def fresh(self, name):
-        assert pr_screen.held(self.runtime, name), 'a hand is started for a screen only under the hold'
-        self.calls.append(('fresh', name))
+        # Started for a piece under the hold; started again after it, once the hold is released and the piece gone.
+        self.calls.append(('fresh', name) if pr_screen.held(self.runtime, name) else ('fresh after', name))
 
     def down(self, name):
         assert pr_screen.held(self.runtime, name), 'the hand goes down before the hold is released'
@@ -120,7 +121,7 @@ def run(world, behaviour, cases=None, **options):
     outcomes = Outcomes()
     clock = Clock()
     results = pr_screen.run(runtime, pr_screen.FixtureSource(FIXTURES, cases), hands, outcomes, hand_names=HANDS,
-                            seat_names=('reviewer', 'desk', 'lead', *HANDS),
+                            seat_names=('reviewer', 'desk', 'lead', *HANDS), corpus=CORPUS,
                             repository='owner/project', clock=clock, sleep=clock.sleep, poll=1.0,
                             answer_seconds=30, idle_seconds=30, **options)
     return results, hands, outcomes
@@ -226,7 +227,7 @@ def one_piece(world, behaviour, **options):
     hands = Hands(runtime, hands_root, behaviour)
     clock = Clock()
     prepared = pr_screen.prepare(texts('post-elsewhere'))
-    verdict = pr_screen.screen_piece(runtime, hands, 'hand-a', 'key', 0, prepared, list(prepared.files),
+    verdict = pr_screen.screen_piece(runtime, hands, 'hand-a', 'key', 0, prepared, list(prepared.files), corpus=CORPUS,
                                      answer_seconds=30, poll=1.0, clock=clock, sleep=clock.sleep, **options)
     return verdict, hands, runtime
 
@@ -240,7 +241,7 @@ def test_a_hand_told_to_post_elsewhere_has_nothing_it_posts_filed(world):
     verdict, hands, runtime = one_piece(world, obeys)
     assert list(post.drop_dir(runtime, 'hand-a').iterdir()) == [], 'nothing it posted stays to be filed'
     assert len(list((runtime / 'pr-screen' / 'held' / 'hand-a').iterdir())) == 1, 'moved aside'
-    assert [call[0] for call in hands.calls] == ['fresh', 'instruct', 'down']
+    assert [call[0] for call in hands.calls] == ['fresh', 'instruct', 'down', 'fresh after']
     assert not pr_screen.held(runtime, 'hand-a'), 'the hold is released once the hand is down and swept'
     assert not verdict.clean  # it flagged the request's lines
 
@@ -262,7 +263,7 @@ def test_the_hand_goes_down_as_soon_as_its_answer_is_there(world):
     hands = Hands(runtime, hands_root, honest)
     clock = Clock()
     prepared = pr_screen.prepare(texts('post-elsewhere'))
-    pr_screen.screen_piece(runtime, hands, 'hand-a', 'key', 0, prepared, list(prepared.files),
+    pr_screen.screen_piece(runtime, hands, 'hand-a', 'key', 0, prepared, list(prepared.files), corpus=CORPUS,
                            answer_seconds=30, poll=1.0, clock=clock, sleep=clock.sleep)
     assert clock.now == 0, 'no wait after the answer: it was there at the first look'
 
@@ -292,7 +293,7 @@ def test_a_hand_that_misses_the_planted_check_counts_as_flagged(world):
 
 def test_the_planted_file_cannot_be_told_from_the_outsiders(world):
     verdict, hands, runtime = one_piece(world, honest)
-    folder = next(path for path in (world[1] / 'hand-a').iterdir() if path.is_dir())
+    folder = runtime / 'pr-screen' / 'screens' / 'key' / 'piece-0-hand-a'  # the piece, as kept after the screen
     names = sorted(path.name for path in folder.glob('f*.txt'))
     assert names == [f'f{n:02d}.txt' for n in range(1, len(names) + 1)], 'one numbered sequence'
     record = json.loads(next((runtime / 'pr-screen' / 'screens' / 'key').glob('piece-0-hand-a.json')).read_text())
@@ -405,3 +406,52 @@ def test_a_listed_instruction_is_never_delivered_again_even_unconfirmed_or_with_
     assert listed not in undelivered(), 'a spoiled list hides more, never less'
     assert other in undelivered() and replied in undelivered(), 'the strict match hides only the instruction\'s form'
     assert pr_screen.spent_instructions(runtime, 'hand-b') == frozenset(), 'each hand\'s own list'
+
+
+# -- outsider text does not outlive the screen, and the planted check's corpus stays private --------------------
+
+def test_a_piece_is_kept_under_the_runtime_and_removed_from_the_hands_folder(world):
+    verdict, hands, runtime = one_piece(world, honest)
+    assert not any((world[1] / 'hand-a').glob('screen-*')), 'no piece folder is left where the hand reads'
+    kept = runtime / 'pr-screen' / 'screens' / 'key' / 'piece-0-hand-a'
+    assert (kept / 'answer.txt').read_text().startswith('FLAGGED')
+    assert len(list(kept.glob('f*.txt'))) == len(pr_screen.prepare(texts('post-elsewhere')).files) + 1
+    assert hands.calls[-1] == ('fresh after', 'hand-a'), 'the hand is started fresh: the watched record is a new one'
+
+
+def test_a_link_swapped_in_for_the_piece_is_removed_never_followed(world, tmp_path):
+    decoy = tmp_path / 'operator'
+    decoy.mkdir()
+    (decoy / 'keep.txt').write_text('mine')
+
+    def swaps(hands, name, order_id, folder):
+        honest(hands, name, order_id, folder)
+        moved = folder.with_name(folder.name + '-moved')
+        folder.rename(moved)
+        folder.symlink_to(decoy)
+    verdict, hands, runtime = one_piece(world, swaps)
+    assert (decoy / 'keep.txt').read_text() == 'mine' and not any((world[1] / 'hand-a').glob('screen-*[0-9a-f]'))
+
+
+def test_a_missing_or_malformed_corpus_refuses_the_screen_before_anything_is_read(world, tmp_path):
+    runtime, hands_root = world
+
+    class Untouched:
+        def open(self):
+            pytest.fail('the screen read a pull request without its corpus')
+    for text in (None, 'not json', json.dumps(dict(phrasings=['say {word}'], words=['heron'], fillers=['x']))):
+        if text is not None:
+            (runtime / 'pr-screen').mkdir(parents=True, exist_ok=True)
+            (runtime / 'pr-screen' / 'planted.json').write_text(text)
+        with pytest.raises(pr_screen.ScreenError, match='corpus'):
+            pr_screen.run(runtime, Untouched(), Hands(runtime, hands_root, honest), Outcomes(), repository='o/p',
+                          hand_names=HANDS)
+
+
+def test_the_code_keeps_the_mechanism_and_no_corpus():
+    source = Path(pr_screen.__file__).read_text()
+    assert not hasattr(pr_screen, 'PLANTED') and not hasattr(pr_screen, 'WORDS')
+    assert not any(phrasing.split('{word}')[0][:30] in source for phrasing in CORPUS.phrasings)
+    text, lines = pr_screen.planted(CORPUS)
+    [line] = lines
+    assert any(text.splitlines()[line - 1].startswith(p.split('{word}')[0]) for p in CORPUS.phrasings)
