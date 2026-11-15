@@ -308,6 +308,27 @@ class OpenCodeHarness(EndpointHarness):
         return home / f"{DATA_PREFIX}{number:03d}"
 
     inputs = staticmethod(inputs)
+    retirement_process_names = ('opencode', 'bun', 'node')
+
+    def retirement_bundle(self, home: Path, record: Path, kept: Path):
+        if not record.is_relative_to(home):
+            return None
+        relative = record.relative_to(home)
+        if (len(relative.parts) != 3 or relative.parts[1:] != ('opencode', 'opencode.db')
+                or not relative.parts[0].startswith(DATA_PREFIX)
+                or not relative.parts[0][len(DATA_PREFIX):].isdigit()):
+            return None
+        allowed = {record.name + suffix for suffix in ('', '-wal', '-shm')}
+        ancillary = {'log', 'repos', 'snapshot'}  # native per-launch data, never shared credentials
+        children = list(record.parent.iterdir())
+        if any(path.name not in allowed | ancillary for path in children):
+            return None
+        paths = [*children, *record.parent.rglob('*')]
+        if any(path.is_symlink() or not (path.is_file() or path.is_dir()) for path in paths):
+            return None
+        files = list({path for path in paths if path.is_file()})
+        return record.parent, kept.parent, files
+
     records = staticmethod(records)
     first_timestamp = staticmethod(first_timestamp)
     session_id = staticmethod(session_id)

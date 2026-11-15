@@ -341,6 +341,8 @@ class Service:
         usage_forecast.notify(self)
 
     def retire_hand_transcripts(self) -> None:
+        if getattr(self, 'ledger', None) is None:
+            return
         from . import hand_transcripts
         hand_transcripts.due(self)
 

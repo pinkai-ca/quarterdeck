@@ -434,6 +434,13 @@ class PiHarness(EndpointHarness):
         return client(home, evidence, version, seat, pool)
 
     inputs = staticmethod(inputs)
+    retirement_process_names = ('pi', 'node', 'bun')
+
+    def retirement_bundle(self, home: Path, record: Path, kept: Path):
+        if record.parent != home / 'sessions' or record.suffix != '.jsonl' or record.is_symlink():
+            return None
+        return record, kept, [record]
+
     records = staticmethod(records)
     first_timestamp = staticmethod(first_timestamp)
     session_id = staticmethod(session_id)

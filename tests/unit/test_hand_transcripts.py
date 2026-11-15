@@ -293,3 +293,17 @@ def test_busy_planner_does_not_delay_next_retirement_opportunity(monkeypatch):
     assert calls == [svc] and svc.hand_transcripts_due == 1300
     hand_transcripts.due(svc)
     assert calls == [svc]
+
+
+def test_without_ledger_retirement_step_does_nothing_and_reads_nothing(monkeypatch):
+    def unexpected(*args, **kwargs):
+        pytest.fail('retirement inspected runtime without a ledger')
+    monkeypatch.setattr(hand_transcripts.time, 'monotonic', unexpected)
+    monkeypatch.setattr(hand_transcripts.reader_stamp, 'readers', unexpected)
+    monkeypatch.setattr(Path, 'iterdir', unexpected)
+    monkeypatch.setattr(record_location, 'destination', unexpected)
+    service = SimpleNamespace()
+    Service.retire_hand_transcripts(service)
+    hand_transcripts.due(service)
+    assert hand_transcripts.run(service) == 0
+    assert vars(service) == {}

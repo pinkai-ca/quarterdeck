@@ -405,6 +405,16 @@ class Harness(ABC):
         return None
     # -- record ------------------------------------------------------------------------
 
+    retirement_process_names: tuple[str, ...] | None = None
+
+    def retirement_bundle(self, home: Path, record: Path, kept: Path):
+        """An atomically movable (source, destination, files) bundle, else unsupported.
+
+        The adapter alone recognizes its native layout and ancillary data. Generic
+        consumers require accounted, old, closed sources before using this bundle.
+        """
+        return None
+
     @abstractmethod
     def records(self, home: Path) -> list[Path]:
         """Every record file in a home, oldest first."""

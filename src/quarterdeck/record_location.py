@@ -1,24 +1,25 @@
-"""Logical record names survive retirement; native bytes have one retained location.
+"""Logical record names survive retirement without rewriting their ledger keys.
 
-Only the two hand transcript layouts have a retired counterpart. Readers keep
-the original path as the ledger key. No symlink or edited native record is needed.
+Adapters select native transcript bundles. This module knows only the framework's
+seat home and retained home locations; it does not interpret a program's layout.
 """
 
 from pathlib import Path
 
 
+def retained_home(home: Path) -> Path | None:
+    if (home.name == 'home' and home.parent.parent.name == 'seats'
+            and home.parents[2].name == 'runtime'):
+        return home.parents[2] / 'retired' / 'hand-transcripts' / home.parent.name / 'home'
+    return None
+
+
 def destination(record: Path) -> Path | None:
     record = Path(record)
     for home in record.parents:
-        if (home.name == 'home' and home.parent.parent.name == 'seats'
-                and home.parent.parent.parent.name == 'runtime'):
-            relative = record.relative_to(home)
-            parts = relative.parts
-            if (len(parts) == 2 and parts[0] == 'sessions' and record.suffix == '.jsonl'
-                    or len(parts) == 3 and parts[0].startswith('data-')
-                    and parts[0][5:].isdigit() and parts[1:] == ('opencode', 'opencode.db')):
-                return home.parents[2] / 'retired' / 'hand-transcripts' / home.parent.name / 'home' / relative
-            return None
+        kept = retained_home(home)
+        if kept is not None:
+            return kept / record.relative_to(home)
     return None
 
 
@@ -36,18 +37,13 @@ def retired(record: Path) -> bool:
     for home in record.parents:
         if (home.name == 'home' and home.parent.parent.name == 'hand-transcripts'
                 and home.parents[2].name == 'retired' and home.parents[3].name == 'runtime'):
-            logical = home.parents[3] / 'seats' / home.parent.name / 'home' / record.relative_to(home)
-            if destination(logical) == record:
-                return True
+            return True
     return resolve(record) != record
 
 
 def records(home: Path, pattern: str) -> list[Path]:
-    """Discover retained sources under their original logical names, including after rebuild."""
-    # Use a recognized exemplar to locate this home's archive, never another seat's.
-    exemplar = home / 'sessions' / 'example.jsonl'
-    kept = destination(exemplar)
-    if kept is None:
+    """An adapter supplies its glob; return retained sources under their logical names."""
+    root = retained_home(home)
+    if root is None:
         return []
-    root = kept.parent.parent
     return [home / path.relative_to(root) for path in root.glob(pattern) if path.is_file()]

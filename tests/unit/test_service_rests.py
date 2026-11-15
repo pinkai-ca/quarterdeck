@@ -366,7 +366,7 @@ def test_every_pass_step_and_between_duty_drain_reaches_the_numeric_summary(monk
              'inboxes', 'views', 'recoveries', 'refusals', 'answers', 'looks', 'jailed_watches',
              'deliveries', 'follow', 'requests', 'compactions', 'person_quiet', 'fresh_after_order',
              'rebrief', 'push_reminders', 'credentials', 'authentications', 'model_differences',
-             'failover', 'account', 'refresh_usage', 'pool_forecasts', 'retire_post')
+             'failover', 'retire_hand_transcripts', 'account', 'refresh_usage', 'pool_forecasts', 'retire_post')
     drains = ('drain_drops', 'drain_accounting', 'drain_requests')
     def stand_in(name, wall):
         def duty():
