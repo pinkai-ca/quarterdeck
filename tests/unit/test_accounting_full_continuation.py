@@ -1,6 +1,7 @@
 """Only a parent's current full generation can finish its identity retry."""
 
 import time
+from types import SimpleNamespace
 
 from quarterdeck import accounting_gate, record_owner
 from quarterdeck.accounting_slices import Driver, FullContinuation
@@ -12,6 +13,9 @@ FENCE = ('UPDATE accounting_progress SET pending=0 WHERE singleton=1', (), False
 
 def ready(tmp_path, monkeypatch):
     svc, seat, record, _ = world(tmp_path, monkeypatch)
+    svc.ship.file.write_text('[ship]\nname="ordinary"\ncode="checkout"\n')
+    seat.spec = SimpleNamespace(model='ordinary-model')
+    seat.pool = SimpleNamespace(name='ordinary-pool')
     monkeypatch.setattr(accounting_gate.time, 'time_ns', lambda: 9_000_000_000_000_000_000)
     driver = Driver()
     finish(driver, svc)
