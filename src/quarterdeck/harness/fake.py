@@ -16,6 +16,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+from .. import durable
 from ..ship import Pool, SeatSpec
 from . import claude, codex, pi
 from .base import Box, Input, Control, Credential, Harness, Interruption, Keys, Launch, Screen, State, Turn
@@ -62,7 +63,7 @@ class FakeHarness(Harness):
     def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None) -> Credential | None:
         self.check_defaults(seat, ship_home)
         home.mkdir(parents=True, exist_ok=True)
-        (home / "settings.json").write_text(json.dumps(seat.settings, indent=2) + "\n")
+        durable.replace_file(home / "settings.json", json.dumps(seat.settings, indent=2) + "\n")
         return None
 
     def launch(

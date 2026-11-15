@@ -208,6 +208,14 @@ runtime/
   - `refusal.json` builds each notice from the refused message in the store. That message must be addressed to this seat and sent by a declared seat, its code a short token and its turn a time.
 
   Anything else is refused, logged once (`alarm-refused`, `compaction-intent-refused`, `refusal-notice-refused`), and never published.
+- No write of the service or of qd into the folder follows a link the jail planted (`seat_files`; `durable.replace_file` takes the same path there):
+  - each folder on the way is opened without following a link, and a link where a folder belongs refuses the write;
+  - a file, `launch.sh` and the harnesses' home files among them, is written to a temporary created with O_CREAT|O_EXCL|O_NOFOLLOW and renamed over its name, so a planted link is replaced, never followed;
+  - a credential link is made under a temporary name and renamed over its name; a credential copy, and the copy a reseed brings up by exchange, are made the same way;
+  - an append (`acts.jsonl`, `acts-notices.jsonl`, `record-readers.jsonl`, `record-launches.jsonl`) refuses a link;
+  - a home file read to be merged and written back (Claude's `.claude.json`, the owned conversations) reads a link as nothing, so no operator's file is copied into the jail's reach.
+
+  The folder move later takes these files out of the jail's reach altogether.
 - The launch record is read whole (`seat.parse_launch`). An unknown, missing or mistyped field refuses it (`LaunchUnreadable`), and that seat alone is held.
 - A credential is taken, and relinked, only from a seat whose launch names a pool the ship file declares for it, and never from a jailed seat or a seat on an endpoint pool (`credential.source_refusal`).
 - For a jailed seat, accounting, walls and usage take only a pool the ship file declares for it. Its `record-launches.jsonl` is filtered the same way. Its turns on any other pool count unattributed, and the line names the refused record. For an unjailed seat, accounting and walls keep charging the pool its own launch names, so a harness or pool switch still charges the running launch's turns to its old pool. That seat already holds the operator's power, and the threat is a jail writing its own folder. This narrows the security review's term 2 to jailed seats for accounting and walls, by the engineer's decision; credentials judge every seat.

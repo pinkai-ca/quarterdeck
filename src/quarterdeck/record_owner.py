@@ -6,6 +6,8 @@ An untyped pin is preserved as unknown; record contents never select an adapter.
 
 from __future__ import annotations
 
+from . import seat_files
+
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -127,7 +129,7 @@ def register(folder: Path, record: Path, name: str | None) -> None:
     from . import ship_locks
     # The lock is the ship's, not the file's: the seat's own jail sees its folder and could hold the file.
     with ship_locks.held(ship_locks.for_seat_file(folder, path.name), f"{folder.name}: record registry"), \
-            path.open("a+") as stream:
+            seat_files.open_append(path, "a+") as stream:  # a link the jail planted is refused, never followed
         # Another process may have appended since the read-only membership check.
         if row not in events(path):
             stream.write(json.dumps(row) + "\n")

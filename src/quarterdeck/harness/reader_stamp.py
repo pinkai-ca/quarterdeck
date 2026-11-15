@@ -59,6 +59,7 @@ _CONTROL_SHARED = (
     ('providers.py', 'which program may run on a pool; records are not interpreted here'),
     ('harness/capabilities.py', 'model and effort selection for launch and controls'),
     ('ship_locks.py', "the registry's lock under runtime/locks; it reads no record"),
+    ('seat_files.py', "the registry's append, made without following a link; it reads no record"),
 )
 _CHECK = (
     ('harness/check_evidence.py', "qd check's tool evidence; turns are read by the record parser"),
@@ -69,11 +70,14 @@ _ENDPOINT = (
 _DURABLE = (
     ('durable.py', 'replaces files when a price or a home is written; record bytes are read by the parser'),
 )
+_SEAT_FILES = (
+    ('seat_files.py', "a home's files written and read without following a link at launch; it reads no record"),
+)
 
 # Named beside each reader set. A new quarterdeck import joins the set or one of these.
 LAUNCH_ONLY = {
-    'codex': _LAUNCH_SHARED,
-    'claude': _LAUNCH_SHARED + (
+    'codex': _LAUNCH_SHARED + _DURABLE,
+    'claude': _LAUNCH_SHARED + _DURABLE + _SEAT_FILES + (
         ('harness/claude_statusline.py', 'status-line command written into the home at launch'),
     ),
     'pi': _LAUNCH_SHARED + _ENDPOINT + _DURABLE + (
@@ -86,7 +90,7 @@ LAUNCH_ONLY = {
     'grok': _LAUNCH_SHARED + _DURABLE + (
         ('harness/grok_workspace.py', 'launch arguments and the workspace check before start'),
     ),
-    'fake': _LAUNCH_SHARED + _ENDPOINT + _DURABLE + (
+    'fake': _LAUNCH_SHARED + _ENDPOINT + _DURABLE + _SEAT_FILES + (
         ('harness/claude_statusline.py', 'status-line command written into the home at launch'),
         ('harness/pi_thinking.py', 'thinking level applied at launch and restored by a client'),
     ),

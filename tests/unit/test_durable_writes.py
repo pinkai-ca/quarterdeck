@@ -53,7 +53,12 @@ class Disk:
             real_sync(descriptor)
         def renaming(real):
             def move(source, target, *args, **kwargs):
-                self.intended[os.fspath(target)] = Path(source).read_bytes()
+                # A rename by name within a folder's handle (as the seat folder's no-follow writer makes it) is
+                # resolved through that handle; the record of what each name was to hold is by full path, as before.
+                def full(name, folder):
+                    return Path(os.readlink(f'/proc/self/fd/{folder}')) / name if folder is not None else Path(name)
+                self.intended[os.fspath(full(target, kwargs.get('dst_dir_fd')))] = \
+                    full(source, kwargs.get('src_dir_fd')).read_bytes()
                 step('before-rename')
                 result = real(source, target, *args, **kwargs)
                 step('after-rename')

@@ -22,10 +22,14 @@ def replace_file(path: Path, text: str, *, encoding: str | None = None) -> None:
     if post_dir.under_post(path):
         post_dir.replace_bytes(path, data)
         return
+    from . import seat_files
+    if seat_files.under_seat(path):
+        seat_files.write_bytes(path, data)  # a seat's folder is its jail's to write: no link is followed there
+        return
     # A name of its own, so two writers never share (or rename away) one temporary;
     # it never ends in a reader's suffix, and a cut can only leave it unread beside the file.
     temporary = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o666)
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o666)
     try:
         try:
             view = memoryview(data)
@@ -50,10 +54,14 @@ def _replace_law_record(path: Path, text: str, *, encoding: str | None = None) -
         # directory walk, with exactly one file sync and one parent sync.
         post_dir._replace_law_bytes(path, data)
         return
+    from . import seat_files
+    if seat_files.under_seat(path):
+        seat_files._replace_law_bytes(path, data)  # a seat's folder is its jail's to write: no link is followed
+        return
     # A name of its own, so two writers never share (or rename away) one temporary;
     # it never ends in a reader's suffix, and a cut can only leave it unread beside the file.
     temporary = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o666)
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o666)
     try:
         try:
             view = memoryview(data)

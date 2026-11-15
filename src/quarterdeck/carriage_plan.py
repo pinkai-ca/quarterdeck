@@ -156,7 +156,7 @@ def publish(plan: Plan) -> None:
     stage = Path(tempfile.mkdtemp(prefix='.carriage-', dir=plan.directory.parent))
     try:
         for name, text in plan.files.items():
-            descriptor = os.open(stage / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            descriptor = os.open(stage / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
             with os.fdopen(descriptor, 'wb') as stream:
                 stream.write(text.encode('utf-8'))
                 stream.flush()

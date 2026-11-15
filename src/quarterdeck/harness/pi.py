@@ -20,7 +20,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .. import endpoint
+from .. import durable, endpoint
 from ..pricing import Price, amount
 from .endpoint import EndpointHarness
 from .costs import CostStep, costed, model_name
@@ -401,8 +401,8 @@ class PiHarness(EndpointHarness):
                                     "cacheRead": price.cache_read, "cacheWrite": price.cache_write}
         settings = merged(SETTINGS, ship_template(ship_home, "settings.json"))
         settings = merged(settings, seat.settings)
-        (agent / "models.json").write_text(json.dumps(models, indent=2) + "\n")
-        (agent / "settings.json").write_text(json.dumps(settings, indent=2) + "\n")
+        durable.replace_file(agent / "models.json", json.dumps(models, indent=2) + "\n")
+        durable.replace_file(agent / "settings.json", json.dumps(settings, indent=2) + "\n")
         return self.endpoint_ready(home, choice, secret, price)
 
     def launch(self, seat: SeatSpec, pool: Pool, home: Path, brief: Path, resume: str | None, first: str | None) -> Launch:

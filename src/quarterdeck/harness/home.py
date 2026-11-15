@@ -7,6 +7,7 @@ import json
 import tomllib
 from pathlib import Path
 
+from .. import seat_files
 from ..ship import Pool, ShipError
 from .types import Credential
 
@@ -22,7 +23,7 @@ def credential(pool: Pool, link: Path, variable: str, *, copy: bool = False) -> 
             raise ShipError(f"{link} holds a detached subscription credential and is not deleted: it may hold the only "
                             f"live token. Pool {pool.name} uses an API key and has no shared credential file; "
                             "move it aside before trying again")
-        link.unlink(missing_ok=True)  # a key pool shares no file: whatever a former pool left here goes
+        seat_files.unlink(link)  # a key pool shares no file: whatever a former pool left here goes
         return Credential(variable=variable)
     if pool.config_dir is None:
         return None
@@ -32,8 +33,9 @@ def credential(pool: Pool, link: Path, variable: str, *, copy: bool = False) -> 
     if _newer(pool, link, source):
         raise ShipError(f"{link} holds a credential newer than pool {pool.name}'s and is not deleted: it may hold the only "
                         f"live token. If it is {pool.name}'s, put it in {source}; otherwise move it aside; then try again")
-    link.unlink(missing_ok=True)  # a link to a former pool, or a refreshed file the service has reseeded from
-    link.symlink_to(source)
+    # A link to a former pool, or a refreshed file the service has reseeded from, is replaced by a link renamed over
+    # its name: never followed, whatever the jail planted there.
+    seat_files.symlink(link, source)
     return Credential(link=(link, source))
 
 
@@ -48,7 +50,7 @@ def _copy(pool: Pool, path: Path, source: Path) -> Credential:
 
     reader = native_for(pool.provider)
     if path.is_symlink():
-        path.unlink()
+        seat_files.unlink(path)
     elif path.exists() and (_newer(pool, path, source)
                             or (source.exists() and reader.freshness(path) is not None
                                 and reader.freshness(path) == reader.freshness(source))):
@@ -60,13 +62,7 @@ def _copy(pool: Pool, path: Path, source: Path) -> Credential:
 
 def put_copy(source: Path, path: Path) -> None:
     """A copy of ``source`` at ``path`` in one step: its bytes and times kept, so it reads exactly as fresh, mode 600."""
-    import shutil
-
-    tmp = path.with_name(f"{path.name}.qd-tmp")
-    tmp.unlink(missing_ok=True)
-    shutil.copy2(source, tmp)
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
+    seat_files.copy(source, path, mode=0o600)  # a temporary renamed over the name: a planted link is never followed
 
 
 def _newer(pool: Pool, link: Path, source: Path | None) -> bool:

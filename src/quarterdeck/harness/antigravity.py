@@ -19,6 +19,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .. import durable
 from ..ship import Pool, SeatSpec
 from .antigravity_quota import banner, fetch_usage, unknown
 from .antigravity_record import OWNED, _CACHE, _parse_usage, first_timestamp, inputs, read, records, session_id, state, turns
@@ -129,7 +130,7 @@ class AntigravityHarness(Harness):
         settings = {"trustedWorkspaces": [str(seat.cwd)] if seat.cwd else []}
         settings = {**ship_template(ship_home, "settings.json"), **settings}
         settings.update(seat.settings)
-        (home / "settings.json").write_text(json.dumps(settings, indent=2) + "\n")
+        durable.replace_file(home / "settings.json", json.dumps(settings, indent=2) + "\n")
         return None
 
     def launch(self, seat: SeatSpec, pool: Pool, home: Path, brief: Path, resume: str | None, first: str | None) -> Launch:
@@ -144,7 +145,7 @@ class AntigravityHarness(Harness):
         if opening:
             argv += ["--prompt-interactive", opening]
         if not resume:  # a new conversation is about to appear: note which ones are there already
-            (home / BEFORE).write_text("".join(f"{p.name}\n" for p in sorted(self._conversations())))
+            durable.replace_file(home / BEFORE, "".join(f"{p.name}\n" for p in sorted(self._conversations())))
         return Launch(tuple(argv), {"AGY_CLI_DISABLE_AUTO_UPDATE": "true"})
 
     # -- record: the one conversation that appeared after the launch ---------------------------

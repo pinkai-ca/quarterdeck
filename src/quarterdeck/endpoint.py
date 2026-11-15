@@ -17,6 +17,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from .harness.base import key_environment
+from . import durable
 from .ship import Pool, ShipError
 from .pricing import save_price, saved_price
 
@@ -89,7 +90,7 @@ class Choice:
         data = asdict(self)
         price = data.pop('price')
         path = home / CHOICE_FILE
-        path.write_text(json.dumps(data, indent=2) + "\n")
+        durable.replace_file(path, json.dumps(data, indent=2) + "\n")
         save_price(path, price)
 
     @classmethod

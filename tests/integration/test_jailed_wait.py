@@ -170,16 +170,20 @@ print(json.dumps(dict(
 AUDITED = r"""
 import json, os, sys
 writes, locks = [], []
+announced = {}  # a seat-folder write opened by name within a folder's handle: its full path, named just before
 WRITE = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
 
 def hook(event, args):
-    if event == 'open':
+    if event == 'quarterdeck.seat_files.open':
+        announced[os.path.basename(args[0])] = args[0]
+    elif event == 'open':
         path, mode, flags = args
         if isinstance(path, int):
             return
         writing = (isinstance(flags, int) and flags & WRITE) or (isinstance(mode, str) and any(c in mode for c in 'wax+'))
         if writing:
-            writes.append(os.fsdecode(path))
+            name = os.fsdecode(path)
+            writes.append(announced.pop(name, name) if not os.path.isabs(name) else name)
     elif event == 'fcntl.flock':
         try:
             locks.append(os.readlink(f'/proc/self/fd/{args[0]}'))

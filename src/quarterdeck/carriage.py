@@ -123,5 +123,9 @@ def folder_of(seat_folder: Path) -> Path:
     if not stat.S_ISDIR(found.st_mode) or found.st_uid != os.getuid():
         raise OSError(f"{folder} is not a folder of this user's")
     if stat.S_IMODE(found.st_mode) != 0o700:
-        os.chmod(folder, 0o700)
+        descriptor = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)  # a link swapped in is refused
+        try:
+            os.fchmod(descriptor, 0o700)
+        finally:
+            os.close(descriptor)
     return folder

@@ -23,6 +23,7 @@ from .json_record import JsonLinesReader, input_reader, input_rows, records_matc
 from .types import BoxScroll, Inputs, PasteClearRule, _cells
 from . import codex_usage
 
+from .. import durable
 from ..ship import Pool, SeatSpec, literal
 from .base import (Box, ship_template, trimmed, Input, Control, Credential, Harness, Interruption, Keys, Launch, RecordError, Screen, State, Tokens,
                    ToolCall, Turn, credential, entries, key_environment, program_version, when)
@@ -722,7 +723,7 @@ class CodexHarness(Harness):
             scope.pop("sandbox_workspace_write", None)
             if not seat.human_session:
                 scope.setdefault('tools', {})['experimental_request_user_input'] = {'enabled': False}
-        (home / "config.toml").write_text(config_text(config))
+        durable.replace_file(home / "config.toml", config_text(config))
         return credential(pool, home / self.credential_file, "OPENAI_API_KEY")
 
     def launch(self, seat: SeatSpec, pool: Pool, home: Path, brief: Path, resume: str | None, first: str | None) -> Launch:

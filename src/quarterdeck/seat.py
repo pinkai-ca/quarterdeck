@@ -627,9 +627,10 @@ class Seat:
         remember_launch(self.folder, record, launched if record_owner.launch_reader(launched) == self.spec.harness else None)
         owned = self.home / "conversations.owned"
         self.home.mkdir(parents=True, exist_ok=True)
-        existing = owned.read_text().splitlines() if owned.is_file() else []
+        from . import seat_files  # the home is its jail's to write: read and write here never follow a link
+        existing = (seat_files.read_text(owned) or '').splitlines()
         if str(record) not in existing:
-            owned.write_text("".join(f"{line}\n" for line in [*existing, str(record)]))
+            durable.replace_file(owned, "".join(f"{line}\n" for line in [*existing, str(record)]))
 
     def _shared_state_contended(self) -> bool:
         """A program with no home of its own writes every seat's record to one place: two unjoined seats cannot be told apart."""
@@ -1094,7 +1095,8 @@ class Seat:
         if not cwd.is_dir():
             raise ShipError(f"{self.name}: working directory {cwd} does not exist; qd creates nothing outside its folder")  # law: one-folder
         script = self.folder / "launch.sh"
-        script.write_text(launch_script(self.name, self._launch_words(argv, env, path)))
+        # Through a temporary renamed over the name: a link the jail planted at launch.sh is replaced, never followed.
+        durable.replace_file(script, launch_script(self.name, self._launch_words(argv, env, path)))
         return self.tmux.new_window(session.title, self.spec.display, cwd, ["sh", str(script)], env)
 
     def _survives(self, pane_id: str, program: str, seconds: float = 0.5) -> None:

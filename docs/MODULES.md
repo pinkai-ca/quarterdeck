@@ -106,7 +106,7 @@ The modules that the framework table does not list, the module of each part amon
 | `copy_state.py` | which installed copy runs a ship, read-only, for the CLI and the status path |
 | `door.py` | the door: the one typing path, which clears, types, checks, submits and confirms at each speed; the wall the door reads |
 | `drill.py` | the Drill: the all-hands exercise that proves the ship works |
-| `durable.py` | a file replaced whole without forcing the write to storage; three fixed records keep a forced write: a delivery's first attempt, a refusal's quarantine and a compaction's transition |
+| `durable.py` | a file replaced whole without forcing the write to storage; three fixed records keep a forced write: a delivery's first attempt, a refusal's quarantine and a compaction's transition; in a seat's folder, through `seat_files` |
 | `endpoint_relay.py` | a jailed seat's one way out: the seat's model endpoint, relayed over a Unix socket into a jail that has no network of its own |
 | `fleet.py` | the fleet: an index of the project's declarations, never another configuration |
 | `fleet_post.py` | posts between ships: offered by the sender and fetched by the receiver, each writer in its own runtime |
@@ -141,6 +141,7 @@ The modules that the framework table does not list, the module of each part amon
 | `request_queue.py` | one owner for queued seat requests, their visible waits and their answers |
 | `resources.py` | the framework's resource files, for packaging and `qd sync` |
 | `seat.py` | the Seat: one program in one tmux pane under one role, and its lifecycle: up, down, restart, fresh and a move to another pool; its launch record read whole, and the pools it may name |
+| `seat_files.py` | writes into a seat's folder, its home included, that never follow a link its jail could have planted: each folder on the way opened without following, a temporary renamed over the name, a link refused on an append, and a read that feeds a write reading a link as nothing |
 | `seat_command.py` | the exact `qd` command a seat is told to run, shell quoting included, shared by the brief and the record readers |
 | `server_recovery.py` | a ship brought back when its own tmux server has gone: only when the server is proved gone, at most twice in an hour, and through `qd up`'s own path |
 | `service.py` | the service: the ship's one long-running process, not a seat, which renders inboxes, delivers, writes attempts, answers requests, the quick ones in short bounded turns between its other duties, re-briefs seats, writes the heartbeat and alone writes the Ledger |

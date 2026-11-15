@@ -38,7 +38,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-from . import harness as harnesses
+from . import harness as harnesses, seat_files
 from .seat import Seat
 from .ship import Pool, Ship, ShipError
 
@@ -250,8 +250,7 @@ def _reseed(ship: Ship, seats: list[Seat]) -> list[str]:
                     continue  # as fresh as the pool's, the winner's own among them; a newer one waits for the next pass
                 proofs.append(_bring_up(source, link, seat.name, pool_name))
                 continue
-            link.unlink()
-            link.symlink_to(source)
+            seat_files.symlink(link, source)  # renamed over the name: a link the jail planted is replaced, never followed
             proofs.append(f"{seat.name} relinked to {pool_name}")
     return proofs
 
@@ -264,25 +263,26 @@ def _bring_up(source: Path, path: Path, name: str, pool_name: str) -> str:
     back and kept, and the next pass puts it in the pool's place. Nothing is overwritten unseen.
     """
     try:
-        judged = path.stat()
+        judged = path.lstat()
     except OSError:
         return f"{name} copy unreadable; retained for the next pass"
+    if not stat.S_ISREG(judged.st_mode):
+        return f"{name} copy is not a plain file; retained for the next pass"
     tmp = path.with_name(f"{path.name}.qd-copy")
-    tmp.unlink(missing_ok=True)
-    shutil.copy2(source, tmp)
-    os.chmod(tmp, 0o600)
+    seat_files.unlink(tmp)
+    seat_files.copy(source, tmp, mode=0o600)  # made in the home without following a link, the pool's times kept
     try:
         _exchange(tmp, path)
     except OSError as error:
-        tmp.unlink(missing_ok=True)
+        seat_files.unlink(tmp)
         return f"{name} copy not brought up to {pool_name}: {os.strerror(error.errno)}; retained"
-    out = tmp.stat()
+    out = tmp.lstat()
     if (out.st_ino, out.st_dev, out.st_mtime_ns, out.st_size) != (judged.st_ino, judged.st_dev, judged.st_mtime_ns,
                                                                   judged.st_size):
         _exchange(tmp, path)  # the program wrote since it was judged: its file goes straight back
-        tmp.unlink()
+        seat_files.unlink(tmp)
         return f"{name} refreshed while its copy was brought up; its refresh kept for the next pass"
-    tmp.unlink()
+    seat_files.unlink(tmp)
     return f"{name} copy brought up to {pool_name}"
 
 
@@ -296,9 +296,16 @@ def _exchange(first: Path, second: Path) -> None:
     if _libc is None:
         _libc = ctypes.CDLL(None, use_errno=True)
     at_cwd = -100
-    if _libc.renameat2(at_cwd, os.fsencode(first), at_cwd, os.fsencode(second), RENAME_EXCHANGE) != 0:
-        code = ctypes.get_errno()
-        raise OSError(code, os.strerror(code or errno.EIO))
+    located = seat_files.parent(second, create=False)  # in a seat folder: through its folder, never a link on the way
+    folder, first_name, second_name = (at_cwd, os.fsencode(first), os.fsencode(second)) if located is None else (
+        located[0], os.fsencode(first.name), os.fsencode(located[1]))
+    try:
+        if _libc.renameat2(folder, first_name, folder, second_name, RENAME_EXCHANGE) != 0:
+            code = ctypes.get_errno()
+            raise OSError(code, os.strerror(code or errno.EIO))
+    finally:
+        if located is not None:
+            os.close(located[0])
 
 
 def _park(source: Path, parked: Path) -> Path | None:
@@ -313,9 +320,12 @@ def _park(source: Path, parked: Path) -> Path | None:
 def _install(winner: Path, source: Path) -> None:
     """The refreshed file put in the pool's place in one step, so no seat finds the place empty: the one
     write outside the project folder, and the law names it."""
-    tmp = source.with_name(f"{source.name}.qd-tmp")
-    shutil.copy2(winner, tmp)
-    os.replace(tmp, source)  # law: one-folder
+    # The winner is read without following a link: a home is its jail's to write, and a link there is no refresh.
+    read = seat_files.read_with_times(winner)
+    if read is None:
+        raise OSError(errno.ELOOP, f'{winner} is not a plain file; the pool keeps its own')
+    data, times = read
+    seat_files.write_bytes(source, data, mode=0o600, times=times)  # law: one-folder (a temporary renamed in place)
 
 
 def grant_expiry(pool: Pool) -> datetime | None:

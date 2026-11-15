@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from . import seat_files
+
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,7 +39,7 @@ def remember_launch(folder: Path, record: Path, launched) -> None:
     from . import ship_locks
     # The lock is the ship's, not the file's: the seat's own jail sees its folder and could hold the file.
     with ship_locks.held(ship_locks.for_seat_file(folder, "record-launches.jsonl"), f"{folder.name}: record launches"), \
-            (folder / "record-launches.jsonl").open("a+") as stream:
+            seat_files.open_append(folder / "record-launches.jsonl", "a+") as stream:  # never through a link
         stream.seek(0)
         events = [json.loads(line) for line in stream if line.strip()]
         if event not in events:

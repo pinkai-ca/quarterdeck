@@ -29,6 +29,7 @@ from .json_record import JsonLinesReader, input_reader, input_rows, records_matc
 from .types import AUTHENTICATION, Inputs, TurnFailure, ControlAnswer, ControlContext, ControlInterruption
 from .claude_background import BackgroundBash, user_notice
 
+from .. import durable, seat_files
 from ..ship import Pool, SeatSpec
 from .base import (Box, ship_template, trimmed, record_fingerprint, Input, Control, Credential, Harness, Interruption, Keys, Launch, Screen, Tokens,
                    Turn, Usage, Window, credential, entries, key_environment, merged, when)
@@ -1225,9 +1226,11 @@ class ClaudeHarness(Harness):
         if not seat.human_session:
             permissions = settings.setdefault('permissions', {})
             permissions['deny'] = list(dict.fromkeys([*permissions.get('deny', []), 'AskUserQuestion']))
-        (home / "settings.json").write_text(json.dumps(settings, indent=2) + "\n")
+        durable.replace_file(home / "settings.json", json.dumps(settings, indent=2) + "\n")
         state_file = home / ".claude.json"
-        state = json.loads(state_file.read_text()) if state_file.is_file() else {}
+        # Read without following a link: a jailed home could plant one to an operator's file, which would be
+        # merged here and written back where the jail reads it (seat_files.read_text reads a link as nothing).
+        state = json.loads(text) if (text := seat_files.read_text(state_file)) else {}
         # The trust dialog and the one that asks a person to accept running without approval prompts, both answered
         # before the first launch: a fresh home opens without a dialog.
         state.update({"hasCompletedOnboarding": True, "bypassPermissionsModeAccepted": True,
@@ -1239,7 +1242,7 @@ class ClaudeHarness(Harness):
         cwd = str(seat.cwd) if seat.cwd else None
         if cwd:
             state.setdefault("projects", {}).setdefault(cwd, {})["hasTrustDialogAccepted"] = True
-        state_file.write_text(json.dumps(state, indent=2) + "\n")
+        durable.replace_file(state_file, json.dumps(state, indent=2) + "\n")
         return credential(pool, home / self.credential_file, "ANTHROPIC_API_KEY")
 
     def launch(self, seat: SeatSpec, pool: Pool, home: Path, brief: Path, resume: str | None, first: str | None) -> Launch:

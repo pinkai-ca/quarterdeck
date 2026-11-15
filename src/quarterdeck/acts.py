@@ -11,6 +11,8 @@ written. ``qd watch`` shows the last act.
 
 from __future__ import annotations
 
+from . import seat_files
+
 import json
 import os
 import re
@@ -188,7 +190,7 @@ def tell_desk(service, seat, launched, caller, act: str, reason: str, screen) ->
         try:
             write_notice = notices(seat)
             write_notice.parent.mkdir(parents=True, exist_ok=True)
-            with write_notice.open("a", encoding="utf-8") as stream:
+            with seat_files.open_append(write_notice) as stream:  # the seat folder: never through a link
                 stream.write(json.dumps(dict(key=key, message=message.id, to=desk, at=_now(), act=act,
                                              caller=caller)) + "\n")
                 stream.flush()
@@ -226,7 +228,7 @@ def write(seat, entry: dict) -> None:
     target = path(seat)
     target.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps(entry, ensure_ascii=False) + "\n"
-    with target.open("a", encoding="utf-8") as stream:
+    with seat_files.open_append(target) as stream:  # the seat folder: never through a link
         stream.write(line)
         stream.flush()
 

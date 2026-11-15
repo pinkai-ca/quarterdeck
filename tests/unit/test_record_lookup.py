@@ -77,8 +77,22 @@ def mutations(monkeypatch, root):
             counts['append_writes'] += 1
             return self.stream.write(text)
 
+    def resolved(path, folder):
+        """A name opened within a folder's handle (seat_files' no-follow writes), as its full path."""
+        if folder is None or not isinstance(path, (str, bytes, os.PathLike)):
+            return path
+        return Path(os.readlink(f'/proc/self/fd/{folder}')) / os.fsdecode(path)
+
     def opening(real):
         def opened(path, mode='r', *args, **kwargs):
+            if isinstance(path, int):
+                # os.fdopen of a descriptor os.open already counted: only its writes are counted here.
+                stream = real(path, mode, *args, **kwargs)
+                try:
+                    inside = within(os.readlink(f'/proc/self/fd/{path}'))
+                except OSError:
+                    inside = False
+                return Appending(stream) if inside and 'a' in mode else stream
             tracked = within(path)
             if tracked and set(mode) & set('wax+'):
                 counts['write_opens'] += 1
@@ -90,13 +104,14 @@ def mutations(monkeypatch, root):
 
     real_open, real_mkdir, real_flock = os.open, os.mkdir, fcntl.flock
     def opened(path, flags, *args, **kwargs):
-        if within(path) and flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND):
+        if within(resolved(path, kwargs.get('dir_fd'))) and flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC
+                                                                     | os.O_APPEND):
             counts['write_opens'] += 1
             if flags & os.O_APPEND:
                 counts['append_opens'] += 1
         return real_open(path, flags, *args, **kwargs)
     def mkdir(path, *args, **kwargs):
-        if within(path):
+        if within(resolved(path, kwargs.get('dir_fd'))):
             counts['mkdirs'] += 1
         return real_mkdir(path, *args, **kwargs)
     def flock(fd, operation):

@@ -21,7 +21,7 @@ import stat
 from collections.abc import Callable
 from pathlib import Path
 
-from .. import endpoint
+from .. import durable, endpoint
 from ..pricing import Price
 from .endpoint import EndpointHarness
 from ..ship import Pool, SeatSpec, ShipError
@@ -209,7 +209,7 @@ class OpenCodeHarness(EndpointHarness):
                              "cache_read": price.cache_read, "cache_write": price.cache_write}
         folder = home / "config" / "opencode"
         folder.mkdir(parents=True, exist_ok=True)
-        (folder / "opencode.json").write_text(json.dumps(config, indent=2) + "\n")
+        durable.replace_file(folder / "opencode.json", json.dumps(config, indent=2) + "\n")
         return self.endpoint_ready(home, choice, secret, price)
 
     @staticmethod

@@ -18,7 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import attribution_cache, record_owner, service, ship_locks, turn_failure
+from quarterdeck import attribution_cache, record_owner, service, ship_locks, turn_failure, seat_files
 from quarterdeck.harness.base import RecordError, State, Tokens, Turn
 from quarterdeck.harness.fake import FakeHarness
 from quarterdeck.service import Service
@@ -58,8 +58,16 @@ class Spy:
                     hook()
             return self.real_held(lock, what, **options)
 
+        real_append = seat_files.open_append
+
+        def counted_append(path, mode='a', **kwargs):  # the registry's append, made without following a link
+            if Path(path).name == record_owner.REGISTRY and set(mode) & WRITE_MODES:
+                self.writes.append((Path(path), mode))
+            return real_append(path, mode, **kwargs)
+
         monkeypatch.setattr(record_owner, 'events', counted_events)
         monkeypatch.setattr(Path, 'open', counted_open)
+        monkeypatch.setattr(seat_files, 'open_append', counted_append)
         monkeypatch.setattr(ship_locks, 'held', counted_held)
 
     def ownership(self, path: Path) -> int:
@@ -319,14 +327,14 @@ def test_a_failed_append_leaves_no_reading_behind(tmp_path, monkeypatch):
     seat, typed, unknown, registry = typed_seat(tmp_path)
     fresh = touch(seat, 'z')
     spy = Spy(monkeypatch)
-    spied = Path.open
+    spied = seat_files.open_append  # the registry's append, made without following a link
 
-    def refuse_writes(path, mode='r', *args, **kwargs):
-        if path.name == record_owner.REGISTRY and set(mode) & WRITE_MODES:
+    def refuse_writes(path, mode='a', *args, **kwargs):
+        if Path(path).name == record_owner.REGISTRY and set(mode) & WRITE_MODES:
             raise PermissionError('synthetic write refusal q')
         return spied(path, mode, *args, **kwargs)
 
-    monkeypatch.setattr(Path, 'open', refuse_writes)
+    monkeypatch.setattr(seat_files, 'open_append', refuse_writes)
     with record_owner.reader_pass():
         record_owner.bindings(seat)
         with pytest.raises(PermissionError):

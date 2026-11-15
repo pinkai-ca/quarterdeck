@@ -473,7 +473,7 @@ class GrokHarness(Harness):
         settings.pop("privacy", None)  # declarations never establish the account's opt-out
         if (kept := program_privacy(home / "config.toml")) is not None:
             settings["privacy"] = kept
-        (home / "config.toml").write_text(config_text(settings))
+        durable.replace_file(home / "config.toml", config_text(settings))
         attached = credential(pool, home / self.credential_file, "XAI_API_KEY", copy=self.credential_copy)
         acknowledge_cached_opt_out(home, pool)
         return attached
@@ -515,7 +515,7 @@ class GrokHarness(Harness):
             return Usage((), datetime.now(timezone.utc), "native billing sign-in unavailable", called=False)
         home.mkdir(parents=True, exist_ok=True)
         build_private_user_home(home)
-        (home / "config.toml").write_text(config_text(SETTINGS))
+        durable.replace_file(home / "config.toml", config_text(SETTINGS))
         credential(pool, home / self.credential_file, "XAI_API_KEY", copy=self.credential_copy)
         acknowledge_cached_opt_out(home, pool)
         try:
