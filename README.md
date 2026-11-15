@@ -14,7 +14,7 @@ Quarterdeck runs AI coding agents from different companies as one crew, on your 
 
 Every agent runs in its normal terminal interface, the one made for people, in a tmux pane. A ship is a crew of such agents, its panes grouped into tmux sessions. Setup makes two ships: your office, whose session `Office` is where the agent you talk to sits, and the crew's ship, whose session is named for it, such as `Endeavour Bridge`. Each ship's sessions are on a tmux server of its own, apart from any tmux you use yourself, and `qd attach` opens them. At any time you can attach, watch an agent work, scroll back through what it did, give it a command, or simply prompt it yourself. Inside, tmux's own keys apply: by default, `Ctrl-b n` moves to the next agent of the session, and `Ctrl-b d` detaches, leaving every agent running.
 
-Quarterdeck is a command, `qd`, and one small service for each ship, on your machine. It starts the agents, types orders and reports into their panes as you would, watches them, and accounts for what they spend. In `Office`, the session you work in, the desk waits for its messages itself. It adds no plug-ins, tools, hooks or protocols to your harnesses, beyond a status line command in each Claude Code agent's own settings, and runs no agent as a hidden background process. Restart any agent once its turn has ended, and that agent comes back with its brief and a list of its open messages: the ones it still has to answer, and the ones it sent that still wait for an answer.
+Quarterdeck is a command, `qd`, and one small service for each ship, on your machine. It starts the agents, types orders and reports into their panes as you would, watches them, and accounts for what they spend. In `Office`, the session you work in, the desk watches for its messages itself, so that your own typing there is not disturbed. It adds no plug-ins, tools, hooks or protocols to your harnesses, beyond a status line command in each Claude Code agent's own settings, and runs no agent as a hidden background process. Restart any agent of the crew at any moment: once its turn has ended, it comes back with its brief and a list of its open messages: the ones it still has to answer, and the ones it sent that still wait for an answer.
 
 ## Quick start
 
@@ -138,7 +138,7 @@ Anything the desk does for you, you can do yourself.
 Bring the crew up, and down:
 
 ```sh
-qd up      # start the service and every agent marked up, each resuming its conversation if it has one
+qd up      # start the service and the agents, each resuming its conversation if it has one
 qd attach  # open the crew in this terminal; qd --ship <office folder> attach opens your office
 qd down    # end every agent and the service; qd down captain ends one
 ```
