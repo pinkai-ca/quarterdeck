@@ -1,0 +1,206 @@
+"""Setup's office with a desk on a local model: the desk is jailed, so it is given a working folder of its own.
+
+A desk on pi or OpenCode with an endpoint pool runs jailed, and the office setup writes declares no project
+workspace: its programs would start in the office's own folder, which a jail shows read-only, and the jail refuses that.
+So setup gives a jailed desk the office's own work/desk, made empty before its launch; a desk on a subscription program
+is unchanged. When a start fails, setup says why in the refusal's own words, and what to do next.
+
+Real setup, real tmux and real bubblewrap. Stood in: the endpoint's model listing, the programs (a stand-in that
+answers its version and waits), the paid live check, and the installed copy (the checkout runs up in-process).
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import stat
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from quarterdeck import cli, endpoint, harness, install, service, setup, ship as shipmod, setup_proposal
+from quarterdeck import seat as seat_module
+from quarterdeck.drill import Check
+from quarterdeck.output import Reading
+from quarterdeck.seat import Seat
+from quarterdeck.tmux import Tmux
+
+from .test_sandbox import namespaces_allowed
+
+pytestmark = pytest.mark.skipif(not namespaces_allowed(), reason="bubblewrap is not installed, or cannot make a namespace here (inside a jail)")
+
+QD = Path(sys.executable).parent / 'qd'
+MODEL = 'qwen3.8-27b'
+VERSIONS = {'pi': '0.79.0', 'opencode': '1.19.5'}
+
+
+def stand_in(folder: Path, name: str) -> Path:
+    """A program that answers its version and otherwise waits, as a seat's program does in its pane."""
+    program = folder / name
+    program.write_text(f'#!/bin/sh\nif [ "$1" = "--version" ]; then echo {VERSIONS[name]}; exit 0; fi\nexec sleep 300\n')
+    program.chmod(0o755)
+    return program
+
+
+@pytest.fixture
+def newcomer(tmp_path, tmux: Tmux, monkeypatch):
+    """A newcomer's project and machine: git identity, the fake endpoint's listing, stand-in programs on the PATH."""
+    for name, value in {'GIT_AUTHOR_NAME': 'Setup Example', 'GIT_AUTHOR_EMAIL': 'setup@example.invalid',
+                        'GIT_COMMITTER_NAME': 'Setup Example', 'GIT_COMMITTER_EMAIL': 'setup@example.invalid',
+                        'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_NOSYSTEM': '1'}.items():
+        monkeypatch.setenv(name, value)
+    for name in ('GIT_DIR', 'GIT_WORK_TREE', 'QD_SEAT', 'QD_SHIP'):
+        monkeypatch.delenv(name, raising=False)
+    project = tmp_path / 'project'
+    (project / 'ships').mkdir(parents=True)
+    workspace = tmp_path / 'my-app'
+    workspace.mkdir()
+    programs = tmp_path / 'programs'
+    programs.mkdir()
+    for name in VERSIONS:
+        stand_in(programs, name)
+    monkeypatch.setenv('PATH', os.pathsep.join([str(programs), str(QD.parent), os.environ.get('PATH', '')]))
+    monkeypatch.setattr(seat_module, 'program_path', lambda: os.pathsep.join([str(programs), '/usr/bin', '/bin']))
+    monkeypatch.setattr(endpoint, 'models', lambda url, timeout=0, **kwargs: [endpoint.Served(MODEL, 98304)])
+    monkeypatch.setenv('QD_TMUX_SOCKET', tmux.socket)
+    monkeypatch.setattr(install, 'prepare_up', lambda current: ([], False))
+    monkeypatch.setattr(install, 'delegate_up', lambda *args, **kwargs: None)  # the checkout runs up itself
+    template = setup.template
+
+    def checkout_template(kind='default'):
+        """The templates as shipped, run from this checkout as the drydock is: no installed copy is made here."""
+        text, orders, _ = template(kind)
+        text = shipmod.edit(text, 'ship', 'code', 'checkout')
+        import tomllib
+        return text, orders, tomllib.loads(text)
+    monkeypatch.setattr(setup, 'template', checkout_template)
+    calls = []
+
+    class Operations(setup.Operations):
+        def project_folder(self):
+            return project
+
+        def discover(self, defaults):
+            return {name: (Check(name, name in VERSIONS, 'stand-in on PATH'), 'sign-in unknown')
+                    for name in harness.NAMES if not harness.get(name).synthetic}
+
+        def credential_present(self, home, filename):
+            return False
+
+        def readiness(self, current, selected):
+            return [Check('readiness', True, 'synthetic')]
+
+        def check(self, current, program):
+            calls.append(('check', program))
+            return [Check('check', True, 'synthetic: no paid live check here')]
+
+        def status(self, current):
+            return Reading({'service': 'ok', 'seats': [SimpleNamespace(name=name, activity=SimpleNamespace(state='idle'))
+                                                       for name in current.seats]}, lambda _: ['synthetic status'])
+
+        def access(self, current):
+            return 'synthetic desk access'
+
+    monkeypatch.setattr(setup, 'Operations', Operations)
+    tmux.new_session('Synthetic bootstrap')
+    tmux.kill_session('Synthetic bootstrap')
+    started = []
+    yield SimpleNamespace(project=project, workspace=workspace, tmux=tmux, calls=calls, started=started, tmp=tmp_path)
+    for folder in (project / 'office', *sorted((project / 'ships').iterdir())):
+        if (folder / 'runtime').is_dir():
+            service.stop(shipmod.load(folder).runtime)
+
+
+def jailed(argv: list[str]) -> bool:
+    return any(Path(word).name == 'bwrap' for word in argv)
+
+
+def bound(argv: list[str], folder: Path) -> bool:
+    """Whether the jail binds the folder writable at its own path."""
+    return any(argv[i:i + 3] == ['--bind', str(folder), str(folder)] for i in range(len(argv)))
+
+
+def free_port() -> int:
+    import socket
+    with socket.socket() as probe:
+        probe.bind(('127.0.0.1', 0))
+        return probe.getsockname()[1]
+
+
+def answers(newcomer, program: str) -> Path:
+    port = free_port()
+    path = newcomer.tmp / 'answers.json'
+    path.write_text(json.dumps({
+        'use_defaults': 'yes', 'name': 'Clonetest', 'workspace': str(newcomer.workspace), 'desk': program,
+        # An unprivileged port: the jail's relay listens on it inside the jail; nothing answers it, the listing is
+        # stood in.
+        'provider': {program: 'local'}, 'endpoint': {program: f'http://127.0.0.1:{port}/v1'},
+        'key_env': {program: 'none'},
+        'model': {program: MODEL},
+        'seats': {name: {'harness': program, 'model': MODEL, **({'effort': 'medium'} if program == 'pi' else {})}
+                  for name in ('captain', 'engineering')},  # OpenCode takes no effort
+        'accept': 'yes', 'check': 'yes', 'start': 'yes'}))
+    return path
+
+
+@pytest.mark.parametrize('program', ['pi', 'opencode'])
+def test_setup_brings_a_jailed_office_desk_up_in_its_own_work_folder_and_the_crew_follows(newcomer, capsys, program):
+    code = cli.main(['setup', '--answers', str(answers(newcomer, program))])
+    out = capsys.readouterr()
+    assert code == 0, out.err[-3000:] + out.out[-3000:]
+    office = shipmod.load(newcomer.project / 'office')
+    desk = office.seat('desk')
+    assert desk.harness == program and office.jailed(desk)
+    work = newcomer.project / 'office' / 'work' / 'desk'
+    assert desk.cwd == work, 'the jailed desk works in its own folder under the office\'s work/'
+    info = work.lstat()
+    assert stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode) and not any(work.iterdir())
+    assert '/work/' in (newcomer.project / 'office' / '.gitignore').read_text().splitlines()
+    assert shipmod._git(office.folder, 'status', '--porcelain') == '', 'the work folder is ignored, the office clean'
+    launched = Seat(office, desk, newcomer.tmux).launched()
+    assert launched is not None and jailed(launched.argv), 'the desk runs jailed (behind its endpoint relay)'
+    assert bound(launched.argv, work), 'its own folder bound writable, at its own path'
+    assert not bound(launched.argv, office.folder), 'the office itself is never bound writable'
+    crew = shipmod.load(next(f for f in (newcomer.project / 'ships').iterdir() if (f / 'ship.toml').is_file()))
+    for name, spec in crew.seats.items():
+        seat = Seat(crew, spec, newcomer.tmux)
+        assert seat.launched() is not None, f'{name} of the crew was started after the desk'
+        assert jailed(seat.launched().argv) and bound(seat.launched().argv, newcomer.workspace)
+
+
+def test_a_desk_on_a_subscription_program_keeps_the_offices_own_folder(tmp_path):
+    """separate_office alone: a desk that is not jailed is given no working folder; the office is unchanged."""
+    text, orders, _ = setup.template('default')
+    office = setup.template('office')[0]
+    proposal = setup_proposal.Proposal(shipmod._from_text(text, tmp_path / 'ships' / 'crew'), text, orders, [], None,
+                                       'new')
+    separated = setup_proposal.separate_office(proposal, tmp_path / 'office')
+    assert separated.office.seat('desk').cwd is None and not separated.office.jailed(separated.office.seat('desk'))
+    assert 'cwd' not in separated.office_text.split('[seats.desk]', 1)[1].split('[', 1)[0]
+    assert office  # the template is read, not changed
+
+
+def test_a_refused_start_names_its_own_words_and_the_next_step(tmp_path):
+    """The installed copy's refusal travels up whole; the next step is one that can answer before a ship exists."""
+    ship = SimpleNamespace(folder=tmp_path / 'office')
+    said = install.refused_up(ship, 'something on stderr\nqd: desk: sandboxed with the ship folder as its working '
+                                    'directory; a jailed seat reads the ship folder and cannot write it.\n')
+    assert 'desk: sandboxed with the ship folder as its working directory' in said
+    assert f'qd --ship {tmp_path / "office"} up' in said and 'qd status' not in said
+    silent = install.refused_up(ship, '')
+    assert 'without a reason' in silent and f'qd --ship {tmp_path / "office"} up' in silent
+
+
+def test_setup_says_why_the_office_desk_did_not_start_and_what_to_do(newcomer, capsys, monkeypatch):
+    def refuse(current):
+        raise shipmod.ShipError('installed up refused: desk: synthetic refusal; no retry made; resolve that, then run '
+                                f'qd --ship {current.folder} up')
+    monkeypatch.setattr(setup.Operations, 'up_desk', lambda self, current: refuse(current))
+    code = cli.main(['setup', '--answers', str(answers(newcomer, 'pi'))])
+    out = capsys.readouterr()
+    assert code == 2
+    assert 'desk: synthetic refusal' in out.err and 'run qd setup again' in out.err
+    assert 'inspect qd status' not in out.err
+    assert (newcomer.project / 'office' / 'ship.toml').is_file(), 'the office is kept for the next run'
