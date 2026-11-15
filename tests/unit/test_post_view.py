@@ -47,18 +47,35 @@ def test_a_seat_of_the_same_name_on_another_ship_is_not_this_seat():
 def test_an_id_chosen_inside_a_view_never_takes_a_short_another_seat_holds(tmp_path):
     runtime = tmp_path / 'view-runtime'
     (runtime / 'post' / 'store').mkdir(parents=True)
-    every = [f'ord-{number:04x}' for number in range(16 ** 4) if number != 0xabcd]
-    (runtime / 'post' / post_view.SHORTS).write_text(''.join(f'{short}\n' for short in every))
+    width = 2 * post.SHORT_ID_BYTES  # the drawn suffix at the width allocation asks for, whatever that width is
+    held = [f'{number:0{width}x}' for number in range(post.ID_DRAWS - 1)]
+    free, spare = f'{16 ** width - 2:0{width}x}', f'{16 ** width - 3:0{width}x}'
+    asked: list[int] = []
+
+    def drawing(values):
+        draws = iter(values)
+
+        def token_hex(size):
+            asked.append(size)
+            return next(draws)
+        return token_hex
+
     # Draws are bounded (at most post.ID_DRAWS): every one but the last falls on a short the view holds.
-    draws = iter([f'{number:04x}' for number in range(post.ID_DRAWS - 1)] + ['abcd'])
+    (runtime / 'post' / post_view.SHORTS).write_text(''.join(f'ord-{short}\n' for short in held))
     with pytest.MonkeyPatch.context() as patched:
-        patched.setattr(post.secrets, 'token_hex', lambda size: next(draws))
+        patched.setattr(post.secrets, 'token_hex', drawing([*held, free]))
         message = post.Store(runtime).prepare('order', 'worker-1', 'captain', 'one short left')
-    assert message.short == 'ord-abcd'
-    # With no short left of a kind, the draws stop and the post is refused with the fixed reason, never spun.
-    (runtime / 'post' / post_view.SHORTS).write_text(''.join(f'{short}\n' for short in [*every, 'ord-abcd']))
-    with pytest.raises(post.IdSpaceExhausted, match=post.ID_SPACE_REASON):
-        post.Store(runtime).prepare('order', 'worker-1', 'captain', 'none left')
+    assert message.short == f'ord-{free}'
+    assert asked == [post.SHORT_ID_BYTES] * post.ID_DRAWS
+    # With every draw on a short the view holds, the draws stop at post.ID_DRAWS and the post is refused with the
+    # fixed reason, never spun: the spare short beyond the bound is free, and is never drawn.
+    (runtime / 'post' / post_view.SHORTS).write_text(''.join(f'ord-{short}\n' for short in [*held, free]))
+    asked.clear()
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(post.secrets, 'token_hex', drawing([*held, free, spare]))
+        with pytest.raises(post.IdSpaceExhausted, match=post.ID_SPACE_REASON):
+            post.Store(runtime).prepare('order', 'worker-1', 'captain', 'none left')
+    assert asked == [post.SHORT_ID_BYTES] * post.ID_DRAWS
 
 
 def test_the_view_drops_an_inbox_the_post_no_longer_has(tmp_path):
