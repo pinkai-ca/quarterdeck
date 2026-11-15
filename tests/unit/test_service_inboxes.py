@@ -12,6 +12,13 @@ from quarterdeck import compaction, durable, post, service, service_inbox
 from quarterdeck.ship import ShipError
 
 
+def moved(path):
+    """What a change to a folder moves: its identity, size and modification times. Never its access time,
+    which a read moves, and which crosses a second on a slow runner (GitHub, 3.12, 314605e7)."""
+    info = path.stat()
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+
 @pytest.fixture
 def inboxes(tmp_path, monkeypatch):
     folder = tmp_path / 'ship'
@@ -121,10 +128,10 @@ def test_existing_mutable_journal_edit_without_directory_change_rebuilds(inboxes
     service.Service.inboxes(svc)
     assert svc.inbox_certificate is not None
     previous_store = svc.store
-    directory = path.parent.stat()
+    directory = moved(path.parent)
     with path.open('a') as stream:
         stream.write(' ')
-    assert path.parent.stat() == directory
+    assert moved(path.parent) == directory
     calls, original = [], post.inbox_reading
     def read(*args, **kwargs):
         calls.append(args[1])
@@ -138,7 +145,7 @@ def test_existing_mutable_journal_edit_without_directory_change_rebuilds(inboxes
 def test_import_and_addressed_publication_change_inbox_without_store_change(inboxes):
     svc, order, _ = inboxes
     runtime = svc.runtime
-    original = svc.store.dir.stat()
+    original = moved(svc.store.dir)
     digest = hashlib.sha256((svc.store.dir / f'{order.id}.json').read_bytes()).hexdigest()
     imported = runtime / 'post/imports' / f'{order.id}.json'
     imported.parent.mkdir()
@@ -153,7 +160,7 @@ def test_import_and_addressed_publication_change_inbox_without_store_change(inbo
     addressed.write_text(json.dumps(dict(format=1, id=order.id, sha256=digest)))
     service.Service.inboxes(svc)
     assert '## Open (1)' in inbox.read_text()
-    assert svc.store.dir.stat() == original
+    assert moved(svc.store.dir) == original
 
 
 @pytest.mark.parametrize('offset', [-1, 0, 1])
