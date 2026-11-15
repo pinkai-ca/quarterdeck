@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from quarterdeck import post, pr_screen, service, ship as shipmod
+from quarterdeck import post, pr_screen, seat as seatmod, service, ship as shipmod
 
 FIXTURES = Path(__file__).resolve().parents[1] / 'fixtures' / 'pr_screen'
 
@@ -23,7 +23,7 @@ def ship(drydock: Path) -> shipmod.Ship:
 
 
 class Obedient:
-    """A stand-in hand that does what the planted text tells it, then reports done as ordered."""
+    """A stand-in hand that does what the planted text tells it, then posts besides."""
 
     def __init__(self, ship, root):
         self.ship, self.root, self.calls = ship, root, []
@@ -42,7 +42,8 @@ class Obedient:
     def down(self, name):
         self.calls.append('down')
 
-    def order(self, name, body, subject):
+    def instruct(self, name, body, before_send):
+        before_send('ans-screen-alarm')
         own = self.ship.runtime / 'seats' / name
         own.mkdir(parents=True, exist_ok=True)
         at = '2026-11-15T08:00:00+00:00'
@@ -57,11 +58,9 @@ class Obedient:
         drop.mkdir(parents=True, exist_ok=True)
         (drop / 'ord-forwarded-text.json').write_text(json.dumps(dict(order, id='ord-forwarded-text', **{'from': name},
                                                                      to='captain')))
-        self.calls.append('order')
-        return 'ord-screen-alarm'
+        self.calls.append('instruct')
+        return 'ans-screen-alarm'
 
-    def file_now(self, name):
-        self.calls.append('file_now')
 
 
 class Outcomes:
@@ -91,6 +90,28 @@ def test_an_obeyed_alarm_journal_and_a_forwarded_post_reach_no_seat(ship, tmux, 
     reached = [m for m in svc.store.all() if 'SHRIKE' in m.body or m.id in ('ord-planted-alarm', 'rep-planted-alarm',
                                                                            'ord-forwarded-text')]
     assert reached == [], 'nothing the hand wrote reached any seat'
-    assert hands.calls == ['fresh', 'order', 'down']
+    assert hands.calls == ['fresh', 'instruct', 'down']
     held = list((ship.runtime / 'pr-screen' / 'held' / 'worker-1').iterdir())
     assert len(held) == 1, 'its forwarded post was moved aside while the hold stood, never filed'
+
+
+def test_an_unconfirmed_instruction_never_comes_back_at_the_hands_next_fresh_start(ship, tmux):
+    """The instruction is sent while the hand is down, so its delivery is never confirmed; the next launch's carriage,
+    previewed by the seat's own path, holds none of it, and a deliveries pass types nothing of it. An unlisted answer
+    beside it shows the path would carry one. A spoiled list hides it all the same."""
+    store = post.Store(ship.runtime)
+    body = pr_screen.INSTRUCTION.format(files='f01.txt', folder='screen-0c0c0c0c0c0c')
+    live = pr_screen.LiveHands(ship, Path('qd'), ship.runtime / 'hands')
+    listed = live.instruct('captain', body,
+                           before_send=lambda message_id: pr_screen.note_instruction(ship.runtime, 'captain', message_id))
+    beside = store.new('answer', post.SHIP, 'captain', 'an ordinary answer from ship, never delivered').id
+    seat = seatmod.Seat(ship, ship.seat('captain'), tmux)
+    for spoiled in (False, True):
+        if spoiled:
+            (ship.runtime / 'pr-screen' / 'instructions' / 'captain.json').write_text('[1, 2')
+        opening, carried = seat.first_message()
+        assert listed not in {m.id for m in carried} and 'screen-0c0c0c0c0c0c' not in (opening or '')
+        assert beside in {m.id for m in carried}, 'the same path carries an unlisted answer'
+        assert listed not in {m.id for m in post.Attempts(ship.runtime).undelivered(post.Store(ship.runtime), 'captain')}
+    service.Service(ship, tmux).deliveries()
+    assert all(attempt.message != listed for attempt in post.Attempts(ship.runtime).all()), 'nothing of it typed'

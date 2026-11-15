@@ -1685,6 +1685,8 @@ class Attempts:
 
         reserved = set()
         read = store.read_ids(seat)  # messages this seat has already read whole are not delivered again
+        from .pr_screen import spent_instructions  # a screen's instruction is never delivered again (pr_screen)
+        read |= spent_instructions(store.dir.parent.parent, seat, store)
         if not for_launch:
             from .compaction import withheld
             reserved, transitioning = withheld(store.dir.parent.parent, seat)

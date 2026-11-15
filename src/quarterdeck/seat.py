@@ -970,6 +970,8 @@ class Seat:
 
             extra = [message for message in (*unread, *queued) if outstanding(message)]
             consumed = self._consumed_messages(store, attempts, resume_id, refused) | store.read_ids(self.name)
+            from .pr_screen import spent_instructions  # a screen's instruction never comes back at a launch
+            consumed |= spent_instructions(self.ship.runtime, self.name, store)
             consumed |= thread_context.closed_order_answers(store, self.name)
             consumed |= frozenset(message.id for message in store.for_seat(self.name)
                                   if message.obligation and not store.is_open(message))

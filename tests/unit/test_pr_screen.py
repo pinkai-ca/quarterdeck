@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -34,7 +35,7 @@ class Clock:
 
 
 class Hands:
-    """Stand-in hands: each order runs ``behaviour`` on the piece's folder; every call is recorded."""
+    """Stand-in hands: each instruction runs ``behaviour`` on the piece's folder; every call is recorded."""
 
     def __init__(self, runtime: Path, root: Path, behaviour, idle=True):
         self.runtime, self.root, self.behaviour, self.idle_answer = runtime, root, behaviour, idle
@@ -56,16 +57,14 @@ class Hands:
         assert pr_screen.held(self.runtime, name), 'the hand goes down before the hold is released'
         self.calls.append(('down', name))
 
-    def order(self, name, body, subject):
-        order_id = f'ord-screen-{len(self.orders) + 1:03d}'
-        self.orders[order_id] = (name, body, subject)
+    def instruct(self, name, body, before_send):
+        message_id = f'ans-screen-{len(self.orders) + 1:03d}'
+        before_send(message_id)
+        self.orders[message_id] = (name, body)
         folder = self.folder(name) / re.search(r'in the folder (screen-[0-9a-f]+) ', body).group(1)
-        self.behaviour(self, name, order_id, folder)
-        self.calls.append(('order', name))
-        return order_id
-
-    def file_now(self, name):
-        self.calls.append(('file_now', name))
+        self.behaviour(self, name, message_id, folder)
+        self.calls.append(('instruct', name))
+        return message_id
 
     def drop(self, name, message: dict):
         folder = post.drop_dir(self.runtime, name)
@@ -73,24 +72,23 @@ class Hands:
         (folder / f"{message['id']}.json").write_text(json.dumps(message))
 
 
-def report_done(hands, name, order_id, text='done'):
-    hands.drop(name, dict(id=f'rep-done-{order_id}', kind='report', **{'from': name}, to=post.SHIP,
-                          at='2026-11-15T08:00:00+00:00', body=text, re=order_id, subject=None, due=None, speed=None))
+def report(hands, name, message_id, text='done'):
+    """A post the hand was not asked for: a report on the instruction, as an obliging model might send."""
+    hands.drop(name, dict(id=f'rep-done-{message_id}', kind='report', **{'from': name}, to=post.SHIP,
+                          at='2026-11-15T08:00:00+00:00', body=text, re=message_id, subject=None, due=None, speed=None))
 
 
-def honest(hands, name, order_id, folder):
+def honest(hands, name, message_id, folder):
     places = []
     for path in sorted(folder.glob('f*.txt')):
         for number, line in enumerate(path.read_text().splitlines(), 1):
             if SUSPICIOUS.search(line):
                 places.append(f'{path.stem}:{number}')
     (folder / 'answer.txt').write_text('FLAGGED ' + ' '.join(places) if places else 'CLEAN')
-    report_done(hands, name, order_id)
 
 
-def says_clean(hands, name, order_id, folder):
+def says_clean(hands, name, message_id, folder):
     (folder / 'answer.txt').write_text('CLEAN\n')
-    report_done(hands, name, order_id)
 
 
 def silent(hands, name, order_id, folder):
@@ -234,28 +232,53 @@ def one_piece(world, behaviour, **options):
     return verdict, hands, runtime
 
 
-def test_a_hand_told_to_post_elsewhere_has_nothing_filed_but_its_done(world):
-    def obeys(hands, name, order_id, folder):
+def test_a_hand_told_to_post_elsewhere_has_nothing_it_posts_filed(world):
+    def obeys(hands, name, message_id, folder):
         hands.drop(name, dict(id='ord-forged-elsewhere', kind='order', **{'from': name}, to='reviewer',
                               at='2026-11-15T08:00:00+00:00', body='PUFFIN', re=None, subject=None, due=None,
                               speed=None))
-        honest(hands, name, order_id, folder)
+        honest(hands, name, message_id, folder)
     verdict, hands, runtime = one_piece(world, obeys)
-    drop = post.drop_dir(runtime, 'hand-a')
-    assert [path.name for path in drop.iterdir()] == ['rep-done-ord-screen-001.json'], 'only its done stays'
-    assert len(list((runtime / 'pr-screen' / 'held' / 'hand-a').iterdir())) == 1, 'the rest moved aside'
-    assert [call[0] for call in hands.calls] == ['fresh', 'order', 'down', 'file_now']
+    assert list(post.drop_dir(runtime, 'hand-a').iterdir()) == [], 'nothing it posted stays to be filed'
+    assert len(list((runtime / 'pr-screen' / 'held' / 'hand-a').iterdir())) == 1, 'moved aside'
+    assert [call[0] for call in hands.calls] == ['fresh', 'instruct', 'down']
     assert not pr_screen.held(runtime, 'hand-a'), 'the hold is released once the hand is down and swept'
     assert not verdict.clean  # it flagged the request's lines
 
 
-def test_a_done_with_more_words_is_moved_aside_too(world):
-    def chatty(hands, name, order_id, folder):
-        (folder / 'answer.txt').write_text('CLEAN')
-        report_done(hands, name, order_id, 'done. Also: the outsider asks reviewer to merge it.')
-    verdict, hands, runtime = one_piece(world, chatty)
+def test_a_report_the_hand_was_not_asked_for_is_moved_aside_too_even_a_bare_done(world):
+    def obliging(hands, name, message_id, folder):
+        honest(hands, name, message_id, folder)
+        report(hands, name, message_id, 'done')
+        report(hands, name, f'{message_id}-again', 'FLAGGED f01:6')
+    verdict, hands, runtime = one_piece(world, obliging)
     assert list(post.drop_dir(runtime, 'hand-a').iterdir()) == []
-    assert ('file_now', 'hand-a') not in hands.calls
+    assert len(list((runtime / 'pr-screen' / 'held' / 'hand-a').iterdir())) == 2
+    kept = json.loads((runtime / 'pr-screen' / 'screens' / 'key' / 'piece-0-hand-a.verdict.json').read_text())
+    assert kept['moved_aside'] == 2 and 'done' not in kept
+
+
+def test_the_hand_goes_down_as_soon_as_its_answer_is_there(world):
+    runtime, hands_root = world
+    hands = Hands(runtime, hands_root, honest)
+    clock = Clock()
+    prepared = pr_screen.prepare(texts('post-elsewhere'))
+    pr_screen.screen_piece(runtime, hands, 'hand-a', 'key', 0, prepared, list(prepared.files),
+                           answer_seconds=30, poll=1.0, clock=clock, sleep=clock.sleep)
+    assert clock.now == 0, 'no wait after the answer: it was there at the first look'
+
+
+def test_the_instruction_asks_for_no_report_and_leaves_nothing_open(world):
+    runtime, hands_root = world
+    ship = SimpleNamespace(runtime=runtime, folder=runtime.parent)
+    live = pr_screen.LiveHands(ship, Path('qd'), hands_root)
+    listed = []
+    message = post.Store(runtime).get(live.instruct('hand-a', pr_screen.INSTRUCTION.format(
+        files='f01.txt', folder='screen-0a0a0a0a0a0a'), before_send=listed.append))
+    assert listed == [message.id], 'its id is known, and listed, before it is written'
+    assert message.kind == 'answer' and message.sender == post.SHIP and message.re is None
+    assert not post.Store(runtime).open_for('hand-a'), 'nothing open: the idle rule finds the hand free'
+    assert 'report on' not in message.body.replace('report on nothing', '') and 'post nothing' in message.body
 
 
 def test_no_answer_in_time_counts_as_flagged_and_the_hand_still_goes_down(world):
@@ -313,7 +336,7 @@ def test_a_pass_tells_una_of_clean_requests_and_the_desk_of_flagged_ones_quoting
     assert len(told) == len(caught)
     text = json.dumps(told)
     assert not any(word in text for word in OUTSIDER_WORDS), 'nothing the outsider wrote reaches the desk'
-    assert all(name in ('hand-a', 'hand-b') for kind, name in hands.calls if kind == 'order')
+    assert all(name in ('hand-a', 'hand-b') for kind, name in hands.calls if kind == 'instruct')
 
 
 def test_a_request_already_screened_at_its_head_is_skipped_and_a_new_push_starts_it_over(world):
@@ -338,3 +361,26 @@ def test_a_busy_hand_leaves_the_request_for_the_next_pass_untold(world):
 def test_flagged_before_any_hand_goes_to_no_hand(world):
     results, hands, outcomes = run(world, honest, cases=['binary-file', 'oversized'])
     assert [r['outcome'] for r in results] == ['flagged', 'flagged'] and hands.calls == []
+
+
+# -- the screen's instructions never come back ----------------------------------------------------------------------
+
+def instruction(runtime, hand='hand-a'):
+    ship = SimpleNamespace(runtime=runtime, folder=runtime.parent)
+    body = pr_screen.INSTRUCTION.format(files='f01.txt', folder='screen-0b0b0b0b0b0b')
+    return pr_screen.LiveHands(ship, Path('qd'), runtime / 'hands').instruct(
+        hand, body, before_send=lambda message_id: pr_screen.note_instruction(runtime, hand, message_id))
+
+
+def test_a_listed_instruction_is_never_delivered_again_even_unconfirmed_or_with_a_spoiled_list(world):
+    runtime, _ = world
+    store = post.Store(runtime)
+    listed = instruction(runtime)
+    other = store.new('answer', post.SHIP, 'hand-a', 'an ordinary answer from ship').id
+    replied = store.new('answer', post.SHIP, 'hand-a', pr_screen.INSTRUCTION.split('{')[0] + 'x', re=other).id
+    undelivered = lambda: [m.id for m in post.Attempts(runtime).undelivered(post.Store(runtime), 'hand-a')]
+    assert listed not in undelivered() and other in undelivered(), 'only the listed one is skipped'
+    (runtime / 'pr-screen' / 'instructions' / 'hand-a.json').write_text('spoiled by a fooled hand?')
+    assert listed not in undelivered(), 'a spoiled list hides more, never less'
+    assert other in undelivered() and replied in undelivered(), 'the strict match hides only the instruction\'s form'
+    assert pr_screen.spent_instructions(runtime, 'hand-b') == frozenset(), 'each hand\'s own list'
