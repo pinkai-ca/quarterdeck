@@ -381,7 +381,14 @@ class Service:
             sessions = [session.title for session in self.ship.sessions.values()]
             demand = self.tmux.clients_attached(sessions) if hasattr(self.tmux, 'clients_attached') else None
             if demand is False:
-                return
+                from . import status_snapshot
+                if not status_snapshot.requested(self.ship):
+                    return
+                # Headless callers need the periodic whole reading only; post
+                # traffic does not start extra collections between its periods.
+                if (not reversed_clock and self.status_inputs is not None
+                        and now < getattr(self, 'status_refresh', 0.0)):
+                    return
             files = service_status.inputs(self.ship)
             # The post's traffic (store, attempts, journals, drops) refreshes only the post facts, over the last full
             # collection; any other change collects in full, at most once every FULL_STATUS_INTERVAL; the periodic

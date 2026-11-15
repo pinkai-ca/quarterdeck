@@ -310,8 +310,8 @@ def service_state(runtime: Path) -> str:
 @post.reading_pass()
 @reading_scope.reading_pass()
 @record_owner.reader_pass()
-def status_reading(ship: Ship, tmux: Tmux) -> dict:
-    store, post_held = _post_listing(ship, post.Store(ship.runtime))
+def status_reading(ship: Ship, tmux: Tmux, *, store=None, collected=None) -> dict:
+    store, post_held = _post_listing(ship, post.Store(ship.runtime) if store is None else store)
     requests = request_queue.pending(ship.runtime)
     selected = seats(ship, tmux, False)
     programs, program_error = program_use.collect(ship, selected)
@@ -320,7 +320,8 @@ def status_reading(ship: Ship, tmux: Tmux) -> dict:
             "programs": programs, "programs_error": program_error,
             "check_outcomes": outcomes[0], "check_outcome_errors": outcomes[1],
             "open_orders": [m for m in store.all() if m.kind == "order" and store.is_open(m)],
-            "requests": requests, "facts": facts(ship, tmux, store=store, post_held=post_held, check_reading=outcomes),
+            "requests": requests, "facts": (collected if collected is not None else
+                facts(ship, tmux, store=store, post_held=post_held, check_reading=outcomes)),
             "usage": headline_readings(ship), **providers.identities(ship)}
     try:
         book = ledger.Ledger.reading(ship.runtime / 'ledger.sqlite')

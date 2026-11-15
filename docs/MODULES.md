@@ -6,6 +6,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 
 | Module | What it holds |
 | --- | --- |
+| `status_snapshot.py` | service-produced JSON status, bounded by the reading’s age and owner |
 | `check.py` | `qd check`, the live proof of an installed program; scoped report filing through the shared post door when no service is alive |
 | `check_capacity.py` | a nightly check's one-pass reservation of an existing shared test slot, held through its cleanup |
 | `compaction_alert.py` | an idle seat that is ready for a fresh start by hand: one report to the systems seats for each such reading, and a named alarm while no systems seat is up |

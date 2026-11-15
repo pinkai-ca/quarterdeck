@@ -756,6 +756,16 @@ def cmd_status(args: argparse.Namespace) -> Reading:
                            lambda _: collected_line(lead + ' · status unknown: evidence unavailable; inspect qd status',
                                                    publication_age)
                            + (' · ' + warning if warning else ''))
+    if getattr(args, 'json', False):
+        from . import status_snapshot
+        import time
+        # An unavailable trusted demand stamp (including a jailed call) keeps
+        # the ordinary independent reader, even if another publication exists.
+        if status_snapshot.request(ship) and (served := status_snapshot.served(ship)) is not None:
+            return Reading(served, watch.render_table)
+        wall = time.time_ns()
+        reading = watch.status_reading(ship, Tmux.for_ship(ship))
+        return Reading(status_snapshot.labelled(reading, 'cold', wall), watch.render_table)
     return Reading(watch.status_reading(ship, Tmux.for_ship(ship)), watch.render_table)
 
 

@@ -175,14 +175,20 @@ def publish_collected(ship, tmux, framework, store, attempts, *, kept=None, door
 
 def _publish(ship, tmux, framework, store, attempts, kept=None, door_seats=frozenset()):
     """Only the service writes this rendering, dating collection and publication separately."""
-    from . import ship as shipmod, watch
+    from . import post, record_owner, ship as shipmod, status_snapshot, watch
+    from .harness import reading_scope
 
     wall, monotonic = time.time_ns(), time.monotonic_ns()
     stamp = fingerprint(ship.file)
+    whole_reading = None
     if kept is None:
+        status_snapshot.invalidate(ship.runtime)
         current = shipmod.load(ship.folder)
         keep = []
-        facts = watch.facts(current, tmux, store=store, attempts=attempts, keep=keep)
+        with post.reading_pass(store=store, attempts=attempts), reading_scope.reading_pass(), record_owner.reader_pass():
+            facts = watch.facts(current, tmux, store=store, attempts=attempts, keep=keep)
+            if isinstance(facts, watch.Facts):
+                whole_reading = watch.status_reading(current, tmux, store=store, collected=facts)
         collection = keep[0] if keep else None  # none kept: the next post change collects in full
     else:
         collection = kept
@@ -203,6 +209,9 @@ def _publish(ship, tmux, framework, store, attempts, kept=None, door_seats=froze
     temporary = path.with_suffix('.tmp')
     temporary.write_text(json.dumps(data, allow_nan=False) + '\n')
     os.replace(temporary, path)
+    if whole_reading is not None:
+        status_snapshot.publish(current, whole_reading, wall=wall, monotonic=monotonic,
+                                framework=framework, stamp=stamp)
     return True, collection
 
 

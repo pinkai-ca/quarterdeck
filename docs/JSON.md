@@ -34,6 +34,19 @@ What each reading holds:
 | `inbox` | the open and the received messages, with the reports that closed them |
 | `inbox --wait` | one object, with `seat` and a `messages` array; then it exits |
 
+`qd --json status` adds a `reading` object with `mode`, `at` and `label`.
+A service reading younger than 60 seconds says `served: service reading at <time>`.
+A stopped service, an older or incomplete publication, or an unreadable publication
+uses the independent reading and says `cold: independent reading at <time>`.
+All existing feed fields keep their names and values. Plain text status and watch
+continue to collect independently.
+
+Each JSON status call marks demand under the runtime's trusted folder. While no
+clients are attached, the service makes its ordinary periodic whole readings only
+for five minutes after the latest call. The minute-by-minute site feed keeps that
+demand alive; five quiet minutes stop headless collection. A call that cannot write
+the trusted stamp falls back cold. The stamp never renews a reading's own time.
+
 Detailed status and the ledger show each provider's allowance as it was last stored. A command that changes something keeps its proof line as text; that includes `watch --save-screen` and `doctor --fix`.
 
 ## For an agent
