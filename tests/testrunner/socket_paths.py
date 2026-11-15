@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 
 from .layout import ROOT_NAME, RUN_SOCKETS, Refused
+from . import socket_roots
 
 SOCKET_LIMIT = 107
 SOCKET_MARGIN = 12
@@ -26,10 +27,10 @@ def lengths(anchor: Path, *, uid: int | None = None) -> tuple[int, int]:
     return len(os.fsencode(generated)), max(len(os.fsencode(path)) for path in named)
 
 
-def project_limit(*, uid: int | None = None) -> int:
-    """Maximum absolute project path bytes for its fixed run socket anchor."""
+def anchor_limit(*, uid: int | None = None) -> int:
+    """Maximum absolute socket anchor bytes, including its final component."""
     sample = Path('/p')
-    generated, named = lengths(sample / ROOT_NAME / RUN_SOCKETS, uid=uid)
+    generated, named = lengths(sample, uid=uid)
     prefix = len(os.fsencode(sample))
     return min(SOCKET_LIMIT - SOCKET_MARGIN - (generated - prefix),
                SOCKET_LIMIT - (named - prefix))
@@ -41,9 +42,8 @@ def check(anchor: Path) -> None:
         raise Refused(
             f'test socket anchor {anchor} gives sockets of {generated} bytes (named probes {named}); '
             f'the native Unix socket path limit is {SOCKET_LIMIT} bytes and the suite keeps a margin '
-            f'of {SOCKET_MARGIN}; the project path is too long for its .testruns/{anchor.name} anchor; '
-            f'the longest checkout/project path is {project_limit()} bytes '
-            '(absolute filesystem path, including separators; a linked worktree uses its Git common project)')
+            f'of {SOCKET_MARGIN}; the longest socket anchor path is {anchor_limit()} bytes '
+            '(absolute filesystem path, including separators). Checkout length does not limit the derived short root')
 
 
 def preflight(top: Path, project: Path, *, jailed: bool = False) -> None:
@@ -57,6 +57,8 @@ def preflight(top: Path, project: Path, *, jailed: bool = False) -> None:
     if jailed:
         from .jail import SOCKET_DIR
         anchor = Path(SOCKET_DIR)
+    elif socket_roots.enabled(top):
+        anchor = socket_roots.path(project) / RUN_SOCKETS
     else:
         anchor = project / ROOT_NAME / RUN_SOCKETS
     check(anchor)

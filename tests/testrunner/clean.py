@@ -248,13 +248,11 @@ def _retire_within(root: Root, run: str) -> int:
                 if completed.get('outcome') == 'complete':
                     for entry in completed.get('sessions', {}).get('entries', []):
                         path = Path(entry['path'])
-                        if path.parent not in (root.path / SOCKETS, root.path / RUN_SOCKETS):
-                            raise Refused(f'{path}: not a recorded session path in this project; held')
                         if anchor is not None:
                             os.close(anchor)
                             anchor = None
                         try:
-                            anchor = root.child(path.parent.name, create=False)
+                            anchor = sessions.retired_anchor(root, path.parent)
                         except FileNotFoundError:
                             pass
                         if anchor is not None:

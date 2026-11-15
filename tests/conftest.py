@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.testrunner import layout, owned, resources, sessions, scratch, servers, socket_paths
+from tests.testrunner import layout, owned, resources, sessions, scratch, servers, socket_paths, socket_roots
 from tests.testrunner.socket_paths import SOCKET_LIMIT, SOCKET_MARGIN, SESSION_PREFIX
 
 OPENBLAS_AT_IMPORT = os.environ.get('OPENBLAS_NUM_THREADS')
@@ -22,45 +22,42 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 TEST_TICK = 0.1  # seconds: every test ship's declared [ship] tick, so the service passes quickly (production: 1.0)
 
 
+def socket_project():
+    """The canonical Git common project, shared by all its linked worktrees."""
+    common = Path(subprocess.check_output(
+        ['git', '-C', str(ROOT), 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+        text=True, stderr=subprocess.PIPE).strip())
+    if common.name != '.git' or common.is_symlink() or not common.is_dir():
+        raise OSError(f'Git common directory {common} is not a plain .git folder')
+    if common.parent.resolve() != common.parent:
+        raise OSError(f'Git common project {common.parent} is reached through a link')
+    return common.parent
+
+
 def socket_parent():
-    """The fixed short anchor ``<project>/.testruns/s``, the project being the parent of the Git common
-    directory: one place for the checkout, every worktree and every run checkout of tests/testrun.py. Inside
-    ``testrun.py run --jail`` the project is not visible: the anchor is the jail's own, in its private /tmp."""
+    """A short project-owned socket root; inside a jail use its declared private anchor."""
     if os.environ.get('TESTRUNS_JAILED') == '1' and os.environ.get('TESTRUNS_SOCKETS'):
         anchor = Path(os.environ['TESTRUNS_SOCKETS'])
         anchor.mkdir(mode=0o700, parents=True, exist_ok=True)
         return anchor
     try:
-        common = Path(subprocess.check_output(
-            ['git', '-C', str(ROOT), 'rev-parse', '--path-format=absolute', '--git-common-dir'],
-            text=True, stderr=subprocess.PIPE).strip())
-        if common.name != '.git' or common.is_symlink() or not common.is_dir():
-            raise OSError(f'Git common directory {common} is not a plain .git folder')
-        root = layout.Root(common.parent)  # verified, private, ignoring itself, proven ignored by Git
-        try:
-            os.close(root.child(layout.SOCKETS))
-        finally:
-            root.close()
+        return socket_roots.ensure(socket_project(), layout.SOCKETS)
     except (OSError, subprocess.CalledProcessError, layout.Refused) as error:
         raise pytest.UsageError(f'cannot verify the project-owned socket anchor for {ROOT}: {error}') from error
-    anchor = common.parent / layout.ROOT_NAME / layout.SOCKETS
-    if anchor.resolve() != anchor:
-        raise pytest.UsageError(f'cannot verify the project-owned socket anchor {anchor}: reached through a link')
-    return anchor
 
 
 def plain_temp():
     """TMPDIR of plain pytest: owned memory storage, or the verified disk fallback .testruns/t."""
-    anchor = socket_parent()
-    memory = scratch.plain(anchor.parent.parent)
+    project = socket_project()
+    memory = scratch.plain(project)
     if memory is not None:
         return memory
-    root = layout.Root(anchor.parent.parent)
+    root = layout.Root(project)
     try:
         os.close(root.child(layout.PLAIN_TEMP))
     finally:
         root.close()
-    return anchor.parent / layout.PLAIN_TEMP
+    return project / layout.ROOT_NAME / layout.PLAIN_TEMP
 
 
 @pytest.hookimpl(tryfirst=True)
@@ -83,7 +80,7 @@ def pytest_configure(config):
     extra = [Path(config.option.basetemp).absolute()] if config.option.basetemp else []
     extra = [path for path in extra if scratch.in_memory(path)]
     config._qd_scratch_monitor = (scratch.Monitor(folder, extra=extra)
-                                  if folder.parent != socket_parent().parent else None)
+                                  if scratch.in_memory(folder) else None)
     tempfile.tempdir = None  # gettempdir() reads TMPDIR again
 
 

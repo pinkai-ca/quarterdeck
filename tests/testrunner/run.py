@@ -23,7 +23,7 @@ import subprocess
 import sys
 import time
 
-from . import clean, environment, evidence, gitops, jail, owned, procs, report, resources, scratch as storage, sessions, socket_paths, usersite
+from . import clean, environment, evidence, gitops, jail, owned, procs, report, resources, scratch as storage, sessions, socket_paths, socket_roots, usersite
 from .layout import RESULTS, RUNS, RUN_SOCKETS, SOCKETS, Refused, Root, RunGuard, Slot, git_environment, identity, reserve_run_id, write_json
 
 GRACE = 15.0
@@ -377,8 +377,11 @@ class Runner:
                     env['TESTRUN_CI_SESSION_CONTEXT'] = json.dumps({'registry': registry, 'run': run})
                 else:
                     env[sessions.RECORD_ENV] = registry
-                os.close(root.child(RUN_SOCKETS))
-                env['TMUX_TMPDIR'] = str(root.path / RUN_SOCKETS)
+                if socket_roots.enabled(target.top):
+                    env['TMUX_TMPDIR'] = str(socket_roots.ensure(root.project, RUN_SOCKETS))
+                else:
+                    os.close(root.child(RUN_SOCKETS))
+                    env['TMUX_TMPDIR'] = str(root.path / RUN_SOCKETS)
                 settings['fixed']['TMUX_TMPDIR'] = env['TMUX_TMPDIR']
                 env[resources.MEMORY_ENV] = str(args.memory_mib)
                 self.env = env
@@ -638,7 +641,7 @@ class Runner:
         if self.ci_layout:
             support = purelib / '_qd_testrun_ci_support'
             support.mkdir()
-            names = ('__init__.py', 'layout.py', 'owned.py', 'procs.py', 'sessions.py', 'servers.py')
+            names = ('__init__.py', 'layout.py', 'owned.py', 'procs.py', 'sessions.py', 'servers.py', 'socket_roots.py')
             for name in names:
                 shutil.copyfile(plugin.with_name(name), support / name)
             result['tools']['ci_session_support'] = {name: gitops.blob_sha((support / name).read_bytes())

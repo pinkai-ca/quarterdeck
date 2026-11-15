@@ -101,14 +101,14 @@ def record(server, *, registry=None, run=None) -> None:
             data = read_json(records, filename, registry / filename)
             if not data:
                 continue
-            from .sessions import anchor_name
-            folder = root.path / anchor_name(data) / data['name']
+            from .sessions import anchor_path, open_anchor
+            folder = anchor_path(root, data) / data['name']
             if not path.is_relative_to(folder):
                 continue
             parts = path.relative_to(folder).parts
             if len(parts) < 2:
                 raise Refused('private server has no recorded namespace')
-            anchor = root.child(anchor_name(data), create=False)
+            anchor = open_anchor(root, data)
             try:
                 container = owned._open_exact(anchor, data['name'], data['identity'], folder, data['owner'])
             finally:
