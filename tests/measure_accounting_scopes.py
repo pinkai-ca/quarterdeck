@@ -87,9 +87,23 @@ def phase(runtime, label):
     try:
         if label == 'warm':
             first = job()
-            driver.gate.reject()
-            second = job()
-            return dict(first=first,second=second,tables=table_rows(service.ledger),
+            previous = table_rows(service.ledger)
+            fresh = []
+            for _ in range(3):
+                # A reused child's transient-read backoff can hide unfinished
+                # relocation work. Two fresh children must agree on every row.
+                driver.close()
+                driver = Driver()
+                reading = job()
+                current = table_rows(service.ledger)
+                reading['changed_tables'] = [name for name in current if current[name] != previous.get(name)]
+                fresh.append(reading)
+                if current == previous:
+                    break
+                previous = current
+            else:
+                raise RuntimeError('base copy did not converge across fresh children')
+            return dict(first=first,fresh_jobs=fresh,tables=current,
                         epoch=reader_stamp.attributions(),owned_records=sum(map(len,inventory.values())))
         full = job()
         frozen = table_rows(service.ledger)
