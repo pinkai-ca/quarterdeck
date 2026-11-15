@@ -1,0 +1,10 @@
+{
+  "payload": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+  "width": 64,
+  "height": 40,
+  "capture": "Claude Code v2.1.325\n──────────────────────────────────────────────────────── probe ─\n❯ XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX  \n  XXXXXXXXXXXXXXXXXXXXXXX\n────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n",
+  "row_lengths": [
+    60,
+    23
+  ]
+}

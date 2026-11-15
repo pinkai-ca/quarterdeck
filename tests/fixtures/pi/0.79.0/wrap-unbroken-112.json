@@ -1,0 +1,10 @@
+{
+  "payload": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+  "width": 112,
+  "height": 40,
+  "capture": "────────────────────────────────────────────────────────────────────────────────────────────────────────────────\nXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX \nXXXXXXXXXXXXXXXXXXXXXXX                                                                                         \n────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n/sample/workspace\n0.0%/32k (auto)    (sample-local) sample-model\n",
+  "row_lengths": [
+    111,
+    23
+  ]
+}

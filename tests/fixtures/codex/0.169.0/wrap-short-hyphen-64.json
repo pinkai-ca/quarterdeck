@@ -1,0 +1,10 @@
+{
+  "payload": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX alpha-beta",
+  "width": 64,
+  "height": 40,
+  "capture": "Codex 0.169.0\n› XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX alpha-\n  beta                    \n   gpt-6.1-sol low · /sample/workspace\n",
+  "row_lengths": [
+    61,
+    4
+  ]
+}

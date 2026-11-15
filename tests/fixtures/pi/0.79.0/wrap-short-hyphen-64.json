@@ -1,0 +1,10 @@
+{
+  "payload": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX alpha-beta",
+  "width": 64,
+  "height": 40,
+  "capture": "────────────────────────────────────────────────────────────────\nXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX        \nalpha-beta                                                      \n────────────────────────────────────────────────────────────────\n/sample/workspace\n0.0%/32k (auto)    (sample-local) sample-model\n",
+  "row_lengths": [
+    56,
+    10
+  ]
+}

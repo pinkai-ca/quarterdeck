@@ -1,0 +1,11 @@
+{
+  "payload": "Write the file /example/long-hyphenated-component-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/check-result.txt now.",
+  "width": 80,
+  "height": 40,
+  "capture": "Codex 0.169.0\n› Write the file /example/long-hyphenated-component-\n  xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/check-         \n  result.txt now.         \n  gpt-6.1-sol low · /sample/workspace\n",
+  "row_lengths": [
+    50,
+    68,
+    15
+  ]
+}

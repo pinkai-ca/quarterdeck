@@ -1,0 +1,10 @@
+{
+  "payload": "Write the file /example/long-hyphenated-component-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/check-result.txt now.",
+  "width": 112,
+  "height": 40,
+  "capture": "Claude Code v2.1.325\n──────────────────────────────────────────────────────────────────────────────────────────────────────── probe ─\n❯ Write the file /example/long-hyphenated-component-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx  \n  xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/check-result.txt now.\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n",
+  "row_lengths": [
+    108,
+    56
+  ]
+}

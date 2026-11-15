@@ -1,0 +1,11 @@
+{
+  "payload": "Write the file /example/long-hyphenated-component-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/check-result.txt now.",
+  "width": 80,
+  "height": 40,
+  "capture": "────────────────────────────────────────────────────────────────────────────────\nWrite the file                                                                  \n/example/long-hyphenated-component-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \nxxxxxxxxxxxxxxxxxxx/check-result.txt now.                                       \n────────────────────────────────────────────────────────────────────────────────\n/sample/workspace\n0.0%/32k (auto)    (sample-local) sample-model\n",
+  "row_lengths": [
+    14,
+    79,
+    41
+  ]
+}
