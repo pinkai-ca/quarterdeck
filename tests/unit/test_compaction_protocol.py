@@ -149,14 +149,12 @@ def test_explicit_attestation_flag_required_before_publishing_report(world, monk
     assert compaction.load(w.svc.runtime, w.seat.name)['attestation'] is None
 
 
-@pytest.mark.parametrize('change', ['tool', 'input', 'compaction'])
-def test_new_tool_or_incoming_work_invalidates_and_releases_reservation(world, change):
+@pytest.mark.parametrize('change', ['input', 'compaction'])
+def test_new_input_or_compaction_invalidates_and_releases_reservation(world, change):
     w = world
     _, hand, _ = ready(w)
     w.source[0].result()
-    if change == 'tool':
-        w.source[0].call()
-    elif change == 'input':
+    if change == 'input':
         w.source[0].begin()
     else:
         w.source[0].compact()
@@ -165,6 +163,24 @@ def test_new_tool_or_incoming_work_invalidates_and_releases_reservation(world, c
     assert data['ready'] is None and data['reserved'] is None and hand.id in data['used']
     assert not w.calls
     assert hand in w.svc.attempts.undelivered(w.svc.store, w.seat.name)
+
+
+def test_a_later_tool_in_the_attested_turn_keeps_readiness_and_the_gate_waits_for_the_turn(world):
+    """The attestation binds the turn, not its tools: the gate alone reads the tool state, after the turn ends."""
+    w = world
+    _, hand, _ = ready(w)
+    bound = compaction.load(w.svc.runtime, w.seat.name)['ready']
+    assert not {'frontier', 'call'} & bound.keys(), 'the binding names no tool'
+    w.source[0].result()
+    w.source[0].call()
+    compaction.tick(w.seat)
+    data = compaction.load(w.svc.runtime, w.seat.name)
+    assert data['ready'] == bound and data['reserved'] == hand.id and not w.calls
+    assert 'waiting for exact recorded turn completion' in compaction.status(w.seat)
+    w.source[0].result()
+    w.source[0].finish()
+    compaction.tick(w.seat)
+    assert w.calls == ['down', 'fresh'] and hand in w.carried[-1]
 
 
 def test_incoming_after_ready_disarms_before_publication_and_late_control_is_stale(world):
@@ -570,7 +586,9 @@ def opaque_result(native):
 
 @pytest.mark.parametrize('world', ['codex'], indirect=True)
 @pytest.mark.parametrize('where', ['older', 'attestation'])
-def test_managed_opaque_shapes_hold_with_real_count_and_explicit_fallback(world, where, monkeypatch):
+def test_managed_opaque_shapes_attest_then_hold_at_the_gate_with_explicit_fallback(world, where, monkeypatch):
+    """An unknown tool state no longer stops the attestation or the arming. The gate reads it once, from the shared
+    idle proof; with no screen to settle it, the seat is ready for manual fresh, and nothing starts by itself."""
     from quarterdeck import cli
     w = world
     native = w.source[0]
@@ -582,15 +600,16 @@ def test_managed_opaque_shapes_hold_with_real_count_and_explicit_fallback(world,
     request = threshold(w)
     hand = handoff(w, request)
     if where == 'older':
-        assert 'compactions 2/2: ready for manual fresh: execution unknown' in compaction.status(w.seat)
+        assert 'ready for manual fresh' not in compaction.status(w.seat), 'the protocol reads no tool state of its own'
         assert not any(message.kind == 'report' for message in w.svc.store.all())
         assert 'Leave that handoff open' in request.body and '--cancel' in request.body
     if where == 'attestation':
         opaque_call(native)
     else:
         direct_call(native)
-    with pytest.raises(ShipError, match='execution unknown'):
-        compaction.prepare_ready(w.seat, request.id, hand.id)
+    assert w.seat.harness.state(native.path).pending_tools is None, 'the record reads the tool state unknown'
+    act = compaction.prepare_ready(w.seat, request.id, hand.id)
+    compaction.arm(w.seat, **act)
     if where == 'attestation':
         opaque_result(native)
     else:
@@ -599,6 +618,7 @@ def test_managed_opaque_shapes_hold_with_real_count_and_explicit_fallback(world,
     compaction.tick(w.seat)
     status = compaction.status(w.seat)
     assert 'compactions 2/2: ready for manual fresh: execution unknown' in status and not w.calls
+    assert compaction.load(w.svc.runtime, w.seat.name)['ready'] is not None, 'readiness stands; nothing is dropped'
     assert w.seat.harness.state(native.path).pending_tools is None
     print(f'synthetic managed {where}: {status}; automatic launches=0')
     # Explicit cancel and fresh do not pretend that opaque work was proved absent.
@@ -753,3 +773,63 @@ sys.stdin.read(1)
     finally:
         for process in launches:
             process.communicate(timeout=5)
+
+
+# -- the screen, read second at the gate ------------------------------------------------------------------------
+
+FIXTURES = Path(__file__).resolve().parents[1] / 'fixtures' / 'claude' / '2.1.317'
+
+
+def unknown_record(w, monkeypatch, shown):
+    """A Claude seat on the measured 2.1.317 whose record cannot say whether a tool is open once its turn ends,
+    the protocol's own reading included, and whose screen is the named measured capture."""
+    from quarterdeck.harness.types import ActiveTool
+    harness = w.seat.harness
+    state, compactions = harness.state, harness.compactions
+    screen = type(harness).screen.__get__(harness)  # the adapter's own reading, under the world's stand-in
+
+    def unknown(found):
+        if found is None or found.turn_open is not False:
+            return found
+        return replace(found, pending_tools=None, active_tools=(ActiveTool('Bash', AT),))
+
+    monkeypatch.setattr(harness, 'state', lambda record: unknown(state(record)))
+    monkeypatch.setattr(harness, 'compactions', lambda record: (lambda reading: replace(
+        reading, state=unknown(reading.state)) if reading.state is not None else reading)(compactions(record)))
+    monkeypatch.setattr(harness, 'screen', lambda _: screen((FIXTURES / shown[0]).read_text()))
+    Launched('%1', 123, AT.isoformat(), 'synthetic', None, ['claude'], '2.1.317', harness='claude').write(
+        w.seat.trusted / 'launch.json')
+
+
+@pytest.mark.parametrize('world', ['claude'], indirect=True)
+def test_compacted_twice_record_unknown_and_screen_at_rest_goes_fresh_by_itself(world, monkeypatch):
+    from quarterdeck import idle
+    w = world
+    unknown_record(w, monkeypatch, ['rest-nothing-running.txt'])
+    _, hand, _ = ready(w)
+    w.source[0].result()
+    w.source[0].finish()
+    assert w.seat.harness.state(w.source[0].path).pending_tools is None, 'the record alone cannot say'
+    compaction.tick(w.seat)
+    assert w.calls == ['down', 'fresh'] and hand in w.carried[-1] and w.svc.store.is_open(hand)
+    assert compaction.load(w.svc.runtime, w.seat.name)['transition']['witness'] == idle.RECORD_AND_SCREEN
+
+
+@pytest.mark.parametrize('world', ['claude'], indirect=True)
+def test_compacted_twice_record_unknown_and_screen_showing_work_stays_held_with_the_reason(world, monkeypatch):
+    w = world
+    shown = ['rest-one-shell-one-monitor.txt']
+    unknown_record(w, monkeypatch, shown)
+    _, hand, _ = ready(w)
+    w.source[0].result()
+    w.source[0].finish()
+    for _ in range(2):
+        compaction.tick(w.seat)
+    data = compaction.load(w.svc.runtime, w.seat.name)
+    assert not w.calls and data['ready'] is not None and data['reserved'] == hand.id
+    assert data['manual'] is None, 'the screen settled the tool state: work, not unknown'
+    assert compaction.status(w.seat) == ('compactions 2/2: tools pending: its screen shows 1 shell and 1 monitor '
+                                         'in the background; automatic fresh held')
+    shown[0] = 'rest-nothing-running.txt'  # the work ends; the same readiness goes at the next gate
+    compaction.tick(w.seat)
+    assert w.calls == ['down', 'fresh'] and hand in w.carried[-1]

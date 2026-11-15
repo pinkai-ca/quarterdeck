@@ -1,7 +1,10 @@
 """Explicit compaction handoffs. Optional runtime intent; immutable posts stay authoritative.
 
 Lock order is lifecycle, sorted recipient admission, attempts. Admission never spans native startup.
-Only a recorded, unchanged turn plus the seat's own attestation may claim an automatic fresh.
+Only a recorded, unchanged turn plus the seat's own attestation may claim an automatic fresh. The attestation
+binds the turn and the seat; neither it nor arming asks anything of the tool state. That is read once, at the gate
+before the automatic fresh start, from the one shared idle proof (idle.reading) that relaunch, failover and select
+use, with its second witness. What that proof cannot settle stays ready for manual fresh.
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ from . import durable, post, record_owner
 from .ship import ShipError
 
 VERSION = 1
+MANUAL = 'ready for manual fresh: '
 
 
 def digest(text):
@@ -104,6 +108,7 @@ def release(data, reason):
     if data.get('reserved') and data['reserved'] not in data['used']:
         data['used'].append(data['reserved'])
     data.update(reserved=None, handoff_digest=None, ready=None, attestation=None, reason=reason)
+    data.pop('witness', None)
 
 
 def disarm(seat, reason='ordinary lifecycle action; prepare a current handoff', *, adopt_successor=False):
@@ -384,8 +389,14 @@ def threshold(seat, data):
 
 
 def binding(seat, data, reading):
+    """Which turn, by which seat: the launch and conversation, the turn, its latest input and the compaction count.
+
+    Never the tool state: a tool started or ended inside the turn leaves the binding as it was. A new input, a new
+    turn, another compaction, new incoming work or a changed handoff or configuration makes it stale.
+    """
+    latest = reading.state.last_input_at if reading.state is not None else None
     return dict(generation=data['generation'], launch=launch_key(seat), source=data['source'],
-                frontier=reading.frontier, turn=reading.turn, call=reading.last_call,
+                turn=reading.turn, count=reading.count, input=latest.isoformat() if latest is not None else None,
                 incoming=incoming(seat.ship.runtime, seat.name, data['request']), config=config_key(seat),
                 handoff=data.get('reserved'), handoff_digest=data.get('handoff_digest'))
 
@@ -421,11 +432,9 @@ def prepare_ready(seat, request_ref, handoff_ref):
                 or digest(handoff.to_json()) != data.get('handoff_digest') or handoff.id in data['used']
                 or not store.is_open(handoff)):
             raise ShipError('readiness needs the current reserved open self-handoff and request')
-        state = reading.state
-        if not state.turn_open or len(state.pending_tools or ()) != 1 or not reading.last_call:
-            data['reason'] = 'execution unknown: readiness needs one proved current attestation tool in its recorded turn'
-            if state.pending_tools is None:
-                data['manual'] = 'ready for manual fresh: execution unknown; choose an idle break'
+        if reading.state.turn_open is not True or not reading.turn:
+            # The seat attests inside the turn it promises to end. Its tool state is not asked here.
+            data['reason'] = 'readiness needs the seat\'s own open recorded turn; run fresh-ready inside it'
             save(runtime, seat.name, data)
             raise ShipError(data['reason'])
         bound = binding(seat, data, reading)
@@ -466,10 +475,11 @@ def arm(seat, revision, report, binding):
         from . import recovery
         from .door import Door
         state, screen = reading.state, Door(seat).screen()
-        if (state.queue_error or state.queued or state.pending_tools is None or len(state.pending_tools) > 1
+        # The tool state is not asked here: the gate reads it once, after the turn has ended.
+        if (state.queue_error or state.queued
                 or recovery.held(seat) or screen is None or screen.box != '' or screen.queued
                 or screen.unknown or screen.interruption or screen.starting):
-            raise ShipError('readiness cannot arm with queue/composer/tool/recovery uncertainty')
+            raise ShipError('readiness cannot arm with queue/composer/recovery uncertainty')
         data['ready'] = bound
         data['reason'] = 'manual-only readiness' if seat.session.human else 'ready; waiting for exact turn completion'
         save(runtime, seat.name, data)
@@ -477,7 +487,10 @@ def arm(seat, revision, report, binding):
 
 
 def obstruction(seat, data, record, reading):
-    from . import pending, recovery
+    """Why the automatic fresh start may not go now, or None. The tool state is read here and nowhere else in the
+    protocol, once, from the shared idle proof. Where that proof cannot settle it, ``data['manual']`` says ready for
+    manual fresh; where it settles it, rest or work, the manual reading clears."""
+    from . import idle, pending, recovery
     from .door import Door
     if seat.session.human:
         return 'human-owned session; manual fresh only'
@@ -488,8 +501,8 @@ def obstruction(seat, data, record, reading):
     if not valid_binding(seat, data, reading, data['ready']):
         return 'readiness stale; prepare a new handoff and renew readiness'
     state = reading.state
-    if not reading.complete or state.turn_open is not False or state.pending_tools != ():
-        return 'waiting for exact recorded turn/tool completion'
+    if not reading.complete or state.turn_open is not False:
+        return 'waiting for exact recorded turn completion'
     if not any(turn.timed and turn.started is not None and turn.ended is not None
                and state.last_input_at is not None and turn.started <= state.last_input_at <= turn.ended
                for turn in state.completed_turns[-1:]):
@@ -507,6 +520,19 @@ def obstruction(seat, data, record, reading):
     request = decode(data['request'])
     if any(message.id != request.id for message in attempts.undelivered(store, seat.name)):
         return 'incoming work has not reached the seat; automatic fresh held'
+    # The tool state, once, from the one proof relaunch, failover and select use: the record first, the screen
+    # second where the record cannot say. Never from this protocol's own reading.
+    proved = idle.reading(seat)
+    hold = proved.hold
+    if hold is not None:
+        if hold.dimension == 'tools-unknown':
+            data['manual'] = f'{MANUAL}execution unknown ({hold.reason}); choose an idle break'
+            return data['manual']
+        if hold.dimension == 'tools-pending':
+            data['manual'] = None
+        return f'{hold.reason}; automatic fresh held'
+    data['manual'] = None
+    data['witness'] = proved.witness
     screen = Door(seat).screen()
     if (screen is None or screen.box != '' or screen.working is not False or screen.queued
             or screen.unknown or screen.interruption or screen.starting):
@@ -554,18 +580,19 @@ def tick(seat):
             manual = None
             if reading.count >= seat.spec.fresh_after_compactions:
                 threshold(seat, data)
-                if reading.state.pending_tools is None:
-                    manual = 'ready for manual fresh: execution unknown; choose an idle break'
-                elif seat.session.human:
-                    manual = 'ready for manual fresh: human-owned session; choose an idle break'
+                if seat.session.human:
+                    manual = f'{MANUAL}human-owned session; choose an idle break'
             else:
                 data['reason'] = 'below compaction threshold'
             prepared = data.get('ready') or (data.get('attestation') or {}).get('binding')
             if prepared and not valid_binding(seat, data, reading, prepared):
                 release(data, 'readiness stale; prepare a new handoff and renew readiness')
+            if manual is None and data.get('ready') and reading.count >= seat.spec.fresh_after_compactions:
+                manual = data.get('manual')  # the gate's own last reading stands until the gate reads again
             data['manual'] = manual
             save(runtime, seat.name, data)
-        if reading.count < seat.spec.fresh_after_compactions or manual or not data.get('ready'):
+        if (reading.count < seat.spec.fresh_after_compactions or seat.session.human
+                or not data.get('ready')):
             return
         with seat._lifecycle(automatic=True):
             with post.admission(runtime, seat.name):
@@ -582,7 +609,8 @@ def tick(seat):
                     data['reason'] = 'record changed during fresh check; waiting for stable proof'
                     save(runtime, seat.name, data)
                     return
-                data['transition'] = dict(source=launch_key(seat), generation=data['generation'], handoff=data['reserved'])
+                data['transition'] = dict(source=launch_key(seat), generation=data['generation'], handoff=data['reserved'],
+                                          witness=data.get('witness'))
                 data['reason'] = 'fresh transition claimed; waiting for proved successor'
                 save(runtime, seat.name, data)
             # Admission is released; later arrivals belong to the successor and are withheld.
