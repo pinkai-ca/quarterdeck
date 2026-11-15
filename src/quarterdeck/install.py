@@ -13,7 +13,6 @@ import fcntl
 import hashlib
 import json
 import os
-import stat
 import re
 import shlex
 import shutil
@@ -26,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import trusted_files
-from . import copy_state, durable, resources, servicectl
+from . import copy_state, durable, lock_holders, resources, servicectl
 from .ship import Ship, ShipError, fence
 from .tmux import Tmux
 
@@ -923,28 +922,10 @@ def _parent_holds_install_lock(ship: Ship, pending: dict) -> str | None:
 
 
 def _flock_holder(path: Path) -> int | None:
-    """The process that holds an exclusive flock on this very file, as the kernel lists it in /proc/locks; None
-    when nobody holds one, the file is a link or absent, or the list cannot be read."""
-    try:
-        info = os.lstat(path)
-        with open('/proc/locks') as listing:
-            lines = listing.read().splitlines()
-    except OSError:
-        return None
-    if not stat.S_ISREG(info.st_mode):
-        return None
-    identity = f'{os.major(info.st_dev):02x}:{os.minor(info.st_dev):02x}:{info.st_ino}'
-    holders = set()
-    for line in lines:
-        fields = line.split()
-        if fields and fields[1:2] == ['->']:
-            continue  # a waiter, not a holder
-        if len(fields) >= 6 and fields[1:4] == ['FLOCK', 'ADVISORY', 'WRITE'] and fields[5] == identity:
-            try:
-                holders.add(int(fields[4]))
-            except ValueError:
-                return None
-    return holders.pop() if len(holders) == 1 else None
+    """The process that holds an exclusive flock on this very file, as the kernel lists it (``lock_holders``); None
+    when nobody holds one, the file is a link or absent, the holder cannot be named, or the kernel cannot say."""
+    found = lock_holders.reading(path)
+    return found[1] if found is not None and found[0] else None
 
 
 def _held(path: Path) -> bool:

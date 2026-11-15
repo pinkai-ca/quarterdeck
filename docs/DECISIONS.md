@@ -232,7 +232,22 @@ process the kernel lists as holding it (`servicectl.holder`, two readings of
 beat outlives it, and after a sync back to an earlier copy the beat a reader finds
 may name a process that is no longer the service. A beat counts as a start only
 when its pid is that holder, and `qd stop` signals the holder alone. Inside a
-jail, which sees no lock, the beat stands alone. The framework installs no system unit for the service, because
+jail, which sees no lock, the beat stands alone. A reader never takes the lock to
+learn whether it is held: it reads the kernel's table by device and inode, since
+a reader taking the lock for an instant makes a service starting that instant
+refuse it. The kernel serves that table a page per read, so one reading can pass
+over a held lock's row: with eight processes each taking and releasing fifty
+locks, a lock held throughout was missing from 1,948 of 77,138 readings, in runs
+of up to three readings back to back. A reading with no row is therefore
+confirmed from the descriptors that hold the file open (their fdinfo) before the
+lock reads as free, and where those cannot be listed the reading is unknown,
+never free. `lock_holders` is that one reader, for the service's lock and the
+installer's. Only where
+the table cannot say (it cannot be read, or it may leave the holder out, as in a
+nested pid namespace) is the lock probed by taking it. A
+row whose pid is 0 or less names no holder, and a start keeps trying a held lock
+for a moment (`TAKE_SECONDS`) before it refuses, since a reader of an earlier
+copy still probes. The framework installs no system unit for the service, because
 `qd` writes only inside its project folder (law `one-folder`).
 
 The service alone writes the Ledger, and every reading opens the Ledger

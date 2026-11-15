@@ -19,7 +19,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import durable
+from . import durable, lock_holders
 from .ship import Ship, ShipError
 from .procstat import EXITED
 
@@ -102,6 +102,26 @@ def _read_beat(path: Path) -> tuple[int, float] | None:
         return None
 
 
+TAKE_SECONDS = 1.0  # how long a start keeps trying a lock that a reader of an earlier copy may hold for an instant
+
+
+def _take(descriptor: int) -> None:
+    """Take an exclusive flock without waiting on it, trying again for up to TAKE_SECONDS while it is held.
+
+    This code's readers never take the lock (``lock_holders``), but a reader of an earlier copy still probes by taking it
+    for an instant, and a start that met such a probe would otherwise refuse a lock nobody keeps. A lock still held
+    at the end raises BlockingIOError, as one attempt does; any other error is raised at once."""
+    deadline = time.monotonic() + TAKE_SECONDS
+    while True:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                raise
+        time.sleep(0.02)
+
+
 def acquire_lock(runtime: Path):
     """Take the ship's service lock for this process's life, or refuse.
 
@@ -113,7 +133,7 @@ def acquire_lock(runtime: Path):
     descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
     handle = os.fdopen(descriptor, "a")
     try:
-        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _take(handle.fileno())
     except OSError:
         handle.close()
         raise ShipError(f"another service holds {path}") from None
@@ -137,7 +157,7 @@ def _retire_legacy(runtime: Path) -> None:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise ShipError(f"the earlier service lock {legacy} is not a regular file; retained")
         try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _take(descriptor)
         except BlockingIOError:
             raise ShipError(f"a service of the earlier code, or a seat that can see it, holds {legacy}; "
                             "stop that service (or that seat) and start again") from None
@@ -162,7 +182,7 @@ def hold_legacy(runtime: Path) -> int:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise ShipError(f"the earlier service lock {legacy} is not a regular file; retained")
         try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _take(descriptor)
         except BlockingIOError:
             raise ShipError(f"a service of the earlier code, or a seat that can see it, holds {legacy}; "
                             "stop that service (or that seat) and start again") from None
@@ -188,8 +208,9 @@ def release_legacy(runtime: Path, descriptor: int) -> None:
     os.close(descriptor)
 
 
-def _held(path: Path) -> bool | None:
-    """True when a process holds the lock, False when it is free, None when there is no such file."""
+def _probe(path: Path) -> bool | None:
+    """Whether the lock is held, found by taking it for an instant: only where the kernel's table cannot say.
+    True when a process holds it, False when it is free, None when there is no such file."""
     try:
         descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
     except FileNotFoundError:
@@ -204,6 +225,14 @@ def _held(path: Path) -> bool | None:
         return True
     finally:
         os.close(descriptor)
+
+
+def _held(path: Path) -> bool | None:
+    """True when a process holds the lock, False when it is free, None when there is no such file: read from the
+    kernel's table, never by taking the lock, which would make a service starting that instant refuse it. Only where
+    the table cannot say is the lock probed by taking it."""
+    reading = lock_holders.reading(path)
+    return _probe(path) if reading is None else reading[0]
 
 
 def locked(runtime: Path) -> bool:
@@ -221,24 +250,6 @@ def locked(runtime: Path) -> bool:
     return beat is not None and 0 <= beat[1] <= JAILED_HEARTBEAT_SECONDS
 
 
-def _flock_holder(path: Path) -> int | None:
-    """The pid the kernel lists as holding ``path``'s exclusive flock (/proc/locks), or None."""
-    try:
-        info = os.stat(path, follow_symlinks=False)
-        lines = Path("/proc/locks").read_text().splitlines()
-    except OSError:
-        return None
-    key = f"{os.major(info.st_dev):02x}:{os.minor(info.st_dev):02x}:{info.st_ino}"
-    for line in lines:
-        fields = line.split()
-        if len(fields) >= 6 and fields[1] == "FLOCK" and fields[3] == "WRITE" and fields[5] == key:
-            try:
-                return int(fields[4])
-            except ValueError:
-                return None
-    return None
-
-
 HOLDER_SECONDS = 1.0  # how long a held lock's holder may take to read the same twice in the kernel's table
 
 
@@ -247,8 +258,8 @@ def _lock_rows(path: Path) -> list[str]:
     try:
         info = os.stat(path, follow_symlinks=False)
         key = f"{os.major(info.st_dev):02x}:{os.minor(info.st_dev):02x}:{info.st_ino}"
-        return [" ".join(line.split()[1:]) for line in Path("/proc/locks").read_text().splitlines() if key in line]
-    except OSError as error:
+        return [" ".join(line.split()[1:]) for line in lock_holders.table().splitlines() if key in line]
+    except (OSError, UnicodeError) as error:
         return [type(error).__name__]
 
 
@@ -256,17 +267,19 @@ def holder(runtime: Path) -> int | None:
     """The service: the process that holds the ship's lock, as the kernel lists it, never a heartbeat's word.
 
     A dead service's last beat outlives it, and a beat at a place a copy no longer writes names whoever wrote last;
-    the lock is held by the live service alone. A probe of a free lock (``_held``) holds it for an instant, and one
-    reading of the table can miss a holder in passing, so a holder counts only when two readings 50 ms apart name the
-    same process while the lock is held, and never this process itself, within HOLDER_SECONDS. None when no process
-    holds it, or when the table cannot name it (inside a jail, which sees no lock)."""
+    the lock is held by the live service alone. The table is read, never the lock taken (``lock_holders``). A reader of an
+    earlier copy probes by taking a free lock for an instant, so a holder counts only when two readings 50 ms apart
+    name the same process, and never this process itself, within HOLDER_SECONDS. None when no process holds it, or
+    when the table cannot name one: inside a jail, which sees no lock, and for a row whose pid is 0 or less."""
     for path in (lock_path(runtime), legacy_lock_path(runtime)):
         deadline = time.monotonic() + HOLDER_SECONDS
-        while _held(path):  # free, or no such file: no holder at this place
-            first = _flock_holder(path)
+        while True:
+            first = lock_holders.reading(path)
+            if first is None or not first[0] or first[1] is None or first[1] == os.getpid():
+                break  # free, no such file, a table that cannot say, or no holder it names: none at this place
             time.sleep(0.05)
-            if first is not None and first != os.getpid() and _flock_holder(path) == first:
-                return first
+            if lock_holders.reading(path) == first:
+                return first[1]
             if time.monotonic() >= deadline:  # a holder the table would not name twice: unknown, never guessed
                 break
     return None
@@ -293,7 +306,7 @@ def started(runtime: Path) -> bool:
     if beat is None:
         return False
     pid = holder(runtime)
-    return pid is None and not lock_path(runtime).exists() or pid == beat[0]
+    return (pid is None and not lock_path(runtime).exists()) or pid == beat[0]
 
 
 def process_start(pid: int) -> str | None:
