@@ -260,7 +260,10 @@ class Runner:
     # -- the run --------------------------------------------------------------------------------------------
     def main(self) -> int:
         args = self.args
-        self.open_files = resources.apply_open_files()  # the controller and every child own the same policy
+        try:
+            self.open_files = resources.apply_open_files()  # controller and children own the same policy
+        except RuntimeError as error:
+            raise Refused(str(error)) from error
         root = slot = None
         self.run_guard = None
         self.bound(SETUP_SECONDS, f'time limit of setup, {SETUP_SECONDS:g} s')
@@ -649,7 +652,8 @@ class Runner:
         if self.ci_layout:
             support = purelib / '_qd_testrun_ci_support'
             support.mkdir()
-            names = ('__init__.py', 'layout.py', 'owned.py', 'procs.py', 'sessions.py', 'servers.py', 'socket_roots.py')
+            names = ('__init__.py', 'layout.py', 'owned.py', 'procs.py', 'resources.py', 'sessions.py',
+                     'servers.py', 'socket_roots.py')
             for name in names:
                 shutil.copyfile(plugin.with_name(name), support / name)
             result['tools']['ci_session_support'] = {name: gitops.blob_sha((support / name).read_bytes())

@@ -179,7 +179,10 @@ def retire(args) -> int:
     # Reuse the landed finalization policy; the local import avoids the runner/cleanup import cycle.
     from .run import Runner, FinalizationTimeout, FINALIZATION_SECONDS, EMERGENCY_SECONDS, FINALIZATION_EXIT
 
-    resources.apply_open_files()
+    try:
+        resources.apply_open_files()
+    except RuntimeError as error:
+        raise Refused(str(error)) from error
     run = run_name(args.run)
     project = gitops.resolve(Path.cwd()).project
     root = Root(project, create=False)

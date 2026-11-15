@@ -1,6 +1,6 @@
 """Resource policy shared by direct pytest and the test tool; never used by production code.
 
-Both limits are lowered before tests run. The hard limit survives fork, exec, multiprocessing
+Both address-space limits are lowered before tests run. The hard limit survives fork, exec, multiprocessing
 spawn and an emptied environment; an ordinary child cannot lift it again. This is a per-process
 address-space bound, not an aggregate RSS budget for all descendants.
 """
@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import os
 import resource
-
-from .layout import Refused
 
 DEFAULT_MEMORY_MIB = 8192
 OPEN_FILES = 8192
@@ -25,7 +23,7 @@ def apply_open_files() -> dict:
         try:
             resource.setrlimit(resource.RLIMIT_NOFILE, (wanted, hard))
         except (OSError, ValueError) as error:
-            raise Refused(f'cannot establish test RLIMIT_NOFILE soft limit of {wanted}: {error}') from error
+            raise RuntimeError(f'cannot establish test RLIMIT_NOFILE soft limit of {wanted}: {error}') from error
     soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
     return dict(resource='RLIMIT_NOFILE', requested_soft=OPEN_FILES, soft=soft, hard=hard)
 

@@ -36,6 +36,25 @@ def test_open_file_policy_preserves_hard_and_higher_soft_limits(monkeypatch, pre
     assert calls == ([] if previous == expected else [expected])
 
 
+def test_resource_policy_loads_and_applies_without_a_package(tmp_path):
+    standalone = tmp_path / 'standalone_resources.py'
+    standalone.write_bytes(Path(resources.__file__).read_bytes())
+    code = '''
+import json, resource, runpy, sys
+policy = runpy.run_path(sys.argv[1])
+resource.setrlimit(resource.RLIMIT_NOFILE, (1024, resource.getrlimit(resource.RLIMIT_NOFILE)[1]))
+memory = policy['apply_from_environment']()
+print(json.dumps(dict(memory=memory, open_files=policy['apply_open_files']())))
+'''
+    done = subprocess.run([sys.executable, '-B', '-I', '-c', code, str(standalone)],
+                          capture_output=True, text=True, timeout=10)
+    assert done.returncode == 0, done.stdout + done.stderr
+    result = json.loads(done.stdout)
+    assert 0 < result['memory'] <= resources.DEFAULT_MEMORY_MIB * resources.MIB
+    assert result['open_files']['soft'] == 8192
+    assert result['open_files']['hard'] == resource.getrlimit(resource.RLIMIT_NOFILE)[1]
+
+
 def tree(tmp_path, levels):
     root = tmp_path / 'tree'
     root.mkdir()
