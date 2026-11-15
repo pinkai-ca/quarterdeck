@@ -177,6 +177,35 @@ def template(kind: str = "default") -> tuple[str, str, dict]:
         raise ShipError(f"{kind} ship template unavailable; install this version's packaged resources and rerun qd setup") from None
 
 
+# The working folder a jailed office desk is given: its own, under the office's work/. The desk writes nothing there but
+# posts, which go through its drop; the folder is only somewhere its program may start that the jail lets it write. It
+# is not the office's folder (read-only in a jail), not the project (another ship's), and no other seat's.
+JAILED_DESK_WORK = "work/desk"
+
+
+def jailed_work_folders(office: Ship) -> list[Path]:
+    """The office's jailed seats' own working folders under its work/, which must exist before their launch."""
+    from . import sandbox
+    own = (office.folder / sandbox.OWN_WORK).resolve()
+    return [spec.cwd for spec in office.seats.values()
+            if spec.cwd is not None and office.jailed(spec) and spec.cwd.resolve().is_relative_to(own)]
+
+
+def make_jailed_work(office: Ship) -> None:
+    """Make each jailed office seat's own working folder, empty, before its launch.
+
+    law: one-folder. The folder lies inside the office, in the project; it is ignored by the office's repository, and
+    only ever made empty: nothing is written in it.
+    """
+    for folder in jailed_work_folders(office):
+        for part in (folder, *folder.parents):
+            if part == office.folder:
+                break
+            if part.is_symlink():
+                raise ShipError(f"{part} is a link; a jailed seat's working folder is a real folder of the office")
+        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+
 def office_folder(project: Path) -> Path:
     """The single office lives at the project top; no alias or alternate location."""
     project = project.resolve()
@@ -242,7 +271,10 @@ def init_office(args: argparse.Namespace, *, operations: Operations | None = Non
             raise ShipError(f"office template unavailable ({type(error).__name__}); install this version's packaged resources") from None
         if declaration is not None:
             files["ship.toml"] = declaration
-        ships._validate(ships._from_text(files["ship.toml"], folder))
+        declared = ships._from_text(files["ship.toml"], folder)
+        ships._validate(declared)
+        # A jailed seat's own working folder under work/ is ignored with the runtime: nothing in it is the office's.
+        ignored = "/runtime/\n" + ("/work/\n" if jailed_work_folders(declared) else "")
         identity = git_identity(project)
         # law: one-folder
         # The fence's empty mount point is inside the project, where the office's
@@ -252,7 +284,7 @@ def init_office(args: argparse.Namespace, *, operations: Operations | None = Non
         except FileExistsError:
             if folder.is_symlink() or not folder.is_dir() or any(folder.iterdir()):
                 raise ShipError(f"{folder} is not an empty office folder; leave its existing files untouched") from None
-        for name, text in {**files, ".gitignore": "/runtime/\n"}.items():
+        for name, text in {**files, ".gitignore": ignored}.items():
             path = folder / name
             path.parent.mkdir(parents=True, exist_ok=True)
             ships._write_atomically(path, text)
@@ -271,6 +303,7 @@ def init_office(args: argparse.Namespace, *, operations: Operations | None = Non
     ships._git(folder, "rev-parse", "--verify", "HEAD")
     if not start:
         return lines + ["Office saved; desk not started. Run qd init to start it."]
+    make_jailed_work(office)
     result = operations.up_desk(office)
     lines.extend([result] if isinstance(result, str) else result)
     lines += [f"Desk access: {operations.access(office)}", "Office ready; tell the desk what you want to work on."]
@@ -601,7 +634,15 @@ def run(args: argparse.Namespace, *, operations: Operations | None = None,
     if initialize_office:
         start_office = conversation.choice("start", "Start the office and crew? Opening briefs may spend turns. yes or no",
                                            ("yes", "no"), "yes")
-        office_lines = init_office(argparse.Namespace(ship=None), operations=operations, start=start_office == "yes", declaration=proposal.office_text)
+        try:
+            office_lines = init_office(argparse.Namespace(ship=None), operations=operations,
+                                       start=start_office == "yes", declaration=proposal.office_text)
+        except ShipError as error:
+            if not (office_path / "ship.toml").exists():
+                raise
+            # Its own words, and the next step: the office is kept, and setup continues from it when run again.
+            raise ShipError(f"the office at {office_path} is saved, but its desk did not start: {error}. "
+                            "Resolve that, then run qd setup again; it continues from the saved office") from None
         for line in office_lines:
             conversation.say(line)
     folder = proposal.ship.folder

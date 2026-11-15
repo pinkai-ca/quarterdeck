@@ -3,7 +3,8 @@
 name = "office"
 kind = "office"
 operator = "operator"
-# No project workspace is required. Programs start in this office's own folder.
+# No project workspace is required. Programs start in this office's own folder; a desk that runs jailed (on a
+# local model) is given work/desk instead, its own folder, since a jail shows the office's folder read-only.
 
 [pools.claude]
 provider = "anthropic"

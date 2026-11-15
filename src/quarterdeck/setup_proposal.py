@@ -372,6 +372,12 @@ def separate_office(proposal: Proposal, office_folder: Path) -> Proposal:
         for key, value in raw["pools"][name].items():
             office_text = ships.edit(office_text, f"pools.{name}", key, value)
     office = ships._from_text(office_text, office_folder)
+    desk_spec = office.seat("desk")
+    if desk_spec.cwd is None and office.jailed(desk_spec):
+        # A jailed desk cannot work in the office's own folder, which its jail shows read-only. It works in a folder of
+        # its own under the office's work/, the one place in its own ship a jailed seat may work (sandbox.OWN_WORK).
+        office_text = ships.edit(office_text, "seats.desk", "cwd", setup.JAILED_DESK_WORK)
+        office = ships._from_text(office_text, office_folder)
     setup.validate_declaration(office)
     crew_text = crew_template(proposal.text)
     used = {pool for name, seat in proposal.ship.seats.items() if name != "desk" for pool in seat.pools}

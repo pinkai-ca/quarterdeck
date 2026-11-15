@@ -164,12 +164,15 @@ def test_child_failure_never_replays_launch_in_caller(vessel, monkeypatch, outco
         if outcome == 'cannot-start':
             raise OSError('synthetic process failure')
         return SimpleNamespace(returncode=1 if outcome == 'failed' else 0,
-                               stdout={'unreadable': '{', 'wrong-shape': '{}'}.get(outcome, '[]'))
+                               stdout={'unreadable': '{', 'wrong-shape': '{}'}.get(outcome, '[]'),
+                               stderr='qd: synthetic child refusal\n' if outcome == 'failed' else '')
 
     monkeypatch.setattr(install.subprocess, 'run', child)
-    with pytest.raises(ShipError, match='no (fallback or )?retry made'):
+    with pytest.raises(ShipError, match='no (fallback or )?retry made') as refused:
         cli.cmd_up(SimpleNamespace(seat=None, fresh=False))
     assert len(calls) == 1
+    if outcome == 'failed':
+        assert 'synthetic child refusal' in str(refused.value), 'the child\'s own words, never a pointer elsewhere'
 
 
 @pytest.mark.parametrize('code', [None, 'checkout'])

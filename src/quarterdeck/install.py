@@ -830,7 +830,7 @@ def delegate_up(ship: Ship, *, seat: str | None, fresh: bool, reload_required: b
         raise ShipError('installed up could not start; no fallback or retry made; inspect qd doctor') from None
     if done.returncode:
         # A child may have acted before failing. Never replay its up in the caller.
-        raise ShipError('installed up failed; no retry made; inspect qd status and the installed copy')
+        raise ShipError(refused_up(ship, done.stderr))
     try:
         result = json.loads(done.stdout)
     except ValueError:
@@ -838,6 +838,19 @@ def delegate_up(ship: Ship, *, seat: str | None, fresh: bool, reload_required: b
     if not isinstance(result, list) or not all(isinstance(line, str) for line in result):
         raise ShipError('installed up returned unknown proof; no retry made; inspect qd status')
     return result
+
+
+def refused_up(ship: Ship, stderr: str) -> str:
+    """Why the installed copy's up failed, in its own words, and the next step that can answer.
+
+    The child prints its refusal as ``qd: <words>``. Those words are the reason; a pointer to qd status could not
+    answer for a ship whose first start failed, before any status exists to read.
+    """
+    said = [line[len('qd: '):].strip() for line in (stderr or '').splitlines() if line.startswith('qd: ')]
+    again = f'qd --ship {shlex.quote(str(ship.folder))} up'
+    if said:
+        return f'installed up refused: {said[-1]}; no retry made; resolve that, then run {again}'
+    return f'installed up failed without a reason; no retry made; run {again} to see its output'
 
 
 def bootstrap_service(ship: Ship, argv: list[str]) -> None:
