@@ -32,12 +32,13 @@ def read(owner, record, load):
     if cache is None:
         return load()
     from .base import record_fingerprint
+    fingerprint = getattr(owner, 'reading_fingerprint', record_fingerprint)
     record = Path(record)
     key = owner, record
     previous = cache.pop(key, None)
     started = time.time_ns()
     try:
-        before = record_fingerprint(record)
+        before = fingerprint(record)
         journal = Path(f'{record}-journal').exists()
     except OSError:
         return load()  # retain the native reader's own failure and diagnostics
@@ -48,7 +49,7 @@ def read(owner, record, load):
         return _copy(previous[2])
     result = load()
     try:
-        stable = before == record_fingerprint(record) and not Path(f'{record}-journal').exists()
+        stable = before == fingerprint(record) and not Path(f'{record}-journal').exists()
     except OSError:
         stable = False
     finished = time.time_ns()

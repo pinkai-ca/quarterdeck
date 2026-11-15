@@ -29,6 +29,7 @@ from . import record_file
 from .json_record import JsonLinesReader, input_reader, input_rows, records_matching
 from .types import AUTHENTICATION, Inputs, TurnFailure, ControlAnswer, ControlContext, ControlInterruption
 from .claude_background import notification as background_notification, BackgroundBash, user_notice
+from .claude_children import Children, fingerprint as children_fingerprint
 
 from .. import durable, seat_files
 from ..ship import Pool, SeatSpec
@@ -454,6 +455,7 @@ class _Reader(JsonLinesReader):
     kinds = ('assistant', 'queue-operation', 'system', 'user')
     label = "Claude Code"
     clock = staticmethod(_wall_clock)  # the notice grace is judged on this clock alone; a test injects its own
+    reading_fingerprint = staticmethod(children_fingerprint)
 
     def __init__(self, record: Path, snapshot=None):
         self.orphan_auth = None
@@ -463,13 +465,15 @@ class _Reader(JsonLinesReader):
         self.queue_slots = []  # FIFO, including returned drafts and consumed echo identities
         self.queue_version = None
         self.background = BackgroundBash(record)
+        self.children = Children(record)
         self.walls = []
         self.notice_input = None  # accounting candidate only: a notice cannot open a turn
         self.notice_unanswered, self.notice_at = False, None  # a notice no assistant row has followed, and its time
         super().__init__(record, snapshot)
 
     def state(self, *, launched_at=None):
-        state = replace(self.background.state(super().state(), launched_at=launched_at), walls=tuple(self.walls))
+        state = replace(self.children.project(super().state(), self.background, INPUT_IGNORED, ai_title,
+                                              launched_at=launched_at), walls=tuple(self.walls))
         if state.queue_error is None and any(slot.uncertain and slot.phase in ('queued', 'pending')
                                              for slot in self.queue_slots):
             state = replace(state, queue_error='unknown queue operation')
@@ -493,6 +497,7 @@ class _Reader(JsonLinesReader):
     def take(self, entry: dict) -> None:
         entry = self.textless_dequeue.take(entry)
         kind = entry.get("type")
+        self.children.observe(entry)
         if not entry.get('isSidechain') and 'version' in entry:
             self.queue_version = entry['version']
         if kind == 'ai-title' and not ai_title(entry):
@@ -682,6 +687,7 @@ class _Reader(JsonLinesReader):
         for block in entry.get("message", {}).get("content") or []:
             if isinstance(block, dict) and block.get("type") == "tool_result":
                 self.background.result(block.get('tool_use_id'), entry, block, when(entry.get('timestamp')))
+                self.children.result(block.get('tool_use_id'), entry, block, when(entry.get('timestamp')))
                 self.close_tool(block.get("tool_use_id"), when(entry.get("timestamp")), bool(block.get("is_error")))
 
     def assistant(self, entry: dict) -> None:
@@ -741,9 +747,10 @@ class _Reader(JsonLinesReader):
             if block.get("type") == "tool_use":
                 name = block.get('name', '?')
                 arguments = block.get('input')
-                if (block.get('id') in self.live_tools or name in ('Task', 'Agent')
+                child = self.children.call(block.get('id'), name, arguments, when(entry.get('timestamp')), entry.get('version'))
+                if (block.get('id') in self.live_tools or name in ('Task', 'Agent') and not child
                         or arguments is not None and not isinstance(arguments, dict)
-                        or name != 'Bash' and isinstance(arguments, dict) and arguments.get('run_in_background')):
+                        or name != 'Bash' and not child and isinstance(arguments, dict) and arguments.get('run_in_background')):
                     self.tools_known = False  # delegation remains opaque; measured Bash has its own lifetime
                 self.background.call(block.get('id'), name, arguments, when(entry.get('timestamp')), entry.get('version'))
                 self.open_call(block.get('id'), name, when(entry.get('timestamp')))
@@ -1122,6 +1129,7 @@ class ClaudeBox(Box):
 
 
 class ClaudeHarness(Harness):
+    reading_fingerprint = staticmethod(children_fingerprint)
     box_geometry_known = True  # box_columns below declares the established text area
 
     def state_for_relaunch(self, record, launched_at):
