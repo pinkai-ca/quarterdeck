@@ -31,6 +31,7 @@ from .ledger import Ledger
 from .order_attribution import Threads
 from .provenance import Provenance
 from .usage_cache import UsageCache
+from .accounting_gate import Gate
 
 BUDGET = 2.0
 DRAIN_BUDGET = 0.02
@@ -274,8 +275,11 @@ class Driver:
         self.job = 0
         self.counts, self.records = Counter(), set()
         self.completed_records = self.reported_records = 0
+        self.gate = Gate()
+        self.step_changes = 0
 
     def close(self):
+        self.gate.reject()
         if self.process is not None:
             if self.process.poll() is None:
                 self.process.terminate()
@@ -334,6 +338,7 @@ class Driver:
                                         scope=sorted(self.scope) if self.scope is not None else None)))
         self.reset_child = False
         self.started = time.monotonic()
+        self.gate.begin(service, (path for item in self.seats for path, *_ in item['sources']))
         self.job += 1
         service.log('accounting-job-start', job=self.job, seats=len(self.seats),
                     scope=sorted(self.scope) if self.scope is not None else None,
@@ -426,15 +431,22 @@ class Driver:
                             retry=sorted(self.invalid), pending=service.ledger.catching_up())
                 if self.changed and not self.invalid:
                     service.log('accounting-caught-up', seconds=time.monotonic() - self.started)
+                self.gate.finish(service, self.step_changes, full=self.scope is None and not self.invalid
+                                 and not service.ledger.catching_up())
         return not self.active
 
     def step(self, service, *, seconds=None, wait=True):
         deadline = time.monotonic() + (BUDGET if seconds is None else seconds)
         before = service.accounting_health.shown()
+        self.step_changes = service.ledger.db.total_changes
         try:
             if self.events and self.callbacks(service, deadline):
                 return
             if not self.active:
+                if self.process is not None and self.process.poll() is not None:
+                    self.close()
+                if not self.gate.allowed(service, retry=bool(self.retry_seats)):
+                    return
                 self.active = True
                 self.started = None
                 self.changed = False
@@ -539,6 +551,7 @@ class Driver:
             if service.accounting_health.failed(accounting_health.cause(error), post.now()):
                 service.log('accounting-failing', cause=service.accounting_health.current)
         finally:
+            self.gate.own(self.step_changes, service.ledger.db.total_changes)
             service.publish_accounting_health(force=True)
             service.accounting_shown_changed(before)
 
