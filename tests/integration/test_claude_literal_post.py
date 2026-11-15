@@ -47,7 +47,9 @@ raise SystemExit(simulator.main())
 
 @pytest.fixture
 def literal_claude(drydock, tmux, tmp_path, monkeypatch):
-    fake, claude = harness.get('fake'), harness.get('claude')
+    current = shipmod.load(drydock)
+    seat = seatmod.Seat(current, current.seat('captain'), tmux)
+    fake, claude = seat.harness, harness.get('claude')
     program = tmp_path / 'literal_claude.py'
     program.write_text(PROGRAM)
     launch = fake.launch
@@ -57,8 +59,6 @@ def literal_claude(drydock, tmux, tmp_path, monkeypatch):
         return replace(found, argv=(found.argv[0], str(program), *found.argv[3:]))
 
     monkeypatch.setattr(fake, 'launch', synthetic_launch)
-    current = shipmod.load(drydock)
-    seat = seatmod.Seat(current, current.seat('captain'), tmux)
     seat.up()
     wait_for(lambda: Door(seat).reading().open)
     monkeypatch.setattr(fake, 'screen', claude.screen)
@@ -103,7 +103,8 @@ def test_unfolded_report_is_pasted_submitted_and_record_confirmed_once(literal_c
     result = Door(seat).deliver(text)
     assert result.result == 'delivered', result
     assert calls == dict(paste=1, submit=1)
-    assert seat.harness.turns(seat.record())[0].input == text.rstrip('\n')
+    turns = wait_for(lambda: seat.harness.turns(seat.record()) or None)
+    assert turns[0].input == text.rstrip('\n')
 
 
 @pytest.mark.parametrize('kind', ['report', 'answer'])
