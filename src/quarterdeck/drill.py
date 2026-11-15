@@ -238,7 +238,7 @@ class Drill:
             if not wait_for(lambda: not service.alive(self.ship.runtime), self.patience):
                 self.check("service killed mid-delivery, recovered", False, "killed service still owns its lock")
                 return
-            service.heartbeat_path(self.ship.runtime).unlink(missing_ok=True)
+            service.remove_heartbeat(self.ship.runtime)
             restarted = service.start(self.ship)
             if gate:
                 gate.release()

@@ -313,8 +313,8 @@ def test_a_sign_in_in_a_runtime_folder_no_list_knows_is_absent_and_what_the_show
     unknown = runtime / 'zz-grown-later' / 'deep' / 'auth.json'
     planted = {unknown: False, runtime / 'brief' / 'counsel.md': False, runtime / 'brief' / 'worker-1.md': True}
     for name in sandbox.RUNTIME_SHOWN:
-        if name in ('post', 'installed.json', 'service.heartbeat'):
-            continue  # the post is the seats' own exchange; the two files are not folders
+        if name in ('post', 'installed.json'):
+            continue  # the post is the seats' own exchange; the record is a file, not a folder
         folder = runtime / name
         folder.mkdir(parents=True, exist_ok=True)
         planted[folder / 'synthetic-planted-auth.json'] = True

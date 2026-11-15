@@ -31,8 +31,25 @@ START_SECONDS = 30.0
 LIFECYCLE_REQUESTS = frozenset({'relaunch', 'stop', 'select', 'control'})
 
 
+HEARTBEAT_FOLDER = "heartbeat"
+
+
 def heartbeat_path(runtime: Path) -> Path:
+    """In a folder of its own, which a jail shows read-only: a replace inside it never races a jail's mount, and a
+    running jail sees every beat. A single-file bind pinned the inode a jail started with, so a jail read its
+    launch-time beat for ever, and a replace during bwrap's mount of the file stopped the launch."""
+    return runtime / HEARTBEAT_FOLDER / "service.heartbeat"
+
+
+def legacy_heartbeat_path(runtime: Path) -> Path:
+    """Where the heartbeat lay before it moved. During a sync the earlier code's service may still write it, so it is
+    read where the heartbeat's own place holds none; the first service of this code removes it."""
     return runtime / "service.heartbeat"
+
+
+def remove_heartbeat(runtime: Path) -> None:
+    heartbeat_path(runtime).unlink(missing_ok=True)
+    legacy_heartbeat_path(runtime).unlink(missing_ok=True)
 
 
 def lock_path(runtime: Path) -> Path:
@@ -49,6 +66,17 @@ def legacy_lock_path(runtime: Path) -> Path:
 
 def write_heartbeat(runtime: Path) -> None:
     path = heartbeat_path(runtime)
+    path.parent.mkdir(exist_ok=True)
+    _beat(path)
+
+
+def write_legacy_heartbeat(runtime: Path) -> None:
+    """The beat at its earlier place too, for an installer of the earlier code that started this service and reads
+    a service's heartbeat only there; never shown to a jail."""
+    _beat(legacy_heartbeat_path(runtime))
+
+
+def _beat(path: Path) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(f"{os.getpid()} {datetime.now(timezone.utc).isoformat()}\n")
     os.replace(tmp, path)
@@ -57,7 +85,11 @@ def write_heartbeat(runtime: Path) -> None:
 def read_heartbeat(runtime: Path) -> tuple[int, float] | None:
     """The service's pid and the age of its last tick in seconds, or None when none was written."""
     try:
-        pid, stamp = heartbeat_path(runtime).read_text().split()
+        try:
+            text = heartbeat_path(runtime).read_text()
+        except FileNotFoundError:
+            text = legacy_heartbeat_path(runtime).read_text()  # an earlier code's service, during a sync
+        pid, stamp = text.split()
         moment = datetime.fromisoformat(stamp)
         if int(pid) <= 0 or moment.tzinfo is None:
             return None

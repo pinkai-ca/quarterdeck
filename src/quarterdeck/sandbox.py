@@ -35,12 +35,13 @@ TMP_BYTES = 256 * 1024 * 1024  # a private /tmp lives in memory; this caps what 
 HOME_BYTES = 16 * 1024 * 1024  # the empty home stands in memory too; bounded, so a jailed seat cannot fill the machine
 HIDDEN_BYTES = 1024 * 1024  # every other tmpfs inside is a fence or a hidden folder, holding mount points only
 # What a jailed seat sees of its ship's runtime, read-only: the post (its own drop writable on top), its own brief, the
-# ship's own qd (bin, venv, the previous copy and the record that selects between them) and the service's heartbeat.
+# ship's own qd (bin, venv, the previous copy and the record that selects between them) and the service's heartbeat, in
+# a folder of its own: the service replaces it whole every 2 s, and a single-file bind would pin the jail's first beat.
 # The rest of runtime/ is an empty folder inside: the ledger, the logs, the evidence, every sign-in a usage reader or a
 # parked credential holds, and whatever the runtime holds later. Its own seat folder and check folder are writable.
 # The runtime's own .git is the empty fence repository that keeps git run above it out; a jailed qd post checks it.
 # The post is shown as the seat's own view of it (post_view), never whole: see Jail.post_view.
-RUNTIME_SHOWN = ('.git', 'bin', 'venv', 'venv.prev', 'installed.json', 'service.heartbeat')
+RUNTIME_SHOWN = ('.git', 'bin', 'venv', 'venv.prev', 'installed.json', 'heartbeat')
 # Of the briefs, only the seat's own: every seat's brief lies in that folder, the counsel's included.
 RUN_BYTES = 16 * 1024 * 1024  # the jail's own /run: a private runtime folder and the resolver's file, nothing more
 MNT_BYTES = 16 * 1024 * 1024  # an empty /mnt: the operator's own disks and the machine's shared scratch are hidden
@@ -306,6 +307,8 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
     post_dir.ensure_directory(drop)  # the one writable post folder, so it must exist before the launch
     (ship.runtime / "tmux").mkdir(mode=0o700, exist_ok=True)  # hidden inside: the mount needs its place in the read-only ship
     (ship.runtime / LOCKS).mkdir(mode=0o700, exist_ok=True)  # hidden inside: the service's own locks, out of every jail's reach
+    # Shown inside before any service has beaten, so a jail launched first still sees the service's beats.
+    (ship.runtime / 'heartbeat').mkdir(exist_ok=True)
     from .fleet import declaration_files
     declarations = tuple(file for file in declaration_files(ship) if file.parent != ship.folder)
     proof = ensure_check_proof_folder(ship.runtime, seat_name)  # a link is refused here, before any bind
