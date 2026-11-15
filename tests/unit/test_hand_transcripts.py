@@ -96,6 +96,16 @@ def world(tmp_path, monkeypatch, kind='pi', *, complete=True, age=timedelta(days
     return SimpleNamespace(svc=svc, seat=seat, record=record, current=current, now=now.timestamp(), logs=logs)
 
 
+def retire(w, **options):
+    """The retirement's moves, with every guard that declined named in the failure, so a record that stays says why."""
+    declined = []
+    moves = hand_transcripts.run(w.svc, now=w.now, declined=declined, **options)
+    if not moves:
+        print('declined:', declined)
+    retire.declined = declined
+    return moves
+
+
 def size(folder):
     return sum(p.stat().st_size for p in folder.rglob('*') if p.is_file())
 
@@ -108,7 +118,7 @@ def test_accounted_old_record_retires_and_size_falls_current_stays(tmp_path, mon
         native = w.record.read_bytes()
         reading = w.seat.harness.read(w.record)
         inputs = w.seat.harness.attribution_inputs(w.record)
-        assert hand_transcripts.run(w.svc, now=w.now) == 1
+        assert retire(w) == 1, f"declined: {retire.declined}"
         kept = record_location.resolve(w.record)
         assert kept != w.record and not w.record.exists() and kept.read_bytes() == native
         assert size(w.seat.folder) < before and w.current.is_file()
@@ -142,8 +152,18 @@ def test_unfinished_or_ineligible_sources_stay(tmp_path, monkeypatch, kind, hold
             w.svc.ledger.begin_catchup(['synthetic-new-epoch'])
         elif hold == 'active-planner':
             w.svc.account_driver = SimpleNamespace(active=True)
-        assert hand_transcripts.run(w.svc, now=w.now) == 0
+        assert retire(w) == 0
         assert w.record.is_file() and record_location.resolve(w.record) == w.record
+        named = {'unaccounted': 'not accounted at its checkpoint', 'changed': 'not accounted at its checkpoint',
+                 'current': 'it is the current record', 'young': 'written within the week',
+                 'catchup': 'the accounting is catching up', 'active-planner': 'an accounting job is open',
+                 'open': 'a turn, a tool or a queue is still open'}[hold]
+        assert named in [guard for _, _, guard in retire.declined], retire.declined
+        held = [data for event, data in w.logs if event == 'hand-transcript-held' and data['guard'] == named]
+        assert len(held) == 1, 'logged once'
+        retire(w)
+        assert len([data for event, data in w.logs if event == 'hand-transcript-held' and data['guard'] == named]) == 1, \
+            'not again at the next pass'
     finally:
         w.svc.ledger.close()
 
@@ -154,7 +174,7 @@ def test_open_program_descriptor_holds_old_record(tmp_path, monkeypatch, kind):
     try:
         with w.record.open('rb'):
             assert hand_transcripts.run(w.svc, now=w.now) == 0
-        assert hand_transcripts.run(w.svc, now=w.now) == 1
+        assert retire(w) == 1, f"declined: {retire.declined}"
     finally:
         w.svc.ledger.close()
 
@@ -177,7 +197,7 @@ def test_changed_epoch_replay_of_copy_keeps_all_measurements_byte_identical(tmp_
             return json.dumps(db.execute('SELECT record,turn,identity,received,status,orders,reason,grouping,valid '
                                          'FROM turn_attribution ORDER BY record,turn').fetchall()).encode()
         expected_verdicts = verdicts(book.db)
-        assert hand_transcripts.run(w.svc, now=w.now) == 1
+        assert retire(w) == 1, f"declined: {retire.declined}"
         book.close()
         w.svc.ledger = book = Ledger(copy)
         # Fresh caches and a changed reader/attribution epoch force actual native replay.
@@ -226,7 +246,7 @@ def test_sqlite_bundle_moves_once_with_wal_and_shm(tmp_path, monkeypatch):
             moves.append((source, target))
             return rename(source, target)
         monkeypatch.setattr(Path, 'rename', observed)
-        assert hand_transcripts.run(w.svc, now=w.now) == 1
+        assert retire(w) == 1, f"declined: {retire.declined}"
         kept = record_location.resolve(w.record)
         assert moves == [(w.record.parent, kept.parent)]
         assert {p.relative_to(kept.parent): p.read_bytes() for p in kept.parent.rglob('*') if p.is_file()} == original
@@ -242,7 +262,7 @@ def test_pi_retired_conversation_refuses_native_resume(tmp_path, monkeypatch):
     from quarterdeck.endpoint import Choice
     w = world(tmp_path, monkeypatch)
     try:
-        assert hand_transcripts.run(w.svc, now=w.now) == 1
+        assert retire(w) == 1, f"declined: {retire.declined}"
         monkeypatch.setattr(Choice, 'read', lambda home: SimpleNamespace(model='synthetic-model'))
         with pytest.raises(ShipError, match='conversation is retired'):
             w.seat.harness.launch(w.seat.spec, SimpleNamespace(name='synthetic'), w.seat.home,
@@ -269,7 +289,7 @@ def test_unknown_reader_stays_and_retired_binding_cannot_be_rejoined(tmp_path, m
             journal.write(json.dumps(dict(record=str(eligible), at=(old-timedelta(seconds=2)).isoformat(),
                                           pool='local', harness=kind)) + '\n')
         w.svc.account_records(process_table={})
-        assert hand_transcripts.run(w.svc, now=w.now) == 1
+        assert retire(w) == 1, f"declined: {retire.declined}"
         kept = record_location.resolve(eligible)
         for path in (eligible, kept):
             assert record_location.retired(path)
@@ -338,7 +358,7 @@ def test_a_screening_record_leaves_the_home_once_accounted_without_the_weeks_wai
         assert hand_transcripts.run(w.svc, now=w.now) == 0, 'an ordinary record two minutes old waits its week'
         pr_screen.mark_screening(w.svc.runtime, 'hand', [str(w.record)])
         assert pr_screen.screening_left(w.svc.runtime, 'hand')
-        assert hand_transcripts.run(w.svc, now=w.now) == 1
+        assert retire(w) == 1, f"declined: {retire.declined}"
         assert holds(w.seat.home, strings) == [], 'nothing under the hand\'s home holds the case\'s text'
         kept = record_location.resolve(w.record)
         assert kept.is_relative_to(w.svc.runtime / 'retired' / 'hand-transcripts')
@@ -366,7 +386,7 @@ def test_a_screening_record_leaves_even_before_the_next_launch_has_a_record(tmp_
         monkeypatch.setattr(w.seat, 'record', lambda: None)  # the fresh launch after the screen has written nothing yet
         assert hand_transcripts.run(w.svc, now=w.now) == 0, 'without a screening record the hand waits, as before'
         pr_screen.mark_screening(w.svc.runtime, 'hand', [str(w.record)])
-        assert hand_transcripts.run(w.svc, now=w.now) == 1 and not w.record.exists()
+        assert retire(w) == 1 and not w.record.exists(), f"declined: {retire.declined}"
         assert w.current.is_file(), 'only the screening record moves'
     finally:
         w.svc.ledger.close()
@@ -447,4 +467,81 @@ def test_a_screening_record_not_yet_accounted_waits_for_that_alone(tmp_path, mon
         assert hand_transcripts.run(w.svc, now=w.now, limit=0) == 1 and not screened.exists(), 'and for that alone'
         assert w.record.is_file(), 'limit 0: the screening walk alone' 
     finally:
+        w.svc.ledger.close()
+
+
+NAMED = r"""
+import ctypes, sys
+ctypes.CDLL(None).prctl(15, b'node', 0, 0, 0)  # PR_SET_NAME: read as a program the retirement waits for
+"""
+
+# The leader alone exits while a thread of its keeps the record open, as a node or bun process with workers can.
+LEADER_EXITS = NAMED + r"""
+import threading, time
+held = open(sys.argv[1], 'rb')
+started = threading.Event()
+def keep():
+    started.set()
+    time.sleep(120)
+threading.Thread(target=keep).start()
+started.wait()
+print('ready', flush=True)
+ctypes.CDLL(None).pthread_exit(None)
+"""
+
+
+def task_states(pid):
+    try:
+        return {task: Path(f'/proc/{pid}/task/{task}/stat').read_text().rsplit(')', 1)[1].split()[0]
+                for task in os.listdir(f'/proc/{pid}/task')}
+    except FileNotFoundError:
+        return {}
+
+
+def until(predicate, bound=30.0):
+    """Wait for the event itself; the bound only ends a test whose event never comes."""
+    import time
+    end = time.monotonic() + bound
+    while not predicate():
+        assert time.monotonic() < end, 'the awaited state never came'
+        time.sleep(0.01)
+
+
+def test_a_zombie_named_after_the_program_holds_nothing_and_the_record_moves(tmp_path, monkeypatch):
+    """A child that has exited and is not yet reaped refuses its descriptor listing, but holds no descriptor: it no
+    longer keeps an old record in the home (the runner's intermittent 0 moves, where other tests' fake programs
+    named node or opencode were caught in that window)."""
+    import subprocess, sys
+    w = world(tmp_path, monkeypatch, 'opencode')
+    zombie = subprocess.Popen([sys.executable, '-I', '-c', NAMED])
+    try:
+        until(lambda: set(task_states(zombie.pid).values()) == {'Z'})
+        with pytest.raises(PermissionError):
+            os.listdir(f'/proc/{zombie.pid}/fd')
+        assert Path(f'/proc/{zombie.pid}/comm').read_text().strip() == 'node'
+        assert not hand_transcripts.opened([w.record], ('opencode', 'bun', 'node'))
+        assert retire(w) == 1, f"declined: {retire.declined}"
+    finally:
+        zombie.wait()
+        w.svc.ledger.close()
+
+
+def test_a_leader_that_exits_while_a_thread_holds_the_record_still_holds_the_move(tmp_path, monkeypatch):
+    import subprocess, sys
+    w = world(tmp_path, monkeypatch, 'opencode')
+    process = subprocess.Popen([sys.executable, '-I', '-c', LEADER_EXITS, str(w.record)], stdout=subprocess.PIPE,
+                               text=True)
+    try:
+        assert process.stdout.readline().strip() == 'ready'
+        until(lambda: task_states(process.pid).get(str(process.pid)) == 'Z')
+        assert 'Z' in task_states(process.pid).values() and set(task_states(process.pid).values()) != {'Z'}
+        with pytest.raises(PermissionError):
+            os.listdir(f'/proc/{process.pid}/fd')
+        assert hand_transcripts.opened([w.record], ('opencode', 'bun', 'node'))
+        assert retire(w) == 0
+        assert ('hand', str(w.record), 'a process may hold its files') in retire.declined
+        assert w.record.is_file()
+    finally:
+        process.kill()
+        process.wait()
         w.svc.ledger.close()
