@@ -67,7 +67,7 @@ pool="fake"
 up=false
 ''')
     ship = shipmod.load(tmp_path)
-    tmux.new_session(ship.sessions['crew'].title)
+    tmux.new_session(ship.sessions['crew'].title, env={'QD_SHIP': str(ship.folder)})
     seat = Seat(ship, ship.seat('worker'), tmux)
     seat.up()
     post.Store(ship.runtime).new('report', 'issuer', 'ship', 'Invented status history')
@@ -117,8 +117,12 @@ up=false
             print('LIVE_STATUS_SERVICE ' + json.dumps(dict(equal=True, samples=samples, medians=medians,
                                                           native_programs=0, synthetic_programs=1), sort_keys=True), flush=True)
     finally:
-        os.write(writer, b'x')
+        try:
+            os.write(writer, b'x')
+        except BrokenPipeError:
+            pass
         os.close(writer)
-        process.terminate()
+        if process.poll() is None:
+            process.terminate()
         process.communicate()
         seat.down()
