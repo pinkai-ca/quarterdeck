@@ -34,6 +34,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `providers.py` | normalizes declared companies and builds public identity metadata |
 | `quota.py` | quota walls and the usage refresh |
 | `record_location.py` | logical record names that survive retirement without rewriting their ledger keys |
+| `record_follow.py` | the status line's failure scans read each seat's JSON-lines record from where they last stopped |
 | `record_owner.py` | which program a record belongs to |
 | `refusal.py` | a provider-refused crew seat started fresh once, the refused message withheld and its sender told by a notice built from the store, never from the journal's words |
 | `sandbox.py` | the bubblewrap jail around a sandboxed seat's program |
