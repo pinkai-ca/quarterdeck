@@ -365,7 +365,7 @@ class BackgroundBash:
         resumed = (status == 'stopped' and note in RESUME_NOTES
                    and version in RESUME_VERSIONS.get(carrier, ()))
         supported = (task.task == identity and version in NOTICE_VERSIONS.get(carrier, ())
-                     and at is not None and at >= task.started)
+                     and at is not None and task.called_at is not None and at >= task.called_at)
         terminal = (status in TERMINAL and (note is None or (
                     status == 'killed' and note == REAPED and version in REAPED_VERSIONS.get(carrier, ()))))
         if supported and terminal and task.phase == 'ended' and not task.invalid and task.terminal == status:
