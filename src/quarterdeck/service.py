@@ -1538,34 +1538,42 @@ class Service:
                 self.log('error', step='person_quiet', seat=seat.name, error=repr(error))
 
     def fresh_after_order(self) -> None:
-        """A worker whose last open order closed, and whose closing turn ended, starts fresh."""
-        from . import compaction
+        """Read each closing-turn decision once; start fresh outside that read-only view."""
         for seat in self.resolved_seats():
-            if seat.session.human or recovery.held(seat) or seat.spec.fresh != "after-order" or not seat.is_up or self.store.open_for(seat.name):
-                continue
-            launched = seat.launched()
-            if launched is None:
-                continue
-            try:
-                protocol = compaction.protocol_requests(seat)
-            except ShipError:
-                continue  # unknown protocol identity cannot authorize another automatic path
-            closed = max((report.at for order in self.store.for_seat(seat.name)
-                          if order.kind == "order" and order.id not in protocol
-                          and not (order.sender == order.to and order.re in protocol)
-                          and (report := self.store.closing_report(order))
-                          and report.at > launched.when), default=None)
-            if closed is None or (record := seat.record()) is None:
-                continue
-            try:
-                state = seat.harness.state(record)
-            except OSError:
-                continue  # no screen or default idle reading can prove a recorded closing turn
-            if (state.turn_open is False and state.queue_error is None and not state.queued
-                    and any(turn.timed and turn.started is not None and turn.ended is not None
-                            and turn.started <= closed <= turn.ended for turn in state.completed_turns)):
+            with post.reading_pass(store=self.store, attempts=getattr(self, 'attempts', None)):
+                ready = self._fresh_after_order_ready(seat)
+            if ready:
                 proof = seat.fresh()  # law: context-is-cache
                 self.log("fresh", seat=seat.name, proof=proof)
+
+    def _fresh_after_order_ready(self, seat) -> bool:
+        """The current orders, recovery and recorded completion; never a lifecycle action."""
+        from . import compaction
+        if seat.session.human or recovery.held(seat) or seat.spec.fresh != "after-order" or not seat.is_up or self.store.open_for(seat.name):
+            return False
+        launched = seat.launched()
+        if launched is None:
+            return False
+        try:
+            protocol = compaction.protocol_requests(seat)
+        except ShipError:
+            return False  # unknown protocol identity cannot authorize another automatic path
+        closed = max((report.at for order in self.store.for_seat(seat.name)
+                      if order.kind == "order" and order.id not in protocol
+                      and not (order.sender == order.to and order.re in protocol)
+                      and (report := self.store.closing_report(order))
+                      and report.at > launched.when), default=None)
+        if closed is None or (record := seat.record()) is None:
+            return False
+        try:
+            state = seat.harness.state(record)
+        except OSError:
+            return False  # no screen or default idle reading can prove a recorded closing turn
+        if (state.turn_open is False and state.queue_error is None and not state.queued
+                and any(turn.timed and turn.started is not None and turn.ended is not None
+                        and turn.started <= closed <= turn.ended for turn in state.completed_turns)):
+            return True
+        return False
 
     def _brief_stamp(self) -> tuple:
         """Fingerprint rendered inputs through the renderer, including session and selection.
