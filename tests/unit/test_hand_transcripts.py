@@ -378,7 +378,16 @@ def test_a_screening_record_leaves_the_home_once_accounted_without_the_weeks_wai
         w.svc.ledger.close()
 
 
-def cut_mid_turn(w, *, number=0, listed=True, age=timedelta(minutes=2), task='Synthetic screening instruction'):
+def trusted_launch(w, number):
+    """The seat's current launch as qd's trusted launch record names it: the data folder it was given."""
+    (w.seat.trusted / trusted_files.LAUNCH).write_text(json.dumps(dict(
+        pane='%1', pid=1, at=datetime.fromtimestamp(w.now, timezone.utc).isoformat(), pool='local', resume=None,
+        argv=['bwrap', '--setenv', 'XDG_DATA_HOME', str(w.seat.home / f'data-{number:03d}'), '--', 'opencode'],
+        version=None)))
+
+
+def cut_mid_turn(w, *, number=0, listed=True, age=timedelta(minutes=2), task='Synthetic screening instruction',
+                 current=2):
     """A launch's OpenCode record that the screen's down cut mid-turn, as a hand's were on 15 November: its last step
     has no finish, and its tool part still reads running. ``number`` is its launch's: 0 is before the current one."""
     at = datetime.fromtimestamp(w.now, timezone.utc) - age
@@ -407,6 +416,7 @@ def cut_mid_turn(w, *, number=0, listed=True, age=timedelta(minutes=2), task='Sy
         stream.write(json.dumps(dict(record=str(record), at=(at - timedelta(seconds=2)).isoformat(), pool='local',
                                      harness='opencode')) + '\n')
     record_owner.register(w.seat.trusted, record, 'opencode')
+    trusted_launch(w, current)
     w.svc.account_records(process_table={})
     if listed:
         pr_screen.mark_screening(w.svc.runtime, 'hand', [str(record)])
@@ -441,6 +451,26 @@ def test_the_same_record_while_its_launch_is_the_latest_keeps_its_turn_open(tmp_
         w.svc.ledger.close()
 
 
+def test_a_forged_later_data_folder_leaves_the_current_launchs_turn_open(tmp_path, monkeypatch):
+    """Security's follow-up: a folder the hand made in its home, an empty later data-<n>, counts for nothing. Only a
+    launch qd's trusted record names closes a turn."""
+    w = world(tmp_path, monkeypatch, 'opencode')
+    try:
+        record = cut_mid_turn(w, number=9, listed=False, current=9)  # its own launch is the current one
+        forged = w.seat.home / 'data-999' / 'opencode' / 'opencode.db'
+        forged.parent.mkdir(parents=True)
+        forged.write_bytes(b'')  # planted by the hand: no launch of qd's
+        w.svc.account_records(process_table={})
+        state, turns = w.seat.harness.read(record)
+        assert state.turn_open is True and state.pending_tools == ('read',) and turns == []
+        assert w.svc.ledger.ingested(record) == 0, 'its accounting is not steered'
+        trusted_launch(w, 10)  # a launch qd gave a later data folder
+        state, turns = w.seat.harness.read(record)
+        assert state.turn_open is False and len(turns) == 1
+    finally:
+        w.svc.ledger.close()
+
+
 def test_an_accounted_record_is_read_again_when_a_later_launch_begins(tmp_path, monkeypatch):
     """Accounted while its launch was the latest, it is read once more when its successor starts, so its cut turn is
     counted then: the later launch is part of an OpenCode record's stamp."""
@@ -449,6 +479,7 @@ def test_an_accounted_record_is_read_again_when_a_later_launch_begins(tmp_path, 
         record = cut_mid_turn(w, number=9, listed=False)
         assert w.svc.ledger.ingested(record) == 0
         transcript(w.seat.home, 'data-010', 'opencode', datetime.fromtimestamp(w.now, timezone.utc))  # its successor
+        trusted_launch(w, 10)  # qd's trusted record now names the later launch
         w.svc.account_records(process_table={})
         assert w.svc.ledger.ingested(record) == 1
     finally:

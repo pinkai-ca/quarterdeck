@@ -59,13 +59,39 @@ def _launch_number(record: Path) -> int:
 
 
 def later_launch(record: Path) -> bool:
-    """Whether a later launch of the same home exists: a data folder numbered after this record's, in the home or
-    retired. A launch that has ended writes nothing more, so a turn it left open was cut, not paused."""
+    """Whether this record's launch has ended: the seat's current launch, as qd's trusted launch record names it, was
+    given a data folder numbered after this record's. A launch that has ended writes nothing more, so a turn it left
+    open was cut, not paused. Folder names in the home, which the seat's jail writes, count for nothing here."""
     folder = record.parents[1].name if len(record.parents) > 2 else ''
     if not folder.startswith(DATA_PREFIX) or not folder[len(DATA_PREFIX):].isdigit():
         return False  # not a launch's own record: no claim of an ending is made
-    own = _launch_number(record)
-    return any(_launch_number(other) > own for other in records(record.parents[2]))
+    current = _current_data(record.parents[2])
+    return current is not None and current > _launch_number(record)
+
+
+def _current_data(home: Path) -> int | None:
+    """The number of the data folder qd gave the seat's current launch, from its trusted launch record; None where
+    there is none, it cannot be read, or it names no data folder of this home."""
+    from .. import trusted_files
+    try:
+        data = json.loads((trusted_files.of_home(home) / trusted_files.LAUNCH).read_text())
+    except (OSError, ValueError):
+        return None
+    argv = data.get('argv') if isinstance(data, dict) else None
+    if not isinstance(argv, list):
+        return None
+    named = None
+    for at, word in enumerate(argv):
+        if word == 'XDG_DATA_HOME' and at + 1 < len(argv):
+            named = argv[at + 1]  # bwrap's --setenv NAME VALUE
+        elif isinstance(word, str) and word.startswith('XDG_DATA_HOME='):
+            named = word.partition('=')[2]  # env NAME=VALUE
+    if not isinstance(named, str):
+        return None
+    given = Path(named)
+    if given.parent != home or not given.name.startswith(DATA_PREFIX) or not given.name[len(DATA_PREFIX):].isdigit():
+        return None
+    return int(given.name[len(DATA_PREFIX):])
 
 
 def data_dir_of(record: Path) -> Path:
