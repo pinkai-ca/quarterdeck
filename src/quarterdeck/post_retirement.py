@@ -421,6 +421,8 @@ def _status(service, result, observation):
 
 def activity_stamp(runtime):
     """A few fixed directory observations for scheduling, never delivery evidence."""
+    if not isinstance(runtime, Path):
+        return None
     found = []
     for path in (runtime / 'post/store', runtime / 'post/attempts', runtime / 'requests'):
         try:

@@ -214,7 +214,7 @@ class Service:
         """One pass: the ship file read afresh, then every duty, each failing alone."""
         from . import post_retirement
         self.pass_had_work = False
-        self.retirement_inputs = post_retirement.activity_stamp(self.runtime)
+        self.retirement_inputs = post_retirement.activity_stamp(getattr(self, 'runtime', None))
         self.release_earlier_installer()
         try:
             stamp = ship_file_stamp(self.ship)  # before the read: a write during it reads as a change later

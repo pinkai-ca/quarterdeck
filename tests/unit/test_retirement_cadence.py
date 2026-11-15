@@ -93,3 +93,7 @@ def test_service_idle_exception_requires_no_actions_changes_or_accounting(tmp_pa
     monkeypatch.setattr(retirement,'activity_stamp',lambda runtime:None)
     Service.retire_post(s)
     assert seen[-1] is False
+
+
+def test_missing_scheduling_inputs_are_unknown():
+    assert retirement.activity_stamp(None) is None
