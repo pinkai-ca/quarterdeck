@@ -23,6 +23,7 @@ class Thread:
     others: tuple[str, ...] = ()  # '<kind> <id>' of the thread's other messages: that they exist, nothing more
     continuations: tuple[str, ...] = ()  # delivered recovery continuations among messages, labelled when printed
     forwards: tuple[str, ...] = ()
+    readable: tuple[str, ...] = ()  # incoming non-obligations whose complete bodies this snapshot contains
 
 
 def party(message: post.Message, seat: str) -> bool:
@@ -155,7 +156,10 @@ def whole(store: post.Store, reference: str, reader: str) -> Thread:
         route = recorded(store.dir.parent.parent, message.id)
         if route:
             forwards.append(f"{message.short}: {route['from']} forwarded to {route['to']}")
-    return Thread(root.id, requested.id, shown, others, delivered_continuations(store, reader, visible), tuple(forwards))
+    readable = tuple(message.id for message in visible
+                     if message.to == reader and not message.obligation and message.kind != 'ack')
+    return Thread(root.id, requested.id, shown, others, delivered_continuations(store, reader, visible),
+                  tuple(forwards), readable)
 
 
 def render(thread: Thread) -> str:

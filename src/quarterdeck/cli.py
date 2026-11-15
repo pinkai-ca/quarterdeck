@@ -37,6 +37,10 @@ def main(argv: list[str] | None = None) -> int:
         handoff(args, argv)
     try:
         result = args.run(args)
+        status = getattr(args, "exit_code", 0)
+        written = emit(args, result, completed_act=True)
+        if written and (after_emit := getattr(args, 'after_emit', None)):
+            after_emit()
     except sqlite3.DatabaseError as error:
         from .ledger_recovery import malformed
         if not malformed(error):
@@ -47,8 +51,6 @@ def main(argv: list[str] | None = None) -> int:
         note = f" (default ship: {args.default_ship})" if args.default_ship else ""
         completed_error(f"qd: {error}{note}")
         return 2
-    status = getattr(args, "exit_code", 0)
-    emit(args, result, completed_act=True)
     return status
 
 
@@ -108,10 +110,10 @@ def handoff(args: argparse.Namespace, argv: list[str]) -> None:
         os.environ.pop(HANDED, None)  # reached only when this qd runs the verb itself
 
 
-def emit(args: argparse.Namespace, result: Any, *, completed_act: bool = False) -> None:
+def emit(args: argparse.Namespace, result: Any, *, completed_act: bool = False) -> bool:
     if getattr(args, "default_ship", None) and result is not None:
         result = output.with_default_ship(result, args.default_ship)
-    output.emit(result, json_output=args.json, completed_act=completed_act)
+    return output.emit(result, json_output=args.json, completed_act=completed_act)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -908,11 +910,17 @@ def _inbox_target(ship: shipmod.Ship, name: str | None):
 
 
 def cmd_thread(args: argparse.Namespace) -> Reading:
-    from . import post_threads
+    from . import post_reads, post_threads
 
     ship = load_ship(args)
     reader = this_seat(ship, None, operator_too=True)
     thread = post_threads.whole(post.Store(ship.runtime), args.message, reader)
+    args.after_emit = None
+    if os.environ.get('QD_SEAT') == reader and reader in ship.seats and thread.readable:
+        def received():
+            shipmod.fence(ship)
+            post_reads.record(ship.runtime, reader, thread.readable)
+        args.after_emit = received  # only main's complete output and flush authorize this receipt
     return Reading(thread, post_threads.render)
 
 

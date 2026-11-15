@@ -514,6 +514,20 @@ class Store:
     def open_for(self, seat: str) -> list[Message]:
         return [m for m in self.for_seat(seat) if self.is_open(m)]
 
+    def read_ids(self, seat: str) -> frozenset[str]:
+        """Non-obligations this recipient read whole or reported on; openness has its own rule."""
+        from . import post_reads
+
+        def read():
+            seen = post_reads.read(self.dir.parent.parent, seat)
+            messages, replies = self._loaded()
+            return frozenset(message.id for message in messages
+                             if message.to == seat and not message.obligation and message.kind != 'ack'
+                             and (message.id in seen or any(reply.kind == 'report' and reply.sender == seat
+                                                           for reply in replies.get(message.id, ()))))
+
+        return reading_value('body-read', (self.dir.absolute(), seat), read)
+
     def claimed(self, seat: str, before: datetime) -> str | None:
         """The message the seat last claimed with an ack and still had open at ``before``, for the Ledger.
 
@@ -1667,6 +1681,7 @@ class Attempts:
             return result in held or result == "unacted" and not for_launch  # law: one-door
 
         reserved = set()
+        read = store.read_ids(seat)  # messages this seat has already read whole are not delivered again
         if not for_launch:
             from .compaction import withheld
             reserved, transitioning = withheld(store.dir.parent.parent, seat)
@@ -1674,7 +1689,7 @@ class Attempts:
                 return []
         # Only the seat's own messages are judged, never every message's latest result.
         return [m for m in store.for_seat(seat)
-                if m.id not in reserved and not skipped(m.id) and m.kind != "ack"]  # law: open-until-closed
+                if m.id not in reserved and m.id not in read and not skipped(m.id) and m.kind != "ack"]  # law: open-until-closed
 
 
 WAIT_RESCAN_SECONDS = 60.0  # a waiting watch reads every attempt in full at least this often

@@ -850,7 +850,9 @@ class Seat:
                 return message.kind not in ('order', 'question') or store.is_open(message)
 
             extra = [message for message in (*unread, *queued) if outstanding(message)]
-            consumed = self._consumed_messages(store, attempts, resume_id, refused)
+            consumed = self._consumed_messages(store, attempts, resume_id, refused) | store.read_ids(self.name)
+            consumed |= frozenset(message.id for message in store.for_seat(self.name)
+                                  if message.obligation and not store.is_open(message))
             selection = thread_context.select(store, self.name, extra, consumed=consumed, excluded=refused)
             messages = store.all()
             sent = tuple(message for message in messages
