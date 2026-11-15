@@ -672,8 +672,9 @@ RULE = re.compile(r"^─{10,}")
 BOX_START = re.compile(r"^❯[  ]?(.*)$")
 MODE_LINE = re.compile(r"[○◐●◑] (\w+) · /effort")
 # The working sign is one of the spinner's glyphs, a verb and the turn's running time. Past the first minute the
-# time leads with minutes ("(1m 32s", 2.1.317; "(3m 38s", 2.1.325) and past the first hour with hours; "✽" is one
-# of the glyphs (2.1.317). All measured on the ship's own seats, 15 November 2026.
+# time leads with minutes ("(1m 32s", 2.1.317; "(3m 38s", 2.1.325) and past the first hour with hours
+# ("(1h 0m 43s", 2.1.325); "✽" is one of the glyphs (2.1.317). All measured on the ship's own seats,
+# 15 November 2026.
 WORKING = re.compile(r"esc to interrupt|^[*✻✶✳✢✽·⠂⠄⠆] \S+… \((?:\d+h )?(?:\d+m )?\d+s", re.M)
 # The composer's bottom line names what the program runs in its background. Each form is matched whole and only
 # on the version it was measured on, through the ship's own captures of its seats on 15 November 2026:

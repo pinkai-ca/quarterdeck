@@ -111,6 +111,7 @@ def test_the_measured_forms_are_an_exact_set_per_version():
     ('2.1.317', 'working-under-a-minute'),  # the glyph ✽, measured on the engineer's seat
     ('2.1.317', 'working-minutes'),         # minutes lead the time past the first one
     ('2.1.325', 'working-minutes'),
+    ('2.1.325', 'working-hours'),           # and hours past the first hour, measured on the desk's seat
 ])
 def test_the_working_sign_is_read_past_the_first_minute_and_with_every_measured_glyph(version, name):
     screen = fixture(version, name)
@@ -122,6 +123,8 @@ def test_the_working_sign_is_read_past_the_first_minute_and_with_every_measured_
     '✻ Pondering… (17m 50s · ↓ 70.3k tokens)',
     '✢ Pondering… (13m 3s · ↓ 48.3k tokens)',
     '✶ Pondering… (3s · ↓ 125 tokens)',
+    '· Pondering… (1h 1m 1s · ↓ 237.2k tokens)',
+    '* Pondering… (1h 1m 21s · ↓ 237.2k tokens)',
 ])
 def test_each_measured_sign_reads_as_working(sign):
     assert drawn(MODE + ' (shift+tab to cycle)', sign=sign).working is True
