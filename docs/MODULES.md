@@ -95,6 +95,7 @@ The modules that the framework table does not list, the module of each part amon
 | `accounting_health.py` | the Ledger's health as the service reports it: a named cause, such as a busy database or full storage, and disposable status evidence |
 | `accounting_slices.py` | the Ledger's catch-up in slices: a low-priority child process reads the records and plans the rows, and the service commits the plan in bounded steps |
 | `accounting_gate.py` | private, tick-bounded input evidence lets a completed accounting job wait for a change, with a ten-minute backstop and bounded class/count start diagnostics |
+| `accounting_scope.py` | per-input dirty observations and proven record owners select whole-seat jobs below unchanged global barriers, without postponing the full backstop |
 | `acts.py` | `qd press` and `qd type`: a systems seat's answer to a screen the door does not know, through the door's own path, recorded before the key is pressed, and never into a session the human owns |
 | `alarms.py` | the alarms' saved readings, their reports to the systems seats, or to the desk where no systems seat is up or an alarm stays untaken, each rebuilt by the service from checked fields, and the reply that takes an alarm |
 | `attribution_cache.py` | the attribution the service writes beside the turn rows, which any turn write invalidates |
