@@ -67,6 +67,13 @@ role = "reviewer"
 harness = "codex"
 pool = "subscription"
 
+[seats.refusing-hand]
+session = "crew"
+role = "hand"
+harness = "codex"
+pool = "subscription"
+sandbox = true
+
 [seats.desk]
 session = "crew"
 role = "desk"
@@ -102,6 +109,7 @@ def test_no_table_is_no_screen_said_plainly(tmp_path, capsys):
     ('hands = ["hand-a", "hand-c"]\nreader = "reviewer"', 'run on the same model'),
     ('hands = ["hand-a", "hand-b"]\nreader = "hand-a"', 'must not be one of its hands'),
     ('hands = ["hand-a", "hand-b"]\nreader = "refusing-reader"', "safeguard can refuse, and so lose"),
+    ('hands = ["hand-a", "refusing-hand"]\nreader = "reviewer"', "hands: refusing-hand runs on .* safeguard can refuse"),
     ('hands = ["hand-a", "hand-b"]', 'reader must name a declared seat'),
     ('hands = ["hand-a", "hand-b"]\nreader = "reviewer"\nextra = 1', 'pr_screen takes hands'),
 ])

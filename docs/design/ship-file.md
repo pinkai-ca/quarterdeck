@@ -133,7 +133,7 @@ One plain service process belongs to whoever ran `qd up`, outlives that shell an
 - a hand is not jailed (an endpoint pool, or `sandbox = true`);
 - the two hands share a pool or a declared model;
 - the reader is one of the hands;
-- the reader runs, on any of its pools, a program whose provider's safeguard can refuse, and so lose, a conversation that reads instructions planted for a reader (the adapter's `refuses_planted_instructions`; Codex today).
+- a hand or the reader runs, on any of its pools, a program whose provider's safeguard can refuse, and so lose, a conversation that reads instructions planted for a reader (the adapter's `refuses_planted_instructions`; Codex today).
 
 Without the table the ship has no screen, and the program says so and reads nothing.
 
