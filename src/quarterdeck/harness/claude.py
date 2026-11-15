@@ -46,11 +46,18 @@ PASTE_HIDDEN_FORMAT = frozenset(chr(code) for first, last in (
     (0x2066, 0x206F), (0xFEFF, 0xFEFF), (0xFFF9, 0xFFFB), (0x13430, 0x1343F), (0x1BCA0, 0x1BCA3),
     (0x1D173, 0x1D17A), (0xE0001, 0xE0001), (0xE0020, 0xE007F)) for code in range(first, last + 1))
 INPUT_IGNORED = ('api-request', 'api-request-blob', 'attachment', 'bridge-session', 'custom-title',
-                 'agent-name', 'mode', 'permission-mode', 'session-owner', 'atis-latch', 'last-prompt',
+                 'ai-title', 'agent-name', 'mode', 'permission-mode', 'session-owner', 'atis-latch', 'last-prompt',
                  'file-history-delta', 'file-history-snapshot', 'tools-used', 'api-request-shape', 'cost-state',
                  # Claude Code 2.1.325 artifact publication bookkeeping: no input or execution boundary.
                  'frame-link', 'artifact-comment-monitor', 'artifact-autoreact-ledger')
 PASTED = re.compile(r'^\s*<pasted_content id="[^"]*">\n?(.*?)\n?</pasted_content(?: id="[^"]*")?>\s*$', re.S)
+
+
+def ai_title(entry: dict) -> bool:
+    """The exact title bookkeeping shape measured on Claude Code 2.1.325."""
+    return (set(entry) == {'type', 'aiTitle', 'sessionId'}
+            and isinstance(entry['aiTitle'], str) and isinstance(entry['sessionId'], str)
+            and bool(entry['sessionId']))
 
 
 def unwrap(text: str) -> str:
@@ -119,6 +126,8 @@ def compactions(record: Path):
             if row.get('isSidechain'):
                 continue
             kind = row.get('type')
+            if kind == 'ai-title' and not ai_title(row):
+                raise ValueError('unknown title bookkeeping')
             if kind not in (*_Reader.kinds, *INPUT_IGNORED):
                 raise ValueError('unknown native history')
             key = row.get('uuid')
@@ -165,11 +174,15 @@ def compactions(record: Path):
     return read(record, interpret, _Reader)
 
 
-@input_reader(lambda row: row.get('type') not in ('assistant', 'system', *INPUT_IGNORED))
+@input_reader(lambda row: row.get('type') not in ('assistant', 'system', *INPUT_IGNORED)
+              or row.get('type') == 'ai-title' and not ai_title(row))
 def inputs(record: Path) -> list[Input]:
     found, queued = Inputs(), []
     for line, row in input_rows(record, _Reader.kinds, _Reader.label, found):
         kind = row.get('type')
+        if kind == 'ai-title' and not ai_title(row):
+            found.skip(line, 'ai-title', 'unknown title bookkeeping')
+            continue
         if kind in INPUT_IGNORED:
             continue  # known non-input metadata does not establish the program format
         if kind not in _Reader.kinds:
@@ -305,6 +318,8 @@ def person_inputs(record: Path, excluded: tuple[str, ...]) -> list[datetime]:
         if row.get('isSidechain'):
             continue
         kind = row.get('type')
+        if kind == 'ai-title' and not ai_title(row):
+            raise ValueError('unknown title bookkeeping')
         if kind == 'user':
             message = row.get('message')
             if not isinstance(message, dict):
@@ -374,6 +389,9 @@ class _Reader(JsonLinesReader):
 
     def take(self, entry: dict) -> None:
         kind = entry.get("type")
+        if kind == 'ai-title' and not ai_title(entry):
+            self.tools_known = False
+            return
         if kind == "assistant":
             from .claude_limits import refused_at_limit
             uuid = entry.get("uuid")

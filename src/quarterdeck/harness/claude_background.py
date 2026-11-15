@@ -17,13 +17,13 @@ from ..seat_command import qd_command
 
 VERSION = '2.1.317'  # the first version measured for every form below
 MEASURED = frozenset({VERSION, '2.1.322'})  # 2.1.322 measured the same, form for form, where it appears below
-CALL_VERSIONS = MEASURED  # a root background Bash call and its joined result row
+CALL_VERSIONS = MEASURED | {'2.1.325'}  # root Bash call/result measured on 2.1.325 too
 STATUS_VERSIONS = MEASURED  # a running local_bash task_status attachment
 STOP_VERSIONS = frozenset({VERSION})  # TaskStop call and result: no 2.1.322 instance measured
 NOTICE_VERSIONS = {  # a task notification, by its carrier
-    ('queue-operation', 'enqueue'): MEASURED,
+    ('queue-operation', 'enqueue'): MEASURED | {'2.1.325'},
     ('queue-operation', 'remove'): frozenset({VERSION}),  # no 2.1.322 remove carrier measured
-    ('user', 'task-notification'): MEASURED,
+    ('user', 'task-notification'): MEASURED | {'2.1.325'},
     ('attachment', 'queued_command'): frozenset({VERSION}),  # no 2.1.322 attachment carrier measured
 }
 TERMINAL = frozenset({'completed', 'failed', 'killed'})
@@ -145,8 +145,15 @@ def user_notice(entry):
     Only the known user-row carrier is set aside. Text alone, an unfamiliar origin,
     version, status or payload remains ordinary/unclassified input, never an idle proof.
     """
+    origin = entry.get('origin')
+    known_origin = origin == {'kind': 'task-notification'}
+    if entry.get('version') == '2.1.325' and isinstance(origin, dict):
+        known_origin = known_origin or (
+            set(origin) == {'kind', 'producer', 'runId'}
+            and origin['kind'] == 'task-notification' and origin['producer'] == 'session-task'
+            and isinstance(origin['runId'], str) and bool(origin['runId']))
     if (entry.get('type') != 'user' or entry.get('isSidechain')
-            or entry.get('origin') != {'kind': 'task-notification'}
+            or not known_origin
             or entry.get('version') not in NOTICE_VERSIONS[('user', 'task-notification')]):
         return False
     message = entry.get('message')
