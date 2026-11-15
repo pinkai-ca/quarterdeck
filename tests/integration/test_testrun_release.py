@@ -4,7 +4,7 @@ from tests.integration import testrun_synthetic as synth
 
 def test_release_of_a_completed_kept_run(tmp_path):
     project, worktree = synth.make(tmp_path, {'test_wait.py': synth.WAIT_TEST})
-    process = synth.start_tool('run', '--target', str(worktree), '-n', '0', '--timeout', '120',
+    process = synth.start('run', '--target', str(worktree), '-n', '0', '--timeout', '120',
                                cwd=project, env=synth.controller_environment())
     marker = None
     try:
