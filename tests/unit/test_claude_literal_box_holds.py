@@ -14,7 +14,8 @@ import pytest
 
 from quarterdeck.harness.claude import ClaudeHarness
 
-HEADER = 'qd > report from synthetic-worker · rep-0000 · re ord-0000'
+SHORT = '-'.join(('rep', '0' * 4)), '-'.join(('ord', '0' * 4))
+HEADER = f'qd > report from synthetic-worker · {SHORT[0]} · re {SHORT[1]}'
 BODY = ('Done: the synthetic-setup-consent change and its well-known follow-up-checks are built, '
         'and the long-hyphenated-compound-word stays together whenever it fits a fresh row of the box. '
         'Named and whole runs passed; nothing-else-changed.')
