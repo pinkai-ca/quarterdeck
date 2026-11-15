@@ -268,3 +268,191 @@ def test_driver_starts_only_for_changed_inputs_or_backstop(example, monkeypatch)
     e.clock.monotonic += 1
     driver.step(e.service)
     assert driver.job == 2
+
+
+def reason_start(e):
+    """Use the actual start logger/encoding without launching a planning process."""
+    import tempfile
+    rows = []
+    e.service.log = lambda event, **data: rows.append(dict(event=event, **data))
+    driver = Driver()
+    driver.gate = e.gate
+    driver.process = object()
+    with tempfile.TemporaryFile() as driver.plan:
+        driver.start(e.service)
+    reasons = [row for row in rows if row['event'] == 'accounting-gate-start']
+    assert len(reasons) == 1
+    return reasons[0]
+
+
+def original_eligibility(e, *, retry=False):
+    return (retry or e.gate.completed is None or e.clock.monotonic >= e.gate.due
+            or accounting_gate.capture(e.service, e.gate.records) != e.gate.completed)
+
+
+@pytest.mark.parametrize('change,kind', [
+    ('record', 'record'), ('wal', '-wal'), ('launch', 'launch-metadata'),
+    ('post', 'post-folder'), ('settings', 'settings'), ('hashes', 'hashes'),
+])
+def test_start_reason_names_only_the_changed_input_class(example, change, kind):
+    e = example
+    e.complete()
+    if change == 'record':
+        e.record.write_text('Ordinary appended record evidence.\n')
+    elif change == 'wal':
+        Path(str(e.record) + '-wal').write_bytes(b'ordinary WAL metadata')
+    elif change == 'launch':
+        (e.folder / 'launch.json').write_text('Ordinary changed launch metadata.\n')
+    elif change == 'post':
+        (e.runtime / 'post' / 'store' / 'ordinary-publication').write_text('Ordinary publication.\n')
+    elif change == 'settings':
+        e.seat.spec.model = 'ordinary-changed-model'
+    else:
+        e.version[0] = 'ordinary-changed-engine'
+    expected = original_eligibility(e)
+    assert e.gate.allowed(e.service) == expected is True
+    row = reason_start(e)
+    assert row['decision']['changed-input'] == {kind: 1}
+    import json
+    encoded = json.dumps(row)
+    for identity in (str(e.runtime), e.seat.name, e.record.name, e.seat.pool.name,
+                     e.seat.spec.model, e.version[0]):
+        assert identity not in encoded
+
+
+@pytest.mark.parametrize('reason', ['retry', 'no-completed-certificate', 'backstop'])
+def test_start_reason_preserves_short_circuit_decisions(example, monkeypatch, reason):
+    e = example
+    e.complete()
+    if reason == 'no-completed-certificate':
+        e.gate.reject()
+    elif reason == 'backstop':
+        e.clock.monotonic = BACKSTOP
+    def unexpected(*args, **kwargs):
+        raise AssertionError('a short-circuit decision must not capture inputs')
+    monkeypatch.setattr(accounting_gate, 'capture', unexpected)
+    retry = reason == 'retry'
+    assert e.gate.allowed(e.service, retry=retry) == original_eligibility(e, retry=retry) is True
+    assert e.gate.decision[reason] == 1
+
+
+@pytest.mark.parametrize('failure', ['tick-young', 'unreadable'])
+def test_invalid_reading_reason_is_class_only_and_decision_is_unchanged(example, monkeypatch, failure):
+    e = example
+    e.complete()
+    original = Path.stat
+    def changed(path, *args, **kwargs):
+        if path == e.record:
+            if failure == 'unreadable':
+                raise PermissionError('an ordinary path must never enter the log')
+            value = original(path, *args, **kwargs)
+            return SimpleNamespace(st_dev=value.st_dev, st_ino=value.st_ino, st_mode=value.st_mode,
+                                   st_size=value.st_size, st_mtime_ns=e.clock.wall,
+                                   st_ctime_ns=value.st_ctime_ns)
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'stat', changed)
+    assert e.gate.allowed(e.service) == original_eligibility(e) is True
+    row = reason_start(e)
+    assert row['decision'][failure] == {'record': 1}
+    assert 'ordinary' not in str(row)
+    assert str(e.record) not in str(row)
+
+
+def test_missing_hash_reason_contains_no_hash_value(example):
+    e = example
+    e.complete()
+    e.version[0] = None
+    # The reader mapping remains nonempty, but a missing top-level hash does not.
+    from unittest.mock import patch
+    with patch.object(accounting_gate.reader_stamp, 'attributions', return_value={'fake': None}):
+        assert e.gate.allowed(e.service) == original_eligibility(e) is True
+        assert reason_start(e)['decision']['unreadable'] == {'hashes': 1}
+
+
+@pytest.mark.parametrize('external', [False, True])
+def test_sql_revision_start_separates_connection_and_other_writer_deltas(example, external):
+    e = example
+    e.complete()
+    if external:
+        db = sqlite3.connect(e.runtime / 'ledger.sqlite')
+        try:
+            db.execute('INSERT INTO output VALUES (?)', ('ordinary other writer',))
+            db.commit()
+        finally:
+            db.close()
+    else:
+        e.db.execute('INSERT INTO output VALUES (?)', ('ordinary same-connection duty',))
+        e.db.commit()
+    assert e.gate.allowed(e.service) == original_eligibility(e) is True
+    decision = reason_start(e)['decision']
+    assert decision['sql-revision'] == 1
+    assert 'changed-input' not in decision
+    assert decision['sql']['driver_changes'] == 0
+    assert decision['sql']['other_changes'] == (0 if external else 1)
+    assert decision['sql']['data_version'] == (1 if external else 0)
+
+
+@pytest.mark.parametrize('other_write', [False, True])
+def test_prior_job_diagnostics_preserve_actual_own_write_exclusion(example, other_write):
+    e = example
+    e.complete()
+    e.gate.begin(e.service, [str(e.record)])
+    before = e.db.total_changes
+    e.db.execute('INSERT INTO output VALUES (?)', ('ordinary driver slice',))
+    e.db.commit()
+    e.gate.own(before, e.db.total_changes)
+    if other_write:
+        e.db.execute('INSERT INTO output VALUES (?)', ('ordinary intervening duty',))
+        e.db.commit()
+    final_slice = e.db.total_changes
+    e.db.execute('INSERT INTO output VALUES (?)', ('ordinary driver completion',))
+    e.db.commit()
+    e.gate.finish(e.service, final_slice, full=True)
+    assert (e.gate.completed is None) == other_write
+    if not other_write:
+        assert not e.gate.allowed(e.service)
+        e.clock.monotonic = e.gate.due
+    assert e.gate.allowed(e.service) == original_eligibility(e) is True
+    prior = reason_start(e)['decision']['previous-job']
+    assert prior['completed'] == int(not other_write)
+    assert prior['end']['sql']['driver_changes'] == 2
+    assert prior['end']['sql']['other_changes'] == int(other_write)
+    assert ('sql-revision' in prior['end']) == other_write
+
+
+def test_no_certificate_start_retains_the_failed_begin_class(example):
+    e = example
+    e.complete()
+    e.clock.wall = e.record.stat().st_mtime_ns
+    e.gate.begin(e.service, [str(e.record)])
+    e.clock.wall += 10_000_000_000
+    e.gate.finish(e.service, e.db.total_changes, full=True)
+    assert e.gate.completed is None
+    assert e.gate.allowed(e.service)
+    prior = reason_start(e)['decision']['previous-job']
+    assert prior['begin_valid'] == 0 and prior['end_valid'] == 1
+    assert prior['begin']['tick-young']['record'] == 1
+    assert 'previous-job' not in prior  # one generation, never a growing history
+
+
+def test_quiet_waits_emit_no_line_and_are_counted_in_minute_summary(example):
+    from quarterdeck.service_timing import Timings
+    e = example
+    e.complete()
+    rows = []
+    timings = Timings()
+    e.service.timings = lambda: timings
+    e.service.accounting_health = Health()
+    e.service.publish_accounting_health = lambda **kwargs: None
+    e.service.accounting_shown_changed = lambda before: None
+    e.service.log = lambda event, **data: rows.append(dict(event=event, **data))
+    driver = Driver()
+    driver.gate = e.gate
+    for _ in range(100):
+        driver.step(e.service)
+    assert rows == [] and driver.process is None and timings.accounting_waits == 100
+    e.clock.monotonic = 60.0
+    timings.publish(e.service.log)
+    assert len(rows) == 1 and rows[0]['event'] == 'service-timing'
+    assert rows[0]['accounting_waits'] == 100 and timings.accounting_waits == 0
+    assert 'ordinary' not in str(rows) and str(e.runtime) not in str(rows)

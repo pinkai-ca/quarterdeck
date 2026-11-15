@@ -340,6 +340,7 @@ class Driver:
         self.started = time.monotonic()
         self.gate.begin(service, (path for item in self.seats for path, *_ in item['sources']))
         self.job += 1
+        service.log('accounting-gate-start', job=self.job, decision=self.gate.decision)
         service.log('accounting-job-start', job=self.job, seats=len(self.seats),
                     scope=sorted(self.scope) if self.scope is not None else None,
                     sources=sum(len(item['sources']) for item in self.seats))
@@ -446,6 +447,9 @@ class Driver:
                 if self.process is not None and self.process.poll() is not None:
                     raise OSError('accounting child ended')
                 if not self.gate.allowed(service, retry=bool(self.retry_seats)):
+                    timings = getattr(service, 'timings', None)
+                    if timings is not None:
+                        timings().accounting_waits += 1
                     return
                 self.active = True
                 self.started = None

@@ -23,6 +23,7 @@ class Timings:
         self.since = time.monotonic()
         self.rows = {}
         self.status_checks = 0
+        self.accounting_waits = 0
 
     @contextmanager
     def measure(self, name):
@@ -49,7 +50,9 @@ class Timings:
             return
         log('service-timing', seconds=now - self.since,
             passes=self.rows.get('pass', {}).get('calls', 0), status_checks=self.status_checks,
+            accounting_waits=self.accounting_waits,
             duties={name: dict(row) for name, row in self.rows.items()})
         self.rows.clear()
         self.status_checks = 0
+        self.accounting_waits = 0
         self.since = now
