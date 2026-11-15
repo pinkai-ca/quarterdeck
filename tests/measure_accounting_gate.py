@@ -26,7 +26,7 @@ from quarterdeck.seat import Seat, seats
 
 STAGE = ['copy']
 
-def copied_runtime(source, destination):
+def copied_runtime(source, destination, *, compact_sqlite=False):
     """No original SQLite connection or native reader; rewrite copied paths only."""
     destination.mkdir(parents=True)
     _, raw = snapshot(source / 'ledger.sqlite')
@@ -41,6 +41,17 @@ def copied_runtime(source, destination):
             continue  # legacy sources outside runtime stay unread, as in replay
         target = destination / path.relative_to(source)
         translated[record] = str(target)
+        if compact_sqlite and path.suffix == '.db' and path.exists():
+            # A coherent native SQLite snapshot replaces accumulated WAL
+            # versions; it preserves the current database, not obsolete pages.
+            if not path.resolve().is_relative_to(source):
+                raise RuntimeError('source record resolves outside runtime')
+            _, data = snapshot(path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+            copied += 1
+            size += len(data)
+            continue
         for suffix in ('', '-wal'):
             old, new = Path(str(path) + suffix), Path(str(target) + suffix)
             if not old.exists():

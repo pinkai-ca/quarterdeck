@@ -54,7 +54,7 @@ def phase(runtime, label):
                                              None if reader else 'reader unavailable in copied history'))
     for name, sources in inventory.items():
         spec = service.ship.seats.get(name)
-        harness = get(spec.harness) if spec is not None else next(item.harness for item in sources if item.harness)
+        harness = get(spec.harness) if spec is not None else next(item.reader for item in sources if item.reader)
         pool = service.ship.pools[spec.pools[0]] if spec is not None else SimpleNamespace(name='copied-history')
         session = service.ship.sessions.get(spec.session) if spec is not None else None
         selected.append(SimpleNamespace(name=name,home=runtime/'seats'/name/'home',harness=harness,
@@ -121,7 +121,7 @@ def test_copied_scoped_accounting_replay(tmp_path, capsys):
     runtime = tmp_path/'ship'/'runtime'
     stage = 'copy'
     try:
-        counts = copied_runtime(source,runtime)
+        counts = copied_runtime(source,runtime,compact_sqlite=True)
         copied_selection_metadata(source,runtime)
         # This proof freezes the ledger's owned inventory, including historical
         # seats. It launches no program, reads no screen and uses no credentials.
@@ -158,5 +158,7 @@ if __name__ == '__main__' and len(sys.argv) == 4 and sys.argv[1] == '--phase':
     try:
         print(json.dumps(phase(Path(sys.argv[2]),sys.argv[3]),sort_keys=True))
     except Exception as error:
-        print(type(error).__name__,file=sys.stderr)
+        import traceback
+        frame = traceback.extract_tb(error.__traceback__)[-1]
+        print(json.dumps(dict(error=type(error).__name__,file=Path(frame.filename).name,line=frame.lineno)),file=sys.stderr)
         raise SystemExit(1) from None
