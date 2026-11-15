@@ -531,6 +531,7 @@ def export(ship, store, *, worklist=None):
 
     Only local classification is certified. An unproved report stays in the
     worklist; no receipt, offer, peer or transport observation is cached here.
+    The retained list bounds offer reads on the classifying pass too.
     """
     from . import post
     started = time.time_ns()
@@ -541,10 +542,9 @@ def export(ship, store, *, worklist=None):
     if worklist is not None:
         worklist.certificate = None  # any failure, including an exception, certifies nothing
     if worklist is None:
-        messages, retained = store.all(), []
+        retained = store.all()
     elif reuse:
-        messages = worklist.messages
-        retained = list(messages)
+        retained = list(worklist.messages)
     else:
         with post.reading_pass(store=store), _LocalReports(ship) as reports:
             messages = store.all()
@@ -557,7 +557,7 @@ def export(ship, store, *, worklist=None):
                 if keep:
                     retained.append(message)
     errors = []
-    for message in messages:
+    for message in retained:
         # Imported posts produce offers only through this ship's declared forward.
         try:
             imported = provenance(ship.runtime, message.id)

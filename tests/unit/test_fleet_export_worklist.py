@@ -47,6 +47,33 @@ def test_quiet_second_service_pass_skips_local_walk_and_all_mutations(pair, cloc
     Service.fleet_post(duty)
 
 
+def test_classifying_pass_walks_only_retained_messages_outside_reading(pair, clock, monkeypatch):
+    ship, store, order = local(pair)
+    store.new('report', 'captain', 'ship', 'Local completion.', re=order.id)
+    store.new('report', 'captain', 'ship', 'Local note without a reply.')
+    remote = store.new('question', 'writer', 'captain@beta', 'Cross-ship question.')
+    answer = store.new('answer', 'writer', 'captain', 'Synthetic information.')
+    uncertain = store.new('report', 'captain', 'ship', 'Non-order ancestry stays.', re=answer.id)
+    walked, offered = [], []
+    original = fleet.destinations
+    def destinations(*args):
+        assert post._READING.get() is None
+        walked.append(args[-1].id)
+        return original(*args)
+    def offer(ship, message, target):
+        assert post._READING.get() is None
+        offered.append((message.id, target))
+    monkeypatch.setattr(fleet, 'destinations', destinations)
+    monkeypatch.setattr(fleet, 'offer', offer)
+    worklist = fleet.ExportWorklist()
+    assert worklist.certificate is None
+    assert fleet.run(ship, store, worklist=worklist) == []
+    assert walked == [remote.id, uncertain.id]
+    assert offered == [(remote.id, 'beta')]
+    assert {message.id for message in worklist.messages} == set(walked)
+    assert worklist.certificate is not None
+
+
 @pytest.mark.parametrize('changed', ['store', 'imports', 'forwarded', 'addressed',
                                      'declaration', 'groups', 'compaction'])
 def test_each_local_classification_input_rebuilds_whole_worklist(pair, clock, monkeypatch, changed):
@@ -92,6 +119,31 @@ def test_recent_listing_is_reread_after_tick_instead_of_aged_into_certificate(pa
     assert calls and worklist.certificate is not None
 
 
+def test_input_recent_at_entry_is_not_certified_after_a_slow_rebuild(pair, clock, monkeypatch):
+    ship, store, _ = local(pair)
+    worklist = fleet.ExportWorklist()
+    stamp = worklist.stamp(ship)
+    newest = max(max(item[-2:]) for item in stamp[1] if item is not None)
+    clock.now = newest + post.POST_TIMESTAMP_TICK_NS // 10
+    retained = worklist.retained
+    def slow(*args):
+        clock.now += 3 * post.POST_TIMESTAMP_TICK_NS
+        return retained(*args)
+    with monkeypatch.context() as patch:
+        patch.setattr(worklist, 'retained', slow)
+        assert fleet.run(ship, store, worklist=worklist) == []
+    assert clock.now - newest > post.POST_TIMESTAMP_TICK_NS
+    assert worklist.stamp(ship) == stamp and worklist.certificate is None
+    calls = []
+    original = store.all
+    monkeypatch.setattr(store, 'all', lambda: (calls.append(True), original())[1])
+    assert fleet.run(ship, store, worklist=worklist) == []
+    assert calls == [True] and worklist.certificate is not None
+    calls.clear()
+    assert fleet.run(ship, store, worklist=worklist) == []
+    assert calls == [], 'the fresh post-tick reading certifies the following quiet pass'
+
+
 def test_change_during_build_and_backward_clock_certify_nothing(pair, clock, monkeypatch):
     ship, store, _ = local(pair)
     worklist = fleet.ExportWorklist()
@@ -132,6 +184,9 @@ def test_failed_export_and_failed_peer_pass_invalidate_certificate(pair, clock, 
         with pytest.raises(RuntimeError, match='discovery failed'):
             fleet.run(ship, store, worklist=worklist)
     assert worklist.certificate is None
+    # The failure must arise from retained work; proven local work is never walked.
+    store.new('question', 'writer', 'captain@beta', 'Synthetic outbound failure.')
+    assert fleet.run(ship, store, worklist=worklist) == []  # establish outbound folders before the error
     with monkeypatch.context() as patch:
         patch.setattr(fleet, 'destinations', lambda *_: (_ for _ in ()).throw(OSError('unreadable')))
         assert fleet.run(ship, store, worklist=worklist)
