@@ -44,7 +44,16 @@ class Native:
             row.update(parentUuid=None, logicalParentUuid=parent)
             self.flush()
         else:
-            self.add('compacted', payload=dict(message='Synthetic summary', replacement_history=[]))
+            # The measured checkpoint envelope, with synthetic values: an ordinal and the full payload, so the reader
+            # classifies it as a harmless checkpoint rather than leaving it unknown.
+            self.compactions = getattr(self, 'compactions', 0) + 1
+            number = self.compactions
+            self.add('compacted', ordinal=number - 1, payload=dict(
+                compaction_response_id=f'synthetic-compaction-{number}', first_window_id='synthetic-window-0',
+                latest_token_usage_record={}, message='Synthetic summary',
+                previous_window_id=f'synthetic-window-{number - 1}', replacement_history=[],
+                replacement_history_metadata=[], resume_metadata={}, retained_context={},
+                window_id=f'synthetic-window-{number}', window_number=number))
 
     def call(self):
         call = f'synthetic-call-{self.serial}'
