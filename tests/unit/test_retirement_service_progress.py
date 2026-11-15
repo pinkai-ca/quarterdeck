@@ -1,6 +1,7 @@
 """Service inventories finish; progress and persistent waits stay visible."""
 from types import SimpleNamespace
 import json
+import pytest
 
 from quarterdeck import post, post_retirement as retirement, presentation
 from quarterdeck.watch import Facts
@@ -64,6 +65,13 @@ def test_each_wait_logs_and_persistent_wait_survives_status_overflow(tmp_path, m
     assert text == 'retirement stalled: attempts read'
     facts = Facts('ok', 0, 0, 0, retirement=text, needs_human=['synthetic-seat'] * 50)
     assert text in facts.line()
+    def held(s, **kwargs):
+        paused(s)
+        return dict(attempts=0, journals=0, held='ledger catch-up')
+    monkeypatch.setattr(retirement, 'run', held)
+    s.post_retirement_due = 0
+    retirement.due(s)
+    assert retirement.reading(s.runtime) == text
     def finished(s, **kwargs):
         paused(s)
         s.post_retirement_observation.update(candidates=0)
@@ -94,3 +102,21 @@ def test_changed_retirement_wait_invalidates_cached_healthy_line(tmp_path, monke
     (runtime / retirement.STATUS).write_text(json.dumps(dict(format=1,
         since=retirement.time.time() - retirement.STALLED_AFTER - 1, phase='store read')))
     assert presentation.cached_line(folder) is None
+
+
+def test_failed_pass_is_logged_and_cannot_clear_a_wait(tmp_path, monkeypatch):
+    s = service(tmp_path / 'runtime');s.runtime.mkdir()
+    wall = [1000.0]
+    monkeypatch.setattr(retirement.time, 'time', lambda: wall[0])
+    def failed(s, **kwargs):
+        paused(s)
+        raise OSError('synthetic read failure')
+    monkeypatch.setattr(retirement, 'run', failed)
+    for age in (0, retirement.STALLED_AFTER):
+        wall[0] = 1000 + age
+        s.post_retirement_due = 0
+        with pytest.raises(OSError):
+            retirement.due(s)
+    assert len(s.logs) == 2
+    assert s.logs[-1][1]['failed'] is True
+    assert retirement.reading(s.runtime) == 'retirement stalled: attempts read'

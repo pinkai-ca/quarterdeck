@@ -29,7 +29,7 @@ HEARTBEAT = 0.1
 INTERVAL = 60.0
 STALLED_AFTER = 300.0
 STATUS = 'retirement-status.json'
-PHASES = frozenset({'start', 'recovery', 'attempts read', 'store read', 'eligibility',
+PHASES = frozenset({'start', 'recovery', 'ledger catch-up', 'attempts read', 'store read', 'eligibility',
                     'seat selection', 'journals read', 'batch', 'moves'})
 
 
@@ -253,6 +253,7 @@ def run(service, *, limit=BATCH, seconds=SECONDS, complete_reads=False):
     except SliceEnded:
         result = {**counts, 'paused': True}
     finally:
+        service.post_retirement_counts = dict(counts)
         service.post_retirement_observation = dict(
             seconds=time.monotonic() - progress.start, phase=progress.phase,
             read_seconds=progress.read_seconds, candidates=progress.candidates,
@@ -263,6 +264,7 @@ def run(service, *, limit=BATCH, seconds=SECONDS, complete_reads=False):
 def _run(service, limit, counts, progress):
     from . import lifecycle, pending, post, receipt_refresh
     if service.ledger.catching_up():
+        progress.phase = 'ledger catch-up'
         return {**counts, 'held': 'ledger catch-up'}
     progress.phase = 'recovery'
     recovered = _recover(service, progress, counts)
@@ -365,6 +367,8 @@ def _run(service, limit, counts, progress):
             # A bounded pass must not repeatedly spend its whole slice scanning
             # already-settled early seats while later seats never get a turn.
             service.post_retirement_cursor = names[(position + 1) % len(names)]
+    if not progress.blocked:
+        progress.candidates = 0  # a complete examination found no movable candidate
     return counts
 
 
@@ -393,9 +397,13 @@ def _status(service, result, observation):
     path = service.runtime / STATUS
     waiting = (result.get('paused') or observation['retirable']
                or observation['candidates'] and observation['blocked'])
-    if result['attempts'] or result['journals'] or result.get('held') or not waiting:
+    complete_empty = (not result.get('paused') and not result.get('held')
+                      and observation['candidates'] == 0 and not observation['blocked'])
+    if result['attempts'] or result['journals'] or complete_empty:
         path.unlink(missing_ok=True)
         return
+    if not waiting and not path.exists():
+        return  # no existing stall and no new evidence of one
     since = time.time()
     try:
         previous = json.loads(path.read_text())
@@ -410,9 +418,15 @@ def due(service):
     now = time.monotonic()
     if now < getattr(service, 'post_retirement_due', 0):
         return
-    result = run(service, complete_reads=True)
-    service.post_retirement_due = now + INTERVAL
-    observation = service.post_retirement_observation
-    _status(service, result, observation)
-    # Every scheduled pass is visible, including an ordinary pause or a no-op.
-    service.log('post-retired', **result, **observation)
+    result = None
+    try:
+        result = run(service, complete_reads=True)
+    finally:
+        service.post_retirement_due = now + INTERVAL
+        observation = service.post_retirement_observation
+        if result is None:
+            result = {**getattr(service, 'post_retirement_counts', dict(attempts=0, journals=0)),
+                      'paused': True, 'failed': True}
+        _status(service, result, observation)
+        # A failed pass is logged too, before its exception reaches the service.
+        service.log('post-retired', **result, **observation)
