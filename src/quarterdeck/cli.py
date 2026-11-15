@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from . import (__version__, check, copy_state, daily_live, doctor, drill, harness as harnesses, install, ledger, post, sandbox, seat as seatmod, service,
+from . import (__version__, check, copy_state, daily_live, doctor, drill, harness as harnesses, install, ledger, post, relaunch_intent, sandbox, seat as seatmod, service,
                ship as shipmod, standing, watch)
 from .output import Reading
 from . import output, ledger_reading, lifecycle, closed_pipe
@@ -350,13 +350,20 @@ def where(tmux: Tmux) -> str:
     return f"tmux: the ship's own server {tmux.socket} · qd attach opens it"
 
 
+def caller_of(ship: shipmod.Ship) -> str:
+    """Who runs this qd: the seat it runs in, else the ship's human."""
+    return os.environ.get('QD_SEAT') or getattr(ship, 'operator', None) or 'the operator'
+
+
 def cmd_down(args: argparse.Namespace) -> list[str] | str:
     ship = load_ship(args)
     if args.seat:
         if args.seat not in ship.seats and seatmod.CHECK_SEAT.fullmatch(args.seat):
             return seatmod.down_leftover_check(ship, Tmux.for_ship(ship), args.seat)  # a check's seat it left behind
+        relaunch_intent.clear(ship.runtime, args.seat, f'qd down by {caller_of(ship)}')  # the person's word stands
         return seat_of(ship, args.seat).down()
     tmux = Tmux.for_ship(ship)
+    relaunch_intent.clear_all(ship, f'qd down by {caller_of(ship)}')
     proofs = seatmod.bring_down(ship, tmux) + [service.stop(ship.runtime)]
     if tmux.legacy:
         proofs.append(f"tmux: brought down on tmux's default server {tmux.socket}, which is left running; "
@@ -422,6 +429,8 @@ def relaunch(ship: shipmod.Ship, name: str | None, resume: bool, cancel=None) ->
     if cancel is not None:
         return request_queue.cancel(ship.runtime, target, None if cancel == '*' else cancel)
     seat = seat_of(ship, target)
+    if not resume:
+        relaunch_intent.clear(ship.runtime, seat.name, f'qd fresh by {caller_of(ship)}')  # the person's own relaunch
     if seat.is_working():
         return service.request(ship.runtime, 'relaunch', seat=seat.name, resume=resume,
                                caller=os.environ.get('QD_SEAT'), origin=request_queue.launch_binding(seat))
@@ -448,6 +457,7 @@ def cmd_stop(args: argparse.Namespace) -> str:
     seat = seat_of(ship, this_seat(ship, args.seat))
     if seat.session.human:
         raise ShipError(f"{seat.name} sits in a human's session; the ship sends no controls into a human's session")
+    relaunch_intent.clear(ship.runtime, seat.name, f'qd stop by {caller_of(ship)}')  # stays as the person left it
     return service.request(ship.runtime, "stop", seat=seat.name)
 
 

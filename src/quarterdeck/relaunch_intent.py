@@ -22,6 +22,12 @@ launch. It acts only on a real file, read without following a link, that names a
 that seat is down and has no launch since the intent, and only when the intent's service is gone. It marks the
 intent as finishing before the up, so a finish that is itself cut short is never tried again. That one waits for a
 person, and the status line says so (``status``). law: nothing-waits-silently
+
+An intent never overrides a later word that the seat stays as it is. A person's ``qd down``, ``qd stop`` or
+``qd fresh``, and a service hold that keeps a seat down, remove the seat's intent and log who cleared it
+(``clear``). The finish also leaves an intent alone while ``hold`` names a reason: the seat declared
+``up = false``, its recovery or refusal hold, a relaunch refused while its program was ending, a program still
+ending, a stopped ship-server recovery, or a hold registered in ``HOLDS``. The status line names the reason.
 """
 
 from __future__ import annotations
@@ -44,6 +50,11 @@ GRACE = 30.0
 LIMIT = 4096  # an intent is a few hundred bytes; a larger file is not one
 RELAUNCHING, RELEASED, FINISHING, FAILED = 'relaunching', 'released', 'finishing', 'failed'
 KINDS = frozenset({'after-order', 'relaunch', 'refusal', 'failover', 'select', 'compaction', 'server-recovery'})
+
+
+# A hold that keeps a seat down, added later, registers a reader here: seat -> reason or None. Its writer calls
+# clear() when it places the hold, so an intent never brings the seat up against it.
+HOLDS: list = []
 
 
 def folder(runtime) -> Path:
@@ -145,6 +156,72 @@ def _entries(runtime, declared):
         except ShipError as error:
             found.append((name, None, str(error)))
     return found
+
+
+def clear(runtime, seat: str, who: str) -> bool:
+    """A later word that the seat stays as it is: its intent goes, logged as cleared by ``who``. A link is left."""
+    target = path(runtime, seat)
+    try:
+        mode = post_dir.mode(target)
+    except (OSError, ShipError):
+        return False
+    if mode is None or not stat.S_ISREG(mode):
+        return False  # nothing to clear, or a link or other file finish() already refuses and the line names
+    try:
+        kind = json.loads(post_dir.read_bytes(target, limit=LIMIT)).get('kind')
+    except (OSError, ShipError, ValueError, AttributeError):
+        kind = None
+    try:
+        post_dir.remove(target)
+    except FileNotFoundError:
+        return False
+    _log(runtime, 'relaunch-intent', seat=seat, kind=kind, outcome='cleared', reason=f'cleared by {who}')
+    return True
+
+
+def clear_all(ship, who: str) -> list[str]:
+    """Every declared seat's intent, for a word about the whole ship."""
+    return [name for name in sorted(ship.seats) if clear(ship.runtime, name, who)]
+
+
+def held(seat) -> str | None:
+    """hold(), with a reading that fails taken as a hold: an unknown is never read as nothing holding the seat."""
+    try:
+        return hold(seat)
+    except Exception as error:
+        return f'hold unknown ({type(error).__name__})'
+
+
+def hold(seat) -> str | None:
+    """Why the seat must stay as it is, whatever an intent says; None when nothing holds it."""
+    if getattr(seat.spec, 'up', True) is False:
+        return 'declared up = false'
+    from . import recovery, refusal, server_recovery
+    from .seat import REFUSED_RELAUNCH
+    runtime = seat.ship.runtime
+    try:
+        if reason := recovery.held(seat):
+            return reason
+    except (OSError, ShipError) as error:
+        return f'recovery hold unreadable ({type(error).__name__})'
+    try:
+        if any(event['stage'] == 'held' for event in refusal.load(runtime, seat.name)):
+            return 'its refusal hold'
+    except (OSError, ShipError, KeyError, TypeError) as error:
+        return f'refusal journal unreadable ({type(error).__name__})'
+    if (seat.folder / REFUSED_RELAUNCH).exists():
+        return 'a relaunch was refused while its program was ending'
+    if seat.retiring() is not None:
+        return 'its last program is still ending'
+    try:
+        if server_recovery.read(runtime)['stopped']:
+            return 'ship server recovery stopped'
+    except (OSError, ShipError, ValueError, KeyError):
+        return 'ship server recovery state unreadable'
+    for reader in HOLDS:
+        if reason := reader(seat):
+            return reason
+    return None
 
 
 @contextmanager
@@ -262,6 +339,8 @@ def finish(service) -> None:
         if data['owner'] == own or not _gone(data['owner']):
             continue  # its own service is still running: its section, not this one's
         seat = service.seat(data['seat'])
+        if held(seat) is not None:
+            continue  # a later word or a hold keeps the seat as it is; the status line names it
         try:
             with seat._lifecycle(automatic=True):
                 try:
@@ -275,8 +354,8 @@ def finish(service) -> None:
                     service.log('relaunch-intent', seat=seat.name, kind=data['kind'], outcome='cleared',
                                 reason='the seat is up' if seat.is_up else 'an up already followed it')
                     continue
-                if data['phase'] in (FINISHING, FAILED):
-                    continue  # tried once already; a person brings it up, and the status line says so
+                if data['phase'] in (FINISHING, FAILED) or held(seat) is not None:
+                    continue  # tried once already, or held: a person decides, and the status line says so
                 left_by = data['owner']['pid']
                 data.update(phase=FINISHING, finisher=own, finishing_at=_now())
                 _write(runtime, data)  # before the up: a finish cut short is never tried twice
@@ -303,8 +382,11 @@ def _clock(stamp) -> str:
         return '?'
 
 
-def status(ship) -> list[str]:
-    """The status line's words for every intent not being carried by a running service."""
+def status(ship, seats=None) -> list[str]:
+    """The status line's words for every intent not being carried by a running service.
+
+    ``seats``: the ship's Seat objects by name, to read a hold that keeps one down.
+    """
     lines = []
     for name, data, refusal in _entries(ship.runtime, lambda: ship.seats):
         if refusal is not None:
@@ -313,6 +395,14 @@ def status(ship) -> list[str]:
         seat = data['seat']
         if data['phase'] == RELAUNCHING and not _gone(data['owner']):
             continue  # a relaunch in progress
+        reason = None
+        if seats and seat in seats:
+            reason = held(seats[seat])
+        elif getattr(ship.seats.get(seat), 'up', True) is False:
+            reason = 'declared up = false'
+        if reason is not None:
+            lines.append(f"{seat}: relaunch intent left as it is while held: {reason}")
+            continue
         if data['phase'] in (RELAUNCHING, RELEASED):
             how = ('released by a stop that waited for it' if data['phase'] == RELEASED
                    else 'left by a service that ended')

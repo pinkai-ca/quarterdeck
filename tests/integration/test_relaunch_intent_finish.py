@@ -100,3 +100,115 @@ def test_a_jailed_seat_finished_from_an_intent_passes_its_own_folder_check(ship,
     assert 'ship folder as its working directory' in refused.logs[1][1]['error']
     assert not in_ship('worker-1').is_up
     assert 'needs a human: qd up worker-1' in relaunch_intent.status(ship)[0]
+
+
+# -- an intent never overrides a later word that the seat stays as it is ----------------------
+
+def cleared(ship):
+    log = ship.runtime / 'log' / 'service.jsonl'
+    entries = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+    return [entry['reason'] for entry in entries if entry.get('outcome') == 'cleared']
+
+
+@pytest.fixture
+def person(ship, tmux, monkeypatch):
+    """qd run by Spock on this ship, on the test's private server."""
+    import argparse
+    from quarterdeck import cli
+
+    monkeypatch.setenv('QD_TMUX_SOCKET', tmux.socket)
+    monkeypatch.setenv('QD_SEAT', 'spock')
+    monkeypatch.setenv('QD_SHIP', str(ship.folder))
+    monkeypatch.setattr(cli, 'seat_of', lambda found, name: seatmod.Seat(found, found.seat(name), tmux))
+    return lambda verb, **extra: getattr(cli, f'cmd_{verb}')(argparse.Namespace(ship=str(ship.folder), **extra))
+
+
+def test_an_intent_then_qd_down_then_a_new_service_leaves_the_seat_down(ship, tmux, person):
+    worker = lambda name: seatmod.Seat(ship, ship.seat(name), tmux)
+    leave(ship)
+    person('down', seat='worker-1')
+    assert cleared(ship) == ['cleared by qd down by spock']
+    assert not relaunch_intent.path(ship.runtime, 'worker-1').exists()
+    svc = service(ship, worker)
+    relaunch_intent.finish(svc)
+    assert svc.logs == [] and not worker('worker-1').is_up, 'the person kept it down'
+
+
+def test_qd_down_of_the_whole_ship_clears_every_intent(ship, tmux, person):
+    leave(ship, seat='worker-1')
+    leave(ship, seat='captain')
+    person('down', seat=None)
+    assert sorted(cleared(ship)) == ['cleared by qd down by spock'] * 2
+    assert not any(relaunch_intent.folder(ship.runtime).iterdir())
+
+
+def test_qd_stop_clears_the_intent_even_with_no_service_to_ask(ship, tmux, person):
+    from quarterdeck.ship import ShipError
+
+    leave(ship)
+    with pytest.raises(ShipError, match='service down'):
+        person('stop', seat='worker-1')
+    assert cleared(ship) == ['cleared by qd stop by spock']
+
+
+def test_qd_fresh_clears_the_intent_and_starts_the_seat_once(ship, tmux, person):
+    worker = lambda name: seatmod.Seat(ship, ship.seat(name), tmux)
+    leave(ship)
+    person('fresh', seat='worker-1', cancel=None)
+    assert cleared(ship) == ['cleared by qd fresh by spock']
+    seat = worker('worker-1')
+    launched = seat.launched()
+    svc = service(ship, worker)
+    relaunch_intent.finish(svc)
+    assert svc.logs == [] and seat.launched() == launched, 'one up, the person\'s'
+    seat.down()
+
+
+def test_an_intent_for_a_seat_declared_up_false_is_never_finished(ship, tmux, drydock):
+    text = (drydock / 'ship.toml').read_text()
+    (drydock / 'ship.toml').write_text(shipmod.edit(text, 'seats.worker-1', 'up', False))
+    declared = shipmod.load(drydock)
+    assert declared.seat('worker-1').up is False
+    worker = lambda name: seatmod.Seat(declared, declared.seat(name), tmux)
+    leave(declared)
+    svc = service(declared, worker)
+    relaunch_intent.finish(svc)
+    assert svc.logs == [] and not worker('worker-1').is_up
+    assert relaunch_intent.path(declared.runtime, 'worker-1').exists()
+    assert relaunch_intent.status(declared) == [
+        'worker-1: relaunch intent left as it is while held: declared up = false']
+
+
+@pytest.mark.parametrize('how', ['recovery', 'refused-relaunch', 'registered'])
+def test_an_intent_for_a_held_seat_is_never_finished_and_shows_on_the_line(ship, tmux, monkeypatch, how):
+    from quarterdeck import recovery, watch
+    from quarterdeck.seat import REFUSED_RELAUNCH
+
+    worker = lambda name: seatmod.Seat(ship, ship.seat(name), tmux)
+    reason = {'recovery': 'synthetic recovery hold',
+              'refused-relaunch': 'a relaunch was refused while its program was ending',
+              'registered': 'synthetic write-bound hold'}[how]
+    if how == 'recovery':
+        monkeypatch.setattr(recovery, 'held', lambda seat: reason if seat.name == 'worker-1' else None)
+    elif how == 'refused-relaunch':
+        folder = worker('worker-1').folder
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / REFUSED_RELAUNCH).write_text('{}\n')
+    else:
+        monkeypatch.setattr(relaunch_intent, 'HOLDS', [lambda seat: reason if seat.name == 'worker-1' else None])
+    leave(ship)
+    svc = service(ship, worker)
+    relaunch_intent.finish(svc)
+    assert svc.logs == [] and not worker('worker-1').is_up
+    line = watch.Facts('ok', 0, 0, 0, relaunches=relaunch_intent.status(ship, {'worker-1': worker('worker-1')})).line()
+    assert f'worker-1: relaunch intent left as it is while held: {reason}' in line
+
+
+def test_a_hold_the_service_places_clears_the_intent_and_says_who(ship):
+    leave(ship)
+    assert relaunch_intent.clear(ship.runtime, 'worker-1', 'its refusal hold')
+    assert cleared(ship) == ['cleared by its refusal hold']
+    assert not relaunch_intent.clear(ship.runtime, 'worker-1', 'its refusal hold'), 'nothing left to clear'
+    link = relaunch_intent.path(ship.runtime, 'worker-1')
+    link.symlink_to(ship.folder / 'ship.toml')
+    assert not relaunch_intent.clear(ship.runtime, 'worker-1', 'its refusal hold') and link.is_symlink()

@@ -977,6 +977,8 @@ class Seat:
                 if relaunch:
                     durable.replace_file(self.folder / REFUSED_RELAUNCH, json.dumps(dict(
                         at=datetime.now(timezone.utc).isoformat(), pid=program[0])) + "\n")
+                    from . import relaunch_intent  # a hold that keeps the seat down: no intent brings it up
+                    relaunch_intent.clear(self.ship.runtime, self.name, 'a relaunch refused while its program was ending')
                 return (f"{self.name} down · pane {pane.id} closed · process still ending after {bound:g}s; "
                         + ("relaunch refused; " if relaunch else "") + "credential and launch left for the next tick")
             waited = (f" · still ending after {PROCESS_END_SECONDS:g}s, ended after "

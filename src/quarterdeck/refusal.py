@@ -212,6 +212,8 @@ def step(service: Service, seat: Seat) -> None:
             _tell(service, seat, event)
             event['stage'], event['reason'] = 'held', 'the automatic fresh start was interrupted; qd up'
             save(runtime, seat.name, events)
+            from . import relaunch_intent  # the hold keeps the seat down until a person acts
+            relaunch_intent.clear(runtime, seat.name, 'its refusal hold')
         else:
             relaunch(service, seat, events, event)
         return
@@ -275,6 +277,7 @@ def relaunch(service: Service, seat: Seat, events: list[dict], event: dict) -> N
         # Held, never retried: the quarantine and the notice stand, and a person or the systems seat starts it fresh.
         event['stage'], event['reason'] = 'held', f'the automatic fresh start failed: {error}'
         save(service.runtime, seat.name, events)
+        relaunch_intent.clear(service.runtime, seat.name, 'its refusal hold')
         service.log('error', step='refusals', seat=seat.name, error=str(error), stage='held')
         return
     event['stage'], event['successor'] = 'launched', (launch_key(seat) or {}).get('at')

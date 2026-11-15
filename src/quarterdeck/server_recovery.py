@@ -178,6 +178,8 @@ def pass_once(service) -> str | None:
                            else f'{count} attempts in the last hour')
         data['unknown'] = None
         save(runtime, data)
+        from . import relaunch_intent  # a stopped recovery keeps every seat down until a person's qd up
+        relaunch_intent.clear_all(ship, 'ship server recovery stopped')
         _report(service, f'ship tmux server gone; recovery stopped ({data["stopped"]}); needs a human: qd up')
         return 'stopped'
     attempt = dict(at=moment.isoformat(), outcome='started', seats=[seat.name for seat, _ in launches])
@@ -215,6 +217,9 @@ def pass_once(service) -> str | None:
     if failures:
         data['stopped'] = 'recovery failed: ' + '; '.join(failures)[:400]
     save(runtime, data)
+    if failures:
+        from . import relaunch_intent  # a stopped recovery keeps every seat down until a person's qd up
+        relaunch_intent.clear_all(ship, 'ship server recovery stopped')
     k = count + 1
     if failures:
         _report(service, f'ship tmux server was gone; recovery attempt {k} of {LIMIT} this hour failed '

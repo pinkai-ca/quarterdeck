@@ -908,7 +908,8 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         compactions=compactions,
         manual_fresh=compaction_alert.unrouted(ship, [seat for seat in selected if not isinstance(seat, UnresolvedSeat)]),
         server_recovery=server_recovery.status(ship.runtime),
-        relaunches=relaunch_intent.status(ship),
+        relaunches=relaunch_intent.status(ship, {seat.name: seat for seat in selected
+                                                 if not isinstance(seat, UnresolvedSeat)}),
         model_mismatches=model_mismatch.unrouted(ship, [seat for seat in selected if not isinstance(seat, UnresolvedSeat)],
                                                pending_model=request_queue.pending_model),
         held=held,
