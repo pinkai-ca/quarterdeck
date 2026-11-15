@@ -27,9 +27,11 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `pending.py`, `delivery_record.py` | saved paste evidence and historical receipts; the service schedules each message |
 | `post_view.py` | a jailed seat's view of the post: copies of what it sent or received, its own inbox, the shorts taken; kept by the service, bound in the post's place |
 | `pricing.py` | a pool's stated rates, and the price saved beside a launch or a model choice |
+| `hand_transcripts.py` | accounted, closed hand transcripts retained outside the seat's write allowance |
 | `provenance.py` | which launch a record belongs to |
 | `providers.py` | normalizes declared companies and builds public identity metadata |
 | `quota.py` | quota walls and the usage refresh |
+| `record_location.py` | logical record names that survive retirement without rewriting their ledger keys |
 | `record_owner.py` | which program a record belongs to |
 | `refusal.py` | a provider-refused crew seat started fresh once, the refused message withheld and its sender told by a notice built from the store, never from the journal's words |
 | `sandbox.py` | the bubblewrap jail around a sandboxed seat's program |
