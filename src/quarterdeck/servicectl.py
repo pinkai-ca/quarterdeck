@@ -44,17 +44,15 @@ def heartbeat_path(runtime: Path) -> Path:
     return runtime / HEARTBEAT_FOLDER / "service.heartbeat"
 
 
-def legacy_heartbeat_path(runtime: Path) -> Path:
-    """Where the heartbeat lay before it moved, and where every installer of the earlier code waits for a new
-    service's beat at a sync's target_ready, whichever place its install lock lies at. TEMPORARY: every beat is
-    written here too until a later change, one release after the move, drops this write once no installed copy of
-    the earlier code can run a sync. Never shown to a jail."""
-    return runtime / "service.heartbeat"
+# Where the heartbeat lay before it moved into its folder. The copy that moved it (11ca0ea6) beat here too, for the
+# installers before it; this code never writes or reads it, and only clears what that copy left.
+EARLIER_HEARTBEAT = "service.heartbeat"
 
 
 def remove_heartbeat(runtime: Path) -> None:
-    """Both places, each with a temporary file a beat cut short may have left."""
-    for path in (heartbeat_path(runtime), legacy_heartbeat_path(runtime)):
+    """The beat, with a temporary file a beat cut short may have left, and what a copy that also beat at the earlier
+    place left there."""
+    for path in (heartbeat_path(runtime), runtime / EARLIER_HEARTBEAT):
         path.unlink(missing_ok=True)
         path.with_suffix(".tmp").unlink(missing_ok=True)
 
@@ -72,12 +70,10 @@ def legacy_lock_path(runtime: Path) -> Path:
 
 
 def write_heartbeat(runtime: Path) -> None:
-    """One beat, whole by rename, at the heartbeat's place and (TEMPORARY, see legacy_heartbeat_path) its earlier
-    place, so that an installer of the earlier code sees a service of this code start."""
+    """One beat, whole by rename, in the heartbeat's folder."""
     path = heartbeat_path(runtime)
     path.parent.mkdir(exist_ok=True)
     _beat(path)
-    _beat(legacy_heartbeat_path(runtime))  # TEMPORARY: dropped one release after the move
 
 
 def _beat(path: Path) -> None:
@@ -89,12 +85,9 @@ def _beat(path: Path) -> None:
 def read_heartbeat(runtime: Path) -> tuple[int, float] | None:
     """The service's pid and the age of its last tick in seconds, or None when none was written.
 
-    Both places are read and the fresher beat wins. The earlier code's service beats only at the earlier place, so
-    after a sync back, or one that failed and rolled back, the folder holds the dead newer service's last beat; the
-    folder alone would name a dead pid. Inside a jail only the folder is shown, and it is live."""
-    beats = [beat for path in (heartbeat_path(runtime), legacy_heartbeat_path(runtime))
-             if (beat := _read_beat(path)) is not None]
-    return min(beats, key=lambda beat: beat[1]) if beats else None
+    Only the folder is read. Every copy a sync can return to beats there: the copy that moved the beat (11ca0ea6) and
+    every later one; a service clears a beat it did not write at its start (Service.first_beat)."""
+    return _read_beat(heartbeat_path(runtime))
 
 
 def _read_beat(path: Path) -> tuple[int, float] | None:

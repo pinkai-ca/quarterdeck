@@ -18,8 +18,8 @@ from tests.integration.waiting import wait_for
 
 
 def beat_everywhere(runtime,text):
-    """The heartbeat as the service leaves it: the same text at both its places while the earlier one stands."""
-    for place in (servicectl.heartbeat_path(runtime),servicectl.legacy_heartbeat_path(runtime)):place.write_text(text)
+    """The heartbeat as the service leaves it, in its folder."""
+    place=servicectl.heartbeat_path(runtime);place.parent.mkdir(exist_ok=True);place.write_text(text)
 
 @pytest.fixture
 def live(tmp_path):

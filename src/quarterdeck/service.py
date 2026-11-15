@@ -40,7 +40,7 @@ from .provenance import UNKNOWN
 from .post import Attempts, Store
 from .seat import SEAT_HOLDS, Seat, SelectionError, UnresolvedSeat, launch_pool_refusal, seats
 from .servicectl import (  # noqa: F401  (the process control, reachable as service.* too)
-    acquire_lock, alive, heartbeat_path, legacy_heartbeat_path, locked, read_heartbeat, remove_heartbeat, request, stale,
+    acquire_lock, alive, heartbeat_path, locked, read_heartbeat, remove_heartbeat, request, stale,
     start, stop, write_heartbeat,
 )
 from .ship import Ship, ShipError
@@ -452,10 +452,10 @@ class Service:
         push_reminder.run(self)
 
     def first_beat(self) -> None:
-        """At the start, a beat this service did not write goes, in both places, and its own first beat follows at once.
+        """At the start, a beat this service did not write goes, and its own first beat follows at once.
 
-        A sync that failed and rolled back leaves the dead newer service's last beat in the folder, which the earlier
-        code neither writes nor clears; no reader is left with it."""
+        A service that ended without clearing its beat (killed, or a sync that rolled back) leaves a dead pid in the
+        folder, and the copy that moved the beat left one at its earlier place too; no reader is left with either."""
         with getattr(self, 'heartbeat_lock', None) or contextlib.nullcontext():
             remove_heartbeat(self.runtime)
             try:
@@ -464,7 +464,7 @@ class Service:
                 pass  # the beat thread and the main step try again; storage failures are reported there
 
     def beat(self) -> None:
-        """The heartbeat, in both its places (servicectl.write_heartbeat; the earlier place is TEMPORARY)."""
+        """The heartbeat, in its folder (servicectl.write_heartbeat)."""
         write_heartbeat(self.runtime)
 
     def heartbeat(self) -> None:

@@ -165,71 +165,51 @@ def beat_at(path: Path, pid: int, age: float) -> None:
     path.write_text(f'{pid} {(datetime.now(timezone.utc) - timedelta(seconds=age)).isoformat()}\n')
 
 
-def test_both_places_are_read_and_the_fresher_beat_wins_either_way_round(tmp_path):
-    """The earlier code's service beats only at runtime/service.heartbeat; after a sync back, or one that rolled
-    back, the folder holds the dead newer service's last beat, which must not be read over the live one."""
-    runtime = tmp_path / 'runtime'
-    runtime.mkdir()
-    new, old = servicectl.heartbeat_path(runtime), servicectl.legacy_heartbeat_path(runtime)
-    assert servicectl.read_heartbeat(runtime) is None
-    beat_at(old, 4107, 1)
-    assert servicectl.read_heartbeat(runtime)[0] == 4107, 'the earlier place alone'
-    beat_at(new, 4108, 300)
-    assert servicectl.read_heartbeat(runtime)[0] == 4107, 'a stale folder never wins over a live earlier beat'
-    beat_at(new, 4108, 0)
-    beat_at(old, 4107, 300)
-    assert servicectl.read_heartbeat(runtime)[0] == 4108, 'nor a stale earlier beat over a live folder'
-    old.write_text('torn')
-    assert servicectl.read_heartbeat(runtime)[0] == 4108, 'an unreadable place is no beat'
-    servicectl.remove_heartbeat(runtime)
-    assert not old.exists() and not new.exists() and servicectl.read_heartbeat(runtime) is None
-
-
-def test_every_beat_is_written_at_both_places_whoever_started_the_service(tmp_path):
-    """Every installer of the earlier code waits at runtime/service.heartbeat, whichever place its install lock lies
-    at: the live sync from 0f20b40 held the lock at this code's place and timed out at target_ready."""
+def test_only_the_folder_is_read_and_the_earlier_place_never_written(tmp_path):
+    """The beat lies in its folder alone. A beat the copy that moved it (11ca0ea6) left at runtime/service.heartbeat is
+    never read, so a dead pid there names no service, and nothing of this code writes it."""
     from quarterdeck import service as servicemod
 
     runtime = tmp_path / 'runtime'
     runtime.mkdir()
+    new, old = servicectl.heartbeat_path(runtime), runtime / servicectl.EARLIER_HEARTBEAT
+    assert servicectl.read_heartbeat(runtime) is None
+    beat_at(old, 4107, 0)
+    assert servicectl.read_heartbeat(runtime) is None, 'the earlier place is no beat'
+    beat_at(new, 4108, 300)
+    assert servicectl.read_heartbeat(runtime)[0] == 4108
+    new.write_text('torn')
+    assert servicectl.read_heartbeat(runtime) is None, 'an unreadable beat is no beat'
+    old.unlink()
     svc = servicemod.Service.__new__(servicemod.Service)
     svc.runtime, svc.heartbeat_lock = runtime, threading.Lock()
-    svc.legacy_lock, svc.earlier_installer = None, None  # started by this code's installer, or a current-lock one
     svc.beat()
-    for path in (servicectl.heartbeat_path(runtime), servicectl.legacy_heartbeat_path(runtime)):
-        assert path.read_text().split()[0] == str(os.getpid()), path
-    svc.legacy_lock = servicectl.hold_legacy(runtime)  # started by an installer that holds the lock's earlier place
-    svc.earlier_installer = (os.getpid(), 'synthetic-ended')
-    svc.log = lambda *args, **data: None
-    svc.release_earlier_installer()
-    assert svc.legacy_lock is None
-    servicectl.legacy_heartbeat_path(runtime).unlink()
-    svc.beat()
-    assert servicectl.legacy_heartbeat_path(runtime).read_text().split()[0] == str(os.getpid()), \
-        'the earlier place keeps its beat after the installer has exited, until the write is dropped'
+    assert new.read_text().split()[0] == str(os.getpid())
+    assert not old.exists() and not old.with_suffix('.tmp').exists(), 'no beat at the earlier place'
 
 
 def test_a_service_clears_a_beat_it_did_not_write_at_its_start_and_a_stop_clears_both(tmp_path):
-    """A sync that rolled back left the dead service's beat in runtime/heartbeat/, which the earlier code never
-    clears; the next service of this code removes it and beats at once."""
+    """A service that ended without clearing its beat left a dead pid in runtime/heartbeat/, and the copy that moved
+    the beat left one at runtime/service.heartbeat; the next service of this code removes both and beats at once."""
     from quarterdeck import service as servicemod
 
     runtime = tmp_path / 'runtime'
     runtime.mkdir()
-    new, old = servicectl.heartbeat_path(runtime), servicectl.legacy_heartbeat_path(runtime)
+    new, old = servicectl.heartbeat_path(runtime), runtime / servicectl.EARLIER_HEARTBEAT
     beat_at(new, 4108, 900)
     (new.parent / 'service.tmp').write_text('left')
     beat_at(old, 4107, 1)
     svc = servicemod.Service.__new__(servicemod.Service)
     svc.runtime, svc.heartbeat_lock = runtime, threading.Lock()
     svc.first_beat()
-    for path in (new, old):
-        pid, stamp = path.read_text().split()
-        assert pid == str(os.getpid()) and datetime.now(timezone.utc) - datetime.fromisoformat(stamp) < timedelta(seconds=30)
+    pid, stamp = new.read_text().split()
+    assert pid == str(os.getpid()) and datetime.now(timezone.utc) - datetime.fromisoformat(stamp) < timedelta(seconds=30)
+    assert not old.exists(), 'the earlier place is cleared, never beaten'
     assert sorted(p.name for p in new.parent.iterdir()) == ['service.heartbeat'], 'nothing else in the jail-shown folder'
     # The lock exists and nobody holds it: no service runs (without it, a fresh beat reads as one, as in a jail).
     servicectl.lock_path(runtime).parent.mkdir(parents=True, exist_ok=True)
     servicectl.lock_path(runtime).touch()
     assert not servicectl.alive(runtime)
+    beat_at(old, 4107, 1)
     assert servicectl.stop(runtime) == 'service was not running'
     assert not new.exists() and not old.exists()
