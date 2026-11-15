@@ -183,7 +183,8 @@ class Service:
                 self.settle_stale_claims()
                 while True:
                     self.tick()
-                    self.drain_accounting()
+                    with self.timings().measure('drain_accounting'):
+                        self.drain_accounting()
                     arrivals.refresh(self.ship.seats)
                     with self.timings().measure('sleep'):
                         arrivals.wait(self.ship.tick)  # arrival or one tick; no full status work in this rest
@@ -261,9 +262,7 @@ class Service:
 
     def _tick_steps(self):
         # Operational duties keep their order and never wait behind the slice.
-        self.drain_drops()
-        self.drain_accounting()
-        self.drain_requests()
+        self._drain_between_duties()
         for step in (self.server_recovery, self.reconcile, self.file_drops, self.groups, self.cascades, self.fleet_post, self.inboxes, self.views, self.recoveries, self.refusals, self.answers, self.looks, self.jailed_watches, self.deliveries, self.follow, self.requests, self.compactions, self.person_quiet, self.fresh_after_order,
                      self.rebrief, self.push_reminders, self.credentials, self.authentications, self.model_differences, self.failover, self.account, self.refresh_usage, self.pool_forecasts, self.retire_post):
             self.heartbeat()  # before every step: a slow delivery or usage read reads as busy, never as dead
@@ -272,11 +271,14 @@ class Service:
                     step()
             except Exception as error:  # one failing step never stops the others
                 self.log("error", step=step.__name__, error=repr(error), trace=traceback.format_exc())
-            self.drain_drops()
-            self.drain_accounting()
-            self.drain_requests()
+            self._drain_between_duties()
             self.status_due()
             self.timings().publish(self.log)
+
+    def _drain_between_duties(self):
+        for name in ('drain_drops', 'drain_accounting', 'drain_requests'):
+            with self.timings().measure(name):
+                getattr(self, name)()
 
     def drain_drops(self) -> None:
         """Give queued post a bounded turn between duties, independently of pass length."""

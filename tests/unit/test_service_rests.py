@@ -196,6 +196,7 @@ def test_withheld_work_is_retried_on_each_tick_and_arrivals_can_wake_earlier(tmp
             service.run()
         assert attempts == pytest.approx([0, 1, 1.2, 2.2])
         assert waits == [1, 1, 1], 'no status deadline can shorten, busy-spin or lengthen a quiet tick'
+        assert service.timings().rows['drain_accounting']['calls'] == 3
     finally:
         service.lock.close()
         service.ledger.close()
@@ -228,6 +229,82 @@ def test_numeric_timing_summaries_are_bounded_to_one_per_minute(monkeypatch):
         assert row['duties']['status']['max_wall'] == pytest.approx(0.2)
     timing.publish(log)
     assert len(lines) == 2, 'reading the summary must not emit another line'
+
+
+@pytest.mark.parametrize('new_step', [False, True])
+def test_every_pass_step_and_between_duty_drain_reaches_the_numeric_summary(monkeypatch, new_step):
+    from quarterdeck import service_timing
+    clock, cpu = [0.0], [0.0]
+    monkeypatch.setattr(service_timing.time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(service_timing.time, 'process_time', lambda: cpu[0])
+    service = Service.__new__(Service)
+    lines, order = [], []
+    service.log = lambda event, **data: lines.append((event, data))
+    service.heartbeat = lambda: None
+    service.status_due = lambda: None
+    service._tick = service._tick_steps
+    steps = ('server_recovery', 'reconcile', 'file_drops', 'groups', 'cascades', 'fleet_post',
+             'inboxes', 'views', 'recoveries', 'refusals', 'answers', 'looks', 'jailed_watches',
+             'deliveries', 'follow', 'requests', 'compactions', 'person_quiet', 'fresh_after_order',
+             'rebrief', 'push_reminders', 'credentials', 'authentications', 'model_differences',
+             'failover', 'account', 'refresh_usage', 'pool_forecasts', 'retire_post')
+    drains = ('drain_drops', 'drain_accounting', 'drain_requests')
+    def stand_in(name, wall):
+        def duty():
+            order.append(name)
+            clock[0] += wall
+            cpu[0] += wall / 2
+        duty.__name__ = name
+        return duty
+    names = list(steps)
+    if new_step:
+        names[0] = 'new_housekeeping_step'
+    for attribute, name in zip(steps, names):
+        setattr(service, attribute, stand_in(name, 0.25))
+    for name in drains:
+        setattr(service, name, stand_in(name, 0.125))
+    # These runtime values must not enter the numeric observation.
+    service.seat = 'synthetic-seat'
+    service.message = 'synthetic-message'
+    service.record = 'synthetic-record'
+    timing = service.timings()
+    for _ in range(2):
+        service.tick()
+    assert lines == [], 'finishing duties does not add log lines before the minute'
+    expected_order = list(drains)
+    for name in names:
+        expected_order.extend((name, *drains))
+    assert order == expected_order * 2, 'timing preserves pass and drain order'
+    clock[0] = 60.0
+    timing.publish(service.log)
+    timing.publish(service.log)
+    assert len(lines) == 1
+    event, summary = lines[0]
+    assert event == 'service-timing'
+    assert set(summary) == {'seconds', 'passes', 'status_checks', 'duties'}
+    assert summary['seconds'] == 60.0 and summary['passes'] == 2
+    assert summary['status_checks'] == 0
+    assert set(summary['duties']) == {*names, *drains, 'pass'}
+    for name in names:
+        assert summary['duties'][name] == dict(calls=2, wall=0.5, cpu=0.25, max_wall=0.25, max_cpu=0.125)
+    drain_calls = 2 * (len(steps) + 1)
+    for name in drains:
+        assert summary['duties'][name] == dict(calls=drain_calls, wall=drain_calls * 0.125,
+                                             cpu=drain_calls * 0.0625, max_wall=0.125, max_cpu=0.0625)
+    pass_wall = len(steps) * 0.25 + (len(steps) + 1) * 3 * 0.125
+    assert summary['duties']['pass'] == dict(calls=2, wall=pass_wall * 2, cpu=pass_wall,
+                                            max_wall=pass_wall, max_cpu=pass_wall / 2)
+    for row in summary['duties'].values():
+        assert set(row) == {'calls', 'wall', 'cpu', 'max_wall', 'max_cpu'}
+        assert all(type(value) in (int, float) for value in row.values())
+    assert all(type(summary[name]) in (int, float) for name in ('seconds', 'passes', 'status_checks'))
+    assert timing.rows == {} and timing.status_checks == 0
+    clock[0] = 119.0
+    timing.publish(service.log)
+    assert len(lines) == 1
+    clock[0] = 120.0
+    timing.publish(service.log)
+    assert len(lines) == 2 and lines[1][1]['duties'] == {}
 
 
 def test_status_summaries_count_full_collections_separately_from_cheap_checks(scheduled, monkeypatch):

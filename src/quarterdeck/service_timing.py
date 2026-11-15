@@ -4,7 +4,6 @@ from contextlib import contextmanager
 import time
 
 INTERVAL = 60.0
-DUTIES = ('status', 'deliveries', 'fleet_post', 'reconcile', 'pass', 'sleep')
 
 
 class Timings:
@@ -15,9 +14,8 @@ class Timings:
 
     @contextmanager
     def measure(self, name):
-        if name not in DUTIES:
-            yield
-            return
+        # Callers supply code's duty names, never message or runtime identities.
+        # Keep new steps automatically instead of silently omitting their cost.
         wall, cpu = time.monotonic(), time.process_time()
         try:
             yield
