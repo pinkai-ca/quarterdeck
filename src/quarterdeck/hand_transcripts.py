@@ -66,6 +66,8 @@ def _listed(runtime) -> dict[str, set[str]]:
             continue
         if records:
             listed[name] = records
+        else:
+            pr_screen.drop_spent(runtime, name)  # spent: the next idle pass finds no list to read
     return listed
 
 

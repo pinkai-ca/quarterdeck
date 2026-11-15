@@ -590,6 +590,13 @@ def _validate(ship: Ship) -> None:
                                     f"(pool {pool}), whose provider's safeguard can refuse, and so lose, a "
                                     "conversation that reads an outsider's text or a planted instruction; name a "
                                     "seat on another program")
+        for hand in (first, second):
+            # A hand on a subscription keeps a sign-in in its home that qd does not write fresh at each launch, and a
+            # refresh there is carried into the pool's own file: a hand that reads an outsider's text has none.
+            if paid := [pool for pool in hand.pools if ship.pools[pool].kind != "endpoint"]:
+                raise ShipError(f"pr_screen.hands: {hand.name} has pool {paid[0]}, which is not an endpoint; a hand "
+                                "that reads an outsider's text runs only on endpoint pools, which keep no sign-in in "
+                                "its home")
         if screen.desk is None and sum(seat.role == "desk" for seat in ship.seats.values()) != 1:
             raise ShipError('pr_screen needs one seat with role = "desk", or desk = "seat" in [pr_screen]')
 

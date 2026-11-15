@@ -344,6 +344,8 @@ def test_a_screening_record_leaves_the_home_once_accounted_without_the_weeks_wai
         assert kept.is_relative_to(w.svc.runtime / 'retired' / 'hand-transcripts')
         assert w.seat.harness.read(w.record) == reading, 'the ledger reads it under its own name, figures kept'
         assert not pr_screen.screening_left(w.svc.runtime, 'hand'), 'nothing left: launches may resume again'
+        hand_transcripts.run(w.svc, now=w.now)
+        assert not (w.svc.runtime / 'pr-screen' / 'records' / 'hand.json').exists(), 'the spent list is deleted'
     finally:
         w.svc.ledger.close()
 

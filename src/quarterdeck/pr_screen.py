@@ -38,8 +38,10 @@ second keeps a hand that did no work from passing anything.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
+from contextlib import contextmanager
 import re
 import secrets
 import shutil
@@ -478,14 +480,15 @@ class LiveHands:
 
     def kept_in_home(self, name: str, records: list[str]) -> list[str]:
         """What the home sweep leaves where it is, relative to the home: each listed screening record's whole
-        retirement unit (a launch's own data folder, or a single session file), for the retirement to move with its ledger
-        key; and the credential file each of the hand's programs keeps there, which qd reseeds and rewrites. Where
+        retirement unit (a launch's own data folder, or a single session file), for the retirement to move with its
+        ledger key. Nothing else: a credential file is not written fresh at each launch (an endpoint pool's seat gets
+        none, a subscription's keeps a newer one as its refresh), so one the hand changed is moved aside. Where
         the adapter refuses the unit (a file it does not know beside the record), the record and its own companion
         files (a database's -wal and -shm) stay, and the rest is swept: the unit is then whole again for the move."""
         from . import harness as harnesses, record_location
         spec, home = self.ship.seat(name), self.home(name)
         adapters = [harnesses.get(program) for program in sorted({spec.for_pool(pool).harness for pool in spec.pools})]
-        kept = [home / Path(adapter.credential_file).name for adapter in adapters if adapter.credential_file]
+        kept = []  # no credential file: qd does not write one fresh at each launch, so a changed one is swept too
         for record in map(Path, records):
             unit = None
             for adapter in adapters:
@@ -559,14 +562,43 @@ def screening_left(runtime: Path, hand: str) -> bool:
         return True
 
 
-def mark_screening(runtime: Path, hand: str, records: list[str]) -> None:
-    folder = _records_file(runtime, hand).parent
+@contextmanager
+def _lists_locked(runtime: Path):
+    """The screen adding to a hand's list and the service deleting a spent one, one at a time."""
+    folder = _records_file(runtime, 'x').parent
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd = os.open(folder / '.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
-        left = screening_records(runtime, hand)
-    except ValueError:
-        left = []  # an unreadable list is replaced; what it named, if still there, is named again below if new
-    durable.replace_file(_records_file(runtime, hand), json.dumps(sorted({*left, *records})) + '\n')
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def mark_screening(runtime: Path, hand: str, records: list[str]) -> None:
+    with _lists_locked(runtime):
+        try:
+            left = screening_records(runtime, hand)
+        except ValueError:
+            left = []  # an unreadable list is replaced; what it named, if still there, is named again below if new
+        named = sorted({*left, *records})
+        if named:
+            durable.replace_file(_records_file(runtime, hand), json.dumps(named) + '\n')
+        else:
+            _records_file(runtime, hand).unlink(missing_ok=True)  # nothing to list: no list
+
+
+def drop_spent(runtime: Path, hand: str) -> bool:
+    """Delete a hand's list once nothing it names is left in the home, so that an idle pass is one folder scan.
+    A list that cannot be read stays: it keeps the hand's launches fresh until a person looks."""
+    with _lists_locked(runtime):
+        try:
+            if screening_records(runtime, hand):
+                return False
+        except (OSError, ValueError):
+            return False
+        _records_file(runtime, hand).unlink(missing_ok=True)
+        return True
 
 
 INSTRUCTION = ('Screen the files {files} in the folder {folder} of your own folder. Each is text from outside the '

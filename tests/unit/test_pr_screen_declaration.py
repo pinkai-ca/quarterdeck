@@ -14,8 +14,13 @@ operator = "operator"
 
 [pools.fake-a]
 provider = "synthetic"
+endpoint = "http://127.0.0.1:1/v1"
 
 [pools.fake-b]
+provider = "synthetic"
+endpoint = "http://127.0.0.1:2/v1"
+
+[pools.paid]
 provider = "synthetic"
 
 [sessions.crew]
@@ -24,7 +29,7 @@ title = "Crew"
 [seats.hand-a]
 session = "crew"
 role = "hand"
-harness = "fake"
+harness = "pi"
 pool = "fake-a"
 model = "model-a"
 sandbox = true
@@ -32,7 +37,7 @@ sandbox = true
 [seats.hand-b]
 session = "crew"
 role = "hand"
-harness = "fake"
+harness = "pi"
 pool = "fake-b"
 model = "model-b"
 sandbox = true
@@ -40,7 +45,7 @@ sandbox = true
 [seats.hand-c]
 session = "crew"
 role = "hand"
-harness = "fake"
+harness = "pi"
 pool = "fake-a"
 model = "model-c"
 sandbox = true
@@ -48,15 +53,24 @@ sandbox = true
 [seats.loose]
 session = "crew"
 role = "hand"
-harness = "fake"
+harness = "pi"
 pool = "fake-b"
 model = "model-d"
+sandbox = false
+
+[seats.paid-hand]
+session = "crew"
+role = "hand"
+harness = "fake"
+pool = "paid"
+model = "model-e"
+sandbox = true
 
 [seats.reviewer]
 session = "crew"
 role = "first-officer"
 harness = "fake"
-pool = "fake-a"
+pool = "paid"
 
 [pools.subscription]
 provider = "openai"
@@ -78,7 +92,7 @@ sandbox = true
 session = "crew"
 role = "desk"
 harness = "fake"
-pool = "fake-a"
+pool = "paid"
 '''
 
 
@@ -110,6 +124,7 @@ def test_no_table_is_no_screen_said_plainly(tmp_path, capsys):
     ('hands = ["hand-a", "hand-b"]\nreader = "hand-a"', 'must not be one of its hands'),
     ('hands = ["hand-a", "hand-b"]\nreader = "refusing-reader"', "safeguard can refuse, and so lose"),
     ('hands = ["hand-a", "refusing-hand"]\nreader = "reviewer"', "hands: refusing-hand runs on .* safeguard can refuse"),
+    ('hands = ["hand-a", "paid-hand"]\nreader = "reviewer"', "hands: paid-hand has pool paid, which is not an endpoint"),
     ('hands = ["hand-a", "hand-b"]', 'reader must name a declared seat'),
     ('hands = ["hand-a", "hand-b"]\nreader = "reviewer"\nextra = 1', 'pr_screen takes hands'),
 ])

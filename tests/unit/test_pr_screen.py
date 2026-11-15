@@ -15,6 +15,8 @@ from types import SimpleNamespace
 import pytest
 
 from quarterdeck import post, pr_screen
+from quarterdeck.harness import get
+from quarterdeck.ship import SeatSpec
 
 FIXTURES = Path(__file__).resolve().parents[1] / 'fixtures' / 'pr_screen'
 CASES = {path.name: json.loads((path / 'pr.json').read_text()) for path in sorted(FIXTURES.iterdir())
@@ -60,7 +62,7 @@ class Hands:
         return path
 
     def kept_in_home(self, name, records):
-        return ['credential.json', *(str(Path(record).relative_to(self.home(name))) for record in records)]
+        return [str(Path(record).relative_to(self.home(name))) for record in records]
 
     def fresh(self, name):
         # Started for a piece under the hold; started again after it, once the hold is released and the piece gone.
@@ -538,7 +540,7 @@ def test_the_records_the_screening_launch_wrote_are_listed_and_no_other(world, t
     assert not pr_screen.screening_left(runtime, 'hand-a')
 
 
-def test_everything_new_or_changed_in_the_hands_home_is_moved_aside_but_its_records_and_credential(world, tmp_path):
+def test_everything_new_or_changed_in_the_hands_home_is_moved_aside_but_its_records(world, tmp_path):
     home = tmp_path / 'homes' / 'hand-a'
     (home / '.config').mkdir(parents=True)
     (home / '.config' / 'settings.json').write_text('{"theme": "dark"}')
@@ -556,14 +558,14 @@ def test_everything_new_or_changed_in_the_hands_home_is_moved_aside_but_its_reco
         honest(hands, name, order_id, folder)
     verdict, hands, runtime = one_piece(world, writes_into_home)
     left = sorted(str(path.relative_to(home)) for path in home.rglob('*'))
-    assert left == ['.config', 'credential.json', 'earlier.jsonl', 'screening.jsonl', 'unchanged.txt']
-    assert (home / 'credential.json').read_text() == '{"token": "refreshed"}', 'the credential is qd\'s to reseed'
+    assert left == ['.config', 'earlier.jsonl', 'screening.jsonl', 'unchanged.txt']
     aside = next((runtime / 'pr-screen' / 'held' / 'hand-a').glob('home-key-0-*'))
     assert sorted(str(path.relative_to(aside)) for path in aside.rglob('*')) == [
-        '.cache', '.cache/deep', '.cache/deep/x', '.config', '.config/settings.json', 'notes.txt']
+        '.cache', '.cache/deep', '.cache/deep/x', '.config', '.config/settings.json', 'credential.json', 'notes.txt']
+    assert (aside / 'credential.json').read_text() == '{"token": "refreshed"}', 'a changed credential file too' 
     assert pr_screen.screening_records(runtime, 'hand-a') == [str(home / 'screening.jsonl')], 'left to the retirement'
     kept = json.loads((runtime / 'pr-screen' / 'screens' / 'key' / 'piece-0-hand-a.verdict.json').read_text())
-    assert kept['home_moved_aside'] == 3
+    assert kept['home_moved_aside'] == 4
 
 
 def test_the_home_and_folder_are_listed_after_the_fresh_start_and_before_the_piece(world, tmp_path):
@@ -585,6 +587,28 @@ def test_the_home_and_folder_are_listed_after_the_fresh_start_and_before_the_pie
                            answer_seconds=30, poll=1.0, clock=clock, sleep=clock.sleep)
     assert seen == [True], 'the piece goes in only after the fresh start'
     assert (home / 'launch-config.json').is_file(), 'what qd wrote at the launch is not moved aside'
+
+
+def test_the_live_hands_keep_no_credential_file_in_the_home(world, tmp_path):
+    spec = SeatSpec('hand-a', 'crew', 'hand', 'claude', ('local',))  # a program that declares a credential file
+    ship = SimpleNamespace(runtime=world[0], folder=world[0].parent, seat=lambda name: spec)
+    live = pr_screen.LiveHands(ship, Path('qd'), world[1])
+    assert get('claude').credential_file, 'the case this test is about'
+    assert live.kept_in_home('hand-a', []) == [], 'not written fresh at each launch: swept when changed'
+
+
+def test_a_list_is_deleted_once_nothing_it_names_is_left_and_none_is_written_empty(world, tmp_path):
+    runtime, _ = world
+    pr_screen.mark_screening(runtime, 'hand-a', [])
+    assert not (runtime / 'pr-screen' / 'records' / 'hand-a.json').exists(), 'nothing to list: no list'
+    record = tmp_path / 'home' / 'screening.jsonl'
+    record.parent.mkdir()
+    record.write_text('read the piece\n')
+    pr_screen.mark_screening(runtime, 'hand-a', [str(record)])
+    assert not pr_screen.drop_spent(runtime, 'hand-a'), 'a record still in the home keeps its list'
+    record.unlink()  # as the retirement moves it out
+    assert pr_screen.drop_spent(runtime, 'hand-a')
+    assert sorted(path.name for path in (runtime / 'pr-screen' / 'records').iterdir()) == ['.lock']
 
 
 def test_an_unreadable_list_of_screening_records_keeps_launches_fresh(world):

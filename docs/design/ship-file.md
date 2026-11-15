@@ -131,6 +131,7 @@ One plain service process belongs to whoever ran `qd up`, outlives that shell an
 - `hands` names fewer or more than two seats;
 - any name is not a declared seat;
 - a hand is not jailed (an endpoint pool, or `sandbox = true`);
+- a hand has a pool that is not an endpoint pool: a hand that reads an outsider's text keeps no sign-in in its home;
 - the two hands share a pool or a declared model;
 - the reader is one of the hands;
 - a hand or the reader runs, on any of its pools, a program whose provider's safeguard can refuse, and so lose, a conversation that reads instructions planted for a reader (the adapter's `refuses_planted_instructions`; Codex today).
