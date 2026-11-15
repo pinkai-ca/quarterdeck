@@ -10,10 +10,20 @@ outsider's instruction. It is one layer of three, beside two hands on two local 
 import re
 
 from .harness import NAMES
+from .trusted_files import MOVED
 
 # The programs a seat can run, by the adapters' own names (program knowledge stays in harness/): an outsider may
 # address a reader by one, and their homes hold credentials.
 _PROGRAMS = '|'.join(re.escape(name) for name in NAMES)
+
+# What the service writes for a seat and trusts, by the names the folder move keeps in runtime/trusted/<seat>
+# (trusted_files.MOVED), and the alarm journals beside them. A name of one word (record, pool) is too common a word to
+# flag alone; the trusted folder's path still catches it.
+_JOURNALS = '|'.join(sorted({re.escape(name) for name in (*MOVED, 'human-alert.json', 'unconfirmed-delivery-alert.json',
+                                                          'selection-alert.json', 'manual-fresh-alert.json',
+                                                          'compaction.json', 'refusal.json', 'launch.json',
+                                                          'launch-price.json', 'record-launches.jsonl')
+                             if '.' in name or '-' in name}, key=len, reverse=True))
 
 PATTERNS = (
     # An instruction aimed at whoever reads the text.
@@ -33,8 +43,8 @@ PATTERNS = (
     # By role; the ship's own seat names are matched by a pattern the screen builds from the ship file at run time.
     ('post-to-a-seat', r'\b(send|post|forward|relay|pass|copy)\b.{0,40}\b(to|for)\b.{0,10}\b(captain|first officer|'
                        r'engineer|desk|admiral|operator|maintainers?|security|systems|operations|reviewer)\b'),
-    ('runtime-journal', r'(human-alert|unconfirmed-delivery-alert|selection-alert|manual-fresh-alert|compaction|refusal|'
-                        r'launch|launch-price|record-launches)\.json(l)?\b|\bruntime/(seats|post|locks)\b|\bseat-holds\b'),
+    ('runtime-journal', r'(?<![\w-])(' + _JOURNALS + r')(?![\w-])|\bruntime/(seats|post|locks|trusted)\b'
+                        r'|\bseat-holds\b'),
     # A command that would do harm, or reach what it should not.
     ('pipe-to-shell', r'\b(curl|wget|fetch)\b[^|\n]{0,200}\|\s*(sudo\s+)?(ba|z|da|k)?sh\b'),
     ('destructive-command', r'\brm\s+-[a-z]*[rf][a-z]*\s+(/|~|\$home|\*|\.\.)|\bmkfs(\.\w+)?\b|\bdd\s+if=.*\bof=/dev/'

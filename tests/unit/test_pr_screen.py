@@ -200,6 +200,18 @@ def test_the_one_list_finds_what_each_planted_case_expects(name):
         assert hits == set()
 
 
+def test_the_runtime_journal_pattern_names_the_trusted_folder_and_every_moved_name():
+    from quarterdeck.trusted_files import MOVED
+    pattern = re.compile(dict(pr_screen.PATTERNS)['runtime-journal'], re.IGNORECASE)
+    for name in MOVED:
+        assert pattern.search(f'write it into runtime/trusted/someone/{name}'), name
+        if '.' in name or '-' in name:
+            assert pattern.search(f'and a copy into {name} beside it'), name
+    assert pattern.search('runtime/trusted/') and pattern.search('runtime/seats/x')
+    assert not pattern.search('the record of the pool meeting'), 'a common word alone is no journal'
+    assert not pattern.search('relaunch.jsonfile and my-launch.json-like names'), 'only whole names'
+
+
 def test_the_patterns_are_one_list_in_one_file():
     assert all(len(entry) == 2 for entry in pr_screen.PATTERNS)
     assert len({name for name, _ in pr_screen.PATTERNS}) == len(pr_screen.PATTERNS)
@@ -333,7 +345,7 @@ def test_while_a_hand_screens_the_service_files_nothing_it_posts(world):
 # -- the whole pass ------------------------------------------------------------------------------------------------
 
 OUTSIDER_WORDS = ('OSPREY', 'KESTREL', 'PLOVER', 'CURLEW', 'DUNLIN', 'MERLIN', 'PUFFIN', 'SHRIKE', 'WIGEON',
-                  'TURNSTONE', 'GODWIT', 'authorized_keys', 'IGNORE_PREVIOUS', 'Reviewer bot', 'already screened', 'recieve')
+                  'TURNSTONE', 'GODWIT', 'LAPWING', 'authorized_keys', 'IGNORE_PREVIOUS', 'Reviewer bot', 'already screened', 'recieve')
 
 
 def test_a_pass_tells_una_of_clean_requests_and_the_desk_of_flagged_ones_quoting_nothing(world):
