@@ -138,7 +138,9 @@ def test_short_canonical_post_retains_middle_dots_and_its_final_empty_row(column
                       "Check · one · two · three · four.")
     text = typed([message])
     rows = text.split("\n")
-    assert text.count("·") == 6 and rows[-1] == ""
+    assert rows[0] == 'qd > order from synthetic · ord-item'
+    assert rows[-2] == 'qd > reply: qd post report --re ord-item'
+    assert text.count("·") == 5 and rows[-1] == ""
     assert all(len(row) < columns - 3 for row in rows)
     screen = read(composer(rows, columns=columns))
     harness = get("muse")

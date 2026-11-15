@@ -244,20 +244,29 @@ def test_the_measured_middle_dot_edge_rows_are_the_projection_of_their_lines(col
 def test_the_whole_edge_envelope_at_120_matches_its_unwrapped_header_and_footer():
     form = order("\n".join(edge_lines(120)))
     header, *_, footer, end = form.split("\n")
-    assert len(footer) == 83 and end == ""
+    assert footer == 'qd > reply: qd post report --re ord-qrst'
+    assert len(header) < 118 and len(footer) == 40 and end == ""
     assert wrapped_rows(form, 118) is None
     screen = read(styled([header] + edge_rows(120) + [footer, ""], 120))
+    assert screen.box.startswith(header + '\n') and screen.box.endswith(footer + '\n')
     assert not VisibleBox(form).matches(screen.box, 118)
 
 
-def test_the_80_column_envelope_holds_on_its_footer_broken_at_a_hyphen():
-    form = order("\n".join(edge_lines(80)))
+def test_the_80_column_envelope_holds_on_a_body_line_broken_at_a_hyphen():
+    # The short reply line no longer reaches a wrap edge. Keep that geometry
+    # on an invented body line, without asserting an unmeasured projection.
+    hyphenated = FILLER * 12 + 'synthetic-seat-qrst'
+    form = order("\n".join([*edge_lines(80), hyphenated]))
     header, *_, footer, _ = form.split("\n")
-    head, rest = footer[:76], footer[76:]
-    assert head.endswith("synthetic-seat-") and rest == "qrst.md"  # the kept break: after the last fitting hyphen
+    assert footer == 'qd > reply: qd post report --re ord-qrst' and len(footer) == 40
+    head, rest = hyphenated.rsplit('-', 1)
+    head += '-'
+    assert len(head) == 75 and len(hyphenated) == 79
+    assert head.endswith("synthetic-seat-") and rest == "qrst"  # after the last fitting hyphen
     assert wrapped_rows(form, 78) is None
     assert wrapped_rows(footer, 78) is None
-    screen = read(styled([header] + edge_rows(80) + [head, rest, ""], 80))
+    assert wrapped_rows(hyphenated, 78) is None
+    screen = read(styled([header] + edge_rows(80) + [head, rest, footer, ""], 80))
     assert not VisibleBox(form).matches(screen.box, 78)
 
 
