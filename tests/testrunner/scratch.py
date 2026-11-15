@@ -7,6 +7,7 @@ memory through a separate physical observer. Each run has its own reservation, i
 from __future__ import annotations
 
 import ctypes
+import errno
 from contextlib import contextmanager
 import fcntl
 import hashlib
@@ -294,33 +295,73 @@ def discard(root, run):
 
 
 def usage(path):
-    """Conservative working bytes, no followed links, hard-linked inodes counted once; tolerate removals."""
+    """Conservative working bytes, no followed links, hard-linked inodes counted once; tolerate removals.
+
+    The walk is by descriptors: each folder is opened with O_NOFOLLOW from the held descriptor of
+    its parent and each entry is read with fstatat without following, so no path is longer than one
+    name and a tree past the path limit is measured, not refused. It is iterative, one descriptor
+    held per level, so depth is bounded by descriptors rather than the interpreter's recursion.
+    """
     total = {'bytes': 0, 'file_bytes': 0, 'allocated_bytes': 0, 'metadata_allowance_bytes': 0, 'files': 0, 'dirs': 0}
     seen = set()
-    def walk(folder, *, root=False):
-        try:
-            with os.scandir(folder) as entries:
-                for entry in entries:
-                    try:
-                        info = entry.stat(follow_symlinks=False)
-                        total['metadata_allowance_bytes'] += METADATA_ALLOWANCE
-                        if stat.S_ISDIR(info.st_mode):
-                            total['dirs'] += 1
-                            walk(entry.path)
-                        elif stat.S_ISREG(info.st_mode) and (info.st_dev, info.st_ino) not in seen:
-                            seen.add((info.st_dev, info.st_ino))
-                            total['files'] += 1
-                            total['file_bytes'] += max(info.st_size, info.st_blocks * 512)
-                            total['allocated_bytes'] += info.st_blocks * 512
-                    except FileNotFoundError:
-                        pass
-        except FileNotFoundError:
-            if root:
-                raise  # a missing measurement root is unknown, rather than measured zero
+
+    def read(fd):
+        """Charge one folder's entries; return the names of its folders, to be opened from fd."""
+        folders = []
+        with os.scandir(fd) as entries:  # entries of a descriptor: entry.stat is fstatat(fd, name)
+            for entry in entries:
+                try:
+                    info = entry.stat(follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                total['metadata_allowance_bytes'] += METADATA_ALLOWANCE
+                if stat.S_ISDIR(info.st_mode):
+                    total['dirs'] += 1
+                    folders.append(entry.name)
+                elif stat.S_ISREG(info.st_mode) and (info.st_dev, info.st_ino) not in seen:
+                    seen.add((info.st_dev, info.st_ino))
+                    total['files'] += 1
+                    total['file_bytes'] += max(info.st_size, info.st_blocks * 512)
+                    total['allocated_bytes'] += info.st_blocks * 512
+        return folders
+
+    stack = []
     try:
-        walk(path, root=True)
-    except (OSError, RecursionError) as error:
+        # The measurement root is named by the caller and opened as named; a missing root is
+        # unknown, rather than measured zero.
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            stack.append((fd, iter(read(fd))))
+        except BaseException:
+            os.close(fd)
+            raise
+        while stack:
+            parent, names = stack[-1]
+            name = next(names, None)
+            if name is None:
+                os.close(stack.pop()[0])
+                continue
+            try:
+                # Gone, or replaced by a link or a file since it was read: tolerated as a removal.
+                child = os.open(name, DIRECTORY, dir_fd=parent)
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            except OSError as error:
+                if error.errno != errno.ELOOP:
+                    raise
+                continue
+            try:
+                stack.append((child, iter(read(child))))
+            except FileNotFoundError:
+                os.close(child)
+            except BaseException:
+                os.close(child)
+                raise
+    except OSError as error:
         raise Refused(f'cannot measure working files at {path}: {type(error).__name__}: {error}; run stopped') from None
+    finally:
+        for fd, _ in stack:
+            os.close(fd)
     total['bytes'] = total['file_bytes'] + total['metadata_allowance_bytes']
     return total
 

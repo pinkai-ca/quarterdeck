@@ -571,3 +571,32 @@ def test_a_memory_run_records_its_peak_and_its_storage_is_gone_after(tmp_path, c
     assert not Path(working['path']).exists() and scratch(project) == []
     assert sorted(os.listdir(results(project)[-1])) == ['report.md', 'result.json']
     cleanup_memory(Path(working['path']).parent.parent)
+
+
+DEEP_TREE = '''
+import os
+def test_leaves_a_deep_tree(tmp_path):
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    held = [os.open(tmp_path, flags)]
+    for _ in range(30):  # 30 folders of 200-byte names: about 6 KiB of path, past the 4 KiB limit
+        os.mkdir("d" * 200, dir_fd=held[-1])
+        held.append(os.open("d" * 200, flags, dir_fd=held[-1]))
+    fd = os.open("bottom", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=held[-1])
+    os.write(fd, b"x" * 4096)
+    for each in [fd, *held]:
+        os.close(each)
+'''
+
+
+def test_a_run_whose_scratch_holds_a_tree_past_the_path_limit_is_measured_and_completes(tmp_path, cleanup_memory):
+    project, worktree = make(tmp_path, {'test_deep.py': DEEP_TREE})
+    done = tool('run', '--target', str(worktree), '-n', '0', cwd=project)
+    assert done.returncode == 0, done.stdout + done.stderr
+    found = result(project)
+    working = found['working_storage']
+    cleanup_memory(Path(working['path']).parent.parent)
+    assert found['evidence']['counts']['passed'] == 2, done.stdout + done.stderr
+    assert 'cannot measure' not in done.stdout + done.stderr
+    # The deep tree stays in pytest's kept temp until the run ends, so the last measure counts it whole.
+    assert working['peak']['dirs'] >= 30 and working['peak']['bytes'] >= 4096 + 31 * storage.METADATA_ALLOWANCE
+    assert not Path(working['path']).exists() and scratch(project) == []
