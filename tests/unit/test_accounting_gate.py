@@ -454,5 +454,16 @@ def test_quiet_waits_emit_no_line_and_are_counted_in_minute_summary(example):
     e.clock.monotonic = 60.0
     timings.publish(e.service.log)
     assert len(rows) == 1 and rows[0]['event'] == 'service-timing'
-    assert rows[0]['accounting_waits'] == 100 and timings.accounting_waits == 0
+    assert rows[0]['duties']['accounting_waits']['calls'] == 100 and timings.accounting_waits == 0
     assert 'ordinary' not in str(rows) and str(e.runtime) not in str(rows)
+
+
+def test_rejected_job_does_not_misreport_an_older_completed_job(example):
+    e = example
+    e.complete()
+    e.gate.begin(e.service, [str(e.record)])
+    e.gate.reject()
+    assert e.gate.allowed(e.service)
+    prior = reason_start(e)['decision']['previous-job']
+    assert prior['completed'] == 0 and prior['rejected'] == 1
+    assert prior['begin_valid'] == 1 and 'end' not in prior

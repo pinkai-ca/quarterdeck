@@ -48,10 +48,14 @@ class Timings:
             self.since = now
         if now - self.since < INTERVAL:
             return
+        duties = {name: dict(row) for name, row in self.rows.items()}
+        if self.accounting_waits:
+            # Count-only row: its time is already included in the account duty.
+            duties['accounting_waits'] = dict(calls=self.accounting_waits, wall=0.0, cpu=0.0,
+                                              max_wall=0.0, max_cpu=0.0)
         log('service-timing', seconds=now - self.since,
             passes=self.rows.get('pass', {}).get('calls', 0), status_checks=self.status_checks,
-            accounting_waits=self.accounting_waits,
-            duties={name: dict(row) for name, row in self.rows.items()})
+            duties=duties)
         self.rows.clear()
         self.status_checks = 0
         self.accounting_waits = 0

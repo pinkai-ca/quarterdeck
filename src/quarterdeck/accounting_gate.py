@@ -159,6 +159,8 @@ class Gate:
         self.begin_issues = {}
 
     def reject(self):
+        self.previous = dict(completed=0, rejected=1, begin_valid=int(self.started is not None),
+                             begin=evidence(None, None, self.begin_issues))
         self.completed = self.started = None
         self.own_changes = 0
 
