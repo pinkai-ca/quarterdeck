@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import relaunch_intent, seat as seatmod, ship as shipmod
+from quarterdeck import relaunch_intent, sandbox, seat as seatmod, ship as shipmod
 
 DEAD = dict(version=1, pid=999999999, start='synthetic-start-zzzz', token='synthetic-owner-zzzz', device=1, inode=1)
 
@@ -89,7 +89,7 @@ def test_a_jailed_seat_finished_from_an_intent_passes_its_own_folder_check(ship,
     relaunch_intent.finish(svc)
     assert phases(svc) == ['finish-begin', 'finished'] and 'jailed' in svc.logs[1][1]['proof']
     seat = jailed('worker-1')
-    assert seat.is_up and Path(seat.launched().argv[0]).name == 'bwrap'
+    assert seat.is_up and sandbox.seats_hidden(seat.launched().argv) is True
     seat.down()
     # The same finish for a jail its folder check refuses: the check ran at the finish, nothing started.
     in_ship = lambda name: seatmod.Seat(ship, replace(ship.seat(name), cwd=ship.folder, sandbox=True), tmux)
