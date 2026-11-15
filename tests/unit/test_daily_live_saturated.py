@@ -59,7 +59,7 @@ def test_recorded_subscription_wall_is_not_a_failed_check_and_names_reset(tmp_pa
     assert 'grok: not tested: pool check-grok is at its limit' in report.body
     assert 'reset ' + reset.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M UTC') in report.body
     assert 'next night' in report.body and 'check failed' not in report.body
-    assert daily_live.MUSE_LINE in report.body
+    assert daily_live.exclusions()['muse'] in report.body
     assert not (tmp_path / 'scratch').exists()
     assert list(origin.runtime.glob('minimal-checks')) == []
     assert list(origin.runtime.glob('seats')) == []
