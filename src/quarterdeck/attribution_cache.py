@@ -1,6 +1,7 @@
 """Service-written attribution beside unchanged turn rows; all turn writes invalidate it."""
 
 from collections import defaultdict
+from bisect import bisect_left, bisect_right
 import hashlib
 import json
 import time
@@ -13,6 +14,57 @@ from .harness.base import record_fingerprint
 from .order_attribution import Threads, Verdict, moment
 
 OUTSIDE_RUNTIME = 'legacy binding outside the runtime, no saved fingerprint'
+
+
+class TurnIntervals:
+    """Closed intervals used by both the replay key and its overlap verdict.
+
+    Ends are inclusive: a post at a shared endpoint belongs to both turns.
+    Unknown, open and reversed intervals contain no timestamp.
+    """
+
+    def __init__(self, rows):
+        intervals = [(moment(row['started']), moment(row['ended'])) for row in rows]
+        closed = [(start, end) for start, end in intervals
+                  if start is not None and end is not None and start <= end]
+        self.starts = sorted(start for start, _ in closed)
+        self.ends = sorted(end for _, end in closed)
+
+    def count(self, at):
+        at = moment(at)
+        if at is None:
+            return 0
+        return bisect_right(self.starts, at) - bisect_left(self.ends, at)
+
+
+class ReplayBounds:
+    """Own record rows and only the other-turn fact a verdict can observe.
+
+    Received-input ambiguity uses this record's own rows. Other records enter
+    the verdict only through posted-message overlap at this seat's post times.
+    Keep that boolean, not all the seat's unrelated historical/future bounds.
+    """
+
+    def __init__(self, by_seat, graph):
+        self.intervals = {seat: TurnIntervals(rows) for seat, rows in by_seat.items()}
+        posts = defaultdict(set)
+        for message in graph.messages:
+            if (at := moment(message.at)) is not None and graph.valid(message):
+                posts[message.sender].add(at)
+        self.posts = {seat: sorted(times) for seat, times in posts.items()}
+
+    def posted_overlap(self, seat, at):
+        return self.intervals[seat].count(at) > 1
+
+    def key(self, seat, turns):
+        own = [row for row in turns if row['seat'] == seat]
+        posts, selected = self.posts.get(seat, ()), set()
+        for row in own:
+            start, end = moment(row['started']), moment(row['ended'])
+            if start is not None and end is not None and start <= end:
+                selected.update(posts[bisect_left(posts, start):bisect_right(posts, end)])
+        overlap = [(at.isoformat(), self.posted_overlap(seat, at)) for at in sorted(selected)]
+        return hashlib.sha256(json.dumps([own, overlap], sort_keys=True).encode()).hexdigest()
 
 
 def source_evidence(source):
@@ -107,8 +159,7 @@ class Attribution:
         invalid_records = {row[0] for row in self.db.execute('''SELECT DISTINCT t.record FROM turns t
             LEFT JOIN turn_attribution a ON a.record=t.record AND a.turn=t.turn
             WHERE a.valid IS NULL OR a.valid=0''')}
-        seat_bounds = {seat: hashlib.sha256(json.dumps(bounds, sort_keys=True).encode()).hexdigest()
-                       for seat, bounds in by_seat.items()} if framework is not None else {}
+        bounds = ReplayBounds(by_seat, graph) if framework is not None else None
         certificates, reused = {}, set()
         reader_keys = reader_stamp.attributions() if framework is not None else {}
         changed = False
@@ -129,7 +180,7 @@ class Attribution:
                     ended = max((end for end in ends if end is not None), default=None)
                     # A record can contain several established seat identities.
                     seats = sorted({row['seat'] for row in by_record[record]})
-                    scope = [(seat, seat_bounds[seat], graph.scope(seat, ended)) for seat in seats]
+                    scope = [(seat, bounds.key(seat, by_record[record]), graph.scope(seat, ended)) for seat in seats]
                     evidence = hashlib.sha256(json.dumps([reader_keys[reader], stamp, sorted(names), scope]).encode()).hexdigest()
                     old = self.db.execute('SELECT evidence FROM attribution_records WHERE record=?', (record,)).fetchone()
                     if record not in invalid_records and old == (evidence,):
@@ -171,7 +222,7 @@ class Attribution:
                 continue
             _, inputs, error = self.sources[record]
             for row in turns:
-                written += self.replay_row(record, row, turns, by_seat, graph, inputs, error)
+                written += self.replay_row(record, row, turns, by_seat, graph, inputs, error, bounds=bounds)
             if record in certificates:
                 self.db.execute('INSERT OR REPLACE INTO attribution_records VALUES (?,?)',
                                 (record, certificates[record]))
@@ -204,12 +255,11 @@ class Attribution:
             row = dict(zip(('record', 'turn', 'seat', 'started', 'ended'), values))
             by_record[row['record']].append(row)
             by_seat[row['seat']].append(row)
-        bounds = {seat: hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
-                  for seat, rows in by_seat.items()}
         invalid = {row[0] for row in self.db.execute('''SELECT DISTINCT t.record FROM turns t
             LEFT JOIN turn_attribution a ON a.record=t.record AND a.turn=t.turn
             WHERE a.valid IS NULL OR a.valid=0''')}
         graph = graph if graph is not None else Threads(store)
+        bounds = ReplayBounds(by_seat, graph)
         written, count = 0, 0
         reader_keys = reader_stamp.attributions() if framework is not None else {}
         for record, turns in by_record.items():
@@ -231,7 +281,7 @@ class Attribution:
                 stamp = (reader, record_fingerprint(Path(record)))
                 ends = [moment(row['ended']) for row in turns]
                 ended = max((end for end in ends if end is not None), default=None)
-                scope = [(seat, bounds[seat], graph.scope(seat, ended)) for seat in owners]
+                scope = [(seat, bounds.key(seat, turns), graph.scope(seat, ended)) for seat in owners]
                 if reader_keys.get(reader) is not None and stamp[1][0][0]:
                     certificate = hashlib.sha256(json.dumps([reader_keys[reader], stamp, sorted(names), scope]).encode()).hexdigest()
                     old = self.db.execute('SELECT evidence FROM attribution_records WHERE record=?', (record,)).fetchone()
@@ -249,7 +299,7 @@ class Attribution:
                 error, certificate = f'record attribution evidence unavailable: {type(exc).__name__}', None
                 errors[record] = (locals().get('stamp'), error, time.monotonic() + retry_interval)
             for row in turns:
-                written += self.replay_row(record, row, turns, by_seat, graph, inputs, error)
+                written += self.replay_row(record, row, turns, by_seat, graph, inputs, error, bounds=bounds)
                 count += 1
                 if count % 200 == 0:
                     progress()
@@ -258,7 +308,7 @@ class Attribution:
             del inputs
         return written
 
-    def replay_row(self, record, row, turns, by_seat, graph, inputs, error):
+    def replay_row(self, record, row, turns, by_seat, graph, inputs, error, *, bounds=None):
         received = []
         overlap = False
         a,b = moment(row['started']), moment(row['ended'])
@@ -284,10 +334,8 @@ class Attribution:
                 received = [dict(item, retained=True) for item in json.loads(old[1])]
         received = list({json.dumps(e, sort_keys=True):e for e in received}.values())
         verdict = graph.decide(row['seat'], row['started'], row['ended'], received, error)
-        posted_overlap = any(e['route'] == 'posted' and sum(
-            moment(t['started']) is not None and moment(t['ended']) is not None
-            and moment(t['started']) <= moment(e['at']) <= moment(t['ended'])
-            for t in by_seat[row['seat']]) > 1 for e in verdict.evidence)
+        intervals = bounds.intervals[row['seat']] if bounds is not None else TurnIntervals(by_seat[row['seat']])
+        posted_overlap = any(e['route'] == 'posted' and intervals.count(e['at']) > 1 for e in verdict.evidence)
         if posted_overlap:
             verdict = Verdict('unresolved', verdict.orders, 'posted message overlaps recorded turn intervals', verdict.evidence)
         if overlap:
