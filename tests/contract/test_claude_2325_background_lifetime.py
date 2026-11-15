@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import idle, inbox_watch, post, ship as shipmod, standing
+from quarterdeck import idle, inbox_watch, post, ship as shipmod, standing, trusted_files
 from quarterdeck.harness import claude
 from quarterdeck.harness.json_record import release
 
@@ -107,7 +107,7 @@ def registered_watch(drydock, monkeypatch, commands=None):
         rows[1]['message']['content'].extend(call(identity, text) for identity, text in commands)
         rows[2:2] = [result(2, identity, 'task-'+identity) for identity, _ in commands]
     write(record, rows)
-    launch = ship.runtime / 'seats/desk/launch.json'; launch.parent.mkdir(parents=True, exist_ok=True)
+    launch = trusted_files.make(ship.runtime, 'desk') / trusted_files.LAUNCH
     launch.write_text(json.dumps(dict(pid=os.getppid(), at=(AT-timedelta(seconds=1)).isoformat())))
     monkeypatch.setattr(post, 'now', lambda: AT+timedelta(seconds=2))
     registration = inbox_watch.register(ship.runtime, 'desk')
