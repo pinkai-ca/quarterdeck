@@ -82,7 +82,7 @@ def test_a_jailed_desk_arms_its_watch_is_woken_and_its_wait_receives(ship, tmux,
     qd(capsys, 'up')
     desk = seatmod.Seat(ship, ship.seat('desk'), tmux)
     launched = desk.launched()
-    assert launched.argv[0] == 'bwrap', 'the desk runs jailed'
+    assert sandbox.seats_hidden(launched.argv) is True, 'the desk runs jailed'
     order = post.Store(ship.runtime).all()  # nothing yet
     qd(capsys, 'post', 'order', '--from', 'captain', '--to', 'desk', '--subject', 'Synthetic', 'Synthetic: for the jailed desk.')
     order = next(m for m in post.Store(ship.runtime).all() if m.to == 'desk')

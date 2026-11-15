@@ -690,7 +690,7 @@ class Seat:
                 endpoint = pool.endpoint if pool.kind == 'endpoint' else None  # its one way out, relayed in
                 jail = sandbox.plan(self.ship, self.name, self.folder, self.home, self.ship.cwd_of(self.spec), launch.argv[0], path,
                                     endpoint=endpoint, pool=pool, synthetic=self.harness.synthetic)
-                argv = sandbox.command(jail, argv)
+                argv = sandbox.command(jail, argv, launch.env)  # the jail starts from nothing but these
             return launch, argv
 
         self._launch_tmpdir = self._fresh_tmux_tmpdir()

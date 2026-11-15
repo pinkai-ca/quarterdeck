@@ -136,8 +136,9 @@ def test_a_jail_sees_only_what_a_seat_needs_of_the_runtime_and_every_tmpfs_is_bo
     home = Path.home()
     jail = sandbox.plan(ship, seat, own, own / 'home', workspace, '/usr/bin/python3', clean_path(), home=home)
     env = {key: value for key, value in os.environ.items() if not key.startswith(('QD_', 'TMUX'))}
-    env.update(QD_PROBE_HOME=str(home))
-    child = subprocess.Popen(sandbox.command(jail, [sys.executable, '-c', PROBE, str(runtime), str(workspace)]),
+    # The jail starts from nothing: the probe's one variable is declared, as a harness declares its program's.
+    child = subprocess.Popen(sandbox.command(jail, [sys.executable, '-c', PROBE, str(runtime), str(workspace)],
+                                             {'QD_PROBE_HOME': str(home)}),
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
     try:
         seen = wait_for_reading(workspace / 'seen.json', child, 90)

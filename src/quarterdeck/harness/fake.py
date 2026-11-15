@@ -82,7 +82,7 @@ class FakeHarness(Harness):
             if key != "as":
                 env[f"QD_FAKE_{key.upper()}"] = "1" if value is True else "0" if value is False else str(value)
         self._startup_token = uuid.uuid4().hex
-        env["QD_FAKE_STARTUP_TOKEN"] = self._startup_token
+        env["QD_FAKE_STARTUP_NONCE"] = self._startup_token
         return Launch(tuple(argv), env)
 
     def synthetic_ready(self, home: Path) -> bool:

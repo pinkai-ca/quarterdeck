@@ -164,7 +164,9 @@ def test_the_endpoint_answers_through_the_relay_and_streams_and_nothing_else_ope
     jail = jail_for(drydock, tmp_path, endpoint=f'http://127.0.0.1:{endpoint}/v1')
     argv = sandbox.command(jail, [sys.executable, '-I', '-c', PROBE, json.dumps(abstract_sockets()), str(elsewhere),
                                   str(endpoint)])
-    assert argv[1:4] == ['-I', '-m', 'quarterdeck.endpoint_relay'] and sandbox.seats_hidden(argv) is True
+    launcher = argv.index('--') + 1  # the launcher that starts the jail from an empty environment, then the relay
+    assert argv[1:4] == ['-I', '-m', 'quarterdeck.jail_environment'] and sandbox.seats_hidden(argv) is True
+    assert argv[launcher + 1:launcher + 4] == ['-I', '-m', 'quarterdeck.endpoint_relay']
     seen = probe(argv)
     assert seen['models'] == 200, seen['models']
     stream = seen['stream']
@@ -179,7 +181,8 @@ def test_without_its_relay_the_jail_reaches_nothing_and_nothing_falls_open(drydo
     inside refuses, and no other way to the endpoint exists."""
     jail = jail_for(drydock, tmp_path, endpoint=f'http://127.0.0.1:{endpoint}/v1')
     argv = sandbox.command(jail, [sys.executable, '-I', '-c', PROBE, '[]', '1', str(endpoint)])
-    jailed = argv[argv.index('--') + 1:]  # the jail itself, started without the relay that would serve it
+    relay = argv.index('quarterdeck.endpoint_relay')
+    jailed = argv[argv.index('--', relay) + 1:]  # the jail itself, started without the relay that would serve it
     folder = endpoint_relay.folder_for(jail.seat_folder)
     endpoint_relay._prepare(folder)
     endpoint_relay._hosts(folder, None)

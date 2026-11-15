@@ -73,7 +73,7 @@ def test_a_jailed_check_seat_is_woken_served_and_answers_with_no_service_up(ship
         player.start()
         checks = check.probe_wake(seat, orders)
         player.join(timeout=90)
-        assert seat.launched().argv[0] == 'bwrap', 'the wake seat runs jailed'
+        assert sandbox.seats_hidden(seat.launched().argv) is True, 'the wake seat runs jailed'
 
     rows = [(c.name, c.passed, c.detail) for c in checks]
     assert all(passed is True for _, passed, _ in rows), (rows, seen)

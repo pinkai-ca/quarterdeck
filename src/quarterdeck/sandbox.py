@@ -18,6 +18,8 @@ merely out of bounds but absent, so nothing the model does inside can read or ch
 from __future__ import annotations
 
 import os
+import pwd
+import shlex
 import shutil
 import stat
 import subprocess
@@ -25,7 +27,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import post_dir, standing
+from . import jail_environment, post_dir, standing
 from .ship import Ship, ShipError
 
 PROGRAM = "bwrap"
@@ -43,7 +45,8 @@ RUNTIME_SHOWN = ('.git', 'bin', 'venv', 'venv.prev', 'installed.json', 'service.
 RUN_BYTES = 16 * 1024 * 1024  # the jail's own /run: a private runtime folder and the resolver's file, nothing more
 MNT_BYTES = 16 * 1024 * 1024  # an empty /mnt: the operator's own disks and the machine's shared scratch are hidden
 MNT = Path('/mnt')
-# Ways into the operator's desktop session that a program finds by its environment; none is passed into a jail.
+# Ways into the operator's desktop session that a program finds by its environment; none is passed into a jail, which
+# starts from --clearenv (jail_environment).
 SESSION_VARIABLES = ('DBUS_SESSION_BUS_ADDRESS', 'DISPLAY', 'WAYLAND_DISPLAY', 'SSH_AUTH_SOCK', 'GPG_AGENT_INFO',
                      'XAUTHORITY')
 HOPS = 20  # a chain of links longer than this is nobody's install
@@ -65,11 +68,21 @@ def seats_hidden(argv: object) -> bool | None:
     if (not isinstance(argv, (list, tuple)) or not argv or not argv[0]
             or any(not isinstance(arg, str) for arg in argv)):
         return None
+    if list(argv[1:4]) == ['-I', '-m', 'quarterdeck.jail_environment'] and '--' in argv:
+        argv = argv[list(argv).index('--') + 1:]  # a jail starts behind the launcher that empties its environment
+        if not argv:
+            return None
     if list(argv[1:4]) == ['-I', '-m', 'quarterdeck.endpoint_relay'] and '--' in argv:
         argv = argv[list(argv).index('--') + 1:]  # an endpoint seat's jail runs behind its relay
         if not argv:
             return None
     return Path(argv[0]).name == PROGRAM
+
+
+def endpoint_key_variable() -> str:
+    from . import endpoint  # the endpoint module reads pools; imported here, where it is needed
+
+    return endpoint.KEY_VARIABLE
 
 
 def available() -> bool:
@@ -97,6 +110,8 @@ class Jail:
     post_view: Path | None = None  # the seat's own view of the post, bound read-only in the post's place
     foreign_runtimes: tuple[Path, ...] = ()  # other ships' runtimes and test-run folders inside a bound folder, each an empty tmpfs
     endpoint: str | None = None  # the pool's model endpoint, relayed into the jail's own network; None: no way out
+    seat: str = ''  # the seat's name, set inside as QD_SEAT
+    path: str = ''  # the PATH qd launches with, set inside as PATH
 
 
 def git_identity(workspace: Path) -> tuple[tuple[str, str], ...]:
@@ -299,7 +314,7 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
     if endpoint is not None:
         endpoint_parts(endpoint)  # refused here, before anything starts, when the jail could not reach it
     jail = Jail(home, seat_home, seat_folder, workspace, ship.folder, ship.runtime, tuple(folders),
-                (drop, proof), git_identity(workspace), declarations, view, foreign, endpoint)
+                (drop, proof), git_identity(workspace), declarations, view, foreign, endpoint, seat_name, path)
     ssh = Path(os.path.realpath(home / '.ssh'))
     if os.path.lexists(home / '.ssh') and not ssh.is_relative_to(Path(os.path.realpath(home))):
         # The home's hiding covers ~/.ssh only where it lies: a link out of the home would leave its keys and sockets
@@ -778,8 +793,20 @@ def sockets_masked(jail: Jail) -> list[str]:
     return args
 
 
-def command(jail: Jail, argv: list[str]) -> list[str]:
-    """The ``bwrap`` command line around a program's own."""
+def command(jail: Jail, argv: list[str], environment: dict[str, str] | None = None) -> list[str]:
+    """The ``bwrap`` command line around a program's own, behind the launcher that starts it from nothing.
+
+    The jail starts from ``--clearenv``: inside, only jail_environment's allowlist is set, the pane's kept values
+    copied in by the launcher, and ``environment``, the variables the seat's harness declares for its program. A
+    declared name that looks secret refuses the launch: nothing secret-named enters a jail, whatever names it.
+    """
+    environment = dict(environment or {})
+    if secret := sorted(name for name in environment if jail_environment.looks_secret(name)):
+        why = (" (a keyed endpoint's key: give the pool an endpoint that takes none, or run the seat open with "
+               "sandbox = false)" if endpoint_key_variable() in secret else '')
+        raise ShipError(f"{jail.seat or 'a jailed seat'}: sandboxed, and its program's environment names "
+                        f"{', '.join(secret)}, which looks secret{why}; nothing secret-named enters a jail, so nothing "
+                        "was started")
     args = [PROGRAM, "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
             "--size", str(TMP_BYTES), "--tmpfs", "/tmp"]
     args += session_hidden()
@@ -865,23 +892,34 @@ def command(jail: Jail, argv: list[str]) -> list[str]:
     for folder in fenced:  # after every mount inside it, which needed its mount point made there
         args += ['--remount-ro', str(folder)]
     args += sockets_masked(jail)
-    for variable in SESSION_VARIABLES:
-        args += ["--unsetenv", variable]
+    # Nothing of the launching environment passes: the operator's desktop shell carries secrets. The launcher puts
+    # the pane's TERM, LANG, TZ and LC_* just after this word; then the allowlist's own values follow.
+    args += [jail_environment.CLEAR]
+    try:
+        user = pwd.getpwuid(os.getuid()).pw_name
+    except KeyError:
+        user = None
+    fixed = {'PATH': jail.path, 'USER': user, 'LOGNAME': user, 'QD_SHIP': str(jail.ship_folder),
+             'QD_SEAT': jail.seat or None, 'BASH_FUNC_qd%%': f'() {{ {shlex.quote(str(jail.runtime / "bin/qd"))} "$@"; }}'}
+    for variable, value in fixed.items():
+        if value:
+            args += ["--setenv", variable, value]
     args += ["--setenv", "XDG_RUNTIME_DIR", str(runtime_dir())]
-    for variable, value in jail.environment:
+    for variable, value in (*jail.environment, *environment.items()):
         args += ["--setenv", variable, value]
     # The launch's TMPDIR may name a filesystem the jail mounts read-only; the program
     # uses the jail's own /tmp for scratch, including spooled tool output.
     args += ["--setenv", "TMPDIR", "/tmp", "--setenv", "TMP", "/tmp", "--setenv", "TEMP", "/tmp"]
     # A network of its own, loopback only: no abstract socket, no outside listener and no other host is reachable.
     args += ["--setenv", "HOME", str(jail.seat_home), "--unshare-pid", "--unshare-net", "--die-with-parent"]
+    launcher = [sys.executable, "-I", "-m", "quarterdeck.jail_environment", "--"]
     if relay is None:
-        return args + ["--", *argv]
+        return [*launcher, *args, "--", *argv]
     from . import endpoint_relay
 
     host, port, name = endpoint_parts(jail.endpoint)
     python = os.path.realpath(sys.executable)  # the machine's own interpreter, which every jail sees read-only
     inside = [python, "-I", "-c", endpoint_relay.INSIDE, f"{endpoint_relay.INSIDE_FOLDER}/{endpoint_relay.SOCKET}",
               str(port), "--", *argv]
-    return [sys.executable, "-I", "-m", "quarterdeck.endpoint_relay", str(relay), host, str(port), name or "", "--",
+    return [*launcher, sys.executable, "-I", "-m", "quarterdeck.endpoint_relay", str(relay), host, str(port), name or "", "--",
             *args, "--", *inside]

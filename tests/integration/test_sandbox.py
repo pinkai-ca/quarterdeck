@@ -46,7 +46,7 @@ def test_a_jailed_seat_writes_its_workspace_posts_from_inside_and_cannot_see_the
         proof = seat.up(resume=False)
         assert "jailed: the operator's home hidden, the workspace writable" in proof
         launched = seat.launched()
-        assert launched.argv[0] == "bwrap" and "--unshare-pid" in launched.argv and launched.harness == "fake"
+        assert sandbox.seats_hidden(launched.argv) is True and "--unshare-pid" in launched.argv and launched.harness == "fake"
         assert str(Path.home()) in launched.argv[launched.argv.index("--tmpfs", 12) + 1:], "the home is an empty tmpfs"
         wait_for(lambda: Door(seat).reading().open)
         store = post.Store(ship.runtime)
@@ -487,7 +487,7 @@ def test_a_jailed_seat_sees_the_qd_only_folder_first_and_the_machines_interprete
     seat = seatmod.Seat(ship, ship.seat("worker-1"), tmux)
     try:
         seat.up(resume=False)
-        assert seat.launched().argv[0] == "bwrap"
+        assert sandbox.seats_hidden(seat.launched().argv) is True
         words = shlex.split((seat.folder / "launch.sh").read_text().splitlines()[-1])
         launch_path = next(word for word in words if word.startswith("PATH="))[len("PATH="):]
         wait_for(lambda: Door(seat).reading().open)

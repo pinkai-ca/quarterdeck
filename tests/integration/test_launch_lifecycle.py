@@ -58,7 +58,7 @@ def test_repeated_fresh_and_down_end_program_jail_descendants_and_windows(drydoc
                        'from pathlib import Path\n'
                        'child=subprocess.Popen([sys.executable,"-c","import time;time.sleep(300)"])\n'
                        'print("owned tree ready",flush=True)\n'
-                       'Path(os.environ["QD_FAKE_HOME"],"synthetic-ready").write_text(os.environ["QD_FAKE_STARTUP_TOKEN"])\n'
+                       'Path(os.environ["QD_FAKE_HOME"],"synthetic-ready").write_text(os.environ["QD_FAKE_STARTUP_NONCE"])\n'
                        'time.sleep(300)\n')
     ship = shipmod.load(drydock)
     spec = replace(ship.seat('worker-1'), cwd=workspace, sandbox=True)
@@ -70,7 +70,7 @@ def test_repeated_fresh_and_down_end_program_jail_descendants_and_windows(drydoc
         token = __import__('uuid').uuid4().hex
         seat.harness._startup_token = token
         return Launch((__import__('sys').executable, str(program)),
-                      {'QD_FAKE_HOME': str(home), 'QD_FAKE_STARTUP_TOKEN': token})
+                      {'QD_FAKE_HOME': str(home), 'QD_FAKE_STARTUP_NONCE': token})
 
     monkeypatch.setattr(seat.harness, 'launch', owned_tree)
     previous = {}

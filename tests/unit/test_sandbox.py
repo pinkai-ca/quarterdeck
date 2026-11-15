@@ -73,6 +73,9 @@ def test_the_command_hides_the_home_binds_the_workspace_writable_and_the_ship_re
                         writable=(runtime / "post" / "drop" / "w", runtime / "check" / "w"),
                         post_view=runtime / "views" / "w" / "post")
     args = sandbox.command(jail, ["pi", "--model", "m"])
+    import sys
+    assert args[:5] == [sys.executable, "-I", "-m", "quarterdeck.jail_environment", "--"], "started from nothing"
+    args = args[5:]
     assert args[:12] == ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--size", str(sandbox.TMP_BYTES), "--tmpfs", "/tmp"]
     session = sandbox.session_hidden()
     assert args[12:12 + len(session)] == session, "the desktop session's /run and the shared scratch are hidden first"
@@ -312,7 +315,7 @@ def venv_bins(ship) -> set[Path]:
     return found
 
 
-def test_a_jailed_launch_runs_with_the_same_qd_only_path_and_sets_no_path_of_its_own(drydock: Path, tmp_path: Path):
+def test_a_jailed_launch_runs_with_the_same_qd_only_path_and_sets_that_path_alone(drydock: Path, tmp_path: Path):
     from quarterdeck import seat as seatmod
     ship = shipmod.load(drydock)
     path = seatmod.prepare_program_path(ship, synthetic=True)
@@ -323,12 +326,16 @@ def test_a_jailed_launch_runs_with_the_same_qd_only_path_and_sets_no_path_of_its
     assert (commands / "qd").resolve() == (seatmod.qd_bin() / "qd").resolve(), "qd is the installed copy"
     assert not any((commands / name).exists() for name in FRAMEWORK_NAMES), "no interpreter or pip beside qd"
     assert not {Path(entry).resolve() for entry in entries if entry} & venv_bins(ship), "no venv bin on the PATH"
-    # The jail adds no PATH of its own: the launch's PATH, the same as unjailed, reaches the program inside.
+    # The jail starts from --clearenv, so it sets PATH itself: the launch's own PATH, the same as unjailed, and no
+    # other. A jail that is given none sets none.
     jail = sandbox.Jail(home=tmp_path / "home", seat_home=ship.runtime / "seats" / "worker-1" / "home",
                         seat_folder=ship.runtime / "seats" / "worker-1", workspace=tmp_path / "work",
-                        ship_folder=ship.folder, runtime=ship.runtime, read_only=(), writable=())
+                        ship_folder=ship.folder, runtime=ship.runtime, read_only=(), writable=(), path=path)
     args = sandbox.command(jail, ["fake"])
-    assert not [args[i + 1] for i, word in enumerate(args) if word == "--setenv" and args[i + 1] == "PATH"]
+    assert [args[i + 2] for i, word in enumerate(args) if word == "--setenv" and args[i + 1] == "PATH"] == [path]
+    from dataclasses import replace
+    bare = sandbox.command(replace(jail, path=''), ["fake"])
+    assert not [i for i, word in enumerate(bare) if word == "--setenv" and bare[i + 1] == "PATH"]
     words = seatmod.launch_words(path, args, socket=None, tmux_tmpdir="/synthetic/tmux", markers=[])
     assert f"PATH={path}" in words and words.index(f"PATH={path}") < words.index("bwrap")
     # The ship folder is bound back read-only; nothing deeper is mounted over the command folder or its parents.

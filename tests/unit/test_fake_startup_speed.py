@@ -27,12 +27,12 @@ def test_each_launch_requires_its_own_startup_acknowledgment(tmp_path):
     first = launch(harness, home)
     ready = home / "synthetic-ready"
     assert not harness.synthetic_ready(home)
-    ready.write_text(first.env["QD_FAKE_STARTUP_TOKEN"])
+    ready.write_text(first.env["QD_FAKE_STARTUP_NONCE"])
     assert harness.synthetic_ready(home)
     second = launch(harness, home)
-    assert second.env["QD_FAKE_STARTUP_TOKEN"] != first.env["QD_FAKE_STARTUP_TOKEN"]
+    assert second.env["QD_FAKE_STARTUP_NONCE"] != first.env["QD_FAKE_STARTUP_NONCE"]
     assert not harness.synthetic_ready(home)
-    ready.write_text(second.env["QD_FAKE_STARTUP_TOKEN"])
+    ready.write_text(second.env["QD_FAKE_STARTUP_NONCE"])
     assert harness.synthetic_ready(home)
     assert not FakeHarness().synthetic_ready(home)
 
