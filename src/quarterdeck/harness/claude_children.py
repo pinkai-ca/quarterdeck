@@ -70,7 +70,7 @@ def current_launch(record):
                 isinstance(row, dict) and all(row.get(key) == value for key, value in expected.items())
                 for row in joined):
             return at
-    except (OSError, ValueError, TypeError, AttributeError):
+    except (OSError, ValueError, TypeError, AttributeError, KeyError):
         pass
     return None
 

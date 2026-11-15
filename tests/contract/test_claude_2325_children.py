@@ -227,14 +227,17 @@ def test_a_child_record_arriving_after_the_root_notice_refreshes_the_read(tmp_pa
         assert claude.ClaudeHarness.state(record).pending_tools == ()
 
 
-def test_naive_launch_time_does_not_end_a_child_command(tmp_path):
+@pytest.mark.parametrize('missing', [False, True])
+def test_unproved_launch_time_does_not_end_a_child_command(tmp_path, missing):
     root = tmp_path/'runtime/seats/synthetic/home/projects/synthetic'
     record, _ = fixture(root)
     launch(record)
     folder = record.parent.parent.parent.parent
     data = json.loads((folder/'launch.json').read_text())
     data['at'] = '2032-04-05T06:07:05'
+    if missing:
+        data.pop('at')
     (folder/'launch.json').write_text(json.dumps(data))
-    (folder/'record-launches.jsonl').write_text(json.dumps(dict(record=str(record), at=data['at'],
+    (folder/'record-launches.jsonl').write_text(json.dumps(dict(record=str(record), at=data.get('at'),
         pool=data['pool'], harness='claude'))+'\n')
     assert claude.state(record).pending_tools == ('Bash', 'Agent')
