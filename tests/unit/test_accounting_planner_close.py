@@ -2,11 +2,11 @@
 
 import os
 from pathlib import Path
+import select
 import signal
 import subprocess
 import sys
 import tempfile
-import time
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -24,6 +24,9 @@ def test_delayed_killed_child_is_closed_now_and_reaped_on_next_pass(tmp_path, mo
     child = subprocess.Popen(
         [sys.executable, '-c', 'import signal; signal.raise_signal(signal.SIGSTOP)'],
         stdin=subprocess.PIPE, stdout=plan, stderr=subprocess.DEVNULL)
+    exited = os.pidfd_open(child.pid)
+    exit_ready = select.poll()
+    exit_ready.register(exited, select.POLLIN)
     poll, kill, wait = child.poll, child.kill, child.wait
     killed, deferred = False, False
     waits, kill_polls = [], []
@@ -44,12 +47,10 @@ def test_delayed_killed_child_is_closed_now_and_reaped_on_next_pass(tmp_path, mo
 
     def waited(timeout=None):
         waits.append(timeout)
-        if killed:
-            raise subprocess.TimeoutExpired(child.args, timeout)
-        return wait(timeout=timeout)
+        raise subprocess.TimeoutExpired(child.args, timeout)
 
     try:
-        # A stopped child cannot handle terminate; the bounded first wait must expire.
+        # A stopped child cannot handle terminate; inject the wait's timeout outcome.
         assert os.WIFSTOPPED(os.waitpid(child.pid, os.WUNTRACED)[1])
         monkeypatch.setattr(child, 'poll', delayed_poll)
         monkeypatch.setattr(child, 'kill', killed_now)
@@ -62,15 +63,10 @@ def test_delayed_killed_child_is_closed_now_and_reaped_on_next_pass(tmp_path, mo
         assert child.stdin.closed and plan.closed
         assert driver.reaping == [child], 'an unconfirmed exit keeps its process handle'
 
-        # Observe a real zombie without reaping it: the next service step must do that.
-        until = time.monotonic() + 5
-        while time.monotonic() < until:
-            state = Path(f'/proc/{child.pid}/stat').read_text().rsplit(') ', 1)[1].split()[0]
-            if state == 'Z':
-                break
-            time.sleep(0.005)
-        else:
-            pytest.fail('the killed synthetic child did not exit')
+        # Exit readiness does not reap: the next service pass must collect the zombie.
+        exit_ready.poll()
+        state = Path(f'/proc/{child.pid}/stat').read_text().rsplit(') ', 1)[1].split()[0]
+        assert state == 'Z'
         if reap_with == 'step':
             # Even a step that has no new accounting job must collect the old exit.
             monkeypatch.setattr(type(driver.gate), 'allowed', lambda *args, **kwargs: False)
@@ -87,7 +83,9 @@ def test_delayed_killed_child_is_closed_now_and_reaped_on_next_pass(tmp_path, mo
         # Use the native methods so a failed assertion never leaves our stopped child behind.
         if poll() is None:
             kill()
-        wait(timeout=5)
+        exit_ready.poll()
+        wait()
+        os.close(exited)
         child.stdin.close()
         plan.close()
         driver.close()

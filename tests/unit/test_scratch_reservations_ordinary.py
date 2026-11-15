@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.testrunner import clean, owned, procs, scratch
-from tests.testrunner.layout import RESULTS, Root, identity, new_run_id, write_json
+from tests.testrunner.layout import RESULTS, Root, identity, new_run_id, reserve_run_id, write_json
 
 
 @pytest.fixture
@@ -34,7 +34,8 @@ def capacity(tmp_path, monkeypatch):
 
 def test_two_reservations_fit_and_third_uses_disk(capacity, capsys):
     root, free = capacity
-    runs = [new_run_id() for _ in range(3)]
+    runs = [reserve_run_id(root) for _ in range(3)]
+    assert len(set(runs)) == 3, 'each modeled run owns a distinct result directory'
     selected = [scratch.prepare(root, run) for run in runs]
     assert [row['kind'] for row in selected] == ['tmpfs', 'tmpfs', 'disk']
     assert selected[0]['path'] != selected[1]['path']

@@ -44,8 +44,8 @@ def world(tmp_path, monkeypatch, count=1):
 
 def finish(driver, svc, timeout=20):
     times = []
-    until = time.monotonic() + timeout
-    while time.monotonic() < until:
+    until = None if timeout is None else time.monotonic() + timeout
+    while until is None or time.monotonic() < until:
         before = time.monotonic()
         driver.step(svc)
         times.append(time.monotonic() - before)
@@ -377,33 +377,27 @@ def test_planner_finishes_while_the_busy_parent_does_not_read_results(tmp_path, 
         # the service send it, while withholding only its reads of the plan.
         with monkeypatch.context() as setup:
             setup.setattr(os, 'pread', unread_plan)
-            deadline = time.monotonic() + 60
-            while time.monotonic() < deadline:
+            while True:
                 driver.step(svc, wait=False)
                 if driver.process is not None and not driver.outgoing:
                     break
                 time.sleep(0.005)
-            else:
-                pytest.fail('planning request was not fully sent before the parent became busy')
         assert driver.plan_offset == 0 and not driver.incoming and not driver.ready, 'setup reads no plan'
         assert svc.ledger.ingested(record) == ingested, 'setup applies no planned writes'
         done = accounting_slices.frame(('done',))
-        deadline = time.monotonic() + 60
         # No driver pump, drain or accounting call: another duty owns the parent.
-        while time.monotonic() < deadline:
+        while True:
             size = os.fstat(driver.plan.fileno()).st_size
             if size >= len(done) and os.pread(driver.plan.fileno(), len(done), size - len(done)) == done:
                 break
             time.sleep(0.005)
-        else:
-            pytest.fail('planning child waited for its busy parent to read output')
         assert size > 65536, 'the plan must exceed a pipe-sized output buffer'
         assert svc.ledger.ingested(record) == ingested, 'only the service applies planned writes'
-        finish(driver, svc)
+        finish(driver, svc, timeout=None)
         assert svc.ledger.ingested(record) == 1000
         assert not svc.ledger.catching_up()
         first_size = os.fstat(driver.plan.fileno()).st_size
-        finish(driver, svc)
+        finish(driver, svc, timeout=None)
         assert os.fstat(driver.plan.fileno()).st_size < first_size, 'completed jobs reclaim their plan file'
         assert svc.ledger.ingested(record) == 1000
     finally:

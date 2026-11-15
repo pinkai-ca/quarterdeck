@@ -7,7 +7,9 @@ fixture names and closes.
 import json
 import os
 import signal
+import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -127,12 +129,37 @@ def stalled_after_open(world, monkeypatch):
 def test_stop_after_open_stalled_past_ordinary_grace_waits_then_restart_types_once(world, monkeypatch):
     message, _ = stalled_after_open(world, monkeypatch)
     runtime = world.ship.runtime
-    thread, results, errors = stopping(lambda: servicectl.stop(runtime))
-    wait_for(lambda: (runtime / 'term-seen').exists() or not thread.is_alive())
-    time.sleep(shutdown.ORDINARY_GRACE + .5)
-    waited = thread.is_alive() and servicectl.locked(runtime)
-    (runtime / 'phase-release').touch()
-    thread.join(timeout=30)
+    crossed, release = threading.Event(), threading.Event()
+    clock = SimpleNamespace(now=0.0)
+
+    def stop_sleep(seconds):
+        if not (runtime / 'term-seen').exists():
+            time.sleep(.005)
+        elif clock.now == 0:
+            clock.now = shutdown.ORDINARY_GRACE + .5
+        else:
+            # The stop loop has tested its deadline at a time past ordinary grace.
+            crossed.set()
+            release.wait()
+            time.sleep(.005)
+
+    def stop():
+        try:
+            return servicectl.stop(runtime)
+        finally:
+            crossed.set()  # an early return/error must also reach the assertions
+
+    with monkeypatch.context() as stopping_clock:
+        stopping_clock.setattr(servicectl, 'time', SimpleNamespace(
+            monotonic=lambda: clock.now, sleep=stop_sleep))
+        thread, results, errors = stopping(stop)
+        try:
+            crossed.wait()
+            waited = thread.is_alive() and servicectl.locked(runtime)
+        finally:
+            (runtime / 'phase-release').touch()
+            release.set()
+            thread.join()
     assert not thread.is_alive() and not errors
     assert waited, 'the stop did not wait past its ordinary grace for the write unit'
     assert 'service stopped' in results[0] and 'killed' not in results[0]
