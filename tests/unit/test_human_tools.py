@@ -55,7 +55,7 @@ def test_native_question_policy_is_applied_after_root_profile_agent_and_wildcard
         out = tomllib.loads((seat.home / 'config.toml').read_text())
         for scope in [out, *out['profiles'].values()]:
             assert scope['tools']['experimental_request_user_input']['enabled'] is human
-        assert out['features'] == config['features'], 'do not disable unrelated modes'
+        assert out['features'] == {**config['features'], 'shell_snapshot': False}, 'do not disable unrelated modes'
         assert ('tools.experimental_request_user_input.enabled=false' in launch.argv) is (not human)
     else:
         out = json.loads((seat.home / 'config/opencode/opencode.json').read_text())

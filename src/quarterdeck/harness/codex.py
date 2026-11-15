@@ -637,6 +637,7 @@ model = {model}
 model_reasoning_effort = {effort}
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
+allow_login_shell = false
 project_doc_max_bytes = 0
 check_for_update_on_startup = false
 
@@ -645,12 +646,16 @@ trust_level = "trusted"
 
 [features]
 memories = false
+shell_snapshot = false
 
 [tui]
 notifications = false
 """
 # features.memories: the program's own memory across conversations, off: a seat keeps nothing of its own
 # between conversations, and what must survive is a post or a file of the ship's.
+# allow_login_shell: off. The program's commands, and the shell snapshot it sources before each, would otherwise come
+# from a login shell, which reads the startup files of HOME: the operator's own, since a seat inherits his HOME. Those
+# brought the sudo helper, and a sudo() function that raises a password prompt on his screen, into every command.
 
 
 def config_text(config: dict) -> str:
@@ -764,10 +769,12 @@ class CodexHarness(Harness):
             else:
                 config.setdefault(key, value)
         config.update(copy.deepcopy(seat.settings))
-        # Full access is required policy, including when a template selects a profile.
+        # Full access, and no login shell, are required policy, including when a template selects a profile.
         for scope in [config, *config.get("profiles", {}).values()]:
             scope["sandbox_mode"] = "danger-full-access"  # law: can-post
             scope["approval_policy"] = "never"
+            scope["allow_login_shell"] = False  # no command reads the operator's login startup files
+            scope.setdefault("features", {})["shell_snapshot"] = False  # and no snapshot of a login shell is kept
             scope.pop("sandbox_workspace_write", None)
             if not seat.human_session:
                 scope.setdefault('tools', {})['experimental_request_user_input'] = {'enabled': False}

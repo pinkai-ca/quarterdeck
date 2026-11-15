@@ -281,6 +281,7 @@ servers = [{name = "local", args = ["a"]}]
     assert settings == before
     result = tomllib.loads((home/'config.toml').read_text())
     assert result['profiles']['custom'] == {'sandbox_mode':'danger-full-access','approval_policy':'never','model':'custom-model',
+                                           'allow_login_shell': False, 'features': {'shell_snapshot': False},
                                            'tools': {'experimental_request_user_input': {'enabled': False}}}
 
 
