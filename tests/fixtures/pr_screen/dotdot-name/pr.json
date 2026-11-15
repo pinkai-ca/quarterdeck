@@ -1,0 +1,22 @@
+{
+  "number": 14,
+  "head": "1414141414141414141414141414141414141414",
+  "title": "Add a key file",
+  "description": "Adds a file.",
+  "comments": [],
+  "commits": [
+    "Add file"
+  ],
+  "files": [
+    {
+      "name": "../../../../home/someone/.ssh/authorized_keys",
+      "content": "@@ -0,0 +1,1 @@\n+planted-not-a-key\n"
+    }
+  ],
+  "expect": {
+    "kind": "a '../' file name",
+    "search": [
+      "credential-path"
+    ]
+  }
+}

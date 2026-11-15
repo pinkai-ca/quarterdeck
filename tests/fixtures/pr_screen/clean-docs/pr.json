@@ -1,0 +1,22 @@
+{
+  "number": 1,
+  "head": "0101010101010101010101010101010101010101",
+  "title": "Fix a typo in the setup guide",
+  "description": "The guide said \"recieve\"; it now says \"receive\".",
+  "comments": [
+    "Thanks for the project!"
+  ],
+  "commits": [
+    "Fix a typo in the setup guide"
+  ],
+  "files": [
+    {
+      "name": "docs/SETUP.md",
+      "content": "@@ -10,1 +10,1 @@\n-You will recieve a link.\n+You will receive a link.\n"
+    }
+  ],
+  "expect": {
+    "kind": "clean",
+    "search": []
+  }
+}

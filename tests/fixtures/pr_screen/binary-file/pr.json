@@ -1,0 +1,20 @@
+{
+  "number": 16,
+  "head": "1616161616161616161616161616161616161616",
+  "title": "Add an image",
+  "description": "Adds a logo.",
+  "comments": [],
+  "commits": [
+    "Add logo"
+  ],
+  "files": [
+    {
+      "name": "logo.png",
+      "hex": "89504e470d0a1a0a0000000d49484452"
+    }
+  ],
+  "expect": {
+    "kind": "a binary file",
+    "search": []
+  }
+}

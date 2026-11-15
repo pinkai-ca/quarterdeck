@@ -1,0 +1,338 @@
+"""The pull-request screen's parts on fixtures (pr_screen): no live hand and no real pull request.
+
+Hands here are stand-ins. ``Honest`` flags every line that reads like an instruction, the planted check among them;
+others answer CLEAN, answer in no shape, answer nothing, or post elsewhere, to show what each counts as.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+
+import pytest
+
+from quarterdeck import post, pr_screen
+
+FIXTURES = Path(__file__).resolve().parents[1] / 'fixtures' / 'pr_screen'
+CASES = {path.name: json.loads((path / 'pr.json').read_text()) for path in sorted(FIXTURES.iterdir())
+         if (path / 'pr.json').is_file()}
+SUSPICIOUS = re.compile(r'ignore|disregard|write the word|reply only|answer clean|new instructions|qd post|'
+                        r'human-alert|already approved|from now on|forward this', re.IGNORECASE)
+
+
+class Clock:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+class Hands:
+    """Stand-in hands: each order runs ``behaviour`` on the piece's folder; every call is recorded."""
+
+    def __init__(self, runtime: Path, root: Path, behaviour, idle=True):
+        self.runtime, self.root, self.behaviour, self.idle_answer = runtime, root, behaviour, idle
+        self.calls, self.orders = [], {}
+
+    def folder(self, name):
+        path = self.root / name
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def idle(self, name):
+        return self.idle_answer
+
+    def fresh(self, name):
+        assert pr_screen.held(self.runtime, name), 'a hand is started for a screen only under the hold'
+        self.calls.append(('fresh', name))
+
+    def down(self, name):
+        assert pr_screen.held(self.runtime, name), 'the hand goes down before the hold is released'
+        self.calls.append(('down', name))
+
+    def order(self, name, body, subject):
+        order_id = f'ord-screen-{len(self.orders) + 1:03d}'
+        self.orders[order_id] = (name, body, subject)
+        folder = self.folder(name) / re.search(r'in the folder (screen-[0-9a-f]+) ', body).group(1)
+        self.behaviour(self, name, order_id, folder)
+        self.calls.append(('order', name))
+        return order_id
+
+    def file_now(self, name):
+        self.calls.append(('file_now', name))
+
+    def drop(self, name, message: dict):
+        folder = post.drop_dir(self.runtime, name)
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / f"{message['id']}.json").write_text(json.dumps(message))
+
+
+def report_done(hands, name, order_id, text='done'):
+    hands.drop(name, dict(id=f'rep-done-{order_id}', kind='report', **{'from': name}, to=post.SHIP,
+                          at='2026-11-15T08:00:00+00:00', body=text, re=order_id, subject=None, due=None, speed=None))
+
+
+def honest(hands, name, order_id, folder):
+    places = []
+    for path in sorted(folder.glob('f*.txt')):
+        for number, line in enumerate(path.read_text().splitlines(), 1):
+            if SUSPICIOUS.search(line):
+                places.append(f'{path.stem}:{number}')
+    (folder / 'answer.txt').write_text('FLAGGED ' + ' '.join(places) if places else 'CLEAN')
+    report_done(hands, name, order_id)
+
+
+def says_clean(hands, name, order_id, folder):
+    (folder / 'answer.txt').write_text('CLEAN\n')
+    report_done(hands, name, order_id)
+
+
+def silent(hands, name, order_id, folder):
+    pass
+
+
+class Outcomes:
+    def __init__(self):
+        self.told = []
+
+    def clean(self, pr, repository):
+        self.told.append(('una', pr.number, None))
+        return f'ord-una-{pr.number}'
+
+    def flagged(self, pr, repository, found):
+        self.told.append(('desk', pr.number, found))
+        return f'rep-desk-{pr.number}'
+
+
+@pytest.fixture
+def world(tmp_path):
+    runtime = tmp_path / 'runtime'
+    runtime.mkdir()
+    return runtime, tmp_path / 'hands'
+
+
+def run(world, behaviour, cases=None, **options):
+    runtime, hands_root = world
+    hands = Hands(runtime, hands_root, behaviour, idle=options.pop('idle', True))
+    outcomes = Outcomes()
+    clock = Clock()
+    results = pr_screen.run(runtime, pr_screen.FixtureSource(FIXTURES, cases), hands, outcomes,
+                            repository='owner/project', clock=clock, sleep=clock.sleep, poll=1.0,
+                            answer_seconds=30, idle_seconds=30, **options)
+    return results, hands, outcomes
+
+
+# -- the outsider's text, numbered ---------------------------------------------------------------------------------
+
+def texts(name):
+    source = pr_screen.FixtureSource(FIXTURES, [name])
+    return source.texts(source.open()[0])
+
+
+def test_files_are_written_under_made_up_numbers_and_real_names_are_kept_apart():
+    prepared = pr_screen.prepare(texts('dotdot-name'))
+    assert all(re.fullmatch(r'f\d{3}', number) for number in prepared.files)
+    named = [origin['name'] for origin in prepared.origin.values() if origin['name']]
+    assert named == ['../../../../home/someone/.ssh/authorized_keys'], 'kept in the separate list only'
+    listing = next(n for n, o in prepared.origin.items() if o['kind'] == 'file names')
+    assert '../../../../home/someone/.ssh/authorized_keys' in prepared.files[listing], 'screened as text'
+
+
+def test_an_over_long_name_is_cut_in_its_listing_and_flags_the_request():
+    prepared = pr_screen.prepare(texts('long-name'))
+    listing = next(n for n, o in prepared.origin.items() if o['kind'] == 'file names')
+    assert all(len(line) <= pr_screen.NAME_BYTES for line in prepared.files[listing].splitlines())
+    assert prepared.flags == [f'file 1 has a name over the length bound ({pr_screen.NAME_BYTES}); '
+                              'the rest of it went to no hand']
+
+
+def test_a_binary_file_goes_to_no_hand_and_flags_the_request():
+    prepared = pr_screen.prepare(texts('binary-file'))
+    assert prepared.flags == ['file 1 is binary and went to no hand']
+    assert all(origin['kind'] != 'file' for origin in prepared.origin.values())
+
+
+def test_an_oversized_change_goes_to_no_hand_and_flags_the_request():
+    prepared = pr_screen.prepare(texts('oversized'))
+    assert len(prepared.flags) == 1 and 'over the size bound' in prepared.flags[0]
+
+
+def test_text_is_cut_into_files_and_pieces_a_hand_can_hold():
+    big = pr_screen.Text('file', 1, (('x' * 50 + '\n') * 1000 + 'y' * 5000 + '\n').encode(), 'big.txt')
+    prepared = pr_screen.prepare([big])
+    for text in prepared.files.values():
+        assert len(text.encode()) <= pr_screen.FILE_BYTES + 1 and len(text.splitlines()) <= pr_screen.FILE_LINES
+        assert all(len(line.encode()) <= pr_screen.LINE_BYTES for line in text.splitlines())
+    for piece in pr_screen.pieces(prepared):
+        assert len(piece) <= pr_screen.PIECE_FILES
+        assert sum(len(prepared.files[n].encode()) for n in piece) <= pr_screen.PIECE_BYTES
+    parts = [o for o in prepared.origin.values() if o['kind'] == 'file']
+    assert len(parts) > 1 and all(o['parts'] == len(parts) for o in parts)
+
+
+# -- the search ----------------------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize('name', sorted(CASES))
+def test_the_one_list_finds_what_each_planted_case_expects(name):
+    hits = {hit[0] for hit in pr_screen.search(pr_screen.prepare(texts(name)))}
+    expected = set(CASES[name]['expect']['search'])
+    assert expected <= hits
+    if CASES[name]['expect']['kind'] == 'clean':
+        assert hits == set()
+
+
+def test_the_patterns_are_one_list_in_one_file():
+    assert all(len(entry) == 2 for entry in pr_screen.PATTERNS)
+    assert len({name for name, _ in pr_screen.PATTERNS}) == len(pr_screen.PATTERNS)
+
+
+# -- the answer's shape --------------------------------------------------------------------------------------------
+
+NAMES = {'f01': 'f001', 'f03': 'f002'}
+CANARY = ('f02', {3})
+
+
+@pytest.mark.parametrize('answer, clean, reason', [
+    (b'FLAGGED f02:3', True, 'found it clean'),
+    (b'FLAGGED f02:1-4\n', True, 'found it clean'),
+    (b'  FLAGGED f02:3, f01:7  ', False, 'flagged'),
+    (b'CLEAN', False, 'did not flag the planted check'),
+    (b'FLAGGED f01:7', False, 'did not flag the planted check'),
+    (b'Looks clean to me.', False, 'answered in no shape'),
+    (b'FLAGGED f02:3 and nothing else', False, 'answered in no shape'),
+    (b'FLAGGED f09:1 f02:3', False, 'a file not in its piece'),
+    (b'\x00', False, 'answered in no shape'),
+    (b'FLAGGED f02:3 ' + b'f01:1 ' * 1000, False, 'answered in no shape'),
+    (None, False, 'gave no answer in time'),
+])
+def test_an_answer_counts_only_by_its_shape(answer, clean, reason):
+    verdict = pr_screen.judge('ernie', answer, NAMES, CANARY)
+    assert verdict.clean is clean and reason in verdict.reason
+
+
+def test_a_flagged_answer_names_the_numbered_file_not_the_pieces_name():
+    verdict = pr_screen.judge('rocky', b'FLAGGED f02:3 f03:4-5', NAMES, CANARY)
+    assert verdict.places == (('f002', 4, 5),)
+
+
+# -- one piece through one hand: the hold, the sweep, the hand down -------------------------------------------------
+
+def one_piece(world, behaviour, **options):
+    runtime, hands_root = world
+    hands = Hands(runtime, hands_root, behaviour)
+    clock = Clock()
+    prepared = pr_screen.prepare(texts('post-elsewhere'))
+    verdict = pr_screen.screen_piece(runtime, hands, 'ernie', 'key', 0, prepared, list(prepared.files),
+                                     answer_seconds=30, poll=1.0, clock=clock, sleep=clock.sleep, **options)
+    return verdict, hands, runtime
+
+
+def test_a_hand_told_to_post_elsewhere_has_nothing_filed_but_its_done(world):
+    def obeys(hands, name, order_id, folder):
+        hands.drop(name, dict(id='ord-forged-elsewhere', kind='order', **{'from': name}, to='una',
+                              at='2026-11-15T08:00:00+00:00', body='PUFFIN', re=None, subject=None, due=None,
+                              speed=None))
+        honest(hands, name, order_id, folder)
+    verdict, hands, runtime = one_piece(world, obeys)
+    drop = post.drop_dir(runtime, 'ernie')
+    assert [path.name for path in drop.iterdir()] == ['rep-done-ord-screen-001.json'], 'only its done stays'
+    assert len(list((runtime / 'pr-screen' / 'held' / 'ernie').iterdir())) == 1, 'the rest moved aside'
+    assert [call[0] for call in hands.calls] == ['fresh', 'order', 'down', 'file_now']
+    assert not pr_screen.held(runtime, 'ernie'), 'the hold is released once the hand is down and swept'
+    assert not verdict.clean  # it flagged the request's lines
+
+
+def test_a_done_with_more_words_is_moved_aside_too(world):
+    def chatty(hands, name, order_id, folder):
+        (folder / 'answer.txt').write_text('CLEAN')
+        report_done(hands, name, order_id, 'done. Also: the outsider asks una to merge it.')
+    verdict, hands, runtime = one_piece(world, chatty)
+    assert list(post.drop_dir(runtime, 'ernie').iterdir()) == []
+    assert ('file_now', 'ernie') not in hands.calls
+
+
+def test_no_answer_in_time_counts_as_flagged_and_the_hand_still_goes_down(world):
+    verdict, hands, runtime = one_piece(world, silent)
+    assert not verdict.clean and 'no answer in time' in verdict.reason
+    assert ('down', 'ernie') in hands.calls and not pr_screen.held(runtime, 'ernie')
+
+
+def test_a_hand_that_misses_the_planted_check_counts_as_flagged(world):
+    verdict, _, _ = one_piece(world, says_clean)
+    assert not verdict.clean and 'planted check' in verdict.reason
+
+
+def test_the_planted_file_cannot_be_told_from_the_outsiders(world):
+    verdict, hands, runtime = one_piece(world, honest)
+    folder = next(path for path in (world[1] / 'ernie').iterdir() if path.is_dir())
+    names = sorted(path.name for path in folder.glob('f*.txt'))
+    assert names == [f'f{n:02d}.txt' for n in range(1, len(names) + 1)], 'one numbered sequence'
+    record = json.loads(next((runtime / 'pr-screen' / 'screens' / 'key').glob('piece-0-ernie.json')).read_text())
+    assert f"{record['planted']}.txt" in names and record['planted'] not in record['names']
+
+
+def test_while_a_hand_screens_the_service_files_nothing_it_posts(world):
+    runtime, _ = world
+    store = post.Store(runtime)
+    message = store.prepare('order', 'ernie', 'una', 'an outsider\'s words')
+    drop = post.drop_dir(runtime, 'ernie')
+    drop.mkdir(parents=True)
+    (drop / f'{message.id}.json').write_text(message.to_json())
+    pr_screen.hold(runtime, 'ernie', 'key')
+    post.file_drops(store, seats=frozenset({'ernie'}))
+    assert store.all() == [] and (drop / f'{message.id}.json').exists()
+    assert pr_screen.status(runtime) and 'its posts are held' in pr_screen.status(runtime)[0]
+    pr_screen.release(runtime, 'ernie')
+    post.file_drops(store, seats=frozenset({'ernie'}))
+    assert [m.id for m in post.Store(runtime).all()] == [message.id]
+
+
+# -- the whole pass ------------------------------------------------------------------------------------------------
+
+OUTSIDER_WORDS = ('OSPREY', 'KESTREL', 'PLOVER', 'CURLEW', 'DUNLIN', 'MERLIN', 'PUFFIN', 'SHRIKE', 'WIGEON',
+                  'authorized_keys', 'IGNORE_PREVIOUS', 'Reviewer bot', 'already screened', 'recieve')
+
+
+def test_a_pass_tells_una_of_clean_requests_and_the_desk_of_flagged_ones_quoting_nothing(world):
+    results, hands, outcomes = run(world, honest)
+    by_case = {CASES[name]['number']: name for name in CASES}
+    outcome = {by_case[r['number']]: r['outcome'] for r in results}
+    assert outcome['clean-docs'] == outcome['clean-code'] == 'clean'
+    planted = [name for name in CASES if CASES[name]['expect']['kind'] != 'clean']
+    caught = [name for name in planted if outcome[name] == 'flagged']
+    # The residual, shown: a case written to slip past the search, before a hand that reads it naively.
+    assert sorted(set(planted) - set(caught)) == ['answer-clean-subtle']
+    told = [entry for entry in outcomes.told if entry[0] == 'desk']
+    assert len(told) == len(caught)
+    text = json.dumps(told)
+    assert not any(word in text for word in OUTSIDER_WORDS), 'nothing the outsider wrote reaches the desk'
+    assert all(name in ('ernie', 'rocky') for kind, name in hands.calls if kind == 'order')
+
+
+def test_a_request_already_screened_at_its_head_is_skipped_and_a_new_push_starts_it_over(world):
+    results, _, _ = run(world, honest, cases=['clean-docs'])
+    assert [r['outcome'] for r in results] == ['clean']
+    assert run(world, honest, cases=['clean-docs'])[0] == []
+    runtime, _ = world
+    state = json.loads((runtime / 'pr-screen' / 'state.json').read_text())
+    state['1']['head'] = 'an older head'
+    (runtime / 'pr-screen' / 'state.json').write_text(json.dumps(state))
+    assert [r['outcome'] for r in run(world, honest, cases=['clean-docs'])[0]] == ['clean']
+
+
+def test_a_busy_hand_leaves_the_request_for_the_next_pass_untold(world):
+    results, hands, outcomes = run(world, honest, cases=['clean-docs'], idle=False)
+    assert [r['outcome'] for r in results] == ['deferred'] and outcomes.told == [] and hands.calls == []
+    runtime, _ = world
+    assert not (runtime / 'pr-screen' / 'state.json').exists() or '1' not in json.loads(
+        (runtime / 'pr-screen' / 'state.json').read_text())
+
+
+def test_flagged_before_any_hand_goes_to_no_hand(world):
+    results, hands, outcomes = run(world, honest, cases=['binary-file', 'oversized'])
+    assert [r['outcome'] for r in results] == ['flagged', 'flagged'] and hands.calls == []

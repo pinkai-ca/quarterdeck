@@ -39,7 +39,7 @@ def inputs(ship):
         'post/forwarded', 'post/outbound', 'post/drop', 'post/group-holds',
         'post/cascade-holds', 'post/structure-waits', 'requests', 'request-state',
         'hwa', 'pool-usage', 'proven/check-outcomes', 'server-recovery.json',
-        'retirement-status.json', 'pool-forecast-alerts.json', 'seat-holds.json', 'post/relaunch',
+        'retirement-status.json', 'pool-forecast-alerts.json', 'seat-holds.json', 'pr-screen/screening', 'post/relaunch',
     )]
     for name in sorted(ship.seats):
         folder = runtime / 'seats' / name

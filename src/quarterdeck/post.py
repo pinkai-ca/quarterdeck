@@ -1049,6 +1049,7 @@ def _drop_steps(store: Store, ship=None, *, seats: frozenset[str] | None = None,
     intent beside it is left for that pass. Every name is walked by the post folder's
     no-follow helpers: a link in a drop is held as not a regular file, never followed.
     """
+    from .pr_screen import held as screening
     runtime = store.dir.parent.parent
     root = store.dir.parent / "drop"
     current: set[tuple[str, str]] = set()
@@ -1092,6 +1093,8 @@ def _drop_steps(store: Store, ship=None, *, seats: frozenset[str] | None = None,
         except (OSError, ShipError):
             hold(folder, "drop unreadable")
             continue
+        if screening(runtime, name):
+            continue  # a hand screening a pull request: nothing it posts is filed while it screens (pr_screen)
         windows.append((name, files))
     # Group and ordinary passes share exactly these windows; no second folder listing. The round's ids avoid
     # the shorts queued in them and the shorts this round prepares.

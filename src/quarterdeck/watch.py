@@ -525,6 +525,7 @@ class Facts:
     cutover: str = ""  # the ship still runs on tmux's default server, until one qd down and qd up
     server_recovery: list[str] = field(default_factory=list)  # a gone ship server: stopped or unknown
     seat_holds: list[str] = field(default_factory=list)  # one seat held alone by a bad file or a refused record
+    screening: list[str] = field(default_factory=list)  # a hand screening a pull request: its posts are held (pr_screen)
     relaunches: list[str] = field(default_factory=list)  # a relaunch a stopped service left unfinished (relaunch_intent)
     write_bounds: list[str] = field(default_factory=list)  # a jailed seat stopped at its write bound (write_bound)
     retirement: str | None = None
@@ -554,6 +555,7 @@ class Facts:
             parts.append(f"{self.unsettled} unsettled after an error")  # law: nothing-waits-silently
         parts += self.unknown
         parts += self.seat_holds
+        parts += self.screening
         parts += self.queue_unknown
         parts += [detail for detail in self.compactions
                   if not any(fallback.startswith(detail + ';') for fallback in self.manual_fresh)]
@@ -917,7 +919,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
                       for path in sorted((ship.runtime / "requests").glob("*.claimed"))]
     now = post.now()
     from . import cascade_runtime, compaction_alert, group_post, ledger_recovery, model_mismatch, relaunch_intent, structure_outcome
-    from . import write_bound
+    from . import pr_screen, write_bound
     oldest = int(max(((now - m.at).total_seconds() for m in waiting), default=0) // 60)
     queued = [a for a in records if a.result == "queued" and latest.get(a.message) == 'queued']
     outcomes, outcome_errors = check_reading if check_reading is not None else check_outcome.collect(ship.runtime)
@@ -942,6 +944,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         server_recovery=server_recovery.status(ship.runtime),
         write_bounds=write_bound.status(ship),
         seat_holds=seat_holds,
+        screening=pr_screen.status(ship.runtime),
         relaunches=relaunch_intent.status(ship, {seat.name: seat for seat in selected
                                                  if not isinstance(seat, UnresolvedSeat)}),
         model_mismatches=model_mismatch.unrouted(ship, readable,

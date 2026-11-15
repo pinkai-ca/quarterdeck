@@ -1,0 +1,24 @@
+{
+  "number": 2,
+  "head": "0202020202020202020202020202020202020202",
+  "title": "Add a helper that sums two numbers",
+  "description": "A small helper and its test.",
+  "comments": [],
+  "commits": [
+    "Add add() with a test"
+  ],
+  "files": [
+    {
+      "name": "src/util.py",
+      "content": "@@ -0,0 +1,3 @@\n+def add(a, b):\n+    \"\"\"Return the sum of a and b.\"\"\"\n+    return a + b\n"
+    },
+    {
+      "name": "tests/test_util.py",
+      "content": "@@ -0,0 +1,2 @@\n+def test_add():\n+    assert add(2, 3) == 5\n"
+    }
+  ],
+  "expect": {
+    "kind": "clean",
+    "search": []
+  }
+}

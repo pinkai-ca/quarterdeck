@@ -98,3 +98,24 @@ Positive refresh saves an intent in the original journal bound to immutable subm
 `qd sync --all [REF]` stays in the typed checkout and resolves one local target before snapshotting direct ship declarations. It passes each through the ordinary installer with its own `Tmux.for_ship`. Tracked templates and checkout-mode ships are named once as passed over. Other crew folders sort by basename; an explicitly marked default goes last, using the shared mark reader once. No mark means ordinary ordering, not arbitrary default selection.
 
 First installer/observation failure stops; earlier successes remain and later ships are untried. Final refreshed copy observations establish dispositions and full commits, including changed/unknown copies; a post-activation/reporting error never implies restoration. JSON retains target, ok and ship rows with before/observed commits, reasons and proof lines. Failure exits 2. `--all` conflicts with explicit `--ship` and `--back`; force/alias retain single-ship behavior. There is no fleet rollback or persistent registry.
+
+### A change from outside
+
+A pull request from outside the crew is screened by a program before any seat reads a word of it (`pr_screen`, run as `python -m quarterdeck.pr_screen --repository OWNER/NAME` on Operations' daily timer).
+
+1. It lists the open pull requests by number and head commit.
+2. For each new number and head, it fetches the outsider's title, description, comments, commit messages, file names and changed files into `runtime/pr-screen/`, which no seat is shown. Each text is written under a number the program makes up (`f001`, ...), never under the outsider's path, and the real names are kept in a separate list.
+   - Lines and files are cut to bounds.
+   - A binary file, a change over the total bound, or a file name over the length bound flags the request, and that text goes to no hand.
+   - Nothing is fetched into a repository: the change is read as the API's patches, so no hook, submodule or large file can run.
+3. It searches every line with the one list of patterns (`pr_screen_patterns`). Each line is searched as written, and again with underscores, dashes, dots and slashes read as spaces.
+4. It copies each piece, with a planted file beside it, into the folders of two hands on two local models (ernie and rocky). The planted file holds a harmless instruction under a number like the outsider's, so a hand cannot tell it apart.
+5. It orders each hand with one fixed order from ship, and judges the answer by its shape alone: `CLEAN`, or `FLAGGED` with `file:line` places. The order is `answer.txt` in the piece's folder.
+   - An answer in no shape, none in time, or one that does not flag the planted file counts as FLAGGED.
+   - While a hand screens, the service files nothing it posts (`pr_screen.held`, read by the drop filing), and the status line says so.
+   - Afterwards the hand is taken down while the hold still stands. Its drops are swept: only a report of exactly `done` on its own order is filed, and anything else it wrote is moved aside under `runtime/pr-screen/held/`, never filed.
+   - The hand stays down until the next screen starts it fresh.
+6. Clean from both hands and nothing from the search: the First Officer is ordered to read the change and report to the desk. Flagged: no seat reads it, and the desk is told the number, the head and what flagged it, in the screen's own terms (the pattern's name or the hand, the numbered file's kind, the lines). Nothing the outsider wrote is quoted.
+7. A new push starts it over.
+
+**The residual.** A pull request written to fool both local models and to miss the search can still pass, and then the First Officer reads it with the key in reach. That is why the hold on a screening hand's posts and the planted check matter: the first keeps a fooled hand from carrying the words to a seat, and the second keeps a hand that did no work from passing anything. The planted cases under `tests/fixtures/pr_screen/` include one written to slip past the search; before a naive reader it passes, which the fixture tests show.
