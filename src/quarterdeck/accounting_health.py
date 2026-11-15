@@ -27,6 +27,7 @@ FILE_CAUSES = {
 }
 CAUSES = frozenset(SQL_CAUSES.values()) | frozenset(FILE_CAUSES.values()) | {
     'database error', 'file I/O error', 'invalid accounting evidence', 'accounting exception',
+    'record past the read bound', 'record refused',
 }
 
 
@@ -35,6 +36,11 @@ def cause(error):
     if isinstance(error, sqlite3.Error):
         code = getattr(error, 'sqlite_errorcode', None)
         return SQL_CAUSES.get(code & 255, 'database error') if type(code) is int else 'database error'
+    from .harness import record_file
+    if isinstance(error, record_file.PastBound):
+        return 'record past the read bound'  # its turns are not read: the status line names the seat and its size
+    if isinstance(error, record_file.Refused):
+        return 'record refused'  # a link, another's file or not a regular one: never read
     if isinstance(error, OSError):
         return FILE_CAUSES.get(error.errno, 'file I/O error')
     if isinstance(error, (ValueError, TypeError, KeyError)):

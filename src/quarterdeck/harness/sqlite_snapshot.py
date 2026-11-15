@@ -10,10 +10,12 @@ times at most, so that a half-written frame is never taken for the truth.
 
 from __future__ import annotations
 
+import os
 import struct
 import time
 from pathlib import Path
 
+from . import record_file
 from .base import RecordError, record_fingerprint
 from ..record_location import resolve
 
@@ -77,8 +79,9 @@ def _apply_wal(name: str, db_bytes: bytes, wal_bytes: bytes | None) -> bytes:
     return bytes(buf)
 
 
-def snapshot(record: Path) -> tuple[tuple, bytes]:
-    """The record's fingerprint and its merged bytes, read without a write beside the source (law: one-folder)."""
+def snapshot(record: Path, bound: int | None = record_file.DATABASE_BOUND) -> tuple[tuple, bytes]:
+    """The record's fingerprint and its merged bytes, read without a write beside the source (law: one-folder). The
+    database and its log are read together within ``bound``; ``None`` only for the ship's own ledger, never a seat's."""
     record = resolve(record)
     if not record.is_file():
         raise RecordError(f"{record.name}: record does not exist")
@@ -87,9 +90,16 @@ def snapshot(record: Path) -> tuple[tuple, bytes]:
         raise RecordError(f"{record.name}: rollback journal present; snapshot unsupported")
     for _ in range(3):
         before = record_fingerprint(record)
-        try:
-            db_bytes = record.read_bytes()  # law: one-folder
-            wal_bytes = wal.read_bytes() if wal.is_file() else None  # law: one-folder
+        try:  # never through a link, never another file, and the database and its log together within one bound
+            db_bytes, _ = record_file.read_bytes(record, bound)  # law: one-folder
+            try:
+                wal_bytes, _ = record_file.read_bytes(wal, None if bound is None else bound - len(db_bytes))
+            except FileNotFoundError:
+                wal_bytes = None
+            except record_file.PastBound:
+                raise record_file.past_bound(record, len(db_bytes) + os.lstat(wal).st_size, bound) from None
+        except RecordError:
+            raise
         except OSError as error:
             raise RecordError(f"{record.name}: {error}") from error
         if before == (after := record_fingerprint(record)):

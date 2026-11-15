@@ -116,7 +116,7 @@ class PlanningDB:
 def planning_book(path, send):
     # Never open the operational ledger through SQLite, even read-only: a WAL
     # connection could create a shared-memory index beside it.
-    _, data = snapshot(path)
+    _, data = snapshot(path, bound=None)  # the ship's own ledger, not a seat's record: no read bound
     memory = sqlite3.connect(':memory:')
     memory.deserialize(data)
     book = Ledger.__new__(Ledger)

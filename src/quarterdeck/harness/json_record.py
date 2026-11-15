@@ -12,19 +12,19 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import wraps
 import json
+import os
 from pathlib import Path
 import time
 from threading import RLock
 from typing import TYPE_CHECKING
-from . import reading_scope
+from . import reading_scope, record_file
 from ..record_location import resolve
 
 if TYPE_CHECKING:
     from .base import State, Turn
 
 
-class RecordError(OSError):
-    """A record file that cannot be read or decoded at all."""
+from .record_file import RecordError  # noqa: E402  (one class for every reader, re-exported here as before)
 
 
 def records_matching(home: Path, pattern: str) -> list[Path]:
@@ -62,6 +62,15 @@ def _stamp(info):
     return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
 
 
+def _same_name(source: Path, opened) -> bool:
+    """The path still names the file that was read: a record renamed over meanwhile is read again."""
+    try:
+        named = os.lstat(source)
+    except OSError:
+        return False
+    return (named.st_dev, named.st_ino) == (opened.st_dev, opened.st_ino)
+
+
 def _parsed(record: Path) -> _Snapshot:
     with _read_lock:
         return _parse(record)
@@ -74,18 +83,23 @@ def _parse(record: Path) -> _Snapshot:
     cached = _snapshots.pop(record, None)  # a failed read cannot preserve a certified success
     for attempt in range(3):
         started = time.time_ns()
-        info = source.stat()
-        checked = time.time_ns()
-        stamp = _stamp(info)
-        if (attempt == 0 and cached is not None and cached.stamp == stamp and cached.certified_at is not None
-                and cached.certified_at <= started <= checked):
-            _snapshots[record] = cached
-            return cached
+        descriptor, info = record_file.open_record(source)  # never a link, a fifo or a swapped file
         try:
-            raw = source.read_bytes().decode('utf-8')
+            checked = time.time_ns()
+            stamp = _stamp(info)
+            if (attempt == 0 and cached is not None and cached.stamp == stamp and cached.certified_at is not None
+                    and cached.certified_at <= started <= checked):
+                _snapshots[record] = cached
+                return cached
+            data = record_file.read_from(descriptor, info, source, record_file.LINES_BOUND)
+            after = record_file.restat(descriptor)
+        finally:
+            os.close(descriptor)
+        try:
+            raw = data.decode('utf-8')
         except UnicodeError as error:
             raise RecordError("record is not UTF-8 JSON lines") from error
-        if _stamp(source.stat()) == stamp:
+        if _stamp(after) == stamp and _same_name(source, after):
             break
         # A live writer can append between stat and read. Re-read fresh bytes,
         # never a cached fallback; a continuously changing source still refuses.

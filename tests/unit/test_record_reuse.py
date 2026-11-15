@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from quarterdeck.harness import claude, codex, json_record
+from quarterdeck.harness import claude, codex, json_record, record_file
 from quarterdeck.harness.synthetic_record import ClaudeShape, CodexShape
 
 
@@ -71,12 +71,12 @@ def test_failed_refresh_cannot_return_or_certify_the_previous_success(tmp_path,m
     record.begin('First synthetic input','synthetic','low')
     claude.state(record.path)
     record.path.write_text(record.path.read_text().replace('First synthetic input','Other synthetic input'))
-    read=Path.open
+    opened=record_file.open_record
     with monkeypatch.context() as patch:
         def denied(path,*args,**kwargs):
             if path==record.path:raise PermissionError('synthetic unavailable source')
-            return read(path,*args,**kwargs)
-        patch.setattr(Path,'open',denied)
+            return opened(path,*args,**kwargs)
+        patch.setattr(record_file,'open_record',denied)
         with pytest.raises(PermissionError):claude.state(record.path)
     assert claude.state(record.path).last_input=='Other synthetic input'
 
@@ -159,13 +159,18 @@ def test_racy_equal_stamps_need_a_new_read_before_certification_and_clock_revers
     record.begin('First synthetic input','synthetic','low')
     stamp=record.path.stat();clock=[stamp.st_ctime_ns+100]
     initial=record.path.read_text()
-    stat=Path.stat;read=Path.open;reads=[]
-    def coarse(path,*args,**kwargs):return stamp if path==record.path else stat(path,*args,**kwargs)
-    def observed(path,mode='r',*args,**kwargs):
-        if path==record.path and mode in ('r','rb'):reads.append(True)
-        return read(path,mode,*args,**kwargs)
-    monkeypatch.setattr(Path,'stat',coarse)
-    monkeypatch.setattr(Path,'open',observed)
+    opened=record_file.open_record;read=record_file.read_from;reads=[];mine=set()
+    def coarse(path,*args,**kwargs):
+        descriptor,info=opened(path,*args,**kwargs)
+        if path!=record.path:return descriptor,info
+        mine.add(descriptor);return descriptor,stamp
+    def restat(descriptor):return stamp if descriptor in mine else os.fstat(descriptor)
+    def observed(descriptor,info,path,*args,**kwargs):
+        if path==record.path:reads.append(True)
+        return read(descriptor,info,path,*args,**kwargs)
+    monkeypatch.setattr(record_file,'open_record',coarse)
+    monkeypatch.setattr(record_file,'restat',restat)
+    monkeypatch.setattr(record_file,'read_from',observed)
     monkeypatch.setattr(json_record.time,'time_ns',lambda:clock[0])
     assert claude.state(record.path).last_input=='First synthetic input'
     record.path.write_text(initial.replace('First synthetic input','Other synthetic input'))
@@ -204,11 +209,11 @@ def test_a_racing_record_read_requires_a_stable_fresh_snapshot(tmp_path, monkeyp
     record = ClaudeShape(tmp_path/'home', tmp_path, 'synthetic', 'synthetic')
     record.begin('First synthetic input', 'synthetic', 'low')
     assert claude.state(record.path).last_input == 'First synthetic input'
-    read = Path.read_bytes
+    read = record_file.read_from
     reads = []
 
-    def concurrent(path):
-        raw = read(path)
+    def concurrent(descriptor, info, path, *args, **kwargs):
+        raw = read(descriptor, info, path, *args, **kwargs)
         if path == record.path:
             reads.append(True)
             if continuous:
@@ -218,11 +223,11 @@ def test_a_racing_record_read_requires_a_stable_fresh_snapshot(tmp_path, monkeyp
                 record.begin('Second synthetic input', 'synthetic', 'low')
         return raw
 
-    monkeypatch.setattr(Path, 'read_bytes', concurrent)
+    monkeypatch.setattr(record_file, 'read_from', concurrent)
     if continuous:
         with pytest.raises(json_record.RecordError, match='changed while being read'):
             claude.state(record.path)
         assert len(reads) <= 3, 'continuous mutation must refuse within the bounded snapshot read'
-        monkeypatch.setattr(Path, 'read_bytes', read)
+        monkeypatch.setattr(record_file, 'read_from', read)
         record.begin('Second synthetic input', 'synthetic', 'low')
     assert claude.state(record.path).last_input == 'Second synthetic input'

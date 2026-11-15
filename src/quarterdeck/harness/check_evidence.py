@@ -6,7 +6,8 @@ from collections import OrderedDict
 import json
 import os
 from pathlib import Path
-import stat
+
+from . import record_file
 
 MAX_PAIRS = 8
 MAX_BYTES = 32768
@@ -51,11 +52,11 @@ def bounded(pairs, *, partial=False) -> dict:
 
 def json_tools(record: Path, decode) -> dict:
     """Read a stable bounded JSONL tail; never follow another record or session."""
-    descriptor = os.open(record, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:  # the one opener of records: no link on the way, this user's own regular file, the one the path named
+        descriptor, before = record_file.open_record(record)
+    except record_file.Refused:
+        return unknown('owned record is not a regular JSONL file')
     try:
-        before = os.fstat(descriptor)
-        if not stat.S_ISREG(before.st_mode):
-            return unknown('owned record is not a regular JSONL file')
         offset = max(0, before.st_size - MAX_READ)
         os.lseek(descriptor, offset, os.SEEK_SET)
         raw = bytearray()

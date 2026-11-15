@@ -70,17 +70,21 @@ def state(seat, record: Path):
 def _follow(name, cls, key, record):
     from .record_location import resolve
     source = resolve(record)
+    from .harness import record_file
     previous = _followed.get(name)
-    with open(source, 'rb') as stream:
-        info = os.fstat(stream.fileno())
+    descriptor, info = record_file.open_record(source)  # never a link on the way, a fifo or a swapped file
+    try:
+        if info.st_size > record_file.LINES_BOUND:  # as the whole reading: unknown, never read in part
+            raise record_file.past_bound(source, info.st_size, record_file.LINES_BOUND)
         identity = (info.st_dev, info.st_ino)
         if previous is not None and not (
                 previous.key == key and previous.identity == identity and info.st_size >= previous.offset
-                and _tail(stream, previous.offset) == previous.tail):
+                and _tail(descriptor, previous.offset) == previous.tail):
             previous = None  # it cannot be proved to have only grown: start over
         start = previous.offset if previous is not None else 0
-        stream.seek(start)
-        data = stream.read(info.st_size - start)
+        data = record_file.read_from(descriptor, info, source, record_file.LINES_BOUND - start, start)
+    finally:
+        os.close(descriptor)
     end = data.rfind(b'\n') + 1
     if data[end:].strip():
         # A final line still being written: the whole reading gives its exact state. What is complete is kept.
@@ -147,7 +151,6 @@ def _feed(followed: _Follow, complete: bytes, start: int) -> _Follow:
     return followed
 
 
-def _tail(stream, offset: int) -> bytes:
+def _tail(descriptor: int, offset: int) -> bytes:
     length = min(TAIL, offset)
-    stream.seek(offset - length)
-    return stream.read(length)
+    return os.pread(descriptor, length, offset - length)

@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from dataclasses import replace
 from pathlib import Path
 
+from . import record_file
 from .json_record import JsonLinesReader, input_reader, input_rows, records_matching
 from .types import AUTHENTICATION, Inputs, TurnFailure, ControlAnswer, ControlContext, ControlInterruption
 from .claude_background import notification as background_notification, BackgroundBash, user_notice
@@ -780,12 +781,12 @@ def control_suffix(record, origin):
     try:
         if str(record) != origin['path']:
             return None
-        before = record.stat()
-        offset = origin['offset']
-        if (type(offset) is not int or offset < 0 or before.st_size < offset
-                or (before.st_dev, before.st_ino) != (origin['device'], origin['inode'])):
-            return None
-        with record.open('rb') as stream:
+        with record_file.Opened(record, record_file.LINES_BOUND) as stream:  # never a link, never without end
+            before = stream.stat
+            offset = origin['offset']
+            if (type(offset) is not int or offset < 0 or before.st_size < offset
+                    or (before.st_dev, before.st_ino) != (origin['device'], origin['inode'])):
+                return None
             digest, left = hashlib.sha256(), offset
             while left:
                 chunk = stream.read(min(left, 65536))
@@ -819,10 +820,10 @@ def control_origin(record: Path | None, display: dict, *, launch: dict | None = 
         return dict(path=None, device=None, inode=None, offset=0, prefix=hashlib.sha256(b'').hexdigest(),
                     display=display, first_record_launch=dict(launch))
     try:
-        before = record.stat()
         digest = hashlib.sha256()
         tail = b''
-        with record.open('rb') as stream:
+        with record_file.Opened(record, record_file.LINES_BOUND) as stream:  # never a link, never without end
+            before = stream.stat
             for chunk in iter(lambda: stream.read(65536), b''):
                 digest.update(chunk)
                 tail = chunk[-1:]
