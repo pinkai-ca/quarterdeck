@@ -39,6 +39,7 @@ def enqueue(runtime, kind='relaunch', **extra):
 def service(runtime, answer):
     result = Service.__new__(Service)
     result.runtime = runtime
+    result.quick_request_scan = result.quick_request_retry = None
     result.answer = answer
     result.log = lambda *args, **kwargs: None
     return result
