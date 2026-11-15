@@ -58,6 +58,15 @@ role = "first-officer"
 harness = "fake"
 pool = "fake-a"
 
+[pools.subscription]
+provider = "openai"
+
+[seats.refusing-reader]
+session = "crew"
+role = "reviewer"
+harness = "codex"
+pool = "subscription"
+
 [seats.desk]
 session = "crew"
 role = "desk"
@@ -92,6 +101,7 @@ def test_no_table_is_no_screen_said_plainly(tmp_path, capsys):
     ('hands = ["hand-a", "loose"]\nreader = "reviewer"', 'loose is not jailed'),
     ('hands = ["hand-a", "hand-c"]\nreader = "reviewer"', 'run on the same model'),
     ('hands = ["hand-a", "hand-b"]\nreader = "hand-a"', 'must not be one of its hands'),
+    ('hands = ["hand-a", "hand-b"]\nreader = "refusing-reader"', "safeguard can refuse, and so lose"),
     ('hands = ["hand-a", "hand-b"]', 'reader must name a declared seat'),
     ('hands = ["hand-a", "hand-b"]\nreader = "reviewer"\nextra = 1', 'pr_screen takes hands'),
 ])

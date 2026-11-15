@@ -663,6 +663,7 @@ class CodexHarness(Harness):
     human_tool_policy = "Native synchronous and asynchronous request_user_input tools are disabled, including plan mode."
 
     reads_usage = background_usage = True
+    refuses_planted_instructions = True  # OpenAI's safeguard refuses work on a reader's planted instructions
     usage_from_records = staticmethod(codex_usage.read)
 
     def headline_windows(self):

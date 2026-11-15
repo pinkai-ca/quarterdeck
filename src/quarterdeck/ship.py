@@ -579,6 +579,13 @@ def _validate(ship: Ship) -> None:
                             "needs one hand on each of two models")
         if screen.reader in screen.hands:
             raise ShipError("pr_screen.reader must not be one of its hands")
+        reader = ship.seats[screen.reader]
+        for pool in reader.pools:
+            program = harnesses.get(reader.for_pool(pool).harness)
+            if program.refuses_planted_instructions:
+                raise ShipError(f"pr_screen.reader: {reader.name} runs on {program.display_name or program.name} "
+                                f"(pool {pool}), whose provider's safeguard can refuse, and so lose, a conversation "
+                                "that reads an outsider's text; name a reader on another program")
         if screen.desk is None and sum(seat.role == "desk" for seat in ship.seats.values()) != 1:
             raise ShipError('pr_screen needs one seat with role = "desk", or desk = "seat" in [pr_screen]')
 
