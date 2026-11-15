@@ -1,6 +1,7 @@
 """Synthetic timestamp/order variations of the measured 2.1.325 task carriers."""
 from datetime import datetime, timedelta, timezone
 import json
+from pathlib import Path
 
 import pytest
 
@@ -9,6 +10,7 @@ from quarterdeck.harness import claude
 from quarterdeck.harness.json_record import release
 
 AT = datetime(2032, 4, 5, 6, 7, tzinfo=timezone.utc)
+RUNNING = Path(__file__).parents[1]/'fixtures/claude/2.1.325/background-running.json'
 
 
 def row(kind, second, **fields):
@@ -26,6 +28,9 @@ def notice(second, carrier='enqueue', status='completed', task='synthetic-task')
     if carrier == 'attachment':
         return row('attachment', second, attachment=dict(type='queued_command', prompt=text,
                    commandMode='task-notification', origin=dict(kind='task-notification', producer='session-task')))
+    if carrier == 'user':
+        return row('user', second, origin=dict(kind='task-notification', producer='session-task', runId='synthetic-run'),
+                   message=dict(role='user', content=text))
     return row('queue-operation', second, operation=carrier, content=text,
                **(dict(reason='absorbed_mid_turn') if carrier == 'remove' else {}))
 
@@ -87,18 +92,19 @@ def test_the_normal_mid_turn_chain_is_unchanged(tmp_path):
     assert task.latest == AT+timedelta(seconds=4) and not task.invalid
 
 
-def test_a_different_older_timestamp_cannot_undo_a_normal_end(tmp_path):
+def test_an_older_copy_after_the_start_keeps_the_original_end(tmp_path):
     record = tmp_path/'record.jsonl'
     write(record, [*initial(), notice(4.5), notice(5, 'remove'), notice(4, 'attachment'),
                    row('system', 6, subtype='turn_duration')])
-    assert claude.state(record).pending_tools is None
-    assert claude._Reader(record).background.tasks['synthetic-call'].invalid
+    assert claude.state(record).pending_tools == ()
+    task = claude._Reader(record).background.tasks['synthetic-call']
+    assert not task.invalid and task.phase == 'ended'
+    assert task.latest == AT+timedelta(seconds=4.5)
 
 
 def test_measured_running_attachment_does_not_poison_a_later_end(tmp_path):
     record = tmp_path/'record.jsonl'
-    running = row('attachment', 4, attachment=dict(type='task_status', taskId='synthetic-task',
-                  taskType='local_bash', status='running', description='synthetic description'))
+    running = json.loads(RUNNING.read_text())
     write(record, [*initial(), running, notice(5), notice(6, 'remove'), notice(5, 'attachment'),
                    row('system', 7, subtype='turn_duration')])
     state = claude.state(record)
@@ -110,9 +116,67 @@ def test_measured_running_attachment_does_not_poison_a_later_end(tmp_path):
 
 def test_a_running_attachment_still_keeps_its_command_pending(tmp_path):
     record = tmp_path/'record.jsonl'
-    running = row('attachment', 4, attachment=dict(type='task_status', taskId='synthetic-task',
-                  taskType='local_bash', status='running', description='synthetic description'))
+    running = json.loads(RUNNING.read_text())
     write(record, [*initial(), running, row('system', 7, subtype='turn_duration')])
     state = claude.state(record)
     assert state.pending_tools == ('Bash',)
     assert idle.check(state).dimension == 'tools-pending'
+
+
+@pytest.mark.parametrize('status', ['completed', 'failed'])
+@pytest.mark.parametrize('carrier', ['enqueue', 'remove', 'attachment', 'user'])
+@pytest.mark.parametrize('second', [3, 4, 6])
+def test_a_matching_duplicate_changes_nothing_after_its_start(tmp_path, status, carrier, second):
+    record = tmp_path/'record.jsonl'
+    write(record, [*initial(), notice(4.5, status=status)])
+    reader = claude._Reader(record)
+    task = reader.background.tasks['synthetic-call']
+    before = vars(task).copy()
+    reader.take(notice(second, carrier, status))
+    assert vars(task) == before
+    assert reader.state().pending_tools == ()
+
+
+@pytest.mark.parametrize('difference', ['status', 'task', 'before-start', 'carrier-version'])
+def test_a_late_copy_cannot_hide_a_real_conflict(tmp_path, difference):
+    record = tmp_path/'record.jsonl'
+    copy = notice(2.5 if difference == 'before-start' else 4, 'attachment',
+                  'failed' if difference == 'status' else 'completed',
+                  'synthetic-other' if difference == 'task' else 'synthetic-task')
+    if difference == 'carrier-version':
+        copy['version'] = '2.1.322'
+    write(record, [*initial(), notice(4.5), notice(5, 'remove'), copy,
+                   row('system', 6, subtype='turn_duration')])
+    assert claude.state(record).pending_tools is None
+    task = claude._Reader(record).background.tasks['synthetic-call']
+    assert task.invalid and task.phase == 'unknown'
+
+
+def test_incremental_older_copy_and_fresh_parse_agree(tmp_path):
+    record = tmp_path/'record.jsonl'
+    write(record, [*initial(), notice(4.5)])
+    assert claude.state(record).pending_tools == ()
+    write(record, [notice(5, 'remove'), notice(4, 'attachment'), row('system', 6, subtype='turn_duration')], 'a')
+    state = claude.state(record)
+    assert idle.check(state) is None
+    fresh = claude._Reader(record)
+    assert fresh.state() == state
+    assert fresh.background.tasks['synthetic-call'].latest == AT+timedelta(seconds=4.5)
+    release(record)
+    assert claude.state(record) == state
+
+
+@pytest.mark.parametrize('difference', ['version', 'before-start', 'running-after-end'])
+def test_unmeasured_or_conflicting_running_evidence_stays_unknown(tmp_path, difference):
+    record = tmp_path/'record.jsonl'
+    running = json.loads(RUNNING.read_text())
+    if difference == 'version':
+        running['version'] = '2.1.326'
+    elif difference == 'before-start':
+        running['timestamp'] = (AT+timedelta(seconds=2)).isoformat()
+    rows = [*initial()]
+    if difference == 'running-after-end':
+        rows.append(notice(3.5))
+    write(record, [*rows, running, notice(5), notice(6, 'remove'), row('system', 7, subtype='turn_duration')])
+    assert claude.state(record).pending_tools is None
+    assert claude._Reader(record).background.tasks['synthetic-call'].invalid

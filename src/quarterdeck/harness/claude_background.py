@@ -18,7 +18,7 @@ from ..seat_command import qd_command
 VERSION = '2.1.317'  # the first version measured for every form below
 MEASURED = frozenset({VERSION, '2.1.322'})  # 2.1.322 measured the same, form for form, where it appears below
 CALL_VERSIONS = MEASURED | {'2.1.325'}  # root Bash call/result measured on 2.1.325 too
-STATUS_VERSIONS = MEASURED  # a running local_bash task_status attachment
+STATUS_VERSIONS = MEASURED | {'2.1.325'}  # running local_bash restoration measured on 2.1.325 too
 STOP_VERSIONS = frozenset({VERSION})  # TaskStop call and result: no 2.1.322 instance measured
 NOTICE_VERSIONS = {  # a task notification, by its carrier
     ('queue-operation', 'enqueue'): MEASURED | {'2.1.325'},
@@ -346,13 +346,19 @@ class BackgroundBash:
     def notice(self, task, identity, status, note, at, version, carrier):
         resumed = (status == 'stopped' and note in RESUME_NOTES
                    and version in RESUME_VERSIONS.get(carrier, ()))
+        supported = (task.task == identity and version in NOTICE_VERSIONS.get(carrier, ())
+                     and at is not None and at >= task.started)
+        terminal = (status in TERMINAL and (note is None or (
+                    status == 'killed' and note == REAPED and version in REAPED_VERSIONS.get(carrier, ()))))
+        if supported and terminal and task.phase == 'ended' and not task.invalid and task.terminal == status:
+            # A later native carrier can retain a timestamp earlier than the enqueue's.
+            # Once its measured identity, status and start bound agree, it is only a copy.
+            return
         if at is not None and not resumed:
             task.other_evidence_at = max(at, task.other_evidence_at)
-        if (task.task != identity or version not in NOTICE_VERSIONS.get(carrier, ())
-                or at is None or at < task.started):
+        if not supported:
             task.phase, task.invalid = 'unknown', True
-        elif status in TERMINAL and (note is None or (
-                status == 'killed' and note == REAPED and version in REAPED_VERSIONS.get(carrier, ()))):
+        elif terminal:
             self.end(task, status, at)
         else:
             # In particular, resume's stopped+note never says the old command ended: it found no completion record

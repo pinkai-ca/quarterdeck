@@ -1,0 +1,19 @@
+{
+  "type": "attachment",
+  "version": "2.1.325",
+  "timestamp": "2032-04-05T06:07:04+00:00",
+  "attachment": {
+    "type": "task_status",
+    "taskId": "synthetic-task",
+    "taskType": "local_bash",
+    "description": "synthetic description",
+    "status": "running",
+    "deltaSummary": null,
+    "outputFilePath": "/synthetic/output",
+    "shell": {
+      "command": "synthetic command",
+      "kind": "bash",
+      "toolUseId": "synthetic-call"
+    }
+  }
+}
