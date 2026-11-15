@@ -816,6 +816,35 @@ class CodexHarness(Harness):
         return Screen(text, box=box, working=working, interruption=self.recognize(text) if box is None else None,
                       shows=shows, echoes=self.echoes(lines) if working else ())
 
+    background_versions = frozenset({'0.166.0'})
+
+    def background(self, screen: Screen, version: str | None) -> tuple[tuple[str, int], ...] | None:
+        """0.166.0 names live terminals above the resting composer, not in the transcript.
+
+        Measured with zero, one and two live exec sessions, and after both ended. The
+        count disappears on process exit before the handles are drained. No terminal
+        is a shell proved to be this seat's own inbox watch: even one stays work.
+        """
+        if version not in self.background_versions or screen.box != '' or screen.working is not False:
+            return None
+        lines = [line.rstrip() for line in screen.text.rstrip().split('\n')]
+        if (len(lines) < 7 or lines[-4] != '› ' + PLACEHOLDER or lines[-3] != ''
+                or not re.fullmatch(r'  \S+ (?:low|medium|high|xhigh|max) · \S.*', lines[-2])
+                or lines[-1] != '  ? for shortcuts' or lines[-6:-4] != ['', '']):
+            return None
+        # A count or near-form anywhere else is not this measured native status row.
+        counts = [(at, line) for at, line in enumerate(lines)
+                  if re.match(r'^\s*\d+\s+background\b', line)]
+        if not counts:
+            return None if 'background' in lines[-7].casefold() else ()
+        if len(counts) != 1 or counts[0][0] != len(lines) - 7:
+            return None
+        found = re.fullmatch(r'  ([1-9]\d*) background (terminals?) running · /ps to view · /stop to close',
+                             counts[0][1])
+        if found is None or found[2] != ('terminal' if found[1] == '1' else 'terminals'):
+            return None
+        return (('terminal', int(found[1])),)
+
     @staticmethod
     def echoes(lines: list[str]) -> tuple[str, ...]:
         """The inputs shown above ``• Working``: the turn's own prompt, and anything queued behind it."""

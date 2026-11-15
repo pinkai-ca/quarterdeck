@@ -1,0 +1,9 @@
+• Synthetic reply.
+
+  2 background terminals running · /ps to view · /stop to close
+
+
+› Ask Codex to do anything
+
+  GPT-6-Sol low · /synthetic/workspace
+  ? for shortcuts
