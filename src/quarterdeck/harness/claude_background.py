@@ -19,6 +19,8 @@ VERSION = '2.1.317'  # the first version measured for every form below
 MEASURED = frozenset({VERSION, '2.1.322'})  # 2.1.322 measured the same, form for form, where it appears below
 CALL_VERSIONS = MEASURED | {'2.1.325'}  # root Bash call/result measured on 2.1.325 too
 STATUS_VERSIONS = MEASURED | {'2.1.325'}  # running local_bash restoration measured on 2.1.325 too
+ERROR_VERSIONS = frozenset({VERSION})  # native failed background invocation with a string result
+EXIT_VERSIONS = frozenset({VERSION, '2.1.325'})  # own root/child process death measured across program exit
 STOP_VERSIONS = frozenset({VERSION})  # TaskStop call and result: no 2.1.322 instance measured
 NOTICE_VERSIONS = {  # a task notification, by its carrier
     ('queue-operation', 'enqueue'): MEASURED | {'2.1.325'},
@@ -49,7 +51,7 @@ REAPED_VERSIONS = {  # the killed notice with REAPED, by its carrier
 }
 
 
-# The single-shell resume emitter in 2.1.317 writes these two exact notes. They describe
+# The single-shell resume emitters measured on 2.1.317 and 2.1.325 write these exact notes. They describe
 # the prior process, never prove that a command ended. Only relaunch admission uses them.
 RESUME_STOPPED = (
     'No completion record was found for it in the previous session. It may have been stopped'
@@ -59,8 +61,8 @@ RESUME_STOPPED = (
 RESUME_NOTES = frozenset({RESUME_STOPPED, RESUME_STOPPED +
     ' Check the output file for partial results before assuming it completed.'})
 RESUME_VERSIONS = {
-    ('queue-operation', 'enqueue'): frozenset({VERSION}),
-    ('user', 'task-notification'): frozenset({VERSION}),
+    ('queue-operation', 'enqueue'): frozenset({VERSION, '2.1.325'}),
+    ('user', 'task-notification'): frozenset({VERSION, '2.1.325'}),
 }
 
 
@@ -175,6 +177,7 @@ class Task:
     inbox_watch_started: datetime | None = None
     resume_stopped_at: datetime | None = None
     other_evidence_at: datetime | None = None
+    version: str | None = None
 
 
 class BackgroundBash:
@@ -197,6 +200,7 @@ class BackgroundBash:
         self.unknown_calls = set()
         self.unbound = False
         self.monitor_calls = set()
+        self.stopped_monitors = set()
         self.monitor_tasks = {}  # a Monitor's task id, from its own result, to its call
         # Notifications met before their call's own rows, by root call id, in file order. When the inbox watch
         # returns at once, Claude Code writes the notification's enqueue first. Each binds when its call's result
@@ -238,6 +242,11 @@ class BackgroundBash:
         allowed = CALL_VERSIONS if name == 'Bash' else STOP_VERSIONS
         supported = version in allowed and entry.get('version') == version
         if name == 'Bash':
+            if (version in ERROR_VERSIONS and supported and wanted is True
+                    and block.get('is_error') is True and isinstance(result, str)
+                    and isinstance(block.get('content'), str)
+                    and at is not None and called_at is not None and at >= called_at):
+                return  # the invocation failed; no background handle/task was created
             task = result.get('backgroundTaskId') if isinstance(result, dict) else None
             advertised = isinstance(result, dict) and 'backgroundTaskId' in result
             if not advertised and not wanted:
@@ -247,7 +256,7 @@ class BackgroundBash:
                     or call in self.tasks or task in self.task_calls):
                 self.unknown_calls.add(call)
                 return
-            self.tasks[call] = Task(call, task, at, at, other_evidence_at=at,
+            self.tasks[call] = Task(call, task, called_at, called_at, other_evidence_at=at, version=version,
                                     inbox_watch_started=called_at if watch else None)
             self.task_calls[task] = call
             for early in self.early.pop(call, ()):
@@ -264,6 +273,9 @@ class BackgroundBash:
             return
         target = self.task_calls.get(wanted) if isinstance(wanted, str) else None
         if target is None:
+            if wanted in self.monitor_tasks:
+                self.stopped_monitors.add(wanted)
+                return  # the known Monitor owns this local_bash success, never a Bash task
             self.unbound = True
             return
         self.end(self.tasks[target], 'task-stop', at)
@@ -383,15 +395,25 @@ class BackgroundBash:
         else:
             task.phase, task.latest = 'pending', at
 
-    def state(self, state, *, launched_at=None):
-        def prior_launch(task):
-            return (launched_at is not None and task.phase == 'unknown' and not task.invalid
-                    and task.resume_stopped_at is not None and task.other_evidence_at is not None
-                    and task.started < launched_at <= task.resume_stopped_at
-                    and task.other_evidence_at < launched_at)
+    def task_states(self, launched_at=None):
+        """Launch-scoped death is its own state, without changing native completion evidence."""
+        for task in self.tasks.values():
+            measured = task.phase == 'pending' or (task.resume_stopped_at is not None
+                                                  and task.latest == task.resume_stopped_at)
+            if (launched_at is not None and task.version in EXIT_VERSIONS and measured
+                    and not task.invalid and task.phase != 'ended'
+                    and task.started < launched_at
+                    and (task.latest < launched_at or task.resume_stopped_at is not None
+                         and launched_at <= task.resume_stopped_at)
+                    and task.other_evidence_at is not None and task.other_evidence_at < launched_at):
+                yield replace(task, phase='ended-by-relaunch', terminal=None)
+            else:
+                yield task
 
-        # A separate admission view; task phases and the ordinary record reading stay unchanged.
-        active = [task for task in self.tasks.values() if task.phase != 'ended' and not prior_launch(task)]
+    def state(self, state, *, launched_at=None):
+        # A separate admission view; the cached native tasks and their completion state stay unchanged.
+        active = [task for task in self.task_states(launched_at)
+                  if task.phase not in ('ended', 'ended-by-relaunch')]
         unknown = (self.unbound or self.early or self.unknown_calls
                    or any(task.phase == 'unknown' for task in active))
         return replace(state,

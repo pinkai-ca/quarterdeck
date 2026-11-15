@@ -1,0 +1,381 @@
+{
+  "textless-dequeue": [
+    {
+      "type": "user",
+      "timestamp": "2032-04-05T06:07:00+00:00",
+      "message": {
+        "role": "user",
+        "content": "synthetic input"
+      },
+      "version": "2.1.317"
+    },
+    {
+      "type": "assistant",
+      "timestamp": "2032-04-05T06:07:01+00:00",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "call-spruce",
+            "name": "Bash",
+            "input": {
+              "command": "synthetic command",
+              "run_in_background": true
+            }
+          }
+        ]
+      },
+      "version": "2.1.317"
+    },
+    {
+      "type": "user",
+      "timestamp": "2032-04-05T06:07:02+00:00",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "call-spruce",
+            "content": "synthetic result",
+            "is_error": false
+          }
+        ]
+      },
+      "toolUseResult": {
+        "stdout": "",
+        "stderr": "",
+        "interrupted": false,
+        "isImage": false,
+        "noOutputExpected": false,
+        "backgroundTaskId": "task-willow"
+      },
+      "version": "2.1.317"
+    },
+    {
+      "type": "system",
+      "timestamp": "2032-04-05T06:07:03+00:00",
+      "subtype": "turn_duration",
+      "version": "2.1.317"
+    },
+    {
+      "type": "queue-operation",
+      "timestamp": "2032-04-05T06:07:04+00:00",
+      "operation": "enqueue",
+      "content": "<task-notification>\n<task-id>task-willow</task-id>\n<tool-use-id>call-spruce</tool-use-id>\n<output-file>/synthetic/output</output-file>\n<status>completed</status>\n<summary>synthetic summary</summary>\n</task-notification>"
+    },
+    {
+      "type": "queue-operation",
+      "timestamp": "2032-04-05T06:07:04.100000+00:00",
+      "operation": "dequeue"
+    }
+  ],
+  "notice-before-result": [
+    {
+      "type": "user",
+      "timestamp": "2032-04-05T06:07:00+00:00",
+      "message": {
+        "role": "user",
+        "content": "synthetic input"
+      },
+      "version": "2.1.317"
+    },
+    {
+      "type": "assistant",
+      "timestamp": "2032-04-05T06:07:01+00:00",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "call-spruce",
+            "name": "Bash",
+            "input": {
+              "command": "synthetic command",
+              "run_in_background": true
+            }
+          }
+        ]
+      },
+      "version": "2.1.317"
+    },
+    {
+      "type": "queue-operation",
+      "timestamp": "2032-04-05T06:07:01.500000+00:00",
+      "operation": "enqueue",
+      "content": "<task-notification>\n<task-id>task-willow</task-id>\n<tool-use-id>call-spruce</tool-use-id>\n<output-file>/synthetic/output</output-file>\n<status>failed</status>\n<summary>synthetic summary</summary>\n</task-notification>"
+    },
+    {
+      "type": "user",
+      "timestamp": "2032-04-05T06:07:02+00:00",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "call-spruce",
+            "content": "synthetic result",
+            "is_error": false
+          }
+        ]
+      },
+      "toolUseResult": {
+        "stdout": "",
+        "stderr": "",
+        "interrupted": false,
+        "isImage": false,
+        "noOutputExpected": false,
+        "backgroundTaskId": "task-willow"
+      },
+      "version": "2.1.317"
+    },
+    {
+      "type": "queue-operation",
+      "timestamp": "2032-04-05T06:07:03+00:00",
+      "operation": "remove",
+      "content": "<task-notification>\n<task-id>task-willow</task-id>\n<tool-use-id>call-spruce</tool-use-id>\n<output-file>/synthetic/output</output-file>\n<status>failed</status>\n<summary>synthetic summary</summary>\n</task-notification>"
+    },
+    {
+      "type": "attachment",
+      "timestamp": "2032-04-05T06:07:01.500000+00:00",
+      "attachment": {
+        "type": "queued_command",
+        "commandMode": "task-notification",
+        "origin": {
+          "kind": "task-notification"
+        },
+        "prompt": "<task-notification>\n<task-id>task-willow</task-id>\n<tool-use-id>call-spruce</tool-use-id>\n<output-file>/synthetic/output</output-file>\n<status>failed</status>\n<summary>synthetic summary</summary>\n</task-notification>"
+      },
+      "version": "2.1.317"
+    },
+    {
+      "type": "system",
+      "timestamp": "2032-04-05T06:07:04+00:00",
+      "subtype": "turn_duration",
+      "version": "2.1.317"
+    }
+  ],
+  "background-error-string": [
+    {
+      "type": "user",
+      "timestamp": "2032-04-05T06:07:00+00:00",
+      "message": {
+        "role": "user",
+        "content": "synthetic input"
+      },
+      "version": "2.1.317"
+    },
+    {
+      "type": "assistant",
+      "timestamp": "2032-04-05T06:07:01+00:00",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "call-spruce",
+            "name": "Bash",
+            "input": {
+              "command": "synthetic command",
+              "run_in_background": true
+            }
+          }
+        ]
+      },
+      "version": "2.1.317"
+    },
+    {
+      "type": "user",
+      "timestamp": "2032-04-05T06:07:02+00:00",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "call-spruce",
+            "content": "synthetic result",
+            "is_error": true
+          }
+        ]
+      },
+      "toolUseResult": "synthetic invocation failure",
+      "version": "2.1.317"
+    },
+    {
+      "type": "system",
+      "timestamp": "2032-04-05T06:07:03+00:00",
+      "subtype": "turn_duration",
+      "version": "2.1.317"
+    }
+  ],
+  "monitor-stop": [
+    {
+      "type": "user",
+      "timestamp": "2032-04-05T06:07:00+00:00",
+      "message": {
+        "role": "user",
+        "content": "synthetic input"
+      },
+      "version": "2.1.317"
+    },
+    {
+      "type": "assistant",
+      "timestamp": "2032-04-05T06:07:01+00:00",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "call-monitor-larch",
+            "name": "Monitor",
+            "input": {
+              "command": "synthetic watch",
+              "description": "synthetic",
+              "timeout_ms": 300000
+            }
+          }
+        ]
+      },
+      "version": "2.1.317"
+    },
+    {
+      "type": "user",
+      "timestamp": "2032-04-05T06:07:02+00:00",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "call-monitor-larch",
+            "content": "synthetic result",
+            "is_error": false
+          }
+        ]
+      },
+      "toolUseResult": {
+        "persistent": true,
+        "taskId": "task-monitor-larch",
+        "timeoutMs": 300000
+      },
+      "version": "2.1.317"
+    },
+    {
+      "type": "assistant",
+      "timestamp": "2032-04-05T06:07:03+00:00",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "synthetic-stop",
+            "name": "TaskStop",
+            "input": {
+              "task_id": "task-monitor-larch"
+            }
+          }
+        ]
+      },
+      "version": "2.1.317"
+    },
+    {
+      "type": "user",
+      "timestamp": "2032-04-05T06:07:04+00:00",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "synthetic-stop",
+            "content": "synthetic result",
+            "is_error": false
+          }
+        ]
+      },
+      "toolUseResult": {
+        "command": "synthetic command",
+        "message": "Successfully stopped synthetic monitor",
+        "task_id": "task-monitor-larch",
+        "task_type": "local_bash"
+      },
+      "version": "2.1.317"
+    },
+    {
+      "type": "system",
+      "timestamp": "2032-04-05T06:07:05+00:00",
+      "subtype": "turn_duration",
+      "version": "2.1.317"
+    }
+  ],
+  "old-resume-stopped": [
+    {
+      "type": "user",
+      "timestamp": "2032-04-05T06:07:00+00:00",
+      "message": {
+        "role": "user",
+        "content": "synthetic input"
+      },
+      "version": "2.1.317"
+    },
+    {
+      "type": "assistant",
+      "timestamp": "2032-04-05T06:07:01+00:00",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "call-spruce",
+            "name": "Bash",
+            "input": {
+              "command": "synthetic command",
+              "run_in_background": true
+            }
+          }
+        ]
+      },
+      "version": "2.1.317"
+    },
+    {
+      "type": "user",
+      "timestamp": "2032-04-05T06:07:02+00:00",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "call-spruce",
+            "content": "synthetic result",
+            "is_error": false
+          }
+        ]
+      },
+      "toolUseResult": {
+        "stdout": "",
+        "stderr": "",
+        "interrupted": false,
+        "isImage": false,
+        "noOutputExpected": false,
+        "backgroundTaskId": "task-willow"
+      },
+      "version": "2.1.317"
+    },
+    {
+      "type": "system",
+      "timestamp": "2032-04-05T06:07:03+00:00",
+      "subtype": "turn_duration",
+      "version": "2.1.317"
+    },
+    {
+      "type": "user",
+      "timestamp": "2032-04-05T06:07:05+00:00",
+      "origin": {
+        "kind": "task-notification"
+      },
+      "message": {
+        "role": "user",
+        "content": "<task-notification>\n<task-id>task-willow</task-id>\n<tool-use-id>call-spruce</tool-use-id>\n<output-file>/synthetic/output</output-file>\n<status>stopped</status>\n<summary>synthetic summary</summary>\n<note>No completion record was found for it in the previous session. It may have been stopped (via the UI, Monitor timeout, or agent teardown \u2014 these leave no transcript marker), or it may have been running when the previous Claude Code process exited.</note>\n</task-notification>"
+      },
+      "version": "2.1.317"
+    }
+  ]
+}

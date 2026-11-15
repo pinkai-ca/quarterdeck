@@ -27,7 +27,7 @@ from pathlib import Path
 
 from .json_record import JsonLinesReader, input_reader, input_rows, records_matching
 from .types import AUTHENTICATION, Inputs, TurnFailure, ControlAnswer, ControlContext, ControlInterruption
-from .claude_background import BackgroundBash, user_notice
+from .claude_background import notification as background_notification, BackgroundBash, user_notice
 
 from .. import durable, seat_files
 from ..ship import Pool, SeatSpec
@@ -175,11 +175,43 @@ def compactions(record: Path):
     return read(record, interpret, _Reader)
 
 
+class _TextlessDequeue:
+    """The measured 2.1.317 adjacent queue-operation pair, never a general FIFO guess."""
+    def __init__(self):
+        self.version = None
+        self.previous = None
+
+    def take(self, entry):
+        if 'version' in entry:
+            self.version = entry['version']
+        if entry.get('type') != 'queue-operation':
+            return entry
+        previous = self.previous
+        self.previous = entry, self.version
+        if (entry.get('operation') != 'dequeue' or 'content' in entry
+                or self.version != '2.1.317' or entry.get('isSidechain')):
+            return entry
+        if previous is None:
+            return entry
+        earlier, version = previous
+        text = earlier.get('content')
+        before, after = when(earlier.get('timestamp')), when(entry.get('timestamp'))
+        if (version == self.version and earlier.get('operation') == 'enqueue'
+                and not earlier.get('isSidechain') and isinstance(text, str)
+                and background_notification(text) is not None
+                and before is not None and after is not None
+                and 0 < (after - before).total_seconds() <= 1):
+            return {**entry, 'content': text}
+        return entry
+
+
 @input_reader(lambda row: row.get('type') not in ('assistant', 'system', *INPUT_IGNORED)
               or row.get('type') == 'ai-title' and not ai_title(row))
 def inputs(record: Path) -> list[Input]:
     found, queued = Inputs(), []
+    dequeue = _TextlessDequeue()
     for line, row in input_rows(record, _Reader.kinds, _Reader.label, found):
+        row = dequeue.take(row)
         kind = row.get('type')
         if kind == 'ai-title' and not ai_title(row):
             found.skip(line, 'ai-title', 'unknown title bookkeeping')
@@ -378,6 +410,7 @@ class _Reader(JsonLinesReader):
         self.orphan_auth = None
         self.sidechain_ends = set()
         self.subagent_turns = 0
+        self.textless_dequeue = _TextlessDequeue()
         self.queue_slots = []  # text/phase FIFO, including returned drafts and consumed echo identities
         self.background = BackgroundBash(record)
         self.walls = []
@@ -389,6 +422,7 @@ class _Reader(JsonLinesReader):
         return replace(state, failure=self.orphan_auth) if self.open is None and self.orphan_auth else state
 
     def take(self, entry: dict) -> None:
+        entry = self.textless_dequeue.take(entry)
         kind = entry.get("type")
         if kind == 'ai-title' and not ai_title(entry):
             self.tools_known = False
