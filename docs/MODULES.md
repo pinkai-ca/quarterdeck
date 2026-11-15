@@ -147,7 +147,7 @@ The modules that the framework table does not list, the module of each part amon
 | `service_inbox.py` | skips a completed inbox pass only while its file inputs and bounded received tail remain unchanged; recent timestamps and failed passes certify nothing |
 | `service_status.py` | cheap change hints for status publication; the ship file sets unchanged refresh, thirty seconds by default; never delivery evidence |
 | `service_timing.py` | one numeric summary per minute: pass count, duty totals/maxima and resting time |
-| `service_wait.py` | directory arrival notifications during service rest, with the ship tick as fallback |
+| `service_wait.py` | directory arrival notifications during service rest and drill settlement, with bounded fallback checks |
 | `setup.py` | guided setup, which asks Git for a usable identity before it writes anything, with one replaceable boundary for every machine, account and live operation |
 | `setup_answers.py` | one answer resolver for setup's conversation, flags, file and summary edits |
 | `setup_proposal.py` | read-only setup discovery, and the one renderer of a proposed ship |

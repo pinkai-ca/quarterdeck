@@ -31,11 +31,12 @@ class Arrivals:
         except (AttributeError, OSError):
             pass
 
-    def refresh(self, names):
+    def refresh(self, names, *, extra=()):
         if self.fd is None:
             return
         paths = [self.runtime / 'requests', self.runtime / 'post/store', self.runtime / 'post/drop']
         paths += [self.runtime / 'post/drop' / name for name in names]
+        paths += list(extra)
         for path in paths:
             try:
                 # Use the existing directory walk for anything under post.

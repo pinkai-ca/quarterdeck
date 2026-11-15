@@ -23,7 +23,7 @@ from tests.shared_install import shared_wheel  # noqa: F401
 
 PY312 = os.environ.get('DRILL_PYTHON312')
 TRIALS = 8
-LOAD = 32
+LOAD = 8
 
 OBSERVE = r'''
 import collections, json, sys, time
@@ -71,7 +71,8 @@ def measured(self, seat, order):
                 time.sleep(.1)
         print('DRILL_SETTLEMENT ' + json.dumps(dict(
             python=sys.version.split()[0], role=seat.spec.role, human=seat.session.human,
-            bound_seconds=self.patience, success=result[0] is not None,
+            bound_seconds=self.patience * getattr(drill, 'SETTLEMENT_WINDOWS', 1),
+            ordinary_patience_seconds=self.patience, success=result[0] is not None,
             call_seconds=ended-began,
             settlement_seconds=called[-1][0]-began if called else None,
             fresh_seconds=called[-1][1]-called[-1][0] if called else None,

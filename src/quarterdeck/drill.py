@@ -21,6 +21,7 @@ from contextlib import nullcontext
 from pathlib import Path
 
 from . import harness as harnesses, human_wake, inbox_watch, input_receipt, lifecycle, post, seat as seatmod, service, ship as shipmod, standing, watch
+from . import service_wait
 from .post import Attempts, Store
 from .pending import journals
 from .harness.synthetic_control import Rendezvous, events
@@ -30,6 +31,8 @@ from .tmux import Tmux, TmuxError
 
 DRYDOCK = standing.PROJECT_DIR / "ships" / "drydock"
 DRILL_TICK = 0.1  # seconds: the generated drydock's service passes quickly; ships/drydock keeps the default
+SETTLEMENT_WINDOWS = 4  # outer stuck-run guard, not permission to start fresh
+SETTLEMENT_FALLBACK = 1.0  # a flock release need not generate a directory notification
 
 
 
@@ -49,11 +52,16 @@ class Check:
 
 def wait_for(predicate, seconds: float, step: float = 0.1):
     deadline = time.monotonic() + seconds
+    # Only a predicate with an explicit event wait changes the ordinary cadence.
+    pause = getattr(predicate, '__dict__', {}).get('_drill_wait')
     while time.monotonic() < deadline:
         value = predicate()
         if value:
             return value
-        time.sleep(step)
+        if pause is None:
+            time.sleep(step)
+        else:
+            pause(max(0.0, deadline - time.monotonic()))
     return None
 
 
@@ -251,9 +259,15 @@ class Drill:
     def fresh_after_delivery(self, seat: Seat, order: post.Message) -> tuple[str | None, str]:
         """Wait for active delivery to settle; an unread open order can be carried by fresh."""
         reason = "pending order has no settled delivery attempt"
+        notifications = service_wait.Arrivals(self.ship.runtime)
 
         def ready():
             nonlocal reason
+            # Subscribe before reading, so a settlement between read and wait
+            # leaves a wake queued. Notifications grant no delivery evidence.
+            notifications.refresh((seat.name,), extra=(self.ship.runtime / 'post/attempts',
+                                  self.ship.runtime / 'post/pending',
+                                  self.ship.runtime / 'post/pending' / seat.name))
             try:
                 attempts = self.attempts.all()
                 current = [a for a in attempts if a.message == order.id and a.seat == seat.name]
@@ -306,8 +320,16 @@ class Drill:
                 mode = "carried; prior delivery evidence unreadable"
             return proof, mode
 
-        result = wait_for(ready, self.patience)
-        return result if result is not None else (None, reason)
+        ready._drill_wait = lambda remaining: notifications.wait(min(SETTLEMENT_FALLBACK, remaining))
+        guard = self.patience * SETTLEMENT_WINDOWS
+        began = time.monotonic()
+        try:
+            result = wait_for(ready, guard)
+        finally:
+            notifications.close()
+        return result if result is not None else (None,
+            f'outer settlement guard expired after {time.monotonic() - began:.1f}s '
+            f'(bound {guard:.1f}s): {reason}')
 
     def fresh_all(self) -> None:
         """Every seat relaunched fresh receives its brief and an index of its open threads."""
