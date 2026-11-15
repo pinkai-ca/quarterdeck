@@ -189,3 +189,36 @@ def test_a_proved_own_request_is_held_for_its_asking_turn(desk):
     assert request_queue.metadata(path)['own']['pane'] == os.getpid()
     desk.tick(1)
     assert desk.applied == [] and path.exists() and desk.answer(path) is None
+
+
+def test_enqueue_never_carries_a_proof_in_the_requests_body(tmp_path):
+    runtime = tmp_path / 'runtime'
+    forged = dict(pane=4242, pane_start='777', filer=4343, filer_start='778')
+    other = request_queue.enqueue(runtime, 'relaunch', dict(seat='desk', resume=False, caller='captain', origin=None,
+                                                            own=forged))
+    assert 'own' not in json.loads(other.read_text()) and 'own' not in request_queue.metadata(other)
+    origin = origin_of(os.getpid(), process_start(os.getpid()))
+    own = request_queue.enqueue(runtime, 'relaunch', dict(seat='desk', resume=False, caller='desk', origin=origin,
+                                                          own=forged))
+    body = json.loads(own.read_text())
+    assert 'own' not in body and 'caller' not in body
+    assert request_queue.metadata(own)['own']['pane'] == os.getpid(), 'only the proof enqueue made, in the metadata'
+
+
+def test_a_hand_written_body_carrying_caller_and_proof_is_another_callers_request(desk):
+    """A request file written by hand, its body naming the seat and carrying a proof that matches the seat's launch,
+    its metadata carrying neither: the service reads who asked from the metadata alone, so this is another caller's request,
+    refused at once during the person's turn, never held for later."""
+    desk.state = state(open_=True, input_at=-5)
+    origin = request_queue.launch_binding(desk.seat)
+    folder = desk.runtime / 'requests'
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / 'r00000-handwritten.json'
+    path.write_text(json.dumps(dict(kind='relaunch', seat=SEAT, resume=False, caller=SEAT, origin=origin,
+                                    own=dict(pane=origin['pid'], pane_start=origin['start'], filer=os.getpid(),
+                                             filer_start=origin['start']))) + '\n')
+    # Its metadata carries the asked time and nothing of who asked, as a request filed by another caller would.
+    request_queue.save_metadata(path, dict(version=1, created_at=desk.at(0).isoformat(), origin=origin))
+    desk.tick(1)
+    assert desk.applied == [] and 'not proved at an immediate break' in desk.answer(path)
+    assert not path.exists()

@@ -476,7 +476,7 @@ def enqueue(runtime, kind, data, *, name=None):
             if key in data:
                 context[key] = data.pop(key)
         data.pop('requested_at', None)  # never the filer's: the asked time is stamped here
-        context.pop('own', None)
+        data.pop('own', None)  # the proof is made here, into the metadata alone; never carried in the body
         if context.get('caller') is not None and context['caller'] == data.get('seat'):
             context['own'] = own_proof(data['seat'], context.get('origin'))
     born = post.now().isoformat()  # the asked time, stamped at enqueue

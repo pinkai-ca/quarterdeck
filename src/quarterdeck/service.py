@@ -985,7 +985,9 @@ class Service:
         """
         from . import request_queue
         meta = getattr(self, 'request_metadata', {})
-        data = {**data, **meta}
+        # Who asked, and the proof that it was the seat itself, are read from the metadata enqueue wrote, never from
+        # the body: a body's caller or proof can never stand where the metadata carries none.
+        data = {**{key: value for key, value in data.items() if key not in ('caller', 'own')}, **meta}
         seat = self.seat(data['seat'])
         origin = request_queue.launch_binding(seat)
         if data.get('origin') is not None and data['origin'] != origin:
