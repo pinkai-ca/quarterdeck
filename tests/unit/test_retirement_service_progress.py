@@ -120,3 +120,11 @@ def test_failed_pass_is_logged_and_cannot_clear_a_wait(tmp_path, monkeypatch):
     assert len(s.logs) == 2
     assert s.logs[-1][1]['failed'] is True
     assert retirement.reading(s.runtime) == 'retirement stalled: attempts read'
+
+
+def test_accounting_gate_does_not_emit_a_delivery_event(tmp_path):
+    s = service(tmp_path / 'runtime');s.runtime.mkdir()
+    s.ledger.catching_up = lambda: True
+    retirement.due(s)
+    assert s.logs == []
+    assert s.post_retirement_observation['phase'] == 'ledger catch-up'

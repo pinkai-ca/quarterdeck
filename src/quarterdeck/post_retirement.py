@@ -428,5 +428,7 @@ def due(service):
             result = {**getattr(service, 'post_retirement_counts', dict(attempts=0, journals=0)),
                       'paused': True, 'failed': True}
         _status(service, result, observation)
-        # A failed pass is logged too, before its exception reaches the service.
-        service.log('post-retired', **result, **observation)
+        # Catch-up gates retirement before any inventory/pass can begin.
+        # Actual passes, including failures and zero moves, always have a line.
+        if result.get('held') != 'ledger catch-up':
+            service.log('post-retired', **result, **observation)
