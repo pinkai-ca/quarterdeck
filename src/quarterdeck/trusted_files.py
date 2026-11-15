@@ -4,7 +4,8 @@ sees, ``runtime/trusted/<seat>``.
 A seat's own folder, ``runtime/seats/<seat>``, is bound writable into its jail: its home, carried/, its tmux folder
 and the watch broker's request and receipts live there, and the jail may write any of them. What the service decides
 from lives here instead: the launch record and its price, the pool selection, the record pointer and its registries,
-the alarm journals, compaction.json, refusal.json, the holds on a relaunch, a retirement and a move, the launch script
+the alarm journals, compaction.json, refusal.json, the holds on a relaunch, a retirement, a move and a sandbox that
+did not end, the sweep's record of the stray sandboxes it ended, the launch script
 tmux runs outside the jail, and the service's own readings and journals of the seat (model mismatch, turn failure,
 person quiet, the human wake, qd press and qd type). Inside every
 jail the runtime is an empty fence and this folder, like the locks, is a private empty tmpfs: no jail can read or
@@ -29,10 +30,13 @@ LAUNCHES = 'record-launches.jsonl'
 COMPACTION = 'compaction.json'
 REFUSAL = 'refusal.json'
 ALARMS = ('human-alert.json', 'unconfirmed-delivery-alert.json', 'selection-alert.json', 'manual-fresh-alert.json',
-          'write-bound-floor-alert.json')  # every journal of alarms.FILES
+          'write-bound-floor-alert.json', 'jail-sweep-alert.json')  # every journal of alarms.FILES
 RETIRING = 'retiring.json'
 REFUSED_RELAUNCH = 'relaunch-refused.json'  # a relaunch refused while the old program was ending, until up succeeds
 MOVE_HOLD = 'move-hold.json'
+JAIL_HELD = 'jail-held.json'  # a seat's old sandbox that did not end at its stop: the seat is held until it has
+JAIL_STOPPING = 'jail-stopping.json'  # the seat's own stop is ending its sandbox now: the sweep leaves it to that stop
+JAIL_SWEPT = 'jail-swept.json'  # the stray sandboxes of this seat the sweep ended, within the last day
 LAUNCH_SCRIPT = 'launch.sh'  # what tmux runs for the seat's window, outside its jail
 MODEL_MISMATCH = 'model-mismatch.json'
 TURN_FAILURE = 'turn-failure.json'

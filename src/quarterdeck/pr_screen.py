@@ -741,6 +741,14 @@ def screen_piece(runtime: Path, hands, hand: str, key: str, index: int, prepared
     folder = f'screen-{secrets.token_hex(6)}'
     record = Path(runtime) / ROOT / 'screens' / key
     record.mkdir(parents=True, exist_ok=True, mode=0o700)
+    from . import jail_end
+    started = datetime.now(timezone.utc)
+    if (unended := jail_end.unproved(runtime, hand)) is not None:
+        # A hand whose old sandbox is held never screens: the piece goes to it not at all, and counts as FLAGGED.
+        verdict = Verdict(hand, False, f'{hand}: its sandbox is not proved ended, so it screened nothing')
+        durable.replace_file(record / f'piece-{index}-{hand}.verdict.json', json.dumps(dict(
+            clean=False, reason=verdict.reason, places=(), sandbox=unended)) + '\n')
+        return verdict
     durable.replace_file(record / f'piece-{index}-{hand}.json', json.dumps(dict(
         folder=folder, names=names, planted=f'f{planted_slot:02d}', planted_lines=sorted(lines))) + '\n')
     hold(runtime, hand, key)
@@ -801,14 +809,20 @@ def screen_piece(runtime: Path, hands, hand: str, key: str, index: int, prepared
         finally:
             if cleared:
                 release(runtime, hand)  # a sweep, a move or a listing that failed leaves the hold, and the line says so
-    # The hand is started fresh, so the record a seat watches (qd watch) is a new one that never held the outsider's
-    # text; the screening one leaves the home with the retirement, once accounted.
-    hands.fresh(hand)
+    # A hand whose sandbox was held at its down, or of which a stray sandbox was swept while it screened, did not
+    # prove that what read the outsider's text has ended: that screen is never clean, and the hand stays down, held.
+    unended = jail_end.unproved(runtime, hand, started)
+    if unended is None:
+        # The hand is started fresh, so the record a seat watches (qd watch) is a new one that never held the
+        # outsider's text; the screening one leaves the home with the retirement, once accounted.
+        hands.fresh(hand)
     verdict = judge(hand, answer, names, (f'f{planted_slot:02d}', lines))
+    if unended is not None:
+        verdict = Verdict(hand, False, f'{hand}: its sandbox was not proved ended after the piece')
     durable.replace_file(record / f'piece-{index}-{hand}.verdict.json', json.dumps(dict(
         clean=verdict.clean, reason=verdict.reason, places=verdict.places, moved_aside=moved,
-        folder_moved_aside=len(aside or []), home_moved_aside=len(home_aside), screening_records=len(screened)))
-        + '\n')
+        folder_moved_aside=len(aside or []), home_moved_aside=len(home_aside), screening_records=len(screened),
+        **({'sandbox': unended} if unended is not None else {}))) + '\n')
     return verdict
 
 

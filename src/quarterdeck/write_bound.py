@@ -499,6 +499,24 @@ def kill(pids: dict[int, str], rounds: int = 10) -> list[int]:
     return signalled
 
 
+def tree(pid: int, start: str | None, processes=None) -> dict[int, str]:
+    """A process and its descendants now, each by pid and start; empty when that process is not the one named.
+
+    Read-only: what kill() is then given, so the stop of a seat ends the same tree the write-bound alarm would.
+    """
+    processes = _processes() if processes is None else processes
+    if pid not in processes or start is None or processes[pid][1] != start:
+        return {}
+    return {child: processes[child][1] for child in _descendants(processes, [pid])}
+
+
+def alive(pids: dict[int, str]) -> dict[int, str]:
+    """Which of these processes still run, by pid and start; a zombie has ended and is not counted."""
+    processes = _processes()
+    return {pid: start for pid, start in pids.items()
+            if pid in processes and processes[pid][1] == start and _state(pid) not in ('Z', 'X')}
+
+
 def _state(pid: int) -> str:
     try:
         with open(f'/proc/{pid}/stat', 'rb') as stream:
@@ -829,6 +847,7 @@ class Alarm:
         self.period = period
         self.stopping = threading.Event()
         self.state = State()  # what one look leaves the next
+        self.swept = None  # when the last sweep of stray sandboxes ran (jail_end), on the monotonic clock
         self.thread = threading.Thread(target=self.run, name='service-write-bound', daemon=True)
 
     def start(self) -> 'Alarm':
@@ -845,3 +864,16 @@ class Alarm:
                 look(self.service.ship, self.service.log, state=self.state)
             except Exception as error:  # the alarm never stops the service; the next look tries again
                 self.service.log('error', step='write-bound', error=repr(error))
+            self.sweep()
+
+    def sweep(self, clock=time.monotonic) -> None:
+        """At most once a minute, after a look: the stray sandboxes no stop saw (jail_end). Its own time is bounded,
+        so a slow sweep never delays the next look; its kills run in this thread, never beside the alarm's own."""
+        from . import jail_end
+        if self.swept is not None and clock() - self.swept < jail_end.SWEEP_SECONDS:
+            return
+        self.swept = clock()
+        try:
+            jail_end.sweep(self.service)
+        except Exception as error:  # a sweep never stops the alarm; the next minute tries again
+            self.service.log('error', step='jail-sweep', error=repr(error))

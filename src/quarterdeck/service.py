@@ -185,7 +185,7 @@ class Service:
         beat.start()
         watch = threading.Thread(target=self.watch_credentials, args=(beat_stop,), name='service-credentials', daemon=True)
         watch.start()
-        from . import write_bound
+        from . import jail_end, write_bound  # noqa: F401  (jail_end registers its hold with relaunch_intent)
         bound = write_bound.Alarm(self).start()  # its own thread and period: a hung pass never delays it
         arrivals = service_wait.Arrivals(self.runtime)
         try:
@@ -847,6 +847,22 @@ class Service:
                               desk_now=True, up=self.systems_recipients(spec))
             except Exception as error:  # one seat's alarm never keeps the others'
                 self.log('error', step='write-bound-floor', seat=spec.name, error=repr(error))
+            self.jail_sweep_alarm(spec)
+
+    def jail_sweep_alarm(self, spec) -> None:
+        """A stray sandbox the sweep ended is told to the systems seats, by the same alarm road; a second within a day
+        goes to security as well, as a sign that the seats' sandboxes want a scope of their own."""
+        from . import alarms, jail_end
+        try:
+            key, words, second = jail_end.alarm(self.runtime, spec.name)
+            told = self.systems_recipients(spec)
+            if second:
+                told += [other.name for other in self.ship.seats.values()
+                         if other.role == 'security' and other.name != spec.name and other.name not in told]
+            alarms.notify(self, spec.name, self.ship.session_of(spec).human, key, words, channel='jail-sweep',
+                          initial=told)
+        except Exception as error:  # one seat's alarm never keeps the others'
+            self.log('error', step='jail-sweep-alarm', seat=spec.name, error=repr(error))
 
     def systems_recipients(self, seat: Seat) -> list[str]:
         """Every up systems seat, excluding the subject of its own alarm."""

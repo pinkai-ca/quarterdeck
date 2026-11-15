@@ -540,6 +540,7 @@ class Facts:
     screening: list[str] = field(default_factory=list)  # a hand screening a pull request: its posts are held (pr_screen)
     relaunches: list[str] = field(default_factory=list)  # a relaunch a stopped service left unfinished (relaunch_intent)
     write_bounds: list[str] = field(default_factory=list)  # a jailed seat stopped at its write bound (write_bound)
+    jail_sweeps: list[str] = field(default_factory=list)  # a stray sandbox the sweep ended, within the day (jail_end)
     retirement: str | None = None
     accounting: str | None = None
     ledger_recovery: list[str] = field(default_factory=list)
@@ -595,6 +596,7 @@ class Facts:
         parts += self.server_recovery
         parts += self.relaunches
         parts += self.write_bounds
+        parts += self.jail_sweeps
         parts += self.routes
         parts += self.pending
         parts += [f"disk: {name} {pct}%" for name, pct in self.disks]
@@ -1071,7 +1073,7 @@ def collect(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[
     reading.suffix['pending'] = [f"request claimed: {path.name}; inspect requests/ before retrying"
                                  for path in sorted((ship.runtime / "requests").glob("*.claimed"))]
     now = post.now()
-    from . import compaction_alert, ledger_recovery, model_mismatch, pr_screen, write_bound
+    from . import compaction_alert, jail_end, ledger_recovery, model_mismatch, pr_screen, write_bound
     outcomes, outcome_errors = check_reading if check_reading is not None else check_outcome.collect(ship.runtime)
     from . import usage_forecast
     lists = _replay(reading)
@@ -1081,6 +1083,7 @@ def collect(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[
         manual_fresh=compaction_alert.unrouted(ship, readable),
         server_recovery=server_recovery.status(ship.runtime),
         write_bounds=write_bound.status(ship),
+        jail_sweeps=jail_end.status(ship),
         screening=pr_screen.status(ship.runtime),
         model_mismatches=model_mismatch.unrouted(ship, readable, pending_model=request_queue.pending_model),
         held=held,

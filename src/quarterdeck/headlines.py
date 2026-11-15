@@ -34,6 +34,8 @@ def status_line(facts, alerts: list[str]) -> str:
     parts += getattr(facts, 'ending', ())
     # A seat stopped at its write bound keeps its name and the word that lifts it.
     parts += getattr(facts, 'write_bounds', ())
+    # A stray sandbox the sweep ended keeps its seat, its pid and its time for the day.
+    parts += getattr(facts, 'jail_sweeps', ())
     # A check's seat that outlived its check keeps its name and its cure until it is gone.
     parts += getattr(facts, 'leftover_checks', ())
     # A sign-in failure must still name its seat and failed cure when categories overflow.

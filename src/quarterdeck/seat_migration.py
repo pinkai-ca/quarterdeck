@@ -25,7 +25,7 @@ are then set aside unchanged in ``runtime/evidence/seat-move/<seat>-<time>/`` an
 - human-wake.json: taken only when it is bound to the adopted launch's pane, pid and time.
 - retiring.json, relaunch-refused.json and person-quiet-wake.json: holds and journals on that seat alone, taken
   when well-formed. A forged one can only hold or quiet its own seat.
-- The five alarm journals, compaction.json, refusal.json, move-hold.json, model-mismatch.json, turn-failure.json,
+- The six alarm journals, compaction.json, refusal.json, move-hold.json, model-mismatch.json, turn-failure.json,
   person-quiet.json, human-wake-status.json, human-wake-history/, acts.jsonl, acts-notices.jsonl and launch.sh: not
   taken. The service writes them afresh (the compaction count of a long-lived seat starts again from 0), and the old
   copies stay in the evidence for a person to read.

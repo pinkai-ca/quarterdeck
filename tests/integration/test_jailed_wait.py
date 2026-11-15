@@ -71,14 +71,49 @@ def desk_jail(ship: shipmod.Ship) -> sandbox.Jail:
     return sandbox.plan(ship, 'desk', own, own / 'home', workspace, sys.executable, os.environ['PATH'])
 
 
-def jailed(ship: shipmod.Ship, argv: list[str], **kwargs):
-    env = {key: value for key, value in os.environ.items() if not key.startswith(('QD_', 'TMUX'))}
-    env.update(QD_SEAT='desk', QD_SHIP=str(ship.folder))
-    return subprocess.Popen(sandbox.command(desk_jail(ship), argv), env=env, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, text=True, **kwargs)
+class StandIn:
+    """A jailed command standing in for one the seat's agent runs inside its jail. It runs in a window of the ship's
+    own server, under a live pane as every real jail is: a jail no pane or launch of the ship holds is a stray one,
+    and the service's sweep ends it (jail_end). Its output and exit status come back through files."""
+
+    def __init__(self, ship: shipmod.Ship, tmux: Tmux, jail: sandbox.Jail, seat: str, argv: list[str], folder: Path):
+        import shlex
+        folder.mkdir(parents=True, exist_ok=True)
+        self.out, self.err, self.code = folder / 'out', folder / 'err', folder / 'code'
+        env = {key: value for key, value in os.environ.items() if not key.startswith(('QD_', 'TMUX'))}
+        env.update(QD_SEAT=seat, QD_SHIP=str(ship.folder))
+        script = folder / 'stand-in.sh'
+        words = shlex.join(['env', f"PATH={env['PATH']}", *sandbox.command(jail, argv)])
+        script.write_text(f'#!/bin/sh\n{words} > {shlex.quote(str(self.out))} 2> {shlex.quote(str(self.err))}\n'
+                          f'echo $? > {shlex.quote(str(self.code))}.tmp && mv {shlex.quote(str(self.code))}.tmp '
+                          f'{shlex.quote(str(self.code))}\n')
+        session = ship.session_of(ship.seat('desk')).title
+        if not tmux.has_session(session):
+            tmux.new_session(session)  # a ship not brought up has no session yet: the stand-in's window needs one
+        self.tmux, self.pane = tmux, tmux.new_window(session, 'stand-in', folder, ['sh', str(script)], env)
+
+    def communicate(self, timeout: float) -> tuple[str, str]:
+        if wait_for(self.code.exists, seconds=timeout) is None:
+            raise subprocess.TimeoutExpired('stand-in', timeout)
+        return self.out.read_text(), self.err.read_text()
+
+    @property
+    def returncode(self) -> int | None:
+        return int(self.code.read_text()) if self.code.exists() else None
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def kill(self) -> None:
+        if self.tmux.pane(self.pane.id) is not None:
+            self.tmux.kill_window(self.pane.id)
 
 
-def test_a_jailed_desk_arms_its_watch_is_woken_and_its_wait_receives(ship, tmux, capsys):
+def jailed(ship: shipmod.Ship, tmux: Tmux, argv: list[str], folder: Path) -> StandIn:
+    return StandIn(ship, tmux, desk_jail(ship), 'desk', argv, folder)
+
+
+def test_a_jailed_desk_arms_its_watch_is_woken_and_its_wait_receives(ship, tmux, capsys, tmp_path):
     qd(capsys, 'up')
     desk = seatmod.Seat(ship, ship.seat('desk'), tmux)
     launched = desk.launched()
@@ -92,7 +127,7 @@ def test_a_jailed_desk_arms_its_watch_is_woken_and_its_wait_receives(ship, tmux,
     assert woken == [EXACT], 'the fixed waking line, typed once into the empty box'
 
     # The desk's agent does what the line says, from inside its own jail.
-    wait = jailed(ship, [str(QD), 'inbox', '--wait'])
+    wait = jailed(ship, tmux, [str(QD), 'inbox', '--wait'], tmp_path / 'stand-in')
     try:
         out, err = wait.communicate(timeout=90)
     finally:
@@ -109,10 +144,10 @@ def test_a_jailed_desk_arms_its_watch_is_woken_and_its_wait_receives(ship, tmux,
     assert inputs(desk) == [EXACT], 'one wake, never repeated: the receipt is a delivery'
 
 
-def test_a_jailed_watch_reads_armed_while_it_waits_and_holds_the_waking_line(ship, tmux, capsys):
+def test_a_jailed_watch_reads_armed_while_it_waits_and_holds_the_waking_line(ship, tmux, capsys, tmp_path):
     qd(capsys, 'up')
     desk = seatmod.Seat(ship, ship.seat('desk'), tmux)
-    wait = jailed(ship, [str(QD), 'inbox', '--wait'])
+    wait = jailed(ship, tmux, [str(QD), 'inbox', '--wait'], tmp_path / 'stand-in')
     try:
         wait_for(lambda: post.watch_armed(ship.runtime, 'desk'), seconds=30)
         qd(capsys, 'post', 'order', '--from', 'captain', '--to', 'desk', 'Synthetic: to an armed jailed watch.')
@@ -126,7 +161,7 @@ def test_a_jailed_watch_reads_armed_while_it_waits_and_holds_the_waking_line(shi
     wait_for(lambda: not post.watch_armed(ship.runtime, 'desk'), seconds=10)  # its lease went with it
 
 
-def test_from_inside_the_desks_jail_nothing_of_the_post_is_writable(ship, capsys):
+def test_from_inside_the_desks_jail_nothing_of_the_post_is_writable(ship, tmux, capsys, tmp_path):
     store = post.Store(ship.runtime)
     victim = store.new('order', 'captain', 'worker-1', 'VICTIM')
     for folder in ('admission', 'attempts', 'drop/worker-1', 'watch-offers'):
@@ -159,7 +194,8 @@ print(json.dumps(dict(
     own_receipts=write(desk / 'watch-receipts' / 'own.json'),
 )))
 """
-    process = jailed(ship, [sys.executable, '-c', probe, str(ship.runtime / 'post'), str(ship.runtime / 'seats' / 'desk')])
+    process = jailed(ship, tmux, [sys.executable, '-c', probe, str(ship.runtime / 'post'), str(ship.runtime / 'seats' / 'desk')],
+                     tmp_path / 'stand-in')
     out, err = process.communicate(timeout=60)
     assert process.returncode == 0, err
     seen = json.loads(out.strip().splitlines()[-1])
@@ -199,13 +235,13 @@ sys.exit(code)
 """
 
 
-def test_a_woken_jailed_wait_writes_and_locks_only_its_own_seat_folder(ship, tmux, capsys):
+def test_a_woken_jailed_wait_writes_and_locks_only_its_own_seat_folder(ship, tmux, capsys, tmp_path):
     """Every write-open and every flock the jailed wait makes, from Python's own audit events, is in its seat folder."""
     qd(capsys, 'up')
     desk = seatmod.Seat(ship, ship.seat('desk'), tmux)
     qd(capsys, 'post', 'order', '--from', 'captain', '--to', 'desk', 'Synthetic: audited.')
     assert wait_for(lambda: inputs(desk) or None, seconds=60) == [EXACT], 'woken by the message'
-    wait = jailed(ship, [sys.executable, '-B', '-c', AUDITED])
+    wait = jailed(ship, tmux, [sys.executable, '-B', '-c', AUDITED], tmp_path / 'stand-in')
     try:
         out, err = wait.communicate(timeout=90)
     finally:
@@ -221,7 +257,7 @@ def test_a_woken_jailed_wait_writes_and_locks_only_its_own_seat_folder(ship, tmu
     assert not any(path.startswith(post_folder) for path in audit['writes'] + audit['locks'])
 
 
-def test_a_jailed_check_seat_held_by_a_live_check_lease_is_served(ship, capsys):
+def test_a_jailed_check_seat_held_by_a_live_check_lease_is_served(ship, tmux, capsys, tmp_path):
     """qd check's human-wake seat is a temporary seat no ship file declares: only the check's live lease admits it.
     Jailed, its wait must still be served by the service (worker7's pi check on 97f1055c: no watch receipt)."""
     from .test_human_wake_inbox_lease_claude_validation import Lease, SEAT
@@ -234,10 +270,7 @@ def test_a_jailed_check_seat_held_by_a_live_check_lease_is_served(ship, capsys):
         (own / 'home').mkdir(parents=True, exist_ok=True)
         workspace = Path(ship.seat('desk').cwd)
         jail = sandbox.plan(ship, SEAT, own, own / 'home', workspace, sys.executable, os.environ['PATH'])
-        env = {key: value for key, value in os.environ.items() if not key.startswith(('QD_', 'TMUX'))}
-        env.update(QD_SEAT=SEAT, QD_SHIP=str(ship.folder))
-        wait = subprocess.Popen(sandbox.command(jail, [str(QD), 'inbox', '--wait']), env=env, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True)
+        wait = StandIn(ship, tmux, jail, SEAT, [str(QD), 'inbox', '--wait'], tmp_path / 'stand-in')
         try:
             out, err = wait.communicate(timeout=60)
         finally:

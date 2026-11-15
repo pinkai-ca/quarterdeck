@@ -27,6 +27,7 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 SOCKET = 's'
@@ -163,8 +164,42 @@ def _serve(listener: socket.socket, host: str, port: int) -> None:
         threading.Thread(target=_carry, args=(client, host, port), daemon=True).start()
 
 
+PR_SET_CHILD_SUBREAPER = 36  # linux/prctl.h
+REAP_SECONDS = 5.0  # how long the relay waits to reap what it ended before it exits
+
+
+def _subreaper() -> None:
+    """Orphans of the jail come to the relay, not to the user's manager: a jail's inner bwrap whose outer one died
+    before it armed its own death with its parent is then still the relay's to end."""
+    import ctypes
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), 'prctl(PR_SET_CHILD_SUBREAPER) refused')
+
+
+def end_descendants() -> list[int]:
+    """Before the relay exits: end every process left under it, by the write bound's own kill, confirm none runs,
+    and reap them. The pids signalled."""
+    from . import write_bound
+    own = write_bound._processes().get(os.getpid())
+    pids = write_bound.tree(os.getpid(), own[1]) if own else {}
+    pids.pop(os.getpid(), None)
+    signalled = write_bound.kill(pids) if pids else []
+    deadline = time.monotonic() + REAP_SECONDS  # what still runs past this is the seat's stop's to hold
+    while time.monotonic() < deadline:
+        try:
+            if os.waitpid(-1, os.WNOHANG) == (0, 0) and not write_bound.alive(pids):
+                break
+        except ChildProcessError:
+            break
+        time.sleep(0.02)  # whether a child was reaped or none was ready: the loop never spins
+    return signalled
+
+
 def run(folder: Path, host: str, port: int, name: str | None, argv: list[str]) -> int:
-    """Serve the jail started from ``argv`` until it ends; its exit status is the relay's."""
+    """Serve the jail started from ``argv`` until it ends; its exit status is the relay's. The relay is a subreaper,
+    and before it exits, by the pane's hangup or its jail's end, it ends and reaps everything left under it."""
+    _subreaper()
     _prepare(folder)
     _hosts(folder, name)
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -185,6 +220,7 @@ def run(folder: Path, host: str, port: int, name: str | None, argv: list[str]) -
     try:
         return child.wait()
     finally:
+        end_descendants()
         listener.close()
         shutil.rmtree(folder, ignore_errors=True)
 

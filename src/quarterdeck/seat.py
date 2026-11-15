@@ -852,6 +852,10 @@ class Seat:
         require_clear(self)
         from . import write_bound
         write_bound.require_clear(self)  # a seat stopped at its write bound stays down until a person lifts it
+        from . import jail_end
+        if (sandbox := jail_end.held(self.trusted)) is not None:
+            # The one hold every launch path meets: restart, fresh, failover, a pool move, the service's relaunch.
+            raise ShipError(jail_end.words(self.name, sandbox) + "; the service's tick lifts it once they have")
         if (held := self.retiring()) is not None:
             if not isinstance(held.get("pid"), int) or process_alive(held["pid"], held.get("start")):
                 raise ShipError(f"{self.name}: the program its last launch ran is still ending (pid {held.get('pid')}); "
@@ -1220,6 +1224,15 @@ class Seat:
         # the start was recorded, or a stand-in's) is not waited for: no other process is taken for it.
         program = ((launched.pid, launched.start) if pane is not None and launched is not None and launched.start
                    and process_alive(launched.pid, launched.start) else None)
+        from . import jail_end
+        # The program's whole tree, read while the window still holds it: a jail's inner bwrap is still its child.
+        tree = jail_end.snapshot(launched) if program is not None else {}
+        with jail_end.stopping(self.trusted):
+            return self._end_down(launched, pane, program, tree, relaunch)
+
+    def _end_down(self, launched, pane, program, tree, relaunch: bool) -> str:
+        """The rest of down, while the sweep leaves this seat's sandbox to it."""
+        from . import jail_end
         self._retire_window(launched)
         if self.launched() != launched:
             raise ShipError(f"{self.name}: launch identity changed during retirement; launch retained")
@@ -1240,6 +1253,19 @@ class Seat:
                         + ("relaunch refused; " if relaunch else "") + "credential and launch left for the next tick")
             waited = (f" · still ending after {PROCESS_END_SECONDS:g}s, ended after "
                       f"{time.monotonic() - started:.0f}s; the relaunch follows")
+        # The program has ended. Its jail's tree, and any orphan of the seat, end now, confirmed by pid and start:
+        # what still runs holds the seat, with its launch, so that nothing is launched beside it.
+        if left := jail_end.end(self, tree):
+            jail_end.hold(self.trusted, self.name, left)
+            from . import relaunch_intent  # a hold that keeps the seat down: no intent brings it up
+            relaunch_intent.clear(self.ship.runtime, self.name, 'held: its old sandbox did not end')
+            if relaunch:
+                durable.replace_file(self.trusted / REFUSED_RELAUNCH, json.dumps(dict(
+                    at=datetime.now(timezone.utc).isoformat(), pid=launched.pid if launched else None)) + "\n")
+            closed = f"pane {pane.id} closed" if pane is not None else "no pane"
+            return (f"{self.name} down · {closed} · "
+                    + jail_end.words(self.name, jail_end.held(self.trusted)).removeprefix(f"{self.name}: ")
+                    + ("; relaunch refused" if relaunch else ""))
         self._finish_retirement(launched)
         if pane is None:
             return f"{self.name} was not up" + (f" · pane {launched.pane} is gone" if launched else "")
@@ -1257,6 +1283,9 @@ class Seat:
 
     def relaunch_refused(self) -> str | None:
         """Plain words for the status line while the seat is down because its relaunch met a program still ending."""
+        from . import jail_end
+        if (sandbox := jail_end.held(self.trusted)) is not None:
+            return jail_end.words(self.name, sandbox)  # the same count the refused launch gives
         held = self.retiring()
         if held is not None:
             return f"{self.name}: its program is still ending; " + (
@@ -1276,13 +1305,25 @@ class Seat:
         return data if isinstance(data, dict) else {"pid": None, "start": None}
 
     def finish_retirement(self) -> str | None:
-        """The service's tick: reseed and remove the launch once the program down left running has ended."""
+        """The service's tick: reseed and remove the launch once the program down left running has ended, and end
+        a held sandbox again until none of it runs."""
+        from . import jail_end
         with self._lifecycle():
+            lifted = jail_end.retry(self.trusted)
+            if lifted is False:
+                return None  # still held: the status line names it
+            if lifted is True and self.retiring() is None:
+                self._finish_retirement(self.launched())
+                return f"{self.name} retired · its old sandbox has ended · credential reseeded, launch removed"
             held = self.retiring()
             if held is None:
                 return None
             if not isinstance(held.get("pid"), int) or process_alive(held["pid"], held.get("start")):
                 return None
+            with jail_end.stopping(self.trusted):
+                if left := jail_end.end(self, {}):  # the program has ended: its jail's orphans end with it
+                    jail_end.hold(self.trusted, self.name, left)
+                    return jail_end.words(self.name, jail_end.held(self.trusted))
             self._finish_retirement(self.launched())
             return f"{self.name} retired · process {held['pid']} ended · credential reseeded, launch removed"
 

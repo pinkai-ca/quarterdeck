@@ -695,6 +695,16 @@ class Tmux:
             return None
         return int(text) if text.isascii() and text.isdigit() else None
 
+    def server_pid(self) -> int | None:
+        """The running server's own pid, as tmux reports it; None if unreadable. Every pane descends from it."""
+        try:
+            text = self.run('display-message', '-p', '#{pid}').strip()
+        except PrivateTmuxError:
+            raise
+        except TmuxError:
+            return None
+        return int(text) if text.isascii() and text.isdigit() and int(text) > 1 else None
+
     def read_pane(self, pane_id: str, history: int = 0, *, styles: bool = False) -> tuple[Pane, str] | None:
         """Read current identity and text in one server command queue, never from a cache."""
         if not pane_id.startswith('%') or not pane_id[1:].isascii() or not pane_id[1:].isdigit():
