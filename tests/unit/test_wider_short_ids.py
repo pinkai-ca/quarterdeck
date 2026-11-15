@@ -81,6 +81,7 @@ def test_mixed_widths_resolve_in_store_thread_cli_inbox_and_view(tmp_path, monke
 @pytest.mark.parametrize('suffix', SUFFIXES[:2])
 def test_canonical_cascade_and_legacy_pending_labels_keep_both_widths(tmp_path,suffix):
     item = message(suffix,'question')
+    assert post.id_sender(item.id) == item.sender
     assert cascade_runtime.key(item.id) == item.id
     seat = SimpleNamespace(name='ordinary-worker',ship=SimpleNamespace(runtime=tmp_path/'runtime'))
     label = pending.inspection(seat,'Ordinary diagnostic',[item.id+'-1.json'])

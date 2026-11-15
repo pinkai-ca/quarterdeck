@@ -597,7 +597,7 @@ def drop_dir(runtime: Path, seat: str) -> Path:
 def id_sender(message_id: str) -> str | None:
     """The seat named by ``ord-<date>-<time>-<seat>-<suffix>``, or None when the id has another shape.
 
-    The seat is everything between the minute and the four-hex suffix, so a name may contain hyphens.
+    The seat is between the minute and a four- or six-hex suffix; names may contain hyphens.
     """
     parts = message_id.split("-")
     if len(parts) < 5:
@@ -608,7 +608,7 @@ def id_sender(message_id: str) -> str | None:
         return None
     if len(date) != 8 or not date.isdigit() or len(minute) != 4 or not minute.isdigit():
         return None
-    if len(suffix) != 4 or any(character not in "0123456789abcdef" for character in suffix):
+    if len(suffix) not in (4, 6) or any(character not in "0123456789abcdef" for character in suffix):
         return None
     if not sender or sender in {".", ".."} or "/" in sender or "\\" in sender:
         return None
