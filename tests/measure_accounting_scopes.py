@@ -43,12 +43,20 @@ def phase(runtime, label):
     service.log = lambda *args, **kwargs: None
     service.publish_accounting_health = lambda **kwargs: None
     service.seat_guard = lambda *args: nullcontext()
-    inventory, selected = {}, []
+    inventory, selected, bindings = {}, [], {}
     for record, seat, name in service.ledger.db.execute('''SELECT DISTINCT t.record,t.seat,h.harness
             FROM turns t LEFT JOIN launch_harnesses h ON h.record=t.record ORDER BY t.seat,t.record'''):
         path = Path(record)
         if not path.is_relative_to(runtime):
             continue  # no authority to read the legacy external source
+        if seat not in bindings:
+            owner = SimpleNamespace(home=runtime/'seats'/seat/'home',launched=lambda:None)
+            bindings[seat] = record_owner.bindings(owner,publish=False)
+        names = bindings[seat].get(path,set())
+        if names:
+            # Saved ownership/launch evidence is an input, not merely the
+            # ledger's reader cache, which the first job may still reconcile.
+            name = next(iter(names)) if len(names) == 1 else None
         reader = get(name) if name else None
         inventory.setdefault(seat, []).append(record_owner.Owned(path, name, reader,
                                              None if reader else 'reader unavailable in copied history'))
