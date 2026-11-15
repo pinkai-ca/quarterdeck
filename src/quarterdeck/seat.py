@@ -1025,6 +1025,7 @@ def temporary_seat(ship: Ship, tmux: Tmux, spec: SeatSpec, orders: list[post.Mes
     Callers register only orders this operation opened. Posts and receipts remain;
     a failure to retire transport leaves its home intact for later inspection.
     """
+    spec = replace(spec, temporary=True)  # the jail's own-cwd rule binds declared seats, not this one
     session = shipmod.Session(spec.session, spec.session, human=human)
     treated = replace(ship, sessions={**ship.sessions, spec.session: session}, seats={**ship.seats, spec.name: spec})
     seat = Seat(treated, spec, tmux)

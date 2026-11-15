@@ -605,3 +605,18 @@ def test_a_project_holding_the_fleet_that_is_not_a_checkout_is_no_checkout(tmp_p
     assert sandbox.framework_checkouts(ship)[0] == (tmp_path / 'project').resolve()
     (tmp_path / 'project' / 'pyproject.toml').unlink()
     assert (tmp_path / 'project').resolve() not in sandbox.framework_checkouts(ship)
+
+
+def test_qd_checks_temporary_seat_at_a_declared_seats_folder_plans_and_is_never_counted(tmp_path, monkeypatch):
+    """qd check's temporary seat stands in for a declared one, in its folder: it is not bound, nor counted as another."""
+    from dataclasses import replace
+    ship, hands = own_cwd_ship(tmp_path)
+    check = shipmod.SeatSpec('check-wake-pi-1a2b', 'qd-check', 'worker', 'pi', ('local',), cwd=hands / 'bert',
+                             sandbox=True, temporary=True)
+    ship = replace(ship, seats={**ship.seats, check.name: check})
+    monkeypatch.setattr(sandbox, 'available', lambda: True)
+    assert plan_seat(ship, check.name, tmp_path / 'operator-home').workspace == (hands / 'bert').resolve()
+    assert plan_seat(ship, 'bert', tmp_path / 'operator-home').workspace == (hands / 'bert').resolve()
+    with pytest.raises(ShipError, match="is also seat bert's"):
+        plan_seat(ship := replace(ship, seats={**ship.seats, check.name: replace(check, temporary=False)}),
+                  check.name, tmp_path / 'operator-home')

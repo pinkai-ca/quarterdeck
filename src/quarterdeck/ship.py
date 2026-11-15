@@ -92,6 +92,7 @@ class SeatSpec:
     settings: dict = field(default_factory=dict)
     pool_choices: dict[str, dict] = field(default_factory=dict)
     human_session: bool = False  # resolved from Session by Seat, never a ship-file setting
+    temporary: bool = False  # qd check's own seat, made by temporary_seat; never a ship-file setting
     fresh_after_compactions: int | None = None
     model_mode: str | None = None
     effort_mode: str | None = None
