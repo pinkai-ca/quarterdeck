@@ -4,12 +4,17 @@ import os
 from pathlib import Path
 import shutil
 
+import pytest
+
 from tests.conftest import ROOT
-from tests.integration.testrun_synthetic import commit, make, result, tool
+from tests.integration.testrun_synthetic import commit, make, result, skip_without_ci_memory, tool
 from tests.testrunner import socket_paths, socket_roots
 
 
-def test_long_checkout_runs_its_native_socket_and_cleans_up(tmp_path):
+@pytest.mark.parametrize('ci_layout', [False, True], ids=['isolated', 'ci-layout'])
+def test_long_checkout_runs_its_native_socket_and_cleans_up(tmp_path, ci_layout):
+    if ci_layout:
+        skip_without_ci_memory()
     marker = tmp_path / 'socket-proof.json'
     project, target = make(tmp_path, {'test_socket.py': f'''
         import json, os, socket
@@ -39,7 +44,8 @@ def test_long_checkout_runs_its_native_socket_and_cleans_up(tmp_path):
     short = socket_roots.path(project)
     try:
         assert len(os.fsencode(project)) > 31
-        done = tool('run', '--target', str(target), '--fast', '-n', '0', cwd=project)
+        mode = ['--ci-layout'] if ci_layout else []
+        done = tool('run', '--target', str(target), '--fast', '-n', '0', *mode, cwd=project)
         failures = '\n'.join(path.read_text() for path in (project / '.testruns/results').glob('*/failures/*.txt'))
         assert done.returncode == 0, done.stdout + done.stderr + failures
         proof = json.loads(marker.read_text())
