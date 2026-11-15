@@ -16,7 +16,7 @@ from typing import Any
 from . import (__version__, check, copy_state, daily_live, doctor, drill, harness as harnesses, install, ledger, post, sandbox, seat as seatmod, service,
                ship as shipmod, standing, watch)
 from .output import Reading
-from . import output, ledger_reading, lifecycle
+from . import output, ledger_reading, lifecycle, closed_pipe
 from .ship import ShipError
 from .harness.capabilities import selection_label
 from .tmux import CUTOVER, Tmux, TmuxError, ship_socket as shipsocket
@@ -41,14 +41,23 @@ def main(argv: list[str] | None = None) -> int:
         from .ledger_recovery import malformed
         if not malformed(error):
             raise
-        print('qd: ledger malformed; stop the service, then qd ledger --recover', file=sys.stderr)
+        completed_error('qd: ledger malformed; stop the service, then qd ledger --recover')
         return 2
     except (ShipError, TmuxError) as error:
         note = f" (default ship: {args.default_ship})" if args.default_ship else ""
-        print(f"qd: {error}{note}", file=sys.stderr)
+        completed_error(f"qd: {error}{note}")
         return 2
-    emit(args, result)
-    return getattr(args, "exit_code", 0)
+    status = getattr(args, "exit_code", 0)
+    emit(args, result, completed_act=True)
+    return status
+
+
+def completed_error(text):
+    """The command already refused; an unavailable diagnostic pipe cannot alter that."""
+    try:
+        print(text, file=sys.stderr)
+    except BrokenPipeError:
+        closed_pipe.silence('stderr')
 
 
 HANDED = "QD_DEFAULT_SHIP"  # the folder the typed qd chose as the default, passed to the ship's own copy
@@ -99,10 +108,10 @@ def handoff(args: argparse.Namespace, argv: list[str]) -> None:
         os.environ.pop(HANDED, None)  # reached only when this qd runs the verb itself
 
 
-def emit(args: argparse.Namespace, result: Any) -> None:
+def emit(args: argparse.Namespace, result: Any, *, completed_act: bool = False) -> None:
     if getattr(args, "default_ship", None) and result is not None:
         result = output.with_default_ship(result, args.default_ship)
-    output.emit(result, json_output=args.json)
+    output.emit(result, json_output=args.json, completed_act=completed_act)
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -22,6 +22,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `ledger_reading.py` | the Ledger's rows and usage windows as a reading takes them, and their tables |
 | `machine.py` | a seat's process tree, sampled for the Ledger |
 | `output.py` | one shape for every reading, rendered for a person or serialized as JSON |
+| `closed_pipe.py` | a completed command keeps its own status when a standard output pipe closes; only the broken stream is retired |
 | `paste_refusal.py` | proved owned-unsubmitted paste cleanup, and refusal evidence scoped by payload, version and geometry |
 | `pending.py`, `delivery_record.py` | saved paste evidence and historical receipts; the service schedules each message |
 | `post_view.py` | a jailed seat's view of the post: copies of what it sent or received, its own inbox, the shorts taken; kept by the service, bound in the post's place |

@@ -6,6 +6,12 @@ A page of [the design](../DESIGN.md).
 
 Build changes in disk-backed worktrees under the ignored `work/` folder, preserving uncommitted work across reboot. A commit identifies the reviewed change; no parallel manifest or backup replaces it. Review, signature and landing roles belong to the ship's orders. The running ship normally uses its installed copy, so landing source and activating it are separate steps. The service alone writes the Ledger; read commands must remain safe beside an older writer.
 
+### Command output
+
+Once a CLI act has returned its outcome, a broken stdout pipe while writing or flushing its final proof does not change the act's exit status or repeat the act. The same applies to a closed stderr diagnostic pipe for an already determined refusal. Before returning from the console entry point, qd flushes both streams and redirects only a broken descriptor to `/dev/null`, avoiding Python's second flush error at interpreter shutdown. Open output files retain their complete output; other I/O errors and failures during an unfinished act keep their existing behavior. This follows [Python's SIGPIPE guidance](https://docs.python.org/3/library/signal.html#note-on-sigpipe) without resetting the process's signal handler.
+
+Receipt-bearing output remains strict: `qd inbox --wait` must serialize, write and flush its whole batch before recording delivery. Its emitter does not opt into the completed-act behavior, and a broken pipe leaves its receipt uncommitted. Rendering errors are also outside the completed proof's pipe handling.
+
 ### Running tests
 
 `python3 -I tests/testrun.py` is the repository's standard-library-only test and cleanup tool. Runtime code neither imports nor installs it. Its project is the parent of Git's common directory, shared by every worktree; retained results/control records live in ignored `.testruns/`. Use main's tool with `--target PATH` for a worktree older than the tool.

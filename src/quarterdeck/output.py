@@ -9,6 +9,8 @@ from typing import Any, Callable
 import json
 import sys
 
+from . import closed_pipe
+
 
 @dataclass(frozen=True)
 class Reading:
@@ -51,8 +53,12 @@ def with_default_ship(result: Any, name: str) -> Any:
     return Reading({**shape, "default_ship": name}, lambda _: first(result))
 
 
-def emit(result: Any, *, json_output: bool = False) -> None:
-    """Serialize/render completely, print and flush. Callers may receipt only after return."""
+def emit(result: Any, *, json_output: bool = False, completed_act: bool = False) -> None:
+    """Render, write and flush; receipt-bearing callers keep the strict default.
+
+    Only a caller whose act already has its outcome may tolerate a broken output
+    pipe. Rendering failures and other output failures retain their normal path.
+    """
     if result is None:
         return
     if isinstance(result, Reading):
@@ -65,6 +71,11 @@ def emit(result: Any, *, json_output: bool = False) -> None:
         rendered = result
     text = rendered if isinstance(rendered, str) else "\n".join(rendered)
     document = text + "\n"
-    if sys.stdout.write(document) != len(document):
-        raise OSError("incomplete reading output; receipt withheld")
-    sys.stdout.flush()
+    try:
+        if sys.stdout.write(document) != len(document):
+            raise OSError("incomplete reading output; receipt withheld")
+        sys.stdout.flush()
+    except BrokenPipeError:
+        if not completed_act:
+            raise
+        closed_pipe.silence('stdout')
