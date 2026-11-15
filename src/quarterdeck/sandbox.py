@@ -329,7 +329,8 @@ def refuse_shared_workspace(ship: Ship, seat_name: str, workspace: Path) -> None
     cwd, the jailed seat would write the other seat's work, which that seat reads and may run outside any jail. The
     framework's checkout is refused first: a cwd that is the checkout or holds it, and a cwd inside it anywhere but
     ``work/hands/<name>`` or below, since the rest of it is the framework's code, its history and hooks, the workers'
-    worktrees and the captain's queue, which unjailed seats read and run. A seat at the ship's common workspace, which
+    worktrees and the captain's queue, which unjailed seats read and run. The office's own seats may also work at
+    ``office/work/<name>`` or below, as its jailed desk does, when the office is a real folder of the checkout. A seat at the ship's common workspace, which
     declares no cwd, and qd check's temporary seats, which no ship file declares, are not bound, nor counted as another
     seat. Nor is a declared cwd that is the common workspace or holds it, as a seat at a folder above the project has:
     lying inside it is lying inside the common workspace, which the checkout rule already rules.
@@ -347,7 +348,12 @@ def refuse_shared_workspace(ship: Ship, seat_name: str, workspace: Path) -> None
                             "a folder under the checkout's work/hands/")
         if real.is_relative_to(checkout):
             inside = real.relative_to(checkout).parts
-            if len(inside) < 3 or inside[:2] != ('work', 'hands'):
+            # The office's own seats also work in a folder of their own under the office's work/ (its desk's
+            # work/desk), when the office is a real folder of the checkout and not a link to another place in it.
+            office = checkout / 'office'
+            own_office = (inside[:2] == ('office', 'work') and len(inside) >= 3 and not office.is_symlink()
+                          and office.is_dir() and Path(os.path.realpath(ship.folder)) == office)
+            if (len(inside) < 3 or inside[:2] != ('work', 'hands')) and not own_office:
                 raise ShipError(f"{seat_name}: sandboxed with its working directory at {real}, inside the framework's "
                                 f"checkout {checkout}; a jailed seat works there only in a folder of its own under "
                                 f"{checkout / 'work' / 'hands'}, since the rest of the checkout is the framework's "

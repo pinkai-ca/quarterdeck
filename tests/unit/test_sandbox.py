@@ -705,3 +705,59 @@ def test_the_ships_own_layout_plans_its_hands_where_the_common_workspace_and_wid
     (tmp_path / 'crew' / 'sub').mkdir()
     ship, _ = own_cwd_ship(tmp_path, hand_a_cwd=tmp_path / 'crew' / 'sub')
     assert plan_seat(ship, 'hand-a', tmp_path / 'operator-home').workspace == (tmp_path / 'crew' / 'sub').resolve()
+
+
+def office_with_desk(tmp_path: Path, desk_cwd=None):
+    """A stand-in checkout holding the office, whose jailed desk declares a cwd (by default the office's work/desk)."""
+    own_cwd_ship(tmp_path)  # the checkout itself
+    office = tmp_path / 'project' / 'office'
+    (office / 'work' / 'desk').mkdir(parents=True, exist_ok=True)
+    desk = shipmod.SeatSpec('desk', 'office', 'desk', 'pi', ('local',), cwd=desk_cwd or office / 'work' / 'desk',
+                            sandbox=True)
+    return shipmod.Ship(office, 'office', 'operator', tmp_path / 'crew', {}, {}, {'desk': desk})
+
+
+def test_a_jailed_office_desk_at_the_offices_own_work_desk_plans(tmp_path, monkeypatch):
+    monkeypatch.setattr(sandbox, 'available', lambda: True)
+    office = office_with_desk(tmp_path)
+    jail = plan_seat(office, 'desk', tmp_path / 'operator-home')
+    assert jail.workspace == (tmp_path / 'project' / 'office' / 'work' / 'desk').resolve()
+
+
+@pytest.mark.parametrize('case', ['the office work folder itself', 'a link from outside to the office work folder',
+                                  'a link in the office work folder into the code', 'the office a link in the checkout'])
+def test_a_jailed_office_cwd_that_is_not_its_own_folder_under_office_work_is_refused(tmp_path, monkeypatch, case):
+    """Only office/work/<name> or below, by real path, in an office that is a real folder of the checkout."""
+    monkeypatch.setattr(sandbox, 'available', lambda: True)
+    project = tmp_path / 'project'
+    if case == 'the office work folder itself':
+        office = office_with_desk(tmp_path, desk_cwd=project / 'office' / 'work')
+        real = (project / 'office' / 'work').resolve()
+    elif case == 'a link from outside to the office work folder':
+        office = office_with_desk(tmp_path, desk_cwd=tmp_path / 'to-office-work')
+        (tmp_path / 'to-office-work').symlink_to(project / 'office' / 'work')
+        real = (project / 'office' / 'work').resolve()
+    elif case == 'a link in the office work folder into the code':
+        office = office_with_desk(tmp_path, desk_cwd=project / 'office' / 'work' / 'code')
+        (project / 'office' / 'work' / 'code').symlink_to(project / 'src' / 'quarterdeck')
+        real = (project / 'src' / 'quarterdeck').resolve()
+    else:
+        own_cwd_ship(tmp_path)
+        (project / 'elsewhere' / 'work' / 'desk').mkdir(parents=True)
+        (project / 'office').symlink_to(project / 'elsewhere')
+        office = office_with_desk(tmp_path)
+        real = (project / 'elsewhere' / 'work' / 'desk').resolve()
+    with pytest.raises(ShipError) as caught:
+        plan_seat(office, 'desk', tmp_path / 'operator-home')
+    assert str(caught.value).startswith(f"desk: sandboxed with its working directory at {real}, inside the framework's "
+                                        f"checkout {project.resolve()}"), caught.value
+
+
+def test_a_crew_seat_at_the_offices_work_folder_is_still_refused(tmp_path, monkeypatch):
+    """The office's work folder is the office's own: a crew ship's jailed seat declared there stays refused."""
+    monkeypatch.setattr(sandbox, 'available', lambda: True)
+    office_with_desk(tmp_path)
+    (tmp_path / 'project' / 'office' / 'work' / 'other').mkdir()
+    ship, _ = own_cwd_ship(tmp_path, hand_a_cwd=tmp_path / 'project' / 'office' / 'work' / 'other')
+    with pytest.raises(ShipError, match='hand-a: sandboxed with its working directory at '):
+        plan_seat(ship, 'hand-a', tmp_path / 'operator-home')
