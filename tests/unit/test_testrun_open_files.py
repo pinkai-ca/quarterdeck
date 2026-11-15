@@ -104,19 +104,19 @@ from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from tests.testrunner import owned, scratch
 from tests.testrunner.layout import DIRECTORY, Refused
-from tests.unit.test_testrun_open_files import tree_descriptors
 root = Path(sys.argv[2])
 resource.setrlimit(resource.RLIMIT_NOFILE, (64, resource.getrlimit(resource.RLIMIT_NOFILE)[1]))
 parent = os.open(root.parent, DIRECTORY)
+before = len(os.listdir('/proc/self/fd'))
 try:
     scratch.usage(root)
 except Refused as error:
     measurement = str(error)
 else:
     raise AssertionError('a tree deeper than the available descriptors was accepted')
-assert not tree_descriptors(root)
+assert len(os.listdir('/proc/self/fd')) == before
 result = owned.retire(parent, root.name, json.loads(sys.argv[3]), root, sys.argv[4])
-assert not tree_descriptors(root)
+assert len(os.listdir('/proc/self/fd')) == before
 os.close(parent)
 print(json.dumps(dict(measurement=measurement, retirement=result)))
 '''
