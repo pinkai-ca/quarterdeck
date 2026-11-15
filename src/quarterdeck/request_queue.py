@@ -64,7 +64,58 @@ def launch_binding(seat):
     launched = seat.launched()
     if launched is None:
         return None
-    return dict(pane=launched.pane, pid=launched.pid, at=launched.at, harness=launched.harness)
+    return dict(pane=launched.pane, pid=launched.pid, at=launched.at, harness=launched.harness,
+                start=getattr(launched, 'start', None))
+
+
+NOT_OWN = 'not the seat\'s own'
+ANCESTRY_HOPS = 256  # far deeper than any shell, program and tool chain under a pane
+
+
+def _parent(pid):
+    """A process's parent, from /proc, or None when it cannot be read."""
+    try:
+        fields = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
+        return int(fields[1])
+    except (OSError, IndexError, ValueError, UnicodeError):
+        return None
+
+
+def own_proof(seat_name, origin):
+    """The filing process's proof that it descends from the seat's own pane process, read from /proc now.
+
+    The pane process is the launch's recorded pid with its recorded start time, so a reused pid never counts. A
+    request that names the seat as its own caller is filed only with this proof; anything else is refused, with
+    the reason, and nothing is filed.
+    """
+    from .seat import process_start
+    if not isinstance(origin, dict) or type(origin.get('pid')) is not int or not origin.get('start'):
+        raise ShipError(f'{seat_name}: refused as {NOT_OWN}: its launch records no pane process and start time to '
+                        'prove the caller by; no request filed')
+    pane, start = origin['pid'], origin['start']
+    filer = os.getpid()
+    hop = filer
+    for _ in range(ANCESTRY_HOPS):
+        if hop is None or hop <= 0:
+            break
+        if hop == pane:
+            if process_start(hop) != start:
+                break  # the pid is reused by a process with another start
+            return dict(pane=pane, pane_start=start, filer=filer, filer_start=process_start(filer))
+        if hop == 1:
+            break
+        hop = _parent(hop)
+    raise ShipError(f'{seat_name}: refused as {NOT_OWN}: the filing process {filer} does not descend from '
+                    f'{seat_name}\'s pane process {pane} started at {start}; no request filed')
+
+
+def proved_own(seat_name, data, origin):
+    """Whether a request is the seat's own: it names the seat as its caller, and was filed with the proof that its
+    filer descended from the pane process of the launch the seat still runs."""
+    proof = data.get('own')
+    return (data.get('caller') == seat_name and isinstance(proof, dict) and isinstance(origin, dict)
+            and data.get('origin') == origin and proof.get('pane') == origin.get('pid')
+            and proof.get('pane_start') is not None and proof.get('pane_start') == origin.get('start'))
 
 
 @contextmanager
@@ -421,10 +472,14 @@ def enqueue(runtime, kind, data, *, name=None):
     data = dict(data)
     context = {}
     if kind == 'relaunch':
-        for key in ('caller', 'origin', 'requested_at'):
+        for key in ('caller', 'origin'):
             if key in data:
                 context[key] = data.pop(key)
-    born = context.pop('requested_at', None) or post.now().isoformat()
+        data.pop('requested_at', None)  # never the filer's: the asked time is stamped here
+        context.pop('own', None)
+        if context.get('caller') is not None and context['caller'] == data.get('seat'):
+            context['own'] = own_proof(data['seat'], context.get('origin'))
+    born = post.now().isoformat()  # the asked time, stamped at enqueue
     name = name or f'{datetime.now().strftime("%H%M%S")}-{kind}-{os.getpid()}'
     folder = runtime / 'requests'
     folder.mkdir(parents=True, exist_ok=True)

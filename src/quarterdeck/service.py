@@ -1005,7 +1005,8 @@ class Service:
             if asked.tzinfo is None or not 0 <= (post.now() - asked).total_seconds() <= ANSWER_SECONDS:
                 return f'refused: {seat.name} no-record request expired; no deferred restart'
             return self.relaunch(seat, bool(data['resume']), reading=(state, hold))
-        if data.get('caller') == seat.name and not data['resume'] and asked.tzinfo is not None:
+        own = request_queue.proved_own(seat.name, data, origin)
+        if own and not data['resume'] and asked.tzinfo is not None:
             handed = self.handoff_fresh(seat, asked, (state, hold))
             if handed is not OWN_TURN_RULE:
                 return handed
@@ -1021,7 +1022,6 @@ class Service:
         if (state is None or state.last_input_at is None or asked.tzinfo is None
                 or state.last_input_at.tzinfo is None or state.last_input_at > asked or asked > post.now()):
             return f'refused: {seat.name} asking turn unknown or superseded by later input; no deferred restart'
-        own = data.get('caller') == seat.name
         if not own:
             from .servicectl import ANSWER_SECONDS
             ending = state.completed_turns[-1] if state.completed_turns else None
