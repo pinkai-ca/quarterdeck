@@ -392,6 +392,7 @@ def start(ship: Ship, qd: Path | None = None, *, expected: dict | None = None,
             stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True,
             cwd=str(ship.folder), env=environment,
         )
+    record_for_test_run(ship, process.pid, scope)
     def confirmed():
         if not started(ship.runtime):
             return False
@@ -422,6 +423,26 @@ def start(ship: Ship, qd: Path | None = None, *, expected: dict | None = None,
 
 
 SCOPE_PROGRAM = 'systemd-run'
+TEST_RUN_RECORDS = 'TESTRUN_SERVICE_RECORDS'  # tests/testrunner/services.py: a test run's folder of the services it started
+
+
+def record_for_test_run(ship: Ship, pid: int, scope: list[str]) -> None:
+    """Under the repository's test tool, record the service just started, so the run stops it before it deletes the
+    ship: it runs in a scope and a session of its own, which no test's ending reaches. Written once, at once; the
+    interpreter and package that started it are named, so its own stop can be run through them."""
+    folder = os.environ.get(TEST_RUN_RECORDS)
+    if not folder:
+        return
+    import sys
+    record = dict(ship=str(ship.folder), runtime=str(ship.runtime), pid=pid, start=process_start(pid),
+                  unit=scope_unit(scope) if scope else None, python=sys.executable,
+                  package=str(Path(__file__).resolve().parent.parent))
+    try:
+        target = Path(folder)
+        target.mkdir(parents=True, exist_ok=True)
+        durable.replace_file(target / f'{pid}-{record["start"]}.json', json.dumps(record, sort_keys=True) + '\n')
+    except OSError:
+        pass  # the run's scan by the ship's path still finds it; a record never stops a start
 
 
 def pool_keys(ship: Ship) -> list[str]:

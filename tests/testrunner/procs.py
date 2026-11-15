@@ -83,3 +83,58 @@ def users_of(folder: Path) -> tuple[list[dict], int]:
                 users.append({'pid': pid, 'link': link, 'path': str(target)})
                 break
     return users, uninspectable
+
+
+def tree(pid: int, start: str) -> dict[int, str]:
+    """A process of this user's and its descendants now, each by pid and start; empty unless ``pid`` still has
+    ``start`` and has not exited."""
+    rows = {}
+    for found in _ours():
+        fields = stat_fields(found)
+        if fields and len(fields) > 19 and fields[0] not in EXITED:
+            rows[found] = (int(fields[1]), fields[19])
+    if pid not in rows or rows[pid][1] != start:
+        return {}
+    taken, stack = {}, [pid]
+    while stack:
+        at = stack.pop()
+        if at in taken:
+            continue
+        taken[at] = rows[at][1]
+        stack += [child for child, (parent, _) in rows.items() if parent == at]
+    return taken
+
+
+def alive(pids: dict[int, str]) -> dict[int, str]:
+    """Which of these still run, by pid and start; an exited process (a zombie included) has ended."""
+    left = {}
+    for pid, start in pids.items():
+        fields = stat_fields(pid)
+        if fields and len(fields) > 19 and fields[19] == start and fields[0] not in EXITED:
+            left[pid] = start
+    return left
+
+
+def end_tree(pid: int, start: str, *, rounds: int = 20, pause: float = 0.05) -> dict[int, str]:
+    """Stop, then kill, a process and every descendant, by pid and start, taking in new children each round, and
+    confirm. Returns what still runs; empty once all of it has ended. A pid is signalled only while it still has the
+    start it was found with, so a pid given to another process since is never struck."""
+    import signal
+    import time
+    known = tree(pid, start)
+    for _ in range(rounds):
+        live = alive(known)
+        for parent, parent_start in list(live.items()):
+            known.update(tree(parent, parent_start))
+        live = alive(known)
+        if not live:
+            return {}
+        for sig in (signal.SIGSTOP, signal.SIGKILL):
+            for target, target_start in live.items():
+                if start_time(target) == target_start:
+                    try:
+                        os.kill(target, sig)
+                    except (ProcessLookupError, PermissionError):
+                        pass
+        time.sleep(pause)
+    return alive(known)

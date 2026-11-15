@@ -10,7 +10,7 @@ import stat
 import sys
 import time
 
-from . import evidence, gitops, owned, procs, report, resources, sessions, scratch as storage
+from . import evidence, gitops, owned, procs, report, resources, services, sessions, scratch as storage
 from .layout import (CHANGES, DIRECTORY, KEEPS, RESULTS, RETIREMENTS, RUNS, RUN_SOCKETS, SOCKETS, Refused, Root, RunGuard, RunBusy, Slot, change_file,
                      identity, read_json, run_active, run_name, write_json)
 
@@ -98,6 +98,13 @@ def _retire_run(root: Root, runs_fd: int, run: str, state: dict, *, releasing=Fa
             if path.is_symlink() or backlink.is_symlink() or backlink.read_text().strip() != str(own / '.git'):
                 return {'outcome': 'held', 'scratch': str(storage.path(root, run)),
                         'reason': f'Git admin {admin} does not point to this run\'s checkout {own}; retained'}
+    # Every ship service the run's tests started is stopped before anything is deleted: a service lives in a scope
+    # and a session of its own, so no test's ending reaches it, and one left behind writes into its deleted ship for
+    # hours. One that still runs holds the cleanup, with nothing removed (services).
+    stopped = services.stop(root.path / RESULTS / run / 'services', storage.path(root, run))
+    if stopped['outcome'] == 'held':
+        return {'outcome': 'held', 'scratch': str(storage.path(root, run)), 'services': stopped,
+                'reason': 'a ship service the run started still runs; nothing removed'}
     budget = owned.Budget()
     parent = None
     try:
@@ -110,6 +117,7 @@ def _retire_run(root: Root, runs_fd: int, run: str, state: dict, *, releasing=Fa
                                    state.get('owner'), budget=budget)
         finally:
             os.close(parent)
+    cleanup['services'] = stopped
     cleanup['sessions'] = sessions.retire(root, run, budget=budget)
     if cleanup['sessions']['outcome'] == 'held':
         cleanup['outcome'] = 'held'

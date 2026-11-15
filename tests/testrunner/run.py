@@ -23,7 +23,7 @@ import subprocess
 import sys
 import time
 
-from . import clean, environment, evidence, gitops, jail, owned, procs, report, resources, scratch as storage, sessions, socket_paths, socket_roots, usersite
+from . import clean, environment, evidence, gitops, jail, owned, procs, report, resources, scratch as storage, services, sessions, socket_paths, socket_roots, usersite
 from .layout import RESULTS, RUNS, RUN_SOCKETS, SOCKETS, Refused, Root, RunGuard, Slot, git_environment, identity, reserve_run_id, write_json
 
 GRACE = 15.0
@@ -377,6 +377,7 @@ class Runner:
                 env, settings = environment.build(scratch, run, self.user['base'] if self.user['exists'] else None,
                                                   **build_options)
                 registry = str(root.path / RESULTS / run / 'sessions')
+                env[services.RECORD_ENV] = str(root.path / RESULTS / run / 'services')  # each ship service a test starts
                 if self.ci_layout:
                     env['TESTRUN_CI_SESSION_CONTEXT'] = json.dumps({'registry': registry, 'run': run})
                 else:
