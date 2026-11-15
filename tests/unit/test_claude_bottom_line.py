@@ -85,7 +85,7 @@ def test_a_panel_below_the_line_is_not_a_measured_rest():
     ('2.1.317', 'cedar' + MODE + ' (shift+tab to cycle)'),
     ('2.1.317', MODE + ' · 1 shell…'),
 ])
-def test_any_other_bottom_line_says_nothing(version, bottom):
+def test_any_other_bottom_line_says_nothing(version, bottom):  # law: record-first
     screen = drawn(bottom)
     assert screen.box == '', 'the composer itself is read'
     assert ClaudeHarness().background(screen, version) is None

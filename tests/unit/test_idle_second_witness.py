@@ -144,7 +144,7 @@ def test_anything_else_the_screen_names_is_work_held_under_its_name(case, bottom
     (None, 'its screen is not the composer at rest'),
     (OSError('synthetic unreadable pane'), 'its screen could not be read'),
 ])
-def test_a_screen_that_does_not_say_settles_nothing_and_the_hold_says_what_it_lacked(case, shown, lacked):
+def test_a_screen_that_does_not_say_settles_nothing_and_the_hold_says_what_it_lacked(case, shown, lacked):  # law: record-first
     built = case(unread(), shown, alone=True)
     state, hold, said = built.second()
     assert state is built.state
@@ -184,7 +184,7 @@ def test_the_record_itself_must_show_everything_else_at_rest(case, changes):
     ({'queued': None}, 'queue-unknown'),
     ({'queue_error': 'synthetic ambiguity'}, 'queue-unknown'),
 ])
-def test_a_hold_of_any_other_kind_is_never_the_screens_to_lift(case, changes, dimension):
+def test_a_hold_of_any_other_kind_is_never_the_screens_to_lift(case, changes, dimension):  # law: record-first
     built = case(unread(**changes), text(NOTHING), alone=True)
     state, hold = idle.reading(built.seat)
     assert hold.dimension == dimension and built.reads == 0
@@ -200,7 +200,7 @@ def test_a_queue_the_explicit_request_may_pass_is_passed_to_the_screen_too(case)
     assert built.second(explicit=True)[1] is None and built.reads == 1
 
 
-def test_a_record_that_knows_is_never_second_guessed_by_the_screen(case):
+def test_a_record_that_knows_is_never_second_guessed_by_the_screen(case):  # law: record-first
     for tools in ((), ('Bash',)):
         built = case(unread(pending_tools=tools), text(MODE + ' · 2 shells'), alone=True)
         reading = idle.reading(built.seat)
