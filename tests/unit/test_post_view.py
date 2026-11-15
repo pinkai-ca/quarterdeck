@@ -142,6 +142,8 @@ def views_service(runtime: Path, seats: dict, kept_up: set[str] = frozenset()):
         return SimpleNamespace(launched=lambda: SimpleNamespace(argv=argv), is_up=name in kept_up)
     stub = SimpleNamespace(runtime=runtime, ship=ship, seat=seat, log=lambda event, **fields: logged.append((event, fields)))
     stub._view_kept = lambda name: servicemod.Service._view_kept(stub, name)
+    stub._viewed_seats = lambda: servicemod.Service._viewed_seats(stub)
+    stub._refresh_views = lambda names, snapshot=None: servicemod.Service._refresh_views(stub, names, snapshot)
     return stub, logged, lambda: servicemod.Service.views(stub)
 
 

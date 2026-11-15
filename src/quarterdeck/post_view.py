@@ -19,7 +19,8 @@ folder ``runtime/views/<seat>/post`` laid out as the post is, and the jail binds
 
 Nothing else of the post is there: no other seat's inbox or messages, no drop holds (whose reasons could tell a seat
 whether a message it cannot read exists), no other attempts, no journals or groups. The view is refreshed before the seat's
-launch, on each service pass before deliveries, and in the door, so a message is in it before it is typed to the seat.
+launch, on each service pass before deliveries, and in the door, so a message is in it before it is typed to the seat;
+and in the service's filing step as soon as a message leaves the seat's drop, so what the seat posted is never in neither.
 
 A refresh opens only what is new. Beside the views, in ``runtime/views``, which no jail is shown, the index
 ``.parties`` keeps each store message's sender and addressee as the store reads them, one JSON line appended per

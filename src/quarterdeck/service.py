@@ -798,10 +798,26 @@ class Service:
                     self.log("view-removed", seat=name)
             except Exception as error:
                 self.log("error", step="views", seat=name, error=repr(error))
-        for name, spec in self.ship.seats.items():
+        self._refresh_views(self._viewed_seats(), snapshot)
+
+    def _viewed_seats(self) -> list[str]:
+        """The declared seats whose view of the post the service keeps: a jailed seat, or one whose view stands."""
+        from . import post_view
+        return [name for name, spec in self.ship.seats.items()
+                if self.ship.jailed(spec) or post_view.folder(self.runtime, name).is_dir()]
+
+    def _refresh_views(self, names, snapshot=None) -> None:
+        """Refresh these seats' views from one snapshot of the store; one seat's failure never stops the others'."""
+        from . import post_view
+        if snapshot is None:
             try:
-                if self.ship.jailed(spec) or post_view.folder(self.runtime, name).is_dir():
-                    post_view.refresh(self.runtime, name, snapshot)
+                snapshot = post_view.Snapshot(self.runtime)
+            except Exception as error:
+                self.log("error", step="views", error=repr(error))
+                return
+        for name in names:
+            try:
+                post_view.refresh(self.runtime, name, snapshot)
             except Exception as error:
                 self.log("error", step="views", seat=name, error=repr(error))
 
@@ -823,9 +839,31 @@ class Service:
         service_inbox.refresh(self)
 
     def file_drops(self) -> None:
-        """File each seat's drop. The service sets the sender from the folder; a refusal is held and logged once."""
+        """File each seat's drop. The service sets the sender from the folder; a refusal is held and logged once.
+
+        Then the view of each viewed seat whose drop a message left is refreshed at once, in the same step: a jailed
+        seat sees the post only through its view, so a message it just posted is in its drop or in its view, never
+        in neither until the pass's views step. Only those seats, and only when a message left: a pass that files
+        nothing of theirs reads no store listing for it."""
+        try:
+            before = {name: self._drop_names(name) for name in self._viewed_seats()}
+        except Exception as error:  # the views never stop the filing; the pass's views step still refreshes them
+            self.log("error", step="views", error=repr(error))
+            before = {}
         for folder, reason in post.file_drops(self.store, self.ship, filing=self.drop_filer):
             self.log("drop-held", folder=folder, reason=reason)
+        left = [name for name, names in before.items() if names - self._drop_names(name)]
+        if left:
+            self._refresh_views(left)
+
+    def _drop_names(self, seat: str) -> set[str]:
+        """The names in a seat's drop, by the post folder's no-follow listing, bounded as the filing's own window is,
+        so a flooded drop costs no more here than there; none when it cannot be read."""
+        try:
+            return {name for name, _ in post_dir.list_children(self.runtime / "post" / "drop" / seat,
+                                                               limit=post.DROP_MAX_FILES)}
+        except (OSError, ShipError):
+            return set()
 
     def groups(self) -> None:
         """Recover fixed group copies and publish one all-filed or failure notice."""

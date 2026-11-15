@@ -566,3 +566,48 @@ print(json.dumps(seen))
     with credential._reseeding(ship, 0.5):
         pass
     assert sorted(os.listdir(lock.parent)) == ["credential-reseed.lock"]
+
+
+def test_a_jailed_seats_report_is_in_its_view_as_soon_as_the_service_files_it(drydock: Path, tmux: Tmux, tmp_path: Path):
+    """Real bwrap and the fake program, no model: the seat posts a report, then waits inside its jail until the
+    report shows in its own view of the post. Outside, the service's filing step alone runs: no views step, no
+    door. The report leaves the drop and is in the view in that one step, read from inside the jail."""
+    from quarterdeck import post_view
+    from quarterdeck.service import Service
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    path = drydock / "ship.toml"
+    text = shipmod.edit(path.read_text(), "seats.worker-1", "sandbox", True)
+    text = shipmod.edit(text, "seats.worker-1", "cwd", str(workspace))
+    path.write_text(text + '\n[seats.worker-1.settings]\nstep_seconds = "0.05"\n')
+    ship = shipmod.load(drydock)
+    seat = seatmod.Seat(ship, ship.seat("worker-1"), tmux)
+    svc = Service(ship, tmux)
+    inside = ship.runtime / "post" / "store"  # the seat's view, bound read-only in the post's place
+    try:
+        seat.up(resume=False)
+        wait_for(lambda: Door(seat).reading().open)
+        message = svc.store.new("order", "captain", "worker-1",
+                                "$ qd post report --re {this} filed once\n"
+                                f"$ for i in $(seq 1 600); do ls {inside} | grep -q '^rep-' && break; sleep 0.05; done;"
+                                f" ls {inside} | grep -q '^rep-' && echo report-in-view || echo report-not-in-view",
+                                subject="Synthetic view after filing")
+        sent = Door(seat).deliver(post.typed([message]))
+        assert sent.result == "delivered", sent
+        drop = post.drop_dir(ship.runtime, "worker-1")
+        dropped = wait_for(lambda: next(iter(drop.glob("rep-*.json")), None), 30)
+        view = post_view.folder(ship.runtime, "worker-1") / "store"
+        assert not (view / dropped.name).exists(), "not yet filed: in the drop, not in the view"
+        for _ in range(50):  # the filing step alone, one bounded slice a call, until the report has left the drop
+            svc.file_drops()
+            if not dropped.exists():
+                break
+        assert not dropped.exists() and (view / dropped.name).is_file(), "filed, and in the view in the same step"
+        report = svc.store.closing_report(message)
+        assert report is not None and report.sender == "worker-1" and report.body == "filed once"
+        screen = wait_for(lambda: (s if "⎿ report-" in (s := tmux.capture(seat.pane().id, history=200)) else None), 60)
+        assert "⎿ report-in-view" in screen and "⎿ report-not-in-view" not in screen, screen
+    finally:
+        seat.down()
+        svc.ledger.close()
