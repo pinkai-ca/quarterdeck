@@ -37,6 +37,10 @@ class RecordModels:
     def __init__(self):
         self._readings = {}
 
+    @staticmethod
+    def _stamp(info):
+        return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
     def read(self, seat, record):
         previous = self._readings.pop(seat.name, None)
         if record is None:
@@ -44,14 +48,29 @@ class RecordModels:
         started = time.time_ns()
         info = record.lstat()  # one metadata read; never follow a record link
         if not stat.S_ISREG(info.st_mode):
-            return None
-        stamp = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-        key = seat.harness.name, record, stamp
+            return seat.harness.record_model(record)  # preserve native link handling, without caching
+        stamp = self._stamp(info)
+        try:
+            wal_info = Path(f'{record}-wal').lstat()
+        except FileNotFoundError:
+            wal = None
+        else:
+            if not stat.S_ISREG(wal_info.st_mode):
+                return seat.harness.record_model(record)
+            wal = self._stamp(wal_info)
+        try:
+            Path(f'{record}-journal').lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            return seat.harness.record_model(record)  # SQLite refuses a rollback journal
+        key = seat.harness.name, record, stamp, wal
         if previous is not None and previous[0] == key:
             self._readings[seat.name] = previous
             return previous[1]
         model = seat.harness.record_model(record)
-        if (model is not None and max(stamp[-2:]) + post.POST_TIMESTAMP_TICK_NS
+        times = (*stamp[-2:], *(wal[-2:] if wal else ()))
+        if (model is not None and max(times) + post.POST_TIMESTAMP_TICK_NS
                 < started <= time.time_ns()):
             self._readings[seat.name] = key, model
         return model

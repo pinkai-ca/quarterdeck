@@ -166,3 +166,107 @@ def test_cached_record_still_checks_launch_and_screen_each_pass(tmp_path, monkey
     seat.pane = lambda: SimpleNamespace(id='%1', pid=123, dead=True)
     assert model_mismatch.observe(seat, records=service.model_records).status == 'unknown'
     assert reads == [pointer[0]]
+
+
+@pytest.mark.parametrize('change', ['append', 'replace', 'remove', 'create'])
+def test_wal_change_reads_model_afresh_while_main_record_is_unchanged(tmp_path, monkeypatch, change):
+    service, seat, pointer, reads, _ = setup_pass(tmp_path, monkeypatch)
+    record = pointer[0]
+    wal = Path(f'{record}-wal')
+    if change != 'create':
+        wal.write_text('sample-a')
+
+    def read(path):
+        reads.append(path)
+        return wal.read_text() if wal.exists() else path.read_text()
+
+    seat.harness.record_model = read
+    before = record.stat()
+    service.model_differences()
+    service.model_differences()
+    assert reads == [record]
+    if change == 'remove':
+        wal.unlink()
+    elif change == 'replace':
+        replacement = tmp_path / 'replacement-wal'
+        replacement.write_text('sample-b')
+        os.replace(replacement, wal)
+    elif change == 'append':
+        with wal.open('a') as stream:
+            stream.write('-changed')
+    else:
+        wal.write_text('sample-b')
+    service.model_differences()
+    service.model_differences()
+    assert reads == [record, record]
+    after = record.stat()
+    assert (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns) == (
+        before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+
+
+@pytest.mark.parametrize('age', [0, post.POST_TIMESTAMP_TICK_NS])
+def test_recent_wal_prevents_reuse_of_an_old_main_record_reading(tmp_path, monkeypatch, age):
+    service, seat, pointer, reads, now = setup_pass(tmp_path, monkeypatch)
+    record = pointer[0]
+    wal = Path(f'{record}-wal')
+    wal.write_text('sample-a')
+    old_info = record.lstat()
+    wal_info = SimpleNamespace(st_mode=old_info.st_mode, st_dev=old_info.st_dev,
+                              st_ino=old_info.st_ino + 1, st_size=8,
+                              st_mtime_ns=now[0], st_ctime_ns=now[0])
+    original = Path.lstat
+    monkeypatch.setattr(Path, 'lstat', lambda p, **kw: wal_info if p == wal else original(p, **kw))
+    now[0] += age
+    service.model_differences()
+    now[0] = max(wal_info.st_mtime_ns, wal_info.st_ctime_ns) + post.POST_TIMESTAMP_TICK_NS + 1
+    service.model_differences()
+    service.model_differences()
+    assert reads == [record, record]
+
+
+def test_linked_record_keeps_native_reading_behavior_without_caching(tmp_path, monkeypatch):
+    service, seat, pointer, reads, _ = setup_pass(tmp_path, monkeypatch)
+    record = pointer[0]
+    target = tmp_path / 'native.jsonl'
+    record.rename(target)
+    record.symlink_to(target)
+    service.model_differences()
+    target.write_text('sample-b')
+    service.model_differences()
+    assert reads == [record, record]
+    assert not service.model_records._readings
+    assert len(service.store.all()) == 1
+
+
+def test_rollback_journal_discards_cached_model_until_native_reader_can_read_again(tmp_path, monkeypatch):
+    import sqlite3
+    from quarterdeck.harness.sqlite_snapshot import snapshot
+
+    service, seat, pointer, reads, _ = setup_pass(tmp_path, monkeypatch)
+    record = pointer[0]
+    record.unlink()
+    with sqlite3.connect(record) as database:
+        database.execute('CREATE TABLE model (value TEXT)')
+        database.execute("INSERT INTO model VALUES ('sample-a')")
+
+    def read(path):
+        reads.append(path)
+        _, data = snapshot(path)
+        with sqlite3.connect(':memory:') as database:
+            database.deserialize(data)
+            return database.execute('SELECT value FROM model').fetchone()[0]
+
+    seat.harness.record_model = read
+    service.model_differences()
+    service.model_differences()
+    assert reads == [record]
+    journal = Path(f'{record}-journal')
+    journal.write_bytes(b'rollback in progress')
+    service.model_differences()
+    service.model_differences()
+    assert reads == [record] * 3
+    assert not service.model_records._readings
+    journal.unlink()
+    service.model_differences()
+    service.model_differences()
+    assert reads == [record] * 4
