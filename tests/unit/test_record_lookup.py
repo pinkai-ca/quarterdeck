@@ -229,17 +229,20 @@ def test_quiet_service_pass_writes_nothing_after_the_first_join(tmp_path, monkey
         launch(seat)
         candidate(seat)
         assert seat.record() is not None
-    # _working is the real periodic follow reader, with no transport or ledger mutation.
+    # follow is the real periodic duty, with no transport or ledger mutation at idle.
     svc = Service(seats[0].ship, seats[0].tmux)
+    monkeypatch.setattr(svc, 'resolved_seats', lambda: seats)
     try:
         with monkeypatch.context() as old:
             # Exact original record() body on this base; join() publication is unchanged.
             old.setattr(Seat, 'record', lambda self: self.join().record)
             with mutations(monkeypatch, tmp_path) as before:
-                old_states = [svc._working(seat) for seat in seats]
+                svc.follow()
+                old_states = dict(svc.working)
         with mutations(monkeypatch, tmp_path) as after:
-            new_states = [svc._working(seat) for seat in seats]
-        assert old_states == new_states == [False] * len(seats)
+            svc.follow()
+            new_states = dict(svc.working)
+        assert old_states == new_states == {seat.name: False for seat in seats}
         assert before == dict(write_opens=8, append_opens=4, append_writes=0, mkdirs=16, locks=4)
         assert after == ZERO
         print('quiet-pass write counts: ' + json.dumps(dict(seats=len(seats), before=before, after=after), sort_keys=True))
