@@ -138,8 +138,8 @@ Anything the desk does for you, you can do yourself.
 Bring the crew up, and down:
 
 ```sh
-qd up      # start the service and every agent, each resuming where it left off
-qd attach  # open your office in this terminal; qd attach bridge opens the rest of the crew
+qd up      # start the service and every agent marked up, each resuming its conversation if it has one
+qd attach  # open the crew in this terminal; qd --ship <office folder> attach opens your office
 qd down    # end every agent and the service; qd down captain ends one
 ```
 
@@ -152,10 +152,10 @@ qd status         # every agent on one screen, then the open orders
 qd watch captain  # one agent in full
 ```
 
-Change an agent:
+Change an agent, such as the engineer, `engineering` in the ship's file:
 
 ```sh
-qd set engineering model=gpt-6.1-sol  # written to the ship's file and committed, then applied
+qd set engineering model=gpt-6.1-sol  # written to the ship's file and committed; the command says whether a restart must apply it
 qd stop engineering                   # interrupt its turn, nothing more
 qd restart engineering                # relaunch it; its conversation goes on
 qd fresh engineering                  # a new conversation, with its brief and a list of its open messages
@@ -164,22 +164,24 @@ qd fresh engineering                  # a new conversation, with its brief and a
 See what it cost, and that all is well:
 
 ```sh
-qd ledger --by order  # what each order cost
+qd ledger --by order  # each order's turns, tokens and time, and its cost where one is known
 qd doctor             # is the machine ready for this ship
 qd check claude       # prove an installed harness live; spends a few turns
+qd drill              # a whole-crew exercise on stand-in agents; spends nothing
 ```
 
-Keep it up to date:
+Keep it up to date, from the `quarterdeck` folder:
 
 ```sh
-git pull       # get the latest Quarterdeck code
-qd sync        # bring your ship's copy of the code up to it
-qd sync --all  # the same for every ship you have, one after another
+git pull               # get the latest Quarterdeck code
+qd sync                # bring your ship's copy of the code up to it
+qd sync --all          # the same for each of your ships under ships/, one after another
+qd --ship office sync  # the same for your office, which --all leaves out
 ```
 
 - An order from your own shell goes out in your name, unchecked: the machine is yours.
-- Agents go by their names in the ship's file: `desk`, `captain` and `engineering` by default.
-- With no ship named, `qd` acts on your default ship, the one setup made, and says which. Name another with `--ship <folder>`, or make another the default with `qd default <ship>`.
+- Agents go by their names in the ship's file: `desk`, `captain` and `engineering` by default. An agent of another ship is named `seat@ship`, as the desk in your office is `desk@office`.
+- With no ship named, `qd` acts on your default ship, the crew's ship that setup made, and says which. Name another with `--ship <folder>` straight after `qd`, or make another the default with `qd default <ship>`.
 - Every command says what it did, and every refusal says why and what would lift it.
 - These are the commands you will use most. `qd --help` lists them all.
 - Add `--json` to get any reading as JSON instead of text, as in `qd --json status`: [Reading as JSON](docs/JSON.md).
@@ -188,8 +190,8 @@ qd sync --all  # the same for every ship you have, one after another
 ## More
 
 - [Harnesses](docs/HARNESSES.md): each supported harness, what it can run on, and what has been proven of it.
-- [Ships](docs/SHIPS.md): the ships to start from, and how to write one by hand.
-- [The parts of Quarterdeck](docs/PARTS.md): ship, seat, pool, post, watch and ledger, in a line each.
+- [Ships](docs/SHIPS.md): the template ships to start from, such as a forum and a cascade, how `qd init` makes your office and `qd raise` a ship from a template, and how to write one by hand.
+- [The parts of Quarterdeck](docs/PARTS.md): ship, office, seat, harness, provider, pool, post, watch, ledger, orders and laws, in a line each.
 - [The laws](docs/LAWS.md): fourteen guarantees, each enforced in code and tried by a test.
 - [Design decisions](docs/DECISIONS.md): the five choices that shape it, each with the code and the test behind it.
 - [CONTRIBUTING.md](CONTRIBUTING.md) is for whoever changes Quarterdeck itself. [SETUP.md](SETUP.md) and [AGENTS.md](AGENTS.md) are for an agent that arrives here.
