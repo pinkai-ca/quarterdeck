@@ -22,7 +22,7 @@ from quarterdeck.tmux import Pane
 @pytest.fixture
 def structures(tmp_path, monkeypatch):
     serial = count()
-    monkeypatch.setattr(post.Store, '_new_id', lambda self, kind, sender, at: f'{kind[:3]}-synthetic-z{next(serial)}')
+    monkeypatch.setattr(post.Store, '_new_id', lambda self, kind, sender, at, **_: f'{kind[:3]}-synthetic-z{next(serial)}')
     monkeypatch.setenv('QD_FAKE_STEPS', '0')
     monkeypatch.setenv('QD_FAKE_ACCEPT_SECONDS', '0')
     monkeypatch.setattr(Program, 'say', lambda *args: None)

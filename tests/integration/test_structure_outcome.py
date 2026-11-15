@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 @pytest.fixture
 def setup_structure(drydock, tmux, monkeypatch):
     serial = count()
-    monkeypatch.setattr(post.Store, '_new_id', lambda self, kind, sender, at: f'{kind[:3]}-synthetic-z{next(serial)}')
+    monkeypatch.setattr(post.Store, '_new_id', lambda self, kind, sender, at, **_: f'{kind[:3]}-synthetic-z{next(serial)}')
     shutil.copytree(ROOT / 'ships/cascade/roles', drydock / 'roles', dirs_exist_ok=True)
     shutil.copyfile(ROOT / 'ships/forum/roles/reviewer.md', drydock / 'roles/reviewer.md')
     (drydock / 'work').mkdir(exist_ok=True)

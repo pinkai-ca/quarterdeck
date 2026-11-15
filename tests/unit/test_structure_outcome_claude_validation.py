@@ -37,7 +37,7 @@ ENDED = 'turn ended, no report'
 def crew(tmp_path, monkeypatch):
     """A ship with a forum of the given members and a three-seat ring, all on the fake program."""
     serial = count()
-    monkeypatch.setattr(post.Store, '_new_id', lambda self, kind, sender, at: f'{kind[:3]}-validation-q{next(serial)}')
+    monkeypatch.setattr(post.Store, '_new_id', lambda self, kind, sender, at, **_: f'{kind[:3]}-validation-q{next(serial)}')
     monkeypatch.setenv('QD_FAKE_STEPS', '0')
     monkeypatch.setenv('QD_FAKE_ACCEPT_SECONDS', '0')
     monkeypatch.setattr(Program, 'say', lambda *args: None)

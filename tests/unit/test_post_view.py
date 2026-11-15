@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from quarterdeck import post, post_view
 
 
@@ -47,8 +49,16 @@ def test_an_id_chosen_inside_a_view_never_takes_a_short_another_seat_holds(tmp_p
     (runtime / 'post' / 'store').mkdir(parents=True)
     every = [f'ord-{number:04x}' for number in range(16 ** 4) if number != 0xabcd]
     (runtime / 'post' / post_view.SHORTS).write_text(''.join(f'{short}\n' for short in every))
-    message = post.Store(runtime).prepare('order', 'worker-1', 'captain', 'one short left')
+    # Draws are bounded (at most post.ID_DRAWS): every one but the last falls on a short the view holds.
+    draws = iter([f'{number:04x}' for number in range(post.ID_DRAWS - 1)] + ['abcd'])
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(post.secrets, 'token_hex', lambda size: next(draws))
+        message = post.Store(runtime).prepare('order', 'worker-1', 'captain', 'one short left')
     assert message.short == 'ord-abcd'
+    # With no short left of a kind, the draws stop and the post is refused with the fixed reason, never spun.
+    (runtime / 'post' / post_view.SHORTS).write_text(''.join(f'{short}\n' for short in [*every, 'ord-abcd']))
+    with pytest.raises(post.IdSpaceExhausted, match=post.ID_SPACE_REASON):
+        post.Store(runtime).prepare('order', 'worker-1', 'captain', 'none left')
 
 
 def test_the_view_drops_an_inbox_the_post_no_longer_has(tmp_path):
