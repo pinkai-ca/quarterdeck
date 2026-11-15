@@ -226,7 +226,13 @@ therefore runs one service: a plain process, run by whoever runs `qd up`, that
 outlives the shell it started from. An exclusive lock, held for the service's
 whole life, is the one fact of whether the service exists. The heartbeat says
 how recently the service ticked, and a busy service, which holds the lock, never
-reads as dead. The framework installs no system unit for the service, because
+reads as dead. The service is therefore known by the holder of its lock, the
+process the kernel lists as holding it (`servicectl.holder`, two readings of
+`/proc/locks` agreeing), never by the pid a beat names: a killed service's last
+beat outlives it, and after a sync back to an earlier copy the beat a reader finds
+may name a process that is no longer the service. A beat counts as a start only
+when its pid is that holder, and `qd stop` signals the holder alone. Inside a
+jail, which sees no lock, the beat stands alone. The framework installs no system unit for the service, because
 `qd` writes only inside its project folder (law `one-folder`).
 
 The service alone writes the Ledger, and every reading opens the Ledger

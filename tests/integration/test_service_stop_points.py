@@ -178,8 +178,8 @@ def test_forced_exit_before_the_journal_keeps_the_attempt_and_never_types_twice(
     assert world.journal() is None and typed(world) == 0
     world.start()
     wait_for(lambda: servicectl.started(runtime))
-    # started() holds once the lock is taken, while the dead owner's record is still in it and its pointer not yet
-    # finished; the new owner is written only after the next start has dealt with that pointer. So wait for it.
+    # started() holds once the new service has beaten, while the dead owner's record is still in the lock and its
+    # pointer not yet finished; the new owner is written only after the next start has dealt with that pointer.
     wait_for(lambda: shutdown.owner(runtime) not in (None, dead))
     # The next start clears the old owner's early pointer; any pointer now is the new owner's own.
     current = shutdown.inflight(runtime, shutdown.owner(runtime))

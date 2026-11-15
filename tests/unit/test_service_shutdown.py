@@ -103,6 +103,7 @@ def test_stop_keeps_a_heartbeat_that_now_names_another_pid(tmp_path, monkeypatch
     stamp = datetime.now(timezone.utc).isoformat()
     heartbeat.write_text(f"{stopped_pid} {stamp}\n")
     monkeypatch.setattr(servicectl, "alive", lambda _: True)
+    monkeypatch.setattr(servicectl, "holder", lambda _: stopped_pid)  # the service is the lock's holder
     monkeypatch.setattr(servicectl, "locked", lambda _: False)
     monkeypatch.setattr(servicectl.os, "kill", lambda *_: heartbeat.write_text(f"{next_pid} {stamp}\n"))
     assert "service stopped" in servicectl.stop(tmp_path)
@@ -120,6 +121,7 @@ def test_stop_waits_for_the_process_to_be_gone_after_its_lock_frees(tmp_path, mo
     gone = iter([False, False, True])
     seen = []
     monkeypatch.setattr(servicectl, "alive", lambda _: True)
+    monkeypatch.setattr(servicectl, "holder", lambda _: pid)  # the service is the lock's holder
     monkeypatch.setattr(servicectl, "locked", lambda _: False)
     monkeypatch.setattr(servicectl.os, "kill", lambda *_: None)
     monkeypatch.setattr(shutdown, "owner", lambda runtime, found=None: expected)

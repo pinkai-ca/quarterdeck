@@ -221,6 +221,57 @@ def locked(runtime: Path) -> bool:
     return beat is not None and 0 <= beat[1] <= JAILED_HEARTBEAT_SECONDS
 
 
+def _flock_holder(path: Path) -> int | None:
+    """The pid the kernel lists as holding ``path``'s exclusive flock (/proc/locks), or None."""
+    try:
+        info = os.stat(path, follow_symlinks=False)
+        lines = Path("/proc/locks").read_text().splitlines()
+    except OSError:
+        return None
+    key = f"{os.major(info.st_dev):02x}:{os.minor(info.st_dev):02x}:{info.st_ino}"
+    for line in lines:
+        fields = line.split()
+        if len(fields) >= 6 and fields[1] == "FLOCK" and fields[3] == "WRITE" and fields[5] == key:
+            try:
+                return int(fields[4])
+            except ValueError:
+                return None
+    return None
+
+
+HOLDER_SECONDS = 1.0  # how long a held lock's holder may take to read the same twice in the kernel's table
+
+
+def _lock_rows(path: Path) -> list[str]:
+    """The kernel's lock-table rows for ``path``, for a refusal that must say what it saw."""
+    try:
+        info = os.stat(path, follow_symlinks=False)
+        key = f"{os.major(info.st_dev):02x}:{os.minor(info.st_dev):02x}:{info.st_ino}"
+        return [" ".join(line.split()[1:]) for line in Path("/proc/locks").read_text().splitlines() if key in line]
+    except OSError as error:
+        return [type(error).__name__]
+
+
+def holder(runtime: Path) -> int | None:
+    """The service: the process that holds the ship's lock, as the kernel lists it, never a heartbeat's word.
+
+    A dead service's last beat outlives it, and a beat at a place a copy no longer writes names whoever wrote last;
+    the lock is held by the live service alone. A probe of a free lock (``_held``) holds it for an instant, and one
+    reading of the table can miss a holder in passing, so a holder counts only when two readings 50 ms apart name the
+    same process while the lock is held, and never this process itself, within HOLDER_SECONDS. None when no process
+    holds it, or when the table cannot name it (inside a jail, which sees no lock)."""
+    for path in (lock_path(runtime), legacy_lock_path(runtime)):
+        deadline = time.monotonic() + HOLDER_SECONDS
+        while _held(path):  # free, or no such file: no holder at this place
+            first = _flock_holder(path)
+            time.sleep(0.05)
+            if first is not None and first != os.getpid() and _flock_holder(path) == first:
+                return first
+            if time.monotonic() >= deadline:  # a holder the table would not name twice: unknown, never guessed
+                break
+    return None
+
+
 def alive(runtime: Path) -> bool:
     """A service owns the ship: its lock is held. A dead process has dropped it; a busy one keeps it."""
     return locked(runtime)
@@ -233,7 +284,16 @@ def stale(runtime: Path) -> float | None:
 
 
 def started(runtime: Path) -> bool:
-    return alive(runtime) and read_heartbeat(runtime) is not None
+    """A service owns the ship and has beaten: a beat counts only when its pid is the lock's holder, so the last beat
+    of a service that died is never read as the start of the next. Where the holder cannot be read (a jail), the beat
+    stands alone, as it must there."""
+    if not alive(runtime):
+        return False
+    beat = read_heartbeat(runtime)
+    if beat is None:
+        return False
+    pid = holder(runtime)
+    return pid is None and not lock_path(runtime).exists() or pid == beat[0]
 
 
 def process_start(pid: int) -> str | None:
@@ -391,10 +451,13 @@ def stop(runtime: Path) -> str:
     if not alive(runtime):
         remove_heartbeat(runtime)
         return "service was not running"
-    beat = read_heartbeat(runtime)
-    if beat is None:
-        raise ShipError(f"a service holds {lock_path(runtime)} and has written no heartbeat; fuser {lock_path(runtime)} names it")
-    pid = beat[0]
+    pid = holder(runtime)  # the lock's holder, never a beat: a dead service's beat names a pid that is not the service
+    if pid is None:
+        if not alive(runtime):  # it ended between the two readings
+            remove_heartbeat(runtime)
+            return "service was not running"
+        raise ShipError(f"a service holds {lock_path(runtime)} but its holder cannot be read"
+                        f" (lock table: {_lock_rows(lock_path(runtime))}); fuser {lock_path(runtime)} names it")
     from . import shutdown
     owner = shutdown.owner(runtime, pid)
     if owner is not None and shutdown.process_start(pid) != owner["start"]:
