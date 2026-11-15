@@ -7,10 +7,12 @@ import sys
 import time
 import subprocess
 import json
+import stat
 
 import pytest
 
 from tests import conftest
+from tests.testrunner import socket_roots
 from quarterdeck import tmux_socket
 from quarterdeck.tmux import Tmux, TmuxError, PrivateTmuxError
 
@@ -108,34 +110,42 @@ def test_failed_real_namespace_setup_removes_only_its_owned_empty_container(monk
     assert container is not None and not container.exists()
 
 
-def test_unset_fallback_refuses_a_symlink_outside_its_verified_project(tmp_path,monkeypatch):
+def synthetic_project(tmp_path, monkeypatch):
+    """A git project of this test's own, made the suite's ROOT, its short root under a private stand-in for /tmp."""
     project=tmp_path/'synthetic-project';project.mkdir()
     conftest.git(project,'init','--quiet')
-    (project/'.gitignore').write_text('.testruns/\n')
-    outside=tmp_path/'synthetic-outside';outside.mkdir()
-    (project/'.testruns').symlink_to(outside,target_is_directory=True)
+    system_tmp=tmp_path/'synthetic-tmp';system_tmp.mkdir()
+    monkeypatch.setattr(socket_roots,'SYSTEM_TMP',system_tmp.resolve())
     monkeypatch.delenv('TESTRUNS_JAILED',raising=False)  # the project rule, which holds inside a jail as well
     monkeypatch.setattr(conftest,'ROOT',project)
+    return project
+
+
+def test_unset_fallback_refuses_a_symlink_outside_its_verified_project(tmp_path,monkeypatch):
+    project=synthetic_project(tmp_path,monkeypatch)
+    outside=tmp_path/'synthetic-outside';outside.mkdir()
+    socket_roots.path(project).symlink_to(outside,target_is_directory=True)  # the short root's own place, a link
+    (project/'.testruns').symlink_to(outside,target_is_directory=True)  # and the project's results folder too
     with pytest.raises(pytest.UsageError,match='cannot verify the project-owned socket anchor'):
         conftest.socket_parent()
-    assert not list(outside.iterdir())
+    assert not list(outside.iterdir()) and socket_roots.path(project).is_symlink()
 
 
-def test_the_anchor_is_the_projects_fixed_testruns_folder_with_a_margin(tmp_path,monkeypatch,private_socket_root):
-    real=conftest.socket_parent()  # the real project's anchor, measured before ROOT is replaced
+def test_the_anchor_is_the_projects_short_root_with_a_margin(tmp_path,monkeypatch,private_socket_root):
     effective=private_socket_root.parent  # the anchor this session's sockets actually use
     deepest=lambda anchor:len(os.fsencode(anchor/(conftest.SESSION_PREFIX+'12345678')/'qs-12345678/qd-pt-12345678/s-replacement'))
     assert deepest(effective)+conftest.SOCKET_MARGIN<=conftest.SOCKET_LIMIT  # wherever the suite runs, the margin holds
-    if deepest(real)+conftest.SOCKET_MARGIN>conftest.SOCKET_LIMIT:
-        assert effective!=real  # a checkout too long for its own anchor ran only on a shorter outer root
-    project=tmp_path/'synthetic-project';project.mkdir()
-    conftest.git(project,'init','--quiet')
-    monkeypatch.delenv('TESTRUNS_JAILED',raising=False)  # the project rule, which holds inside a jail as well
-    monkeypatch.setattr(conftest,'ROOT',project)
+    real=socket_roots.path(Path('/'+'a-checkout-longer-than-any-runner/'*8))/'s'  # the real /tmp, never made here
+    assert deepest(real)+conftest.SOCKET_MARGIN<=conftest.SOCKET_LIMIT  # the short root fits whatever the checkout
+    project=synthetic_project(tmp_path,monkeypatch)
     anchor=conftest.socket_parent()
-    assert anchor==project/'.testruns'/'s' and anchor.is_dir() and not anchor.is_symlink()
-    assert (project/'.testruns'/'.gitignore').read_text()=='*\n'  # ignored even before .gitignore names it
-    assert conftest.git(project,'status','--porcelain')==''
+    root=socket_roots.path(project)
+    assert anchor==root/'s' and anchor.is_dir() and not anchor.is_symlink()
+    assert root.parent==socket_roots.SYSTEM_TMP and root.name.startswith(f'qd-{os.getuid()}-')
+    assert stat.S_IMODE(root.stat().st_mode)==0o700 and stat.S_IMODE(anchor.stat().st_mode)==0o700
+    marker=root/socket_roots.PROJECT
+    assert stat.S_IMODE(marker.stat().st_mode)==0o600 and json.loads(marker.read_text())['project']==str(project)
+    assert not (project/'.testruns').exists() and conftest.git(project,'status','--porcelain')==''  # nothing in it
 
 
 @pytest.mark.parametrize('replace',[False,True])

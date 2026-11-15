@@ -9,27 +9,33 @@ that puts a `python` running this run's interpreter first on PATH. The workflow'
 unset as it is on the runner. The stricter `--noprofile --norc -eo pipefail` is what GitHub uses only when a
 step names `shell: bash`; this one does not.
 
-Only the refusal paths are proved here. A short RUNNER_TEMP would need a folder outside the run's own
-scratch, which is not allowed; the success path is left to the first private GitHub run.
+With TMUX_TMPDIR unset, the checkout's sockets live in its project's short root under /tmp, whose length does not
+depend on the checkout's: a hosted-length checkout runs there and leaves no container. A RUNNER_TEMP too long for
+the guard is still refused. A short RUNNER_TEMP would need a folder outside the run's own scratch, which is not
+allowed; that success path is left to the first private GitHub run.
 """
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 
 from tests import conftest
+from tests.testrunner import socket_roots
 
 HOSTED = "/home/runner/work/quarterdeck/quarterdeck"  # GitHub's default workspace for this repository
 STEP = "- name: Unit, contract and integration tests"
 SYNTHETIC_TEST = "def test_synthetic_session_reaches_a_test():\n    pass\n"
-DROPPED = ("TMUX_TMPDIR", "TMUX", "TMUX_PANE", "QD_SHIP", "QD_SEAT", "QD_TMUX_SOCKET", "TESTRUNS_RUN", "RUNNER_TEMP",
-           "BASH_ENV",  # bash -e reads BASH_ENV when it is set; the runner sets none
-           "TESTRUNS_JAILED", "TESTRUNS_SOCKETS")  # a hosted runner is no jail, even when this suite runs in one
+DROPPED = ("TMUX_TMPDIR", "TMUX", "TMUX_PANE", "QD_SHIP", "QD_SEAT", "QD_TMUX_SOCKET", "RUNNER_TEMP",
+           "BASH_ENV")  # bash -e reads BASH_ENV when it is set; the runner sets none
+# A hosted runner has none of the test tool's variables: no run, no session records, no jail.
+DROPPED_PREFIXES = ("TESTRUN",)
 
 
 def deepest(anchor: Path) -> int:
@@ -55,12 +61,13 @@ def checkout(tmp_path: Path) -> Path:
     assert (folder / "tests/conftest.py").read_bytes() == (conftest.ROOT / "tests/conftest.py").read_bytes()
     assert len(os.fsencode(folder)) >= len(HOSTED)
     assert deepest(folder / ".testruns/s") + conftest.SOCKET_MARGIN > conftest.SOCKET_LIMIT, \
-        "the synthetic checkout must be long enough for the unchanged guard to refuse its own anchor"
+        "the synthetic checkout must be long enough that an anchor inside it could not fit"
     return folder
 
 
 def environment(**extra: str) -> dict[str, str]:
-    env = {key: value for key, value in os.environ.items() if key not in DROPPED}
+    env = {key: value for key, value in os.environ.items()
+           if key not in DROPPED and not key.startswith(DROPPED_PREFIXES)}
     env.update(extra)
     return env
 
@@ -82,22 +89,52 @@ def step_body() -> str:
     return text
 
 
-def test_a_hosted_length_checkout_refuses_its_own_anchor_without_a_supplied_root(tmp_path):
-    """Before the workflow's fix: with TMUX_TMPDIR unset, every test errors at the session guard."""
+def short_root(folder: Path) -> Path:
+    """The checkout's own short socket root under /tmp, named for its project."""
+    return socket_roots.path(folder.resolve())
+
+
+def remove_short_root(folder: Path) -> None:
+    """Remove the short root this test's checkout caused, and only when it names that checkout."""
+    root = short_root(folder)
+    if root.is_symlink() or not root.is_dir():
+        return
+    try:
+        record = json.loads((root / socket_roots.PROJECT).read_text())
+    except (OSError, ValueError):
+        return
+    if record.get("project") == str(folder.resolve()):
+        shutil.rmtree(root)
+
+
+def test_a_hosted_length_checkout_runs_on_its_short_root_without_a_supplied_root(tmp_path):
+    """With TMUX_TMPDIR unset, the session's sockets live in the project's short root, whatever the checkout's
+    length; the session passes, and leaves the root private and its anchor empty."""
     folder = checkout(tmp_path)
-    done = subprocess.run([sys.executable, "-m", "pytest", "-q", "-rs", "-p", "no:xdist"], cwd=folder,
-                          env=environment(), capture_output=True, text=True, timeout=120)
-    output = done.stdout + done.stderr
-    assert done.returncode != 0 and "the project path is too long for its .testruns/s anchor" in output, output[-2000:]
-    assert " passed" not in output.splitlines()[-1]
-    anchor = folder / ".testruns/s"
-    assert anchor.is_dir() and not any(anchor.iterdir()), "a refused session leaves no socket container"
+    root = short_root(folder)
+    assert not root.exists() and not root.is_symlink(), f"{root} is already there; this checkout is new"
+    try:
+        done = subprocess.run([sys.executable, "-m", "pytest", "-q", "-rs", "-p", "no:xdist"], cwd=folder,
+                              env=environment(), capture_output=True, text=True, timeout=120)
+        output = done.stdout + done.stderr
+        assert done.returncode == 0 and "1 passed" in output, output[-2000:]
+        assert len(os.fsencode(root)) == len(os.fsencode(short_root(Path("/p")))), "the root's length is fixed"
+        assert deepest(root / "s") + conftest.SOCKET_MARGIN <= conftest.SOCKET_LIMIT
+        info = root.lstat()
+        assert stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o700 and info.st_uid == os.getuid()
+        assert json.loads((root / socket_roots.PROJECT).read_text())["project"] == str(folder.resolve())
+        anchor = root / "s"
+        assert anchor.is_dir() and not anchor.is_symlink() and not any(anchor.iterdir()), \
+            "the session leaves no socket container"
+        assert not (folder / ".testruns/s").exists(), "no socket anchor in the long checkout itself"
+    finally:
+        remove_short_root(folder)
 
 
 def test_the_workflow_step_on_a_too_long_runner_temp_fails_and_leaves_it_empty(tmp_path):
     """The candidate step itself, on a RUNNER_TEMP too long for the unchanged guard: nonzero, nothing retained.
-    The refusal must name the step's own mktemp anchor under RUNNER_TEMP. The checkout's own anchor is too long
-    as well, so a step that lost its export of TMUX_TMPDIR would still fail, but on the checkout's anchor."""
+    The refusal must name the step's own mktemp anchor under RUNNER_TEMP, the root the step supplies; the
+    checkout's own short root, used only when none is supplied, is never the cause."""
     folder = checkout(tmp_path)
     runner_temp = tmp_path / ("synthetic-runner-temp-" + "w" * 40)
     runner_temp.mkdir()
