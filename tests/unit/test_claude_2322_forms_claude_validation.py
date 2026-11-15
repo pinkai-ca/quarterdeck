@@ -71,11 +71,12 @@ def read(tmp_path, rows):
 
 
 def test_the_measured_versions_are_an_exact_set_per_form():
-    assert claude_background.CALL_VERSIONS == claude_background.STATUS_VERSIONS == {'2.1.317', '2.1.322'}
+    assert claude_background.CALL_VERSIONS == {'2.1.317', '2.1.322', '2.1.325'}
+    assert claude_background.STATUS_VERSIONS == {'2.1.317', '2.1.322'}
     assert claude_background.STOP_VERSIONS == {'2.1.317'}
     assert claude_background.NOTICE_VERSIONS == {
-        ('queue-operation', 'enqueue'): {'2.1.317', '2.1.322'}, ('queue-operation', 'remove'): {'2.1.317'},
-        ('user', 'task-notification'): {'2.1.317', '2.1.322'}, ('attachment', 'queued_command'): {'2.1.317'}}
+        ('queue-operation', 'enqueue'): {'2.1.317', '2.1.322', '2.1.325'}, ('queue-operation', 'remove'): {'2.1.317'},
+        ('user', 'task-notification'): {'2.1.317', '2.1.322', '2.1.325'}, ('attachment', 'queued_command'): {'2.1.317'}}
     assert claude.PASTE_FORM_VERSIONS == {'2.1.317'}, 'no 2.1.322 instance of either paste transform was measured'
 
 
