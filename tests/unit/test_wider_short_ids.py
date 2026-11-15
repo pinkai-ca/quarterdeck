@@ -157,5 +157,5 @@ def test_each_native_record_and_the_door_confirm_the_complete_typed_message(tmp_
     door.since = AT
     assert door.matches(adapter.box(payload),Screen(payload,box=payload,working=False))
     assert door.confirm(payload,seconds=0).result == 'delivered'
-    other = payload.replace(item.short,'ord-ffee11' if len(suffix)==4 else 'ord-ffee')
+    other = payload.replace(item.short,item.short+'00')
     assert input_receipt.confirmed(adapter,record,other,AT) is None
