@@ -108,27 +108,101 @@ def test_a_failed_collection_keeps_the_same_input_owed(scheduled):
     assert published == [0.8]
 
 
-def test_real_input_hints_observe_arrivals_attempts_journals_and_seat_state(tmp_path, monkeypatch):
+def hinted_ship(tmp_path):
     (tmp_path / 'ship.toml').write_text('[ship]\ncode="checkout"\n[pools.p]\nprovider="fake"\n[sessions.crew]\n[seats.worker]\nsession="crew"\nharness="fake"\npool="p"\n')
     ship = shipmod.load(tmp_path)
-    monkeypatch.setattr(service_status.watch, 'service_state', lambda runtime: 'ok')
-    monkeypatch.setattr(service_status.accounting_health, 'reading', lambda runtime: None)
-    paths = [ship.runtime / name for name in ('post/store', 'post/attempts', 'post/pending/worker', 'seats/worker')]
-    for folder in paths:
-        folder.mkdir(parents=True)
+    for name in ('post/store', 'post/attempts', 'post/pending/worker', 'post/drop/worker', 'seats/worker', 'requests'):
+        (ship.runtime / name).mkdir(parents=True)
+    return ship
+
+
+def replace(path, text):
+    """The way the framework writes: a whole new file renamed into place."""
+    temporary = path.with_name(path.name + '.tmp')
+    temporary.write_text(text)
+    temporary.replace(path)
+
+
+def test_each_kept_input_still_requests_a_reading(tmp_path):
+    ship = hinted_ship(tmp_path)
+    seat = ship.runtime / 'seats/worker'
+    native = tmp_path / 'synthetic-record'
+    native.write_text('first')
+    replace(seat / 'human-alert.json', '{}')
     before = service_status.inputs(ship)
-    for folder in paths:
-        (folder / 'synthetic.json').write_text('{}')
+    changes = [
+        lambda: (ship.runtime / 'post/store/synthetic.json').write_text('{}'),  # an arrival
+        lambda: (ship.runtime / 'post/attempts/synthetic.json').write_text('{}'),  # a delivery attempt
+        lambda: (ship.runtime / 'post/pending/worker/synthetic.json').write_text('{}'),  # a delivery journal
+        lambda: (ship.runtime / 'post/drop/worker/synthetic.json').write_text('{}'),  # a seat's post
+        lambda: (ship.runtime / 'requests/synthetic.json').write_text('{}'),  # a request
+        lambda: (seat / 'launch.json').write_text('{}'),  # a new seat file
+        lambda: replace(seat / 'human-alert.json', '{"alert": true}'),  # a seat file rewritten in place
+        lambda: (seat / 'record').write_text(str(native)),  # a launch points the seat at a record
+        lambda: (seat / 'launch.json').unlink(),  # a seat file removed
+        lambda: ship.file.write_text(ship.file.read_text() + '# changed\n'),  # the ship file
+    ]
+    for change in changes:
+        change()
         after = service_status.inputs(ship)
         assert after != before
         before = after
-    # Same-path native updates have no directory change: the record/WAL stamp is checked.
+
+
+def test_what_the_service_writes_itself_never_requests_a_reading(tmp_path):
+    ship = hinted_ship(tmp_path)
+    seat = ship.runtime / 'seats/worker'
+    replace(seat / 'move-hold.json', '{"wall": 1}')
+    replace(seat / 'compaction.json', '{"extent": 1}')
+    before = service_status.inputs(ship)
+    replace(seat / 'move-hold.json', '{"wall": 2}')  # its idle reading's bounded refresh, on its own pass
+    replace(seat / 'compaction.json', '{"extent": 2}')  # its observation of a growing record
+    servicemod.write_heartbeat(ship.runtime)  # before every step and with each collection
+    (ship.runtime / 'accounting-health.json').write_text('{}')  # beside each heartbeat
+    assert service_status.inputs(ship) == before
+
+
+def test_a_working_seats_record_growing_never_requests_a_reading(tmp_path):
+    # The periodic refresh reads it: every alert the line carries is in a kept file or as slow as a screen.
+    ship = hinted_ship(tmp_path)
     native = tmp_path / 'synthetic-record'
     native.write_text('first')
-    (paths[-1] / 'record').write_text(str(native))
+    (ship.runtime / 'seats/worker/record').write_text(str(native))
     before = service_status.inputs(ship)
-    native.write_text('changed record bytes')
-    assert service_status.inputs(ship) != before
+    with native.open('a') as record:
+        record.write('a turn of the working seat\n')
+    Path(str(native) + '-wal').write_text('its write-ahead log')
+    assert service_status.inputs(ship) == before
+
+
+def test_the_service_collects_again_only_for_a_kept_input(tmp_path, monkeypatch):
+    ship = hinted_ship(tmp_path)
+    seat = ship.runtime / 'seats/worker'
+    native = tmp_path / 'synthetic-record'
+    native.write_text('first')
+    (seat / 'record').write_text(str(native))
+    clock = [0.0]
+    monkeypatch.setattr(servicemod.time, 'monotonic', lambda: clock[0])
+    service = Service(ship, SimpleNamespace(clients_attached=lambda sessions: True))
+    try:
+        service.heartbeat = lambda: servicemod.write_heartbeat(ship.runtime)
+        published = []
+        service.publish_status = lambda: published.append(clock[0])
+        service.status_due()
+        for step in range(1, 20):
+            clock[0] = step * 0.8
+            replace(seat / 'move-hold.json', f'{{"wall": {step}}}')
+            replace(seat / 'compaction.json', f'{{"extent": {step}}}')
+            with native.open('a') as record:
+                record.write('a turn\n')
+            service.status_due()
+        assert published == [0.0], 'neither its own writes nor a working record forced a collection'
+        clock[0] = 16.0
+        (ship.runtime / 'post/store/synthetic.json').write_text('{}')
+        service.status_due()
+        assert published == [0.0, 16.0], 'an arrival is still published at once'
+    finally:
+        service.ledger.close()
 
 
 def test_resting_wait_returns_for_a_real_arrival(tmp_path):

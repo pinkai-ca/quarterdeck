@@ -5,10 +5,6 @@ covers native screens, expiring grants, disk space and changes outside these hin
 No Facts, record state or screen is reused by this scheduler.
 """
 
-from pathlib import Path
-
-from . import accounting_health, watch
-
 
 def fingerprint(path):
     try:
@@ -18,13 +14,23 @@ def fingerprint(path):
     return info.st_dev, info.st_ino, info.st_mode, info.st_size, info.st_mtime_ns, info.st_ctime_ns
 
 
-def inputs(ship):
-    """Bounded metadata: fixed directories and one shallow folder per declared seat.
+# What the service writes itself, on every pass or with each collection: a change there is the service's own
+# doing, never a reason to collect again. move-hold.json is refreshed by its idle reading on its passes, and
+# compaction.json by its observation as a working seat's record grows. The 30 s refresh still reads both.
+SERVICE_WRITTEN = frozenset({'move-hold.json', 'compaction.json'})
 
-    Immutable post/atomic attempt writes change their parent. Journals live one
-    level below pending, and seat metadata is checked by file as well as folder
-    so an in-place update requests a reading too. Native record pointers name files to stat, never bytes to parse; the periodic
-    reading also observes native screens and evidence outside these hints.
+
+def inputs(ship):
+    """Bounded metadata: fixed directories and one shallow listing per declared seat.
+
+    Immutable post/atomic attempt writes change their parent. Journals live one level below pending,
+    and seat metadata is checked by file, so an in-place update requests a reading too. A seat's folder
+    is listed, not stamped: a file added or removed changes the listing, while a rename of a file the
+    service rewrites leaves it as it was. Never an input: what the service writes itself (SERVICE_WRITTEN,
+    its heartbeat and its accounting snapshot) and a working seat's native record, which grows on every
+    turn. Those, native screens, expiring grants, disk space and changes outside these hints are read by
+    the periodic refresh (the ship's status_refresh, 30 s by default); every alert the line carries is
+    either in a file kept here or as slow as a screen.
     """
     runtime = ship.runtime
     paths = [ship.file]
@@ -37,25 +43,15 @@ def inputs(ship):
     )]
     for name in sorted(ship.seats):
         folder = runtime / 'seats' / name
-        paths += [folder, runtime / 'post/pending' / name, runtime / 'post/drop' / name]
+        paths += [runtime / 'post/pending' / name, runtime / 'post/drop' / name]
         try:
-            paths += sorted(path for path in folder.iterdir() if path.name != 'home')
+            paths += sorted(path for path in folder.iterdir()
+                            if path.name != 'home' and path.name not in SERVICE_WRITTEN)
         except FileNotFoundError:
             pass
         except OSError:
             return None
-        try:
-            pointer = folder / 'record'
-            if pointer.stat().st_size <= 4096:
-                record = pointer.read_text().strip()
-                if record:
-                    paths += [Path(record), Path(record + '-wal')]
-        except FileNotFoundError:
-            pass
-        except (OSError, UnicodeError):
-            return None
     try:
-        return (tuple((str(path), fingerprint(path)) for path in paths),
-                watch.service_state(runtime), accounting_health.reading(runtime))
+        return tuple((str(path), fingerprint(path)) for path in paths)
     except OSError:
         return None  # an unreadable hint cannot certify that nothing changed
