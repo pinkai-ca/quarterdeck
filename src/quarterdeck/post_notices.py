@@ -20,6 +20,27 @@ def notice_class(message):
     return None
 
 
+def held_request(message):
+    """Only the ship's complete held-relaunch report, naming its own request."""
+    if message.sender != post.SHIP or message.kind != 'report' or message.re is not None:
+        return None
+    tail = re.fullmatch(r'(?P<head>[^\n]+) · request (?P<request>[A-Za-z0-9][A-Za-z0-9_.-]*)', message.body)
+    if tail is None:
+        return None
+    body = tail['head']
+    for verb, name in (('restart', 'restart'), ('fresh', 'fresh start')):
+        word = (f'give your own word as the last act of a turn: '
+                f'qd {verb} {message.to} --release')
+        held = (rf'your own {name} was not applied: your turn ended with it held · [^\n]+ · '
+                rf'ask again once that has ended; or, losing what you have running, {re.escape(word)}')
+        waiting = (rf'(?:your own {name} waits|a {name} of this seat, asked by [^\n]+, waits) · '
+                   rf'[^\n]+ · it applies once that has ended; to apply it without waiting, losing '
+                   rf'what you have running, {re.escape(word)}')
+        if re.fullmatch(held, body) or re.fullmatch(waiting, body):
+            return tail['request']
+    return None
+
+
 # Assumes one reading thread (the service's own loop). A race here could only
 # repeat a read, never settle wrongly: reuse requires an unchanged stamp.
 # A second reading thread takes a lock first.
@@ -29,6 +50,7 @@ class _LaunchCache:
         self.owner_ship = None
         self.owners = {}
         self.launches = {}
+        self.requests = {}
 
 
 def _stamp(path):
@@ -103,6 +125,19 @@ def launched_at(runtime, seat, *, cache=None):
         return None  # missing/unreadable evidence grants no settlement
 
 
+
+def request_state(runtime, identifier, seat, *, cache):
+    """Use the queue's own record API under the launch cache's same tick rule."""
+    from . import request_queue
+    from .ship import ShipError
+    try:
+        return _observed(cache.requests, (identifier, seat),
+                         lambda: request_queue.notice_stamp(runtime, identifier),
+                         lambda: request_queue.notice_state(runtime, identifier, seat))
+    except (OSError, ValueError, TypeError, ShipError):
+        return None
+
+
 def settled(store, seat, *, brief_at=None):
     """A later launch or newer exact notice; no durable certificate or message edits.
 
@@ -112,7 +147,9 @@ def settled(store, seat, *, brief_at=None):
     incoming = store.for_seat(seat)
     candidates = [(m, notice_class(m)) for m in incoming]
     candidates = [(m, kind) for m, kind in candidates if kind is not None and m.at.tzinfo is not None]
-    if candidates:
+    held = [(m, held_request(m)) for m in incoming if m.at.tzinfo is not None]
+    held = [(m, request) for m, request in held if request is not None]
+    if candidates or held:
         cache = getattr(store, '_notice_launch_cache', None)
         if cache is None:
             cache = store._notice_launch_cache = _LaunchCache()
@@ -130,6 +167,11 @@ def settled(store, seat, *, brief_at=None):
             result[message.id] = f'{kind}: settled by a later launch'
         elif (message.at, message.id) < latest[kind]:
             result[message.id] = f'{kind}: settled by a newer notice'
+    for message, request in held:
+        if launch is not None and message.at < launch:
+            result[message.id] = 'held restart: settled by a later launch'
+        elif request_state(store.dir.parent.parent, request, seat, cache=cache) in ('completed', 'retired'):
+            result[message.id] = 'held restart: settled by completion of its request'
     # A saved group/cascade terminal notice has no further duty after its own
     # root is closed. An arbitrary report on a closed root proves no such thing.
     terminal = [m for m in incoming if m.sender == post.SHIP and m.kind == 'report' and m.re]

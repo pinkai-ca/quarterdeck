@@ -10,6 +10,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import stat
 import time
@@ -159,6 +160,68 @@ def load(path):
     if not isinstance(data, dict) or not isinstance(data.get('kind'), str):
         raise ShipError('request payload unsupported; retained')
     return data
+
+
+
+def notice_path(runtime, identifier):
+    """The exact request named by a ship notice; never interpret it as a path."""
+    if (not isinstance(identifier, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', identifier)):
+        raise ShipError('notice request name unsupported')
+    return runtime / 'requests' / (identifier + '.json')
+
+
+def notice_stamp(runtime, identifier):
+    """Queue-owned payload, metadata and answer observations for a notice reading."""
+    path = notice_path(runtime, identifier)
+    result = []
+    for item in (path, state_path(path), path.with_suffix('.done'),
+                 path.with_suffix('.claimed'), path.parent / 'failed' / path.name):
+        try:
+            info = item.lstat()
+        except FileNotFoundError:
+            result.append(None)
+            continue
+        if not stat.S_ISREG(info.st_mode):
+            raise ShipError('notice request record is not a regular file')
+        result.append((info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+                       info.st_ctime_ns, info.st_mode))
+    return tuple(result)
+
+
+def notice_state(runtime, identifier, seat):
+    """Read only this request's surviving evidence; absence is not completion."""
+    path = notice_path(runtime, identifier)
+    try:
+        data = load(path)
+    except FileNotFoundError:
+        data = None
+    if data is not None and (data.get('kind') != 'relaunch' or data.get('seat') != seat):
+        raise ShipError('notice request does not name this relaunch seat')
+    try:
+        meta = metadata(path)
+    except FileNotFoundError:
+        meta = None
+    if meta is not None and 'terminal' in meta:
+        if data is None or not isinstance(meta['terminal'], str) or not meta['terminal']:
+            raise ShipError('notice request terminal intent unreadable')
+        return 'retired'
+    try:
+        proof = path.with_suffix('.done').read_text()
+    except FileNotFoundError:
+        proof = None
+    if proof is not None:
+        if not proof.strip():
+            raise ShipError('notice request answer unreadable')
+        return 'completed'
+    if data is None:
+        try:
+            failed = load(path.parent / 'failed' / path.name)
+        except FileNotFoundError:
+            return None
+        if failed.get('kind') != 'relaunch' or failed.get('seat') != seat:
+            raise ShipError('notice archived request does not name this relaunch seat')
+        return 'retired'
+    return 'pending'
 
 
 def created(path, data):
