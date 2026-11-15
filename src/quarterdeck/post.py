@@ -634,7 +634,7 @@ REPEATS_REFUSED = ("report", "answer", "ack")  # an order or a question is never
 
 
 def already_posted(store: Store, message: Message, *, seat: str | None = None) -> Message | None:
-    """The message this seat already posted with the same kind, re and byte-identical body, or None.
+    """The message this seat already posted with the same kind, re, addressee and byte-identical body, or None.
 
     Only a report, an answer or an ack that names a message is checked: posting the same one twice
     says nothing new, and a seat that took the command's answer for a failure would otherwise file
@@ -661,7 +661,7 @@ def already_posted(store: Store, message: Message, *, seat: str | None = None) -
     drops = [found for found in _own_drops(runtime, folder) if mine(found)]
     stored, replies = store._loaded()
     same = [found for found in (*drops, *replies.get(message.re, ()))
-            if mine(found) and found.re == message.re and found.body == message.body]
+            if mine(found) and found.re == message.re and found.to == message.to and found.body == message.body]
     if not same:
         return None
     order = lambda found: (found.at, found.id)

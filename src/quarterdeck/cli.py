@@ -190,8 +190,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--save-screen", action="store_true", help="save the screen for the adapter's next fixture")
     p = verb("post", cmd_post, "send a message: order, report, question, answer or ack; or resend one")
     p.epilog = ("On success it says 'Posted <id> to <seat>. Nothing more to do'. A report, answer or ack that "
-                "carries a re is not posted again when this seat already posted one with the same re and the "
-                "same body: it says 'Already posted as <id>; not posted again' and exits 0. A post with no re "
+                "carries a re is not posted again when this seat already posted one of the same kind with the "
+                "same re, addressee and body (a group address is compared as written): it says 'Already posted "
+                "as <id>; not posted again' and exits 0. A post with no re "
                 "is never refused, so a standing report may recur. An ack is refused only while the identical "
                 "ack is still this seat's latest, so a claim can move back. Orders and questions are never refused.")
     p.add_argument("kind", choices=(*post.KINDS, "resend"))

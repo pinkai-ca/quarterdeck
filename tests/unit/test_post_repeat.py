@@ -2,7 +2,7 @@
 
 A hand on a local model took the old answer for a failure and filed one report 23 times in 23 seconds.
 The answer now starts with plain words that nothing more is to be done. A report, answer or ack that
-the same seat already posted, with the same re and a byte-identical body, is not posted again.
+the same seat already posted, with the same re, addressee and a byte-identical body, is not posted again.
 """
 
 from __future__ import annotations
@@ -75,6 +75,35 @@ def test_a_repeat_already_filed_into_the_store_is_not_posted_again(drydock, caps
     _, again = qd(capsys, drydock, kind, "--from", "worker-1", "--re", order.id, "the same words")
     assert again == f"Already posted as {first.short}; not posted again. Nothing more to do."
     assert drops(drydock, "worker-1") == [] and [m for m in stored(drydock) if m.kind == kind] == [first]
+
+
+@pytest.mark.parametrize("kind", ["report", "answer", "ack"])
+@pytest.mark.parametrize("filed", [False, True], ids=["drop", "store"])
+def test_the_same_text_to_two_seats_posts_both_and_each_repeat_names_its_first(drydock, capsys, operator, kind, filed):
+    order = an_order(capsys, drydock)
+    for to in ("captain", "operator"):
+        _, out = qd(capsys, drydock, kind, "--from", "worker-1", "--to", to, "--re", order.id, "the same words")
+        assert out.startswith("Posted "), out
+        if filed:
+            messages = stored(drydock)
+        else:
+            messages = [post.Message.from_json(path.read_text()) for path in drops(drydock, "worker-1")]
+        (first,) = [m for m in messages if m.kind == kind and m.to == to]
+        _, again = qd(capsys, drydock, kind, "--from", "worker-1", "--to", to, "--re", order.id, "the same words")
+        assert again == f"Already posted as {first.short}; not posted again. Nothing more to do."
+    assert [m.to for m in stored(drydock) if m.kind == kind] == ["captain", "operator"]
+
+
+@pytest.mark.parametrize("addresses", [("crew", "command"), ("captain", "captain@other")])
+def test_the_guard_compares_the_address_as_written(tmp_path, addresses):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    store = post.Store(runtime)
+    order = store.new("order", "desk", "worker-1", "build")
+    first = store.new("answer", "worker-1", addresses[0], "the same words", re=order.id)
+    other = replace(store.prepare("answer", "worker-1", addresses[0], "the same words", re=order.id), to=addresses[1])
+    assert post.already_posted(store, other) is None
+    assert post.already_posted(store, replace(other, to=addresses[0])) == first
 
 
 def test_an_ack_without_words_is_one_claim(drydock, capsys, operator):
@@ -188,6 +217,8 @@ def test_the_help_says_the_words_and_both_edges_of_the_guard(capsys):
     assert "Already posted as <id>; not posted again" in text
     assert "A post with no re is never refused" in text
     assert "An ack is refused only while the identical ack is still this seat's latest" in text
+    assert "same kind with the same re, addressee and body" in text
+    assert "a group address is compared as written" in text
     assert "Orders and questions are never refused" in text
 
 

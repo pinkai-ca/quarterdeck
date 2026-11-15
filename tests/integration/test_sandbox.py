@@ -617,7 +617,8 @@ def test_a_jailed_seat_reads_plain_success_words_and_cannot_post_the_same_report
     """Real bwrap + the fake program: the success words, and the repeat guard from what the jail shows.
 
     The first repeat is caught in the seat's own drop, before the service files it; the second, in a later
-    turn, in the read-only store. An order with the same words is posted twice: orders are never deduplicated.
+    turn, in the read-only store. The same text to another seat is posted too. Orders and questions
+    with the same words and re are posted twice: they are never deduplicated.
     """
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -638,28 +639,48 @@ def test_a_jailed_seat_reads_plain_success_words_and_cannot_post_the_same_report
                           "$ qd post ack --re {this}\n"
                           "$ qd post report --re {this} jail proven\n"
                           "$ qd post report --re {this} jail proven\n"
-                          "$ qd post order --to captain the same words\n"
-                          "$ qd post order --to captain the same words\n"
+                          "$ qd post report --to captain --re {this} jail proven\n"
+                          "$ qd post report --to captain --re {this} jail proven\n"
+                          "$ qd post answer --to captain --re {this} the same answer\n"
+                          "$ qd post answer --to captain --re {this} the same answer\n"
+                          "$ qd post answer --to operator --re {this} the same answer\n"
+                          "$ qd post answer --to operator --re {this} the same answer\n"
+                          "$ qd post order --to captain --re {this} the same words\n"
+                          "$ qd post order --to captain --re {this} the same words\n"
+                          "$ qd post question --to captain --re {this} the same words\n"
+                          "$ qd post question --to captain --re {this} the same words\n"
                           "$ ls " + str(drop) + " | wc -l | sed 's/^/drops=/'", subject="Twice")
         assert Door(worker).deliver(post.typed([first])).result == "delivered"
         screen = wait_for(lambda: (s if "⎿ drops=" in (s := tmux.capture(worker.pane().id, history=400)) else None), 60)
-        assert "⎿ drops=4" in screen, screen  # one ack, one report, two orders: nothing else was written
+        assert "⎿ drops=9" in screen, screen  # one ack, two reports, two answers, two orders, two questions
         post.file_drops(store)
         (ack,) = [m for m in store.all() if m.kind == "ack" and m.re == first.id]
-        (report,) = [m for m in store.all() if m.kind == "report" and m.re == first.id]
-        assert len([m for m in store.all() if m.kind == "order" and m.body == "the same words"]) == 2
+        reports = [m for m in store.all() if m.kind == "report" and m.re == first.id]
+        (report,) = [m for m in reports if m.to == "desk"]
+        assert {m.to for m in reports} == {"desk", "captain"}
+        answers = [m for m in store.all() if m.kind == "answer" and m.re == first.id]
+        assert {m.to for m in answers} == {"captain", "operator"} and len(answers) == 2
+        for message in [*reports, *answers]:
+            assert f"Already posted as {message.short}; not posted again. Nothing more to do." in screen
+        for kind in ("order", "question"):
+            assert len([m for m in store.all() if m.kind == kind and m.re == first.id and m.body == "the same words"]) == 2
         assert f"Posted {report.short} to desk. Nothing more to do: the ship delivers it." in screen
         assert f"Posted {ack.short} to desk. Nothing more to do: the ship files it." in screen
         assert f"Already posted as {report.short}; not posted again. Nothing more to do." in screen
         assert f"Already posted as {ack.short}; not posted again. Nothing more to do." in screen
         second = store.new("order", "desk", worker.name,
-                           f"$ qd post report --re {first.id} jail proven\n$ echo second-done", subject="Again")
+                           f"$ qd post report --re {first.id} jail proven\n"
+                           f"$ qd post report --to captain --re {first.id} jail proven\n"
+                           f"$ qd post answer --to captain --re {first.id} the same answer\n"
+                           f"$ qd post answer --to operator --re {first.id} the same answer\n"
+                           "$ echo second-done", subject="Again")
         wait_for(lambda: (r := Door(worker).reading()).open and not r.working, 60)
         assert Door(worker).deliver(post.typed([second])).result == "delivered"
         screen = wait_for(lambda: (s if "⎿ second-done" in (s := tmux.capture(worker.pane().id, history=400)) else None), 60)
-        assert screen.count(f"Already posted as {report.short}; not posted again.") == 2, screen
+        for message in [*reports, *answers]:
+            assert screen.count(f"Already posted as {message.short}; not posted again.") == 2, screen
         assert post.file_drops(store) == [] and not list(drop.glob("*.json"))
-        assert [m.id for m in store.all() if m.kind == "report" and m.re == first.id] == [report.id]
+        assert [m.id for m in store.all() if m.kind == "report" and m.re == first.id] == [m.id for m in reports]
     finally:
         worker.down()
 
