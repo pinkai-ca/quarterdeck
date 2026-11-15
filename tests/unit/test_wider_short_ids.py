@@ -22,7 +22,8 @@ SUFFIXES = ('ab12', 'ab12cd', '0123456789abcdef')
 
 
 def message(suffix, kind='order', parent=None):
-    identity = f'{kind[:3]}-20400101-0000-ordinary-lead-{suffix}'
+    identity = (f'{kind[:3]}-ordinary-{suffix}' if len(suffix)==16 else
+                f'{kind[:3]}-20400101-0000-ordinary-lead-{suffix}')
     return post.Message(identity, kind, 'ordinary-lead', 'ordinary-worker', AT,
                         'An ordinary synthetic task.\n', re=parent, subject='An ordinary task')
 
@@ -35,7 +36,7 @@ def test_new_allocator_uses_six_digits_and_old_prefix_remains_a_distinct_referen
     def suffix(size):
         draws.append(size)
         return 'ab12cd'
-    monkeypatch.setattr(post.secrets, 'token_hex', suffix)
+    monkeypatch.setattr(post, 'secrets', SimpleNamespace(token_hex=suffix))
     new = store.new('order', 'ordinary-lead', 'ordinary-worker', 'A new ordinary task.')
     assert draws == [3]
     assert re.fullmatch(r'ord-[0-9a-f]{6}', new.short)
