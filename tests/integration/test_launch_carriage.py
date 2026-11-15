@@ -336,15 +336,15 @@ def test_a_jailed_seat_reads_its_own_file_and_no_other_seats_with_no_mount_added
     captain.down()
     store.new("order", "captain", "captain", body("self handoff", 150000), subject="Self handoff")
     from quarterdeck import standing
-    runs = standing.PROJECT_DIR / ".testruns"  # as a whole run's CI-layout test makes it, between two launches
-    made = not runs.exists()
-    if made:
-        runs.mkdir()
-    try:
-        captain.up(resume=False)
-    finally:
-        if made:
-            runs.rmdir()
+    from tests.testrunner import layout
+    # The checkout's .testruns, as a whole run's CI-layout test makes it, between two launches. Made as the test tool
+    # makes it (private, ignoring itself) and never removed: every other worker's jail lays its cover over it while
+    # it exists, so taking it away between such a jail's plan and its launch would leave bwrap no mount point in the
+    # read-only checkout. The run's own cleanup removes it with the checkout.
+    layout.Root(standing.PROJECT_DIR).close()
+    runs = standing.PROJECT_DIR / layout.ROOT_NAME
+    captain.up(resume=False)
+    assert runs.is_dir() and not runs.is_symlink(), "the shared folder is left in place for the jails that cover it"
     long_mounts = jail_words(captain)
     assert long_mounts == short_mounts, "the jail is the same: no mount is added for the file"
     path = carried_file(first_input(captain, 0))
