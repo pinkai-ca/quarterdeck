@@ -1,9 +1,21 @@
 """One numeric service summary per minute; no message, seat or record identities."""
 
 from contextlib import contextmanager
+from inspect import isroutine
 import time
 
 INTERVAL = 60.0
+FIXED_NAMES = frozenset(('pass', 'sleep', 'status', 'status_checks',
+                         'drain_drops', 'drain_accounting', 'drain_requests'))
+
+
+def duty_name(name):
+    # Imported when measuring, after Service's module has finished loading.
+    from .service import Service
+    if isinstance(name, str) and name.isidentifier():
+        if name in FIXED_NAMES or isroutine(getattr(Service, name, None)):
+            return name
+    return 'other'
 
 
 class Timings:
@@ -14,8 +26,9 @@ class Timings:
 
     @contextmanager
     def measure(self, name):
-        # Callers supply code's duty names, never message or runtime identities.
-        # Keep new steps automatically instead of silently omitting their cost.
+        # New Service methods are carried automatically; other labels cannot
+        # put runtime identities into the summary or create unbounded rows.
+        name = duty_name(name)
         wall, cpu = time.monotonic(), time.process_time()
         try:
             yield

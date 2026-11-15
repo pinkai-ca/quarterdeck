@@ -259,6 +259,7 @@ def test_every_pass_step_and_between_duty_drain_reaches_the_numeric_summary(monk
     names = list(steps)
     if new_step:
         names[0] = 'new_housekeeping_step'
+        monkeypatch.setattr(Service, names[0], stand_in(names[0], 0.25), raising=False)
     for attribute, name in zip(steps, names):
         setattr(service, attribute, stand_in(name, 0.25))
     for name in drains:
@@ -305,6 +306,26 @@ def test_every_pass_step_and_between_duty_drain_reaches_the_numeric_summary(monk
     clock[0] = 120.0
     timing.publish(service.log)
     assert len(lines) == 2 and lines[1][1]['duties'] == {}
+
+
+def test_unknown_timing_labels_are_counted_without_publishing_their_names(monkeypatch):
+    from quarterdeck import service_timing
+    clock = [0.0]
+    monkeypatch.setattr(service_timing.time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(service_timing.time, 'process_time', lambda: clock[0] / 2)
+    timing = service_timing.Timings()
+    for name in ('synthetic-message:example', 'synthetic_record', 'Service.synthetic_seat',
+                 'since', '__class__', 'reconcile', 'sleep', 'status_checks'):
+        with timing.measure(name):
+            clock[0] += 0.25
+    lines = []
+    clock[0] = 60.0
+    timing.publish(lambda event, **data: lines.append((event, data)))
+    assert len(lines) == 1 and lines[0][0] == 'service-timing'
+    duties = lines[0][1]['duties']
+    assert set(duties) == {'other', 'reconcile', 'sleep', 'status_checks'}
+    assert duties['other'] == dict(calls=5, wall=1.25, cpu=0.625, max_wall=0.25, max_cpu=0.125)
+    assert all(duties[name]['calls'] == 1 for name in ('reconcile', 'sleep', 'status_checks'))
 
 
 def test_status_summaries_count_full_collections_separately_from_cheap_checks(scheduled, monkeypatch):
