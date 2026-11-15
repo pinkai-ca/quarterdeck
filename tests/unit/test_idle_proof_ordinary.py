@@ -189,3 +189,32 @@ def test_explicit_no_record_join_needs_owned_live_pane(tmp_path, monkeypatch, re
     else:
         assert service.relaunch(seat, True) is None
     assert bool(moved) == allowed
+
+
+QUEUED = {'queued': ('synthetic background notice the walled program never takes',)}
+
+
+@pytest.mark.parametrize('path', ['failover', 'select'])
+def test_a_walled_seat_whose_only_hold_is_its_queue_moves(tmp_path, monkeypatch, path):
+    """At a wall the program never takes its queue: a seat held there by queued input alone moves."""
+    service, seat, moved = service_case(tmp_path, monkeypatch, replace(completed(), **QUEUED))
+    if path == 'failover':
+        service.failover()
+    else:
+        assert 'moved to pool-oak' in service.select(seat, 'pool-oak')
+    assert moved == ['pool-oak']
+
+
+@pytest.mark.parametrize('changes', [{'pending_tools': ('Bash',)}, {'turn_open': True}, {'last_input_at': None}])
+def test_a_walled_seat_with_queued_input_and_other_work_stays(tmp_path, monkeypatch, changes):
+    service, seat, moved = service_case(tmp_path, monkeypatch, replace(completed(), **QUEUED, **changes))
+    service.failover()
+    assert 'not moved' in service.select(seat, 'pool-oak')
+    assert moved == []
+
+
+def test_queued_input_without_a_wall_still_holds_a_selection(tmp_path, monkeypatch):
+    service, seat, moved = service_case(tmp_path, monkeypatch, replace(completed(), **QUEUED))
+    monkeypatch.setattr(quota, 'current_walled', lambda *args: False)
+    assert 'input is queued' in service.select(seat, 'pool-oak')
+    assert moved == []

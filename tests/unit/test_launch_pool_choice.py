@@ -204,3 +204,37 @@ def test_a_launch_after_the_pane_exits_reseeds_its_old_pool_before_selection(run
     assert r.reseeds and all(pool == launched for pool, harness, launched in r.reseeds)
     assert r.reseeds[0] == ('second', 'claude', 'second')
     assert r.seat.launched().pool == 'first' and r.seat.launched().harness == 'codex'
+
+
+def walled_now(monkeypatch, *walled):
+    """The ledger shows these pools walled for the running seat."""
+    from quarterdeck import quota
+    monkeypatch.setattr(quota, 'current_walled', lambda seat, book: seat.pool.name in walled)
+    walls(monkeypatch, *walled)
+
+
+@pytest.mark.parametrize('how', ['restart', 'fresh'])
+def test_a_relaunch_off_a_walled_pool_takes_the_first_declared_choice_with_room(migrated, monkeypatch, how):
+    r = migrated
+    walled_now(monkeypatch, 'first')
+    assert r.worker.is_up and r.worker.launched().pool == 'first'
+    proof = getattr(r.worker, how)()
+    assert 'worker: relaunched on second, not on its walled first' in proof
+    after = Seat(r.ship, r.ship.seat('worker'), r.tmux)
+    assert after.pool.name == 'second' and after.launched().pool == 'second'
+
+
+def test_a_relaunch_on_a_pool_with_room_stays_where_it_is(migrated, monkeypatch):
+    r = migrated
+    walled_now(monkeypatch)  # nothing walled
+    proof = r.worker.restart()
+    assert 'relaunched on' not in proof
+    assert Seat(r.ship, r.ship.seat('worker'), r.tmux).launched().pool == 'first'
+
+
+def test_a_relaunch_with_every_choice_walled_stays_where_it_is(migrated, monkeypatch):
+    r = migrated
+    walled_now(monkeypatch, 'first', 'second')
+    proof = r.worker.restart()
+    assert 'relaunched on' not in proof
+    assert Seat(r.ship, r.ship.seat('worker'), r.tmux).launched().pool == 'first'

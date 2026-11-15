@@ -1003,6 +1003,8 @@ class Seat:
             self._accept_pool()
             from .recovery import require_clear
             require_clear(self)
+            if moved := self._relaunch_off_wall(resume=True):
+                return moved
             self.harness.preflight_resume(self.spec, self.home, self._resume_id)
             observation = self._observe_selection()
             return self._relaunch_down() + "\n" + self._up(resume=True, observation=observation)
@@ -1013,8 +1015,45 @@ class Seat:
             self._accept_pool()
             from .recovery import require_clear
             require_clear(self)
+            if moved := self._relaunch_off_wall(resume=False):
+                return moved
             observation = self._observe_selection()
             return self._relaunch_down() + "\n" + self._up(resume=False, observation=observation)
+
+    def _walled_now(self) -> bool:
+        """Whether the ledger shows the seat's current pool walled, under its running model's scope."""
+        from . import ledger, quota
+        book = ledger.Ledger.reading(self.ship.runtime / 'ledger.sqlite')
+        if book is None:
+            return False
+        try:
+            return quota.current_walled(self, book)
+        finally:
+            book.close()
+
+    def _relaunch_off_wall(self, *, resume: bool) -> str | None:
+        """A relaunch never lands on a walled pool while a declared choice has room: it takes the launch's choice.
+
+        Only a seat whose current pool is walled moves; one with room relaunches where it is. None: nothing moved.
+        """
+        if not self.spec.pool_choices or not self._walled_now():
+            return None
+        target, why = self.launch_choice()
+        came_from = self.pool.name
+        if target == came_from:
+            return None  # every declared choice is walled, or this one was chosen by qd set: it stays
+        selected = replace(self.spec.for_pool(target), human_session=self.session.human)
+        observation = self._observe_selection(selected, self.ship.pool(target))
+        same_program = selected.harness == self.spec.harness
+        if same_program and resume:
+            self.harness.preflight_resume(selected, self.home, self._resume_id)
+        stopped = self._relaunch_down()
+        self.move_to(target)
+        self.spec = selected
+        if not same_program:
+            self.harness = harnesses.get(selected.harness)
+        proof = self._up(resume=resume and same_program, observation=observation)
+        return (stopped + f"\n{self.name}: relaunched on {target}, not on its walled {came_from} ({why})\n" + proof)
 
 
 @contextmanager

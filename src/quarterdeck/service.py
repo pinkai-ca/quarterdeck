@@ -1733,7 +1733,7 @@ class Service:
                         quota.observe_screen(book, seat, screen, seat.launched(), commit=False)
             if not quota.current_walled(seat, self.ledger):
                 continue
-            if self.not_idle(seat):
+            if self.not_idle_at_wall(seat):
                 continue
             ordered = quota.candidate_pools(seat)
             target = next((p for p in ordered if self.known_open(seat, p)), None)
@@ -1748,6 +1748,23 @@ class Service:
         """The ordinary live proof shared by failover, select and relaunch."""
         _, hold = idle.reading(seat)
         return hold.reason if hold is not None else None
+
+    def not_idle_at_wall(self, seat: Seat) -> str | None:
+        """The live proof for a move off a pool, with one allowance at its wall: input queued in the program.
+
+        A walled program never takes its queue, so a seat with input queued there would be held at its wall for
+        good (its own notices of background commands are queued so). When its only hold is that queue, its turn
+        is ended and nothing else is pending, and its pool is walled, it may move: the framework's own queued
+        deliveries are carried into the new launch, as every relaunch carries them.
+        """
+        state, hold = idle.reading(seat)
+        if hold is None:
+            return None
+        if (hold.dimension == 'queue-pending' and state is not None
+                and idle.check(replace(state, queued=())) is None
+                and quota.current_walled(seat, self.ledger)):
+            return None
+        return hold.reason
 
     def idle_reading(self, seat: Seat):
         """Compatibility wrapper for callers that already hold the service."""
@@ -1768,7 +1785,7 @@ class Service:
             return f"{seat.name} not moved: {reason}"
         if not seat.is_up:
             return f"{seat.name} not moved: it is down; qd up {seat.name} first"
-        if reason := self.not_idle(seat):
+        if reason := self.not_idle_at_wall(seat):
             return f"{seat.name} not moved: {reason}; ask again when its turn has ended"
         # The destination is read as failover would read it. Only a wall refuses the explicit act: a pool
         # whose usage is unknown, such as a background provider with no seat on it to read, is the human's call.
