@@ -1718,7 +1718,10 @@ def wait_batch(runtime: Path, seat: str, interval: float = 1.0, stop_after: floa
                 if validate is not None:
                     validate()
                 # Read under the admission, as before; the attempts are read in full only when they may have changed.
-                waiting = attempts.undelivered(store, seat, results=look.latest())
+                # One reading pass per check: imports and forwarded are listed once, after the store is loaded,
+                # not walked three times for every message the seat ever received. It ends before anything opens.
+                with reading_pass(store=store, attempts=attempts):
+                    waiting = attempts.undelivered(store, seat, results=look.latest())
                 if waiting:
                     opened = [attempts.open(message, seat, None, None, None) for message in waiting]
                     return waiting, opened

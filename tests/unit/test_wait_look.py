@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from quarterdeck import post
+from quarterdeck import fleet_post, post, post_dir
 from quarterdeck.post import Store
 
 TICK = 50_000_000  # a short tick for tests; the rule is the same as for the real two seconds
@@ -133,6 +133,35 @@ def test_the_waiting_watch_reads_the_attempts_once_and_delivers_an_arrival_once(
     assert [(a.message, a.result) for a in opened] == [(arrival.id, None)]
     post.printed(tmp_path, opened)
     assert post.wait_batch(tmp_path, "desk", interval=0.02, stop_after=0.3) is None, "delivered once"  # law: one-door
+
+
+def test_a_waiting_watch_lists_imports_and_forwarded_once_a_check_never_once_a_message(tmp_path: Path, short_tick,
+                                                                                         monkeypatch):
+    # Every message ever addressed to the seat is judged on each check; none of them is walked to its absent
+    # imports or forwarded file. Those folders are listed once in the check's reading pass instead.
+    store, attempts = Store(tmp_path), post.Attempts(tmp_path)
+    for number in range(40):
+        message = store.new("question", "operator", "desk", f"printed {number}")
+        attempts.close(attempts.open(message, "desk", None, None, None), "watch", "printed by qd inbox --wait")
+    settle()
+    walked, listed = [], []
+    stable_bytes, list_children = fleet_post.stable_bytes, post_dir.list_children
+
+    def walk(path, *args, **kwargs):
+        walked.append(path.parent.name)
+        return stable_bytes(path, *args, **kwargs)
+
+    def listing(folder, *args, **kwargs):
+        listed.append(folder.name)
+        return list_children(folder, *args, **kwargs)
+
+    monkeypatch.setattr(fleet_post, "stable_bytes", walk)
+    monkeypatch.setattr(post_dir, "list_children", listing)
+    assert post.wait_batch(tmp_path, "desk", interval=0.02, stop_after=0.4) is None
+    checks = listed.count("imports")
+    assert checks >= 5, "the wait made its checks"
+    assert walked == [], "no message was walked to an imports or forwarded file"
+    assert listed.count("forwarded") == checks, "each folder is listed once a check"
 
 
 @pytest.mark.parametrize("result, for_launch, delivered", [

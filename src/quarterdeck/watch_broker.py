@@ -358,7 +358,8 @@ def _run(service, seat) -> None:
             service.log('watch-offer-retired', seat=name, open=len(pending))
         if data is None or reading.armed is not True or reading.generation != data['generation']:
             return
-        waiting = service.attempts.undelivered(service.store, name)
+        with post.reading_pass(store=service.store, attempts=service.attempts):
+            waiting = service.attempts.undelivered(service.store, name)  # one listing per check, as a waiting watch's
         if not waiting:
             return
         opened = [service.attempts.open(message, name, None, None, None, wait=WAIT) for message in waiting]  # law: one-door

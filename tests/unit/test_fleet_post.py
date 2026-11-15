@@ -167,6 +167,25 @@ def test_closing_report_to_silent_ship_returns_as_context(pair):
     assert fleet.waiting(right, destination) == []
 
 
+def test_a_waiting_watch_judges_imported_post_as_an_unwatched_reading_does(pair):
+    # The watch's check reads imports and forwarded from one listing a check; what it judges is unchanged:
+    # a context-only import never wakes, an import addressed to the seat does, and a local message does.
+    left, right, source, destination = pair
+    order = source.new('order', 'writer', 'captain@beta', 'Report silently if no wake is needed.')
+    fleet.run(left, source); fleet.run(right, destination)
+    destination.new('report', 'captain', 'ship', 'Done.', re=order.id)
+    root = destination.new('order', 'captain', 'writer', 'Original local brief.')
+    asked = destination.new('question', 'writer', 'captain@alpha', 'Consult the other ship.', re=root.id)
+    fleet.run(right, destination); fleet.run(left, source)
+    local = source.new('question', 'captain', 'ship', 'A local note to the ship.')
+    for seat, expected in (('ship', [local.id]), ('captain', [asked.id])):
+        unwatched = [m.id for m in post.Attempts(left.runtime).undelivered(post.Store(left.runtime), seat)]
+        assert unwatched == expected
+        messages, opened = post.wait_batch(left.runtime, seat, interval=0.01, stop_after=2)
+        assert [m.id for m in messages] == expected
+        post.printed(left.runtime, opened)
+
+
 def test_a_down_ship_keeps_outbound_waiting_until_it_fetches(pair):
     left, right, source, destination = pair
     order = source.new('order', 'writer', 'captain@beta', 'Wait until the ship is running.')
