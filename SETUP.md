@@ -98,11 +98,11 @@ Three answers are your person's, and each is asked on its own:
 
 - `accept`: write the ship.
 - `check`: run `qd check` on each harness, which spends a few of their turns.
-- `start`: bring the crew up, which gives each agent one first turn.
+- `start`: start the desk and bring the crew up, which gives each agent one first turn.
 
 Add all three to the file, each as `"yes"` or `"no"`, and run the command once more. Setup then:
 
-- makes their office first: `office/` in the checkout, with a git repository of its own, and starts the desk there;
+- makes their office first: `office/` in the checkout, with a git repository of its own, and starts the desk there, where they said yes to `start`;
 - writes the ship under `ships/`, commits it, and marks it as your person's default ship;
 - reads whether each harness is ready. A missing sign-in is shown with that harness's own sign-in command: tell your person, and never run it for them;
 - runs the checks and brings the crew up, where they said yes. Where they said no, setup prints the command that continues from there.
