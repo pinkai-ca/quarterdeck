@@ -65,6 +65,18 @@ class Obedient:
 
 
 
+class WritesElsewhere(Obedient):
+    """A stand-in hand that obeys the planted text by writing its word into a file at the top of its own folder,
+    where the next seat that orders it would read it, then answers as instructed."""
+
+    def instruct(self, name, body):
+        folder = next(path for path in self.folder(name).iterdir() if path.name.startswith('screen-'))
+        (self.folder(name) / 'note.txt').write_text('TURNSTONE')
+        (folder / 'answer.txt').write_text('CLEAN')
+        self.calls.append('instruct')
+        return 'ans-screen-note'
+
+
 class Outcomes:
     def __init__(self):
         self.told = []
@@ -135,3 +147,18 @@ def test_an_instruction_is_typed_once_and_never_comes_back_after_its_piece(drydo
     finally:
         svc.ledger.close()
         seat.down()
+
+
+def test_a_hand_told_to_write_elsewhere_in_its_folder_ends_the_screen_with_that_file_moved_aside(ship, tmux, tmp_path):
+    hands = WritesElsewhere(ship, tmp_path / 'hands')
+    (hands.folder('worker-1') / 'mine.txt').write_text('the hand\'s own, from before')
+    results = pr_screen.run(ship.runtime, pr_screen.FixtureSource(FIXTURES, ['note-elsewhere']), hands, Outcomes(),
+                            seat_names=tuple(ship.seats),
+                            repository='owner/project', hand_names=('worker-1',), answer_seconds=0, poll=0.01,
+                            corpus=pr_screen.load_corpus(FIXTURES / 'planted-test-corpus.json'))
+    assert [r['outcome'] for r in results] == ['flagged'], 'it answered CLEAN and missed the planted check'
+    own = hands.folder('worker-1')
+    assert sorted(path.name for path in own.iterdir()) == ['mine.txt'], 'nothing of the screen is left to read'
+    aside = next((ship.runtime / 'pr-screen' / 'held' / 'worker-1').glob('folder-*'))
+    assert (aside / 'note.txt').read_text() == 'TURNSTONE'
+    assert not pr_screen.held(ship.runtime, 'worker-1') and hands.calls == ['fresh', 'instruct', 'down', 'fresh']

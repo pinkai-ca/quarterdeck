@@ -319,7 +319,7 @@ def test_while_a_hand_screens_the_service_files_nothing_it_posts(world):
 # -- the whole pass ------------------------------------------------------------------------------------------------
 
 OUTSIDER_WORDS = ('OSPREY', 'KESTREL', 'PLOVER', 'CURLEW', 'DUNLIN', 'MERLIN', 'PUFFIN', 'SHRIKE', 'WIGEON',
-                  'authorized_keys', 'IGNORE_PREVIOUS', 'Reviewer bot', 'already screened', 'recieve')
+                  'TURNSTONE', 'authorized_keys', 'IGNORE_PREVIOUS', 'Reviewer bot', 'already screened', 'recieve')
 
 
 def test_a_pass_tells_una_of_clean_requests_and_the_desk_of_flagged_ones_quoting_nothing(world):
@@ -431,6 +431,49 @@ def test_a_link_swapped_in_for_the_piece_is_removed_never_followed(world, tmp_pa
         folder.symlink_to(decoy)
     verdict, hands, runtime = one_piece(world, swaps)
     assert (decoy / 'keep.txt').read_text() == 'mine' and not any((world[1] / 'hand-a').glob('screen-*[0-9a-f]'))
+
+
+def test_everything_new_or_changed_in_the_hands_folder_is_moved_aside_and_the_rest_stays(world, tmp_path):
+    outside = tmp_path / 'operator'
+    outside.mkdir()
+    (outside / 'keep.txt').write_text('mine')
+    own = world[1] / 'hand-a'
+    (own / 'notes').mkdir(parents=True)
+    (own / 'unchanged.txt').write_text('as it was')
+    (own / 'changed.txt').write_text('as it was')
+    (own / 'notes' / 'old.txt').write_text('as it was')
+    (own / 'old-link').symlink_to(outside)
+
+    def writes_elsewhere(hands, name, order_id, folder):
+        honest(hands, name, order_id, folder)
+        root = folder.parent
+        (root / 'note.txt').write_text('TURNSTONE')
+        (root / 'changed.txt').write_text('TURNSTONE, longer than it was')
+        (root / 'notes' / 'later.txt').write_text('TURNSTONE')
+        (root / 'new-folder' / 'deep').mkdir(parents=True)
+        (root / 'new-folder' / 'deep' / 'x.txt').write_text('TURNSTONE')
+        (root / 'new-link').symlink_to(outside)
+    verdict, hands, runtime = one_piece(world, writes_elsewhere)
+    left = sorted(str(path.relative_to(own)) for path in own.rglob('*'))
+    assert left == ['notes', 'notes/old.txt', 'old-link', 'unchanged.txt'], 'only what was there and unchanged stays'
+    assert (own / 'unchanged.txt').read_text() == (own / 'notes' / 'old.txt').read_text() == 'as it was'
+    aside = next((runtime / 'pr-screen' / 'held' / 'hand-a').glob('folder-key-0-*'))
+    assert sorted(str(path.relative_to(aside)) for path in aside.rglob('*')) == [
+        'changed.txt', 'new-folder', 'new-folder/deep', 'new-folder/deep/x.txt', 'new-link', 'note.txt', 'notes',
+        'notes/later.txt']
+    assert (aside / 'new-link').is_symlink() and (outside / 'keep.txt').read_text() == 'mine', 'a link moves as itself'
+    kept = json.loads((runtime / 'pr-screen' / 'screens' / 'key' / 'piece-0-hand-a.verdict.json').read_text())
+    assert kept['folder_moved_aside'] == 5
+    assert not pr_screen.held(runtime, 'hand-a') and hands.calls[-1] == ('fresh after', 'hand-a')
+
+
+def test_a_folder_that_cannot_be_cleared_keeps_the_hold(world, monkeypatch):
+    def fails(*args):
+        raise OSError('cannot move')
+    monkeypatch.setattr(pr_screen, 'move_aside_new', fails)
+    with pytest.raises(OSError):
+        one_piece(world, honest)
+    assert pr_screen.held(world[0], 'hand-a'), 'its posts stay held, and the status line says so'
 
 
 def test_a_missing_or_malformed_corpus_refuses_the_screen_before_anything_is_read(world, tmp_path):

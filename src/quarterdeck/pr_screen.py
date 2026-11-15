@@ -525,6 +525,52 @@ def keep_and_remove(piece: Path, kept: Path) -> None:
         shutil.rmtree(piece, ignore_errors=True)
 
 
+def folder_listing(folder: Path) -> dict[str, tuple[int, int, int, int]]:
+    """Every entry under a hand's folder, by its path within it: (mode, size, mtime_ns, inode). Nothing is followed:
+    a link is listed as itself, and only a real folder is walked into."""
+    listing, pending = {}, ['']
+    while pending:
+        inner = pending.pop()
+        try:
+            with os.scandir(folder / inner if inner else folder) as entries:
+                for entry in entries:
+                    try:
+                        found = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    name = f'{inner}/{entry.name}' if inner else entry.name
+                    listing[name] = (found.st_mode, found.st_size, found.st_mtime_ns, found.st_ino)
+                    if stat.S_ISDIR(found.st_mode):
+                        pending.append(name)
+        except OSError:
+            continue
+    return listing
+
+
+def _changed(before: tuple | None, now: tuple) -> bool:
+    """New, of another kind or another inode; a file or link whose mode, size or time changed. A folder that was
+    there is changed only by what is in it, which is judged entry by entry."""
+    if before is None or stat.S_IFMT(before[0]) != stat.S_IFMT(now[0]) or before[3] != now[3]:
+        return True
+    return not stat.S_ISDIR(now[0]) and before != now
+
+
+def move_aside_new(folder: Path, before: dict, aside: Path) -> list[str]:
+    """Every entry of the hand's folder that is new or changed since ``before``, moved under ``aside`` at the same
+    path, a link as a link and a new folder whole; what was there before and is unchanged stays. A fooled hand may
+    have written the outsider's words anywhere in its folder, where the next seat that orders it would read them.
+    Returns the paths moved, which are never shown to a seat."""
+    now, moved = folder_listing(folder), []
+    for name in sorted(now):  # a folder sorts before everything inside it
+        if any(name.startswith(f'{done}/') for done in moved) or not _changed(before.get(name), now[name]):
+            continue
+        target = aside / name
+        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        shutil.move(str(folder / name), str(target))  # a rename on one filesystem: a link moves as the link itself
+        moved.append(name)
+    return moved
+
+
 def _read_answer(piece: Path) -> bytes | None:
     """The hand's answer.txt, read without following a link, ANSWER_BYTES + 1 at most; None while there is none."""
     try:
@@ -557,9 +603,10 @@ def screen_piece(runtime: Path, hands, hand: str, key: str, index: int, prepared
     record.mkdir(parents=True, exist_ok=True, mode=0o700)
     durable.replace_file(record / f'piece-{index}-{hand}.json', json.dumps(dict(
         folder=folder, names=names, planted=f'f{planted_slot:02d}', planted_lines=sorted(lines))) + '\n')
+    before = folder_listing(hands.folder(hand))  # what the hand's folder holds before any outsider's word is in it
     piece = _write_piece(hands.folder(hand), folder, dict(sorted(files.items())))
     hold(runtime, hand, key)
-    answer, moved, instruction = None, None, None
+    answer, moved, instruction, aside = None, None, None, None
     try:
         hands.fresh(hand)
         instruction = hands.instruct(hand, INSTRUCTION.format(files=', '.join(sorted(files)), folder=folder))
@@ -569,12 +616,18 @@ def screen_piece(runtime: Path, hands, hand: str, key: str, index: int, prepared
             sleep(poll)
             answer = _read_answer(piece)
     finally:
-        # However the wait ended, the hand goes down while the hold still stands, and its drops are swept: only
-        # then is the hold released, so nothing written in a context that read the outsider's text is ever filed.
+        # However the wait ended, the hand goes down while the hold still stands. Everything it posted is moved aside,
+        # and the outsider's text is taken out of its folder: the piece is kept under the runtime, where no seat is
+        # pointed, and removed, and every other entry new or changed since the piece went in is moved aside. Only then
+        # is the hold released, so nothing written in a context that read the outsider's text is filed or left where a
+        # seat reads. A step that fails leaves the hold, and the status line says so.
         cleared = False
         try:
             hands.down(hand)
             moved = sweep(runtime, hand)
+            keep_and_remove(piece, record / f'piece-{index}-{hand}')
+            aside = move_aside_new(hands.folder(hand), before, Path(runtime) / ROOT / 'held' / hand
+                                   / f'folder-{key}-{index}-{time.time_ns()}')
             if instruction is not None:
                 # Delivered once while the hand screened; listed now, while the hand is down and the hold stands,
                 # so that no later delivery and no later launch of the hand brings it back.
@@ -582,20 +635,14 @@ def screen_piece(runtime: Path, hands, hand: str, key: str, index: int, prepared
             cleared = True
         finally:
             if cleared:
-                release(runtime, hand)  # a sweep or a listing that failed leaves the hold, and the line says so
-    # The outsider's text does not outlive the screen where a seat reads: the piece is kept under the runtime, where
-    # no seat is pointed, and removed from the hand's folder. The hand is started fresh, so the record a seat
-    # watches (qd watch) is a new one that never held it; the old one stays in the home for the accounting alone.
-    keep_and_remove(piece, record / f'piece-{index}-{hand}')
-    for left in sorted(hands.folder(hand).glob('screen-*')):  # a piece the hand moved or copied under that name
-        if left.is_symlink() or not left.is_dir():
-            left.unlink(missing_ok=True)
-        else:
-            shutil.rmtree(left, ignore_errors=True)
+                release(runtime, hand)  # a sweep, a move or a listing that failed leaves the hold, and the line says so
+    # The hand is started fresh, so the record a seat watches (qd watch) is a new one that never held the outsider's
+    # text; the old one stays in the home for the accounting alone.
     hands.fresh(hand)
     verdict = judge(hand, answer, names, (f'f{planted_slot:02d}', lines))
     durable.replace_file(record / f'piece-{index}-{hand}.verdict.json', json.dumps(dict(
-        clean=verdict.clean, reason=verdict.reason, places=verdict.places, moved_aside=moved)) + '\n')
+        clean=verdict.clean, reason=verdict.reason, places=verdict.places, moved_aside=moved,
+        folder_moved_aside=len(aside))) + '\n')
     return verdict
 
 
