@@ -28,7 +28,7 @@ from . import providers, durable, harness as harnesses, input_receipt, pending, 
 from . import carriage as carriagemod
 from .harness.base import Harness, Join, Launch, _version_in_runtime
 from .harness.capabilities import validate_selection
-from .provenance import remember_launch
+from .provenance import remember_launch, retained_launch
 from .pricing import save_price, saved_price
 from .ship import Pool, SeatSpec, Ship, ShipError
 from .tmux import Pane, Tmux, check_private_folder
@@ -455,8 +455,8 @@ class Seat:
             return None  # law: identity
         return frame
 
-    def join(self) -> Join:
-        """The seat's record: pinned once found, the first written after its launch."""
+    def _pinned_join(self, *, publish: bool) -> Join | None:
+        """Validate a pin; None alone means that no join has been pinned yet."""
         pinned = self.folder / "record"
         if pinned.is_file():
             try:
@@ -467,7 +467,8 @@ class Seat:
                 return Join(None, f"record pointer empty: {pinned}; restore the owned record if available; inspect with qd watch {self.name}")  # law: one-record
             record = Path(named)
             try:
-                owner = record_owner.pinned_reader(self, record)
+                owner = (record_owner.pinned_reader(self, record) if publish else
+                         record_owner.lookup_reader(self, record))
             except OSError as error:
                 return Join(None, f"record reader unknown: {error}; inspect with qd watch {self.name}")
             if owner != self.spec.harness:
@@ -476,9 +477,27 @@ class Seat:
             if self.launched() is not None and record_owner.launch_reader(self.launched()) != owner:
                 return Join(None, f"record reader changed: {record.name} and saved launch disagree; inspect with qd watch {self.name}")
             if record.exists():
-                self._note_owned(record)
+                if publish:
+                    self._note_owned(record)
                 return Join(record)
             return Join(None, f"record missing: {record.name}; restore the owned record if available; inspect with qd watch {self.name}")
+        return None
+
+    def lookup_record(self) -> Path | None:
+        """Read only an already-pinned join, without discovering or publishing one.
+
+        A missing, unreadable or mismatched record is never a replacement candidate.
+        This lookup neither registers a reader nor retains a launch boundary.
+        """
+        found = self._pinned_join(publish=False)
+        return found.record if found is not None else None
+
+    def join(self) -> Join:
+        """Pin the first record after launch and retain its ownership and launch boundary."""
+        found = self._pinned_join(publish=True)
+        if found is not None:
+            return found
+        pinned = self.folder / "record"
         launched = self.launched()
         if launched is None:
             return Join(None, "not up")
@@ -547,6 +566,19 @@ class Seat:
         return found is None or self.harness.screen(found[1]).working is not False
 
     def record(self) -> Path | None:
+        """Read a retained join; otherwise discover/journal it through the one joining path."""
+        launched = self.launched()
+        record = self.lookup_record()
+        if record is not None:
+            # A pin can predate a resumed launch or an interrupted first join. Only
+            # fully retained evidence permits readers to bypass publication.
+            owned = self.home / "conversations.owned"
+            registered = {"record": str(record), "harness": self.spec.harness}
+            if (registered in record_owner.registry_events(self.folder)
+                    and owned.is_file() and str(record) in owned.read_text().splitlines()
+                    and retained_launch(self.folder, record, launched)
+                    and self.launched() == launched):
+                return record
         return self.join().record
 
     # -- the one relaunch path -----------------------------------------------------------

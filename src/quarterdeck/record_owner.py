@@ -165,6 +165,12 @@ def pinned_reader(seat: Seat, record: Path) -> str | None:
     return next(iter(names)) if len(names) == 1 and names <= set(harnesses.NAMES) else None
 
 
+def lookup_reader(seat: Seat, record: Path) -> str | None:
+    """Validate retained reader evidence without publishing inferred bindings."""
+    names = bindings(seat, publish=False).get(record, set())
+    return next(iter(names)) if len(names) == 1 and names <= set(harnesses.NAMES) else None
+
+
 @dataclass(frozen=True)
 class Owned:
     path: Path

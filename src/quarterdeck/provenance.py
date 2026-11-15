@@ -10,13 +10,30 @@ from .harness.base import record_fingerprint
 UNKNOWN = "-"
 
 
+def launch_event(record: Path, launched) -> dict:
+    from .record_owner import launch_reader
+
+    return {"record": str(record), "at": launched.at, "pool": launched.pool,
+            "harness": launch_reader(launched), "price": getattr(launched, "price", None)}
+
+
+def retained_launch(folder: Path, record: Path, launched) -> bool:
+    """Read-only proof that this exact launch boundary is already in the journal."""
+    if launched is None:
+        return True
+    try:
+        text = (folder / "record-launches.jsonl").read_text()
+    except FileNotFoundError:
+        return False
+    event = launch_event(record, launched)
+    return event in [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
 def remember_launch(folder: Path, record: Path, launched) -> None:
     """Journal a proven join before its launch file can be replaced or removed."""
     if launched is None:
         return
-    from .record_owner import launch_reader
-
-    event = {"record": str(record), "at": launched.at, "pool": launched.pool, "harness": launch_reader(launched), "price": getattr(launched, "price", None)}
+    event = launch_event(record, launched)
     from . import ship_locks
     # The lock is the ship's, not the file's: the seat's own jail sees its folder and could hold the file.
     with ship_locks.held(ship_locks.for_seat_file(folder, "record-launches.jsonl"), f"{folder.name}: record launches"), \
