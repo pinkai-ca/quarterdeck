@@ -139,22 +139,50 @@ def test_a_watch_under_a_shell_of_a_shell_is_not_directly_under_the_program(case
     assert inbox_watch.alone(case.seat) is False
 
 
-def test_a_registration_older_than_the_launch_is_not_this_programs_watch(case):
+def test_a_watch_registered_under_another_launch_record_is_not_this_programs_watch(case):
     shell = case.run(['bash', '-c', f'{WATCH}; true'])
     case.registered(shell)
     assert inbox_watch.alone(case.seat) is True
     case.launch(datetime.now(timezone.utc) + timedelta(seconds=30))
-    assert inbox_watch.alone(case.seat) is False, 'a new launch is another binding and another time'
+    assert inbox_watch.alone(case.seat) is False, 'the registration binds the launch record it was made under'
 
 
-def test_the_kernels_list_of_children_is_read_or_said_unknown():
-    assert inbox_watch.children(os.getpid()) is not None
+def test_a_registration_earlier_than_its_launch_is_not_this_programs_watch(case):
+    """The time alone: the launch record is unchanged since the registration, so its binding holds, and only the
+    order of the two moments is wrong."""
+    case.launch(datetime.now(timezone.utc) + timedelta(seconds=300))
+    shell = case.run(['bash', '-c', f'{WATCH}; true'])
+    case.registered(shell)
+    assert inbox_watch._live(case.seat, lambda launched, registered: True, shell_of_its_own=True) is True, (
+        'the registration, the binding and the shape all hold')
+    assert inbox_watch.alone(case.seat) is False, 'registered before the launch it names'
+
+
+def test_a_watch_with_a_child_of_its_own_is_not_alone(case, monkeypatch):
+    """The real watch starts nothing, so the process table is stood in for this one reading of it."""
+    shell = case.run(['bash', '-c', f'{WATCH}; true'])
+    pid = case.registered(shell)
+    assert inbox_watch.alone(case.seat) is True
+    table = inbox_watch.children
+    monkeypatch.setattr(inbox_watch, 'children', lambda process: {4242} if process == pid else table(process))
+    assert inbox_watch.alone(case.seat) is False
+    monkeypatch.setattr(inbox_watch, 'children', lambda process: None)
+    assert inbox_watch.alone(case.seat) is False, 'a table that cannot be read proves nothing'
+
+
+def test_children_are_read_from_each_process_s_own_parent_or_said_unknown():
     child = subprocess.Popen(['sleep', '30'])
+    other = subprocess.Popen(['sleep', '30'])
     try:
-        assert child.pid in inbox_watch.children(os.getpid())
+        assert {child.pid, other.pid} <= inbox_watch.children(os.getpid())
         assert inbox_watch.children(child.pid) == set()
+        other.kill()
+        other.wait()
+        found = inbox_watch.children(os.getpid())
+        assert child.pid in found and other.pid not in found, 'an ended sibling hides no live child'
     finally:
         child.kill()
         child.wait()
+    assert inbox_watch.children(child.pid) is None, 'no live process, no table of its children'
     for value in (0, -1, None, '1', 2 ** 22 + 12345):
         assert inbox_watch.children(value) is None, value

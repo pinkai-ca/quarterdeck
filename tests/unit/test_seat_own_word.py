@@ -19,7 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import cli, door, idle, post, request_queue
+from quarterdeck import cli, door, idle, post, request_queue, service as servicemod
 from quarterdeck.harness.claude import ClaudeHarness
 from quarterdeck.harness.types import ActiveTool
 from quarterdeck.ship import ShipError
@@ -131,9 +131,12 @@ def test_a_crew_seats_held_request_waits_and_the_seat_is_told_once_for_that_requ
     crew(desk)
     desk.hold, desk.state = UNKNOWN, unread(open_=False, input_at=-5, turns=[turn(-5, -1)])
     path = ask(desk, release=False, caller='systems-larch', resume=True)
-    for second in (1, 2, 3):
+    for second in (1, 2, 30, 60):
         desk.tick(second)
     assert desk.applied == [] and path.exists(), 'deferred, as before'
+    assert told(desk) == [], 'not before the same hold has stood a minute, counted from the pass that first saw it'
+    for second in (61.5, 62, 90, 300):
+        desk.tick(second)
     [message] = told(desk)
     assert message.body == (
         f'a restart of this seat, asked by systems-larch, waits · {UNKNOWN.reason} · it applies once that has '
@@ -141,8 +144,37 @@ def test_a_crew_seats_held_request_waits_and_the_seat_is_told_once_for_that_requ
         f'a turn: qd restart {SEAT} --release · request {path.stem}')
     assert request_queue.metadata(path)['told'] == message.id
     desk.hold, desk.state = None, unread(open_=False, input_at=-5, turns=[turn(-5, -1)], tools=())
-    desk.tick(4)
+    desk.tick(301)
     assert desk.applied == ['restart'] and len(told(desk)) == 1
+
+
+def test_a_hold_that_passes_within_the_minute_is_never_told(desk, shown):
+    """A helper that just ended leaves a hint on the bottom line for some thirty seconds: the request applies by
+    itself when the hint goes, and the seat is spared a report and a turn."""
+    crew(desk)
+    desk.hold, desk.state = UNKNOWN, unread(open_=False, input_at=-5, turns=[turn(-5, -1)])
+    path = ask(desk, release=False, caller='systems-larch', resume=True)
+    for second in (1, 15, 30, 45):
+        desk.tick(second)
+    desk.hold, desk.state = None, unread(open_=False, input_at=-5, turns=[turn(-5, -1)], tools=())
+    desk.tick(46)
+    assert desk.applied == ['restart'] and told(desk) == [] and not path.exists()
+
+
+def test_a_hold_that_changes_is_counted_from_its_change(desk, shown):
+    crew(desk)
+    desk.hold, desk.state = UNKNOWN, unread(open_=False, input_at=-5, turns=[turn(-5, -1)])
+    ask(desk, release=False, caller='systems-larch', resume=True)
+    for second in (1, 50):
+        desk.tick(second)
+    desk.hold = PENDING  # the hint went and the line now names work
+    for second in (55, 100):
+        desk.tick(second)
+    assert told(desk) == [], 'the new hold has stood forty-five seconds'
+    desk.tick(116)
+    [message] = told(desk)
+    assert PENDING.reason in message.body and UNKNOWN.reason not in message.body
+    assert servicemod.TELL_HELD_AFTER == 60.0
 
 
 def test_an_own_crew_request_that_waits_is_told_as_its_own(desk, shown):
@@ -150,6 +182,8 @@ def test_an_own_crew_request_that_waits_is_told_as_its_own(desk, shown):
     desk.hold, desk.state = PENDING, unread(open_=False, input_at=-5, turns=[turn(-5, 3)])
     path = ask(desk, release=False, seconds=4)
     desk.tick(5)
+    assert told(desk) == []
+    desk.tick(66)
     [message] = told(desk)
     assert message.body.startswith('your own fresh start waits · tools pending: ')
     assert message.body.endswith(f'qd fresh {SEAT} --release · request {path.stem}')
@@ -201,6 +235,7 @@ def test_a_hold_that_is_not_of_the_tool_state_is_not_the_seats_to_release(desk, 
 @pytest.mark.parametrize(('changes', 'why'), [
     (dict(queued=('synthetic queued input',)), 'input is queued'),
     (dict(queued=None), 'the queue is unknown'),
+    (dict(queue_error='synthetic ambiguity'), 'the queue is unresolved, which an explicit relaunch alone may pass'),
     (dict(turn_open=True), 'a turn is open'),
     (dict(turn_open=None), 'the turn is unknown'),
     (dict(completed_turns=()), 'no completion'),
