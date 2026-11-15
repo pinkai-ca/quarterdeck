@@ -201,6 +201,54 @@ def test_setup_says_why_the_office_desk_did_not_start_and_what_to_do(newcomer, c
     code = cli.main(['setup', '--answers', str(answers(newcomer, 'pi'))])
     out = capsys.readouterr()
     assert code == 2
-    assert 'desk: synthetic refusal' in out.err and 'run qd setup again' in out.err
+    assert 'desk: synthetic refusal' in out.err and 'run qd init to start the desk' in out.err
+    assert 'qd setup again for the crew' in out.err
     assert 'inspect qd status' not in out.err
     assert (newcomer.project / 'office' / 'ship.toml').is_file(), 'the office is kept for the next run'
+
+
+def test_setup_run_again_after_a_refusal_keeps_the_desks_folder_private_and_its_own(newcomer, capsys, monkeypatch):
+    """The flow a refusal advises: setup, refused at the desk's start; then qd init starts the desk. The desk's folder
+    from the first run is kept with what is in it, and made private again however its mode was left."""
+    real_up_desk = setup.Operations.up_desk
+    monkeypatch.setattr(setup.Operations, 'up_desk', lambda self, current: (_ for _ in ()).throw(
+        shipmod.ShipError('installed up refused: desk: synthetic refusal')))
+    assert cli.main(['setup', '--answers', str(answers(newcomer, 'pi'))]) == 2
+    work = newcomer.project / 'office' / 'work' / 'desk'
+    assert work.is_dir() and stat.S_IMODE(work.stat().st_mode) == 0o700, 'made before the refused start'
+    work.chmod(0o755)
+    (work / 'left-by-the-desk.txt').write_text('synthetic')
+    capsys.readouterr()
+    monkeypatch.setattr(setup.Operations, 'up_desk', real_up_desk)
+    code = cli.main(['init'])
+    out = capsys.readouterr()
+    assert code == 0, out.err[-3000:]
+    assert stat.S_IMODE(work.lstat().st_mode) == 0o700 and not work.is_symlink()
+    assert (work / 'left-by-the-desk.txt').read_text() == 'synthetic', 'its contents are the desk\'s, kept'
+    office = shipmod.load(newcomer.project / 'office')
+    launched = Seat(office, office.seat('desk'), newcomer.tmux).launched()
+    assert launched is not None and jailed(launched.argv) and bound(launched.argv, work)
+
+
+@pytest.mark.parametrize('planted', ['link', 'file', 'another user\'s'])
+def test_a_desk_folder_that_is_not_the_operators_own_real_folder_is_refused(tmp_path, monkeypatch, planted):
+    office_folder = tmp_path / 'office'
+    office_folder.mkdir()
+    text = setup.template('office')[0]
+    text = shipmod.edit(text, 'seats.desk', 'sandbox', True)
+    text = shipmod.edit(text, 'seats.desk', 'cwd', setup.JAILED_DESK_WORK)
+    office = shipmod._from_text(text, office_folder)
+    work = office_folder / 'work' / 'desk'
+    work.parent.mkdir()
+    elsewhere = tmp_path / 'elsewhere'
+    elsewhere.mkdir(mode=0o755)
+    if planted == 'link':
+        work.symlink_to(elsewhere, target_is_directory=True)
+    elif planted == 'file':
+        work.write_text('not a folder')
+    else:
+        work.mkdir(mode=0o755)
+        monkeypatch.setattr(setup.os, 'getuid', lambda: os.stat(work).st_uid + 1)
+    with pytest.raises(shipmod.ShipError, match='is a link|not this user\'s own folder'):
+        setup.make_jailed_work(office, text)
+    assert stat.S_IMODE(elsewhere.stat().st_mode) == 0o755 and not any(elsewhere.iterdir()), 'nothing changed there'
