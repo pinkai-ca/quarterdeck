@@ -201,6 +201,8 @@ def idle_hold(seat, state) -> str | None:
     """Why the seat is not idle, or None: the ship's one idle proof, which lets through only the seat's
     own proved, current inbox watch among its pending tools."""
     hold = idle.check(state, seat)
+    if hold is not None and hold.dimension == 'tools-unknown':
+        hold = idle.second(seat, idle.execution(seat, state), hold)[1]  # the screen, where the record cannot say
     return hold.reason if hold else None
 
 

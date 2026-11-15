@@ -377,13 +377,23 @@ def table(ship: Ship, tmux: Tmux) -> list[str]:
     return render_table(status_reading(ship, tmux))
 
 
-def tool_reading(seat, state) -> tuple[str | None, str | None]:
-    """The tool reason as the idle proof reads it: a seat's own inbox watch, proved, is not a pending tool."""
+def tool_reading(seat, state, screen=None) -> tuple[str | None, str | None]:
+    """The tool reason as the idle proof reads it: a seat's own inbox watch, proved, is not a pending tool. Where
+    the record cannot say, the line adds what the screen, read second, shows or lacks (law: record-first)."""
     if state is None:
         return None, None
     executed = idle.execution(seat, state)
     proved = executed is not state and len(executed.active_tools) < len(state.active_tools)
-    return idle.tool_reason(executed), ("own inbox watch, proved" if proved else None)
+    reason = idle.tool_reason(executed)
+    if executed.pending_tools is None:
+        _, hold, saw = idle.second(seat, executed, idle.Hold('tools-unknown', reason), screen=screen)
+        if hold is None:
+            reason = f'{reason} in its record; its screen shows {saw}: at rest'
+        elif hold.dimension == 'tools-pending':
+            reason = f'{reason} in its record; its screen shows {saw}'
+        else:
+            reason = hold.reason
+    return reason, ("own inbox watch, proved" if proved else None)
 
 
 def seat_reading(seat: Seat | UnresolvedSeat) -> dict:
@@ -409,13 +419,14 @@ def seat_reading(seat: Seat | UnresolvedSeat) -> dict:
                 skips = evidence.diagnostics()
         except OSError as failure:
             receipt_error = str(failure)
-    tools, own_watch = tool_reading(seat, state)
+    screen = Door(seat).screen()
+    tools, own_watch = tool_reading(seat, state, screen)
     return {"seat": r, "record": record, "state": state, "record_error": error, "tools": tools, "own_watch": own_watch,
             "requests": request_queue.pending(seat.ship.runtime, seat.name),
             "receipt_skips": skips, "receipt_error": receipt_error,
             "record_absent": seat.join().reason if record is None else None,
             "record_limits": getattr(seat.harness, "record_limits", None),
-            "screen": Door(seat).screen(), "answered": list((launched.answered or []) if (launched := seat.launched()) else []),
+            "screen": screen, "answered": list((launched.answered or []) if (launched := seat.launched()) else []),
             "act": acts.last(seat),
             "launch_notice": launched.notice if launched else None,
             "usage": headline_readings(seat.ship), **providers.identities(seat.ship)}

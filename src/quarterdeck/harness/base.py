@@ -540,6 +540,14 @@ class Harness(ABC):
         the cursor there (the Door reads it). None, the default, leaves the box as the reader read it."""
         return None
 
+    background_versions: frozenset[str] = frozenset()  # the versions whose screen is measured to name its background
+
+    def background(self, screen: Screen, version: str | None) -> tuple[tuple[str, int], ...] | None:
+        """What the program's own screen names as running in its background, by kind and count, read whole from
+        a form measured on this version; an empty tuple where it names nothing. None, the default, where the
+        screen does not say: the idle proof then has no second witness in it (law: record-first)."""
+        return None
+
     def check_tool_evidence(self, record: Path) -> dict:
         """Private check-only call/results; adapters opt in to a bounded decoder."""
         return dict(status='unknown', reason='adapter tool call/results unsupported', pairs=[])

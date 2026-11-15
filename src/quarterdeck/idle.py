@@ -16,9 +16,22 @@ class Hold:
 NO_RECORD = 'no record yet: nothing has run'
 
 
-class Reading(NamedTuple):
+RECORD, RECORD_AND_SCREEN = 'record', 'record and screen'
+
+
+class _Pair(NamedTuple):
     state: State | None
     hold: Hold | None
+
+
+class Reading(_Pair):
+    """The state and its hold, as a pair, and the witness that settled the tool state: the record alone, or
+    the record and the screen where the screen was read second and said what the record could not."""
+
+    def __new__(cls, state, hold, witness=RECORD):
+        self = super().__new__(cls, state, hold)
+        self.witness = witness
+        return self
 
     @property
     def reason(self):
@@ -120,11 +133,68 @@ def check(state: State | None, seat=None, *, explicit=False) -> Hold | None:
     return None
 
 
+WATCH_ALONE = (('shell', 1),)
+
+
+def named(names) -> str:
+    """What a screen names in its background, by kind and count: labels and numbers only."""
+    return ' and '.join(f"{count} {kind}{'' if count == 1 else 's'}" for kind, count in names)
+
+
+def second(seat, state: State, hold: Hold, *, explicit=False, screen=None):
+    """The screen, read second, where the record cannot say whether a tool is open (law: record-first).
+
+    Returns the state, its hold and what the screen showed, in words, or None where it was not read. The screen
+    settles the tool state only together with the record: the record shows the turn ended, nothing queued and its
+    last input complete, and the door reads the composer at rest. The program's own bottom line then names what
+    it runs in its background, in a form measured on the launched version. Nothing named is rest. One shell is
+    rest only where it is this seat's registered watch, proved alone in a shell of its own under the launched
+    program. Anything else it names is work, held under its name. A screen that does not say settles nothing:
+    the record's unknown stands, and the hold says what the screen lacked. A program version with no measured
+    bottom line has no second witness in its screen, and the screen is not read for it.
+    """
+    if hold.dimension != 'tools-unknown' or state is None or state.pending_tools is not None:
+        return state, hold, None
+    rest = replace(state, pending_tools=(), active_tools=())
+    if check(rest, explicit=explicit) is not None:
+        return state, hold, None  # the record itself must show everything else at rest
+    from . import inbox_watch
+    from .door import Door
+
+    def unknown(lacked):
+        return state, Hold('tools-unknown', f"{REASONS['tools-unknown']}: {lacked}"), lacked
+
+    try:
+        launched = seat.launched()
+        version = getattr(launched, 'version', None)
+        if version is None or version not in getattr(seat.harness, 'background_versions', ()):
+            return state, hold, None
+        if screen is None:
+            screen = Door(seat).screen()
+    except OSError:
+        return unknown('its screen could not be read')
+    if (screen is None or screen.box != '' or screen.working is not False or screen.queued
+            or screen.unknown or screen.interruption or screen.starting or screen.fresh):
+        return unknown('its screen is not the composer at rest')
+    names = seat.harness.background(screen, version)
+    if names is None:
+        return unknown("its screen's bottom line is not a measured form")
+    if names == ():
+        return rest, None, 'nothing in the background'
+    if names == WATCH_ALONE and inbox_watch.alone(seat):
+        return rest, None, 'only its inbox watch in the background'
+    saw = f'{named(names)} in the background'
+    if names == WATCH_ALONE:
+        saw += ', not proved to be its inbox watch alone'
+    return state, Hold('tools-pending', f'tools pending: its screen shows {saw}'), saw
+
+
 def reading(seat, *, explicit=False, relaunch=False):
     """Read the shared proof; only relaunch may request a launch-scoped adapter view."""
     from . import move_hold
     binding = move_hold.generation(seat)
     state = None
+    witness = RECORD
     try:
         record = seat.record()
         state = seat.harness.state(record) if record is not None else None
@@ -143,11 +213,19 @@ def reading(seat, *, explicit=False, relaunch=False):
                 pass
             state = execution(seat, reader(record, launched_at))
         hold = check(state, seat=seat if state is None else None, explicit=explicit)
+        if hold is not None and hold.dimension == 'tools-unknown':
+            # The screen says the same of the launch-scoped view and of the ordinary one: what runs now.
+            state, hold, saw = second(seat, state, hold, explicit=explicit)
+            if hold is None or hold.dimension == 'tools-pending':
+                witness = RECORD_AND_SCREEN
+                if published_hold is not None and published_hold.dimension == 'tools-unknown':
+                    published_hold = hold
     except OSError:
         hold = published_hold = Hold('record', 'its record is unreadable')
     if move_hold.generation(seat) != binding:
         state = None
         hold = published_hold = Hold('identity', REASONS['identity'])
+        witness = RECORD
     # A relaunch allowance must not clear the ordinary move/status hold.
     move_hold.publish(seat, binding, published_hold)
-    return Reading(state, hold)
+    return Reading(state, hold, witness)

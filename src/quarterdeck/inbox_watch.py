@@ -126,10 +126,35 @@ def retire(runtime, name, registration, *, admitted=True):
             pass
 
 
+def children(pid):
+    """A live process's children as the kernel lists them, or None where it does not say."""
+    try:
+        if type(pid) is not int or pid <= 0:
+            return None
+        tasks = list(Path(f'/proc/{pid}/task').iterdir())
+        if not tasks:
+            return None
+        return {int(word) for task in tasks for word in (task / 'children').read_text().split()}
+    except (OSError, ValueError, UnicodeError):
+        return None
+
+
 def current(seat, called_at):
     """Both native candidate and this seat's unchanged live generation must be proved."""
     if called_at is None or called_at.tzinfo is None:
         return False
+    return _live(seat, lambda launched, registered: launched <= called_at <= registered)
+
+
+def alone(seat):
+    """This seat's unchanged live generation, proved where no record names its call: the screen's count stands
+    for the native candidate, so the process table must show the watch as that count's whole. The registered
+    process has no child, its parent is a shell whose only child it is, and that shell's parent is the launched
+    program. A watch started beside other work in one shell, or under anything but the program, is not proved."""
+    return _live(seat, lambda launched, registered: launched <= registered, shell_of_its_own=True)
+
+
+def _live(seat, admitted, shell_of_its_own=False):
     path = post.watch_file(seat.ship.runtime, seat.name)
     companion = proof_path(seat.ship.runtime, seat.name)
     token_path = generation_path(seat.ship.runtime, seat.name)
@@ -152,9 +177,14 @@ def current(seat, called_at):
         observed = process(pid)
         if (source is None or observed is None or registered.tzinfo is None
                 or observed[1] != proof['process_start'] or source[2] != proof['launch']
-                or not source[1] <= called_at <= registered <= post.now()):
+                or not admitted(source[1], registered) or not registered <= post.now()):
             return False
         root, parent, seen = source[0], observed[0], {pid}
+        if shell_of_its_own:
+            shell = process(parent)
+            if (parent == root or shell is None or shell[0] != root
+                    or children(parent) != {pid} or children(pid) != set()):
+                return False
         for _ in range(64):
             if parent in seen or parent <= 0:
                 return False

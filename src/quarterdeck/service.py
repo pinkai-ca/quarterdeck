@@ -1294,7 +1294,8 @@ class Service:
         pane = seat.pane()
         if pane is None or pane.dead:
             return self.relaunch(seat, bool(data['resume']))
-        state, hold = idle.reading(seat, explicit=True, relaunch=True)
+        proved = idle.reading(seat, explicit=True, relaunch=True)
+        state, hold = proved
         try:
             asked = datetime.fromisoformat(data['created_at'])
         except (KeyError, TypeError, ValueError):
@@ -1303,10 +1304,10 @@ class Service:
             from .servicectl import ANSWER_SECONDS
             if asked.tzinfo is None or not 0 <= (post.now() - asked).total_seconds() <= ANSWER_SECONDS:
                 return f'refused: {seat.name} no-record request expired; no deferred restart'
-            return self.relaunch(seat, bool(data['resume']), reading=(state, hold))
+            return self.relaunch(seat, bool(data['resume']), reading=proved)
         own = request_queue.proved_own(seat.name, data, origin)
         if own and not data['resume'] and asked.tzinfo is not None:
-            handed = self.handoff_fresh(seat, asked, (state, hold))
+            handed = self.handoff_fresh(seat, asked, proved)
             if handed is not OWN_TURN_RULE:
                 return handed
         if data.get('caller') == seat.name and asked.tzinfo is not None and asked <= post.now():
@@ -1317,7 +1318,7 @@ class Service:
                 self.request_wait = self.handoff_quiet(seat, state, hold)
                 if self.request_wait is not None:
                     return None
-                return self.relaunch(seat, bool(data['resume']), reading=(state, hold))
+                return self.relaunch(seat, bool(data['resume']), reading=proved)
         if (state is None or state.last_input_at is None or asked.tzinfo is None
                 or state.last_input_at.tzinfo is None or state.last_input_at > asked or asked > post.now()):
             return f'refused: {seat.name} asking turn unknown or superseded by later input; no deferred restart'
@@ -1328,7 +1329,7 @@ class Service:
             if ((post.now() - asked).total_seconds() > ANSWER_SECONDS
                     or not question and (ending is None or ending.ended is None or ending.ended > asked)):
                 return f'refused: {seat.name} was not proved at an immediate break when requested; no deferred restart'
-            answer = self.relaunch(seat, bool(data['resume']), reading=(state, hold))
+            answer = self.relaunch(seat, bool(data['resume']), reading=proved)
             return answer if answer is not None else f'refused: {seat.name} waits for {(self.request_wait or (None, "idle proof unknown"))[1]}; human request not deferred'
         scope = dict(origin=origin, input_at=state.last_input_at.isoformat(),
                      input_id=state.input_id, work_id=state.work_id,
@@ -1350,7 +1351,7 @@ class Service:
         if (ending is None or not ending.timed or ending.started is None or ending.ended is None
                 or not ending.started <= asked <= ending.ended):
             return f'refused: {seat.name} exact asking-turn end not proved; no deferred restart'
-        answer = self.relaunch(seat, bool(data['resume']), reading=(state, hold))
+        answer = self.relaunch(seat, bool(data['resume']), reading=proved)
         return answer if answer is not None else f'refused: {seat.name} asking turn ended with {(self.request_wait or (None, "idle proof unknown"))[1]}; request retired, never applied at a later turn'
 
     def relaunch_person_input(self, seat):
@@ -1429,16 +1430,21 @@ class Service:
                 self.request_wait = ('recovery', reason)
             return None
         pane = seat.pane()
+        witness = idle.RECORD
         if pane is not None and not pane.dead:
-            state, hold = reading if reading is not None else idle.reading(seat, explicit=True, relaunch=True)
+            proved = reading if reading is not None else idle.reading(seat, explicit=True, relaunch=True)
+            state, hold = proved
             if state is None or not seat.harness.waiting_for_human(state):
                 if hold is not None:
                     if self is not None:
                         self.request_wait = (hold.dimension, hold.reason)
                     return None  # deferred-request answers/lifetime are separate; the reason is shared
+                witness = getattr(proved, 'witness', idle.RECORD)
         from . import relaunch_intent
         with relaunch_intent.section(self, seat, 'relaunch', resume=resume):
-            return seat.restart() if resume else seat.fresh()
+            proof = seat.restart() if resume else seat.fresh()
+        # The proof line says which witness settled the tool state where the record alone could not.
+        return f'{proof}\nat rest by its record and its screen' if witness == idle.RECORD_AND_SCREEN else proof
 
     def control(self, seat: Seat, name: str, value: str) -> str | None:
         """Apply a control by its in-session form, through the door, when the seat is idle."""

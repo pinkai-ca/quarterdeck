@@ -671,7 +671,23 @@ read = _Reader.read
 RULE = re.compile(r"^─{10,}")
 BOX_START = re.compile(r"^❯[  ]?(.*)$")
 MODE_LINE = re.compile(r"[○◐●◑] (\w+) · /effort")
-WORKING = re.compile(r"esc to interrupt|^[*✻✶✳✢·⠂⠄⠆] \S+… \(\d+s", re.M)
+# The working sign is one of the spinner's glyphs, a verb and the turn's running time. Past the first minute the
+# time leads with minutes ("(1m 32s", 2.1.317; "(3m 38s", 2.1.325) and past the first hour with hours; "✽" is one
+# of the glyphs (2.1.317). All measured on the ship's own seats, 15 November 2026.
+WORKING = re.compile(r"esc to interrupt|^[*✻✶✳✢✽·⠂⠄⠆] \S+… \((?:\d+h )?(?:\d+m )?\d+s", re.M)
+# The composer's bottom line names what the program runs in its background. Each form is matched whole and only
+# on the version it was measured on, through the ship's own captures of its seats on 15 November 2026:
+#   2.1.317  with nothing in the background the mode is followed by its cycling hint; with work the hint gives
+#            way to the count of shells, and of one monitor beside them
+#   2.1.325  the same two bodies, each followed by the name of the session's published page; a helper agent
+#            running in the background adds a panel of its own below the line, gone when the helper ends
+# Any other bottom line, or one that is not the screen's last, says nothing here.
+BOTTOM_LINES = {
+    "2.1.317": re.compile(r"  ⏵⏵ bypass permissions on(?: \(shift\+tab to cycle\)"
+                          r"| · (?P<shells>[1-9]\d*) (?P<noun>shells?)(?P<monitor>, 1 monitor)?)"),
+    "2.1.325": re.compile(r"  ⏵⏵ bypass permissions on(?: \(shift\+tab to cycle\)"
+                          r"| · (?P<shells>[1-9]\d*) (?P<noun>shells?)) · ⧉ \S+"),
+}
 SET_MODEL = re.compile(r"Set model to `?([^`]+?)`? and saved")
 SET_EFFORT = re.compile(r"Set effort level to `?(\w+)`?")
 QUEUED_PLACEHOLDER = "Press up to edit queued messages"
@@ -1329,6 +1345,21 @@ class ClaudeHarness(Harness):
         interruption = (auto_default_offer(text) or self.recognize(text)) if box is None else None  # prose never counts
         return Screen(text, box=box, working=bool(WORKING.search(text)), interruption=interruption,
                       queued=queued, shows={"effort": mode.group(1)} if mode else {})
+
+    background_versions = frozenset(BOTTOM_LINES)
+
+    def background(self, screen: Screen, version: str | None) -> tuple[tuple[str, int], ...] | None:
+        form = BOTTOM_LINES.get(version)
+        lines = screen.text.rstrip().split("\n")
+        found = form.fullmatch(lines[-1].rstrip()) if form is not None and screen.box is not None else None
+        if found is None:
+            return None
+        shells, monitor = found["shells"], found.groupdict().get("monitor")
+        if shells is None:
+            return ()
+        if found["noun"] != ("shell" if shells == "1" else "shells"):
+            return None
+        return (("shell", int(shells)), *((("monitor", 1),) if monitor else ()))
 
     def box(self, text: str) -> Box:
         """A paste folds when it is long or has three newlines or more (2.1.317). The placeholder counts the
