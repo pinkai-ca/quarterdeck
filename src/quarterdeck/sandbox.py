@@ -325,11 +325,14 @@ def refuse_shared_workspace(ship: Ship, seat_name: str, workspace: Path) -> None
     """Refuse a jailed seat whose declared cwd is not its own, by real path (links resolved).
 
     A jail binds its working directory writable. Where a seat declares a cwd of its own (a hand's
-    ``work/hands/<name>``) and that folder is another declared seat's, or holds one, the jailed seat would write the
-    other seat's work, which that seat reads and may run outside any jail. The framework's checkout, or a folder
-    holding it, is refused the same way, first: it holds the framework's code and every ship's folder. A seat at the
-    ship's common workspace, which declares no cwd, and qd check's temporary seats, which no ship file declares, are not
-    bound, nor counted as another seat.
+    ``work/hands/<name>``) and that folder is another declared seat's, holds one, or lies inside another seat's declared
+    cwd, the jailed seat would write the other seat's work, which that seat reads and may run outside any jail. The
+    framework's checkout is refused first: a cwd that is the checkout or holds it, and a cwd inside it anywhere but
+    ``work/hands/<name>`` or below, since the rest of it is the framework's code, its history and hooks, the workers'
+    worktrees and the captain's queue, which unjailed seats read and run. A seat at the ship's common workspace, which
+    declares no cwd, and qd check's temporary seats, which no ship file declares, are not bound, nor counted as another
+    seat. Nor is a declared cwd that is the common workspace or holds it, as a seat at a folder above the project has:
+    lying inside it is lying inside the common workspace, which the checkout rule already rules.
     """
     spec = ship.seats.get(seat_name)
     if spec is None or spec.cwd is None or spec.temporary:
@@ -342,6 +345,15 @@ def refuse_shared_workspace(ship: Ship, seat_name: str, workspace: Path) -> None
                             f"framework's checkout {checkout}; a jailed seat never works there, since it holds the "
                             f"framework's code and every ship's folder. Give {seat_name} a cwd of its own, such as "
                             "a folder under the checkout's work/hands/")
+        if real.is_relative_to(checkout):
+            inside = real.relative_to(checkout).parts
+            if len(inside) < 3 or inside[:2] != ('work', 'hands'):
+                raise ShipError(f"{seat_name}: sandboxed with its working directory at {real}, inside the framework's "
+                                f"checkout {checkout}; a jailed seat works there only in a folder of its own under "
+                                f"{checkout / 'work' / 'hands'}, since the rest of the checkout is the framework's "
+                                f"code, history and worktrees. Give {seat_name} a cwd such as "
+                                f"{checkout / 'work' / 'hands' / seat_name}")
+    common = Path(os.path.realpath(ship.workspace))
     for other, theirs_spec in ship.seats.items():
         if other == seat_name or theirs_spec.temporary:
             continue
@@ -351,6 +363,10 @@ def refuse_shared_workspace(ship: Ship, seat_name: str, workspace: Path) -> None
             raise ShipError(f"{seat_name}: sandboxed with its working directory at {real}, which {what} seat "
                             f"{other}'s working directory ({theirs}); a jailed seat works in a folder of its own. "
                             f"Give {seat_name} a cwd that no other seat uses and that holds no other seat's")
+        if theirs_spec.cwd is not None and real.is_relative_to(theirs) and not common.is_relative_to(theirs):
+            raise ShipError(f"{seat_name}: sandboxed with its working directory at {real}, inside seat {other}'s "
+                            f"declared working directory ({theirs}); a jailed seat works in a folder of its own. "
+                            f"Give {seat_name} a cwd outside every other seat's")
 
 
 def fence_point(seat_name: str, folder: Path) -> None:

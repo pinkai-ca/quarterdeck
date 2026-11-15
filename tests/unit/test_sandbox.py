@@ -518,15 +518,15 @@ def test_plan_refuses_a_bound_folder_that_holds_the_ssh_folders_target(tmp_path:
 def own_cwd_ship(tmp_path: Path, hand_a_cwd=None, hand_b_cwd=None):
     """A stand-in framework checkout holding the ship, with two hands, each declared at work/hands/<name>."""
     project = tmp_path / 'project'
-    (project / '.git').mkdir(parents=True)
+    (project / '.git').mkdir(parents=True, exist_ok=True)
     (project / 'pyproject.toml').write_text('')
-    (project / 'src' / 'quarterdeck').mkdir(parents=True)
+    (project / 'src' / 'quarterdeck').mkdir(parents=True, exist_ok=True)
     (project / 'src' / 'quarterdeck' / 'sandbox.py').write_text('')
     hands = project / 'work' / 'hands'
     for name in ('hand-a', 'hand-b'):
-        (hands / name).mkdir(parents=True)
+        (hands / name).mkdir(parents=True, exist_ok=True)
     crew = tmp_path / 'crew'
-    crew.mkdir()
+    crew.mkdir(exist_ok=True)
 
     def seat(name, cwd):
         return shipmod.SeatSpec(name, 'crew', 'hand', 'pi', ('local',), cwd=cwd, sandbox=True)
@@ -561,13 +561,14 @@ def test_plan_refuses_a_jailed_cwd_that_is_not_the_seats_own_naming_both_by_real
         plan_seat(ship, 'hand-a', home)
     message = str(caught.value)
     real = Path(os.path.realpath(hand_a_cwd))
-    assert message.startswith(f'hand-a: sandboxed with its working directory at {real}, which '), message
+    joint = ', inside ' if case == 'the hands folder' else ', which '
+    assert message.startswith(f'hand-a: sandboxed with its working directory at {real}{joint}'), message
     if case in ('the checkout', 'a folder holding the checkout'):
         assert f"the framework's checkout {project.resolve()}" in message
     elif case == 'another seat at the default workspace':
         assert f"is also seat captain's working directory ({real})" in message
     elif case == 'the hands folder':
-        assert f"holds seat hand-b's working directory ({(hands / 'hand-b').resolve()})" in message
+        assert f"inside the framework's checkout {project.resolve()}" in message
     else:
         assert f"is also seat hand-b's working directory ({(hands / 'hand-b').resolve()})" in message
     assert not (ship.runtime / 'post').exists(), 'refused before anything of the launch is made'
@@ -620,3 +621,87 @@ def test_qd_checks_temporary_seat_at_a_declared_seats_folder_plans_and_is_never_
     with pytest.raises(ShipError, match="is also seat hand-a's"):
         plan_seat(ship := replace(ship, seats={**ship.seats, check.name: replace(check, temporary=False)}),
                   check.name, tmp_path / 'operator-home')
+
+
+INSIDE_CHECKOUT = ['src', 'src/quarterdeck', 'tests', '.git', '.git/hooks', 'work', 'work/hands',
+                   'work/store-incremental', 'work/store-incremental/tests', 'work/queue']
+
+
+@pytest.mark.parametrize('rel', INSIDE_CHECKOUT)
+def test_a_jailed_cwd_inside_the_checkout_but_not_under_work_hands_is_refused(tmp_path, monkeypatch, rel):
+    """Inside a framework checkout a declared jailed cwd lies at work/hands/<name> or below, or nowhere: the code, its
+    history and hooks, a worker's worktree and its tests, and the captain's queue are refused by real path."""
+    cwd = tmp_path / 'project' / rel
+    cwd.mkdir(parents=True, exist_ok=True)
+    ship, _ = own_cwd_ship(tmp_path, hand_a_cwd=cwd)
+    monkeypatch.setattr(sandbox, 'available', lambda: True)
+    with pytest.raises(ShipError) as caught:
+        plan_seat(ship, 'hand-a', tmp_path / 'operator-home')
+    checkout = (tmp_path / 'project').resolve()
+    assert str(caught.value).startswith(f"hand-a: sandboxed with its working directory at {cwd.resolve()}, inside the "
+                                        f"framework's checkout {checkout}; a jailed seat works there only in a folder "
+                                        f"of its own under {checkout / 'work' / 'hands'}"), caught.value
+    assert not (ship.runtime / 'post').exists(), 'refused before anything of the launch is made'
+
+
+def test_a_jailed_cwd_declared_through_a_link_into_the_checkouts_code_is_refused_by_its_real_path(tmp_path, monkeypatch):
+    link = tmp_path / 'looks-like-a-hand'
+    ship, _ = own_cwd_ship(tmp_path, hand_a_cwd=link)
+    link.symlink_to(tmp_path / 'project' / 'src' / 'quarterdeck')
+    monkeypatch.setattr(sandbox, 'available', lambda: True)
+    real = (tmp_path / 'project' / 'src' / 'quarterdeck').resolve()
+    with pytest.raises(ShipError, match=f"hand-a: sandboxed with its working directory at {real}, inside the framework's"):
+        plan_seat(ship, 'hand-a', tmp_path / 'operator-home')
+
+
+def test_a_jailed_cwd_inside_another_hands_folder_is_refused_naming_it(tmp_path, monkeypatch):
+    sub = tmp_path / 'project' / 'work' / 'hands' / 'hand-b' / 'sub'
+    sub.mkdir(parents=True)
+    ship, hands = own_cwd_ship(tmp_path, hand_a_cwd=sub)
+    monkeypatch.setattr(sandbox, 'available', lambda: True)
+    with pytest.raises(ShipError) as caught:
+        plan_seat(ship, 'hand-a', tmp_path / 'operator-home')
+    assert str(caught.value).startswith(f"hand-a: sandboxed with its working directory at {sub.resolve()}, inside seat "
+                                        f"hand-b's declared working directory ({(hands / 'hand-b').resolve()})"), caught.value
+
+
+def test_a_jailed_cwd_inside_another_seats_declared_cwd_outside_any_checkout_is_refused(tmp_path, monkeypatch):
+    """The rule follows a declared cwd wherever it lies: a film folder another seat declares is that seat's."""
+    from dataclasses import replace
+    film = tmp_path / 'film'
+    (film / 'cut').mkdir(parents=True)
+    ship, _ = own_cwd_ship(tmp_path, hand_a_cwd=film / 'cut')
+    media = shipmod.SeatSpec('media', 'office', 'media', 'fake', ('fake',), cwd=film)
+    ship = replace(ship, seats={**ship.seats, 'media': media})
+    monkeypatch.setattr(sandbox, 'available', lambda: True)
+    with pytest.raises(ShipError, match=r"hand-a: .*, inside seat media's declared working directory"):
+        plan_seat(ship, 'hand-a', tmp_path / 'operator-home')
+
+
+def test_a_jailed_hand_below_its_own_folder_and_through_a_link_to_it_plans(tmp_path, monkeypatch):
+    deeper = tmp_path / 'project' / 'work' / 'hands' / 'hand-a' / 'scratch' / 'deeper'
+    deeper.mkdir(parents=True)
+    monkeypatch.setattr(sandbox, 'available', lambda: True)
+    ship, _ = own_cwd_ship(tmp_path, hand_a_cwd=deeper)
+    assert plan_seat(ship, 'hand-a', tmp_path / 'operator-home').workspace == deeper.resolve()
+    link = tmp_path / 'to-hand-a'
+    link.symlink_to(tmp_path / 'project' / 'work' / 'hands' / 'hand-a')
+    ship, hands = own_cwd_ship(tmp_path, hand_a_cwd=link)
+    assert plan_seat(ship, 'hand-a', tmp_path / 'operator-home').workspace == (hands / 'hand-a').resolve()
+
+
+def test_the_ships_own_layout_plans_its_hands_where_the_common_workspace_and_wider_cwds_hold_them(tmp_path, monkeypatch):
+    """As the ship has it: the common workspace is the checkout, and six seats declare the folder holding it. Neither
+    counts as another seat's own folder, so the hands at work/hands/<name> still plan, and a jailed cwd inside the
+    common workspace outside the checkout plans too."""
+    from dataclasses import replace
+    ship, hands = own_cwd_ship(tmp_path)
+    wide = {name: shipmod.SeatSpec(name, 'crew', name, 'fake', ('fake',), cwd=tmp_path)
+            for name in ('desk', 'counsel', 'steward', 'uhura', 'spock', 'laan')}
+    ship = replace(ship, workspace=tmp_path / 'project', seats={**ship.seats, **wide})
+    monkeypatch.setattr(sandbox, 'available', lambda: True)
+    for name in ('hand-a', 'hand-b'):
+        assert plan_seat(ship, name, tmp_path / 'operator-home').workspace == (hands / name).resolve()
+    (tmp_path / 'crew' / 'sub').mkdir()
+    ship, _ = own_cwd_ship(tmp_path, hand_a_cwd=tmp_path / 'crew' / 'sub')
+    assert plan_seat(ship, 'hand-a', tmp_path / 'operator-home').workspace == (tmp_path / 'crew' / 'sub').resolve()
