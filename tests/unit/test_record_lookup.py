@@ -151,7 +151,9 @@ def test_record_still_joins_the_first_new_record_and_keeps_its_pin(tmp_path, mon
         assert seat.record() == first  # law: one-record
     assert counts['append_writes'] == 2, 'reader binding and exact launch boundary are retained'
     assert counts['locks'] == 2
-    assert seat.join().record == seat.lookup_record() == first
+    with mutations(monkeypatch, tmp_path) as counts:
+        assert seat.join().record == seat.lookup_record() == first
+    assert counts == ZERO, 'readers needing Join.reason also avoid republication'
     # A restarted reader has no process-local cache to rely on.
     other = Seat(seat.ship, seat.spec, seat.tmux)
     with mutations(monkeypatch, tmp_path) as counts:
@@ -234,8 +236,9 @@ def test_quiet_service_pass_writes_nothing_after_the_first_join(tmp_path, monkey
     monkeypatch.setattr(svc, 'resolved_seats', lambda: seats)
     try:
         with monkeypatch.context() as old:
-            # Exact original record() body on this base; join() publication is unchanged.
+            # Original record() body and unconditional pinned-join publication on this base.
             old.setattr(Seat, 'record', lambda self: self.join().record)
+            old.setattr(Seat, '_join_retained', lambda *args: False)
             with mutations(monkeypatch, tmp_path) as before:
                 svc.follow()
                 old_states = dict(svc.working)

@@ -477,7 +477,7 @@ class Seat:
             if self.launched() is not None and record_owner.launch_reader(self.launched()) != owner:
                 return Join(None, f"record reader changed: {record.name} and saved launch disagree; inspect with qd watch {self.name}")
             if record.exists():
-                if publish:
+                if publish and not self._join_retained(record, self.launched()):
                     self._note_owned(record)
                 return Join(record)
             return Join(None, f"record missing: {record.name}; restore the owned record if available; inspect with qd watch {self.name}")
@@ -570,16 +570,18 @@ class Seat:
         launched = self.launched()
         record = self.lookup_record()
         if record is not None:
-            # A pin can predate a resumed launch or an interrupted first join. Only
-            # fully retained evidence permits readers to bypass publication.
-            owned = self.home / "conversations.owned"
-            registered = {"record": str(record), "harness": self.spec.harness}
-            if (registered in record_owner.registry_events(self.folder)
-                    and owned.is_file() and str(record) in owned.read_text().splitlines()
-                    and retained_launch(self.folder, record, launched)
-                    and self.launched() == launched):
+            if self._join_retained(record, launched):
                 return record
         return self.join().record
+
+    def _join_retained(self, record: Path, launched: Launched | None) -> bool:
+        """Check all publication stages, including a resumed launch, without writing."""
+        owned = self.home / "conversations.owned"
+        registered = {"record": str(record), "harness": self.spec.harness}
+        return (registered in record_owner.registry_events(self.folder)
+                and owned.is_file() and str(record) in owned.read_text().splitlines()
+                and retained_launch(self.folder, record, launched)
+                and self.launched() == launched)
 
     # -- the one relaunch path -----------------------------------------------------------
 
