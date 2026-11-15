@@ -217,3 +217,17 @@ def test_request_without_told_does_not_acquire_a_receipt(store, monkeypatch):
     path = request_queue.enqueue(runtime, 'relaunch', {'seat': 'reader', 'resume': True}, name=STEM)
     finish(store, path)
     assert not request_queue.notice_path(runtime, 'reader').exists()
+
+
+def test_undispatched_terminal_intent_does_not_report_application(store, monkeypatch):
+    path, message = held(store, monkeypatch)
+    meta = request_queue.metadata(path)
+    meta.update(terminal='reader: completed request', notice_terminal_state='applied')
+    request_queue.save_metadata(path, meta)
+    service = service_for(store)
+    dispatched = []
+    service.answer = lambda data: dispatched.append(data) or 'unexpected dispatch'
+    assert Service._requests(service, (path,)) is True
+    assert not dispatched and not path.exists()
+    assert request_queue.notice_records(service.runtime, 'reader')[message.id]['state'] == 'retired'
+    assert message.id in store.settled_notices('reader')

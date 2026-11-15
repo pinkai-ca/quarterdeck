@@ -1206,7 +1206,7 @@ class Service:
                     retired = meta.get('retired')
                     if retired:
                         answer += f'; retired pending relaunch request(s): {", ".join(retired)}'
-                    Service.complete_request_notice(self, path, data, meta, answer)
+                    Service.complete_request_notice(self, path, data, meta, answer, dispatched=True)
                     request_queue.answer(path, answer)
                     self.log("request", **data, answer=answer)
                     request_queue.retire(path)
@@ -1234,14 +1234,17 @@ class Service:
             raise retry[0]
         return True
 
-    def complete_request_notice(self, path, data, meta, proof):
+    def complete_request_notice(self, path, data, meta, proof, *, dispatched=False):
         """Only the service promotes a told relaunch's terminal intent to trusted evidence."""
         if data.get('kind') != 'relaunch' or not meta.get('told'):
             return
         from . import request_queue
-        state = meta.get('notice_terminal_state')
-        if state is None:
+        if dispatched:
+            # This argument is supplied only at the service's own dispatch return,
+            # never from a request field or a recovered terminal intent.
             state = 'retired' if proof.startswith(('refused:', 'failed:', 'settled without applying:')) else 'applied'
+        else:
+            state = 'withdrawn' if meta.get('notice_terminal_state') == 'withdrawn' else 'retired'
         meta['terminal'], meta['notice_terminal_state'] = proof, state
         try:
             request_queue.save_metadata(path, meta)  # a receipt retry must never dispatch the act again
