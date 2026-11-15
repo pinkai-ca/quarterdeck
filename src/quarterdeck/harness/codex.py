@@ -205,7 +205,7 @@ def process_result(output) -> tuple[bool, str | None]:
 
 def _input_relevant(row):
     kind, payload = row.get('type'), row.get('payload', {})
-    if kind in INPUT_IGNORED:
+    if kind in INPUT_IGNORED or kind == 'compacted' and _compacted_row(row):
         return False
     if kind not in _Reader.kinds:
         return True
@@ -221,7 +221,7 @@ def inputs(record: Path) -> list[Input]:
     seen = False
     for line, row in input_rows(record, _Reader.kinds, _Reader.label, found):
         kind = row.get('type')
-        if kind in INPUT_IGNORED:
+        if kind in INPUT_IGNORED or kind == 'compacted' and _compacted_row(row):
             continue  # normal metadata, not a program-format marker or receipt candidate
         if kind not in _Reader.kinds:
             found.skip(line, 'unknown', 'unknown row kind')
@@ -270,6 +270,42 @@ def _shape(value, fields):
             and all(type(value[key]) is kind for key, kind in fields.items()))
 
 
+def _compacted_row(row):
+    """Measured checkpoint envelope; its retained history is not new execution/input."""
+    if (not _shape(row, {'ordinal': int, 'payload': dict, 'timestamp': str, 'type': str})
+            or row['type'] != 'compacted' or row['ordinal'] < 0 or when(row['timestamp']) is None):
+        return False
+    payload = row['payload']
+    return (_shape(payload, {'compaction_response_id': str, 'first_window_id': str,
+                            'latest_token_usage_record': dict, 'message': str,
+                            'previous_window_id': str, 'replacement_history': list,
+                            'replacement_history_metadata': list, 'resume_metadata': dict,
+                            'retained_context': dict, 'window_id': str, 'window_number': int})
+            and payload['window_number'] > 0
+            and all(payload[key] for key in ('compaction_response_id', 'first_window_id',
+                                            'previous_window_id', 'window_id')))
+
+
+def _completed_extension(item):
+    """Only the measured sleep and web completion metadata, never tool results."""
+    if item.get('kind') == 'clock.sleep':
+        return (_shape(item, {'type': str, 'id': str, 'kind': str, 'durationMs': int})
+                and item['durationMs'] >= 0)
+    if not _shape(item, {'type': str, 'id': str, 'kind': str, 'query': str,
+                         'action': dict, 'results': list}) or item['kind'] != 'web.search':
+        return False
+    action = item['action']
+    fields = {'type': str, 'url': str}
+    if action.get('type') == 'findInPage':
+        fields['pattern'] = str
+    elif action.get('type') != 'openPage':
+        return False
+    return (_shape(action, fields)
+            and all(_shape(result, {'type': str, 'domain': str, 'ref_id': str,
+                                    'snippet': str, 'thumbnail_url': str, 'title': str, 'url': str})
+                    and result['type'] == 'text_result' for result in item['results']))
+
+
 def _completed_item(payload):
     """Measured native completion metadata; never a result for a response-item call.
 
@@ -284,6 +320,10 @@ def _completed_item(payload):
         return False
     item = payload['item']
     kind = item.get('type')
+    if kind == 'Extension':
+        return bool(item.get('id')) and _completed_extension(item)
+    if kind == 'ContextCompaction':
+        return _shape(item, {'type': str, 'id': str}) and bool(item['id'])
     schemas = {
         'UserMessage': {'type': str, 'id': str, 'client_id': str, 'content': list},
         'AgentMessage': {'type': str, 'id': str, 'phase': str, 'content': list},
@@ -323,7 +363,9 @@ class _Reader(JsonLinesReader):
         if snapshot.rows and snapshot.rows[-1][0] > snapshot.complete_lines:
             entry = snapshot.rows[-1][1]
             payload = entry.get('payload')
-            if entry.get('type') == 'event_msg' and isinstance(payload, dict) and payload.get('type') == 'item_completed':
+            if (entry.get('type') == 'compacted'
+                    or entry.get('type') == 'event_msg' and isinstance(payload, dict)
+                    and payload.get('type') == 'item_completed'):
                 from dataclasses import replace
                 # This exact metadata row may still be extended by the native writer.
                 state = replace(state, pending_tools=None)
@@ -345,9 +387,13 @@ class _Reader(JsonLinesReader):
 
     def take(self, entry: dict) -> None:
         kind = entry.get('type')
-        if kind in (*INPUT_IGNORED, 'compacted'):
-            if kind == 'compacted' and self.open is not None:
+        if kind == 'compacted':
+            if not _compacted_row(entry):
+                self.tools_known = False
+            if self.open is not None:
                 self.open['model_output'] = True  # the program worked inside this turn
+            return
+        if kind in INPUT_IGNORED:
             return  # known non-execution metadata, independent of accounting format markers
         if kind not in ('session_meta', 'turn_context', 'event_msg', 'response_item'):
             self.tools_known = False
