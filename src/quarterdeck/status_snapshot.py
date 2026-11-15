@@ -7,7 +7,7 @@ import os
 import stat
 import time
 
-from . import durable, output, servicectl, trusted_files
+from . import durable, lock_holders, output, servicectl, trusted_files
 
 NAME = 'status-reading.json'
 DEMAND = 'status-demand.json'
@@ -120,7 +120,7 @@ def served(ship):
         beat = servicectl.read_heartbeat(ship.runtime)
         if (beat is None or type(data.get('pid')) is not int or data['pid'] <= 0 or beat[0] != data['pid']
                 or not 0 <= beat[1] <= servicectl.STALE_SECONDS or not servicectl.alive(ship.runtime)
-                or servicectl.holder(ship.runtime) != data['pid']
+                or lock_holders.reading(servicectl.lock_path(ship.runtime)) != (True, data['pid'])
                 or data.get('process_start') is None or servicectl.process_start(data['pid']) != data['process_start']
                 or data.get('ship') != presentation.fingerprint(ship.file)
                 or data.get('framework') != presentation.framework_stamp()):
