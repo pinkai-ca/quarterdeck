@@ -158,6 +158,7 @@ class Service:
             self.legacy_lock = servicectl.hold_legacy(self.runtime)
         servicectl.acknowledge(self.runtime, self.copy_identity, self.copy_start_token)
         self.log("start", pid=os.getpid())
+        self.clean_server_environment()
         from .shutdown import Stop
         beat_stop = threading.Event()
         def keep_heartbeat():
@@ -415,6 +416,33 @@ class Service:
             if self.accounting_health_error is not None:
                 self.log('accounting-health-available')
             self.accounting_health_error = None
+
+    def clean_server_environment(self) -> None:
+        """Bring the ship's own running tmux server's global environment to the unjailed list, at each start.
+
+        A server keeps the environment it started with, and gives it to every new window: one started before the
+        declared lists, from a desktop's shell, would hand its secrets to every unjailed seat launched after. So
+        every name the unjailed list would not keep is unset there. Only the ship's own server, on its own socket,
+        never the operator's default server nor a test's; none running, nothing to do. Names are logged, never values.
+        """
+        from .jail_environment import unjailed_environment
+        from .tmux import Tmux
+
+        try:
+            server = Tmux.for_ship(self.ship)
+            if not server.ship or server.legacy or not server.running():
+                return
+            names = [line.split('=', 1)[0] for line in server.run('show-environment', '-g').splitlines()
+                     if '=' in line and not line.startswith('-')]
+            kept = unjailed_environment(dict.fromkeys(names, ''))
+            removed = [name for name in names if name not in kept]
+            for name in removed:
+                server.run('set-environment', '-g', '-u', name)
+        except Exception as error:  # a step of the start never stops the service: logged, and the pass goes on
+            self.log('server-environment-unchecked', reason=f'{type(error).__name__}: {str(error)[:200]}')
+            return
+        if removed:
+            self.log('server-environment-cleaned', names=removed)
 
     def log(self, event: str, **data) -> None:
         if event not in ('post-retired', 'service-timing'):

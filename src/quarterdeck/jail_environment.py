@@ -48,13 +48,17 @@ DESKTOP_PREFIXES = ('XDG_SESSION_',)
 UNJAILED = (*ALLOWED, *FROM_PANE, *DESKTOP)
 UNJAILED_PREFIXES = (*FROM_PANE_PREFIXES, *DESKTOP_PREFIXES)
 
-# The service starts from a declared list too: the unjailed panes' (it may start the ship's server, which they
-# inherit), what it needs to run (the tmux folder of a test's private namespace, certificates and proxies for its
-# readers, the framework's QD_*, git's identity and isolation, Python's own), and the pools' keys the ship file names
-# (api_key = "env:NAME"). Never QD_SEAT: the pane that ran qd sync is not the service.
+# The service starts from a declared list too, named exactly, with no prefix but the unjailed list's own: the
+# unjailed panes' list (it may start the ship's server, which they inherit), what it needs to run (a test namespace's
+# tmux folder, certificates and proxies for its readers), its own ship (QD_SHIP, QD_DEFAULT_SHIP), git's identity, and
+# the pools' keys the ship file names (api_key = "env:NAME"). Never QD_SEAT; no other QD_ or GIT_ name, so neither
+# GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE, GIT_OBJECT_DIRECTORY nor GIT_SSH*. QD_TMUX_SOCKET passes only where it is
+# declared (servicectl.start): a test's or the drill's private namespace.
+GIT_IDENTITY = ('GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL')
 SERVICE = (*UNJAILED, 'TMUX_TMPDIR', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY',
-           'ALL_PROXY', 'http_proxy', 'https_proxy', 'no_proxy', 'all_proxy')
-SERVICE_PREFIXES = (*UNJAILED_PREFIXES, 'QD_', 'GIT_', 'PYTHON')
+           'ALL_PROXY', 'http_proxy', 'https_proxy', 'no_proxy', 'all_proxy', 'QD_SHIP', 'QD_DEFAULT_SHIP',
+           *GIT_IDENTITY)
+SERVICE_PREFIXES = UNJAILED_PREFIXES
 NEVER = ('QD_SEAT',)
 
 

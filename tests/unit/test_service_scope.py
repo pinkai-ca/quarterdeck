@@ -37,10 +37,14 @@ def test_without_systemd_run_or_its_manager_the_service_starts_as_today_and_says
 def test_the_declared_environment_keeps_its_list_and_the_pools_keys_and_never_a_seat():
     environ = {'PATH': '/bin', 'HOME': '/h', 'QD_SEAT': 'una', 'QD_TMUX_SOCKET': '/s', 'GIT_CONFIG_GLOBAL': '/dev/null',
                'LC_ALL': 'C', 'OPENAI_API_KEY': 'x', 'DISPLAY': ':0', 'POOL_API_KEY': 'k', 'QD_DECOY_TOKEN': 'x',
-               'GIT_ASKPASS': 'x', 'XDG_RUNTIME_DIR': '/run/user/1'}
+               'GIT_ASKPASS': 'x', 'XDG_RUNTIME_DIR': '/run/user/1', 'GIT_DIR': '/r/.git', 'GIT_WORK_TREE': '/r',
+               'GIT_INDEX_FILE': '/i', 'GIT_OBJECT_DIRECTORY': '/o', 'GIT_SSH_COMMAND': 'ssh -i k', 'GIT_SSH': 's',
+               'QD_SHIP': '/s', 'QD_DEFAULT_SHIP': '/d', 'QD_SESSION_OWNER': 't', 'GIT_AUTHOR_NAME': 'a',
+               'PYTHONPATH': '/p'}
     kept = je.service_environment(environ, ['POOL_API_KEY', 'QD_SEAT', 'ABSENT_KEY'])
-    assert set(kept) == {'PATH', 'HOME', 'QD_TMUX_SOCKET', 'GIT_CONFIG_GLOBAL', 'LC_ALL', 'POOL_API_KEY',
-                         'XDG_RUNTIME_DIR', 'DISPLAY'}  # the desktop's, for the server it may start
+    # Named exactly: no other QD_ or GIT_ name, and QD_TMUX_SOCKET only where servicectl finds it declared.
+    assert set(kept) == {'PATH', 'HOME', 'LC_ALL', 'POOL_API_KEY', 'XDG_RUNTIME_DIR', 'DISPLAY', 'QD_SHIP',
+                         'QD_DEFAULT_SHIP', 'GIT_AUTHOR_NAME'}  # DISPLAY: the desktop's, for the server it may start
 
 
 def test_the_pools_keys_are_the_env_names_the_ship_file_declares():

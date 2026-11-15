@@ -7,6 +7,7 @@ ship's own tmux server on its own socket. Names only: no value is printed or com
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -43,6 +44,8 @@ def test_the_service_holds_only_its_declared_environment(drydock: Path, tmux, mo
     file.write_text(text)
     ship = shipmod.load(drydock)
     seeded(monkeypatch)
+    monkeypatch.setenv('QD_TMUX_SOCKET', str(drydock / 'elsewhere' / 's'))  # the caller's, not declared
+    monkeypatch.setenv('GIT_DIR', str(drydock / 'elsewhere' / '.git'))
     proof = servicectl.start(ship, qd=Path(sys.executable).parent / 'qd')
     try:
         pid = servicectl.read_heartbeat(ship.runtime)[0]
@@ -50,6 +53,7 @@ def test_the_service_holds_only_its_declared_environment(drydock: Path, tmux, mo
         print('service:', ' '.join(sorted(names)))  # names only
         assert not names & set(DECOYS), sorted(names & set(DECOYS))
         assert 'QD_SEAT' not in names, 'the service carries no seat'
+        assert not names & {'QD_TMUX_SOCKET', 'GIT_DIR'}, 'a caller\'s socket and repository stay with the caller'
         assert 'service started' in proof and ('in its own scope qd-service-' in proof
                                                or "in the caller's scope: systemd-run" in proof), proof
         assert POOL_KEY in names, 'a pool key the ship file names is what the service needs'
@@ -144,4 +148,67 @@ def test_an_unjailed_pane_has_the_desktop_names_and_no_decoy_and_a_jailed_one_ha
         assert inside and not inside & set(DESKTOP), sorted(inside & set(DESKTOP))
         assert not inside & set(SECRET_DECOYS)
     finally:
+        seatmod.bring_down(ship, server)
+
+
+def test_a_declared_test_socket_reaches_the_service(drydock: Path, tmux, monkeypatch):
+    """A test's private namespace is declared: the service runs on that server, as before."""
+    monkeypatch.setenv('QD_TMUX_SOCKET', tmux.socket)
+    monkeypatch.setenv('GIT_DIR', str(drydock / 'elsewhere' / '.git'))
+    ship = shipmod.load(drydock)
+    servicectl.start(ship, qd=Path(sys.executable).parent / 'qd')
+    try:
+        names = environ_names(servicectl.read_heartbeat(ship.runtime)[0])
+        assert 'QD_TMUX_SOCKET' in names and 'GIT_DIR' not in names
+    finally:
+        servicectl.stop(ship.runtime)
+
+
+def test_a_running_servers_environment_is_cleaned_at_the_service_start(ship, monkeypatch):  # noqa: F811
+    """A server started before the declared lists keeps a desktop's secrets and gives them to every new window."""
+    import json
+    import time
+    from quarterdeck import seat as seatmod
+    from quarterdeck.tmux import ship_socket
+    socket = ship_socket(ship)
+    socket.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    old = dict(os.environ, **DESKTOP, QD_DECOY_OPENAI_API_KEY='decoy', DECOY_CLIENT_SECRET='decoy', QD_SEAT='una')
+    subprocess.run(['tmux', '-S', str(socket), 'new-session', '-d', '-s', 'Old', 'sleep 600'], env=old, check=True)
+    subprocess.run(['tmux', '-S', str(socket), 'set-environment', '-g', 'DECOY_JMAP_TOKEN', 'decoy'], check=True)
+    for name, value in DESKTOP.items():
+        subprocess.run(['tmux', '-S', str(socket), 'set-environment', '-g', name, value], check=True)
+    # The caller is the operator's shell: the desktop's names, and secrets that must reach no one. (tmux marks a name of
+    # its update-environment list that the creating client lacks as removed in the new session, so the desktop names
+    # come from the caller as they do in use.)
+    for name, value in DESKTOP.items():
+        monkeypatch.setenv(name, value)
+    for name in SECRET_DECOYS:
+        monkeypatch.setenv(name, 'decoy-value')
+    servicectl.start(ship, qd=Path(sys.executable).parent / 'qd')
+    server = Tmux.for_ship(ship)
+    try:
+        log = ship.runtime / 'log' / 'service.jsonl'
+        deadline = time.monotonic() + 15
+        cleaned = None
+        while cleaned is None and time.monotonic() < deadline:
+            if log.exists():
+                cleaned = next((json.loads(line) for line in log.read_text().splitlines()
+                                if '"server-environment-cleaned"' in line), None)
+            time.sleep(0.1)
+        assert cleaned is not None, 'the service cleaned the running server'
+        assert {'QD_DECOY_OPENAI_API_KEY', 'DECOY_CLIENT_SECRET', 'DECOY_JMAP_TOKEN', 'QD_SEAT'} <= set(cleaned['names'])
+        assert all('decoy' not in str(value) for value in cleaned.values()), 'names only'
+        captain = seatmod.Seat(ship, ship.seat('captain'), server)
+        captain.up(resume=False)
+        names = environ_names(captain.pane().pid)
+        deadline = time.monotonic() + 10
+        while 'QD_SEAT' not in names and time.monotonic() < deadline:
+            time.sleep(0.05)
+            names = environ_names(captain.pane().pid)
+        print('unjailed after the clean:', ' '.join(sorted(names)))  # names only
+        from quarterdeck import jail_environment
+        assert not [name for name in names if jail_environment.looks_secret(name)], 'none secret'
+        assert set(DESKTOP) <= names, 'the desktop names are still there'
+    finally:
+        servicectl.stop(ship.runtime)
         seatmod.bring_down(ship, server)

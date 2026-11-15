@@ -253,16 +253,16 @@ def start(ship: Ship, qd: Path | None = None, *, expected: dict | None = None,
     # Declared, never inherited: not the caller's seat (QD_SEAT) nor the desktop's secrets.
     environment = jail_environment.service_environment(os.environ, pool_keys(ship))
     environment['QD_SHIP'] = str(ship.folder)
-    if named := environment.get('QD_TMUX_SOCKET'):
-        # The service keeps a caller's binding only where the ship's own choice of server accepts it (a
-        # private test namespace, or the default server the ship still runs on); otherwise it finds the
-        # ship's server itself, from the ship, and never runs on another ship's.
+    from .tmux_socket import private_endpoint
+
+    if (named := os.environ.get('QD_TMUX_SOCKET')) and private_endpoint(named):
+        # Declared: a test's or the drill's private namespace, where the ship's own choice of server is that one. Any
+        # other binding is the caller's and stays with it: the service finds the ship's server itself.
         try:
-            kept = Tmux.for_ship(ship).socket == named
+            if Tmux.for_ship(ship).socket == named:
+                environment['QD_TMUX_SOCKET'] = named
         except TmuxError:
-            kept = False
-        if not kept:
-            environment.pop('QD_TMUX_SOCKET')
+            pass
     environment.pop('QD_COPY_START', None)
     if startup_token:
         environment['QD_COPY_START'] = startup_token
