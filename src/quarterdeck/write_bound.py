@@ -266,6 +266,11 @@ def jails(ship, processes=None) -> dict[str, Jail]:
 # -- the measure ----------------------------------------------------------------------------
 
 
+def _device(info: os.stat_result) -> int:
+    """The device a stat names: the one lookup by which the walk, the open files and the floor group by disk."""
+    return info.st_dev
+
+
 def _flags() -> int:
     return os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 
@@ -281,7 +286,7 @@ def walk(folder: str, group: Group, budget: Budget) -> None:
     stack: list[tuple[int, list[str]]] = []
     try:
         info = os.fstat(top)
-        device = info.st_dev
+        device = _device(info)
         group.devices.add(device)
         _count(group, info)
         stack.append((top, _scan(top, device, group, budget)))
@@ -298,7 +303,7 @@ def walk(folder: str, group: Group, budget: Budget) -> None:
                 continue  # gone since it was listed
             except OSError as error:
                 raise Over(f'a folder in {folder} could not be opened ({type(error).__name__})') from None
-            if os.fstat(child).st_dev != device:
+            if _device(os.fstat(child)) != device:
                 os.close(child)
                 continue
             if len(stack) >= budget.depth:
@@ -329,7 +334,7 @@ def _scan(fd: int, device: int, group: Group, budget: Budget) -> list[str]:
                 continue
             except OSError as error:
                 raise Over(f'an entry could not be read ({type(error).__name__})') from None
-            if info.st_dev != device:
+            if _device(info) != device:
                 continue  # a mount point of another device: not this folder's disk
             _count(group, info)
             if stat.S_ISDIR(info.st_mode):
@@ -338,11 +343,12 @@ def _scan(fd: int, device: int, group: Group, budget: Budget) -> list[str]:
 
 
 def _count(group: Group, info) -> None:
-    key = (info.st_dev, info.st_ino)
+    device = _device(info)
+    key = (device, info.st_ino)
     if key not in group.inodes:
         group.inodes.add(key)
         group.held += info.st_blocks * 512
-        group.on[info.st_dev] = group.on.get(info.st_dev, 0) + info.st_blocks * 512
+        group.on[device] = group.on.get(device, 0) + info.st_blocks * 512
 
 
 def open_deleted(pids, budget: Budget) -> dict[tuple[int, int], int]:
@@ -363,7 +369,7 @@ def open_deleted(pids, budget: Budget) -> dict[tuple[int, int], int]:
             except OSError:
                 continue
             if stat.S_ISREG(info.st_mode):
-                found[(info.st_dev, info.st_ino)] = info.st_blocks * 512
+                found[(_device(info), info.st_ino)] = info.st_blocks * 512
     return found
 
 
@@ -750,7 +756,7 @@ def _devices(jail: Jail) -> dict[str, int | None]:
     found = {}
     for folder in jail.binds:
         try:
-            found[folder] = os.stat(folder).st_dev
+            found[folder] = _device(os.stat(folder))
         except FileNotFoundError:
             continue  # a bind-try folder that is not there holds nothing
         except OSError:

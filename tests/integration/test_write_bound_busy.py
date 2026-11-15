@@ -461,7 +461,10 @@ def test_the_floor_stops_only_seats_unmeasured_or_grown_on_its_disk_and_names_wh
 
 def test_the_floor_judges_a_seat_only_on_the_disk_it_went_unmeasured_on(ship, monkeypatch):
     """An endpoint seat cut short in its seat folder is not stopped for the floor of /tmp, where its relay folder,
-    in the small group and walked first, was measured whole and has not grown."""
+    in the small group and walked first, was measured whole and has not grown.
+
+    The relay is given a device of its own through the module's one device lookup (``_device``), as its free space
+    is given through ``space``: the case never depends on where the machine puts the two folders."""
     import shutil
     from quarterdeck import endpoint_relay
 
@@ -469,15 +472,26 @@ def test_the_floor_judges_a_seat_only_on_the_disk_it_went_unmeasured_on(ship, mo
     running = fake_jails(ship, monkeypatch, ['worker-1'])
     seat = write_bound.seat_folder(ship, 'worker-1')
     relay = endpoint_relay.folder_for(seat)
-    if os.stat(relay.parent).st_dev == os.stat(seat).st_dev:
-        pytest.skip('the relay folder and the seat folder share a device here')
     relay.mkdir()
     try:
         running['worker-1'].binds.append(str(relay))
-        low = os.stat(relay).st_dev
+        low = 1 << 62  # a device no stat names: the relay's own disk
+
+        def inodes():
+            found = {(os.stat(relay).st_dev, os.stat(relay).st_ino)}
+            for top, names, files in os.walk(relay):
+                for name in names + files:
+                    info = os.stat(os.path.join(top, name), follow_symlinks=False)
+                    found.add((info.st_dev, info.st_ino))
+            return found
+
+        device = write_bound._device
+        monkeypatch.setattr(write_bound, '_device',
+                            lambda info: low if (info.st_dev, info.st_ino) in inodes() else device(info))
+        assert write_bound._device(os.stat(relay)) != write_bound._device(os.stat(seat)), 'two disks, whatever the machine'
 
         def space(path):
-            return (1 * GiB, 44 * GiB) if os.stat(path).st_dev == low else (300 * GiB, 1000 * GiB)
+            return (1 * GiB, 44 * GiB) if path == str(relay) else (300 * GiB, 1000 * GiB)
 
         scan = write_bound._scan
 
