@@ -163,6 +163,8 @@ def test_forced_exit_before_the_journal_keeps_the_attempt_and_never_types_twice(
     message, attempt = stalled_after_open(world, monkeypatch)
     runtime = world.ship.runtime
     kept = attempt.path.read_bytes()
+    dead = shutdown.owner(runtime)
+    assert dead is not None
     if cut == 'killed-past-grace':
         monkeypatch.setattr(shutdown, 'ORDINARY_GRACE', .1)
         monkeypatch.setattr(shutdown, 'DELIVERY_GRACE', .3)
@@ -176,6 +178,9 @@ def test_forced_exit_before_the_journal_keeps_the_attempt_and_never_types_twice(
     assert world.journal() is None and typed(world) == 0
     world.start()
     wait_for(lambda: servicectl.started(runtime))
+    # started() holds once the lock is taken, while the dead owner's record is still in it and its pointer not yet
+    # finished; the new owner is written only after the next start has dealt with that pointer. So wait for it.
+    wait_for(lambda: shutdown.owner(runtime) not in (None, dead))
     # The next start clears the old owner's early pointer; any pointer now is the new owner's own.
     current = shutdown.inflight(runtime, shutdown.owner(runtime))
     assert not shutdown.pointer_path(runtime).exists() or current and current['journal'] != f'post/attempts/{attempt.path.name}'
