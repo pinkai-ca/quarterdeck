@@ -160,7 +160,14 @@ def test_otherwise_the_asking_turn_rule_decides_and_a_later_input_retires_it(des
     deliver(desk, 2)
     desk.state = state(open_=True, input_at=3, input_id='input-larch-notice')
     desk.tick(4)
-    assert desk.applied == [] and 'superseded by later input' in desk.answer(path)
+    if setup == 'person-unknown':
+        # The person's input cannot be told from the program's notices: the conservative rule retires it.
+        assert desk.applied == [] and 'superseded by later input' in desk.answer(path)
+    else:
+        # A notice is not the person's typing: it retires nothing, and the open turn still holds the restart.
+        assert desk.applied == []
+        answer = desk.answer(path)
+        assert answer is None or 'superseded' not in answer
 
 
 def test_another_seats_fresh_request_is_never_deferred_by_the_seats_handoff(desk):
