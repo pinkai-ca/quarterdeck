@@ -174,3 +174,20 @@ def test_only_an_old_invalid_measured_bash_task_ends_by_relaunch(tmp_path, curre
         assert projected.phase == 'unknown'
         assert reader.state(launched_at=launch).pending_tools is None
     assert task.phase == 'unknown' and task.invalid
+
+
+def test_old_invalid_bash_with_running_evidence_after_relaunch_stays_held(tmp_path):
+    rows = initial()
+    malformed = ('<task-notification><task-id>' + TASK + '</task-id>'
+                 '<summary>synthetic unparsed notice</summary></task-notification>')
+    rows.append(row('user', 4, origin=dict(kind='task-notification'),
+                    message=dict(role='user', content=malformed)))
+    rows.append(row('attachment', 11, attachment=dict(
+        type='task_status', taskId=TASK, taskType='local_bash', status='running')))
+    record, _ = read(tmp_path, rows)
+    reader = claude._Reader(record)
+    launch = AT + timedelta(seconds=10)
+    projected = list(reader.background.task_states(launch))[0]
+    assert projected.called_at < launch < projected.other_evidence_at
+    assert projected.invalid and projected.phase == 'unknown'
+    assert reader.state(launched_at=launch).pending_tools is None

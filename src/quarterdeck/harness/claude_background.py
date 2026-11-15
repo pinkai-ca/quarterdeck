@@ -413,7 +413,8 @@ class BackgroundBash:
         """Launch-scoped death is its own state, without changing native completion evidence."""
         for task in self.tasks.values():
             if (launched_at is not None and task.kind == 'Bash' and task.version in EXIT_VERSIONS
-                    and task.invalid and task.called_at is not None and task.called_at < launched_at):
+                    and task.invalid and task.called_at is not None and task.called_at < launched_at
+                    and task.other_evidence_at is not None and task.other_evidence_at < launched_at):
                 yield replace(task, phase='ended-by-relaunch-after-unreadable-evidence', terminal=None)
                 continue
             measured = task.phase == 'pending' or (task.resume_stopped_at is not None
