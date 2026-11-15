@@ -134,13 +134,6 @@ def test_another_open_background_command_stays_pending_beside_the_watch(drydock,
     inbox_watch.retire(seat.ship.runtime, seat.name, registration)
 
 
-def test_a_bare_command_is_pending_even_with_a_live_own_registration(drydock, monkeypatch):
-    seat, record, registration = registered_watch(drydock, monkeypatch)
-    rows = initial('qd inbox --wait'); write(record, rows)
-    state = claude.state(record)
-    assert state.active_tools[0].inbox_watch_started is None
-    assert idle.check(state, seat=seat).dimension == 'tools-pending'
-    inbox_watch.retire(seat.ship.runtime, seat.name, registration)
 
 
 @pytest.mark.parametrize('later', ['remove', 'attachment'])

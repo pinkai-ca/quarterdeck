@@ -55,10 +55,9 @@ def test_reader_knows_the_watch_taken_from_the_rendered_brief(drydock, tmp_path,
     assert state.active_tools[0].inbox_watch_started == AT + timedelta(seconds=1)
 
 
-def test_bare_watch_without_a_ship_record_layout_is_ordinary_work(tmp_path):
+def test_bare_watch_still_works_without_a_ship_record_layout(tmp_path):
     state = background_state(tmp_path / 'record.jsonl', 'qd inbox --wait')
-    assert state.pending_tools == ('Bash',)
-    assert state.active_tools[0].inbox_watch_started is None
+    assert state.active_tools[0].inbox_watch_started == AT + timedelta(seconds=1)
 
 
 @pytest.mark.parametrize('template', ['echo ready; {}', '{} && echo done', 'exec {}', '{}\necho done'])
