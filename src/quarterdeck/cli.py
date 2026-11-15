@@ -776,39 +776,47 @@ def cmd_post(args: argparse.Namespace) -> str:
     if seat_here and args.sender and args.sender != seat_here:
         raise ShipError(f"this shell is seat {seat_here}, which posts as itself; --from names a sender only from a shell that is no seat")
     sender = seat_here or args.sender or ship.operator.lower()  # a seat's identity is the one its launch set, never a flag
-    to = args.to or (store.get(args.re).sender if args.re else None)
-    if not to:
-        raise ShipError(f"a {args.kind} needs --to <seat>" + (" or --re <message>" if args.kind != "order" else ""))
-    if '@' in to:
-        from . import fleet_post
-        recipient, destination = fleet_post.validate_target(ship, to)
-        if destination == ship.folder.name:
-            to = recipient
-        else:
-            message = store.prepare(args.kind, sender, to, body, re=args.re, subject=args.subject,
-                                    due=args.due, speed=args.speed)
-            if found := post.already_posted(store, message, seat=sender):
-                return not_posted_again(found)
-            post.write_drop(ship.runtime, message, seat=sender)  # law: can-post
-            note = ('claims; an ack wakes nobody' if args.kind == 'ack'
-                    else 'waiting for the addressee ship to fetch it')
-            return posted(message, to, note)
-    if to.lower() == ship.operator.lower():
-        to = ship.operator.lower()
-    if to in ship.groups:
-        if args.kind != 'order':
-            raise ShipError(f'group {to}: {args.kind} is unsupported; groups accept orders only for now')
-        if not body.strip():
-            raise ShipError('an empty group order: give the brief, --body-file, or - for stdin')
+    # Resolve the reply and reserve its id from one read-only post view. The
+    # repeat guard must read drops, then a fresh store view, after this ends.
+    remote = False
+    with post.reading_pass(store=store):
+        to = args.to or (store.get(args.re).sender if args.re else None)
+        if not to:
+            raise ShipError(f"a {args.kind} needs --to <seat>" + (" or --re <message>" if args.kind != "order" else ""))
+        if '@' in to:
+            from . import fleet_post
+            recipient, destination = fleet_post.validate_target(ship, to)
+            if destination == ship.folder.name:
+                to = recipient
+            else:
+                remote = True
+        if not remote:
+            if to.lower() == ship.operator.lower():
+                to = ship.operator.lower()
+            if to in ship.groups:
+                if args.kind != 'order':
+                    raise ShipError(f'group {to}: {args.kind} is unsupported; groups accept orders only for now')
+                if not body.strip():
+                    raise ShipError('an empty group order: give the brief, --body-file, or - for stdin')
+            elif to not in ship.seats and to not in getattr(ship, 'forward', {}) and to not in (ship.operator.lower(), post.SHIP):
+                raise ShipError(f"no seat {to!r} to address; declared: {', '.join(ship.seats)}, "
+                                f"the operator {ship.operator.lower()}, or {post.SHIP} for the ship's own notices")
+        message = (None if not remote and to in ship.groups else
+                   store.prepare(args.kind, sender, to, body, re=args.re, subject=args.subject,
+                                 due=args.due, speed=args.speed))
+    if remote:
+        if found := post.already_posted(store, message, seat=sender):
+            return not_posted_again(found)
+        post.write_drop(ship.runtime, message, seat=sender)  # law: can-post
+        note = ('claims; an ack wakes nobody' if args.kind == 'ack'
+                else 'waiting for the addressee ship to fetch it')
+        return posted(message, to, note)
+    if message is None:
         from . import group_post
         root, count = group_post.stage(ship, store, to, sender, body, re=args.re,
                                         subject=args.subject, due=args.due, speed=args.speed)
         return posted(root, f'group {to}', f'{count} body-identical copies · common id {root.id} · '
                       f'{delivery_note(ship, root.to)}')
-    if to not in ship.seats and to not in getattr(ship, 'forward', {}) and to not in (ship.operator.lower(), post.SHIP):
-        raise ShipError(f"no seat {to!r} to address; declared: {', '.join(ship.seats)}, "
-                        f"the operator {ship.operator.lower()}, or {post.SHIP} for the ship's own notices")
-    message = store.prepare(args.kind, sender, to, body, re=args.re, subject=args.subject, due=args.due, speed=args.speed)
     if found := post.already_posted(store, message):
         return not_posted_again(found)
     post.write_drop(ship.runtime, message)  # law: can-post

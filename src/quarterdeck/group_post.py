@@ -162,19 +162,22 @@ def stage(ship: Ship, store: post.Store, group_name: str, sender: str, body: str
     """A seat's group order: the root in its drop folder, and an intent beside it. Nothing is stored yet.
 
     A forward leaves the existing root where it is and writes only the intent. The service files both.
+    Reference/identity planning shares one reading; drop and intent publication follow outside it.
     """
     group = ship.groups[group_name]
-    if re is not None:
-        root = store.get(re)
-        if (sender != group.lead or root.to != group.lead or root.kind != 'order' or root.body != body):
-            raise ShipError('group --re must name an identical order to this lead, forwarded by the lead')
-        if any(value is not None and value != getattr(root, key)
-               for key, value in (('subject', subject), ('due', due), ('speed', speed))):
-            raise ShipError('group --re cannot change the original order fields')
-        if not store.is_open(root):
-            raise ShipError('cannot start a group review of a closed order')
-    else:
-        root = store.prepare('order', sender, group.lead, body, subject=subject, due=due, speed=speed)
+    with post.reading_pass(store=store):
+        if re is not None:
+            root = store.get(re)
+            if (sender != group.lead or root.to != group.lead or root.kind != 'order' or root.body != body):
+                raise ShipError('group --re must name an identical order to this lead, forwarded by the lead')
+            if any(value is not None and value != getattr(root, key)
+                   for key, value in (('subject', subject), ('due', due), ('speed', speed))):
+                raise ShipError('group --re cannot change the original order fields')
+            if not store.is_open(root):
+                raise ShipError('cannot start a group review of a closed order')
+        else:
+            root = store.prepare('order', sender, group.lead, body, subject=subject, due=due, speed=speed)
+    if re is None:
         post.write_drop(ship.runtime, root)
     folder = post.drop_dir(ship.runtime, sender)
     post_dir.ensure_directory(folder)
