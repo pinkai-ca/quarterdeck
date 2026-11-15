@@ -85,7 +85,7 @@ env -u TMUX -u TMUX_PANE -u QD_TMUX_SOCKET OPENBLAS_NUM_THREADS=1 TMPDIR=/tmp ti
 
 - `src/quarterdeck/`: the framework, standard library only, Python 3.12 or later. One module per part, plus the pieces that grew beside them: [docs/MODULES.md](docs/MODULES.md).
 - `standing-orders/`: the laws and the generic cards. A ship may replace any generic card.
-- `ships/`: four tracked ships. Every other ship is its own repository.
+- `ships/`: six tracked ships. Every other ship is its own repository.
 - `tests/`: `unit` is pure logic, `integration` runs a private tmux server and the fake harness, and `contract` runs each adapter against recorded fixtures. Nothing in the suite spends tokens.
 
 ## How a change lands

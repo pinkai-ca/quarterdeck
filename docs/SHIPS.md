@@ -9,6 +9,7 @@ A ship is a group of AI agents, with the group's orders and records: a folder un
 - [`ships/default/`](../ships/default/ship.toml), the smallest real crew: a desk that you talk to, on Claude Code, and on Codex a captain who turns what you say into orders and reviews the work, and an engineer who builds it. Uses the sign-ins already on your machine.
 - [`ships/forum/`](../ships/forum/README.md), a lead and four reviewers: give every reviewer the same order, and get one combined report from the lead. The forum's README has the steps and the limits.
 - [`ships/cascade/`](../ships/cascade/README.md), three agents on Claude Code, Codex and Grok Build: the three take turns on one question before one conclusion. The cascade's README has the steps; the template still needs a live proof on installed harnesses.
+- [`ships/shuttle/`](../ships/shuttle/README.md), a mission crew of three, with no desk: a captain who receives the task, an engineer who builds it, and a first officer who checks the reviewed result and signs it. The shuttle's README has the steps and the limits.
 
 ## Start with your office
 
@@ -132,7 +133,7 @@ Or give an order by hand:
 .venv/bin/qd --ship ships/mine post order --to captain "Build the thing. Report when its tests pass."
 ```
 
-- The command prints `ord-<id> to captain · stored · the service types it into captain's pane`.
+- The command prints `ord-<id> to captain · filed by the service · the service types it into captain's pane`.
 - An agent is addressed by seat name: in the default ship, `desk`, `captain` and `engineering`.
 - The order stays open, and shows in `qd --ship ships/mine status`, until the captain reports on the order.
 
