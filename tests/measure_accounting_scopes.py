@@ -184,6 +184,10 @@ def test_copied_scoped_accounting_replay(tmp_path, capsys):
         results['counts'] = counts
         results['base'] = BASE
         results['all_tables_equal'] = True
+        if destination := os.environ.get('QD_ACCOUNTING_MEASURE_REPORT'):
+            # The runner discards successful stdout; preserve only this
+            # explicitly requested aggregate report, never the native copy.
+            Path(destination).write_text(json.dumps(results,sort_keys=True,indent=2)+'\n')
         with capsys.disabled():
             print('COPIED_SCOPED_REPLAY '+json.dumps(results,sort_keys=True),flush=True)
     except Exception as error:
