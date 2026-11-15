@@ -7,6 +7,7 @@ others answer CLEAN, answer in no shape, answer nothing, or post elsewhere, to s
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from types import SimpleNamespace
@@ -465,6 +466,39 @@ def test_everything_new_or_changed_in_the_hands_folder_is_moved_aside_and_the_re
     kept = json.loads((runtime / 'pr-screen' / 'screens' / 'key' / 'piece-0-hand-a.verdict.json').read_text())
     assert kept['folder_moved_aside'] == 5
     assert not pr_screen.held(runtime, 'hand-a') and hands.calls[-1] == ('fresh after', 'hand-a')
+
+
+def test_a_same_size_rewrite_with_its_time_set_back_is_moved_aside(world):
+    own = world[1] / 'hand-a'
+    own.mkdir(parents=True)
+    (own / 'same.txt').write_text('as it was')
+    (own / 'kept.txt').write_text('as it was')
+    was = os.stat(own / 'same.txt')
+
+    def rewrites_in_place(hands, name, order_id, folder):
+        honest(hands, name, order_id, folder)
+        with open(folder.parent / 'same.txt', 'r+') as stream:
+            stream.write('TURNSTONE')  # the same nine bytes
+        os.utime(folder.parent / 'same.txt', ns=(was.st_atime_ns, was.st_mtime_ns))
+    verdict, hands, runtime = one_piece(world, rewrites_in_place)
+    assert sorted(path.name for path in own.iterdir()) == ['kept.txt'], 'its change time gave it away'
+    aside = next((runtime / 'pr-screen' / 'held' / 'hand-a').glob('folder-key-0-*'))
+    assert (aside / 'same.txt').read_text() == 'TURNSTONE'
+
+
+def test_a_hand_with_an_open_order_is_not_idle_for_the_screen_even_down(world, monkeypatch):
+    runtime, hands_root = world
+    ship = SimpleNamespace(runtime=runtime, folder=runtime.parent)
+    live = pr_screen.LiveHands(ship, Path('qd'), hands_root)
+    down = json.dumps(dict(seat=dict(activity=dict(state='down')), state=dict(turn_open=False)))
+    asked = []
+    monkeypatch.setattr(live, '_qd', lambda *args, **kw: asked.append(args) or SimpleNamespace(stdout=down))
+    assert live.idle('hand-a'), 'down, with nothing open: the screen may start it fresh'
+    order = post.Store(runtime).new('order', 'reviewer', 'hand-a', 'count the files', subject='Count')
+    assert not live.idle('hand-a'), 'an order from another seat comes first'
+    assert len(asked) == 1, 'decided by the order alone, before the screen is read'
+    post.Store(runtime).new('report', 'hand-a', 'reviewer', 'counted', re=order.id)
+    assert live.idle('hand-a')
 
 
 def test_a_folder_that_cannot_be_cleared_keeps_the_hold(world, monkeypatch):

@@ -440,8 +440,11 @@ class LiveHands:
                               text=True, timeout=timeout, env=environment)
 
     def idle(self, name: str) -> bool:
+        """Idle for the screen: no open order addressed to the hand, and no open turn. An open order would come back
+        to the fresh start and be carried into the screening context, and that work's files moved aside with the rest;
+        so the order is done first, and the request waits for the next pass."""
         if post.Store(self.ship.runtime).open_for(name):
-            return False  # an order from anyone else first
+            return False
         result = self._qd('--json', 'watch', name, timeout=60)
         try:
             data = json.loads(result.stdout)
@@ -525,9 +528,10 @@ def keep_and_remove(piece: Path, kept: Path) -> None:
         shutil.rmtree(piece, ignore_errors=True)
 
 
-def folder_listing(folder: Path) -> dict[str, tuple[int, int, int, int]]:
-    """Every entry under a hand's folder, by its path within it: (mode, size, mtime_ns, inode). Nothing is followed:
-    a link is listed as itself, and only a real folder is walked into."""
+def folder_listing(folder: Path) -> dict[str, tuple[int, int, int, int, int]]:
+    """Every entry under a hand's folder, by its path within it: (mode, size, mtime_ns, inode, ctime_ns). Nothing is
+    followed: a link is listed as itself, and only a real folder is walked into. The change time is there because a
+    hand can rewrite a file in place at the same size and set its modification time back, but cannot set that back."""
     listing, pending = {}, ['']
     while pending:
         inner = pending.pop()
@@ -539,7 +543,7 @@ def folder_listing(folder: Path) -> dict[str, tuple[int, int, int, int]]:
                     except OSError:
                         continue
                     name = f'{inner}/{entry.name}' if inner else entry.name
-                    listing[name] = (found.st_mode, found.st_size, found.st_mtime_ns, found.st_ino)
+                    listing[name] = (found.st_mode, found.st_size, found.st_mtime_ns, found.st_ino, found.st_ctime_ns)
                     if stat.S_ISDIR(found.st_mode):
                         pending.append(name)
         except OSError:
@@ -548,8 +552,8 @@ def folder_listing(folder: Path) -> dict[str, tuple[int, int, int, int]]:
 
 
 def _changed(before: tuple | None, now: tuple) -> bool:
-    """New, of another kind or another inode; a file or link whose mode, size or time changed. A folder that was
-    there is changed only by what is in it, which is judged entry by entry."""
+    """New, of another kind or another inode; a file or link whose mode, size, modification or change time changed.
+    A folder that was there is changed only by what is in it, which is judged entry by entry."""
     if before is None or stat.S_IFMT(before[0]) != stat.S_IFMT(now[0]) or before[3] != now[3]:
         return True
     return not stat.S_ISDIR(now[0]) and before != now
