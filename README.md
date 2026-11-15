@@ -18,7 +18,9 @@ Quarterdeck is a command, `qd`, and one small service for each ship, on your mac
 
 ## Quick start
 
-You need Linux, with Python 3.12 or later, tmux 3.x and git; Quarterdeck itself uses Python's standard library only. macOS is not supported yet. You also need at least one of the harnesses listed at the top, installed and signed in. Any of them will do: a crew can sit on one harness or on several, so use what you already have and like.
+You need Linux, with Python 3.12 or later, tmux 3.x and git; Quarterdeck itself uses Python's standard library only. macOS is not supported yet. You also need at least one of the supported harnesses listed at the top, installed and with something to run on: a subscription you are signed in to, an API key, or a local model. Any of those harnesses will do, though Antigravity needs a second beside it, since setup gives it one seat only: a crew can sit on one harness or on several, so use what you already have and like.
+
+The agents run without approval prompts: Claude Code with its permission prompts bypassed, Codex with full access. An agent on a local model or other endpoint runs in a sandbox unless the ship's file says otherwise: for such an agent you need bubblewrap installed, and the model answering at its address.
 
 ### Ask your agent (recommended)
 
@@ -41,7 +43,7 @@ Your agent asks, and you choose:
 - **Your desk and your crew.** The desk is the agent you talk to, and it sits in your office. The crew is a captain, who turns what you say into orders and reviews the work, and an engineer, who builds it. Each of the three gets a name, a harness, a model and an effort.
 - **What each harness runs on**: a subscription you are signed in to, an API key, or a local model.
 
-It shows you the whole ship before it writes anything:
+It shows you the whole ship before it writes anything, as in this example:
 
 ```
 Operator name:  Admiral
@@ -88,6 +90,8 @@ mkdir -p ~/.local/bin  # your folder for commands, made if it is missing
 ln -sf "$PWD/.venv/bin/qd" ~/.local/bin/qd  # qd is linked into it, so that it runs from any folder
 ```
 
+If `~/.local/bin` is not on your PATH, add it, or run `.venv/bin/qd` from the `quarterdeck` folder in place of `qd`.
+
 **2. Commission your ship.**
 
 Either let the setup command ask you:
@@ -96,7 +100,7 @@ Either let the setup command ask you:
 qd setup
 ```
 
-It asks the same questions in your terminal, with a suggestion for every one but your project's folder: on a harness you are already signed in to, name the folder, press Enter at the rest, and you have a working ship. It shows you the whole ship, makes your office with its desk, writes the ship and brings the crew up.
+It asks the questions listed above in your terminal, with a suggestion for most: on a harness you are already signed in to, name your project's folder, press Enter at the rest, and you have a working ship. No suggested model or effort is checked against your account. It shows you the whole ship, makes your office with its desk, writes the ship and brings the crew up, and asks before it starts an agent or checks a harness live, since both spend turns.
 
 Or write the ship's file yourself: [A ship of your own](docs/SHIPS.md#a-project-ship-of-your-own) goes through it step by step, and ends with the crew up.
 
