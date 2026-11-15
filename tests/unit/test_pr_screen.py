@@ -408,6 +408,41 @@ def test_the_instruction_is_listed_when_its_piece_ends_and_not_before(world):
     assert not pr_screen.held(runtime, 'hand-a')
 
 
+def test_an_instruction_filed_before_instruct_raised_is_listed_by_the_strict_match(world):
+    runtime, hands_root = world
+
+    class LostAfterFiling(Hands):
+        def instruct(self, name, body):
+            self.filed = post.Store(self.runtime).new('answer', post.SHIP, name, body).id
+            raise OSError('the id was lost after the store filed it')
+    hands = LostAfterFiling(runtime, hands_root, honest)
+    prepared = pr_screen.prepare(texts('post-elsewhere'))
+    with pytest.raises(OSError):
+        pr_screen.screen_piece(runtime, hands, 'hand-a', 'key', 0, prepared, list(prepared.files), corpus=CORPUS,
+                               answer_seconds=30, poll=1.0, clock=Clock(), sleep=lambda seconds: None)
+    listed = json.loads((runtime / 'pr-screen' / 'instructions' / 'hand-a.json').read_text())
+    assert listed == [hands.filed], 'listed though its id never came back'
+    assert not pr_screen.held(runtime, 'hand-a'), 'listed: the hold is released'
+    assert hands.filed not in [m.id for m in post.Attempts(runtime).undelivered(post.Store(runtime), 'hand-a')]
+
+
+def test_a_store_that_cannot_be_read_for_the_strict_match_leaves_the_hold(world, monkeypatch):
+    runtime, hands_root = world
+
+    class Raises(Hands):
+        def instruct(self, name, body):
+            raise OSError('the instruction may or may not have been filed')
+    def unreadable(*args, **kwargs):
+        raise OSError('store unreadable')
+    monkeypatch.setattr(pr_screen, 'instruction_answers', unreadable)
+    prepared = pr_screen.prepare(texts('post-elsewhere'))
+    with pytest.raises(OSError):
+        pr_screen.screen_piece(runtime, Raises(runtime, hands_root, honest), 'hand-a', 'key', 0, prepared,
+                               list(prepared.files), corpus=CORPUS, answer_seconds=30, poll=1.0, clock=Clock(),
+                               sleep=lambda seconds: None)
+    assert pr_screen.held(runtime, 'hand-a'), 'its posts stay held, and the status line says so'
+
+
 def test_a_listing_that_fails_leaves_the_hold(world, monkeypatch):
     def fails(*args):
         raise OSError('cannot write the list')

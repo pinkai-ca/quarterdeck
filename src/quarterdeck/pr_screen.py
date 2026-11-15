@@ -376,11 +376,16 @@ def spent_instructions(runtime: Path, hand: str, store=None) -> frozenset[str]:
         return frozenset()
     except (OSError, ValueError):
         pass
+    return frozenset(instruction_answers(runtime, hand, store))
+
+
+def instruction_answers(runtime: Path, hand: str, store=None) -> list[str]:
+    """The strict match: every answer from ship to ``hand``, with no re, that opens as the screen's instruction does."""
     store = store if store is not None else post.Store(Path(runtime))
     opening = INSTRUCTION.split('{', 1)[0]
-    return frozenset(message.id for message in store.for_seat(hand)
-                     if message.kind == 'answer' and message.sender == post.SHIP and message.to == hand
-                     and not message.re and message.body.startswith(opening))
+    return [message.id for message in store.for_seat(hand)
+            if message.kind == 'answer' and message.sender == post.SHIP and message.to == hand
+            and not message.re and message.body.startswith(opening)]
 
 
 def status(runtime: Path) -> list[str]:
@@ -786,6 +791,12 @@ def screen_piece(runtime: Path, hands, hand: str, key: str, index: int, prepared
                 # Delivered once while the hand screened; listed now, while the hand is down and the hold stands,
                 # so that no later delivery and no later launch of the hand brings it back.
                 note_instruction(runtime, hand, instruction)
+            else:
+                # instruct() raised, or never ran: a message it may have filed has no id here. Every answer of the
+                # instruction's form to this hand is listed instead, by the strict match; a store that cannot be read
+                # leaves the hold.
+                for message_id in instruction_answers(runtime, hand):
+                    note_instruction(runtime, hand, message_id)
             cleared = True
         finally:
             if cleared:
