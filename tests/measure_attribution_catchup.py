@@ -8,6 +8,7 @@ removes that scratch whole. Only aggregate numbers reach the console.
 """
 
 import importlib.util
+from datetime import timedelta
 import json
 import os
 from pathlib import Path
@@ -22,6 +23,7 @@ from quarterdeck.harness.json_record import release
 from quarterdeck.harness.sqlite_snapshot import snapshot
 from quarterdeck.ledger import Ledger
 from quarterdeck.order_attribution import Threads
+from quarterdeck.order_attribution import moment
 
 
 def copied_runtime(source, destination):
@@ -90,6 +92,74 @@ def copied_runtime(source, destination):
     return dict(ledger_records=len(records), copied_files=copied, copied_bytes=size)
 
 
+def growth_comparison(book, runtime, store, old_module, old_epoch, new_epoch,
+                      old_state, new_state, context, monkeypatch):
+    """Paired private-memory jobs, as in the worker; never live service CPU.
+
+    Whitespace growth introduces no input or completed turn. A second, clearly
+    synthetic ledger-only append isolates the whole-seat invalidation cost.
+    It is not a claim that the native program produced another measured turn.
+    """
+    histories = dict(book.db.execute('SELECT seat,count(DISTINCT record) FROM turns GROUP BY seat'))
+    candidates = list(book.db.execute('''SELECT t.record,t.seat,max(t.ended),h.harness
+        FROM turns t JOIN launch_harnesses h ON h.record=t.record
+        WHERE h.harness IN ('pi','claude','codex') GROUP BY t.record,t.seat,h.harness'''))
+    candidates.sort(key=lambda row: (histories[row[1]], moment(row[2]) is not None,
+                                     moment(row[2]).timestamp() if moment(row[2]) else 0), reverse=True)
+    chosen = next((row for row in candidates if Path(row[0]).suffix == '.jsonl' and Path(row[0]).is_file()), None)
+    if chosen is None:
+        raise RuntimeError('copy has no JSON-lines history for the growth control')
+    record, seat, _, program = chosen
+    graph = Threads(store)
+    factory, reads = attribution_cache.harness.get, [0]
+    def counted(name):
+        reader = factory(name)
+        def inputs(path):
+            reads[0] += 1
+            return reader.attribution_inputs(path)
+        return SimpleNamespace(attribution_inputs=inputs)
+    monkeypatch.setattr(attribution_cache.harness, 'get', counted)
+    results = dict(program=program, seat_history_records=histories[seat])
+    for label, cls, epoch, saved in (
+        ('before', old_module.Attribution, old_epoch, old_state),
+        ('after', attribution_cache.Attribution, new_epoch, new_state),
+    ):
+        book.db.deserialize(saved)
+        monkeypatch.setattr(reader_stamp, 'attributions', lambda epoch=epoch: epoch)
+        cache, rows = cls(book.db, create=False), [0]
+        actual = cache.replay_row
+        def replayed(*args, **kwargs):
+            rows[0] += 1
+            return actual(*args, **kwargs)
+        cache.replay_row = replayed
+        def job():
+            reads[0] = rows[0] = 0
+            changes = book.db.total_changes
+            wall, cpu = time.monotonic(), time.process_time()
+            written = cache.replay_stream(store, runtime, epoch, context, lambda: None, graph=graph)
+            book.db.commit()
+            return dict(wall_seconds=time.monotonic() - wall, cpu_seconds=time.process_time() - cpu,
+                        native_reads=reads[0], replayed_turns=rows[0], changed_rows=written,
+                        database_changes=book.db.total_changes - changes)
+        job()  # settle any relocated/grown source stamp before the paired control
+        steady = job()
+        with Path(record).open('ab') as stream:
+            stream.write(b'\n')
+        growth = job()
+        settled = [job() for _ in range(3)]
+        latest = max(moment(row[0]) for row in book.db.execute('SELECT ended FROM turns')
+                     if moment(row[0]) is not None)
+        index = book.db.execute('SELECT max(turn)+1 FROM turns WHERE record=?', (record,)).fetchone()[0]
+        start = latest + timedelta(days=1)
+        book.db.execute('''INSERT INTO turns (record,turn,seat,pool,order_id,started,ended)
+            VALUES (?,?,?,?,?,?,?)''', (record, index, seat, 'measurement-only', '-', start.isoformat(),
+                                       (start + timedelta(seconds=1)).isoformat()))
+        appended = job()
+        results[label] = dict(steady=steady, growth_without_new_turns=growth,
+                              subsequent_unchanged_jobs=settled, synthetic_disjoint_turn=appended)
+    return results
+
+
 def measure(source, baseline, root, monkeypatch):
     runtime = root / 'ship' / 'runtime'
     counts = copied_runtime(source, runtime)
@@ -121,6 +191,7 @@ def measure(source, baseline, root, monkeypatch):
         old.replay_stream(store, runtime, old_epoch, context, lambda: None)
         book.finish_catchup(old_epoch)
         book.db.commit()
+        old_state = book.db.serialize()
         monkeypatch.setattr(reader_stamp, 'attributions', lambda: new_epoch)
         new = attribution_cache.Attribution(book.db, create=False)
         book.begin_catchup(new_epoch)
@@ -134,6 +205,9 @@ def measure(source, baseline, root, monkeypatch):
                       certificates=book.db.execute('SELECT count(*) FROM attribution_records').fetchone()[0],
                       native_readers_unchanged=native_equal, attribution_epoch_changed=True,
                       pending=book.catching_up())
+        new_state = book.db.serialize()
+        result['growth_comparison'] = growth_comparison(
+            book, runtime, store, old_module, old_epoch, new_epoch, old_state, new_state, context, monkeypatch)
         return result
     finally:
         if current[0] is not None:

@@ -332,9 +332,10 @@ def test_account_pass_commits_once_for_history_and_writes_nothing_when_unchanged
     trace.clear()
     svc.account()
     changes = sql_writes(trace)
-    assert len(changes) == 3 and changes[0] == 'BEGIN ' and changes[-1] == 'COMMIT'
+    assert len(changes) == 4 and changes[0] == 'BEGIN ' and changes[-1] == 'COMMIT'
     assert changes[1].startswith('INSERT OR REPLACE INTO record_accounting VALUES ')
-    assert svc.ledger.db.total_changes == before + 1
+    assert changes[2].startswith('INSERT OR REPLACE INTO attribution_records VALUES ')
+    assert svc.ledger.db.total_changes == before + 2
     checkpoint = svc.ledger.db.execute('SELECT record,evidence FROM record_accounting').fetchall()
     assert len(checkpoint) == len(old_checkpoint) == 1
     assert checkpoint[0][0] == old_checkpoint[0][0] == str(record)
@@ -342,7 +343,7 @@ def test_account_pass_commits_once_for_history_and_writes_nothing_when_unchanged
     assert reads == [record, record]
     trace.clear()
     svc.account()
-    assert sql_writes(trace) == [] and svc.ledger.db.total_changes == before + 1
+    assert sql_writes(trace) == [] and svc.ledger.db.total_changes == before + 2
     assert reads == [record, record]
     svc.ledger.close()
 
