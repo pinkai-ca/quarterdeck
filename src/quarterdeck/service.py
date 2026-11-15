@@ -233,7 +233,7 @@ class Service:
         # Operational duties keep their order and never wait behind the slice.
         self.drain_drops()
         self.drain_accounting()
-        for step in (self.server_recovery, self.reconcile, self.file_drops, self.groups, self.cascades, self.fleet_post, self.inboxes, self.views, self.recoveries, self.refusals, self.answers, self.looks, self.jailed_watches, self.deliveries, self.follow, self.requests, self.compactions, self.person_quiet, self.fresh_after_order,
+        for step in (self.requests, self.server_recovery, self.reconcile, self.file_drops, self.groups, self.cascades, self.fleet_post, self.inboxes, self.views, self.recoveries, self.refusals, self.answers, self.looks, self.jailed_watches, self.deliveries, self.follow, self.compactions, self.person_quiet, self.fresh_after_order,
                      self.rebrief, self.push_reminders, self.credentials, self.authentications, self.model_differences, self.failover, self.account, self.refresh_usage, self.pool_forecasts, self.retire_post):
             self.heartbeat()  # before every step: a slow delivery or usage read reads as busy, never as dead
             try:
@@ -921,8 +921,10 @@ class Service:
         return f"unknown request {kind!r}"
 
     def relaunch_request(self, data):
-        """A human's own asking turn is its only deferred break and later speech retires it, but for a fresh start
-        asked with an open handoff, which waits for any quiet moment and is retired by the person alone."""
+        """The person's later input retires an own restart; framework work waits for the next quiet break.
+
+        Without classified person-input evidence the existing exact-asking-turn rule still decides.
+        """
         from . import request_queue
         meta = getattr(self, 'request_metadata', {})
         data = {**data, **meta}
@@ -949,6 +951,15 @@ class Service:
             handed = self.handoff_fresh(seat, asked, (state, hold))
             if handed is not OWN_TURN_RULE:
                 return handed
+        if data.get('caller') == seat.name and asked.tzinfo is not None and asked <= post.now():
+            person = self.relaunch_person_input(seat)
+            if person is not None and person['at'] is not None:
+                if datetime.fromisoformat(person['at']) > asked:
+                    return f"refused: {seat.name} superseded by the person's later input; no deferred restart"
+                self.request_wait = self.handoff_quiet(seat, state, hold)
+                if self.request_wait is not None:
+                    return None
+                return self.relaunch(seat, bool(data['resume']), reading=(state, hold))
         if (state is None or state.last_input_at is None or asked.tzinfo is None
                 or state.last_input_at.tzinfo is None or state.last_input_at > asked or asked > post.now()):
             return f'refused: {seat.name} asking turn unknown or superseded by later input; no deferred restart'
@@ -985,13 +996,25 @@ class Service:
         answer = self.relaunch(seat, bool(data['resume']), reading=(state, hold))
         return answer if answer is not None else f'refused: {seat.name} asking turn ended with {(self.request_wait or (None, "idle proof unknown"))[1]}; request retired, never applied at a later turn'
 
+    def relaunch_person_input(self, seat):
+        """Classify the person's input, excluding whole known transports, never a matching prefix."""
+        from . import person_quiet
+        if not callable(getattr(seat.harness, 'person_inputs', None)):
+            return None
+        store = getattr(self, 'store', None) or Store(self.runtime)
+        attempts = getattr(self, 'attempts', None) or Attempts(self.runtime)
+        attempted = attempts.latest(seat.name)
+        excluded = (*person_quiet.waking_lines(),
+                    *(form.strip() for message in store.for_seat(seat.name) if message.id in attempted
+                      for form in post.delivered_forms(message)))
+        return person_quiet.read(seat, post.now(), excluded=excluded)
+
     def handoff_fresh(self, seat: Seat, asked: datetime, reading):
         """A human seat's own fresh start, asked once it has an open handoff to itself, applies at its next quiet
         moment. What reaches it later, a delivery or the program's own notice, is carried into the fresh start as
         an open message and never retires the request; the person's own input does. Where no such handoff was
         posted before the request, or the person's input cannot be told from the program's notices, the asking
         turn's own rule decides (OWN_TURN_RULE)."""
-        from . import person_quiet
         meta = getattr(self, 'request_metadata', {})
         store = Store(self.runtime)
         bound = meta.get('handoff')
@@ -1005,11 +1028,12 @@ class Service:
             handoff = store.get(bound)
             if not store.is_open(handoff):
                 return f'refused: {seat.name} handoff {handoff.short} closed before its fresh start applied; no deferred restart'
-        person = person_quiet.read(seat, post.now())
-        if person['at'] is None:
+        person = self.relaunch_person_input(seat)
+        if person is None or person['at'] is None:
             if bound is None:
                 return OWN_TURN_RULE
-            return f"refused: {seat.name} person's input unknown ({person['reason']}); no deferred restart"
+            reason = person['reason'] if person is not None else 'reader unavailable'
+            return f"refused: {seat.name} person's input unknown ({reason}); no deferred restart"
         if datetime.fromisoformat(person['at']) > asked:
             return f"refused: {seat.name} superseded by the person's later input; no deferred restart"
         meta['handoff'] = handoff.id
