@@ -88,6 +88,9 @@ The modules that the framework table does not list, the module of each part amon
 | Module | What it holds |
 | --- | --- |
 | `accounting_health.py` | the Ledger's health as the service reports it: a named cause, such as a busy database or full storage, and disposable status evidence |
+| `accounting_slices.py` | the Ledger's catch-up in slices: a low-priority child process reads the records and plans the rows, and the service commits the plan in bounded steps |
+| `acts.py` | `qd press` and `qd type`: a systems seat's answer to a screen the door does not know, through the door's own path, recorded before the key is pressed, and never into a session the human owns |
+| `alarms.py` | the alarms' saved readings, their reports to the systems seats, or to the desk where no systems seat is up or an alarm stays untaken, and the reply that takes an alarm |
 | `attribution_cache.py` | the attribution the service writes beside the turn rows, which any turn write invalidates |
 | `auth_failure.py` | recorded sign-in failures: the next delivery first, then bounded resumes once the pool's sign-in is renewed |
 | `carriage.py` | what a launch carries, and the byte checks on the final command |
@@ -101,6 +104,8 @@ The modules that the framework table does not list, the module of each part amon
 | `copy_state.py` | which installed copy runs a ship, read-only, for the CLI and the status path |
 | `door.py` | the door: the one typing path, which clears, types, checks, submits and confirms at each speed; the wall the door reads |
 | `drill.py` | the Drill: the all-hands exercise that proves the ship works |
+| `durable.py` | a file replaced whole without forcing the write to storage; three fixed records keep a forced write: a delivery's first attempt, a refusal's quarantine and a compaction's transition |
+| `endpoint_relay.py` | a jailed seat's one way out: the seat's model endpoint, relayed over a Unix socket into a jail that has no network of its own |
 | `fleet.py` | the fleet: an index of the project's declarations, never another configuration |
 | `fleet_post.py` | posts between ships: offered by the sender and fetched by the receiver, each writer in its own runtime |
 | `forward_post.py` | recorded forwarding routes from an old address; the original posts stay as they are |
@@ -117,16 +122,22 @@ The modules that the framework table does not list, the module of each part amon
 | `pending_lifecycle.py` | journal retirement by the journal's writer, and the last exact join of a retiring launch |
 | `person_quiet.py` | a human seat's quiet time, from the seat's record, and one wake per readiness |
 | `post.py` | Post: orders, reports, questions, answers and acknowledgments as immutable files; the store, the inbox, the attempts and the watch |
+| `post_dir.py` | every path under `runtime/post` opened folder by folder, so that a link is refused by name and never followed |
 | `post_message.py` | a message's immutable identity, its JSON and the envelope the message is typed in |
+| `post_retirement.py` | finished delivery evidence moved, unchanged, out of the service's working folders into batches that every reader still resolves |
 | `post_threads.py` | the thread indexes, and a thread read whole for `qd thread` |
 | `presentation.py` | optional, bounded status text, never evidence for a lifecycle or receipt decision |
+| `procstat.py` | the states `/proc` gives a process that has exited, each read as ended |
 | `program_use.py` | each program's current activity, and its last use bound to saved launch evidence |
+| `push_reminder.py` | after a push of `main`, seen on the local tracking ref alone, one order twenty quiet minutes later to the seat named `una`, where the ship has one, to read the hosted runs of the pushed tips |
 | `raise_ship.py` | a template ship, declared after the person approves its exact proposal |
 | `receipt_refresh.py` | the service's progress through one closed-record receipt pass per framework revision |
 | `recovery.py` | one native continuation after a proved thinking exhaustion, through the door's journal |
 | `request_queue.py` | one owner for queued seat requests, their visible waits and their answers |
 | `resources.py` | the framework's resource files, for packaging and `qd sync` |
 | `seat.py` | the Seat: one program in one tmux pane under one role, and its lifecycle: up, down, restart, fresh and a move to another pool |
+| `seat_command.py` | the exact `qd` command a seat is told to run, shell quoting included, shared by the brief and the record readers |
+| `server_recovery.py` | a ship brought back when its own tmux server has gone: only when the server is proved gone, at most twice in an hour, and through `qd up`'s own path |
 | `service.py` | the service: the ship's one long-running process, not a seat, which renders inboxes, delivers, writes attempts, answers requests, the quick ones in short bounded turns between its other duties, re-briefs seats, writes the heartbeat and alone writes the Ledger |
 | `setup.py` | guided setup, which asks Git for a usable identity before it writes anything, with one replaceable boundary for every machine, account and live operation |
 | `setup_answers.py` | one answer resolver for setup's conversation, flags, file and summary edits |
@@ -135,9 +146,12 @@ The modules that the framework table does not list, the module of each part amon
 | `shutdown.py` | the service's stop at a durable delivery boundary |
 | `standing.py` | standing orders: the laws, the ship's orders, the cards and the brief every seat reads |
 | `structure_outcome.py` | read-only proof of an ended turn, and one completed service pass of report grace |
+| `sync_all.py` | `qd sync --all`: every ship of the project synced in turn through the single-ship installer, the default ship last, stopping at the first failure |
 | `thread_context.py` | open-thread context, with incoming carriage kept apart from outgoing explanation |
 | `tmux_socket.py` | creator evidence and serialization for the ship's private tmux endpoints |
+| `unconfirmed_alert.py` | the alarm for a seat whose earlier launch left a delivery unconfirmed, raised through the common alarms |
 | `watch.py` | the Watch: a seat's activity and door, and the status line |
+| `watch_broker.py` | a jailed seat's inbox watch, kept by the service on the seat's behalf, so that nothing under `runtime/post` is writable inside the jail |
 
 ### Under `src/quarterdeck/harness/`
 
@@ -164,6 +178,7 @@ The adapters, and the harness modules that the `harness/` table does not list.
 | `grok_usage.py` | Grok's own ACP billing reader, with no provider HTTP client and no token handling |
 | `grok_workspace.py` | Grok's native folder trust for the whole repository |
 | `reader_stamp.py` | reader identities derived from files, independent of where Quarterdeck is installed |
+| `reading_scope.py` | one reading's own cache: a program's record that has not changed is read once within that reading, and nothing is kept beyond it |
 | `thinking.py`, `opencode_thinking.py`, `pi_thinking.py` | the proved controls that turn a model's thinking off and back on in OpenCode and pi, and the values and checks the controls share |
 
 ### Under `ships/`
@@ -196,6 +211,10 @@ Each template holds a `ship.toml` and an `orders.md`.
 | `testrunner/evidence_plugin.py`, `testrunner/evidence.py`, `testrunner/report.py` | the events and session layout a run records, what the events prove, and the result and report a run leaves |
 | `testrunner/sessions.py`, `testrunner/servers.py` | the records of a run's session containers and private tmux servers, and the servers' bounded shutdown |
 | `testrunner/usersite.py` | the ordinary interpreter's user site, made visible to the run's environment, nested CI runs included |
+| `testrunner/jail.py` | `run --jail`: every step that runs the target's code runs inside bubblewrap, a jail built by listing what goes in |
+| `testrunner/owned.py` | measuring and removing a tree the tool owns, never following a link, never crossing a filesystem, and refusing what is not this user's |
+| `testrunner/procs.py` | which processes belong to a run: this user's, in the run's own process group or using its folder; one that cannot be inspected is counted as such |
+| `testrunner/socket_paths.py`, `testrunner/socket_roots.py` | the length a test socket's path may have, and the short private folder under `/tmp` that holds a project's test sockets, named from the user's id and a hash of the project's path, with its sweep once the project is gone |
 | `shared_install.py` | worker-local, immutable wheel and install fixtures; a test that changes an install clones its own |
 | `authentication_shapes.py` | a measured Claude API-error envelope, with invented text, paths and identities |
 | `integration/waiting.py` | `wait_for`, a condition polled until its deadline, and `attached_client`, which owns a terminal client, keeps the client's whole output and retires the client's own command group |
