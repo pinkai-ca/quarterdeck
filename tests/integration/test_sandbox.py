@@ -662,3 +662,55 @@ def test_a_jailed_seat_reads_plain_success_words_and_cannot_post_the_same_report
         assert [m.id for m in store.all() if m.kind == "report" and m.re == first.id] == [report.id]
     finally:
         worker.down()
+
+
+def test_a_jailed_seats_repeat_right_after_the_filing_step_is_refused_from_its_view(drydock: Path, tmux: Tmux, tmp_path: Path):
+    """Real bwrap and the fake program, no model. The seat posts a report; outside, the service's filing step alone
+    runs, which empties the drop. In the same turn, once the report shows in its view, the seat posts the same report
+    again: the guard finds it in the view, though it is in the drop no more, and posts nothing. Before the filing
+    step refreshed the view, the view lacked it until the pass's views step: the seat's wait ran out with the report
+    in neither, and the repeat was posted a second time."""
+    from quarterdeck import post_view
+    from quarterdeck.service import Service
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    path = drydock / "ship.toml"
+    text = shipmod.edit(path.read_text(), "seats.worker-1", "sandbox", True)
+    text = shipmod.edit(text, "seats.worker-1", "cwd", str(workspace))
+    path.write_text(text + '\n[seats.worker-1.settings]\nstep_seconds = "0.05"\n')
+    ship = shipmod.load(drydock)
+    seat = seatmod.Seat(ship, ship.seat("worker-1"), tmux)
+    svc = Service(ship, tmux)
+    drop = post.drop_dir(ship.runtime, "worker-1")
+    try:
+        seat.up(resume=False)
+        wait_for(lambda: Door(seat).reading().open)
+        inside = ship.runtime / "post" / "store"  # the seat's view, bound read-only in the post's place
+        message = svc.store.new("order", "captain", "worker-1",
+                                "$ qd post report --re {this} filed once\n"
+                                f"$ for i in $(seq 1 600); do ls {inside} | grep -q '^rep-' && break; sleep 0.05; done;"
+                                f" ls {drop} | grep -q '^rep-' && echo still-in-drop || echo drop-empty\n"
+                                "$ qd post report --re {this} filed once",
+                                subject="Synthetic repeat after filing")
+        sent = Door(seat).deliver(post.typed([message]))
+        assert sent.result == "delivered", sent
+        dropped = wait_for(lambda: next(iter(drop.glob("rep-*.json")), None), 30)
+        for _ in range(50):  # the filing step alone, one bounded slice a call: no views step, no door
+            svc.file_drops()
+            if not dropped.exists():
+                break
+        assert not dropped.exists()
+        assert (post_view.folder(ship.runtime, "worker-1") / "store" / dropped.name).is_file()
+        screen = wait_for(lambda: (s if "Already posted as" in s or s.count("⎿ Posted rep-") > 1 else None)
+                          if (s := tmux.capture(seat.pane().id, history=200)) else None, 60)
+        assert "⎿ drop-empty" in screen, screen
+        assert f"Already posted as {post.short_of(dropped.stem)}; not posted again" in screen, screen
+        assert list(drop.glob("rep-*.json")) == [], "the repeat wrote nothing to the drop"
+        for _ in range(5):
+            svc.file_drops()
+        reports = [m for m in svc.store.all() if m.kind == "report" and m.re == message.id]
+        assert [m.id for m in reports] == [dropped.stem], "one report, filed once"
+    finally:
+        seat.down()
+        svc.ledger.close()
