@@ -34,19 +34,20 @@ def migrated(tmp_path, monkeypatch):
 
     def own(seat, ident):
         seat.home.mkdir(parents=True, exist_ok=True)
+        seat.trusted.mkdir(parents=True, exist_ok=True)
         record = CodexShape(seat.home, tmp_path, f'synthetic-{seat.name}', 'synthetic-source')
         record.begin('Synthetic previous input', 'synthetic-source', 'high')
         record.end('Synthetic previous reply')
         pane = Pane(ident, 'crew', seat.name, 100 + len(live), 80, 24, False, False, None)
         live[ident] = pane
         Launched(ident, pane.pid, (post.now()-timedelta(minutes=1)).isoformat(), 'first', None,
-                 ['codex'], 'synthetic', 'codex').write(seat.folder/'launch.json')
-        (seat.folder/'record').write_text(str(record.path))
+                 ['codex'], 'synthetic', 'codex').write(seat.trusted/'launch.json')
+        (seat.trusted/'record').write_text(str(record.path))
         assert seat.record() == record.path
         return record
 
     source = own(original, '%1')
-    assert not (original.folder/'pool').exists()
+    assert not (original.trusted/'pool').exists()
     changed = declaration(tmp_path, CHOICES)
     with changed.file.open('a') as out:
         out.write('\n[seats.healthy]\nsession="crew"\nharness="codex"\npool="first"\nmodel="synthetic-source"\n')
@@ -95,7 +96,7 @@ def test_plain_seat_gaining_choices_preserves_its_pool_before_stop(migrated, act
     else:
         getattr(r.worker, action)()
     restored = Seat(r.ship, r.ship.seat('worker'), r.tmux)
-    assert (restored.folder/'pool').read_text() == 'first\n'
+    assert (restored.trusted/'pool').read_text() == 'first\n'
     assert restored.harness.name == 'codex' and restored.pool.name == 'first'
     assert restored.launched().pool == 'first' and restored.launched().harness == 'codex'
     assert bool(restored.launched().resume) is (action != 'fresh')
@@ -105,13 +106,13 @@ def test_plain_seat_gaining_choices_preserves_its_pool_before_stop(migrated, act
     assert attempts.latest()[message.id] == 'launch'
     assert r.source.path.read_bytes() == original
     assert record_owner.pinned_reader(restored, r.source.path) == 'codex'
-    events = record_owner.events(restored.folder/'record-launches.jsonl')
+    events = record_owner.events(restored.trusted/'record-launches.jsonl')
     assert any(event['record'] == str(r.source.path) and event['pool'] == 'first' for event in events)
 
 
 def unresolved(r):
-    (r.worker.folder/'launch.json').unlink()
-    assert not (r.worker.folder/'pool').exists()
+    (r.worker.trusted/'launch.json').unlink()
+    assert not (r.worker.trusted/'pool').exists()
 
 
 @pytest.mark.usefixtures('synthetic_disk_room')  # the machine's disk is not this test's subject
@@ -145,13 +146,13 @@ def test_unresolved_selection_reads_unknown_without_reading_a_guessed_record(mig
     assert 'saved pool missing' in facts.unknown[0]
     overflow = replace(facts, needs_human=['synthetic-name' * 30]).line()
     assert '1 selection unknown' in overflow and 'qd status' in overflow
-    assert not (r.worker.folder/'pool').exists(), 'a reading must not persist a guessed selection'
+    assert not (r.worker.trusted/'pool').exists(), 'a reading must not persist a guessed selection'
 
 
 @pytest.mark.parametrize('damage', ['undeclared', 'conflicting', 'unreadable'])
 def test_invalid_selection_is_also_isolated_without_fallback(migrated, monkeypatch, damage):
     r = migrated
-    path = r.worker.folder/'pool'
+    path = r.worker.trusted/'pool'
     path.write_text({'undeclared': 'unlisted', 'conflicting': 'second', 'unreadable': 'first'}[damage])
     expected = {'undeclared': 'no declared choice', 'conflicting': 'disagree', 'unreadable': 'PermissionError'}[damage]
     if damage == 'unreadable':
@@ -169,7 +170,7 @@ def test_invalid_selection_is_also_isolated_without_fallback(migrated, monkeypat
 
 def test_selection_write_failure_cannot_destroy_the_only_current_launch(migrated, monkeypatch):
     r = migrated
-    path = r.worker.folder/'launch.json'
+    path = r.worker.trusted/'launch.json'
     before = path.read_bytes()
     def unavailable(*args):
         raise PermissionError('synthetic selection write refused')
@@ -177,7 +178,7 @@ def test_selection_write_failure_cannot_destroy_the_only_current_launch(migrated
     with pytest.raises(PermissionError, match='selection write refused'):
         r.worker.down()
     assert path.read_bytes() == before and r.worker.is_up
-    assert not (r.worker.folder/'pool').exists()
+    assert not (r.worker.trusted/'pool').exists()
 
 
 @pytest.fixture

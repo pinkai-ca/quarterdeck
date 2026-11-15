@@ -104,14 +104,15 @@ def refreshed(home):
 def test_a_restart_with_the_service_down_leaves_the_pool_holding_the_newer_credential(ship):
     seat = Seat(ship.ship, ship.ship.seat("worker"), ship.tmux)
     seat.home.mkdir(parents=True)
+    seat.trusted.mkdir(parents=True, exist_ok=True)
     record = ClaudeShape(seat.home, ship.ship.folder, "synthetic-session", "synthetic-model")
     record.begin("synthetic input", "synthetic-model", "none")
     record.end("synthetic reply")
     pane = Pane("%1", "crew", "worker", 101, 80, 24, False, False, None)
     ship.tmux.panes["%1"] = pane
     Launched("%1", 101, (post.now() - timedelta(minutes=1)).isoformat(), "claude-primary", None,
-             ["claude"], "synthetic", "claude").write(seat.folder / "launch.json")
-    (seat.folder / "record").write_text(str(record.path))
+             ["claude"], "synthetic", "claude").write(seat.trusted / "launch.json")
+    (seat.trusted / "record").write_text(str(record.path))
     link = refreshed(seat.home)
     seat.restart()
     assert token(ship.source) == "newer", "the pool holds the refresh"

@@ -134,7 +134,7 @@ def test_nothing_waiting_means_nothing_is_typed_after_up(ship, tmux, capsys):
     wait_for(lambda: box(desk, tmux) == '', seconds=30)
     service_progress(ship)
     service_progress(ship)
-    assert inputs(desk) == [] and not (desk.folder / 'human-wake.json').exists()
+    assert inputs(desk) == [] and not (desk.trusted / 'human-wake.json').exists()
 
 
 def test_an_armed_watch_delivers_and_nothing_is_typed(ship, tmux, capsys):
@@ -171,8 +171,8 @@ def test_a_down_human_seat_gets_no_wake_pass_and_leaves_a_named_alert_on_the_lin
     assert not desk.is_up and post.Attempts(ship.runtime).undelivered(store, 'desk')
     service_progress(ship)
     service_progress(ship)
-    assert not (desk.folder / 'human-wake-status.json').exists(), 'no wake observation for a seat that is not up'
-    assert not (desk.folder / 'human-wake.json').exists(), 'no wake pass for a seat that is not up'
+    assert not (desk.trusted / 'human-wake-status.json').exists(), 'no wake observation for a seat that is not up'
+    assert not (desk.trusted / 'human-wake.json').exists(), 'no wake pass for a seat that is not up'
     facts = watch.facts(ship, tmux)
     assert facts.needs_human == ['captain'], facts.pending
     assert 'desk' in facts.unarmed, facts.pending
@@ -224,9 +224,9 @@ def test_a_seat_proved_down_has_no_wake_state_and_an_unreadable_launch_is_not_si
     assert 'human wake' not in qd(capsys, 'status'), 'no wake row for a seat proved down'
     assert 'human wake' not in qd(capsys, 'watch', 'desk')
     assert 'desk: no watch armed' in qd(capsys, 'status', '--line'), 'its waiting message still shows'
-    assert not (desk.folder / 'human-wake-status.json').exists() and inputs(desk) == []
+    assert not (desk.trusted / 'human-wake-status.json').exists() and inputs(desk) == []
 
-    (desk.folder / 'launch.json').write_text('{ unreadable synthetic launch')
+    (desk.trusted / 'launch.json').write_text('{ unreadable synthetic launch')
     try:
         said = human_wake.status(desk)
     except (OSError, ValueError, shipmod.ShipError) as error:

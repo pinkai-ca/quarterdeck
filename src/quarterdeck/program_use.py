@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
 
+from . import trusted_files
 from . import harness as harnesses, record_owner
 
 
@@ -60,16 +61,16 @@ def working(seat):
         pane = seat.pane()
         if pane is None or pane.dead:
             return False
-        record = Path((seat.folder / 'record').read_text().strip())
+        record = Path((seat.trusted / trusted_files.RECORD).read_text().strip())
         # A historical reader binding alone cannot prove a current launch's join.
-        events = record_owner.events(seat.folder / 'record-launches.jsonl')
+        events = record_owner.events(seat.trusted / trusted_files.LAUNCHES)
         names = {row.get('harness') for row in events if row.get('record') == str(record)
                  and row.get('at') == launched.at and row.get('pool') == launched.pool}
         if names != {name}:
             return None
         state = seat.harness.state(record)
         if (type(state.turn_open) is not bool or seat.launched() != launched
-                or (seat.folder / 'record').read_text().strip() != str(record)):
+                or (seat.trusted / trusted_files.RECORD).read_text().strip() != str(record)):
             return None
         return bool(state.turn_open and not seat.harness.waiting_for_human(state))
     except (OSError, ValueError, TypeError, KeyError):

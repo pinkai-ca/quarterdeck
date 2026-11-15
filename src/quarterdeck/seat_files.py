@@ -29,10 +29,26 @@ from pathlib import Path
 from .ship import ShipError
 
 DIRECTORY = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+# A read that feeds a write takes at most this much. The largest such file measured on the live ship on 15 November
+# was a harness's own state file in a seat's home, about 160 KB; conversations.owned, the next, about 100 KB, grows by
+# one line (about 150 bytes) per record a seat owns. 4 MiB is 25 times the first and some 28,000 records of the second, and small enough
+# that a file its jail grew without bound is refused before it is read into memory or copied anywhere.
+READ_LIMIT = 4 * 1024 * 1024
 
 
 class LinkRefused(ShipError):
     """A link where the seat folder holds a folder or a file the service writes: nothing is written through it."""
+
+
+class TooLarge(ShipError):
+    """A file read to feed a write is larger than READ_LIMIT: it is not read, and nothing is written from it."""
+
+
+def _bounded(stream, path) -> bytes:
+    data = stream.read(READ_LIMIT + 1)
+    if len(data) > READ_LIMIT:
+        raise TooLarge(f'{path}: larger than {READ_LIMIT // (1024 * 1024)} MiB; not read, and nothing written from it')
+    return data
 
 
 def _announce(path: Path) -> None:
@@ -96,6 +112,18 @@ def _walk(root: Path, parts: tuple[str, ...], *, create: bool) -> int:
     except BaseException:
         os.close(descriptor)
         raise
+
+
+def make_folder(path, *, mode: int = 0o777) -> None:
+    """The folder ``path`` and every folder on the way to it, made as ``mkdir -p`` would but never through a link:
+    in a seat's folder each step is walked without following one (a link where a folder belongs refuses, and nothing
+    is made beyond it). Elsewhere, an ordinary ``mkdir -p``."""
+    found = seat_root(path)
+    if found is None:
+        Path(path).mkdir(mode=mode, parents=True, exist_ok=True)
+        return
+    root, parts = found
+    os.close(_walk(root, parts, create=True))
 
 
 def parent(path, *, create: bool = True) -> tuple[int, str] | None:
@@ -286,7 +314,7 @@ def read_with_times(path) -> tuple[bytes, tuple[int, int]] | None:
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode):
             return None
-        return stream.read(), (info.st_atime_ns, info.st_mtime_ns)
+        return _bounded(stream, path), (info.st_atime_ns, info.st_mtime_ns)
 
 
 def read_text(path, *, encoding: str = 'utf-8') -> str | None:
@@ -313,4 +341,4 @@ def read_text(path, *, encoding: str = 'utf-8') -> str | None:
     with os.fdopen(descriptor, 'rb') as stream:
         if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
             return None
-        return stream.read().decode(encoding)
+        return _bounded(stream, path).decode(encoding)

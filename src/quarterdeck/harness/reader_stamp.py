@@ -13,7 +13,7 @@ import sys
 
 
 COMMON = (
-    'harness/reader_stamp.py', 'record_owner.py', 'harness/__init__.py', 'harness/base.py',
+    'harness/reader_stamp.py', 'record_owner.py', 'trusted_files.py', 'harness/__init__.py', 'harness/base.py',
     'harness/types.py', 'harness/limits.py', 'harness/json_record.py',
     'harness/reading_scope.py', 'harness/compactions.py', 'record_location.py',
 )

@@ -191,7 +191,7 @@ def test_an_intent_for_a_held_seat_is_never_finished_and_shows_on_the_line(ship,
     if how == 'recovery':
         monkeypatch.setattr(recovery, 'held', lambda seat: reason if seat.name == 'worker-1' else None)
     elif how == 'refused-relaunch':
-        folder = worker('worker-1').folder
+        folder = worker('worker-1').trusted
         folder.mkdir(parents=True, exist_ok=True)
         (folder / REFUSED_RELAUNCH).write_text('{}\n')
     else:

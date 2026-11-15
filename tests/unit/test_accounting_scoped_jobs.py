@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import accounting_gate
+from quarterdeck import accounting_gate, trusted_files
 from quarterdeck.accounting_gate import BACKSTOP, Gate
 
 
@@ -28,7 +28,7 @@ def world(tmp_path, monkeypatch):
         home.mkdir(parents=True)
         record = home / 'ordinary-native-record'
         record.write_text('Ordinary synthetic native input.\n')
-        (home.parent / 'record-readers.jsonl').write_text('Synthetic binding.\n')
+        (trusted_files.make(runtime, name) / trusted_files.READERS).write_text('Synthetic binding.\n')
         seats.append(SimpleNamespace(name=name, home=home, harness=SimpleNamespace(name='fake'),
                      spec=SimpleNamespace(model='ordinary-model'), pool=SimpleNamespace(name='ordinary-pool'),
                      session=SimpleNamespace(human=False)))
@@ -91,9 +91,9 @@ def test_each_global_barrier_requires_full_work(world, monkeypatch, barrier):
     if barrier == 'post':
         (e.runtime / 'post/store/ordinary-message').write_text('Ordinary immutable publication.\n')
     elif barrier == 'launch':
-        (e.seats[1].home.parent / 'launch.json').write_text('Ordinary new launch.\n')
+        (trusted_files.of_home(e.seats[1].home) / trusted_files.LAUNCH).write_text('Ordinary new launch.\n')
     elif barrier == 'registry':
-        change(e.seats[1].home.parent / 'record-readers.jsonl')
+        change(trusted_files.of_home(e.seats[1].home) / trusted_files.READERS)
     elif barrier == 'settings':
         e.seats[1].spec.model = 'another-ordinary-model'
     elif barrier == 'hash':

@@ -59,7 +59,7 @@ def test_unproved_successor_stays_unknown_but_explicit_resume_remains_available(
         # The record already existed before this fresh launch, so it cannot prove its origin.
         from dataclasses import replace
         launch = w.seat.launched()
-        replace(launch, records_before=[str(w.source[0].path)]).write(w.seat.folder/'launch.json')
+        replace(launch, records_before=[str(w.source[0].path)]).write(w.seat.trusted/'launch.json')
     w.seat.restart()
     compaction.tick(w.seat)
     data = compaction.load(w.svc.runtime, w.seat.name)

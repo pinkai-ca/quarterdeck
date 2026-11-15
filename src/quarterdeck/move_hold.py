@@ -6,6 +6,7 @@ Human status reads these categories and launch/watch metadata, never a conversat
 import json
 import time
 
+from . import trusted_files
 from . import durable, idle, post
 
 
@@ -26,7 +27,7 @@ def generation(seat):
 
 
 def path(seat):
-    return seat.folder / 'move-hold.json'
+    return seat.trusted / trusted_files.MOVE_HOLD
 
 
 def publish(seat, binding, hold):

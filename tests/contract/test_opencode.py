@@ -381,7 +381,7 @@ def test_scoped_hand_relaunch_refuses_unproved_directory_before_retirement(tmp_p
     seat = Seat(ship, spec, SimpleNamespace(pane=lambda ident: pane if ident == pane.id else None))
     legacy = build_record(seat.home, directory=seat.home.parent / "work")  # saved in the old seat-runtime folder
     Launched(pane.id, pane.pid, datetime.now(UTC).isoformat(), pool.name, None,
-             ["opencode"], VERSION, "opencode").write(seat.folder / "launch.json")
+             ["opencode"], VERSION, "opencode").write(seat.trusted / "launch.json")
     monkeypatch.setattr(seat, "record", lambda: legacy if joined else None)
     assert seat.is_up
     retired = []

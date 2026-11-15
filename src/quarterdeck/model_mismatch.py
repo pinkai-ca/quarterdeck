@@ -12,6 +12,7 @@ from pathlib import Path
 import stat
 import time
 
+from . import trusted_files
 from . import durable, post, record_owner
 from .door import Door
 from .harness.base import RecordError
@@ -114,7 +115,7 @@ def observe(seat, *, records=None) -> Reading:
 
 
 def path(runtime, name):
-    return runtime / 'seats' / name / 'model-mismatch.json'
+    return trusted_files.path(runtime, name, trusted_files.MODEL_MISMATCH)
 
 
 def report_intent(intent):

@@ -85,7 +85,7 @@ def seat_for(reader, height, after_paste, tmp_path, events):
 
     composer = Composer()
     seat = SimpleNamespace(
-        name='probe', harness=reader, tmux=composer, folder=tmp_path / 'probe', home=tmp_path / 'home',
+        name='probe', harness=reader, tmux=composer, folder=tmp_path / 'probe', trusted=tmp_path / 'probe', home=tmp_path / 'home',
         ship=SimpleNamespace(runtime=tmp_path / 'runtime'),
         session=SimpleNamespace(human=False), pool=SimpleNamespace(name='google'),
         spec=SeatSpec('probe', 'probe', 'worker', 'antigravity', ('google',)),

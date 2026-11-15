@@ -6,6 +6,7 @@ restart independently of the compaction generation that the controller may retir
 
 import json
 
+from . import trusted_files
 from . import compaction, durable, post
 from .ship import ShipError
 
@@ -22,7 +23,7 @@ UNKNOWN = object()
 
 
 def path(runtime, name):
-    return compaction.path(runtime, name).with_name('manual-fresh-alert.json')
+    return trusted_files.path(runtime, name, 'manual-fresh-alert.json')
 
 
 def load(runtime, name):

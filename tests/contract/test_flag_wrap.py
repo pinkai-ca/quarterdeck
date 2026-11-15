@@ -113,14 +113,15 @@ def transport(request, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     svc = Service(ship, tmux)
     seat = svc.seat("worker")
     seat.home.mkdir(parents=True)
+    seat.trusted.mkdir(parents=True, exist_ok=True)
     launch = {"pane": pane.id, "pid": pane.pid, "at": (post.now() - timedelta(minutes=1)).isoformat(),
               "pool": "synthetic", "argv": [harness.program], "harness": name, "resume": None, "version": "synthetic"}
-    (seat.folder / "launch.json").write_text(json.dumps(launch))
+    (seat.trusted / "launch.json").write_text(json.dumps(launch))
     record = seat.home / "sessions" / "synthetic.jsonl"
     record.parent.mkdir()
     record.write_text("")
-    (seat.folder / "record").write_text(str(record) + "\n")
-    record_owner.register(seat.folder, record, name)
+    (seat.trusted / "record").write_text(str(record) + "\n")
+    record_owner.register(seat.trusted, record, name)
     confirm = Door.confirm
     monkeypatch.setattr(Door, "confirm", lambda self, text: confirm(self, text, seconds=0))
     box_shows = Door.box_shows

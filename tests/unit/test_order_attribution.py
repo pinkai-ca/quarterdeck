@@ -202,7 +202,7 @@ def test_service_revisits_unchanged_retired_record_on_new_post_and_restart(tmp_p
     svc=Service(ship,SimpleNamespace())
     path=ship.runtime/'retired-record';path.write_text('synthetic')
     svc.ledger.ingest('retired','pool',path,[turn()],svc.store)
-    record_owner.register(ship.runtime/'seats/retired',path,'fake')
+    record_owner.register(ship.runtime/'trusted/retired',path,'fake')
     before=measurement_snapshot(svc.ledger)
     svc.account()
     assert svc.ledger.attributions.details()[0]['status']=='unassociated'

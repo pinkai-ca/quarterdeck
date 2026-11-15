@@ -16,6 +16,7 @@ import secrets
 import stat
 import time
 
+from . import trusted_files
 from . import durable, post_dir
 from .ship import ShipError
 
@@ -306,7 +307,7 @@ def _run(service, limit, counts, progress):
                     if service.ledger.catching_up():
                         return {**counts, 'held': 'ledger catch-up'}
                     current = progress.read('attempts read', service.attempts.all, progress=progress)
-                    launch_path = service.runtime / 'seats' / name / 'launch.json'
+                    launch_path = trusted_files.path(service.runtime, name, trusted_files.LAUNCH)
                     try:
                         launch = json.loads(launch_path.read_text())
                         live_join = (launch['pane'], launch['pid'], launch['at'])

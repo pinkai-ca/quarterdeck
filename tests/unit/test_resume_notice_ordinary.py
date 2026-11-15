@@ -148,7 +148,7 @@ def resumed_seat(tmp_path, monkeypatch, *, stopped, rows=None, launch_second=4):
     spec = SimpleNamespace(name='seat-spruce')
     ship = SimpleNamespace(runtime=tmp_path / 'runtime', seat=lambda _: spec)
     seat = SimpleNamespace(name=spec.name, spec=spec, ship=ship,
-                           folder=ship.runtime / 'seats' / spec.name,
+                           folder=ship.runtime / 'seats' / spec.name, trusted=ship.runtime / 'seats' / spec.name,
                            session=SimpleNamespace(human=True), harness=reader,
                            pane=lambda: pane, launched=lambda: launch,
                            record=lambda: path, join=lambda: SimpleNamespace(record=path, reason=None),

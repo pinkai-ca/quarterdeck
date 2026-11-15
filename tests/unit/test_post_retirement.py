@@ -134,7 +134,7 @@ def test_batch_limit_does_not_leave_finished_journals_stranded(tmp_path):
 def test_current_launch_receipts_stay_until_that_launch_ends(tmp_path):
     s = service(tmp_path)
     _, attempt, journal = delivery(s)
-    launch = tmp_path / 'seats/builder/launch.json'
+    launch = tmp_path / 'trusted/builder/launch.json'
     launch.parent.mkdir(parents=True)
     launch.write_text(json.dumps(dict(pane=attempt.pane, pid=attempt.pid, at=attempt.launched_at)))
     assert retirement.run(s) == dict(attempts=0, journals=0)

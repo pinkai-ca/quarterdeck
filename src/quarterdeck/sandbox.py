@@ -27,7 +27,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import jail_environment, post_dir, standing
+from . import jail_environment, post_dir, trusted_files, standing
 from .ship import Ship, ShipError
 
 PROGRAM = "bwrap"
@@ -309,6 +309,7 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
     (ship.runtime / LOCKS).mkdir(mode=0o700, exist_ok=True)  # hidden inside: the service's own locks, out of every jail's reach
     # Shown inside before any service has beaten, so a jail launched first still sees the service's beats.
     (ship.runtime / 'heartbeat').mkdir(exist_ok=True)
+    trusted_files.root(ship.runtime).mkdir(mode=0o700, exist_ok=True)  # hidden inside: what the service writes and trusts
     from .fleet import declaration_files
     declarations = tuple(file for file in declaration_files(ship) if file.parent != ship.folder)
     proof = ensure_check_proof_folder(ship.runtime, seat_name)  # a link is refused here, before any bind
@@ -872,12 +873,14 @@ def command(jail: Jail, argv: list[str], environment: dict[str, str] | None = No
     # The ship's own tmux server is hidden like the other seats: its socket folder is an empty private
     # tmpfs inside, so nothing in the jail reaches the server, by its path or any other way.
     # The service's own locks are hidden the same way: a lock a jailed seat could take (flock needs no write
-    # access) would let it stop the service's pass.
+    # access) would let it stop the service's pass. And so is every seat's trusted folder (trusted_files): what the
+    # service writes for a seat and then trusts, which no jail may read or write.
     mounts += [("--workspace", jail.workspace)]
     mounts += [("--fleet", folder) for folder in fleet_folders]
     mounts += [("--ro-bind", jail.ship_folder), ("--runtime", jail.runtime),
                ("--private-tmpfs", jail.runtime / "tmux"),
-               ("--private-tmpfs", jail.runtime / LOCKS), ("--bind", jail.seat_folder)]
+               ("--private-tmpfs", jail.runtime / LOCKS),
+               ("--private-tmpfs", trusted_files.root(jail.runtime)), ("--bind", jail.seat_folder)]
     mounts += [("--ro-bind-try", jail.runtime / name) for name in RUNTIME_SHOWN]
     mounts += [("--ro-bind-try", jail.runtime / "brief" / f"{jail.seat_folder.name}.md")]
     # The post: the seat's own view of it in the post's place, read-only, with its real drop writable over it.

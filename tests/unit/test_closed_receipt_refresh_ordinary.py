@@ -32,7 +32,7 @@ def world(tmp_path, monkeypatch):
                launch=AT.isoformat(), harness='fake'), at=AT.isoformat(), since=AT.isoformat(),
                payload='synthetic original payload', phase='not-in-closed-record', record=str(record),
                shown=None, attempts=[attempt.path.name])
-    seat = SimpleNamespace(name='seat-orchid', folder=folder, ship=SimpleNamespace(runtime=runtime),
+    seat = SimpleNamespace(name='seat-orchid', folder=folder, trusted=folder, ship=SimpleNamespace(runtime=runtime),
                            launched=lambda: SimpleNamespace(when=AT + timedelta(days=1)),
                            record=lambda: pytest.fail('read current record'),
                            tmux=SimpleNamespace(capture=lambda *args: pytest.fail('read live screen')))

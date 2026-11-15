@@ -9,6 +9,7 @@ from datetime import timedelta
 import stat
 import time
 
+from . import trusted_files
 from . import forward_post, post, post_dir
 from .ship import ShipError
 
@@ -53,8 +54,8 @@ def inputs(service):
     journals = sorted(set(names) | set(forward_post.declared(runtime)))
     sources = [runtime.parent / 'ship.toml', service.store.dir,
                *(runtime / 'post' / name for name in ('imports', 'addressed', 'forwarded')),
-               *(runtime / 'seats' / name / file for name in journals
-                 for file in ('refusal.json', 'compaction.json'))]
+               *(trusted_files.path(runtime, name, file) for name in journals
+                 for file in (trusted_files.REFUSAL, trusted_files.COMPACTION))]
     outputs = [runtime / 'post' / 'inbox',
                *(runtime / 'post' / 'inbox' / f'{name}.md' for name in names)]
     return (names, fingerprint(runtime, sources)), fingerprint(runtime, outputs)

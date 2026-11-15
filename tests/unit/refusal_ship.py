@@ -80,17 +80,18 @@ class World:
     def launch(self, name):
         seat = self.seat(name)
         seat.home.mkdir(parents=True, exist_ok=True)
+        seat.trusted.mkdir(parents=True, exist_ok=True)
         self.pid += 1
         pane = Pane(f'%{self.pid}', 'Crew', name, self.pid, 120, 40, False, False, None)
         self.panes[pane.id] = pane
         Launched(pane.id, pane.pid, self.stamp(), seat.pool.name, None, ['codex'], 'synthetic', 'codex').write(
-            seat.folder / 'launch.json')
+            seat.trusted / 'launch.json')
         record = seat.home / 'sessions' / f'rollout-{self.pid}.jsonl'
         record.parent.mkdir(parents=True, exist_ok=True)
         self.rows[name] = [{'type': 'session_meta', 'timestamp': self.stamp(), 'payload': {'id': f'synthetic-{self.pid}'}}]
         self._flush(name, record)
-        (seat.folder / 'record').write_text(str(record))
-        register(seat.folder, record, 'codex')
+        (seat.trusted / 'record').write_text(str(record))
+        register(seat.trusted, record, 'codex')
         return seat
 
     def _flush(self, name, record=None):

@@ -112,6 +112,6 @@ def test_a_restart_whose_program_outlasts_the_longer_bound_is_refused_and_named_
 def test_an_unreadable_retiring_marker_counts_as_still_ending(lingering):
     w = lingering(0)
     w.seat.up(resume=False)
-    (w.seat.folder / seatmod.RETIRING).write_text("{not json")
+    (w.seat.trusted / seatmod.RETIRING).write_text("{not json")
     assert w.seat.relaunch_refused().startswith("captain: its program is still ending")
     assert w.seat.finish_retirement() is None

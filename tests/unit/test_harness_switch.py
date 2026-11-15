@@ -34,13 +34,14 @@ def setup_seat(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     tmux = SimpleNamespace(pane=lambda ident: active["pane"], kill_window=lambda ident, *, expected_pid=None: active.update(pane=None))
     seat = Seat(ship, specs["worker"], tmux)
     seat.home.mkdir(parents=True)
+    seat.trusted.mkdir(parents=True, exist_ok=True)
     old = AntigravityShape(seat.home, tmp_path, "synthetic-old", "synthetic-model")
     old.begin("synthetic old input", "synthetic-model", "high")
     old.end("synthetic old reply")
     launch = Launched("%1", 12345, (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat(),
                       "google", None, ["agy"], "synthetic", harness="antigravity")
-    launch.write(seat.folder / "launch.json")
-    (seat.folder / "record").write_text(str(old.path))
+    launch.write(seat.trusted / "launch.json")
+    (seat.trusted / "record").write_text(str(old.path))
     monkeypatch.setattr(service.machine, "processes", lambda: {})
     return seat, old, active
 
@@ -102,7 +103,7 @@ def test_down_switch_fresh_join_and_history_use_original_reader_pool_and_quota(t
     assert original == [(str(old.path), "google", old_turns[0].tokens.read_uncached)]
     assert svc.ledger.walled("google") and not svc.ledger.walled("codex")
     assert not seen and old.path.read_bytes() == snapshot
-    journal = [json.loads(line) for line in (seat.folder / "record-launches.jsonl").read_text().splitlines()]
+    journal = [json.loads(line) for line in (seat.trusted / "record-launches.jsonl").read_text().splitlines()]
     assert journal[0]["harness"] == "antigravity" and journal[0]["pool"] == "google"
 
     # Real fresh lifecycle; only opening the synthetic process and its version are substituted.
@@ -146,18 +147,18 @@ def test_down_switch_fresh_join_and_history_use_original_reader_pool_and_quota(t
 
 def test_saved_argv_proves_reader_but_untyped_down_history_does_not_guess(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     seat, old, _ = setup_seat(tmp_path, monkeypatch)
-    launch = json.loads((seat.folder / "launch.json").read_text())
+    launch = json.loads((seat.trusted / "launch.json").read_text())
     launch.pop("harness")  # old launch.json still has exact argv evidence
-    (seat.folder / "launch.json").write_text(json.dumps(launch))
+    (seat.trusted / "launch.json").write_text(json.dumps(launch))
     spec = replace(seat.spec, harness="codex", pools=("codex",))
     changed = Seat(seat.ship, spec, seat.tmux)
     assert changed.record() is None
     assert record_owner.records(changed)[0].name == "antigravity"
     # A down seat: no saved program identity, only owned path and pool boundary.
-    (seat.folder / record_owner.REGISTRY).unlink()
-    (seat.folder / "launch.json").unlink()
+    (seat.trusted / record_owner.REGISTRY).unlink()
+    (seat.trusted / "launch.json").unlink()
     event = {"record": str(old.path), "at": launch["at"], "pool": "google"}
-    (seat.folder / "record-launches.jsonl").write_text(json.dumps(event) + "\n")
+    (seat.trusted / "record-launches.jsonl").write_text(json.dumps(event) + "\n")
     monkeypatch.setattr(AntigravityHarness, "read", lambda *args: pytest.fail("unproven reader invoked"))
     monkeypatch.setattr(CodexHarness, "read", lambda *args: pytest.fail("foreign record decoded"))
     assert changed.record() is None and "reader unknown" in changed.join().reason
@@ -184,8 +185,8 @@ def owned_codex_record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, data):
     path.parent.mkdir(parents=True)
     if data is not None:
         path.write_bytes(data)
-    record_owner.register(seat.folder, path, "codex")
-    (seat.folder / "record").write_text(str(path))
+    record_owner.register(seat.trusted, path, "codex")
+    (seat.trusted / "record").write_text(str(path))
     return seat, old, path
 
 
@@ -243,7 +244,7 @@ def test_queued_history_uses_original_reader_and_conflicts_remain_unknown(tmp_pa
     svc.reconcile()
     assert attempts.latest()[message.id] == "queued", "a restart does not reset the original receipt time"
     svc.ledger.close()
-    record_owner.register(seat.folder, old.path, "codex")  # conflicting explicit history is not guessed
+    record_owner.register(seat.trusted, old.path, "codex")  # conflicting explicit history is not guessed
     assert record_owner.records(seat)[0].reader is None
     assert seat._queued_unread(store, attempts) == [message]
     assert old.path.exists()
@@ -252,30 +253,31 @@ def test_queued_history_uses_original_reader_and_conflicts_remain_unknown(tmp_pa
 def test_saved_launch_disagreement_cannot_add_a_wrong_pool_boundary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     seat, old, _ = setup_seat(tmp_path, monkeypatch)
     assert seat.record() == old.path
-    previous = (seat.folder / "record-launches.jsonl").read_bytes()
+    previous = (seat.trusted / "record-launches.jsonl").read_bytes()
     changed = replace(seat.launched(), harness="codex", pool="codex", argv=["codex"])
-    changed.write(seat.folder / "launch.json")
+    changed.write(seat.trusted / "launch.json")
     assert seat.record() is None and "disagree" in seat.join().reason
     svc = Service(seat.ship, seat.tmux)
     svc.account()
     assert svc.ledger.db.execute("SELECT pool FROM turns").fetchall() == [("google",)]
-    assert (seat.folder / "record-launches.jsonl").read_bytes() == previous
+    assert (seat.trusted / "record-launches.jsonl").read_bytes() == previous
     svc.ledger.close()
 
 
 def test_stale_sibling_pin_does_not_resolve_shared_record_ambiguity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     seat, old, _ = setup_seat(tmp_path, monkeypatch)
-    (seat.folder / "record").unlink()
+    (seat.trusted / "record").unlink()
     neighbor = replace(seat.ship.seats["neighbor"], harness="antigravity", pools=("google",))
     seat.ship.seats["neighbor"] = neighbor
     sibling = Seat(seat.ship, neighbor, seat.tmux)
     sibling.home.mkdir(parents=True)
+    sibling.trusted.mkdir(parents=True, exist_ok=True)
     stale = sibling.home / "synthetic-codex-record"
     stale.write_bytes(b"foreign synthetic bytes must never be opened")
-    record_owner.register(sibling.folder, stale, "codex")
-    (sibling.folder / "record").write_text(str(stale))
+    record_owner.register(sibling.trusted, stale, "codex")
+    (sibling.trusted / "record").write_text(str(stale))
     launch = replace(seat.launched(), pane="%2", pid=45678)
-    launch.write(sibling.folder / "launch.json")
+    launch.write(sibling.trusted / "launch.json")
     seat.tmux.pane = lambda ident: Pane("%2", "crew", "neighbor", 45678, 80, 24, False, False, None)
     monkeypatch.setattr(AntigravityHarness, "_appeared", lambda *a: pytest.fail("ambiguous shared candidates enumerated"))
     monkeypatch.setattr(AntigravityHarness, "state", lambda *a: pytest.fail("foreign candidate decoded"))
@@ -286,8 +288,9 @@ def test_new_program_without_a_joined_record_has_nothing_to_count_yet(tmp_path: 
     seat, _, _ = setup_seat(tmp_path, monkeypatch)
     fresh = Seat(seat.ship, seat.ship.seats["neighbor"], seat.tmux)
     fresh.home.mkdir(parents=True)
+    fresh.trusted.mkdir(parents=True, exist_ok=True)
     launch = replace(seat.launched(), harness="codex", pool="codex", argv=["codex"])
-    launch.write(fresh.folder / "launch.json")
+    launch.write(fresh.trusted / "launch.json")
     assert fresh.join().reason == "no record yet"
     assert watch.tokens_today(fresh) == Count(), "no record, nothing spent, nothing unmeasured"
     assert "record absent: no record yet" in "\n".join(watch.full(fresh))

@@ -35,10 +35,11 @@ def test_service_start_keeps_malformed_bytes_and_rebuilds_real_program_records(t
                 {'synthetic': Pool('synthetic', 'synthetic')}, {'crew': Session('crew', 'crew')}, {'worker': spec})
     seat = Seat(ship, spec, SimpleNamespace())
     seat.folder.mkdir(parents=True)
+    seat.trusted.mkdir(parents=True, exist_ok=True)
     store = post.Store(ship.runtime)
     record = worked_record(seat.folder, store, ['one completed turn', 'another completed turn'])
-    record_owner.register(seat.folder, record, 'fake')
-    (seat.folder / 'record-launches.jsonl').write_text(json.dumps(dict(record=str(record),
+    record_owner.register(seat.trusted, record, 'fake')
+    (seat.trusted / 'record-launches.jsonl').write_text(json.dumps(dict(record=str(record),
         at=datetime(2000, 1, 1, tzinfo=timezone.utc).isoformat(), pool='synthetic', harness='fake')) + '\n')
     path = corrupt(ship.runtime / 'ledger.sqlite')
     svc = Service(ship, SimpleNamespace())  # the real service's startup path

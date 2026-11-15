@@ -11,6 +11,7 @@ from pathlib import Path
 import sqlite3
 import time
 
+from . import trusted_files
 from . import post, record_owner, record_location
 from .harness import reader_stamp
 from .accounting_scope import Partitions
@@ -56,15 +57,17 @@ def capture(service, records, *, issues=None, retain=False):
     try:
         runtime = Path(service.runtime)
         seats = service.resolved_seats()
-        paths = {service.ship.folder / 'ship.toml', runtime / 'seats'}
+        paths = {service.ship.folder / 'ship.toml', runtime / 'seats', trusted_files.root(runtime)}
         classes = {path: 'settings' for path in paths}
         folders = {runtime / 'seats' / name for name in service.ship.seats}
-        if (runtime / 'seats').is_dir():
-            folders.update(path for path in (runtime / 'seats').iterdir() if path.is_dir())
+        for parent in (runtime / 'seats', trusted_files.root(runtime)):  # a seat known by either of its folders
+            if parent.is_dir():
+                folders.update(runtime / 'seats' / path.name for path in parent.iterdir() if path.is_dir())
         folders.update(runtime / 'seats' / seat.name for seat in seats)
         for folder in folders:
-            paths.update(folder / name for name in ('launch.json', 'launch-price.json', 'record',
-                         'pool', record_owner.REGISTRY, 'record-launches.jsonl'))
+            trusted = trusted_files.of_seat_folder(folder)
+            paths.update(trusted / name for name in (trusted_files.LAUNCH, trusted_files.PRICE, trusted_files.RECORD,
+                         trusted_files.POOL, trusted_files.READERS, trusted_files.LAUNCHES))
             paths.add(folder / 'home' / 'conversations.owned')
         declarations = []
         for seat in seats:

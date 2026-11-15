@@ -1215,7 +1215,7 @@ class ClaudeHarness(Harness):
 
     def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None) -> Credential | None:
         self.check_defaults(seat, ship_home)
-        home.mkdir(parents=True, exist_ok=True)
+        seat_files.make_folder(home)  # never through a link its jail planted
         template = ship_template(ship_home, "settings.json")
         from . import claude_statusline
         defaults = merged(SETTINGS, {"statusLine": {

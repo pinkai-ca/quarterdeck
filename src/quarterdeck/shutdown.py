@@ -88,7 +88,7 @@ def journal_kind(runtime: Path, path: Path) -> str | None:
         return 'pending'
     if len(parts) == 3 and parts[:2] == ('post', 'attempts'):
         return 'attempt'
-    if len(parts) == 3 and parts[0] == 'seats' and parts[2] == 'human-wake.json':
+    if len(parts) == 3 and parts[0] == 'trusted' and parts[2] == 'human-wake.json':  # trusted_files
         return 'human wake'
     return None
 

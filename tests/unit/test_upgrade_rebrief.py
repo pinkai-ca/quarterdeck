@@ -31,7 +31,7 @@ def upgraded(drydock, tmp_path, monkeypatch):
     for spec in ship.seats.values():standing.render(ship,spec)
     panes={}
     for i,name in enumerate(('captain','desk'),1):
-        folder=ship.runtime/'seats'/name;folder.mkdir(parents=True)
+        folder=ship.runtime/'trusted'/name;folder.mkdir(parents=True)
         launch=dict(pane=f'%{i}',pid=100+i,at='2025-01-01T00:00:00+00:00',pool='fake',
                     argv=['synthetic'],harness='fake',resume='same-conversation',version='synthetic')
         (folder/'launch.json').write_text(json.dumps(launch))
@@ -131,7 +131,7 @@ def test_upgrade_to_changed_card_rebriefs_affected_live_launch_without_restartin
         for name,body in files.items():
             info=tarfile.TarInfo(name);info.size=len(body);bundle.addfile(info,BytesIO(body))
     s.archive.seek(0);s.archive.truncate();s.archive.write(changed.getvalue())
-    launch_files=list((s.ship.runtime/'seats').glob('*/launch.json'))
+    launch_files=list((s.ship.runtime/'trusted').glob('*/launch.json'))
     identities={p:p.read_bytes() for p in launch_files}
     proofs=install.upgrade(s.ship,'changed',s.tmux)
     assert 'Changed framework instruction.' in (s.ship.runtime/'brief/captain.md').read_text()
@@ -238,7 +238,7 @@ def test_replaced_launch_gets_no_old_notice_and_down_seat_brief_is_current(upgra
     s=upgraded;change_archive(s)
     start=s.start
     def replaced(ship,qd=None,**kwargs):
-        path=ship.runtime/'seats/desk/launch.json'
+        path=ship.runtime/'trusted/desk/launch.json'
         data=json.loads(path.read_text());data['resume']='different-conversation'
         path.write_text(json.dumps(data))
         return start(ship,qd)
@@ -383,7 +383,7 @@ def test_card_edit_during_partial_upgrade_gets_one_new_notice(upgraded,monkeypat
     assert first.to=='captain' and first_brief!=original_brief
     assert 'Changed framework instruction.' in first_brief  # first version/file and immutable notice were offered
     if replace_desk:
-        launch=s.ship.runtime/'seats/desk/launch.json'
+        launch=s.ship.runtime/'trusted/desk/launch.json'
         data=json.loads(launch.read_text());data['resume']='replacement';launch.write_text(json.dumps(data))
     if return_to_baseline:
         laws=standing.FRAMEWORK_DIR/'laws.md'

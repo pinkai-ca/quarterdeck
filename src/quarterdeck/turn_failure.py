@@ -14,6 +14,7 @@ from pathlib import Path
 import stat
 from typing import TYPE_CHECKING
 
+from . import trusted_files
 from . import durable, input_receipt, pending, post
 from .harness.base import record_fingerprint
 from .harness.failures import words
@@ -23,7 +24,7 @@ if TYPE_CHECKING:
     from .seat import Seat
     from .service import Service
 
-FILE = 'turn-failure.json'
+FILE = trusted_files.TURN_FAILURE
 MAX_BYTES = 8192
 KINDS = ('provider refusal', 'provider error', 'program error', AUTHENTICATION)
 REFUSAL = 'provider refusal'
@@ -70,23 +71,24 @@ def publish(seat: Seat, record: Path, state, turns, stamp=None) -> None:
         data['failure'] = {'message': words(failure.message), 'kind': failure.kind, 'code': failure.code,
                            'model_output': failure.model_output,
                            'at': failure.at.isoformat() if failure.at else None}
-    path = seat.folder / FILE
+    path = seat.trusted / FILE
     text = json.dumps(data, sort_keys=True) + '\n'
     try:
         previous = metadata(path)
     except (OSError, ValueError):
         previous = None
     if previous != text:
+        trusted_files.make(seat.ship.runtime, seat.name)
         durable.replace_file(path, text)
 
 
 def cached(seat: Seat) -> TurnFailure | None:
     """A human seat's latest failure from owned metadata and the record's stat, never its bytes."""
     try:
-        data = json.loads(metadata(seat.folder / FILE))
+        data = json.loads(metadata(seat.trusted / FILE))
         if data.get('format') != 1 or data.get('identity') != identity(seat):
             return None
-        if metadata(seat.folder / 'record').strip() != data['record']:
+        if metadata(seat.trusted / trusted_files.RECORD).strip() != data['record']:
             return None
         failure = data['failure']
         if not failure:

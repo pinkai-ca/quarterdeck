@@ -94,7 +94,7 @@ def test_both_callers_retire_transport_and_finish_cleanup_after_exceptions(tmp_p
         assert svc.attempts.latest()[state["own"].id] == expected
         if outcome == "down":
             raise RuntimeError("down")
-        (seat.folder / "launch.json").unlink(missing_ok=True)  # as a down that proved its program ended
+        (seat.trusted / "launch.json").unlink(missing_ok=True)  # as a down that proved its program ended
 
     def kill(ident):
         Sessions.kill_session_id(tmux, ident)

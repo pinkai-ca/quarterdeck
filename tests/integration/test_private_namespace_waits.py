@@ -189,7 +189,7 @@ def test_a_holder_past_the_budget_still_refuses_and_retains(drydock, tmux):
     seat = seatmod.Seat(ship, ship.seat('worker-1'), tmux)
     seat.up(False)
     launch = seat.launched()
-    path = seat.folder / 'launch.json'
+    path = seat.trusted / 'launch.json'
     retained = path.read_bytes()
     holder = hold_shared(tmux, BUDGET * 2 + 5)
     try:

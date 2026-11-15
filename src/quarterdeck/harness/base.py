@@ -132,6 +132,19 @@ class SetupMetadata:
     fresh_after_compactions: int | None = None
 
 
+
+def inside_home(path: Path, home: Path) -> bool:
+    """Whether ``path`` is a file of this home: inside it as written and as it really lies, every link on the way
+    resolved. A seat's home is its jail's to write, so a link there (to another seat's records, say) makes nothing
+    outside it that seat's own."""
+    path, home = Path(path), Path(home)
+    if not path.is_absolute() or '..' in path.parts or not path.is_relative_to(home):
+        return False
+    try:
+        return path.resolve(strict=False).is_relative_to(home.resolve(strict=False))
+    except (OSError, RuntimeError):
+        return False
+
 class Harness(ABC):
     """One agent program, as the framework knows it."""
 
@@ -468,7 +481,8 @@ class Harness(ABC):
         after = []
         for record in self.records(home):
             from ..record_location import retired
-            if record in excluded or retired(record):
+            if (record in excluded or retired(record)
+                    or (self.home_variable is not None and not inside_home(record, home))):
                 continue
             first = self.first_timestamp(record)
             if first is not None and first >= launched_at:

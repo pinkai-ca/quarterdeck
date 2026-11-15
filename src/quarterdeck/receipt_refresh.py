@@ -11,6 +11,7 @@ from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
+from . import trusted_files
 from . import durable, post_dir
 from .ship import ShipError
 
@@ -149,8 +150,8 @@ def _owned_closed(seat, proof):
     if not proof.data['record'] or not _closed(seat, proof.data['identity']):
         return None
     record, name = Path(proof.data['record']), proof.data['identity']['harness']
-    names = {row.get('harness') for filename in (record_owner.REGISTRY, 'record-launches.jsonl')
-             for row in record_owner.events(seat.folder / filename)
+    names = {row.get('harness') for filename in (trusted_files.READERS, trusted_files.LAUNCHES)
+             for row in record_owner.events(seat.trusted / filename)
              if Path(row['record']) == record and row.get('harness')}
     return (record, name) if names == {name} and name in harness.NAMES else None
 

@@ -212,7 +212,8 @@ def test_a_working_seats_record_growing_never_requests_a_reading(tmp_path):
     ship = hinted_ship(tmp_path)
     native = tmp_path / 'synthetic-record'
     native.write_text('first')
-    (ship.runtime / 'seats/worker/record').write_text(str(native))
+    (ship.runtime / 'trusted/worker').mkdir(parents=True, exist_ok=True)
+    (ship.runtime / 'trusted/worker/record').write_text(str(native))
     before = service_status.inputs(ship)
     with native.open('a') as record:
         record.write('a turn of the working seat\n')

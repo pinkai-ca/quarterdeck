@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 from typing import Any, Iterator, TYPE_CHECKING
 
+from . import trusted_files
 from . import harness as harnesses
 from .harness.base import Harness, RecordError
 from .harness.types import State, Turn
@@ -22,11 +23,11 @@ from .harness.types import State, Turn
 if TYPE_CHECKING:
     from .seat import Launched, Seat
 
-REGISTRY = "record-readers.jsonl"
+REGISTRY = trusted_files.READERS
 
 
 def registry(folder: Path) -> Path:
-    """Reader registry in a seat's runtime folder."""
+    """Reader registry in a seat's trusted folder (trusted_files)."""
     return folder / REGISTRY
 
 
@@ -136,15 +137,15 @@ def register(folder: Path, record: Path, name: str | None) -> None:
 
 
 def bindings(seat: Seat, *, publish=True) -> dict[Path, set[str]]:
-    folder = seat.home.parent
+    folder = seat.trusted
     found: dict[Path, set[str]] = {}
     saved = registry_events(folder)
     registered = {Path(row["record"]) for row in saved}
-    for row in [*saved, *events(folder / "record-launches.jsonl")]:
+    for row in [*saved, *events(folder / trusted_files.LAUNCHES)]:
         names = found.setdefault(Path(row["record"]), set())
         if row.get("harness"):
             names.add(row["harness"])
-    pinned = folder / "record"
+    pinned = folder / trusted_files.RECORD
     if pinned.is_file():
         path = Path(pinned.read_text().strip())
         names = found.setdefault(path, set())
@@ -153,12 +154,16 @@ def bindings(seat: Seat, *, publish=True) -> dict[Path, set[str]]:
         if publish:
             for name in names or {None}:
                 register(folder, path, name)
-    # The owned-path list proves seat ownership, never a program's file format.
-    owned = seat.home / "conversations.owned"
-    if owned.is_file():
-        for line in owned.read_text().splitlines():
-            if line.strip():
-                found.setdefault(Path(line.strip()), set())
+    # The owned-path list proves seat ownership, never a program's file format. It is in the home, its jail's to
+    # write: read without following a link and bounded (seat_files), and a line counts only for a record inside the
+    # seat's own home, unless its program keeps no home of its own and its records lie in one shared place.
+    from . import seat_files
+    from .harness.base import inside_home
+    text = seat_files.read_text(seat.home / "conversations.owned") or ''
+    shared = getattr(getattr(seat, 'harness', None), 'home_variable', '') is None
+    for line in text.splitlines():
+        if line.strip() and (shared or inside_home(Path(line.strip()), seat.home)):
+            found.setdefault(Path(line.strip()), set())
     return found
 
 
@@ -193,11 +198,12 @@ def records(seat: Seat, *, publish=True) -> list[Owned]:
     try:
         found = bindings(seat) if publish else bindings(seat, publish=False)
     except OSError as error:
-        return [Owned(registry(seat.home.parent), None, None, f"{error}; inspect ownership for {seat.name} with qd watch {seat.name}",
+        return [Owned(registry(seat.trusted), None, None, f"{error}; inspect ownership for {seat.name} with qd watch {seat.name}",
                       transient=True)]
     known = {name for names in found.values() for name in names if name in harnesses.NAMES}
     if name := launch_reader(seat.launched()):
         known.add(name)
+    from .harness.base import inside_home
     readers = {name: seat.harness if name == seat.spec.harness else harnesses.get(name) for name in known}
     candidates: dict[Path, set[str]] = {}
     for name, reader in readers.items():
@@ -205,14 +211,14 @@ def records(seat: Seat, *, publish=True) -> list[Owned]:
         if reader.home_variable is None:
             continue
         for path in reader.records(seat.home):
-            if path not in found:
+            if path not in found and inside_home(path, seat.home):  # never through a link out of the home
                 candidates.setdefault(path, set()).add(name)
     found.update(candidates)
     result = []
     for path, names in found.items():
         name = next(iter(names)) if len(names) == 1 and names <= set(harnesses.NAMES) else None
         if publish:
-            register(seat.home.parent, path, name)
+            register(seat.trusted, path, name)
         result.append(Owned(path, name, readers.get(name),
                             f"record reader unknown or conflicting for {seat.name}, {path.name}; historical harness evidence required; inspect with qd watch {seat.name}" if name is None else None))
     return sorted(result, key=lambda item: str(item.path))

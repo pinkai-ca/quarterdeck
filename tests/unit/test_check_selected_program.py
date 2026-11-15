@@ -30,7 +30,7 @@ def test_the_check_proves_its_seat_ran_the_selected_program(tmp_path: Path, monk
     def probe(checked, seat, orders):
         launched = launch(seat, "%2", 222)
         argv = [str(selected), "--synthetic"] if ran else ["fake", "--synthetic"]
-        replace(launched, argv=argv).write(seat.folder / "launch.json")
+        replace(launched, argv=argv).write(seat.trusted / "launch.json")
         return [Check("synthetic probe", True)]
 
     monkeypatch.setattr(check, "probe", probe)

@@ -61,13 +61,14 @@ def transport(tmp_path: Path, monkeypatch):
     svc = Service(ship, tmux)
     seat = svc.seat("worker")
     seat.home.mkdir(parents=True)
+    seat.trusted.mkdir(parents=True, exist_ok=True)
     launch = dict(pane=pane.id, pid=pane.pid, at=(post.now()-timedelta(minutes=1)).isoformat(), pool="synthetic",
                   argv=["codex"], harness="codex", resume=None, version="synthetic")
-    (seat.folder/"launch.json").write_text(json.dumps(launch))
+    (seat.trusted/"launch.json").write_text(json.dumps(launch))
     record = seat.home/"synthetic.jsonl"
     record.write_text("")
-    (seat.folder/"record").write_text(str(record))
-    record_owner.register(seat.folder, record, "codex")
+    (seat.trusted/"record").write_text(str(record))
+    record_owner.register(seat.trusted, record, "codex")
     confirm, shows = Door.confirm, Door.box_shows
     monkeypatch.setattr(Door, "confirm", lambda self, text: confirm(self, text, seconds=0))
     monkeypatch.setattr(Door, "box_shows", lambda self, box: shows(self, box, seconds=0))

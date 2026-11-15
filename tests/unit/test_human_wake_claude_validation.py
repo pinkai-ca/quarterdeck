@@ -85,7 +85,7 @@ class Composer:
 
 def launch(seat: Seat, pane: Pane, minutes: int = 1) -> None:
     Launched(pane.id, pane.pid, (post.now() - timedelta(minutes=minutes)).isoformat(), seat.pool.name, None,
-             ['qd-fakeharness'], 'synthetic', harness='fake').write(seat.folder / 'launch.json')
+             ['qd-fakeharness'], 'synthetic', harness='fake').write(seat.trusted / 'launch.json')
 
 
 @pytest.fixture
@@ -96,12 +96,14 @@ def desk(drydock, monkeypatch):
     tmux = Composer(DESK)
     seat = Seat(ship, ship.seat('desk'), tmux)
     seat.folder.mkdir(parents=True, exist_ok=True)
+    seat.trusted.mkdir(parents=True, exist_ok=True)
     seat.home.mkdir(parents=True, exist_ok=True)
+    seat.trusted.mkdir(parents=True, exist_ok=True)
     launch(seat, DESK)
     record = ClaudeShape(seat.home, ship.workspace, 'synthetic-desk-record', 'fake-1')
     record.begin('Synthetic earlier request', 'fake-1', 'medium')
     record.end('synthetic earlier answer')
-    (seat.folder / 'record').write_text(f'{record.path}\n')
+    (seat.trusted / 'record').write_text(f'{record.path}\n')
     monkeypatch.setattr(seat, 'join', lambda: Join(record.path))
     tmux.record = record
     store = post.Store(ship.runtime)
@@ -142,7 +144,7 @@ def dead_pid() -> int:
 
 
 def reservation(d) -> dict:
-    return json.loads((d.seat.folder / 'human-wake.json').read_text())
+    return json.loads((d.seat.trusted / 'human-wake.json').read_text())
 
 
 def received(d) -> bool:
@@ -189,7 +191,7 @@ def test_no_waiting_message_means_no_input(desk):
     for _ in range(3):
         human_wake.run(desk.seat)
     assert desk.tmux.typed() == []
-    assert not (desk.seat.folder / 'human-wake.json').exists()
+    assert not (desk.seat.trusted / 'human-wake.json').exists()
     assert human_wake.status(desk.seat) is None
 
 
@@ -299,7 +301,7 @@ def test_an_old_identical_line_at_the_boundary_vetoes_without_input(desk, monkey
     monkeypatch.setattr(input_receipt, 'confirmed', lambda *args, **kwargs: 'delivered')
     reason = human_wake.run(desk.seat)
     assert reason and 'receipt' in reason and desk.tmux.typed() == []
-    assert not (desk.seat.folder / 'human-wake.json').exists() or reservation(desk)['phase'] == 'cancelled'
+    assert not (desk.seat.trusted / 'human-wake.json').exists() or reservation(desk)['phase'] == 'cancelled'
 
 
 # -- the watch: tri-state, malformed evidence holds --------------------------------------------
@@ -453,7 +455,7 @@ def test_a_relaunch_after_a_confirmed_wake_releases_it_for_exactly_one_new_wake(
     assert desk.pastes() == [EXACT, EXACT] and desk.keys() == [('Enter',), ('Enter',)]
     assert received(desk), 'the new launch\'s wake has its own receipt'
     assert 'person must intervene' not in (human_wake.status(desk.seat) or '')
-    history = list((desk.seat.folder / 'human-wake-history').iterdir())
+    history = list((desk.seat.trusted / 'human-wake-history').iterdir())
     assert len(history) == 1 and json.loads(history[0].read_text())['phase'] == 'delivered', \
         'the old launch\'s wake is retained, not erased'
 
@@ -468,7 +470,7 @@ def test_a_crash_left_typing_phase_without_a_receipt_is_never_resent(desk, monke
     human_wake.run(desk.seat)
     data = reservation(desk)
     data['phase'] = phase
-    (desk.seat.folder / 'human-wake.json').write_text(json.dumps(data))
+    (desk.seat.trusted / 'human-wake.json').write_text(json.dumps(data))
     sent = len(desk.tmux.typed())
     for _ in range(3):
         human_wake.run(desk.seat)
@@ -481,7 +483,7 @@ def test_a_crash_left_typing_phase_with_its_receipt_is_recovered_without_input(d
     confirmed_wake(desk)
     data = reservation(desk)
     data['phase'] = phase
-    (desk.seat.folder / 'human-wake.json').write_text(json.dumps(data))
+    (desk.seat.trusted / 'human-wake.json').write_text(json.dumps(data))
     human_wake.run(desk.seat)
     assert received(desk)
     assert desk.pastes() == [EXACT] and desk.keys() == [('Enter',)]
@@ -529,7 +531,7 @@ def test_a_pre_paste_launch_change_cancels_without_keys_or_a_person_hold(desk, m
 
 @pytest.mark.parametrize('content', ['garbage', '{}', json.dumps({'format': 2})])
 def test_a_malformed_reservation_holds_without_input(desk, content):
-    (desk.seat.folder / 'human-wake.json').write_text(content)
+    (desk.seat.trusted / 'human-wake.json').write_text(content)
     desk.order()
     reason = human_wake.run(desk.seat)
     assert reason and 'never resent' in reason and desk.tmux.typed() == []
@@ -549,7 +551,7 @@ def test_every_input_hold_is_checked_before_any_record_or_screen_read(desk, monk
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('garbage')
     else:
-        (desk.seat.folder / 'human-wake.json').write_text('garbage')
+        (desk.seat.trusted / 'human-wake.json').write_text('garbage')
 
     def forbidden(*args, **kwargs):
         pytest.fail('a held human seat is never read: no record, state, inputs or screen')
@@ -581,7 +583,7 @@ def test_a_standing_reservation_reads_only_its_own_receipt_or_ended_state_and_a_
         if phase == 'queued':
             data = reservation(desk)
             data['phase'] = 'queued'
-            (desk.seat.folder / 'human-wake.json').write_text(json.dumps(data))
+            (desk.seat.trusted / 'human-wake.json').write_text(json.dumps(data))
     desk.order('A later synthetic order')
     sent, before, states = list(desk.tmux.sent), reservation(desk)['phase'], []
 
@@ -645,7 +647,7 @@ def test_one_human_seats_wake_failure_is_isolated_detailed_only_and_logged_once(
     about = [fields for _, fields in logged if fields.get('seat') == 'desk']
     assert len(about) == 1 and about[0].get('reason') == reason, 'one fixed category, logged once'
     assert secret not in json.dumps(logged, default=str), 'no exception text is logged'
-    assert secret not in (d.seat.folder / 'human-wake-status.json').read_text()
+    assert secret not in (d.seat.trusted / 'human-wake-status.json').read_text()
     # The public per-seat hold: the seat's wake state, the declared field qd status detail and qd watch render.
     assert human_wake.status(d.seat) == reason
     assert watch.reading(d.seat).wake == reason
@@ -691,7 +693,7 @@ def test_status_evidence_is_operational_only_and_never_carries_the_message(desk)
     desk.tmux.box = 'operator draft'
     desk.order()
     reason = human_wake.run(desk.seat)
-    data = json.loads((desk.seat.folder / 'human-wake-status.json').read_text())
+    data = json.loads((desk.seat.trusted / 'human-wake-status.json').read_text())
     assert set(data) == {'format', 'identity', 'source', 'reason'} and data['reason'] == reason
     assert human_wake.status(desk.seat) == reason
     for path in desk.seat.folder.rglob('*'):
@@ -804,8 +806,9 @@ def checking(desk, monkeypatch):
     def temporary(ship, tmux, spec, orders, purpose, *, installed_version=None, human=False, check_inbox=False):
         assert check_inbox is True, 'every check seat is admitted to its own inbox by the check alone'
         launched.append((spec.name, human))
-        seat = SimpleNamespace(name=spec.name, ship=ship, folder=ship.runtime / 'seats' / spec.name)
+        seat = SimpleNamespace(name=spec.name, ship=ship, folder=ship.runtime / 'seats' / spec.name, trusted=ship.runtime / 'seats' / spec.name)
         seat.folder.mkdir(parents=True, exist_ok=True)
+        seat.trusted.mkdir(parents=True, exist_ok=True)
         yield seat
     monkeypatch.setattr(checkmod, 'temporary_seat', temporary)
     return SimpleNamespace(ship=desk.ship, launched=launched, normal=normal, version=version)
@@ -839,7 +842,7 @@ def test_a_missing_program_adds_no_waking_row_and_launches_nothing(checking, nam
 
 def test_the_wake_reservation_is_retained_before_teardown_and_a_failed_proof_fails(checking, monkeypatch):
     def probe_wake(seat, orders):
-        (seat.folder / 'human-wake.json').write_text('{"synthetic": "reservation"}\n')
+        (seat.trusted / 'human-wake.json').write_text('{"synthetic": "reservation"}\n')
         return [drill.Check('human-session waking line: known-empty paste and record receipt', False, 'synthetic')]
     monkeypatch.setattr(checkmod, 'probe_wake', probe_wake)
     checks = checkmod.check(checking.ship, 'fake', None)
@@ -906,7 +909,7 @@ def test_the_wake_steps_own_human_seat_retires_its_transport_and_cleans_up(tmp_p
             assert not available, 'the check owns the wake seat while it probes'
         order = post.Store(ship.runtime).new('order', 'ship', seat.name, 'Synthetic wake order')
         orders.append(order)
-        (seat.folder / 'human-wake.json').write_text('{"synthetic": "wake reservation"}\n')
+        (seat.trusted / 'human-wake.json').write_text('{"synthetic": "wake reservation"}\n')
         seen.update(seat=seat, order=order)
         if outcome == 'exception':
             raise RuntimeError('synthetic wake exception')
@@ -974,7 +977,7 @@ def narrowed(d, width, after_reservation=False):
 
     def read_pane(ident, history=0, **options):
         found = real(ident, history, **options)
-        if found and (not after_reservation or (d.seat.folder / 'human-wake.json').exists()):
+        if found and (not after_reservation or (d.seat.trusted / 'human-wake.json').exists()):
             return replace(found[0], width=width), found[1]
         return found
     d.tmux.read_pane = read_pane
@@ -986,7 +989,7 @@ def test_a_pane_one_column_too_narrow_is_never_typed_into_and_says_why(desk):
     for _ in range(2):
         said = human_wake.run(desk.seat)
         assert said == f"human wake held: pane too narrow for the waking line ({NEEDED['fake']} columns needed)"
-    assert desk.tmux.typed() == [] and not (desk.seat.folder / 'human-wake.json').exists(), 'no reservation'
+    assert desk.tmux.typed() == [] and not (desk.seat.trusted / 'human-wake.json').exists(), 'no reservation'
     assert human_wake.status(desk.seat) == said, 'the hold is named in the detailed reading'
 
 
@@ -1135,10 +1138,10 @@ def test_tool_evidence_is_read_only_from_the_seats_own_pinned_record(desk, tmp_p
     desk.seat.harness.check_tool_evidence = lambda record: read.append(record) or dict(status='known', reason='r', pairs=[])
     elsewhere = ClaudeShape(tmp_path / 'elsewhere', desk.ship.workspace, 'synthetic-foreign-record', 'fake-1')
     elsewhere.begin('Synthetic foreign request', 'fake-1', 'medium')
-    (desk.seat.folder / 'record').write_text(f'{elsewhere.path}\n')
+    (desk.seat.trusted / 'record').write_text(f'{elsewhere.path}\n')
     checkmod.retain_wake_evidence(desk.seat, dict(reason='synthetic', first_delivery=None))
     assert read == [] and evidence(desk)[1]['status'] == 'unknown', 'a record outside the seat home is never read'
-    (desk.seat.folder / 'record').write_text(f'{desk.record.path}\n')
+    (desk.seat.trusted / 'record').write_text(f'{desk.record.path}\n')
     checkmod.retain_wake_evidence(desk.seat, dict(reason='synthetic', first_delivery=None))
     assert read == [desk.record.path] and evidence(desk)[1]['status'] == 'known', 'its own pinned record, once'
     desk.tmux.panes[DESK.id] = replace(DESK, pid=DESK.pid + 1)  # the pane no longer belongs to the launch

@@ -39,9 +39,10 @@ def test_account_prices_resume_fresh_pool_edit_and_restart_from_launch_evidence(
     launched = Launched('%1', 2, AT.isoformat(), 'a', None, ['pi'], 'synthetic', 'pi')
 
     def pin(path, launch):
-        (seat.folder / 'record').write_text(str(path))
-        launch.write(seat.folder / 'launch.json')
-        remember_launch(seat.folder, path, launch)
+        seat.trusted.mkdir(parents=True, exist_ok=True)
+        (seat.trusted / 'record').write_text(str(path))
+        launch.write(seat.trusted / 'launch.json')
+        remember_launch(seat.trusted, path, launch)
 
     pin(record, launched)  # old launch had no stated price
     append_turn(record, 1)

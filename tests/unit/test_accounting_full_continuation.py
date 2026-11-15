@@ -86,7 +86,7 @@ def test_identity_retry_is_refused_when_its_full_generation_moves(tmp_path, monk
         def start(self, service):
             result = super().start(service)
             if self.job == 1:
-                with record_owner.registry(seat.home.parent).open('a') as stream:
+                with record_owner.registry(seat.trusted).open('a') as stream:
                     stream.write('\n')
             return result
     driver = ChurnOnce()

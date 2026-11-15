@@ -36,7 +36,7 @@ def grok(drydock, monkeypatch):
     pane = SimpleNamespace(id="%1", pid=123, dead=False, width=112, in_mode=False)
 
     def click(pane_id, x, y):
-        launches.append(json.loads((seat.folder / "launch.json").read_text()))  # what was recorded before the press
+        launches.append(json.loads((seat.trusted / "launch.json").read_text()))  # what was recorded before the press
         clicks.append((pane_id, x, y))
         shown[0] = after[0]
 
@@ -46,8 +46,9 @@ def grok(drydock, monkeypatch):
                            mouse_modes=lambda pane_id, pid: modes[0] if pid == pane.pid else None)
     seat = Seat(ship, spec, tmux)
     seat.folder.mkdir(parents=True, exist_ok=True)
+    seat.trusted.mkdir(parents=True, exist_ok=True)
     Launched("%1", 123, "2030-01-01T00:00:00+00:00", "synthetic", None, ["grok"], "1.0.77", "grok").write(
-        seat.folder / "launch.json")
+        seat.trusted / "launch.json")
     monkeypatch.setattr(seat, "pane", lambda: pane)
     monkeypatch.setattr("quarterdeck.door.ANSWER_SECONDS", 0.5)
     return SimpleNamespace(seat=seat, shown=shown, after=after, clicks=clicks, modes=modes, launches=launches)
@@ -187,7 +188,7 @@ def test_no_press_under_a_hint_row_that_reads_neither(grok):
 
 
 def test_the_launch_record_keeps_its_old_shape_until_a_question_is_answered(grok):
-    data = json.loads((grok.seat.folder / "launch.json").read_text())
+    data = json.loads((grok.seat.trusted / "launch.json").read_text())
     assert "answered" not in data
 
 
@@ -195,7 +196,7 @@ def test_the_launch_record_keeps_its_old_shape_until_a_question_is_answered(grok
 
 def relaunch(grok, **fields):
     launched = grok.seat.launched()
-    replace(launched, **fields).write(grok.seat.folder / "launch.json")
+    replace(launched, **fields).write(grok.seat.trusted / "launch.json")
 
 
 def test_after_the_press_the_fresh_composer_reads_idle_in_that_launch(grok):

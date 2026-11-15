@@ -10,6 +10,7 @@ listed in docs/ANTIGRAVITY.md.
 
 from __future__ import annotations
 
+from .. import seat_files
 from .base import SetupMetadata
 from .capabilities import DefaultMetadata, EffortCapability, SuggestedValue
 
@@ -126,7 +127,7 @@ class AntigravityHarness(Harness):
     def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None) -> Credential | None:
         """Our settings for the session, passed on the command line; nothing of the program's own is written."""
         self.check_defaults(seat, ship_home)
-        home.mkdir(parents=True, exist_ok=True)
+        seat_files.make_folder(home)  # never through a link its jail planted
         settings = {"trustedWorkspaces": [str(seat.cwd)] if seat.cwd else []}
         settings = {**ship_template(ship_home, "settings.json"), **settings}
         settings.update(seat.settings)

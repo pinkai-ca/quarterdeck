@@ -20,12 +20,14 @@ def example(tmp_path, monkeypatch):
     folder = runtime / 'seats' / 'ordinary-builder'
     home = folder / 'home'
     home.mkdir(parents=True)
+    trusted = runtime / 'trusted' / 'ordinary-builder'
+    trusted.mkdir(parents=True)
     record = home / 'ordinary-record'
     record.write_text('Ordinary native evidence.\n')
     (tmp_path / 'ship.toml').write_text('Ordinary declaration.\n')
     for name in ('launch.json', 'launch-price.json', 'record', 'pool',
                  'record-readers.jsonl', 'record-launches.jsonl'):
-        (folder / name).write_text('Ordinary saved metadata.\n')
+        (trusted / name).write_text('Ordinary saved metadata.\n')
     (home / 'conversations.owned').write_text('Ordinary historical binding.\n')
     for name in ('store', 'imports', 'forwarded', 'addressed'):
         (runtime / 'post' / name).mkdir(parents=True)
@@ -52,7 +54,7 @@ def example(tmp_path, monkeypatch):
         gate.finish(service, db.total_changes, full=True)
         assert gate.completed is not None
     value = SimpleNamespace(service=service, seat=seat, db=db, gate=gate, complete=complete,
-                            clock=clock, version=version, runtime=runtime, folder=folder, record=record)
+                            clock=clock, version=version, runtime=runtime, folder=folder, trusted=trusted, record=record)
     yield value
     db.close()
 
@@ -87,7 +89,7 @@ def test_each_file_or_immutable_post_publication_starts_a_job(example, name):
     elif name in ('store', 'imports', 'forwarded', 'addressed'):
         target = e.runtime / 'post' / name / 'ordinary-publication.json'
     else:
-        target = e.folder / name
+        target = e.trusted / name
     target.write_text('Changed ordinary evidence.\n')
     assert e.gate.allowed(e.service)
     e.complete()
@@ -97,7 +99,7 @@ def test_each_file_or_immutable_post_publication_starts_a_job(example, name):
 @pytest.mark.parametrize('declared', [False, True])
 def test_retired_and_unresolved_seat_binding_changes_start_jobs(example, declared):
     e = example
-    folder = e.runtime / 'seats' / 'ordinary-unresolved-or-retired'
+    folder = e.runtime / 'trusted' / 'ordinary-unresolved-or-retired'
     folder.mkdir()
     journal = folder / 'record-launches.jsonl'
     journal.write_text('Ordinary retained launch evidence.\n')
@@ -302,7 +304,7 @@ def test_start_reason_names_only_the_changed_input_class(example, change, kind):
     elif change == 'wal':
         Path(str(e.record) + '-wal').write_bytes(b'ordinary WAL metadata')
     elif change == 'launch':
-        (e.folder / 'launch.json').write_text('Ordinary changed launch metadata.\n')
+        (e.trusted / 'launch.json').write_text('Ordinary changed launch metadata.\n')
     elif change == 'post':
         (e.runtime / 'post' / 'store' / 'ordinary-publication').write_text('Ordinary publication.\n')
     elif change == 'settings':

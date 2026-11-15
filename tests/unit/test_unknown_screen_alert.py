@@ -31,9 +31,10 @@ def observed(drydock, monkeypatch):
     tmux = SimpleNamespace(read_pane=packet, pane=lambda _: pane, keys=forbidden, paste=forbidden)
     seat = Seat(ship, spec, tmux)
     seat.folder.mkdir(parents=True)
+    seat.trusted.mkdir(parents=True, exist_ok=True)
     launched = Launched('%1', 123, datetime.now(timezone.utc).isoformat(),
                         spec.pools[0], None, ['pi'], '0.74.2', 'pi')
-    launched.write(seat.folder / 'launch.json')
+    launched.write(seat.trusted / 'launch.json')
     monkeypatch.setattr(watch, 'seats', lambda *_: [seat])
     monkeypatch.setattr(service, 'seats', lambda *_: [seat])
     svc = service.Service(ship, tmux)
@@ -94,7 +95,7 @@ def test_another_or_missing_launch_cannot_confirm_an_unknown_alarm(observed, mon
                 return replace(found[0], pid=999), found[1]
             if change == 'missing':
                 return None
-            replace(w.launched, at='2000-01-01T00:00:00+00:00').write(w.seat.folder / 'launch.json')
+            replace(w.launched, at='2000-01-01T00:00:00+00:00').write(w.seat.trusted / 'launch.json')
         return found
     monkeypatch.setattr(w.seat.tmux, 'read_pane', changed)
     assert not w.alert(route)

@@ -416,7 +416,7 @@ def test_an_upgrade_held_by_an_unresolved_seat_retries_without_rewriting_healthy
                 **install.brief_snapshot(ship))
     card = framework / "roles" / "captain.md"
     card.write_text(card.read_text() + "\nSynthetic upgraded instruction.\n")
-    unknown = ship.runtime / "seats" / "worker-1" / "pool"
+    unknown = ship.runtime / "trusted" / "worker-1" / "pool"
     unknown.mkdir(parents=True)  # an unreadable saved selection: the seat cannot be resolved
 
     assert svc.upgrade_rebrief(data) is None

@@ -194,7 +194,7 @@ def test_unproved_compaction_never_suppresses_the_mode_alarm(world, fault):
     con.close()
     if fault == 'replaced-launch':
         launch = world.seat.launched()
-        replace(launch, at=(AT + timedelta(seconds=2)).isoformat()).write(world.seat.folder / 'launch.json')
+        replace(launch, at=(AT + timedelta(seconds=2)).isoformat()).write(world.seat.trusted / 'launch.json')
     elif fault == 'changed-config':
         path = world.seat.home / 'config/opencode/opencode.json'
         path.write_text(path.read_text() + '\n')

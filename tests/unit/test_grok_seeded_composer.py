@@ -121,6 +121,7 @@ def seeded(drydock, tmp_path, monkeypatch):
         tmux = GrokTmux(pane)
         seat = Seat(ship, spec, tmux)
         seat.folder.mkdir(parents=True, exist_ok=True)
+        seat.trusted.mkdir(parents=True, exist_ok=True)
         sign_in = tmp_path / f"sign-in-{seat_name}"
         sign_in.mkdir()
         (sign_in / "auth.json").write_text(json.dumps({"synthetic-account": {"coding_data_retention_opt_out": opt_out}}))
@@ -138,7 +139,7 @@ def seeded(drydock, tmp_path, monkeypatch):
         adapter.build_home(seat.home, built, pool, None)
         launch = adapter.launch(built, pool, seat.home, brief, None, None)
         Launched(pane.id, pane.pid, (post.now()).isoformat(), "example-subscription", None, list(launch.argv),
-                 version, "grok", notice=launch.notice).write(seat.folder / "launch.json")
+                 version, "grok", notice=launch.notice).write(seat.trusted / "launch.json")
         record = seat.home / "sessions" / "synthetic" / SESSION / "updates.jsonl"
         ended_turn(record)
         tmux.record = record
@@ -150,7 +151,7 @@ def seeded(drydock, tmp_path, monkeypatch):
 
 
 def relaunch(seat: Seat, **fields) -> None:
-    replace(seat.launched(), **fields).write(seat.folder / "launch.json")
+    replace(seat.launched(), **fields).write(seat.trusted / "launch.json")
 
 
 def pastes(d) -> list[str]:

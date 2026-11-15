@@ -33,7 +33,7 @@ def table_rows(book):
 def phase(runtime, label):
     from contextlib import nullcontext
     from types import SimpleNamespace
-    from quarterdeck import record_owner, ship as shipmod
+    from quarterdeck import record_owner, ship as shipmod, trusted_files
     from quarterdeck.accounting_slices import Driver
     from quarterdeck.harness import get, reader_stamp
     from quarterdeck.service import Service
@@ -50,7 +50,8 @@ def phase(runtime, label):
         if not path.is_relative_to(runtime):
             continue  # no authority to read the legacy external source
         if seat not in bindings:
-            owner = SimpleNamespace(home=runtime/'seats'/seat/'home',launched=lambda:None)
+            owner = SimpleNamespace(home=runtime/'seats'/seat/'home',trusted=trusted_files.folder(runtime,seat),
+                launched=lambda:None)
             bindings[seat] = record_owner.bindings(owner,publish=False)
         names = bindings[seat].get(path,set())
         if names:
@@ -66,7 +67,8 @@ def phase(runtime, label):
                    next((item.reader for item in sources if item.reader), get('fake')))
         pool = service.ship.pools[spec.pools[0]] if spec is not None else SimpleNamespace(name='copied-history')
         session = service.ship.sessions.get(spec.session) if spec is not None else None
-        selected.append(SimpleNamespace(name=name,home=runtime/'seats'/name/'home',harness=harness,
+        selected.append(SimpleNamespace(name=name,home=runtime/'seats'/name/'home',
+            trusted=trusted_files.folder(runtime,name),harness=harness,
             spec=spec or SimpleNamespace(model=None),pool=pool,
             session=session or SimpleNamespace(human=False),pane=lambda:None,
             launched=lambda:None,record=lambda:None))

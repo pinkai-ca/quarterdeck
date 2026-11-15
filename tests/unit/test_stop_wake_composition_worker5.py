@@ -15,7 +15,7 @@ def wake_reservation(tmp_path):
     runtime.mkdir()
     stamp = datetime(2000, 1, 1, tzinfo=timezone.utc).isoformat()
     name = 'synthetic-human-zzzz'
-    proof = pending.Proof(runtime / 'seats' / name / 'human-wake.json', {})
+    proof = pending.Proof(runtime / 'trusted' / name / 'human-wake.json', {})
     proof.save(format=1, seat=name, identity=dict(pane='synthetic-pane-zzzz', pid=101,
                launch=stamp, harness='fake'), at=stamp, since=stamp, payload=human_wake.LINE,
                phase='prepared', record=None, shown=None, attempts=[], generation=None, ended=False)
@@ -29,7 +29,7 @@ def test_wake_reservation_joins_stop_without_becoming_a_pending_post(tmp_path):
         with shutdown.delivery(proof):
             active = shutdown.inflight(runtime, shutdown.owner(runtime))
             assert active['kind'] == 'human wake'
-            assert active['journal'] == 'seats/synthetic-human-zzzz/human-wake.json'
+            assert active['journal'] == 'trusted/synthetic-human-zzzz/human-wake.json'
             assert active['before_paste']
             assert proof.path.read_bytes() == original
             assert 'delivery_token' not in proof.data and 'service_owner' not in proof.data
@@ -81,7 +81,7 @@ def test_post_exit_submitted_wake_preserves_submission_for_its_receipt(tmp_path,
                 shutdown._controller.signal()
     monkeypatch.setattr(shutdown, 'process_gone', lambda expected: True)
     assert 'delivery reached submitted' in shutdown.annotate(runtime, owner, forced=False)
-    saved = human_wake.load(SimpleNamespace(folder=proof.path.parent, name=proof.data['seat']))
+    saved = human_wake.load(SimpleNamespace(folder=proof.path.parent, trusted=proof.path.parent, name=proof.data['seat']))
     assert saved.data['phase'] == 'submitted'
     assert saved.data['service_stop']['phase'] == 'submitted'
     assert saved.data['attempts'] == []

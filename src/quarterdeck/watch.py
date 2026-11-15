@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+from . import trusted_files
 from . import post_retirement, accounting_health, acts, check_outcome, credential, idle, ledger, move_hold, server_recovery, pending as pending_delivery, post, post_dir, program_use, providers, quota, record_owner, recovery, request_queue, servicectl as service
 from .door import Door, Reading
 from .harness.capabilities import selection_label
@@ -255,7 +256,7 @@ def accounted_history(book, seat):
         if not owned:
             return False
         try:
-            named = (seat.home.parent / 'record').read_text().strip()
+            named = (seat.trusted / trusted_files.RECORD).read_text().strip()
             current = Path(named) if named else None
         except FileNotFoundError:
             current = None

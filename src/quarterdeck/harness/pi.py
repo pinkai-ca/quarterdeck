@@ -10,6 +10,7 @@ against a local vLLM endpoint.
 
 from __future__ import annotations
 
+from .. import seat_files
 from .capabilities import (DefaultMetadata, EffortCapability, SuggestedValue, reject_default_overrides,
                            reject_unclassified_overrides)
 
@@ -365,8 +366,8 @@ class PiHarness(EndpointHarness):
     def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None) -> Credential | None:
         self.check_defaults(seat, ship_home)
         agent, sessions = home / "agent", home / "sessions"
-        agent.mkdir(parents=True, exist_ok=True)
-        sessions.mkdir(parents=True, exist_ok=True)
+        seat_files.make_folder(agent)  # never through a link its jail planted
+        seat_files.make_folder(sessions)
         choice, secret = self.endpoint_home(home, seat, pool)
         model = {"id": choice.model, "name": choice.model, "input": ["text"],
                  "contextWindow": choice.context, "maxTokens": choice.output}

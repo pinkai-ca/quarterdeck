@@ -117,7 +117,7 @@ def test_door_pastes_and_submits_unfolded_text_once(tmp_path, width, offset):
 
     composer = Composer()
     seat = SimpleNamespace(
-        name='probe', harness=reader, tmux=composer, folder=tmp_path / 'probe',
+        name='probe', harness=reader, tmux=composer, folder=tmp_path / 'probe', trusted=tmp_path / 'probe',
         ship=SimpleNamespace(runtime=tmp_path / 'runtime'),
         session=SimpleNamespace(human=False), pool=SimpleNamespace(name='google'),
         spec=SeatSpec('probe', 'probe', 'worker', 'antigravity', ('google',)),

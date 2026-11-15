@@ -41,16 +41,18 @@ def inputs(ship):
         'hwa', 'pool-usage', 'proven/check-outcomes', 'server-recovery.json',
         'retirement-status.json', 'pool-forecast-alerts.json', 'seat-holds.json', 'pr-screen/screening', 'post/relaunch',
     )]
+    from . import trusted_files
     for name in sorted(ship.seats):
-        folder = runtime / 'seats' / name
         paths += [runtime / 'post/pending' / name, runtime / 'post/drop' / name]
-        try:
-            paths += sorted(path for path in folder.iterdir()
-                            if path.name != 'home' and path.name not in SERVICE_WRITTEN)
-        except FileNotFoundError:
-            pass
-        except OSError:
-            return None
+        # Its own folder (what its program and its watch write) and its trusted one (what the service writes).
+        for folder in (runtime / 'seats' / name, trusted_files.folder(runtime, name)):
+            try:
+                paths += sorted(path for path in folder.iterdir()
+                                if path.name != 'home' and path.name not in SERVICE_WRITTEN)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                return None
     try:
         return tuple((str(path), fingerprint(path)) for path in paths)
     except OSError:

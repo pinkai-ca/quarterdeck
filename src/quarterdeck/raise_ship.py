@@ -60,7 +60,7 @@ def recorded_programs(project: Path) -> set[tuple[int, str]]:
     try:
         folders = [project / "office", *[p for p in entries(project / "ships") if p.is_dir()]]
         for folder in folders:
-            for seat in entries(folder / "runtime" / "seats"):
+            for seat in entries(folder / "runtime" / "trusted"):  # trusted_files: what qd wrote, out of every jail's reach
                 if not seat.is_dir():
                     continue
                 path = seat / "launch.json"

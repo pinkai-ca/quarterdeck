@@ -1,9 +1,12 @@
-"""A jail's own seat folder cannot make the service act on another seat (S1 to S5), in real bubblewrap.
+"""The service's defences against a forged journal or launch record (S1 to S5), as a second layer.
 
-A jail for worker-1 writes each forged file into its own seat folder, the one place of the runtime it may write.
-Then the service's own steps run. Nothing is filed under another name, no pool's credential is replaced, nothing
-is charged to a pool not declared for the seat, and a malformed launch record holds worker-1 alone: the seat
-declared after it still gets its delivery, and the status line says why.
+These files now live in the seat's trusted folder, runtime/trusted/<seat> (trusted_files), which no jail can read or
+write: test_jail_trusted_folder proves that, and that a jail writing them in its own seat folder changes nothing.
+Here each forged file is put in the trusted folder by the test itself, as if one had ever got there, and the
+service's own steps run. Nothing is filed under another name, no pool's credential is replaced, nothing is charged
+to a pool not declared for the seat, and a malformed launch record holds worker-1 alone: the seat declared after it
+still gets its delivery, and the status line says why. The credential file, in the home, is still the jail's to
+write, and it writes it in real bubblewrap.
 """
 
 from __future__ import annotations
@@ -86,6 +89,14 @@ def jail_writes(ship: shipmod.Ship, tmp_path: Path, files: dict[Path, str]) -> N
     assert all(value is True for value in written.values()), written
 
 
+def planted(ship: shipmod.Ship, files: dict[str, str]) -> None:
+    """Each forged file put in worker-1's trusted folder by the test: no jail can reach it."""
+    trusted = ship.runtime / "trusted" / "worker-1"
+    trusted.mkdir(parents=True, exist_ok=True)
+    for name, text in files.items():
+        (trusted / name).write_text(text)
+
+
 def message(kind: str, sender: str, to: str, body: str, *, tail: str, re: str | None = None) -> Message:
     at = datetime(2026, 11, 15, 8, 0, tzinfo=timezone.utc)
     return Message(f"{kind[:3]}-20261115-0800-{sender}-{tail}", kind, sender, to, at, body, re=re)
@@ -126,8 +137,7 @@ def test_a_forged_journal_files_nothing_under_any_name(ship, tmux, tmp_path, jou
     """S1 (an alarm journal), S2 (compaction.json), S3 (refusal.json): a service pass files nothing of it."""
     svc = service.Service(ship, tmux)
     refused = svc.store.new("order", "captain", "worker-1", "Synthetic task")
-    own = ship.runtime / "seats" / "worker-1"
-    jail_writes(ship, tmp_path, {own / journal: json.dumps(forged(ship, tmp_path, journal, refused))})
+    planted(ship, {journal: json.dumps(forged(ship, tmp_path, journal, refused))})
 
     svc.deliveries()  # S1: every crew seat's alarm is observed on this pass
     svc.store.new("order", "captain", "worker-1", "A second synthetic task")  # S2: an admission to worker-1
@@ -153,11 +163,8 @@ def test_a_forged_launch_pool_and_credential_replace_no_pools_credential_and_cha
                   resume=None, argv=["fake"], version=None)
     history = dict(record=str(own / "home" / "record.jsonl"), at=launch["at"], pool="claude-primary",
                    harness="fake", price=None)
-    jail_writes(ship, tmp_path, {
-        own / "launch.json": json.dumps(launch),
-        own / "home" / ".credentials.json": live(FORGED, 10 * 365 * 86400),
-        own / "record-launches.jsonl": json.dumps(history) + "\n",
-    })
+    planted(ship, {"launch.json": json.dumps(launch), "record-launches.jsonl": json.dumps(history) + "\n"})
+    jail_writes(ship, tmp_path, {own / "home" / ".credentials.json": live(FORGED, 10 * 365 * 86400)})
 
     svc.credentials()
 
@@ -178,10 +185,9 @@ def test_a_malformed_launch_record_holds_its_seat_alone_and_the_next_seat_gets_i
     worker2 = Seat(ship, ship.seat("worker-2"), tmux)
     worker2.up(resume=False)
     order = svc.store.new("order", "captain", "worker-2", "Synthetic task for the seat after the jail")
-    own = ship.runtime / "seats" / "worker-1"
     launch = dict(pane="%1", pid=1, at=datetime.now(timezone.utc).isoformat(), pool="fake", resume=None,
                   argv=["fake"], version=None, planted="a field qd never writes")
-    jail_writes(ship, tmp_path, {own / "launch.json": json.dumps(launch)})
+    planted(ship, {"launch.json": json.dumps(launch)})
 
     svc.deliveries()
 

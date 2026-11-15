@@ -34,8 +34,8 @@ def setup(tmp_path, monkeypatch):
     con.close()
     launched = Launched('%1', 1, (AT-timedelta(seconds=1)).isoformat(), 'local', None,
                         ['opencode'], 'synthetic', harness='opencode')
-    launched.write(seat.folder/'launch.json')
-    (seat.folder/'record').write_text(str(history))
+    launched.write(seat.trusted/'launch.json')
+    (seat.trusted/'record').write_text(str(history))
     monkeypatch.setattr(service.machine, 'processes', lambda: {})
     svc = Service(ship, tmux)
     svc.account()
@@ -43,7 +43,7 @@ def setup(tmp_path, monkeypatch):
     con = database(fresh)
     con.commit()
     con.close()
-    (seat.folder/'record').write_text(str(fresh))
+    (seat.trusted/'record').write_text(str(fresh))
     yield svc, seat, history, fresh
     svc.ledger.close()
 

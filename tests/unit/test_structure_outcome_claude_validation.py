@@ -73,7 +73,7 @@ def crew(tmp_path, monkeypatch):
             (locks / f'{name}.lock').touch()
             pane = Pane(launch.pane, 'Validation', 'Validation', launch.pid, 100, 40, False, False, None)
             seat = SimpleNamespace(name=name, ship=ship, spec=specs[name], pool=ship.pools['fake'],
-                                   home=home, folder=home.parent, session=ship.sessions['crew'],
+                                   home=home, folder=home.parent, trusted=home.parent, session=ship.sessions['crew'],
                                    harness=FakeHarness(), _lifecycle=lambda **kwargs: nullcontext(),
                                    current_launch=launch, current_pane=pane,
                                    shown='────────────────\n> \n────────────────\n'

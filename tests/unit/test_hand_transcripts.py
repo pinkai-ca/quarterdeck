@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import hand_transcripts, record_location, record_owner
+from quarterdeck import hand_transcripts, record_location, record_owner, trusted_files
 from quarterdeck.harness import get, reader_stamp
 from quarterdeck.harness.base import record_fingerprint
 from quarterdeck.harness.opencode import OpenCodeHarness
@@ -75,16 +75,18 @@ def world(tmp_path, monkeypatch, kind='pi', *, complete=True):
         {'local': Pool('local', 'synthetic-endpoint', endpoint='http://127.0.0.1:1/v1')},
         {'crew': Session('crew', 'crew')}, {'hand': spec})
     home = ship.runtime / 'seats' / 'hand' / 'home'
+    trusted = trusted_files.folder(ship.runtime, 'hand')
+    trusted.mkdir(parents=True)
     record = transcript(home, 'old' if kind == 'pi' else 'data-001', kind, old, complete=complete)
     current = transcript(home, 'current' if kind == 'pi' else 'data-002', kind, now)
     launched = SimpleNamespace(at=(now-timedelta(seconds=1)).isoformat(), pool='local', harness=kind, price=None)
-    seat = SimpleNamespace(name='hand', folder=home.parent, home=home, spec=spec, harness=get(kind),
+    seat = SimpleNamespace(name='hand', folder=home.parent, trusted=trusted, home=home, spec=spec, harness=get(kind),
         session=SimpleNamespace(human=False), record=lambda: current, launched=lambda: launched, pane=lambda: None)
-    (home.parent / 'record-launches.jsonl').write_text(''.join(json.dumps(dict(record=str(r),
+    (trusted / 'record-launches.jsonl').write_text(''.join(json.dumps(dict(record=str(r),
         at=(at-timedelta(seconds=2)).isoformat(), pool='local', harness=kind)) + '\n'
         for r, at in ((record, old), (current, now))))
     for path in (record, current):
-        record_owner.register(home.parent, path, kind)
+        record_owner.register(trusted, path, kind)
     svc = Service(ship, SimpleNamespace())
     monkeypatch.setattr(svc, 'resolved_seats', lambda: [seat])
     logs = []
@@ -255,15 +257,15 @@ def test_unknown_reader_stays_and_retired_binding_cannot_be_rejoined(tmp_path, m
     from quarterdeck.seat import Seat
     w = world(tmp_path, monkeypatch, kind)
     try:
-        record_owner.register(w.seat.folder, w.record, 'fake')
+        record_owner.register(w.seat.trusted, w.record, 'fake')
         assert hand_transcripts.run(w.svc, now=w.now) == 0
         assert w.record.is_file()
         # A separate eligible record exercises both logical and physical retired bindings.
         name = 'eligible' if kind == 'pi' else 'data-003'
         old = datetime.fromtimestamp(w.now, timezone.utc) - timedelta(days=9)
         eligible = transcript(w.seat.home, name, kind, old)
-        record_owner.register(w.seat.folder, eligible, kind)
-        with (w.seat.folder / 'record-launches.jsonl').open('a') as journal:
+        record_owner.register(w.seat.trusted, eligible, kind)
+        with (w.seat.trusted / 'record-launches.jsonl').open('a') as journal:
             journal.write(json.dumps(dict(record=str(eligible), at=(old-timedelta(seconds=2)).isoformat(),
                                           pool='local', harness=kind)) + '\n')
         w.svc.account_records(process_table={})
@@ -272,8 +274,8 @@ def test_unknown_reader_stays_and_retired_binding_cannot_be_rejoined(tmp_path, m
         for path in (eligible, kept):
             assert record_location.retired(path)
             with pytest.raises(ShipError, match='retired'):
-                remember_launch(w.seat.folder, path, w.seat.launched())
-            (w.seat.folder / 'record').write_text(str(path)+'\n')
+                remember_launch(w.seat.trusted, path, w.seat.launched())
+            (w.seat.trusted / 'record').write_text(str(path)+'\n')
             with pytest.raises(ShipError, match='conversation is retired'):
                 Seat._resume_id(w.seat)
     finally:

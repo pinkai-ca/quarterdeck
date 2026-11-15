@@ -69,7 +69,8 @@ def test_every_row_identity_must_match_the_session_folder(tmp_path, extra):
 @pytest.mark.parametrize("name", ["claude", "codex"])
 def test_existing_adapters_keep_their_exact_join_boundary(tmp_path, monkeypatch, name):
     adapter = get(name)
-    record = Path(__file__).parents[1] / f"fixtures/receipt-time/{name}-fractional.jsonl"
+    record = tmp_path / f"{name}-fractional.jsonl"  # in the home: a record elsewhere is no seat's own
+    record.write_bytes((Path(__file__).parents[1] / f"fixtures/receipt-time/{name}-fractional.jsonl").read_bytes())
     at = adapter.first_timestamp(record)
     assert at is not None
     monkeypatch.setattr(adapter, "records", lambda home: [record])

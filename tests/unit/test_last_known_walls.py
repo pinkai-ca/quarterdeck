@@ -26,9 +26,10 @@ def claude_seat(tmp_path) -> Seat:
     ship = Ship(tmp_path, "example", "admiral", tmp_path, pools, {"crew": Session("crew", "crew")}, {"worker": spec})
     seat = Seat(ship, spec, SimpleNamespace(pane=lambda ident: None))
     seat.folder.mkdir(parents=True)
+    seat.trusted.mkdir(parents=True, exist_ok=True)
     now = datetime.now(timezone.utc)
     Launched("%1", 4242, (now - timedelta(hours=2)).isoformat(), "claude-primary", None, ["claude"], "synthetic",
-             harness="claude").write(seat.folder / "launch.json")
+             harness="claude").write(seat.trusted / "launch.json")
     return seat
 
 

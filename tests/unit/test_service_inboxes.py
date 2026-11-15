@@ -53,7 +53,7 @@ def test_quiet_warm_pass_does_no_rendering_reading_or_writing(inboxes, monkeypat
 
 @pytest.mark.parametrize('target', [
     'post/store', 'post/imports', 'post/addressed', 'post/forwarded',
-    'seats/worker/refusal.json', 'seats/worker/compaction.json',
+    'trusted/worker/refusal.json', 'trusted/worker/compaction.json',
     'ship.toml', 'membership', 'inbox-content', 'inbox-removed', 'inbox-folder',
 ])
 def test_each_input_alone_rebuilds(inboxes, monkeypatch, target):
@@ -99,7 +99,7 @@ def test_each_input_alone_rebuilds(inboxes, monkeypatch, target):
     if target == 'post/store':
         assert svc.store is previous_store, 'ordinary arrivals retain the incremental reader'
     elif target in ('ship.toml', 'membership', 'post/imports', 'post/addressed', 'post/forwarded',
-                    'seats/worker/refusal.json', 'seats/worker/compaction.json'):
+                    'trusted/worker/refusal.json', 'trusted/worker/compaction.json'):
         assert svc.store is not previous_store, 'projection changes require a fresh reader'
     assert inbox.read_text() == post.inbox_text(svc.store, 'worker')
     if target == 'post/store':
@@ -119,7 +119,7 @@ def test_a_question_answer_to_another_seat_rebuilds(inboxes):
 @pytest.mark.parametrize('file', ['refusal.json', 'compaction.json'])
 def test_existing_mutable_journal_edit_without_directory_change_rebuilds(inboxes, monkeypatch, file):
     svc, _, _ = inboxes
-    path = svc.runtime / 'seats/worker' / file
+    path = svc.runtime / 'trusted/worker' / file
     path.parent.mkdir(parents=True, exist_ok=True)
     value = ({'format': 1, 'seat': 'worker', 'events': []} if file == 'refusal.json'
              else compaction.new())

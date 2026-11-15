@@ -112,7 +112,7 @@ def test_a_seat_cannot_answer_by_dropping_its_own_environment(project, monkeypat
     try:
         # The desk's launch record names this program, as qd up writes it.
         start = seatmod.process_start(program.pid)
-        folder = office.runtime / 'seats' / 'desk'
+        folder = office.runtime / 'trusted' / 'desk'
         folder.mkdir(parents=True, exist_ok=True)
         seatmod.Launched(pane='%1', pid=program.pid, at=time.strftime('%Y-%m-%dT%H:%M:%S+00:00', time.gmtime()),
                          pool='claude', resume=None, argv=['claude'], version=None, harness='claude',

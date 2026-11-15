@@ -104,7 +104,7 @@ def test_unmatched_present_pane_keeps_launch_and_refuses_new_window(drydock, tmu
     seat = seatmod.Seat(ship, ship.seat('worker-1'), tmux)
     seat.up(False)
     launch = seat.launched()
-    path = seat.folder / 'launch.json'
+    path = seat.trusted / 'launch.json'
     data = json.loads(path.read_text())
     data['pid'] = launch.pid + 1  # mismatching evidence grants no ownership of the live pane
     path.write_text(json.dumps(data))
@@ -126,7 +126,7 @@ def test_failed_native_retirement_retains_launch_and_running_program(drydock, tm
     seat = seatmod.Seat(ship, ship.seat('worker-1'), tmux)
     seat.up(False)
     launch = seat.launched()
-    path = seat.folder / 'launch.json'
+    path = seat.trusted / 'launch.json'
     retained = path.read_bytes()
     original = tmux._invoke
 
@@ -150,7 +150,7 @@ def test_replacement_after_python_check_is_refused_by_native_pid_guard(drydock, 
     seat = seatmod.Seat(ship, ship.seat('worker-1'), tmux)
     seat.up(False)
     launch = seat.launched()
-    path = seat.folder / 'launch.json'
+    path = seat.trusted / 'launch.json'
     retained = path.read_bytes()
     original = tmux.kill_window
     replacements = []
@@ -180,7 +180,7 @@ def test_intervening_launch_snapshot_is_not_unlinked(drydock, tmux, monkeypatch,
     seat = seatmod.Seat(ship, ship.seat('worker-1'), tmux)
     seat.up(False)
     launch = seat.launched()
-    path = seat.folder / 'launch.json'
+    path = seat.trusted / 'launch.json'
     replacement = replace(launch, at='2030-01-01T00:00:00+00:00')
     if phase == 'before-close':
         monkeypatch.setattr(seat, 'record', lambda: replacement.write(path))

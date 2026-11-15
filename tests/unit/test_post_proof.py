@@ -92,7 +92,8 @@ def test_real_post_with_malformed_caller_launch_stores_once_without_recipient_re
     transport = SimpleNamespace(pane=lambda *a: pytest.fail('no PID/pane read is permitted'))
     sender = seat.Seat(ship, ship.seat('worker-1'), transport)
     sender.folder.mkdir(parents=True)
-    path = sender.folder/'launch.json'
+    sender.trusted.mkdir(parents=True, exist_ok=True)
+    path = sender.trusted/'launch.json'
     path.write_text(wire)
     original = path.read_bytes()
     monkeypatch.setenv('QD_SEAT', sender.name)
@@ -126,7 +127,8 @@ def test_real_post_with_malformed_recipient_launch_keeps_storage_and_unknown_sta
     transport = SimpleNamespace(pane=lambda *a: pytest.fail('malformed launch cannot establish a PID'))
     recipient = seat.Seat(ship, ship.seat('captain'), transport)
     recipient.folder.mkdir(parents=True)
-    path = recipient.folder/'launch.json'
+    recipient.trusted.mkdir(parents=True, exist_ok=True)
+    path = recipient.trusted/'launch.json'
     path.write_text(wire)
     original = path.read_bytes()
     monkeypatch.delenv('QD_SEAT', raising=False)

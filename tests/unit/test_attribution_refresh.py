@@ -24,7 +24,7 @@ def test_turn_write_waits_for_full_cached_evidence_and_service_replay(tmp_path, 
     order=message(svc.store,'ord-work')
     message(svc.store,'rep-close','report','worker','issuer',1,order.id)
     record=ship.runtime/'record';record.write_text('unchanged synthetic source')
-    record_owner.register(ship.runtime/'seats/worker',record,'fake')
+    record_owner.register(ship.runtime/'trusted/worker',record,'fake')
     calls=[]
     def inputs(self,path):
         calls.append(path)

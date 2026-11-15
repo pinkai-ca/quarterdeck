@@ -91,7 +91,7 @@ def test_human_policy_does_not_force_enable_an_explicit_denial_and_inline_choice
     assert Seat(seat.ship, spec, None).spec.for_pool('other').human_session is True
     seat.ship.seats['worker'] = spec
     # Actual session ownership also survives selecting the other program on reconstruction.
-    (seat.folder / 'pool').write_text('other')
+    (seat.trusted / 'pool').write_text('other')
     seat.ship.pools['other'] = Pool('other', 'codex')
     assert Seat(seat.ship, spec, None).spec.human_session is True
 
@@ -190,6 +190,7 @@ def test_native_scope_symlink_is_refused_without_reading_its_target(tmp_path, mo
     monkeypatch.setattr(endpoint, 'choose', lambda *args: pytest.fail('unmanaged native scope reached model discovery'))
     seat = resolved(tmp_path, 'opencode', False)
     seat.home.mkdir(parents=True)
+    seat.trusted.mkdir(parents=True, exist_ok=True)
     target = tmp_path/'synthetic-native-config'
     target.mkdir()
     (seat.home/'.opencode').symlink_to(target, target_is_directory=True)

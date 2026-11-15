@@ -116,7 +116,8 @@ def test_invalid_subscription_never_retires_an_existing_launch(tmp_path, monkeyp
     seat = Seat(ship, spec, SimpleNamespace())  # historical readings stay possible
     launch = Launched("%1", 101, post.now().isoformat(), "bad", None, ["codex"], "synthetic", "codex")
     seat.folder.mkdir(parents=True)
-    launch.write(seat.folder / "launch.json")
+    seat.trusted.mkdir(parents=True, exist_ok=True)
+    launch.write(seat.trusted / "launch.json")
     monkeypatch.setattr(seat, "_down", lambda: pytest.fail("refusal retired the existing launch"))
     args = ("bad",) if verb == "failover_to" else ()
     with pytest.raises(ShipError, match="native harness claude"):

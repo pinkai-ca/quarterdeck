@@ -12,6 +12,7 @@ opened in place (law: one-folder). Proven on 1.19.5 against a local vLLM endpoin
 
 from __future__ import annotations
 
+from .. import seat_files
 from .capabilities import DefaultMetadata, EffortCapability, SuggestedValue
 
 import copy
@@ -172,7 +173,7 @@ class OpenCodeHarness(EndpointHarness):
         self.check_defaults(seat, ship_home)
         if not seat.human_session:
             guard_question_configuration(home)
-        home.mkdir(parents=True, exist_ok=True)
+        seat_files.make_folder(home)  # never through a link its jail planted
         runtime = home.parents[2]  # runtime/seats/<seat>/home
         choice, secret = self.endpoint_home(home, seat, pool)
         provider = {
@@ -208,7 +209,7 @@ class OpenCodeHarness(EndpointHarness):
             model["cost"] = {"input": price.input, "output": price.output,
                              "cache_read": price.cache_read, "cache_write": price.cache_write}
         folder = home / "config" / "opencode"
-        folder.mkdir(parents=True, exist_ok=True)
+        seat_files.make_folder(folder)  # never through a link its jail planted
         durable.replace_file(folder / "opencode.json", json.dumps(config, indent=2) + "\n")
         return self.endpoint_ready(home, choice, secret, price)
 
@@ -256,10 +257,15 @@ class OpenCodeHarness(EndpointHarness):
                        OPENCODE_CONFIG_CONTENT='{}', OPENCODE_PERMISSION='{"question":"deny"}')
         if folder is not None:
             try:
-                folder.mkdir()
+                if seat_files.under_seat(folder):
+                    seat_files.make_folder(folder)  # in the seat folder: never through a link its jail planted
+                else:
+                    folder.mkdir()  # a declared folder elsewhere: never its parents (law: one-folder)
             except FileExistsError:
                 if not stat.S_ISDIR(folder.lstat().st_mode):
                     raise ShipError(f'opencode: {folder} must be a seat-owned working directory') from None
+            except OSError:
+                raise ShipError(f'opencode: {folder} must be a seat-owned working directory') from None
             # The native project argument starts its finder in the declared workspace.
             argv.insert(1, str(folder))
             if seat.cwd is not None:

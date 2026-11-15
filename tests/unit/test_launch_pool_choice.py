@@ -22,7 +22,7 @@ def down_on(r, pool):
     """The worker down, its saved choice ``pool``, as failover or an older ship file left it."""
     r.worker.down()
     assert r.worker.launched() is None
-    (r.worker.folder / 'pool').write_text(pool + '\n')
+    (r.worker.trusted / 'pool').write_text(pool + '\n')
     return Seat(r.ship, r.ship.seat('worker'), r.tmux, launching=True)
 
 
@@ -45,7 +45,7 @@ def test_a_saved_later_choice_gives_way_to_the_first_with_room_and_starts_fresh_
     assert proof.startswith('worker: launched on first (the first declared choice with room, before its saved '
                             'second); its saved choice was second')
     after = Seat(r.ship, r.ship.seat('worker'), r.tmux)
-    assert (after.folder / 'pool').read_text() == 'first\n' and after.pool.name == 'first'
+    assert (after.trusted / 'pool').read_text() == 'first\n' and after.pool.name == 'first'
     assert after.launched().pool == 'first' and after.launched().harness == 'codex'
     assert r.launches[-1][:2] == ('codex', 'first')
 
@@ -71,7 +71,7 @@ def test_with_every_choice_walled_the_saved_choice_stays(migrated, monkeypatch):
 def test_a_saved_choice_the_ship_file_no_longer_declares_gives_way_only_at_a_launch(migrated):
     r = migrated
     r.worker.down()
-    (r.worker.folder / 'pool').write_text('withdrawn\n')
+    (r.worker.trusted / 'pool').write_text('withdrawn\n')
     with pytest.raises(SelectionError, match="saved pool 'withdrawn' has no declared choice"):
         Seat(r.ship, r.ship.seat('worker'), r.tmux)
     reading = read_seat(r.ship, r.ship.seat('worker'), r.tmux)
@@ -84,7 +84,7 @@ def test_a_saved_choice_the_ship_file_no_longer_declares_gives_way_only_at_a_lau
 
 def test_an_undeclared_saved_choice_with_a_launch_on_file_is_still_refused(migrated):
     r = migrated
-    (r.worker.folder / 'pool').write_text('withdrawn\n')
+    (r.worker.trusted / 'pool').write_text('withdrawn\n')
     assert r.worker.launched() is not None
     with pytest.raises(SelectionError, match='has no declared choice'):
         Seat(r.ship, r.ship.seat('worker'), r.tmux, launching=True)
@@ -96,11 +96,11 @@ def test_qd_set_on_a_down_seat_chooses_the_next_launch_and_it_is_taken_once(migr
     seat = Seat(r.ship, r.ship.seat('worker'), r.tmux, launching=True)
     answer = cli.select(r.ship, seat, ['pool=second'])
     assert answer == 'worker: pool second chosen for its next launch (it is down); qd up worker launches it there'
-    assert (seat.folder / 'pool').read_text() == 'second\n' and (seat.folder / EXPLICIT).read_text() == 'second\n'
+    assert (seat.trusted / 'pool').read_text() == 'second\n' and (seat.trusted / EXPLICIT).read_text() == 'second\n'
     seat = Seat(r.ship, r.ship.seat('worker'), r.tmux, launching=True)
     proof = seat.up()
     assert proof.startswith('worker: launched on second (chosen for this launch by qd set)')
-    assert not (seat.folder / EXPLICIT).exists(), 'the choice is taken by one launch'
+    assert not (seat.trusted / EXPLICIT).exists(), 'the choice is taken by one launch'
     assert Seat(r.ship, r.ship.seat('worker'), r.tmux).launched().pool == 'second'
     r.live.clear()
     again = Seat(r.ship, r.ship.seat('worker'), r.tmux, launching=True)
@@ -116,7 +116,7 @@ def test_qd_set_never_writes_a_choice_while_a_launch_is_on_file(migrated):
     assert not seat.is_up and seat.launched() is not None
     with pytest.raises(ShipError, match='its last launch is still on file'):
         cli.select(r.ship, seat, ['pool=second'])
-    assert not (seat.folder / EXPLICIT).exists() and not (seat.folder / 'pool').exists()
+    assert not (seat.trusted / EXPLICIT).exists() and not (seat.trusted / 'pool').exists()
 
 
 def test_qd_set_on_an_up_seat_still_asks_the_service(migrated, monkeypatch):
@@ -125,7 +125,7 @@ def test_qd_set_on_an_up_seat_still_asks_the_service(migrated, monkeypatch):
     monkeypatch.setattr(cli.service, 'request', lambda runtime, kind, **data: asked.append((kind, data)) or 'asked')
     assert cli.select(r.ship, r.worker, ['pool=second']) == 'asked'
     assert asked == [('select', {'seat': 'worker', 'pool': 'second'})]
-    assert not (r.worker.folder / EXPLICIT).exists()
+    assert not (r.worker.trusted / EXPLICIT).exists()
 
 
 def test_qd_up_pool_takes_a_declared_choice_for_one_launch_and_refuses_another(migrated):
@@ -152,7 +152,7 @@ def test_a_seat_that_is_up_is_never_moved_by_its_launch_choice(migrated):
         r.worker.up()
     with pytest.raises(ShipError, match='is up in %1'):
         r.worker.up(pool='second')
-    assert not (r.worker.folder / 'pool').exists() and r.worker.launched().pool == 'first'
+    assert not (r.worker.trusted / 'pool').exists() and r.worker.launched().pool == 'first'
 
 
 def test_bring_up_launches_down_seats_by_the_ship_file(migrated, monkeypatch):

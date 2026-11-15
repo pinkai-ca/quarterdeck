@@ -7,6 +7,7 @@ from . import seat_files
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from . import trusted_files
 from .harness.base import record_fingerprint
 
 UNKNOWN = "-"
@@ -24,7 +25,7 @@ def retained_launch(folder: Path, record: Path, launched) -> bool:
     if launched is None:
         return True
     try:
-        text = (folder / "record-launches.jsonl").read_text()
+        text = (folder / trusted_files.LAUNCHES).read_text()
     except FileNotFoundError:
         return False
     event = launch_event(record, launched)
@@ -43,8 +44,8 @@ def remember_launch(folder: Path, record: Path, launched) -> None:
     event = launch_event(record, launched)
     from . import ship_locks
     # The lock is the ship's, not the file's: the seat's own jail sees its folder and could hold the file.
-    with ship_locks.held(ship_locks.for_seat_file(folder, "record-launches.jsonl"), f"{folder.name}: record launches"), \
-            seat_files.open_append(folder / "record-launches.jsonl", "a+") as stream:  # never through a link
+    with ship_locks.held(ship_locks.for_seat_file(folder, trusted_files.LAUNCHES), f"{folder.name}: record launches"), \
+            seat_files.open_append(folder / trusted_files.LAUNCHES, "a+") as stream:  # never through a link
         stream.seek(0)
         events = [json.loads(line) for line in stream if line.strip()]
         if event not in events:
@@ -133,7 +134,7 @@ class Provenance:
 
     def prepare(self, seat, current: Path | None, launched):
         """Read launch evidence before the record transaction; cache the pre-read stamp."""
-        path = seat.home.parent / "record-launches.jsonl"
+        path = seat.trusted / trusted_files.LAUNCHES
         from .record_owner import launch_reader
         active = ({"record": str(current), "at": launched.at, "pool": launched.pool,
                    "harness": launch_reader(launched), "price": getattr(launched, "price", None)}

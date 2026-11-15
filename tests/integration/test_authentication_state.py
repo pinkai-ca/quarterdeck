@@ -23,7 +23,7 @@ def test_recorded_authentication_is_visible_and_only_eligible_crew_resumes(tmp_p
                                pid=12345, harness='claude')
     ship = SimpleNamespace(runtime=tmp_path / 'runtime', pools={pool.name: pool})
     seat = SimpleNamespace(name='synthetic-seat', ship=ship, session=SimpleNamespace(human=mode == 'human'),
-                           folder=ship.runtime / 'seats' / 'synthetic-seat',
+                           folder=ship.runtime / 'seats' / 'synthetic-seat', trusted=ship.runtime / 'seats' / 'synthetic-seat',
                            launched=lambda: launched, record=Mock(return_value=record),
                            pane=lambda: SimpleNamespace(dead=False, id=launched.pane, pid=launched.pid),
                            join=lambda: SimpleNamespace(record=record), is_up=True,

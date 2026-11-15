@@ -25,8 +25,8 @@ def test_fresh_codex_shape_process_joins_without_reusing_old_sqlite(tmp_path: Pa
     old_seat, old_record, _ = setup_seat(tmp_path, monkeypatch)
     selected = switch(old_seat)
     if untyped:
-        (selected.folder / record_owner.REGISTRY).unlink()
-        journal = selected.folder / "record-launches.jsonl"
+        (selected.trusted / record_owner.REGISTRY).unlink()
+        journal = selected.trusted / "record-launches.jsonl"
         rows = [json.loads(line) for line in journal.read_text().splitlines()]
         for row in rows:
             row.pop("harness")
@@ -50,7 +50,7 @@ pool = "codex"
     bad = seat.home / "sessions/2030/01/01/rollout-synthetic-older.jsonl"
     bad.parent.mkdir(parents=True)
     bad.write_bytes(b"incomplete old record\n")
-    record_owner.register(seat.folder, bad, "codex")
+    record_owner.register(seat.trusted, bad, "codex")
     first_timestamp = CodexHarness.first_timestamp
 
     def new_candidate_only(path):

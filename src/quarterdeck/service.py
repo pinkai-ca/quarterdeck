@@ -25,6 +25,7 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
+from . import trusted_files
 from . import harness as harnesses
 from . import service_status, service_timing, service_wait
 from . import shutdown, lifecycle
@@ -162,6 +163,7 @@ class Service:
         servicectl.acknowledge(self.runtime, self.copy_identity, self.copy_start_token)
         self.log("start", pid=os.getpid())
         self.clean_server_environment()
+        self.move_seat_files()
         (self.runtime / SEAT_HOLDS).unlink(missing_ok=True)  # an earlier service's holds are its own; this one observes anew
         self.first_beat()
         from .shutdown import Stop
@@ -446,6 +448,27 @@ class Service:
             if self.accounting_health_error is not None:
                 self.log('accounting-health-available')
             self.accounting_health_error = None
+
+    def move_seat_files(self) -> None:
+        """Once per seat, at the start: what the service once kept in a seat's own folder, which its jail can write,
+        is considered and taken into the seat's trusted folder only where live state confirms it (seat_migration).
+        Before any step reads a launch. Names and outcomes are logged, never contents."""
+        from . import seat_migration
+
+        server = getattr(self, 'tmux', None)  # the server it reaches its seats on; a seat whose windows it cannot read waits
+        try:
+            specs = list(self.ship.seats.values())
+        except AttributeError as error:  # a step of the start never stops the service: logged, and the pass goes on
+            self.log('seat-files-move-unchecked', reason=f'{type(error).__name__}: {str(error)[:200]}')
+            return
+        for spec in specs:
+            try:
+                outcome = seat_migration.migrate(self.ship, spec, server)
+            except Exception as error:  # one seat's failure is that seat's: logged, and the others go on
+                self.log('seat-files-move-failed', seat=spec.name, reason=f'{type(error).__name__}: {str(error)[:200]}')
+                continue
+            if outcome:
+                self.log('seat-files-moved', seat=spec.name, outcome=outcome)
 
     def clean_server_environment(self) -> None:
         """Bring the ship's own running tmux server's global environment to the unjailed list, at each start.
@@ -1939,7 +1962,7 @@ class Service:
                     stamp = (owned.name, record_fingerprint(record))
                     # The launches joined to this record. A down seat or a newer launch of another record does not move it.
                     launch = self.ledger.provenance.owning_launch(prepared[0], record)
-                    evidence = (stamp, owned.reason, record_fingerprint(record_owner.registry(seat.home.parent)), launch)
+                    evidence = (stamp, owned.reason, record_fingerprint(record_owner.registry(seat.trusted)), launch)
                     # New launch/price evidence for this record must be reconciled even if its bytes stand still.
                     if marks.get(record) == stamp and prepared[2] is None:
                         continue
@@ -2172,7 +2195,7 @@ class Service:
         for seat in selected:
             if (text := self.brief_texts.get(seat.name)) is None:
                 continue  # a selection resolved after the stamp; retry it next pass
-            launch = seat.folder / 'launch.json'
+            launch = seat.trusted / trusted_files.LAUNCH
             same = (data['launches'].get(seat.name) is not None
                     and install.launch_stamp(launch) == data['launches'][seat.name] and seat.is_up)
             if same and data['before'].get(seat.name) is None:

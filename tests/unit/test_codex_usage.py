@@ -141,10 +141,11 @@ def make_service(tmp_path):
 def launch(svc, name, pool, at, *events):
     seat = Seat(svc.ship, svc.ship.seats[name], svc.tmux)
     seat.folder.mkdir(parents=True, exist_ok=True)
+    seat.trusted.mkdir(parents=True, exist_ok=True)
     path = write(seat.folder/'synthetic.jsonl', *events)
-    Launched('%0', 1, at.isoformat(), pool, None, ['codex'], '0.166.0', 'codex').write(seat.folder/'launch.json')
+    Launched('%0', 1, at.isoformat(), pool, None, ['codex'], '0.166.0', 'codex').write(seat.trusted/'launch.json')
     seat._note_owned(path)
-    (seat.folder/'record').write_text(str(path))
+    (seat.trusted/'record').write_text(str(path))
     return seat, path
 
 
@@ -210,7 +211,7 @@ def test_restart_without_snapshot_retains_dated_measurement_and_missing_join_hol
     seat, path = launch(svc, 'alpha', 'one', AT, event(primary=window()))
     quota.refresh_declared(svc)
     Launched('%0', 1, (AT+timedelta(seconds=1)).isoformat(), 'one', None,
-             ['codex'], '0.166.0', 'codex').write(seat.folder/'launch.json')
+             ['codex'], '0.166.0', 'codex').write(seat.trusted/'launch.json')
     for missing in (False, True):
         if missing: path.unlink()
         svc.ledger.db.execute('DELETE FROM usage_reads'); svc.ledger.db.commit()

@@ -21,7 +21,7 @@ def own_restart(desk, monkeypatch):
     pane = os.getpid()
     world.seat.tmux.pane = lambda _: SimpleNamespace(id='%1', pid=pane, dead=False)
     Launched('%1', pane, AT.isoformat(), 'synthetic', None, [world.seat.spec.harness], 'synthetic',
-             harness=world.seat.spec.harness, start=process_start(pane)).write(world.seat.folder / 'launch.json')
+             harness=world.seat.spec.harness, start=process_start(pane)).write(world.seat.trusted / 'launch.json')
     world.now = AT + timedelta(seconds=10)
     world.screen = Screen(text='', box='', working=False)
     world.calls = []

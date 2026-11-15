@@ -37,12 +37,13 @@ def running(tmp_path, monkeypatch, request):
                            kill_window=lambda ident, *, expected_pid=None: live.update(pane=None), capture=lambda *a, **k: '')
     seat = Seat(ship, ship.seat('worker'), tmux)
     seat.home.mkdir(parents=True)
+    seat.trusted.mkdir(parents=True, exist_ok=True)
     source = CodexShape(seat.home, tmp_path, 'synthetic-source', 'synthetic-source')
     source.begin('old synthetic input', 'synthetic-source', 'high')
     source.end('old synthetic reply')
     Launched('%1', 101, (post.now()-timedelta(minutes=1)).isoformat(), 'first', None,
-             ['codex'], 'synthetic', 'codex').write(seat.folder/'launch.json')
-    (seat.folder/'record').write_text(str(source.path))
+             ['codex'], 'synthetic', 'codex').write(seat.trusted/'launch.json')
+    (seat.trusted/'record').write_text(str(source.path))
     seat.record()
     launches, created, reseeds = [], [], []
     original_reseed = credential.reseed
@@ -156,17 +157,17 @@ def test_unknown_or_missing_saved_selection_does_not_choose_the_first_program(ru
     r = running
     r.svc.failover()
     launched = r.seat.launched()
-    replace(launched, pool='first').write(r.seat.folder/'launch.json')
+    replace(launched, pool='first').write(r.seat.trusted/'launch.json')
     with pytest.raises(ShipError, match='saved launch and selected program disagree'):
         Seat(r.seat.ship, r.seat.ship.seat('worker'), r.seat.tmux)
-    launched.write(r.seat.folder/'launch.json')
-    (r.seat.folder/'pool').write_text('unknown-choice\n')
+    launched.write(r.seat.trusted/'launch.json')
+    (r.seat.trusted/'pool').write_text('unknown-choice\n')
     with pytest.raises(ShipError, match='no declared choice'):
         Seat(r.seat.ship, r.seat.ship.seat('worker'), r.seat.tmux)
-    (r.seat.folder/'pool').unlink()
+    (r.seat.trusted/'pool').unlink()
     restored = Seat(r.seat.ship, r.seat.ship.seat('worker'), r.seat.tmux)
     assert restored.harness.name == 'claude', 'saved launch is evidence, not a primary-program guess'
-    (r.seat.folder/'launch.json').unlink()
+    (r.seat.trusted/'launch.json').unlink()
     with pytest.raises(ShipError, match='saved pool missing'):
         Seat(r.seat.ship, r.seat.ship.seat('worker'), r.seat.tmux)
 
@@ -268,13 +269,14 @@ def test_legacy_pool_list_also_requires_record_proof_at_the_move_boundary(tmp_pa
     tmux = SimpleNamespace(pane=lambda ident: pane, capture=lambda *a, **k: '')
     seat = Seat(ship, spec, tmux)
     seat.home.mkdir(parents=True)
+    seat.trusted.mkdir(parents=True, exist_ok=True)
     shape = CodexShape(seat.home, tmp_path, 'synthetic-terminal', 'synthetic-model')
     shape.begin('synthetic input', 'synthetic-model', 'high')
     shape.end('synthetic reply')
     record = shape.path
-    Launched('%1', 101, post.now().isoformat(), 'one', None, ['fake'], 'synthetic', 'fake').write(seat.folder/'launch.json')
-    (seat.folder/'record').write_text(str(record))
-    record_owner.register(seat.folder, record, 'fake')
+    Launched('%1', 101, post.now().isoformat(), 'one', None, ['fake'], 'synthetic', 'fake').write(seat.trusted/'launch.json')
+    (seat.trusted/'record').write_text(str(record))
+    record_owner.register(seat.trusted, record, 'fake')
     calls = []
 
     def move(target=None):
@@ -316,14 +318,14 @@ def test_shared_state_join_checks_a_siblings_selected_program(tmp_path, monkeypa
     from .test_harness_switch import setup_seat
 
     seat, _, _ = setup_seat(tmp_path, monkeypatch)
-    (seat.folder/'record').unlink()
+    (seat.trusted/'record').unlink()
     neighbor = replace(seat.ship.seats['neighbor'], pools=('codex', 'google'), pool_choices={
         'codex': dict(harness='codex', model='synthetic', effort=None, settings={}),
         'google': dict(harness='antigravity', model='synthetic', effort=None, settings={})})
     seat.ship.seats['neighbor'] = neighbor
     sibling = Seat(seat.ship, neighbor, seat.tmux)
     sibling.move_to('google')
-    replace(seat.launched(), pane='%2', pid=45678).write(sibling.folder/'launch.json')
+    replace(seat.launched(), pane='%2', pid=45678).write(sibling.trusted/'launch.json')
     seat.tmux.pane = lambda ident: Pane(ident, 'crew', 'synthetic', 45678 if ident == '%2' else 12345,
                                       80, 24, False, False, None)
     def no_scan(*args):

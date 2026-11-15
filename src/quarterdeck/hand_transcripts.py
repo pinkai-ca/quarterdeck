@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import time
 
-from . import lifecycle, record_location, record_owner
+from . import lifecycle, record_location, record_owner, trusted_files
 from .harness import reader_stamp
 from .harness.base import record_fingerprint
 from .provenance import owning_launch_evidence
@@ -69,7 +69,7 @@ def run(service, *, now=None, limit=1):
                 if launched is None or current is None:
                     continue  # the current launch/record is not established
                 launch_at = datetime.fromisoformat(launched.at).astimezone(timezone.utc)
-                events = record_owner.events(seat.folder / 'record-launches.jsonl')
+                events = record_owner.events(seat.trusted / trusted_files.LAUNCHES)
                 for owned in record_owner.records(seat):
                     record = owned.path
                     kept = record_location.destination(record)

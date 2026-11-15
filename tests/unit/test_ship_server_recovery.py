@@ -80,7 +80,7 @@ def ship(drydock, tmp_path, monkeypatch):
 
 
 def launch(ship, name, pid=None):
-    folder = ship.runtime / 'seats' / name
+    folder = ship.runtime / 'trusted' / name
     folder.mkdir(parents=True, exist_ok=True)
     seatmod.Launched('%9', pid or dead_pid(), datetime.now(timezone.utc).isoformat(), 'fake', None,
                      ['qd-fakeharness'], 'synthetic', harness='fake').write(folder / 'launch.json')
@@ -266,7 +266,7 @@ def test_a_deliberate_down_between_the_proof_and_the_effect_wins(ship, monkeypat
     real_now = recovery.now
 
     def now():  # read after every proof, before any effect: a qd down of worker-1 lands here
-        (ship.runtime / 'seats' / 'worker-1' / 'launch.json').unlink()
+        (ship.runtime / 'trusted' / 'worker-1' / 'launch.json').unlink()
         return real_now()
     monkeypatch.setattr(recovery, 'now', now)
     assert recovery.pass_once(ship.service) == 'recovered'

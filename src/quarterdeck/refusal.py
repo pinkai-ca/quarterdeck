@@ -7,7 +7,7 @@ the store, its sender is told, and it is never typed into the seat again: not by
 launch and not by a resend. Every other open message is carried by the ordinary fresh start (law:
 context-is-cache). What cannot be proved is held where the status line shows it, never guessed.
 
-``runtime/seats/<seat>/refusal.json`` keeps one event per refused turn, written before any notice or
+``runtime/trusted/<seat>/refusal.json`` keeps one event per refused turn, written before any notice or
 relaunch, so a service that dies mid-way neither repeats a fresh start nor loses the quarantine.
 """
 from __future__ import annotations
@@ -18,6 +18,7 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from . import trusted_files
 from . import durable, input_receipt, post
 from .ship import ShipError
 from .turn_failure import REFUSAL, current, describe
@@ -37,7 +38,7 @@ class JournalError(ValueError):
 
 
 def path(runtime: Path, seat: str) -> Path:
-    return runtime / 'seats' / seat / FILE
+    return trusted_files.path(runtime, seat, FILE)
 
 
 def load(runtime: Path, seat: str) -> list[dict]:

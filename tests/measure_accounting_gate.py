@@ -137,7 +137,8 @@ def append_synthetic_native_turn(book, runtime, store):
     state, turns = get('pi').read(record)
     if len(turns) != 1 or state.turn_open is not False:
         raise RuntimeError('synthetic native fixture did not yield exactly one completed turn')
-    folder = runtime / 'seats' / seat
+    folder = runtime / 'trusted' / seat
+    folder.mkdir(parents=True, exist_ok=True)
     with (folder / 'record-launches.jsonl').open('a') as stream:
         stream.write(json.dumps(dict(record=str(record), harness='pi')) + '\n')
     book.ingest(seat, 'measurement-only', record, turns, store)

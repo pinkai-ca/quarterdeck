@@ -24,8 +24,8 @@ def test_default_replay_excludes_bound_external_source_before_any_access(tmp_pat
     inside_order=message(store,'ord-inside',to='internal')
     message(store,'rep-closed','report','internal','issuer',1,inside_order.id)
     internal=runtime/'record';internal.write_text('synthetic internal source')
-    record_owner.register(runtime/'seats/worker',bound,'fake')
-    record_owner.register(runtime/'seats/internal',internal,'fake')
+    record_owner.register(runtime/'trusted/worker',bound,'fake')
+    record_owner.register(runtime/'trusted/internal',internal,'fake')
     fingerprints=[]
     fingerprint=attribution_cache.record_fingerprint
     def checked_fingerprint(path):

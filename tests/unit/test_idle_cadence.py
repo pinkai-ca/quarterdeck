@@ -38,7 +38,7 @@ def test_door_reads_one_fresh_identity_and_capture_packet(tmp_path,monkeypatch):
     (tmp_path/'ship.toml').write_text('[ship]\ncode="checkout"\n[pools.p]\nprovider="fake"\n[sessions.crew]\n[seats.worker]\nsession="crew"\nharness="fake"\npool="p"\n')
     ship=shipmod.load(tmp_path);tmux=Tmux(socket='synthetic');calls=[]
     seat=Seat(ship,ship.seat('worker'),tmux);seat.folder.mkdir(parents=True)
-    Launched('%1',101,datetime.now(timezone.utc).isoformat(),'p',None,['synthetic'],'synthetic','fake').write(seat.folder/'launch.json')
+    Launched('%1',101,datetime.now(timezone.utc).isoformat(),'p',None,['synthetic'],'synthetic','fake').write(seat.trusted/'launch.json')
     def run(*args,**kwargs):
         calls.append(args)
         if args[0]=='list-sessions':return 'crew\n'
@@ -131,10 +131,11 @@ def test_combined_screen_refuses_replaced_identity(tmp_path,monkeypatch,changed)
     (tmp_path/'ship.toml').write_text('[ship]\ncode="checkout"\n[pools.p]\nprovider="fake"\n[sessions.crew]\n[seats.worker]\nsession="crew"\nharness="fake"\npool="p"\n')
     seat=Seat(shipmod.load(tmp_path),shipmod.load(tmp_path).seat('worker'),Tmux(socket='synthetic'))
     seat.folder.mkdir(parents=True)
+    seat.trusted.mkdir(parents=True, exist_ok=True)
     launch=Launched('%1',101,datetime.now(timezone.utc).isoformat(),'p',None,['synthetic'],'synthetic','fake')
-    launch.write(seat.folder/'launch.json')
+    launch.write(seat.trusted/'launch.json')
     def read(*args):
-        if changed=='launch':replace(launch,pid=202).write(seat.folder/'launch.json')
+        if changed=='launch':replace(launch,pid=202).write(seat.trusted/'launch.json')
         # Exercise the native returned-id check as well as the seat's PID binding.
         return metadata(ident='%2' if changed=='pane' else '%1',pid=202 if changed=='pid' else 101).replace('\t0\t0\t','\t0\t1\t' if changed=='dead' else '\t0\t0\t')+'frame\n'
     monkeypatch.setattr(seat.tmux,'run',read)
@@ -177,7 +178,7 @@ def test_idle_delivery_uses_its_fresh_owned_frame_without_a_second_liveness_quer
     (tmp_path/'ship.toml').write_text('[ship]\ncode="checkout"\n[pools.p]\nprovider="fake"\n[sessions.crew]\n[seats.worker]\nsession="crew"\nharness="fake"\npool="p"\n')
     tmux=Tmux(socket='synthetic');svc=Service(shipmod.load(tmp_path),tmux)
     seat=svc.seat('worker');seat.folder.mkdir(parents=True)
-    Launched('%1',101,datetime.now(timezone.utc).isoformat(),'p',None,['synthetic'],'synthetic','fake').write(seat.folder/'launch.json')
+    Launched('%1',101,datetime.now(timezone.utc).isoformat(),'p',None,['synthetic'],'synthetic','fake').write(seat.trusted/'launch.json')
     calls=[];pid=[101]
     def packet(*args):
         calls.append(args)

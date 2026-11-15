@@ -117,7 +117,7 @@ def test_human_presentation_shares_the_callers_attempt_reader(tmp_path, monkeypa
     runtime, store, attempts, message, _ = inventory(tmp_path)
     launch = SimpleNamespace(pane='%synthetic', pid=123)
     pane = SimpleNamespace(id=launch.pane, pid=launch.pid, dead=False)
-    seat = SimpleNamespace(name='reader', folder=runtime / 'seats/reader', ship=SimpleNamespace(runtime=runtime),
+    seat = SimpleNamespace(name='reader', folder=runtime / 'seats/reader', trusted=runtime / 'seats/reader', ship=SimpleNamespace(runtime=runtime),
                            launched=lambda: launch, pane=lambda: pane)
     monkeypatch.setattr(post, 'watch_reading', lambda *args: post.WatchReading(True))
     scans = []

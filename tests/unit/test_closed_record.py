@@ -54,7 +54,7 @@ def world(tmp_path, request):
     record_owner.register(folder, record, name)
     launched = Launched('%1', 100, stamp(1), 'synthetic', None, ['synthetic'], 'synthetic', name)
     live = dict(pane=SimpleNamespace(id='%1', pid=100), launched=launched, earlier=False)
-    seat = SimpleNamespace(folder=folder, launched=lambda: live['launched'],
+    seat = SimpleNamespace(folder=folder, trusted=folder, launched=lambda: live['launched'],
                            tmux=SimpleNamespace(pane=lambda ident: live['pane']),
                            _earlier_server=lambda: live['earlier'])
     # The old durable journal shape has no later protocol/baseline fields.
@@ -146,11 +146,11 @@ def test_unreadable_incomplete_or_unrecognized_input_history_holds(world, damage
 def test_missing_or_ambiguous_pinned_reader_is_not_adopted(world, ownership):
     w = world
     w.live['pane'] = None
-    registry = w.seat.folder / record_owner.REGISTRY
+    registry = w.seat.trusted / record_owner.REGISTRY
     if ownership == 'missing':
         registry.unlink()
     elif ownership == 'conflicting':
-        record_owner.register(w.seat.folder, w.record, 'pi' if w.name != 'pi' else 'codex')
+        record_owner.register(w.seat.trusted, w.record, 'pi' if w.name != 'pi' else 'codex')
     else:
         registry.write_text('{')
     before = inventory(w.seat.folder)
@@ -187,7 +187,7 @@ def test_adapter_without_approved_diagnostic_coverage_holds(world, monkeypatch):
     w = world
     w.live['pane'] = None
     w.proof.data['identity']['harness'] = 'grok'
-    (w.seat.folder / record_owner.REGISTRY).write_text(
+    (w.seat.trusted / record_owner.REGISTRY).write_text(
         json.dumps(dict(record=str(w.record), harness='grok')) + '\n')
     monkeypatch.setattr(harness, 'get', lambda name: SimpleNamespace(inputs=lambda record: Inputs()))
     assert not closed_record.not_in_closed_record(w.seat, w.proof)

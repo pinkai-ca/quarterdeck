@@ -266,7 +266,7 @@ def test_shared_positive_failure_reading_holds_on_absence_and_ends_only_on_owned
     elif pane == "dead":
         world.panes[launched.pane] = replace(world.panes[launched.pane], dead=True)
     else:
-        (seat.folder / "launch.json").unlink()
+        (seat.trusted / "launch.json").unlink()
     world.runner.advance(world.path)
     data = cascade.load(world.path)
     stops = finals(world.svc.store, "conductor")
@@ -283,7 +283,7 @@ def test_a_launch_replaced_while_reading_holds_instead_of_associating(world, mon
     world.runner.advance(world.path)
     order = step_order(world.svc.store, world.path)
     world.turn("worker", order, error=REFUSED)
-    launch = seat.folder / "launch.json"
+    launch = seat.trusted / "launch.json"
     saved = launch.read_bytes()
     original = thread_context.consumed_ids
     moved = []

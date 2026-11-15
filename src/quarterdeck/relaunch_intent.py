@@ -209,7 +209,7 @@ def hold(seat) -> str | None:
             return 'its refusal hold'
     except (OSError, ShipError, KeyError, TypeError) as error:
         return f'refusal journal unreadable ({type(error).__name__})'
-    if (seat.folder / REFUSED_RELAUNCH).exists():
+    if (seat.trusted / REFUSED_RELAUNCH).exists():
         return 'a relaunch was refused while its program was ending'
     if seat.retiring() is not None:
         return 'its last program is still ending'

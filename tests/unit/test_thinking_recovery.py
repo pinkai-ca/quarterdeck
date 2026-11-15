@@ -105,13 +105,13 @@ def world(tmp_path, monkeypatch):
     seat.harness.build_home(seat.home, seat.spec, pool, None)
     launch = seat.harness.launch(seat.spec, pool, seat.home, tmp_path / 'brief', None, None)
     Launched('%1', 12345, AT.isoformat(), pool.name, None, list(launch.argv), '1.19.5', 'opencode',
-             recovery=launch.recovery).write(seat.folder / 'launch.json')
+             recovery=launch.recovery).write(seat.trusted / 'launch.json')
     record = seat.home / 'data-001/opencode/opencode.db'
     con = database(record)
     capped(con)
     con.close()
-    (seat.folder / 'record').write_text(str(record))
-    record_owner.register(seat.folder, record, 'opencode')
+    (seat.trusted / 'record').write_text(str(record))
+    record_owner.register(seat.trusted, record, 'opencode')
     native = Native(seat, record)
     seat.tmux = native
     store, attempts = post.Store(ship.runtime), post.Attempts(ship.runtime)
@@ -489,7 +489,7 @@ def test_changed_launch_is_not_adopted_and_identity_checked_down_is_still_availa
     recovery.run(world.service)
     proof = journal(world)
     launch = world.seat.launched()
-    replace(launch, at=(AT + timedelta(seconds=2)).isoformat()).write(world.seat.folder / 'launch.json')
+    replace(launch, at=(AT + timedelta(seconds=2)).isoformat()).write(world.seat.trusted / 'launch.json')
     world.native.fault = None
     recovery.run(world.service)
     assert len(world.native.calls) == 1 and recovery.held(world.seat)
@@ -516,7 +516,7 @@ def test_unproven_original_state_never_claims_or_types(world, fault):
         p.write_text(p.read_text() + '\n')
     elif fault in ('missing-launch-proof', 'wrong-version'):
         launch = seat.launched()
-        replace(launch, **({'recovery': None} if fault == 'missing-launch-proof' else {'version': '1.19.6'})).write(seat.folder / 'launch.json')
+        replace(launch, **({'recovery': None} if fault == 'missing-launch-proof' else {'version': '1.19.6'})).write(seat.trusted / 'launch.json')
     else:
         world.native.selected = 'custom'
     recovery.run(world.service)

@@ -47,7 +47,7 @@ def desk_of(office: Path, newcomer) -> Seat:
 
 def launch_file(office: Path) -> str | None:
     """The desk's launch record; qd down removes it, so a refused launch leaves none."""
-    path = office / 'runtime' / 'seats' / 'desk' / 'launch.json'
+    path = office / 'runtime' / 'trusted' / 'desk' / 'launch.json'
     return path.read_text() if path.exists() else None
 
 

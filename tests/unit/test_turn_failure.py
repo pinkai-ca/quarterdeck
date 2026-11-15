@@ -133,7 +133,7 @@ def test_a_human_seat_is_read_from_operational_metadata_only(world, monkeypatch)
     record = seat.record()
     state, turns = seat.harness.read(record)
     turn_failure.publish(seat, record, state, turns)
-    text = (seat.folder / turn_failure.FILE).read_text()
+    text = (seat.trusted / turn_failure.FILE).read_text()
     assert 'Invented private subject matter' not in text and 'inputs' not in text
     monkeypatch.setattr(type(seat.harness), 'state', lambda *a, **k: pytest.fail('a human record is never read'))
     cached = turn_failure.current(seat)

@@ -32,7 +32,7 @@ def synthetic_seat(tmp_path, turn_open):
     (folder / 'record-launches.jsonl').write_text(json.dumps(
         dict(record=str(record), at=START, pool='local', harness='fake')) + '\n')
     harness = NS(name='fake', state=lambda _: NS(turn_open=turn_open), waiting_for_human=lambda _: False)
-    return NS(folder=folder, harness=harness, launched=lambda: launch,
+    return NS(folder=folder, trusted=folder, harness=harness, launched=lambda: launch,
               pane=lambda: NS(dead=False))
 
 
@@ -158,7 +158,7 @@ def test_service_import_retains_journal_harness(tmp_path):
     record = home / 'ordinary-record'
     (home.parent / 'record-launches.jsonl').write_text(json.dumps(
         dict(record=str(record), at=START, pool='local', harness='codex')) + '\n')
-    seat = NS(home=home, name='synthetic-seat')
+    seat = NS(home=home, trusted=home.parent, name='synthetic-seat')
     with Ledger(tmp_path / 'book') as book:
         with book.record_pass() as staged:
             assert staged.provenance.sync(seat, None, None, commit=False) == {record}

@@ -10,6 +10,7 @@ import hashlib
 import json
 from datetime import datetime
 
+from . import trusted_files
 from . import durable, input_receipt, pending, post, recovery
 from .harness.base import record_fingerprint
 from .turn_failure import metadata
@@ -29,7 +30,7 @@ PHASES = {'prepared', 'pasting', 'submitting', 'submitted', 'queued', 'delivered
 
 
 def load(seat) -> pending.Proof | None:
-    path = seat.folder / 'human-wake.json'
+    path = seat.trusted / trusted_files.HUMAN_WAKE
     try:
         data = json.loads(metadata(path))
     except FileNotFoundError:
@@ -91,7 +92,7 @@ def changed_launch(seat, proof) -> bool:
 
 def release_launch(seat, proof) -> None:
     raw = metadata(proof.path)
-    archive = seat.folder / 'human-wake-history' / (hashlib.sha256(raw.encode()).hexdigest() + '.json')
+    archive = seat.trusted / trusted_files.HUMAN_WAKE_HISTORY / (hashlib.sha256(raw.encode()).hexdigest() + '.json')
     archive.parent.mkdir(parents=True, exist_ok=True)
     try:
         retained = metadata(archive)
@@ -107,7 +108,7 @@ def release_launch(seat, proof) -> None:
 def record_stamp(seat) -> dict:
     """Operational pointer and file metadata only, never conversation bytes."""
     try:
-        name = metadata(seat.folder / 'record').strip()
+        name = metadata(seat.trusted / trusted_files.RECORD).strip()
     except FileNotFoundError:
         return {'record': None, 'fingerprint': None}
     if not name:
@@ -128,7 +129,7 @@ def service_failure_reason(phase, error) -> str:
 
 def failure_status(seat) -> str | None:
     try:
-        data = json.loads(metadata(seat.folder / 'human-wake-status.json'))
+        data = json.loads(metadata(seat.trusted / trusted_files.HUMAN_WAKE_STATUS))
         if data.get('failure') is not True:
             return None
         reason = data.get('failure_reason', data.get('reason'))
@@ -174,7 +175,7 @@ def observe_failure(seat, reason) -> None:
 def observed_action(seat) -> str | None:
     """Current actionable observation, including a missing reservation receipt."""
     try:
-        data = json.loads(metadata(seat.folder / 'human-wake-status.json'))
+        data = json.loads(metadata(seat.trusted / trusted_files.HUMAN_WAKE_STATUS))
         reason = data['reason']
         if (data['format'] == 1 and isinstance(reason, str) and len(reason) <= 1024
                 and data['identity'] == pending.identity(seat) and data['source'] == record_stamp(seat)
@@ -210,7 +211,7 @@ def status(seat) -> str | None:
         proof = load(seat)
         if proof is not None and proof.data['phase'] != 'cancelled' and changed_launch(seat, proof):
             try:
-                observed = json.loads(metadata(seat.folder / 'human-wake-status.json'))
+                observed = json.loads(metadata(seat.trusted / trusted_files.HUMAN_WAKE_STATUS))
             except FileNotFoundError:
                 observed = None
             if (observed and observed['identity'] == pending.identity(seat)
@@ -230,7 +231,7 @@ def status(seat) -> str | None:
         if watch.armed or not waiting:
             return failure
         try:
-            data = json.loads(metadata(seat.folder / 'human-wake-status.json'))
+            data = json.loads(metadata(seat.trusted / trusted_files.HUMAN_WAKE_STATUS))
         except FileNotFoundError:
             return failure or 'human wake awaiting service observation'
         if (data['format'] != 1 or not isinstance(data['reason'], (str, type(None)))
@@ -245,7 +246,7 @@ def status(seat) -> str | None:
 
 
 def observe(seat, reason, identity, source, *, failure=False, successful=True) -> None:
-    path = seat.folder / 'human-wake-status.json'
+    path = seat.trusted / trusted_files.HUMAN_WAKE_STATUS
     try:
         previous = metadata(path)
     except FileNotFoundError:
@@ -509,7 +510,7 @@ def _run(seat, *, observe_delivery=None) -> str | None:
     if reason := width_hold(seat.harness, door.captured_pane):
         return reason
     at = since.isoformat()
-    proof = pending.Proof(seat.folder / 'human-wake.json', {})
+    proof = pending.Proof(seat.trusted / trusted_files.HUMAN_WAKE, {})
     proof.save(format=1, seat=seat.name, identity=identity, at=at, since=at,
                payload=LINE, phase='prepared', record=str(record) if record else None,
                shown=None, attempts=[], generation=watch.generation, ended=False)

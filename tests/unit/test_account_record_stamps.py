@@ -246,8 +246,10 @@ def test_restart_only_replays_records_affected_by_a_post(tmp_path, monkeypatch, 
     w = world(tmp_path, monkeypatch, records=('one', 'two'))
     other = SimpleNamespace(**{**vars(w.seat), 'name': 'synthetic-other-seat-q',
                                'home': w.seat.home.parent.parent / 'synthetic-other-seat-q' / 'home',
+                               'trusted': w.seat.trusted.parent / 'synthetic-other-seat-q',
                                'record': lambda: w.paths[1]})
     other.home.mkdir(parents=True)
+    other.trusted.mkdir(parents=True)
     owned = list(w.owned.values())
     monkeypatch.setattr(w.svc, 'resolved_seats', lambda: [w.seat, other])
     monkeypatch.setattr(record_owner, 'records', lambda seat: [owned[0] if seat is w.seat else owned[1]])

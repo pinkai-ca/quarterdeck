@@ -18,6 +18,7 @@ import secrets
 import stat
 import time
 
+from . import trusted_files
 from . import post_dir
 from .fleet import peers
 from .ship import ShipError
@@ -485,7 +486,7 @@ class ExportWorklist:
         folders = [ship.runtime / 'post' / name
                    for name in ('', 'store', 'imports', 'forwarded', 'addressed')]
         files = [ship.folder / 'ship.toml']
-        files += [ship.runtime / 'seats' / name / 'compaction.json'
+        files += [trusted_files.path(ship.runtime, name, trusted_files.COMPACTION)
                   for name in getattr(ship, 'forward', {})]
         try:
             for path in folders + files:

@@ -435,7 +435,7 @@ def test_a_jailed_post_to_an_up_recipient_does_not_call_hidden_state_down(drydoc
         captain.up(resume=False)
         worker.up(resume=False)
         wait_for(lambda: Door(captain).reading().open and Door(worker).reading().open)
-        assert captain.is_up and (captain.folder/'launch.json').is_file()
+        assert captain.is_up and (captain.trusted/'launch.json').is_file()
         message = svc.store.new('order','captain',worker.name,
             f'$ test ! -e {captain.folder}/launch.json && echo recipient-runtime-hidden\n'
             '$ qd post report --re {this} Synthetic jailed report', subject='Synthetic jailed post')
@@ -488,7 +488,7 @@ def test_a_jailed_seat_sees_the_qd_only_folder_first_and_the_machines_interprete
     try:
         seat.up(resume=False)
         assert sandbox.seats_hidden(seat.launched().argv) is True
-        words = shlex.split((seat.folder / "launch.sh").read_text().splitlines()[-1])
+        words = shlex.split((seat.trusted / "launch.sh").read_text().splitlines()[-1])
         launch_path = next(word for word in words if word.startswith("PATH="))[len("PATH="):]
         wait_for(lambda: Door(seat).reading().open)
         store = post.Store(ship.runtime)

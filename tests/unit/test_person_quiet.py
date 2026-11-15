@@ -32,6 +32,7 @@ def desk(tmp_path, monkeypatch):
         tmux = SimpleNamespace(pane=lambda _: SimpleNamespace(id='%1', pid=123, dead=False))
         seat = Seat(ship, spec, tmux)
         seat.folder.mkdir(parents=True)
+        seat.trusted.mkdir(parents=True, exist_ok=True)
         native = Native(seat.home / 'synthetic-record', harness if harness in ('claude', 'codex') else 'claude')
         launch(seat)
         monkeypatch.setattr(seat, 'record', lambda: native.path)
@@ -43,7 +44,7 @@ def desk(tmp_path, monkeypatch):
 
 def launch(seat, at=AT):
     Launched('%1', 123, at.isoformat(), 'synthetic', None, [seat.spec.harness], 'synthetic',
-             harness=seat.spec.harness).write(seat.folder / 'launch.json')
+             harness=seat.spec.harness).write(seat.trusted / 'launch.json')
 
 
 def ready(seat, generation='synthetic-generation-a', manual=READY, **changes):
@@ -149,7 +150,7 @@ def test_unknown_readings_say_why_and_never_read_quiet(desk, monkeypatch):
     assert person_quiet.read(w.seat, AT - timedelta(minutes=1))['reason'] == 'a recorded time is in the future'
     monkeypatch.setattr(w.seat, 'record', lambda: None)
     assert person_quiet.read(w.seat, now)['reason'] == 'no record joined'
-    (w.seat.folder / 'launch.json').unlink()
+    (w.seat.trusted / 'launch.json').unlink()
     assert person_quiet.read(w.seat, now)['reason'] == 'seat not launched'
 
 
@@ -189,7 +190,7 @@ def test_unknown_is_shown_with_its_reason_and_a_new_launch_drops_the_old_fact(de
     assert person_quiet.summary(w.seat)['text'] == "person's quiet time unknown: codex declares no program notices"
     launch(w.seat, AT + timedelta(hours=1))
     assert person_quiet.summary(w.seat)['text'] == "person's quiet time unknown: reading belongs to an earlier launch"
-    (w.seat.folder / person_quiet.FACT).write_text(json.dumps(dict(version=1, launch=None, at=None, reason='Synthetic words')))
+    (w.seat.trusted / person_quiet.FACT).write_text(json.dumps(dict(version=1, launch=None, at=None, reason='Synthetic words')))
     assert person_quiet.fact(w.seat)['reason'] in ('reading belongs to an earlier launch', 'reading unreadable')
 
 
@@ -197,7 +198,7 @@ def test_an_unchanged_fact_is_not_rewritten(desk):
     w = desk()
     w.native.finish()
     person_quiet.observe(w.seat, latest(w.native))
-    path = w.seat.folder / person_quiet.FACT
+    path = w.seat.trusted / person_quiet.FACT
     before = path.stat().st_ino, path.stat().st_mtime_ns
     person_quiet.observe(w.seat, latest(w.native) + timedelta(minutes=5))
     assert (path.stat().st_ino, path.stat().st_mtime_ns) == before
@@ -233,7 +234,7 @@ def test_a_ready_idle_desk_quiet_twenty_minutes_gets_exactly_one_order(desk):
 def test_nineteen_minutes_gets_none(desk):
     w, typed = quiet_desk(desk)
     assert tick(w, typed + timedelta(minutes=19, seconds=59)) is None
-    assert wake_orders(w) == [] and not (w.seat.folder / person_quiet.WAKE).exists()
+    assert wake_orders(w) == [] and not (w.seat.trusted / person_quiet.WAKE).exists()
 
 
 def test_the_wake_waits_for_readiness(desk):
@@ -293,7 +294,7 @@ def test_unknown_readiness_never_rearms_but_a_clear_one_or_a_new_readiness_does(
     ready(w.seat)
     assert tick(w, typed + timedelta(minutes=22)) is None and len(wake_orders(w)) == 1
     ready(w.seat, manual=None, reason='below compaction threshold')
-    assert tick(w, typed + timedelta(minutes=23)) is None and not (w.seat.folder / person_quiet.WAKE).exists()
+    assert tick(w, typed + timedelta(minutes=23)) is None and not (w.seat.trusted / person_quiet.WAKE).exists()
     ready(w.seat)
     assert tick(w, typed + timedelta(minutes=24)) and len(wake_orders(w)) == 2
     ready(w.seat, generation='synthetic-generation-b')
@@ -323,7 +324,7 @@ def test_an_interrupted_pass_adopts_its_posted_order_and_never_posts_twice(desk,
     assert len(wake_orders(w)) == 1
     adopted = tick(w, typed + timedelta(minutes=21))
     assert adopted == wake_orders(w)[0].id and len(wake_orders(w)) == 1
-    kept = json.loads((w.seat.folder / person_quiet.WAKE).read_text())
+    kept = json.loads((w.seat.trusted / person_quiet.WAKE).read_text())
     assert kept['order'] == adopted and kept['published'] is True
     assert tick(w, typed + timedelta(minutes=22)) is None and len(wake_orders(w)) == 1
 
@@ -337,7 +338,7 @@ def test_an_intent_without_its_post_posts_once(desk, monkeypatch):
     with pytest.raises(OSError):
         tick(w, typed + timedelta(minutes=20))
     monkeypatch.setattr(w.store, 'write', original)
-    named = json.loads((w.seat.folder / person_quiet.WAKE).read_text())['order']
+    named = json.loads((w.seat.trusted / person_quiet.WAKE).read_text())['order']
     assert named and wake_orders(w) == []
     assert tick(w, typed + timedelta(minutes=20, seconds=30)) and len(wake_orders(w)) == 1
     assert tick(w, typed + timedelta(minutes=30)) is None and len(wake_orders(w)) == 1
@@ -345,7 +346,7 @@ def test_an_intent_without_its_post_posts_once(desk, monkeypatch):
 
 def test_an_unreadable_wake_journal_posts_nothing(desk):
     w, typed = quiet_desk(desk)
-    (w.seat.folder / person_quiet.WAKE).write_text('{')
+    (w.seat.trusted / person_quiet.WAKE).write_text('{')
     with pytest.raises(shipmod.ShipError):
         tick(w, typed + timedelta(minutes=30))
     assert wake_orders(w) == []
@@ -356,7 +357,7 @@ def test_a_seat_outside_a_human_session_is_never_read_or_woken(desk):
     w.native.finish()
     ready(w.seat)
     assert tick(w, AT + timedelta(hours=1)) is None
-    assert wake_orders(w) == [] and not (w.seat.folder / person_quiet.FACT).exists()
+    assert wake_orders(w) == [] and not (w.seat.trusted / person_quiet.FACT).exists()
 
 
 def test_an_office_seat_that_is_not_the_desk_is_read_but_never_woken(desk):
@@ -366,7 +367,7 @@ def test_an_office_seat_that_is_not_the_desk_is_read_but_never_woken(desk):
     typed = AT + timedelta(seconds=1)
     for minutes in (20, 30, 120):
         assert tick(w, typed + timedelta(minutes=minutes)) is None
-    assert wake_orders(w) == [] and not (w.seat.folder / person_quiet.WAKE).exists()
+    assert wake_orders(w) == [] and not (w.seat.trusted / person_quiet.WAKE).exists()
     assert person_quiet.summary(w.seat, now=typed + timedelta(minutes=20))['text'] == 'person quiet for 20m'
 
 

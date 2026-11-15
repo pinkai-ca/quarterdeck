@@ -97,7 +97,7 @@ def test_a_seat_moves_back_to_its_first_choice_by_failovers_path(running):
     assert f"qd thread {message.id}" in r.launches[-1][-1]
     assert r.reseeds[-1][0] == "second", "the source credential is reseeded first"
     assert any(m.body == "moved to pool first from second by qd set" for m in r.svc.store.for_seat("worker"))
-    assert (r.seat.folder / "pool").read_text().strip() == "first"
+    assert (r.seat.trusted / "pool").read_text().strip() == "first"
 
 
 def test_the_same_program_moves_by_restart_with_resume(running):

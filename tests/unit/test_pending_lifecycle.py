@@ -22,8 +22,10 @@ class SyntheticSeat(Seat):
         self.spec = SimpleNamespace(name=name, harness='claude', pool_choices=False)
         self.ship = SimpleNamespace(runtime=runtime, session_of=lambda spec: SimpleNamespace(human=False))
         self.folder = runtime / 'seats' / name
+        self.trusted = runtime / 'trusted' / name
         self.home = self.folder / 'home'
         self.home.mkdir(parents=True)
+        self.trusted.mkdir(parents=True)
         self.harness = ClaudeHarness()
         self.harness.preflight_resume = lambda *args: None
         self._pane = Pane('%' + name, 'synthetic', '@' + name, 12345, 100, 40, False, False, None)
@@ -33,7 +35,7 @@ class SyntheticSeat(Seat):
 
     def _write_launch(self, at, prior):
         Launched(self._pane.id, self._pane.pid, at.isoformat(), 'synthetic-pool', None,
-                 ['claude'], 'synthetic', 'claude', prior).write(self.folder / 'launch.json')
+                 ['claude'], 'synthetic', 'claude', prior).write(self.trusted / 'launch.json')
 
     def _accept_pool(self):
         pass
@@ -47,7 +49,7 @@ class SyntheticSeat(Seat):
         self._pane = None
 
     def _up(self, resume=True, *, observation=None):
-        pin = self.folder / 'record'
+        pin = self.trusted / 'record'
         prior = [pin.read_text().strip()] if pin.exists() else []
         pin.unlink(missing_ok=True)
         self._pane = Pane('%' + self.name + '-next', 'synthetic', '@' + self.name,
@@ -143,11 +145,11 @@ def test_incomplete_launch_opens_neither_attempt_nor_journal(tmp_path, monkeypat
     if missing == 'pane':
         seat._pane = None
     elif missing == 'pid':
-        data = json.loads((seat.folder / 'launch.json').read_text())
+        data = json.loads((seat.trusted / 'launch.json').read_text())
         data['pid'] = None
-        (seat.folder / 'launch.json').write_text(json.dumps(data))
+        (seat.trusted / 'launch.json').write_text(json.dumps(data))
     else:
-        (seat.folder / 'launch.json').unlink()
+        (seat.trusted / 'launch.json').unlink()
     assert 'message waits unread' in service._deliver(seat, message)
     assert service.attempts.all() == []
     assert not list((tmp_path / 'post/pending').glob('*/*.json'))

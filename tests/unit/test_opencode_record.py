@@ -161,9 +161,10 @@ def test_unknown_nested_usage_is_unmeasured_with_siblings_through_watch_and_acco
     part(con, "text", "good-answer", "root", 31, {"type": "text", "text": "Readable sibling reply"})
     con.commit()
     con.close()
-    (seat.folder / "record").write_text(str(record))
+    seat.trusted.mkdir(parents=True, exist_ok=True)
+    (seat.trusted / "record").write_text(str(record))
     launched = Launched("%999", 999, AT.isoformat(), "local", "root", ["opencode"], "synthetic", harness="opencode")
-    launched.write(seat.folder / "launch.json")
+    launched.write(seat.trusted / "launch.json")
     observed = SimpleNamespace(pane=lambda: SimpleNamespace(dead=False), harness=seat.harness, join=lambda: Join(record))
     assert watch.activity(observed, AT + timedelta(seconds=1)).state == "idle"
     turns = seat.harness.turns(record)

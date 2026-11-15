@@ -30,14 +30,15 @@ from .harness.base import Harness, Join, Launch, _version_in_runtime
 from .harness.capabilities import validate_selection
 from .provenance import remember_launch, retained_launch
 from .pricing import save_price, saved_price
+from . import trusted_files
 from .ship import Pool, SeatSpec, Ship, ShipError
 from .tmux import Pane, Tmux, check_private_folder
 
 
 PROCESS_END_SECONDS = 10.0  # how long down watches a closed pane's program end before it leaves the rest to the tick
 RELAUNCH_END_SECONDS = 60.0  # a relaunch (restart, fresh, a pool move) watches a program end this long in all
-RETIRING = "retiring.json"
-REFUSED_RELAUNCH = "relaunch-refused.json"  # a relaunch refused while the old program was ending, until up succeeds
+RETIRING = trusted_files.RETIRING
+REFUSED_RELAUNCH = trusted_files.REFUSED_RELAUNCH  # a relaunch refused while the old program was ending, until up succeeds
 
 
 def process_start(pid: int) -> str | None:
@@ -96,6 +97,7 @@ class Launched:
             data.pop('answered')  # unchanged launch shape until a question is answered
         if data['start'] is None:
             data.pop('start')  # unchanged launch shape where the start was not read
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)  # the seat's trusted folder (trusted_files)
         durable.replace_file(path, json.dumps(data, indent=2) + "\n")
         save_price(path, price)
 
@@ -323,7 +325,7 @@ class UnresolvedSeat:
         return self.spec.name
 
 
-EXPLICIT = 'pool-explicit'  # beside ``pool``: a person chose that pool for the next launch, which takes it
+EXPLICIT = trusted_files.EXPLICIT  # beside ``pool``: a person chose that pool for the next launch, which takes it
 
 
 class Seat:
@@ -331,8 +333,14 @@ class Seat:
         self.ship, self.spec, self.tmux = ship, spec, tmux
         # A launch of a seat with no launch on file reads a saved choice the ship file no longer declares as
         # absent, so the declared order chooses (``launch_choice``); every other reader still refuses it.
-        self._launching = launching and not (ship.runtime / "seats" / spec.name / "launch.json").exists()
-        self.folder = ship.runtime / "seats" / spec.name
+        self._launching = launching and not trusted_files.path(ship.runtime, spec.name, trusted_files.LAUNCH).exists()
+        self.folder = ship.runtime / "seats" / spec.name  # its own: its jail may write all of it
+        self.trusted = trusted_files.folder(ship.runtime, spec.name)  # what the service writes and trusts: no jail sees it
+        if self.folder.is_dir():  # a seat that exists has both; reading a ship that has none makes nothing
+            try:
+                trusted_files.make(ship.runtime, spec.name)  # private; inside a jail, in that jail's own empty tmpfs
+            except OSError:
+                pass  # a runtime that cannot be written: nothing is written there either
         self.home = self.folder / "home"
         self._prepared_observation: tuple[str | None, str | None] | None = None
         try:
@@ -358,7 +366,7 @@ class Seat:
     @property
     def pool(self) -> Pool:
         """The pool the seat is on: the first declared, or the one failover moved it to."""
-        current = self.folder / "pool"
+        current = self.trusted / trusted_files.POOL
         try:
             name = current.read_text().strip()
         except FileNotFoundError:
@@ -374,24 +382,24 @@ class Seat:
                     name = launched.pool
                     if name not in self.spec.pools:
                         raise ShipError(f"{self.name}: saved launch pool has no declared choice; restore its declaration")
-                elif any((self.folder / file).exists() for file in
-                         ('record', record_owner.REGISTRY, 'record-launches.jsonl')):
+                elif any((self.trusted / file).exists() for file in
+                         (trusted_files.RECORD, trusted_files.READERS, trusted_files.LAUNCHES)):
                     raise ShipError(f"{self.name}: saved pool missing with retained record; restore the selected pool")
         return self.ship.pool(name if name in self.spec.pools else self.spec.pools[0])
 
     def move_to(self, pool: str, *, explicit: bool = False) -> None:
         self.spec.for_pool(pool)
-        self.folder.mkdir(parents=True, exist_ok=True)
-        path = self.folder / 'pool'
+        trusted_files.make(self.ship.runtime, self.name)
+        path = self.trusted / trusted_files.POOL
         durable.replace_file(path, pool + '\n')
         if explicit:
-            durable.replace_file(self.folder / EXPLICIT, pool + '\n')
+            durable.replace_file(self.trusted / EXPLICIT, pool + '\n')
         else:
-            (self.folder / EXPLICIT).unlink(missing_ok=True)
+            (self.trusted / EXPLICIT).unlink(missing_ok=True)
 
     def _saved_name(self) -> str | None:
         try:
-            return (self.folder / 'pool').read_text().strip() or None
+            return (self.trusted / trusted_files.POOL).read_text().strip() or None
         except FileNotFoundError:
             return None
 
@@ -407,7 +415,7 @@ class Seat:
         current = self.pool.name
         saved = self._saved_name() or current
         try:
-            explicit = (self.folder / EXPLICIT).read_text().strip()
+            explicit = (self.trusted / EXPLICIT).read_text().strip()
         except FileNotFoundError:
             explicit = None
         if explicit is not None and explicit == current:
@@ -456,7 +464,12 @@ class Seat:
         return stopped + '\n' + self._up(resume=same_program, observation=observation)
 
     def launched(self) -> Launched | None:
-        path = self.folder / "launch.json"
+        path = self.trusted / trusted_files.LAUNCH
+        from . import seat_migration
+        if (hold := seat_migration.unconfirmed(self.trusted)) is not None:
+            raise LaunchUnreadable(f"{self.trusted.name}: its live window could not be joined to its old launch record when "
+                                   f"its files moved ({hold.get('reason', 'unknown')}); this seat is held, no other; "
+                                   f"qd down {self.trusted.name} closes that window")
         try:
             text = path.read_text()
         except FileNotFoundError:
@@ -506,7 +519,7 @@ class Seat:
         """
         started = self.tmux.started()
         try:
-            written = (self.folder / "launch.json").stat().st_mtime
+            written = (self.trusted / trusted_files.LAUNCH).stat().st_mtime
         except FileNotFoundError:
             return False
         return started is not None and started > written
@@ -533,7 +546,7 @@ class Seat:
             return None  # law: identity
         answered = [item for item in (launched.answered or []) if item.get("question") != entry["question"]]
         updated = replace(launched, answered=[*answered, entry])
-        updated.write(self.folder / "launch.json")
+        updated.write(self.trusted / trusted_files.LAUNCH)
         return updated
 
     def read_pane(self, history: int = 0) -> tuple[Pane, str] | None:
@@ -564,7 +577,7 @@ class Seat:
 
     def _pinned_join(self, *, publish: bool) -> Join | None:
         """Validate a pin; None alone means that no join has been pinned yet."""
-        pinned = self.folder / "record"
+        pinned = self.trusted / trusted_files.RECORD
         if pinned.is_file():
             try:
                 named = pinned.read_text().strip()
@@ -607,7 +620,7 @@ class Seat:
         found = self._pinned_join(publish=True)
         if found is not None:
             return found
-        pinned = self.folder / "record"
+        pinned = self.trusted / trusted_files.RECORD
         launched = self.launched()
         if launched is None:
             return Join(None, "not up")
@@ -620,17 +633,18 @@ class Seat:
         except OSError as error:
             return Join(None, f"record unreadable: {error}; inspect with qd watch {self.name}")
         if found.record is not None:
+            trusted_files.make(self.ship.runtime, self.name)
             durable.replace_file(pinned, str(found.record) + "\n")  # law: one-record
             self._note_owned(found.record)
         return found
 
     def _note_owned(self, record: Path) -> None:
-        record_owner.register(self.folder, record, self.spec.harness)
+        record_owner.register(self.trusted, record, self.spec.harness)
         launched = self.launched()
-        remember_launch(self.folder, record, launched if record_owner.launch_reader(launched) == self.spec.harness else None)
+        remember_launch(self.trusted, record, launched if record_owner.launch_reader(launched) == self.spec.harness else None)
         owned = self.home / "conversations.owned"
-        self.home.mkdir(parents=True, exist_ok=True)
-        from . import seat_files  # the home is its jail's to write: read and write here never follow a link
+        from . import seat_files
+        seat_files.make_folder(self.home)  # never through a link its jail planted  # the home is its jail's to write: read and write here never follow a link
         existing = (seat_files.read_text(owned) or '').splitlines()
         if str(record) not in existing:
             durable.replace_file(owned, "".join(f"{line}\n" for line in [*existing, str(record)]))
@@ -646,7 +660,7 @@ class Seat:
                 except SelectionError:
                     return True  # an unresolved sibling cannot certify exclusive shared state
                 if sibling.spec.harness == self.spec.harness and sibling.is_up:
-                    pinned = sibling.folder / "record"
+                    pinned = sibling.trusted / trusted_files.RECORD
                     if not pinned.is_file():
                         return True
                     try:
@@ -689,9 +703,10 @@ class Seat:
         """Check all publication stages, including a resumed launch, without writing."""
         owned = self.home / "conversations.owned"
         registered = {"record": str(record), "harness": self.spec.harness}
-        return (registered in record_owner.registry_events(self.folder)
-                and owned.is_file() and str(record) in owned.read_text().splitlines()
-                and retained_launch(self.folder, record, launched)
+        from . import seat_files  # the home is its jail's: read without following a link, and bounded
+        return (registered in record_owner.registry_events(self.trusted)
+                and str(record) in (seat_files.read_text(owned) or '').splitlines()
+                and retained_launch(self.trusted, record, launched)
                 and self.launched() == launched)
 
     # -- the one relaunch path -----------------------------------------------------------
@@ -716,6 +731,7 @@ class Seat:
         """Bring the seat up. A seat with declared choices, being down, launches on ``launch_choice``, or on
         ``pool`` for this one launch; a move to another program starts it fresh, as failover does."""
         with self._lifecycle():
+            self.migrate()  # before the launch choice reads the pool selection in its new place
             if pool is not None and (not self.spec.pool_choices or pool not in self.spec.pools):
                 raise ShipError(f"{self.name}: --pool {pool!r} is not one of its declared choices"
                                 + (f" ({', '.join(self.spec.pools)})" if self.spec.pool_choices else ""))
@@ -733,7 +749,7 @@ class Seat:
             current = self.pool.name
             saved = self._saved_name()
             if target == current and pool is None and why == 'its saved choice':
-                (self.folder / EXPLICIT).unlink(missing_ok=True)
+                (self.trusted / EXPLICIT).unlink(missing_ok=True)
                 return proof(self._up(resume))  # nothing chosen: the launch is as it always was
             selected = replace(self.spec.for_pool(target), human_session=self.session.human)
             observation = self._observe_selection(selected, self.ship.pool(target))
@@ -792,7 +808,13 @@ class Seat:
         note = validate_selection(selected, reader, version=version, installed=True)
         return version, note
 
+    def migrate(self) -> dict[str, str]:
+        """Consider this seat's files in its own folder once, before anything reads their new place (seat_migration)."""
+        from . import seat_migration
+        return seat_migration.migrate(self.ship, self.spec, self.tmux)
+
     def _up(self, resume: bool = True, *, observation=None) -> str:
+        self.migrate()
         self._accept_pool()
         if launchable := getattr(self.tmux, "launchable", None):
             launchable()  # a socket too long or not this user's refuses before anything of the launch is made
@@ -822,6 +844,7 @@ class Seat:
         version, effort_note = observation if observation is not None else self._observe_selection()
         shipmod.fence(self.ship)
         self.folder.mkdir(parents=True, exist_ok=True)
+        trusted_files.make(self.ship.runtime, self.name)
         if left is not None and left.dead:
             self._retire_window(previous)  # the last launch's failed pane goes only with matching identity
         if self.launched() is not None:
@@ -829,9 +852,11 @@ class Seat:
 
             credential.reseed(self.ship, [self], wait=credential.DOWN_WAIT)  # a refresh left in this home reseeds the pool it came from, before any move
         prior = {item.path for item in record_owner.records(self)}
-        prior.update(self.harness.records(self.home))
+        from .harness.base import inside_home
+        prior.update(path for path in self.harness.records(self.home)  # never through a link out of its home
+                     if self.harness.home_variable is None or inside_home(path, self.home))
         for record in prior:
-            record_owner.register(self.folder, record, None)  # retain even untyped history before clearing a fresh pin
+            record_owner.register(self.trusted, record, None)  # retain even untyped history before clearing a fresh pin
         brief = standing.render(self.ship, self.spec)
         pool = self.pool
         ship_home = self.ship.folder / "homes" / self.harness.name
@@ -843,7 +868,7 @@ class Seat:
         carriage = self.carriage(resume_id=resume_id)  # read while the last record is still pinned
         carried = carriage.carried
         if not resume_id:
-            (self.folder / "record").unlink(missing_ok=True)
+            (self.trusted / trusted_files.RECORD).unlink(missing_ok=True)
         path = self._path()
         jailed = self.ship.jailed(self.spec, pool)
 
@@ -905,8 +930,8 @@ class Seat:
         launched = Launched(pane.id, pane.pid, at, pool.name, resume_id, argv, version, self.spec.harness,
                             sorted(map(str, prior)), launch.price, launch.recovery, notice=launch.notice,
                             start=process_start(pane.pid))
-        launched.write(self.folder / "launch.json")
-        (self.folder / REFUSED_RELAUNCH).unlink(missing_ok=True)  # up again: a refused relaunch is over
+        launched.write(self.trusted / trusted_files.LAUNCH)
+        (self.trusted / REFUSED_RELAUNCH).unlink(missing_ok=True)  # up again: a refused relaunch is over
         if self.spec.pool_choices:
             self.move_to(pool.name)
         if resume_id:
@@ -927,7 +952,7 @@ class Seat:
 
     def _resume_id(self) -> str | None:
         from .record_location import retired
-        pinned = self.folder / "record"
+        pinned = self.trusted / trusted_files.RECORD
         if pinned.is_file() and retired(Path(pinned.read_text().strip())):
             raise ShipError(f"{self.name}: conversation is retired; use qd fresh {self.name}")
         record = self.record()
@@ -1105,8 +1130,9 @@ class Seat:
         cwd = self.ship.cwd_of(self.spec)
         if not cwd.is_dir():
             raise ShipError(f"{self.name}: working directory {cwd} does not exist; qd creates nothing outside its folder")  # law: one-folder
-        script = self.folder / "launch.sh"
-        # Through a temporary renamed over the name: a link the jail planted at launch.sh is replaced, never followed.
+        # tmux runs it as the operator: kept where no jail reaches, and written through a temporary renamed over the
+        # name, so a link at the name is replaced, never followed.
+        script = trusted_files.make(self.ship.runtime, self.name) / trusted_files.LAUNCH_SCRIPT
         durable.replace_file(script, launch_script(self.name, self._launch_words(argv, env, path)))
         return self.tmux.new_window(session.title, self.spec.display, cwd, ["sh", str(script)], env)
 
@@ -1127,6 +1153,9 @@ class Seat:
 
     def down(self) -> str:
         with self._lifecycle(wait=True):
+            from . import seat_migration
+            if (lifted := seat_migration.close_unconfirmed(self.ship, self.name, self.tmux)) is not None:
+                return lifted  # a person's down on a seat its files move held: its own window alone
             return self._down()
 
     def _relaunch_down(self) -> str:
@@ -1164,10 +1193,10 @@ class Seat:
             if not (relaunch and wait_for_end(*program, RELAUNCH_END_SECONDS - PROCESS_END_SECONDS)):
                 # The pane is closed but the program still runs: it may still write its credential or record.
                 # Nothing is reseeded and the launch stays, for the service's tick to finish once it has ended.
-                durable.replace_file(self.folder / RETIRING, json.dumps(dict(pid=program[0], start=program[1])) + "\n")
+                durable.replace_file(self.trusted / RETIRING, json.dumps(dict(pid=program[0], start=program[1])) + "\n")
                 bound = RELAUNCH_END_SECONDS if relaunch else PROCESS_END_SECONDS
                 if relaunch:
-                    durable.replace_file(self.folder / REFUSED_RELAUNCH, json.dumps(dict(
+                    durable.replace_file(self.trusted / REFUSED_RELAUNCH, json.dumps(dict(
                         at=datetime.now(timezone.utc).isoformat(), pid=program[0])) + "\n")
                     from . import relaunch_intent  # a hold that keeps the seat down: no intent brings it up
                     relaunch_intent.clear(self.ship.runtime, self.name, 'a relaunch refused while its program was ending')
@@ -1187,23 +1216,23 @@ class Seat:
             from . import credential  # the credential module reads seats, so it is imported here, not above
 
             credential.reseed(self.ship, [self], wait=credential.DOWN_WAIT)  # the program has ended: a refresh it left reseeds the pool its launch names, while it is named
-        (self.folder / "launch.json").unlink(missing_ok=True)
-        (self.folder / RETIRING).unlink(missing_ok=True)
+        (self.trusted / trusted_files.LAUNCH).unlink(missing_ok=True)
+        (self.trusted / RETIRING).unlink(missing_ok=True)
 
     def relaunch_refused(self) -> str | None:
         """Plain words for the status line while the seat is down because its relaunch met a program still ending."""
         held = self.retiring()
         if held is not None:
             return f"{self.name}: its program is still ending; " + (
-                "its relaunch was refused" if (self.folder / REFUSED_RELAUNCH).exists() else "it is not retired yet")
-        if (self.folder / REFUSED_RELAUNCH).exists():
+                "its relaunch was refused" if (self.trusted / REFUSED_RELAUNCH).exists() else "it is not retired yet")
+        if (self.trusted / REFUSED_RELAUNCH).exists():
             return f"{self.name}: its relaunch was refused while its program was ending; qd up {self.name}"
         return None
 
     def retiring(self) -> dict | None:
         """The program a closed pane left still running at down: its pid and start, until it has ended."""
         try:
-            data = json.loads((self.folder / RETIRING).read_text())
+            data = json.loads((self.trusted / RETIRING).read_text())
         except FileNotFoundError:
             return None
         except (OSError, ValueError):
@@ -1300,11 +1329,12 @@ def temporary_seat(ship: Ship, tmux: Tmux, spec: SeatSpec, orders: list[post.Mes
         if not owned:
             raise ShipError(f"{seat.name}: temporary seat ownership is busy; retry {purpose}")
         if (spec.name in ship.seats or spec.session in ship.sessions or tmux.has_session(session.title)
-                or seat.folder.exists() or (ship.runtime / "post" / "pending" / seat.name).exists()
+                or seat.folder.exists() or seat.trusted.exists() or (ship.runtime / "post" / "pending" / seat.name).exists()
                 or store.for_seat(seat.name)
                 or any(a.seat == seat.name for a in post.Attempts(ship.runtime).all())):
             raise ShipError(f"{seat.name}: temporary seat/session/history already exists; retry {purpose}")
         seat.folder.mkdir(parents=True, exist_ok=False)
+        trusted_files.make(ship.runtime, seat.name)
         session_id = None
         # Cleanup is registered before publication can fail, and runs before the
         # outer lease retires. The transient lock remains held around both.
@@ -1344,11 +1374,13 @@ def _teardown(cleanup: ExitStack, treated: Ship, seat: Seat, tmux: Tmux, orders:
         # A launch still standing means down did not prove its program ended: the home stays, the status
         # line names the seat, and qd down <seat> finishes it (law: nothing-waits-silently).
         running = launched is not None and launched.start and process_alive(launched.pid, launched.start)
-        if retired and not running and not (seat.folder / "launch.json").exists():
+        if retired and not running and not (seat.trusted / trusted_files.LAUNCH).exists():
             from . import credential
 
             credential.reseed(treated, [seat], wait=credential.DOWN_WAIT)  # its one pool: a refresh left in the home is not deleted with it
             shutil.rmtree(seat.folder)
+            if seat.trusted.is_dir():
+                shutil.rmtree(seat.trusted)  # its trusted files go with it
 
     held: list[int] = []
     previous: dict = {}
@@ -1387,7 +1419,7 @@ def _leftover(ship: Ship, name: str) -> dict | None:
     if name in ship.seats or not CHECK_SEAT.fullmatch(name):
         return None
     try:
-        launch = json.loads((ship.runtime / "seats" / name / "launch.json").read_text())
+        launch = json.loads(trusted_files.path(ship.runtime, name, trusted_files.LAUNCH).read_text())
     except FileNotFoundError:
         return None  # no launch: nothing of it can be running
     except (OSError, ValueError):
@@ -1422,7 +1454,7 @@ def down_leftover_check(ship: Ship, tmux: Tmux, name: str) -> str:
         if not owned:
             raise ShipError(f"{name}: its check is still running and takes its own seat down; nothing done")
         try:
-            launch = json.loads((folder / "launch.json").read_text())
+            launch = json.loads(trusted_files.path(ship.runtime, name, trusted_files.LAUNCH).read_text())
         except FileNotFoundError:
             launch = None
         except (OSError, ValueError) as error:

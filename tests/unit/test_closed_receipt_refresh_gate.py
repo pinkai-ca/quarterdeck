@@ -45,7 +45,7 @@ def test_a_record_not_bound_to_exactly_its_reader_is_left_alone(guarded, monkeyp
     for registry in (record_owner.REGISTRY, 'record-launches.jsonl'):
         (world.seat.folder / registry).unlink(missing_ok=True)
     for name in owners:
-        record_owner.register(world.seat.folder, world.record, name)
+        record_owner.register(world.seat.trusted, world.record, name)
     before = snapshot(world)
     monkeypatch.setattr(input_receipt, 'confirmed', lambda *a: pytest.fail('read an unowned record'))
     receipt_refresh.run(world.service, NEW)

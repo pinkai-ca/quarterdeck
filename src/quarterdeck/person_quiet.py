@@ -18,6 +18,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import json
 
+from . import trusted_files
 from . import compaction, durable, idle, post
 from .ship import ShipError
 
@@ -25,8 +26,8 @@ QUIET = timedelta(minutes=20)  # a framework constant; there is no ship-file key
 WAKES = 'desk'  # the one role the wake is posted to; other seats in the person's session wait for the person
 ORDER = ('The person has been quiet for twenty minutes and you are ready: '
          'post your handoff if you have not, then run qd fresh now.')
-FACT = 'person-quiet.json'
-WAKE = 'person-quiet-wake.json'
+FACT = trusted_files.PERSON_QUIET
+WAKE = trusted_files.PERSON_QUIET_WAKE
 VERSION = 1
 FUTURE = timedelta(seconds=5)  # a recorded time further ahead of the clock than this is not believed
 
@@ -93,7 +94,7 @@ def read(seat, now: datetime, excluded: tuple[str, ...] | None = None) -> dict:
 def observe(seat, now: datetime) -> dict:
     """Read the record and keep the fact; an unchanged fact is not rewritten."""
     fact = read(seat, now)
-    path = seat.folder / FACT
+    path = seat.trusted / FACT
     text = json.dumps(fact, sort_keys=True) + '\n'
     try:
         if path.read_text() == text:
@@ -113,7 +114,7 @@ def fact(seat) -> dict:
         return _unknown(None, 'launch unreadable')
     launch = compaction.key_for(launched) if launched else None
     try:
-        data = json.loads((seat.folder / FACT).read_text())
+        data = json.loads((seat.trusted / FACT).read_text())
     except FileNotFoundError:
         return _unknown(launch, 'not yet read by the service')
     except (OSError, ValueError, UnicodeDecodeError):
@@ -205,7 +206,7 @@ def idle_hold(seat, state) -> str | None:
 
 def _wake(seat) -> dict | None:
     try:
-        data = json.loads((seat.folder / WAKE).read_text())
+        data = json.loads((seat.trusted / WAKE).read_text())
     except FileNotFoundError:
         return None
     except (OSError, ValueError, UnicodeDecodeError):
@@ -216,8 +217,8 @@ def _wake(seat) -> dict | None:
 
 
 def _save_wake(seat, data: dict) -> None:
-    seat.folder.mkdir(parents=True, exist_ok=True)
-    durable.replace_file(seat.folder / WAKE, json.dumps(data, sort_keys=True) + '\n')
+    trusted_files.make(seat.ship.runtime, seat.name)
+    durable.replace_file(seat.trusted / WAKE, json.dumps(data, sort_keys=True) + '\n')
 
 
 def _post(seat, store, wake: dict) -> str:
@@ -249,7 +250,7 @@ def tick(seat, store, now: datetime | None = None) -> str | None:
     wake = _wake(seat)
     if clear:
         if wake is not None:
-            (seat.folder / WAKE).unlink()
+            (seat.trusted / WAKE).unlink()
         return None
     if identity is None:
         return None

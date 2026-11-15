@@ -15,6 +15,7 @@ import secrets
 import signal
 import stat
 
+from . import trusted_files
 from . import durable, post
 from .procstat import EXITED
 
@@ -34,7 +35,7 @@ def process(pid):
 
 def launch(runtime, name):
     try:
-        raw = (runtime / 'seats' / name / 'launch.json').read_bytes()
+        raw = trusted_files.path(runtime, name, trusted_files.LAUNCH).read_bytes()
         data = json.loads(raw)
         if type(data['pid']) is not int or data['pid'] <= 0:
             return None

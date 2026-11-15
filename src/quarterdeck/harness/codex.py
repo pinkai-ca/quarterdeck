@@ -9,6 +9,7 @@ follows each model response with the usage of that response and the running tota
 
 from __future__ import annotations
 
+from .. import seat_files
 from .base import SetupMetadata
 from .capabilities import DefaultMetadata, EffortCapability, SuggestedValue
 
@@ -747,7 +748,7 @@ class CodexHarness(Harness):
 
     def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None) -> Credential | None:
         self.check_defaults(seat, ship_home)
-        home.mkdir(parents=True, exist_ok=True)
+        seat_files.make_folder(home)  # never through a link its jail planted
         runtime = home.parents[2]  # runtime/seats/<seat>/home
         cwd = seat.cwd or runtime.parent
         defaults = tomllib.loads(CONFIG.format(model=literal(seat.model or DEFAULT_MODEL),

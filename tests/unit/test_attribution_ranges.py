@@ -37,7 +37,7 @@ class History:
             self.visits.append(record.rsplit('/', 1)[-1])
             return replay_row(record, *args, **kwargs)
         monkeypatch.setattr(self.cache, 'replay_row', visit)
-        self.journal = root / 'seats' / 'builder' / 'record-launches.jsonl'
+        self.journal = root / 'trusted' / 'builder' / 'record-launches.jsonl'
         self.journal.parent.mkdir(parents=True)
         self.journal.write_text('')
         def inputs(record):

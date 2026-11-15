@@ -104,7 +104,7 @@ def _queued_delivery(setup, monkeypatch, width):  # noqa: F811
     svc.ship.pools[old.pool.name] = replace(old.pool, provider="xai")
     svc.ship.seats[old.name] = replace(old.spec, harness="grok")
     seat = svc.seat(old.name)
-    launch_path = seat.folder / "launch.json"
+    launch_path = seat.trusted / "launch.json"
     launch = json.loads(launch_path.read_text())
     launch.update(harness="grok", argv=["grok"])
     launch_path.write_text(json.dumps(launch))
@@ -116,8 +116,8 @@ def _queued_delivery(setup, monkeypatch, width):  # noqa: F811
         "params": {"sessionId": "synthetic-queue", "update": {
             "sessionUpdate": "user_message_chunk",
             "content": {"type": "text", "text": "Initial fictional turn is still running."}}}}) + "\n")
-    (seat.folder / "record").write_text(str(record) + "\n")
-    register(seat.folder, record, "grok")
+    (seat.trusted / "record").write_text(str(record) + "\n")
+    register(seat.trusted, record, "grok")
     data = sample(width)
     payload = data["payloads"][0]
     message = svc.store.new("order", "sender", seat.name, "A fictional queued task.")

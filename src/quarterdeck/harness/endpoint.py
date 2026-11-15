@@ -3,6 +3,7 @@
 from pathlib import Path
 from dataclasses import replace
 
+from .. import seat_files
 from .. import endpoint
 from ..ship import Pool, SeatSpec
 from ..pricing import Price
@@ -26,7 +27,7 @@ class EndpointHarness(Harness):
 
     def endpoint_home(self, home: Path, seat: SeatSpec, pool: Pool):
         """Discover this launch's model and key without storing the key in the home."""
-        home.mkdir(parents=True, exist_ok=True)
+        seat_files.make_folder(home)  # never through a link its jail planted
         return endpoint.choose(pool, seat.model), endpoint.key(pool)
 
     def endpoint_ready(self, home: Path, choice: endpoint.Choice, secret: dict, price: Price | None = None) -> Credential | None:

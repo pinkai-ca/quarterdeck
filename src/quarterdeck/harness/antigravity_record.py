@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .. import trusted_files
 from .antigravity_quota import record_wall
 from .antigravity_wire import _bytes, _int, _proto, _snapshot_query, _str, _ts, _uints
 from ..pricing import amount
@@ -278,7 +279,7 @@ def _decode(record: Path) -> _Decoded:
 def records(home: Path) -> list[Path]:
     """Only the conversations proven to belong to this seat (law: one-record)."""
     paths: list[Path] = []
-    for source in (s for s in (home / OWNED, home.parent / "record") if s.is_file()):
+    for source in (s for s in (home / OWNED, trusted_files.of_home(home) / trusted_files.RECORD) if s.is_file()):
         for line in source.read_text().splitlines():
             if (path := Path(line.strip())).name and path not in paths:
                 paths.append(path)

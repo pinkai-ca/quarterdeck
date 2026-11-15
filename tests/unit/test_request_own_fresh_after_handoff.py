@@ -208,8 +208,9 @@ def recorded(tmp_path, monkeypatch):
     pane = os.getpid()
     seat = Seat(ship, spec, SimpleNamespace(pane=lambda _: SimpleNamespace(id='%1', pid=pane, dead=False)))
     seat.folder.mkdir(parents=True)
+    seat.trusted.mkdir(parents=True, exist_ok=True)
     Launched('%1', pane, (shapes.AT - timedelta(hours=1)).isoformat(), 'synthetic', None, ['claude'], 'synthetic',
-             harness='claude', start=process_start(pane)).write(seat.folder / 'launch.json')
+             harness='claude', start=process_start(pane)).write(seat.trusted / 'launch.json')
     record = seat.home / 'record-larch.jsonl'
     record.parent.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(seat, 'record', lambda: record)

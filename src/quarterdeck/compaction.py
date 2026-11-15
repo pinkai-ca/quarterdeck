@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 import secrets
 
+from . import trusted_files
 from . import durable, post, record_owner
 from .ship import ShipError
 
@@ -25,7 +26,7 @@ def digest(text):
 def path(runtime, name):
     if Path(name).name != name or name in ('.', '..'):
         raise ShipError('invalid compaction seat identity')
-    return runtime / 'seats' / name / 'compaction.json'
+    return trusted_files.path(runtime, name, trusted_files.COMPACTION)
 
 
 def load(runtime, name):

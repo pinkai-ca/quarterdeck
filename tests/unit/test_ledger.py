@@ -269,17 +269,19 @@ def accounting_example(tmp_path, monkeypatch, count):
     folder = ship.runtime / 'seats' / 'worker-z'
     home = folder / 'home'
     home.mkdir(parents=True)
+    trusted = ship.runtime / 'trusted' / 'worker-z'
+    trusted.mkdir(parents=True)
     record = home / 'record-z'
     record.write_text('synthetic first revision')
     at = datetime(2026, 1, 1, tzinfo=timezone.utc)
     reader = FakeHarness()
-    seat = SimpleNamespace(name='worker-z', home=home, folder=folder, harness=reader,
+    seat = SimpleNamespace(name='worker-z', home=home, folder=folder, trusted=trusted, harness=reader,
                            session=SimpleNamespace(human=False), pane=lambda: None,
                            launched=lambda: None, record=lambda: record)
-    record_owner.register(folder, record, 'fake')
+    record_owner.register(trusted, record, 'fake')
     launches = [dict(record=str(record), at=(at-timedelta(seconds=i+1)).isoformat(),
                      pool='pool-z', harness='fake') for i in range(count)]
-    (folder / 'record-launches.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in launches))
+    (trusted / 'record-launches.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in launches))
     turns = [Turn(i, at+timedelta(seconds=i*2), at+timedelta(seconds=i*2+1),
                   'synthetic input', 'synthetic reply', 'model-z', Tokens(1,2,3,4),
                   (ToolCall('synthetic-tool', 0.5, False),), cost=0.25) for i in range(count)]
@@ -394,7 +396,7 @@ def test_account_pass_reconciles_new_turn_metadata_launch_prices_and_posts(tmp_p
     assert svc.ledger.db.execute('SELECT COUNT(*),SUM(written),SUM(cost) FROM turns').fetchone() == (2,13,0.75)
     trace.clear()
     # Pricing/launch evidence can change while source bytes remain unchanged.
-    journal = seat.folder/'record-launches.jsonl'
+    journal = seat.trusted/'record-launches.jsonl'
     launch = json.loads(journal.read_text())
     launch['price'] = {'synthetic-model-z': 2}
     journal.write_text(json.dumps(launch)+'\n')

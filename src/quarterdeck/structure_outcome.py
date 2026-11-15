@@ -16,6 +16,7 @@ import os
 import stat
 from pathlib import Path
 
+from . import trusted_files
 from . import durable, input_receipt, pending, post, post_dir, record_owner, recovery
 from .door import Door
 from .ship import ShipError
@@ -245,12 +246,12 @@ class _SavedSeat:
         return getattr(self.seat, name)
 
     def record(self):
-        named = (self.folder / 'record').read_text().strip()
+        named = (self.trusted / trusted_files.RECORD).read_text().strip()
         return Path(named) if named else None
 
     def reader(self, record):
-        rows = record_owner.events(self.folder / record_owner.REGISTRY)
-        rows += record_owner.events(self.folder / 'record-launches.jsonl')
+        rows = record_owner.events(self.trusted / trusted_files.READERS)
+        rows += record_owner.events(self.trusted / trusted_files.LAUNCHES)
         names = {row['harness'] for row in rows if row['record'] == str(record) and row.get('harness')}
         return self.harness.name if names == {self.harness.name} else None
 

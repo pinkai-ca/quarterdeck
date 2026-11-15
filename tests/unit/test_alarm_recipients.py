@@ -37,11 +37,13 @@ def alarms(drydock):
         at = datetime.now(timezone.utc).isoformat()
         seat = Seat(ship, worker, tmux)
         seat.folder.mkdir(parents=True)
-        Launched(WORKER.id, WORKER.pid, at, worker.pools[0], None, ['pi'], '0.74.2', 'pi').write(seat.folder / 'launch.json')
+        seat.trusted.mkdir(parents=True, exist_ok=True)
+        Launched(WORKER.id, WORKER.pid, at, worker.pools[0], None, ['pi'], '0.74.2', 'pi').write(seat.trusted / 'launch.json')
         if systems != 'absent':
             spock = Seat(ship, ship.seat('spock'), tmux)
             spock.folder.mkdir(parents=True)
-            Launched(SPOCK.id, SPOCK.pid, at, spock.spec.pools[0], None, ['fake'], None, 'fake').write(spock.folder / 'launch.json')
+            spock.trusted.mkdir(parents=True, exist_ok=True)
+            Launched(SPOCK.id, SPOCK.pid, at, spock.spec.pools[0], None, ['fake'], None, 'fake').write(spock.trusted / 'launch.json')
         svc = service.Service(ship, tmux)
         built.append(svc)
 

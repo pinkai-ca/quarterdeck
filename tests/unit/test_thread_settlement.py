@@ -111,7 +111,7 @@ def test_interrupted_settlement_finishes_attempt_without_rewriting_proof(world, 
 def test_service_restart_settles_detached_alarm_without_sending(setup):
     svc, seat, live, record = setup
     message, proof = send(svc, seat)
-    launch = seat.folder / 'launch.json'
+    launch = seat.trusted / 'launch.json'
     data = json.loads(launch.read_text())
     data['at'] = post.now().isoformat()
     launch.write_text(json.dumps(data))

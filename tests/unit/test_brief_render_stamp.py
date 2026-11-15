@@ -181,7 +181,7 @@ def test_selected_program_change_refreshes_without_card_edit(case):
         'alpha-synthetic': {'harness': 'fake'},
         'beta-synthetic': {'harness': 'other-synthetic'}})
     case.service.brief_stamp = case.service._brief_stamp()
-    selection = case.service.runtime / 'seats' / case.spec.name / 'pool'
+    selection = case.service.runtime / 'trusted' / case.spec.name / 'pool'
     selection.parent.mkdir(parents=True)
     selection.write_text('beta-synthetic\n')
     assert_refresh(case, 'Other synthetic card')
@@ -193,7 +193,7 @@ def test_selection_with_same_rendered_program_stays_quiet(case):
         'alpha-synthetic': {'harness': 'fake', 'model': 'first-synthetic'},
         'beta-synthetic': {'harness': 'fake', 'model': 'second-synthetic'}})
     case.service.brief_stamp = case.service._brief_stamp()
-    selection = case.service.runtime / 'seats' / case.spec.name / 'pool'
+    selection = case.service.runtime / 'trusted' / case.spec.name / 'pool'
     selection.parent.mkdir(parents=True)
     selection.write_text('beta-synthetic\n')
     case.service.rebrief()
@@ -381,7 +381,7 @@ def test_unresolved_selection_does_not_hide_healthy_edits_or_repair(case):
                      pool_choices={'alpha-synthetic': {'harness': 'fake'},
                                    'beta-synthetic': {'harness': 'other-synthetic'}})
     service.ship = replace(service.ship, seats={**service.ship.seats, broken.name: broken})
-    selection = service.runtime / 'seats' / broken.name / 'pool'
+    selection = service.runtime / 'trusted' / broken.name / 'pool'
     selection.parent.mkdir(parents=True)
     selection.write_text('missing-synthetic\n')
     service._brief_stamp()

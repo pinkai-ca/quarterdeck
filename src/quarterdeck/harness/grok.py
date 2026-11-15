@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .. import seat_files
 from .base import SetupMetadata
 from .capabilities import DefaultMetadata, EffortCapability, SuggestedValue
 
@@ -85,7 +86,7 @@ def build_private_user_home(home: Path) -> None:
     for path in (user_home, *(user_home / name for name in ("config", "data", "cache", "state"))):
         if path.is_symlink() or (path.exists() and not path.is_dir()):
             raise ShipError(f"{path}: private Grok user home is not an owned directory")
-        path.mkdir(parents=True, exist_ok=True)
+        seat_files.make_folder(path)  # never through a link its jail planted
 
 
 def config_text(config: dict) -> str:
@@ -450,7 +451,7 @@ class GrokHarness(Harness):
         template = ship_template(ship_home, "config.toml")
         no_extra_rules(template, "ship Grok template")
         no_extra_rules(seat.settings, "seat settings")
-        home.mkdir(parents=True, exist_ok=True)
+        seat_files.make_folder(home)  # never through a link its jail planted
         build_private_user_home(home)
         settings = copy.deepcopy(merged(merged(SETTINGS, template), seat.settings))
         # These native switches describe the adapter's input/launch contract.
@@ -513,7 +514,7 @@ class GrokHarness(Harness):
             return Usage((), datetime.now(timezone.utc), str(error), called=False)
         if pool.config_dir is None or not (pool.config_dir / self.credential_file).is_file():
             return Usage((), datetime.now(timezone.utc), "native billing sign-in unavailable", called=False)
-        home.mkdir(parents=True, exist_ok=True)
+        seat_files.make_folder(home)  # never through a link its jail planted
         build_private_user_home(home)
         durable.replace_file(home / "config.toml", config_text(SETTINGS))
         credential(pool, home / self.credential_file, "XAI_API_KEY", copy=self.credential_copy)

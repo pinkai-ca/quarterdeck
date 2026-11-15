@@ -89,7 +89,7 @@ def received(seat: seatmod.Seat, opening: str) -> str:
 
 
 def words(seat: seatmod.Seat) -> list[str]:
-    script = (seat.folder / "launch.sh").read_text(encoding="utf-8")
+    script = (seat.trusted / "launch.sh").read_text(encoding="utf-8")
     return shlex.split(script.split("\n", 2)[2])
 
 
@@ -264,7 +264,7 @@ def test_a_refused_message_is_only_its_notice_in_the_account_and_the_file(ship, 
     opening = first_input(captain)
     row = next(row for row in index_rows(opening) if row['id'] == refused.id)
     printed = thread_text(captain, refused.id)
-    launch = (captain.folder / 'launch.sh').read_text(encoding='utf-8')
+    launch = (captain.trusted / 'launch.sh').read_text(encoding='utf-8')
     folder = captain.folder / 'carried'
     generated = [path.read_text(encoding='utf-8') for generation in folder.iterdir() for path in generation.iterdir()] if folder.exists() else []
     for shown in (opening, printed, launch, *generated):

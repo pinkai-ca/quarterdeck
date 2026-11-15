@@ -101,7 +101,7 @@ def test_the_door_holds_a_box_that_is_not_the_message_and_never_types_again(tmp_
 
     composer = Composer()
     seat = SimpleNamespace(
-        name='probe', harness=reader, tmux=composer, folder=tmp_path / 'probe',
+        name='probe', harness=reader, tmux=composer, folder=tmp_path / 'probe', trusted=tmp_path / 'probe',
         ship=SimpleNamespace(runtime=tmp_path / 'runtime'),
         session=SimpleNamespace(human=False), pool=SimpleNamespace(name='google'),
         spec=SeatSpec('probe', 'probe', 'worker', 'antigravity', ('google',)),

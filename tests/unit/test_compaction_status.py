@@ -40,9 +40,9 @@ def ship_view(tmp_path, monkeypatch):
         pane = SimpleNamespace(id=f'%{len(panes) + 1}', pid=100 + len(panes), dead=False, box=box)
         panes[pane.id] = pane
         Launched(pane.id, pane.pid, AT.isoformat(), 'crew-pool', None, ['claude'], 'synthetic',
-                 harness='claude').write(seat.folder / 'launch.json')
-        (seat.folder / 'record').write_text(str(native.path))
-        record_owner.register(seat.folder, native.path, 'claude')
+                 harness='claude').write(seat.trusted / 'launch.json')
+        (seat.trusted / 'record').write_text(str(native.path))
+        record_owner.register(seat.trusted, native.path, 'claude')
         compaction.tick(seat)
         return seat, native
 
@@ -141,8 +141,8 @@ def test_fresh_launch_does_not_render_the_previous_conversations_count(ship_view
     fresh = replace(previous, pid=previous.pid + 100, at=(AT + timedelta(seconds=10)).isoformat(),
                     resume=None, records_before=[str(native.path)])
     seat.pane().pid = fresh.pid
-    fresh.write(seat.folder / 'launch.json')
-    (seat.folder / 'record').unlink()
+    fresh.write(seat.trusted / 'launch.json')
+    (seat.trusted / 'record').unlink()
     monkeypatch.setattr(seat, 'join', lambda: Join(None, join_reason))
     before = compaction.path(ship.runtime, seat.name).read_bytes()
 
@@ -176,7 +176,7 @@ def test_a_resumed_launch_keeps_the_same_conversations_observed_count(ship_view)
     resumed = replace(previous, pid=previous.pid + 100, at=(AT + timedelta(seconds=10)).isoformat(),
                       resume=data['source']['conversation'])
     seat.pane().pid = resumed.pid
-    resumed.write(seat.folder / 'launch.json')
+    resumed.write(seat.trusted / 'launch.json')
     before = compaction.path(ship.runtime, seat.name).read_bytes()
     assert compaction.status(seat) == expected == 'compactions 1/2: below compaction threshold'
     assert compaction.path(ship.runtime, seat.name).read_bytes() == before

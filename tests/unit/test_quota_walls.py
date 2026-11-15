@@ -38,13 +38,14 @@ def synthetic_seat(tmp_path, monkeypatch):
                            keys=lambda *a:actions.append(('keys',a)))
     seat = Seat(ship,spec,tmux)
     seat.home.mkdir(parents=True)
+    seat.trusted.mkdir(parents=True, exist_ok=True)
     now = datetime.now(timezone.utc)
     launched = Launched('%1',4242,(now-timedelta(hours=1)).isoformat(),'google-a',None,['synthetic-agy'],'synthetic', harness='antigravity')
-    launched.write(seat.folder/'launch.json')
+    launched.write(seat.trusted/'launch.json')
     rec = AntigravityShape(seat.home,tmp_path,'synthetic-conversation','synthetic-model')
     rec.begin('synthetic input','synthetic-model','high')
     rec.end('synthetic reply')
-    (seat.folder/'record').write_text(str(rec.path))
+    (seat.trusted/'record').write_text(str(rec.path))
     monkeypatch.setattr(service,'seats',lambda *args:[seat])
     return seat,rec,shown,actions
 
@@ -160,7 +161,7 @@ def test_launch_pool_at_event_time_survives_pool_switch_and_ambiguous_history(tm
     at=datetime.now(timezone.utc)-timedelta(minutes=5)
     seat.record()  # preserve the first proven launch
     seat.move_to('google-b')
-    replace(first,at=(at+timedelta(minutes=1)).isoformat(),pool='google-b').write(seat.folder/'launch.json')
+    replace(first,at=(at+timedelta(minutes=1)).isoformat(),pool='google-b').write(seat.trusted/'launch.json')
     append_error(rec,TEXT,at)
     tick(seat)
     assert Door(seat).reading().open, 'current pool-b is not blocked by pool-a evidence'
@@ -209,7 +210,7 @@ def test_background_refresh_cadence_restart_wall_trigger_and_failures(tmp_path, 
 
 def test_ambiguous_join_never_decodes_foreign_records_for_wall_attribution(tmp_path, monkeypatch):
     seat,rec,shown,_=synthetic_seat(tmp_path,monkeypatch)
-    (seat.folder/'record').unlink()
+    (seat.trusted/'record').unlink()
     monkeypatch.setattr(AntigravityHarness,'_appeared',lambda *a:[tmp_path/'one.db',tmp_path/'two.db'])
     monkeypatch.setattr(seat.harness,'state',lambda *a: (_ for _ in ()).throw(AssertionError('foreign record opened')))
     shown['text']=TEXT+'\n'+IDLE
@@ -227,7 +228,7 @@ def test_expired_record_event_recognized_after_restart_and_record_failure(tmp_pa
     tick(seat)
     assert Door(seat).reading().open
     prior = seat.launched()
-    replace(prior, at=datetime.now(timezone.utc).isoformat()).write(seat.folder/'launch.json')
+    replace(prior, at=datetime.now(timezone.utc).isoformat()).write(seat.trusted/'launch.json')
     shown['text'] = TEXT + '\n' + IDLE
     def unreadable(*args):
         raise OSError('synthetic record temporarily unreadable')

@@ -25,14 +25,15 @@ def test_account_same_record_failover_restart_and_delayed_metadata(tmp_path, mon
     tmux = SimpleNamespace(pane=lambda ident: active['pane'], kill_window=lambda ident, *, expected_pid=None: active.update(pane=None))
     seat = Seat(ship, spec, tmux)
     seat.home.mkdir(parents=True)
+    seat.trusted.mkdir(parents=True, exist_ok=True)
     shape = CodexShape(seat.home, tmp_path, 'synthetic-provenance', 'synthetic-model')
     shape.begin('old input', 'synthetic-model', 'high')
     shape.end('old reply')
     record = shape.path
-    (seat.folder / 'record').write_text(str(record))
+    (seat.trusted / 'record').write_text(str(record))
     origin = datetime.now(timezone.utc) - timedelta(minutes=10)
     initial_launch = Launched('%1', 1001, origin.isoformat(), 'pool-a', None, ['fake'], 'synthetic')
-    initial_launch.write(seat.folder / 'launch.json')
+    initial_launch.write(seat.trusted / 'launch.json')
     old = Turn(0, origin + timedelta(seconds=1), origin + timedelta(seconds=2),
                'old input', 'old reply', 'synthetic-model', Tokens(1, 10, 0, 2),
                (ToolCall('run_command', None, False),))
@@ -68,7 +69,7 @@ def test_account_same_record_failover_restart_and_delayed_metadata(tmp_path, mon
     assert seat.pool.name == 'pool-b' and seat.record() == record
     assert '--resume' in launches[0] and 'synthetic-resume' in launches[0]
     resumed = seat.launched()
-    journal = [json.loads(line) for line in (seat.folder / 'record-launches.jsonl').read_text().splitlines()]
+    journal = [json.loads(line) for line in (seat.trusted / 'record-launches.jsonl').read_text().splitlines()]
     assert [(event['pool'], event['at']) for event in journal] == [('pool-a', initial_launch.at), ('pool-b', resumed.at)]
 
     # No new turn is required for unreadability to affect both launch pools.
@@ -102,7 +103,7 @@ def test_account_same_record_failover_restart_and_delayed_metadata(tmp_path, mon
 
     # Stopping removes launch.json, but a new accounting database can still import the durable history.
     seat.down()
-    assert not (seat.folder / 'launch.json').exists()
+    assert not (seat.trusted / 'launch.json').exists()
     svc = Service(ship, tmux)
     svc.ledger.close()
     svc.ledger = Ledger(ship.runtime / 'rebuilt-ledger.sqlite')

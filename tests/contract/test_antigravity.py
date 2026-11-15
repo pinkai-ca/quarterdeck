@@ -125,7 +125,8 @@ def test_background_task_screen_recognizes_empty_or_nonempty_box_and_fails_close
     })()
     seat = Seat(ship, spec, fake_tmux)
     seat.folder.mkdir(parents=True, exist_ok=True)
-    (seat.folder / "launch.json").write_text(json.dumps({
+    seat.trusted.mkdir(parents=True, exist_ok=True)
+    (seat.trusted / "launch.json").write_text(json.dumps({
         "pane": "%1", "pid": 4242, "at": datetime.now(timezone.utc).isoformat(),
         "pool": "google", "resume": None, "argv": ["agy"], "version": "1.5.2",
     }))
@@ -348,10 +349,11 @@ def test_records_returns_only_proven_seat_owned_conversations_and_never_foreign_
     fake_tmux = type("FakeTmux", (), {"pane": lambda self, pid: Pane("%1", "qd", "scott", 4242, 80, 24, False, False, None)})()
     seat = Seat(ship, spec, fake_tmux)
     seat.home.mkdir(parents=True, exist_ok=True)
+    seat.trusted.mkdir(parents=True, exist_ok=True)
     brief = tmp_path / "brief.md"
     brief.write_text("# Standing orders\n")
     seat.harness.launch(spec, pool, seat.home, brief, None, None)
-    (seat.folder / "launch.json").write_text(json.dumps({
+    (seat.trusted / "launch.json").write_text(json.dumps({
         "pane": "%1", "pid": 4242, "at": datetime.now(timezone.utc).isoformat(),
         "pool": "google", "resume": None, "argv": ["agy"], "version": "1.5.2",
     }))
@@ -370,7 +372,7 @@ def test_records_returns_only_proven_seat_owned_conversations_and_never_foreign_
     # Even if another foreign conversation appears later or the seat unlinks its current record on fresh start,
     # records() still returns only ours.db and never foreign.db
     AntigravityShape(tmp_path / "unused3", tmp_path, "foreign2", "gemini-3.1-pro-high", path=conversations / "foreign2.db")
-    (seat.folder / "record").unlink()
+    (seat.trusted / "record").unlink()
     assert seat.harness.records(seat.home) == [ours.path]
 
 

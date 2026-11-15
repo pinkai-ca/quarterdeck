@@ -37,7 +37,7 @@ def ship(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         return live["screen"]
 
     def sent(kind, value):
-        path = seat.folder / "acts.jsonl"
+        path = seat.trusted / "acts.jsonl"
         live["record_at_send"].append(path.read_text().count("\n") if path.exists() else 0)
         live["sent"].append((kind, value))
         live.get("after", lambda kind, value: None)(kind, value)
@@ -53,9 +53,10 @@ def ship(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     svc = Service(ship, tmux)
     seat = svc.seat("worker")
     seat.folder.mkdir(parents=True)
+    seat.trusted.mkdir(parents=True, exist_ok=True)
     launch = {"pane": "%1", "pid": 123, "at": (post.now() - timedelta(minutes=1)).isoformat(),
               "pool": "test", "argv": ["codex"], "harness": "codex", "resume": None, "version": "synthetic"}
-    (seat.folder / "launch.json").write_text(json.dumps(launch))
+    (seat.trusted / "launch.json").write_text(json.dumps(launch))
     monkeypatch.setattr(doormod, "ANSWER_SECONDS", 0.3)
     monkeypatch.setattr(doormod, "BOX_SECONDS", 0.3)
     monkeypatch.setattr(doormod.Door, "confirm", lambda self, text, seconds=0: doormod.Delivery("blind", "no record"))

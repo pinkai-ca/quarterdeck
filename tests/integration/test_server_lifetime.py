@@ -37,7 +37,7 @@ def test_a_launch_from_an_earlier_server_lifetime_is_gone(drydock, tmux, operati
     seat = seatmod.Seat(ship, ship.seat('worker-1'), tmux)
     seat.up(False)
     old = seat.launched()
-    path = seat.folder / 'launch.json'
+    path = seat.trusted / 'launch.json'
     restart_server_after(tmux, path)
     foreign, foreign_pid = foreign_pane_with_id(tmux, old.pane)
     assert foreign_pid != old.pid
@@ -81,7 +81,7 @@ def test_a_mismatched_pane_in_the_same_lifetime_still_refuses(drydock, tmux, mon
     tmux.run('respawn-pane', '-k', '-t', launch.pane, 'sleep 300')
     respawned = tmux.pane(launch.pane)
     assert respawned.pid != launch.pid
-    path = seat.folder / 'launch.json'
+    path = seat.trusted / 'launch.json'
     retained, before = path.read_bytes(), windows(tmux)
 
     with pytest.raises(ShipError, match='no longer matches its launch PID'):
@@ -97,7 +97,7 @@ def test_an_unreadable_server_start_keeps_the_refusal(drydock, tmux, monkeypatch
     seat = seatmod.Seat(ship, ship.seat('worker-1'), tmux)
     seat.up(False)
     old = seat.launched()
-    path = seat.folder / 'launch.json'
+    path = seat.trusted / 'launch.json'
     restart_server_after(tmux, path)
     foreign_pane_with_id(tmux, old.pane)
     monkeypatch.setattr(type(tmux), 'started', lambda self: None, raising=False)

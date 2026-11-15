@@ -19,6 +19,7 @@ import tempfile
 import time
 from types import SimpleNamespace
 
+from . import trusted_files
 from . import accounting_health, machine, post, quota, record_owner
 from .attribution_cache import Attribution
 from .cost_evidence import CostEvidence
@@ -189,7 +190,8 @@ def worker():
                 current = Path(item['record']) if item['record'] else None
                 pane = SimpleNamespace(**item['pane']) if item['pane'] else None
                 launch = SimpleNamespace(**item['launch']) if item['launch'] else None
-                seat = SimpleNamespace(name=item['name'], home=Path(item['home']), harness=get(item['harness']),
+                seat = SimpleNamespace(name=item['name'], home=Path(item['home']), trusted=Path(item['trusted']),
+                                       harness=get(item['harness']),
                                        session=SimpleNamespace(human=item['human']), pane=lambda pane=pane: pane,
                                        launched=lambda launch=launch: launch, record=lambda current=current: current)
                 selected.append(seat)
@@ -328,7 +330,7 @@ class Driver:
                 screen = Door(seat).screen() if pane is not None and seat.harness.screen_walls else None
                 # law: every-turn-accounted -- a pool not declared for the seat is never charged; its turns count unattributed
                 pool = launch.pool if launch is not None and launch_pool_refusal(seat, launch) is None else UNKNOWN
-                entry = dict(name=seat.name, home=str(seat.home), harness=seat.harness.name,
+                entry = dict(name=seat.name, home=str(seat.home), trusted=str(seat.trusted), harness=seat.harness.name,
                              human=seat.session.human, record=str(record) if record else None,
                              pane=dict(pid=pane.pid, dead=False) if pane else None,
                              launch=dict(at=launch.at, pool=pool, harness=record_owner.launch_reader(launch),
@@ -422,9 +424,9 @@ class Driver:
     def identity(runtime, name):
         if Path(name).name != name:
             raise ValueError('invalid accounting seat identity')
-        folder = runtime / 'seats' / name
-        return tuple(record_fingerprint(folder / part) for part in ('launch.json', record_owner.REGISTRY,
-                                                                    'record-launches.jsonl'))
+        folder = trusted_files.folder(runtime, name)
+        return tuple(record_fingerprint(folder / part) for part in (trusted_files.LAUNCH, trusted_files.READERS,
+                                                                    trusted_files.LAUNCHES))
 
     def valid(self, service, names=None):
         names = self.context[1] if names is None else names

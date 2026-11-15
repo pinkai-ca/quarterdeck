@@ -21,7 +21,7 @@ def context(tmp_path, monkeypatch):
         raise AssertionError('status must not read a conversation')
 
     seat = SimpleNamespace(
-        name='seat-maple', folder=tmp_path / 'seats' / 'seat-maple',
+        name='seat-maple', folder=tmp_path / 'seats' / 'seat-maple', trusted=tmp_path / 'seats' / 'seat-maple',
         ship=SimpleNamespace(runtime=tmp_path), session=SimpleNamespace(human=True),
         launched=lambda: launch, record=no_record, join=no_record,
         harness=SimpleNamespace(state=no_record), is_up=True,

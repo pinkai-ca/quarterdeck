@@ -17,13 +17,14 @@ def live_pointer_seat(drydock, monkeypatch):
     ship = load(drydock)
     seat = Seat(ship, ship.seat("worker-1"), SimpleNamespace())
     seat.folder.mkdir(parents=True, exist_ok=True)
+    seat.trusted.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(seat, "pane", lambda: SimpleNamespace(dead=False))
     return seat
 
 
 def test_an_empty_record_pointer_reads_unknown_with_its_reason(drydock, monkeypatch):
     seat = live_pointer_seat(drydock, monkeypatch)
-    pointer = seat.folder / "record"
+    pointer = seat.trusted / "record"
     pointer.write_text(" \n\t ")
     reason = seat.join().reason
     assert reason.startswith("record pointer empty:")
@@ -33,7 +34,7 @@ def test_an_empty_record_pointer_reads_unknown_with_its_reason(drydock, monkeypa
 
 def test_an_unreadable_record_pointer_reads_unknown_with_its_reason(drydock, monkeypatch):
     seat = live_pointer_seat(drydock, monkeypatch)
-    pointer = seat.folder / "record"
+    pointer = seat.trusted / "record"
     pointer.write_bytes(b"\xff")
     reason = seat.join().reason
     assert reason.startswith("record pointer unreadable:")
@@ -93,7 +94,8 @@ def test_watch_and_seat_count_what_was_read_and_mark_what_was_not(tmp_path: Path
 
     seat = Seat(ship, spec, FakeTmux())
     seat.folder.mkdir(parents=True, exist_ok=True)
-    (seat.folder / "launch.json").write_text(json.dumps({
+    seat.trusted.mkdir(parents=True, exist_ok=True)
+    (seat.trusted / "launch.json").write_text(json.dumps({
         "pane": "%1", "pid": 4242, "at": datetime.now(timezone.utc).isoformat(),
         "pool": "google", "resume": None, "argv": ["agy"], "version": "1.5.2",
     }))
@@ -101,7 +103,7 @@ def test_watch_and_seat_count_what_was_read_and_mark_what_was_not(tmp_path: Path
     # 1. A record that will not read: activity unknown, today 0+ (nothing read, something there), the screen says whether it works
     bad_record = tmp_path / "bad.db"
     bad_record.write_text("not sqlite")
-    (seat.folder / "record").write_text(f"{bad_record}\n")
+    (seat.trusted / "record").write_text(f"{bad_record}\n")
     assert watch.activity(seat).state == "unknown"  # law: record-first
     assert str(watch.tokens_today(seat)) == "0+", "nothing could be read, and the + says so"
     assert seat.is_working() is True, "when record is unreadable, is_working falls back to screen"
@@ -114,7 +116,7 @@ def test_watch_and_seat_count_what_was_read_and_mark_what_was_not(tmp_path: Path
     rec = AntigravityShape(seat.home, tmp_path, "conv-ok", "gemini-3.1-pro-high")
     rec.begin("ping", "gemini-3.1-pro-high", "high")
     rec.end("pong")
-    (seat.folder / "record").write_text(f"{rec.path}\n")
+    (seat.trusted / "record").write_text(f"{rec.path}\n")
     assert watch.activity(seat).state == "idle"
     assert seat.is_working() is False
     today = watch.tokens_today(seat)

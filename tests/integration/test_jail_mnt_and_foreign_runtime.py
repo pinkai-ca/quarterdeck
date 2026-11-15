@@ -319,7 +319,7 @@ print(json.dumps(dict(
 """
     seen = run_probe(jail, probe, str(project), str(ship.runtime), path=path)
     assert seen['alpha'] is None and seen['beta'] is None and seen['office'] is None, seen
-    allowed = {*sandbox.RUNTIME_SHOWN, 'seats', 'tmux', 'locks', 'post', 'check', 'brief'}
+    allowed = {*sandbox.RUNTIME_SHOWN, 'seats', 'tmux', 'locks', 'trusted', 'post', 'check', 'brief'}
     assert set(seen['own']) <= allowed and 'ledger.sqlite' not in seen['own'], seen['own']
 
 

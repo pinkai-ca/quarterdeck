@@ -89,11 +89,12 @@ def stop(program):
 def launch(seat, server, pane="%7", *, stubborn=False):
     """What qd up leaves: a pane in the seat's session running its program, and launch.json naming both."""
     seat.home.mkdir(parents=True, exist_ok=True)
+    seat.trusted.mkdir(parents=True, exist_ok=True)
     program = server.start(seat.spec.session, pane, stubborn=stubborn)
     launched = Launched(pane, program.pid, (post.now() - timedelta(seconds=5)).isoformat(), seat.pool.name,
                         None, [seat.harness.name], "synthetic", harness=seat.harness.name,
                         start=process_start(program.pid))
-    launched.write(seat.folder / "launch.json")
+    launched.write(seat.trusted / "launch.json")
     return program
 
 
@@ -178,6 +179,7 @@ def leaked(ship, server, *, stubborn=False):
                       seats={**ship.seats, name: spec})
     seat = seatmod.Seat(treated, spec, server)
     seat.folder.mkdir(parents=True)
+    seat.trusted.mkdir(parents=True, exist_ok=True)
     server.new_session(spec.session)
     program = launch(seat, server, stubborn=stubborn)
     with pending.transient_lock(ship.runtime, name) as owned:
@@ -217,7 +219,7 @@ def test_a_program_that_outlives_qd_down_keeps_its_home_and_its_name_until_it_ha
     name, program = leaked(ship, server, stubborn=True)
     proof = seatmod.down_leftover_check(ship, server, name)
     assert "still ending" in proof and f"qd down {name} again" in proof
-    assert (ship.runtime / "seats" / name / "launch.json").exists(), "nothing proved its end: the launch stays"
+    assert (ship.runtime / "trusted" / name / "launch.json").exists(), "nothing proved its end: the launch stays"
     assert seatmod.leftover_checks(ship) == [f"{name} outlived its check: its program still runs; qd down {name}"]
     stop(program)
     assert seatmod.leftover_checks(ship) == [f"{name} outlived its check: its program has ended; qd down {name}"]

@@ -59,14 +59,16 @@ def world(tmp_path, monkeypatch, *, records=('record-q',), human=False):
     folder = ship.runtime / 'seats' / SEAT
     home = folder / 'home'
     home.mkdir(parents=True)
+    trusted = ship.runtime / 'trusted' / SEAT
+    trusted.mkdir(parents=True)
     reader = FakeHarness()
     paths = []
     for name in records:
         path = home / name
         path.write_text(f'synthetic {name} first revision')
-        record_owner.register(folder, path, 'fake')
+        record_owner.register(trusted, path, 'fake')
         paths.append(path)
-    (folder / 'record-launches.jsonl').write_text(json.dumps(dict(
+    (trusted / 'record-launches.jsonl').write_text(json.dumps(dict(
         record=str(paths[0]), at=(AT - timedelta(minutes=1)).isoformat(), pool='synthetic-pool-q', harness='fake')) + '\n')
     sources = {path: (State(turns=1, turn_open=False), [turn(0)]) for path in paths}
     inputs = {path: [] for path in paths}
@@ -88,7 +90,7 @@ def world(tmp_path, monkeypatch, *, records=('record-q',), human=False):
         return found
 
     owned = {path: record_owner.Owned(path, 'fake', reader) for path in paths}
-    seat = SimpleNamespace(name=SEAT, home=home, folder=folder, harness=reader,
+    seat = SimpleNamespace(name=SEAT, home=home, folder=folder, trusted=trusted, harness=reader,
                            session=SimpleNamespace(human=human), pane=lambda: None,
                            launched=lambda: None, record=lambda: paths[0])
     clock = Clock()
@@ -103,7 +105,7 @@ def world(tmp_path, monkeypatch, *, records=('record-q',), human=False):
     monkeypatch.setattr(turn_failure, 'publish', lambda *args: published.append(args[1]))
     return SimpleNamespace(svc=svc, seat=seat, paths=paths, sources=sources, inputs=inputs, owned=owned,
                            reads=reads, input_reads=input_reads, logs=logs, published=published, clock=clock,
-                           journal=folder / 'record-launches.jsonl')
+                           journal=trusted / 'record-launches.jsonl')
 
 
 def counts(db):

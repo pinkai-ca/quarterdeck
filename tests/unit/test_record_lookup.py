@@ -32,12 +32,13 @@ def make_seat(tmp_path, name='worker', *, home=True):
     seat = Seat(ship, spec, SimpleNamespace(pane=lambda ident: None))
     if home:
         seat.home.mkdir(parents=True)
+        seat.trusted.mkdir(parents=True, exist_ok=True)
     return seat
 
 
 def launch(seat):
     value = Launched('%1', 1001, AT.isoformat(), 'pool-a', None, ['fake'], 'fake', 'fake')
-    value.write(seat.folder / 'launch.json')
+    value.write(seat.trusted / 'launch.json')
     return value
 
 
@@ -140,12 +141,12 @@ def test_lookup_writes_nothing_even_when_legacy_reader_binding_is_missing(tmp_pa
     seat = make_seat(tmp_path)
     launch(seat)
     path = candidate(seat)
-    (seat.folder / 'record').write_text(str(path))
+    (seat.trusted / 'record').write_text(str(path))
     with mutations(monkeypatch, tmp_path) as counts:
         assert seat.lookup_record() == path
     assert counts == ZERO
-    assert not record_owner.registry(seat.folder).exists()
-    assert not (seat.folder / 'record-launches.jsonl').exists()
+    assert not record_owner.registry(seat.trusted).exists()
+    assert not (seat.trusted / 'record-launches.jsonl').exists()
     assert not (seat.home / 'conversations.owned').exists()
     # Normal record() must still finish retaining the legacy join.
     assert seat.record() == path
@@ -186,7 +187,7 @@ def test_an_ambiguous_first_join_is_reported_and_never_pinned(tmp_path, monkeypa
         assert seat.record() is None
         found = seat.join()
     assert found.record is None and found.reason.startswith('ambiguous:')  # law: one-record
-    assert not (seat.folder / 'record').exists()
+    assert not (seat.trusted / 'record').exists()
     assert counts == ZERO
 
 
@@ -197,14 +198,14 @@ def test_incomplete_join_retention_still_uses_the_joining_path(tmp_path, monkeyp
     path = candidate(seat)
     assert seat.record() == path
     if change == 'launch':
-        replace(original, at=(AT + timedelta(seconds=10)).isoformat(), pid=1002).write(seat.folder / 'launch.json')
+        replace(original, at=(AT + timedelta(seconds=10)).isoformat(), pid=1002).write(seat.trusted / 'launch.json')
     elif change == 'pool':
-        replace(original, pool='pool-b').write(seat.folder / 'launch.json')
+        replace(original, pool='pool-b').write(seat.trusted / 'launch.json')
     elif change == 'price':
-        replace(original, price={'synthetic': 1}).write(seat.folder / 'launch.json')
+        replace(original, price={'synthetic': 1}).write(seat.trusted / 'launch.json')
     else:
-        named = {'missing-journal': seat.folder / 'record-launches.jsonl',
-                 'missing-reader': record_owner.registry(seat.folder),
+        named = {'missing-journal': seat.trusted / 'record-launches.jsonl',
+                 'missing-reader': record_owner.registry(seat.trusted),
                  'missing-owned': seat.home / 'conversations.owned'}[change]
         named.unlink()
     joined = []
@@ -226,13 +227,13 @@ def test_lookup_and_join_refuse_the_same_invalid_pin(tmp_path, monkeypatch, chan
     path = candidate(seat)
     assert seat.record() == path
     if change == 'empty-pin':
-        (seat.folder / 'record').write_text('')
+        (seat.trusted / 'record').write_text('')
     elif change == 'missing-record':
         path.unlink()
     elif change == 'conflicting-reader':
-        record_owner.register(seat.folder, path, 'claude')
+        record_owner.register(seat.trusted, path, 'claude')
     else:
-        replace(original, harness='claude').write(seat.folder / 'launch.json')
+        replace(original, harness='claude').write(seat.trusted / 'launch.json')
     with mutations(monkeypatch, tmp_path) as counts:
         assert seat.lookup_record() is None
         assert seat.record() is None
@@ -261,7 +262,7 @@ def test_quiet_service_pass_writes_nothing_after_the_first_join(tmp_path, monkey
             svc.follow()
             new_states = dict(svc.working)
         assert old_states == new_states == {seat.name: False for seat in seats}
-        assert before == dict(write_opens=8, append_opens=4, append_writes=0, mkdirs=16, locks=4)
+        assert before == dict(write_opens=8, append_opens=4, append_writes=0, mkdirs=12, locks=4)
         assert after == ZERO
         print('quiet-pass write counts: ' + json.dumps(dict(seats=len(seats), before=before, after=after), sort_keys=True))
     finally:

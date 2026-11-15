@@ -47,10 +47,11 @@ def crew(drydock, monkeypatch, tmp_path):
     for index, name in enumerate(['worker-1', 'worker-2', 'desk', 'captain'], start=1):
         seat = Seat(ship, ship.seat(name), tmux)
         seat.folder.mkdir(parents=True, exist_ok=True)
+        seat.trusted.mkdir(parents=True, exist_ok=True)
         pane = Pane(f'%{index}', seat.session.title, name, 100 + index, 120, 40, False, False, None)
         tmux.panes[pane.id] = pane
         Launched(pane.id, pane.pid, datetime.now(timezone.utc).isoformat(), seat.spec.pools[0], None,
-                 ['fake'], None, 'fake').write(seat.folder / 'launch.json')
+                 ['fake'], None, 'fake').write(seat.trusted / 'launch.json')
         record = tmp_path / f'{name}.record'
         record.write_text('')
         seat.record = (lambda record=record: record)

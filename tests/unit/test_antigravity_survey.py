@@ -38,7 +38,7 @@ def agy(drydock, monkeypatch):
     pane = SimpleNamespace(id="%1", pid=123, dead=False, width=80, in_mode=False)
 
     def keys(pane_id, *pressed):
-        launches.append(json.loads((seat.folder / "launch.json").read_text()))  # what was recorded before the press
+        launches.append(json.loads((seat.trusted / "launch.json").read_text()))  # what was recorded before the press
         presses.append((pane_id, *pressed))
         if pressed == ("0",):
             shown[0] = after[0]
@@ -54,8 +54,9 @@ def agy(drydock, monkeypatch):
                            paste=lambda *a, **k: presses.append(("paste", a)), click=no_click, mouse_modes=no_modes)
     seat = Seat(ship, spec, tmux)
     seat.folder.mkdir(parents=True, exist_ok=True)
+    seat.trusted.mkdir(parents=True, exist_ok=True)
     Launched("%1", 123, "2030-01-01T00:00:00+00:00", "synthetic", None, ["agy"], "1.5.5", "antigravity").write(
-        seat.folder / "launch.json")
+        seat.trusted / "launch.json")
     monkeypatch.setattr(seat, "pane", lambda: pane)
     monkeypatch.setattr("quarterdeck.door.ANSWER_SECONDS", 0.5)
     monkeypatch.setattr("quarterdeck.door.SETTLE_SECONDS", 0)

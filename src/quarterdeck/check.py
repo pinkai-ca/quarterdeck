@@ -27,6 +27,7 @@ import threading
 import time
 from dataclasses import dataclass
 
+from . import trusted_files
 from . import check_outcome, harness as harnesses, durable, human_wake, pending, post, providers, record_owner, sandbox, standing
 from .door import Delivery, Door
 from .drill import Check, wait_for
@@ -173,7 +174,7 @@ def _check(ship: Ship, name: str, tmux: Tmux, harness, model: str | None = None,
                 try:
                     checks += [ProbeCheck(c.name, c.passed, c.detail, 'wake') for c in probe_wake(human_seat, human_orders)]
                 finally:
-                    wake = human_seat.folder / 'human-wake.json'
+                    wake = human_seat.trusted / trusted_files.HUMAN_WAKE
                     if wake.exists():
                         evidence = ship.runtime / 'check' / f'{human_seat.name}-human-wake.json'
                         evidence.parent.mkdir(parents=True, exist_ok=True)
@@ -531,7 +532,7 @@ def retain_wake_evidence(seat: Seat, observed: dict) -> None:
     try:
         launch = seat.launched()
         pane = seat.pane()
-        named = metadata(seat.folder / 'record').strip()
+        named = metadata(seat.trusted / trusted_files.RECORD).strip()
         record = Path(named)
         if (not named or not record.is_absolute() or seat.home not in record.parents
                 or record.resolve() != record or launch is None or pane is None or pane.dead
@@ -541,7 +542,7 @@ def retain_wake_evidence(seat: Seat, observed: dict) -> None:
             raise ValueError('unproved temporary record ownership')
         stamp = record_fingerprint(record)
         tools = seat.harness.check_tool_evidence(record)
-        if (seat.launched() != launch or metadata(seat.folder / 'record').strip() != named
+        if (seat.launched() != launch or metadata(seat.trusted / trusted_files.RECORD).strip() != named
                 or record_fingerprint(record) != stamp):
             tools = unknown('temporary record changed during tool evidence reading')
     except Exception:

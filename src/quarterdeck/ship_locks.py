@@ -49,10 +49,10 @@ def hashed(runtime: Path, kind: str, key: str) -> Path:
 
 
 def for_seat_file(seat_folder: Path, name: str) -> Path:
-    """The lock for a file in a seat's own folder (``runtime/seats/<seat>/<name>``), kept beside the ship's
-    other locks so that the seat's own jail, which sees its folder, cannot hold it."""
+    """The lock for a file of a seat's (``runtime/seats/<seat>/<name>`` or ``runtime/trusted/<seat>/<name>``), kept
+    beside the ship's other locks so that no jail can hold it. A file keeps one lock in either folder."""
     seat_folder = Path(seat_folder)
-    runtime = seat_folder.parent.parent if seat_folder.parent.name == "seats" else seat_folder
+    runtime = seat_folder.parent.parent if seat_folder.parent.name in ("seats", "trusted") else seat_folder
     return path(runtime, "seat-files", f"{seat_folder.name}--{name}.lock")
 
 

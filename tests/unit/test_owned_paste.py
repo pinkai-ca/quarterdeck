@@ -57,7 +57,7 @@ def editor(tmp_path):
         def pane(self,*a):return pane
     terminal=Terminal()
     seat=SimpleNamespace(name='worker',harness=CodexHarness(),tmux=terminal,spec=spec,ship=ship,
-                         session=SimpleNamespace(human=False,title='Synthetic'),pool=ship.pool('synthetic'),folder=folder,
+                         session=SimpleNamespace(human=False,title='Synthetic'),pool=ship.pool('synthetic'),folder=folder, trusted=folder,
                          pane=lambda:pane,launched=lambda:launch,record=lambda:record)
     def proof(text):
         message=post.Store(ship.runtime).new('order','issuer','worker',text)

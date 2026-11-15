@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-from quarterdeck import accounting_gate, post, record_owner, ship as shipmod
+from quarterdeck import accounting_gate, post, record_owner, ship as shipmod, trusted_files
 from quarterdeck.accounting_slices import Driver
 from quarterdeck.harness import synthetic_record
 from quarterdeck.harness.fake import FakeHarness
@@ -50,7 +50,7 @@ def test_scoped_whole_inventory_equals_full_job_in_every_ledger_row(tmp_path, mo
         if end is not None:
             at[0] = origin + timedelta(minutes=end)
             writer.end('Ordinary synthetic result.')
-        record_owner.register(home.parent, writer.path, 'fake')
+        record_owner.register(trusted_files.of_home(home), writer.path, 'fake')
         owners.setdefault(name, []).append(record_owner.Owned(writer.path, 'fake', reader))
         return writer
     older = create('ordinary-alpha', 'ordinary-older', 0, 10)
@@ -61,7 +61,8 @@ def test_scoped_whole_inventory_equals_full_job_in_every_ledger_row(tmp_path, mo
     for name, current in [('ordinary-alpha', active), ('ordinary-beta', beta)]:
         home = current.path.parents[2]
         spec = shipmod.SeatSpec(name, 'ordinary-session', 'worker', 'fake', (pool.name,))
-        selected.append(SimpleNamespace(name=name, home=home, harness=reader, spec=spec, pool=pool,
+        selected.append(SimpleNamespace(name=name, home=home, trusted=trusted_files.of_home(home), harness=reader,
+                        spec=spec, pool=pool,
                         session=SimpleNamespace(human=False), pane=lambda: None, launched=lambda: None,
                         record=lambda path=current.path: path))
         writers[name] = current

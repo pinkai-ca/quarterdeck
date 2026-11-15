@@ -45,7 +45,7 @@ def test_native_counted_bottom_window_is_submitted_once_and_record_confirms(tmp_
 
     composer = Composer()
     seat = SimpleNamespace(
-        name='probe', harness=reader, tmux=composer, folder=tmp_path / 'probe', home=home,
+        name='probe', harness=reader, tmux=composer, folder=tmp_path / 'probe', trusted=tmp_path / 'probe', home=home,
         ship=SimpleNamespace(runtime=tmp_path / 'runtime'),
         session=SimpleNamespace(human=False), pool=SimpleNamespace(name='google'),
         spec=SeatSpec('probe', 'probe', 'worker', 'antigravity', ('google',)),

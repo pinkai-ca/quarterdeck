@@ -22,9 +22,10 @@ SURVIVOR = '[seats.survivor]\nsession="crew"\nharness="codex"\npool="test"\n'
 
 def launch(seat, pane="%1", pid=111):
     seat.home.mkdir(parents=True, exist_ok=True)
+    seat.trusted.mkdir(parents=True, exist_ok=True)
     launched = Launched(pane, pid, (post.now() - timedelta(minutes=1)).isoformat(), seat.pool.name,
                         None, [seat.harness.name], "synthetic", harness=seat.harness.name)
-    launched.write(seat.folder / "launch.json")
+    launched.write(seat.trusted / "launch.json")
     return launched
 
 
@@ -59,9 +60,9 @@ def test_removed_seat_is_abandoned_once_and_survivor_confirms_on_same_tick(tmp_p
     record.parent.mkdir()
     record.write_text(json.dumps({"type": "session_meta", "timestamp": survivor.launched().at,
                                   "payload": {"id": "synthetic"}}) + "\n")
-    (survivor.folder / "record").write_text(str(record))
+    (survivor.trusted / "record").write_text(str(record))
     from quarterdeck.record_owner import register
-    register(survivor.folder, record, "codex")
+    register(survivor.trusted, record, "codex")
     good = svc.store.new("order", "desk", survivor.name, "Synthetic surviving delivery")
     attempt = svc.attempts.open(good, survivor.name, "%1", 111, survivor.launched().at)
     payload = post.typed([good])
@@ -137,7 +138,7 @@ def test_check_retires_all_unresolved_attempts_and_journals_before_deleting_seat
         assert not pending.active(seat)
         if outcome == "stop-exception":
             raise RuntimeError("synthetic stop exception")
-        (seat.folder / "launch.json").unlink(missing_ok=True)  # as a down that proved its program ended
+        (seat.trusted / "launch.json").unlink(missing_ok=True)  # as a down that proved its program ended
         return "synthetic down"
     monkeypatch.setattr(check, "probe", probe)
     monkeypatch.setattr(Seat, "down", down)

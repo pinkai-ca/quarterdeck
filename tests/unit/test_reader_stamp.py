@@ -85,7 +85,7 @@ def test_restart_outside_readers_reuses_all_and_changed_reader_rechecks_only_its
     w = world(tmp_path / 'ship', monkeypatch, records=('first', 'second'))
     second = w.paths[1]
     w.owned[second] = replace(w.owned[second], name='grok')
-    registry = w.seat.home.parent / 'record-readers.jsonl'
+    registry = w.seat.trusted / 'record-readers.jsonl'
     rows = [json.loads(line) for line in registry.read_text().splitlines()]
     registry.write_text(''.join(json.dumps(dict(row, harness='grok' if row['record'] == str(second) else 'fake'))+'\n' for row in rows))
     native_get = harness.get

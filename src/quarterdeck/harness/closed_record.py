@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .. import trusted_files
 from .. import harness, input_receipt, record_owner
 from ..tmux import TmuxError
 from .types import Inputs
@@ -46,8 +47,8 @@ def not_in_closed_record(seat: 'Seat', proof: 'Proof') -> bool:
         if not data['record'] or not _closed(seat, data['identity']):
             return False
         record, name = Path(data['record']), data['identity']['harness']
-        names = {row.get('harness') for journal in (record_owner.REGISTRY, 'record-launches.jsonl')
-                 for row in record_owner.events(seat.folder / journal)
+        names = {row.get('harness') for journal in (trusted_files.READERS, trusted_files.LAUNCHES)
+                 for row in record_owner.events(seat.trusted / journal)
                  if Path(row['record']) == record and row.get('harness')}
         if names != {name} or name not in ('claude', 'codex', 'pi'):
             return False

@@ -333,12 +333,14 @@ def ship_seat(tmp_path, monkeypatch):
         svc = Service(ship, tmux)
         seat = svc.seat('worker')
         seat.folder.mkdir(parents=True)
+        seat.trusted.mkdir(parents=True, exist_ok=True)
         at = (post.now() - timedelta(minutes=5)).isoformat()
-        (seat.folder / 'launch.json').write_text(json.dumps(dict(
+        (seat.trusted / 'launch.json').write_text(json.dumps(dict(
             pane='%7', pid=4242, at=at, pool='synthetic', resume=None, harness='claude', version='2.1.317',
             argv=['claude', '--setting-sources', 'user'])))
         home = stand_in(root).home
         seat.home.mkdir(parents=True, exist_ok=True)
+        seat.trusted.mkdir(parents=True, exist_ok=True)
         for path in home.rglob('*'):
             if path.is_file():
                 target = seat.home / path.relative_to(home)
@@ -350,9 +352,9 @@ def ship_seat(tmp_path, monkeypatch):
         record.write_text(json.dumps({'type': 'user', 'uuid': 'u-0', 'parentUuid': None, 'isSidechain': False,
                                       'timestamp': at, 'sessionId': 'synthetic-session', 'version': '2.1.317',
                                       'message': {'role': 'user', 'content': 'Synthetic earlier input.'}}) + '\n')
-        (seat.folder / 'record').write_text(str(record) + '\n')
+        (seat.trusted / 'record').write_text(str(record) + '\n')
         from quarterdeck.record_owner import register
-        register(seat.folder, record, 'claude')
+        register(seat.trusted, record, 'claude')
         original = Door.confirm
         monkeypatch.setattr(Door, 'confirm', lambda self, text: original(self, text, seconds=0))
         return SimpleNamespace(svc=svc, seat=seat, live=live, record=record, door=Door(seat))

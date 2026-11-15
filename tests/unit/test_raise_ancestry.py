@@ -31,7 +31,7 @@ def modeled_ancestry(tmp_path, monkeypatch):
 
 
 def launch(project, location, *, pid=40, start="400"):
-    path = project / location / "runtime" / "seats" / "example" / "launch.json"
+    path = project / location / "runtime" / "trusted" / "example" / "launch.json"
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps({"pid": pid, "start": start}))
     return path

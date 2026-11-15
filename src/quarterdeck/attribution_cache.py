@@ -8,6 +8,7 @@ import time
 from os.path import abspath
 from pathlib import Path
 
+from . import trusted_files
 from . import harness, record_owner
 from .harness import reader_stamp
 from .harness.base import record_fingerprint
@@ -175,8 +176,8 @@ class Attribution:
         self.last = None  # source-cache updates stay dirty through every pre-gate failure
         if bindings is None:
             bindings = defaultdict(set)
-            for folder in (Path(runtime)/'seats').glob('*'):
-                for name in (record_owner.REGISTRY, 'record-launches.jsonl'):
+            for folder in trusted_files.root(runtime).glob('*'):
+                for name in (trusted_files.READERS, trusted_files.LAUNCHES):
                     try:
                         events = (record_owner.registry_events(folder) if name == record_owner.REGISTRY
                                   else record_owner.events(folder/name))
@@ -281,8 +282,8 @@ class Attribution:
         """
         errors = {} if errors is None else errors
         bindings = defaultdict(set)
-        for folder in (Path(runtime) / 'seats').glob('*'):
-            for name in (record_owner.REGISTRY, 'record-launches.jsonl'):
+        for folder in trusted_files.root(runtime).glob('*'):
+            for name in (trusted_files.READERS, trusted_files.LAUNCHES):
                 try:
                     events = (record_owner.registry_events(folder) if name == record_owner.REGISTRY
                               else record_owner.events(folder / name))

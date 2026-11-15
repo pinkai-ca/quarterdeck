@@ -21,6 +21,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import trusted_files
 from .ship import Ship
 from .tmux import TmuxError
 
@@ -153,7 +154,7 @@ NOTICE_CHARS = 2000
 
 
 def notices(seat) -> Path:
-    return seat.folder / "acts-notices.jsonl"
+    return seat.trusted / trusted_files.ACTS_NOTICES
 
 
 def tell_desk(service, seat, launched, caller, act: str, reason: str, screen) -> str:
@@ -200,7 +201,7 @@ def tell_desk(service, seat, launched, caller, act: str, reason: str, screen) ->
 
 
 def path(seat) -> Path:
-    return seat.folder / "acts.jsonl"
+    return seat.trusted / trusted_files.ACTS
 
 
 def authority(ship: Ship, caller: str | None, seat) -> str | None:

@@ -650,6 +650,19 @@ class Tmux:
         args = ["list-panes", "-F", _FORMAT] + (["-s", "-t", _session(session)] if session else ["-a"])
         return [_parse(line) for line in self.run(*args).splitlines()]
 
+    def started_with(self) -> list[tuple[str, int, bool, str]]:
+        """Every pane of the server with its pid, whether it is dead, and the command it was started with, which
+        tmux fixes when the window is made: nothing run inside a pane can change it."""
+        if not self.running():
+            return []
+        lines = self.run("list-panes", "-a", "-F", "#{pane_id}\t#{pane_pid}\t#{pane_dead}\t#{pane_start_command}")
+        found = []
+        for line in lines.splitlines():
+            parts = line.split("\t", 3)
+            if len(parts) == 4 and parts[1].isascii() and parts[1].isdigit():
+                found.append((parts[0], int(parts[1]), parts[2] == "1", parts[3]))
+        return found
+
     def pane(self, pane_id: str) -> Pane | None:
         if not pane_id.startswith('%') or not pane_id[1:].isascii() or not pane_id[1:].isdigit():
             return None

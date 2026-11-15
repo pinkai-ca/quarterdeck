@@ -96,7 +96,7 @@ def test_each_local_classification_input_rebuilds_whole_worklist(pair, clock, mo
     elif changed == 'groups':
         ship.groups['new'] = SimpleNamespace(members=('captain',))
     else:
-        path = ship.runtime / 'seats' / 'retired' / 'compaction.json'
+        path = ship.runtime / 'trusted' / 'retired' / 'compaction.json'
         path.parent.mkdir(parents=True)
         path.write_text('{}')
     assert fleet.run(ship, store, worklist=worklist) == []

@@ -7,6 +7,7 @@ passed verbatim as ``QD_FAKE_<KEY>`` at launch.
 
 from __future__ import annotations
 
+from .. import seat_files
 from .capabilities import DefaultMetadata, EffortCapability, SuggestedValue
 
 import json
@@ -62,7 +63,7 @@ class FakeHarness(Harness):
 
     def build_home(self, home: Path, seat: SeatSpec, pool: Pool, ship_home: Path | None) -> Credential | None:
         self.check_defaults(seat, ship_home)
-        home.mkdir(parents=True, exist_ok=True)
+        seat_files.make_folder(home)  # never through a link its jail planted
         durable.replace_file(home / "settings.json", json.dumps(seat.settings, indent=2) + "\n")
         return None
 

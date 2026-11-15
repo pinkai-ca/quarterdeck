@@ -32,9 +32,9 @@ def test_queued_root_input_survives_reconciliation_and_restart_until_consumed(tm
     record = seat.home / "data-001" / "opencode" / "opencode.db"
     con = database(record)
     launch = Launched("%1", 123, AT.isoformat(), "local", "root", ["opencode"], "synthetic", harness="opencode")
-    launch.write(seat.folder / "launch.json")
-    (seat.folder / "record").write_text(str(record))
-    record_owner.register(seat.folder, record, "opencode")
+    launch.write(seat.trusted / "launch.json")
+    (seat.trusted / "record").write_text(str(record))
+    record_owner.register(seat.trusted, record, "opencode")
     clock = [AT + timedelta(milliseconds=30)]
     monkeypatch.setattr(post, "now", lambda: clock[0])
     svc = Service(ship, tmux)

@@ -55,9 +55,10 @@ def test_account_tracks_wal_fingerprint_and_retries_after_transient_read_error(t
     svc = Service(ship, fake_tmux)
     seat = svc.seat("scott")
     seat.folder.mkdir(parents=True, exist_ok=True)
+    seat.trusted.mkdir(parents=True, exist_ok=True)
     rec = AntigravityShape(seat.home, tmp_path, "conv-wal", "gemini-3.1-pro-high")
-    (seat.folder / "record").write_text(f"{rec.path}\n")
-    (seat.folder / "launch.json").write_text(json.dumps({
+    (seat.trusted / "record").write_text(f"{rec.path}\n")
+    (seat.trusted / "launch.json").write_text(json.dumps({
         "pane": "%1", "pid": 4242, "at": datetime.now(timezone.utc).isoformat(),
         "pool": "google", "resume": None, "argv": ["agy"], "version": "1.5.2",
     }))
@@ -184,7 +185,7 @@ def test_account_keeps_sparse_ids_and_missing_owned_records_visible(tmp_path: Pa
     monkeypatch.setattr(service, "seats", lambda *a: [seat])
     monkeypatch.setattr(service.quota, "refresh_declared", lambda service: None)
     from quarterdeck.record_owner import register
-    register(home.parent, record, "antigravity")
+    register(seat.trusted, record, "antigravity")
     svc = Service(ship, None)
     svc.account()
     assert svc.ledger.ingested(record) == 1
@@ -217,11 +218,12 @@ def test_a_blind_attempt_is_judged_delivered_once_a_record_shows_the_message(tmp
     svc = Service(ship, fake_tmux)
     seat = svc.seat("scott")
     seat.folder.mkdir(parents=True, exist_ok=True)
+    seat.trusted.mkdir(parents=True, exist_ok=True)
     launched_at = datetime.now(timezone.utc) - timedelta(minutes=5)
-    (seat.folder / "launch.json").write_text(json.dumps({"pane": "%1", "pid": 4242, "at": launched_at.isoformat(),
+    (seat.trusted / "launch.json").write_text(json.dumps({"pane": "%1", "pid": 4242, "at": launched_at.isoformat(),
                                                          "pool": "claude-secondary", "resume": None, "argv": ["claude"], "version": "2.1.317"}))
     record = ClaudeShape(seat.home, tmp_path, "s1", "claude-opus-5-5")
-    (seat.folder / "record").write_text(f"{record.path}\n")
+    (seat.trusted / "record").write_text(f"{record.path}\n")
     message = svc.store.new("order", "desk", "scott", "Count the stars.")
     attempt = svc.attempts.open(message, "scott", "%1", 4242, launched_at.isoformat())
     svc.attempts.close(attempt, "blind", "typed and submitted, not seen in the record within 5s")

@@ -42,7 +42,7 @@ def test_up_brings_up_every_declared_seat_in_its_session(ship: shipmod.Ship, tmu
     runtime = ship.runtime
     assert (runtime / ".git").is_dir() and (runtime / "brief" / "captain.md").is_file()
     assert (runtime / "seats" / "captain" / "home" / "settings.json").is_file()
-    launched = json.loads((runtime / "seats" / "captain" / "launch.json").read_text())
+    launched = json.loads((runtime / "trusted" / "captain" / "launch.json").read_text())
     assert launched["pane"].startswith("%") and launched["pool"] == "fake" and launched["resume"] is None
     env = environ(launched["pid"])
     assert env["QD_SHIP"] == str(ship.folder) and env["QD_SEAT"] == "captain"
@@ -112,7 +112,7 @@ def test_a_launch_longer_than_tmux_allows_keeps_full_self_handoff_and_indexes_ot
     ordinary = store.new('order', 'desk', 'captain', 'A distinct long ordinary task.\n' + body)
     captain = seatmod.Seat(ship, ship.seat('captain'), tmux)
     assert captain.up(resume=False).endswith('2 threads indexed')
-    script = (ship.runtime / 'seats' / 'captain' / 'launch.sh').read_text()
+    script = (ship.runtime / 'trusted' / 'captain' / 'launch.sh').read_text()
     assert script.startswith('#!/bin/sh\n') and '\nexec env -u TMUX -u TMUX_PANE ' in script and ' PATH=' in script
     assert len(script.encode()) > 16384 and handoff.short in script and body[-200:] in script
     assert ordinary.id in script and ordinary.body not in script
@@ -152,7 +152,7 @@ def test_identity_is_pane_and_process_not_name(ship: shipmod.Ship, tmux: Tmux):
     captain.up()
     launched = captain.launched()
     assert captain.pane() is not None and captain.is_up
-    path = ship.runtime / "seats" / "captain" / "launch.json"
+    path = ship.runtime / "trusted" / "captain" / "launch.json"
     data = json.loads(path.read_text())
     data["pid"] = launched.pid + 1
     path.write_text(json.dumps(data))

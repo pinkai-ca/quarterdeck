@@ -29,7 +29,7 @@ def synthetic_ship(root, survivor=False):
 def seed(seat, sid, pane="%1", pid=111):
     launch(seat, pane, pid)
     record = ClaudeShape(seat.home, seat.ship.workspace, sid, "fake-1")
-    (seat.folder / "record").write_text(str(record.path))
+    (seat.trusted / "record").write_text(str(record.path))
     return record
 
 
@@ -86,7 +86,7 @@ def test_service_leaves_live_check_to_owner_and_teardown_retires_only_uncertaint
         expected = "delivered" if outcome == "delivered" else "abandoned"
         assert svc.attempts.latest()[observed["message"].id] == expected
         assert not pending.active(seat)
-        (seat.folder / "launch.json").unlink(missing_ok=True)  # as a down that proved its program ended
+        (seat.trusted / "launch.json").unlink(missing_ok=True)  # as a down that proved its program ended
         return "synthetic stop"
     monkeypatch.setattr(check, "probe", probe)
     monkeypatch.setattr(Seat, "down", down)

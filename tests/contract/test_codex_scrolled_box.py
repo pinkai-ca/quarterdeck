@@ -49,7 +49,7 @@ def test_scrolled_22_line_paste_is_submitted_once_and_confirmed_by_record(tmp_pa
 
     composer = Composer()
     seat = SimpleNamespace(
-        name='probe', harness=reader, tmux=composer, folder=tmp_path / 'probe',
+        name='probe', harness=reader, tmux=composer, folder=tmp_path / 'probe', trusted=tmp_path / 'probe',
         home=tmp_path / 'probe/home', ship=SimpleNamespace(runtime=tmp_path / 'runtime'),
         session=SimpleNamespace(human=False), pool=SimpleNamespace(name='codex'),
         spec=SeatSpec('probe', 'probe', 'worker', 'codex', ('codex',)),

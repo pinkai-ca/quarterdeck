@@ -183,7 +183,7 @@ def test_old_launch_reader_rejects_the_extension_and_new_reader_accepts_missing_
     old = dict(pane='%1', pid=10, at='2030-01-01T00:00:00+00:00', pool='synthetic', resume=None,
                argv=['opencode'], version='1.19.5', harness='opencode', records_before=[])
     path.write_text(json.dumps(old))
-    holder = SimpleNamespace(folder=tmp_path)
+    holder = SimpleNamespace(folder=tmp_path, trusted=tmp_path)
     assert module.old_read(holder).pane == '%1'
     assert Seat.launched(holder).recovery is None
     path.write_text(json.dumps({**old, 'recovery': {'format': 1}}))

@@ -74,6 +74,14 @@ def test_upgrade_edit_rollback_preserves_saved_launch_selection_records_and_ledg
     folder = home.parent
     retained = {name: (folder / name).read_bytes() for name in
                 ("launch.json", "pool", "record", "record-readers.jsonl", "record-launches.jsonl")}
+    # The preceding code keeps a seat's saved files in its own folder; this code reads them from its trusted folder,
+    # where the move takes them only on live evidence (seat_migration). This test is about the provider's spelling,
+    # so the files stand where the move would put them, copied, and the old copies stay for the old code's reads.
+    trusted = tmp_path / "runtime/trusted/worker"
+    trusted.mkdir(parents=True)
+    for name, data in retained.items():
+        (trusted / name).write_bytes(data)
+    (trusted / "launch-price.json").write_bytes((folder / "launch-price.json").read_bytes())
     for text in (original, original.replace(f'provider="{program}"', f'provider="{company}"'), original):
         (tmp_path / "ship.toml").write_text(text)
         ship = load(tmp_path)

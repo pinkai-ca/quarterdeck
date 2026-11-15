@@ -50,7 +50,7 @@ def test_a_change_elsewhere_in_the_seats_registry_is_no_new_attempt(tmp_path, mo
     svc, record = w.svc, w.paths[0]
     unknown(w, record)
     svc.account()
-    record_owner.register(w.seat.home.parent, w.seat.home / 'synthetic-other-q', 'fake')
+    record_owner.register(w.seat.trusted, w.seat.home / 'synthetic-other-q', 'fake')
     svc.account()
     assert len(errors(w)) == 1
 

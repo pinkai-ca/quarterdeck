@@ -17,6 +17,7 @@ from pathlib import Path
 import socket
 import stat
 
+from . import trusted_files
 from . import durable
 from .ship import Ship, ShipError
 
@@ -103,9 +104,10 @@ def pid_dead(pid) -> bool | None:
 def formerly_up(ship: Ship, tmux) -> tuple[list, list[str]]:
     """Declared seats whose launch.json exists, and the names of undeclared ones that have one."""
     from .seat import Seat
-    members = [Seat(ship, spec, tmux) for spec in ship.seats.values() if (ship.runtime / 'seats' / spec.name / 'launch.json').exists()]
-    folder = ship.runtime / 'seats'
-    stray = sorted(path.parent.name for path in folder.glob('*/launch.json') if path.parent.name not in ship.seats) \
+    members = [Seat(ship, spec, tmux) for spec in ship.seats.values()
+               if trusted_files.path(ship.runtime, spec.name, trusted_files.LAUNCH).exists()]
+    folder = trusted_files.root(ship.runtime)
+    stray = sorted(path.parent.name for path in folder.glob(f'*/{trusted_files.LAUNCH}') if path.parent.name not in ship.seats) \
         if folder.is_dir() else []
     return members, stray
 

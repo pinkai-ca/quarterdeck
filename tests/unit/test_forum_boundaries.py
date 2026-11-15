@@ -73,8 +73,9 @@ class World:
         self.pid += 1
         seat = self.seat(name)
         seat.folder.mkdir(parents=True, exist_ok=True)
+        seat.trusted.mkdir(parents=True, exist_ok=True)
         launched = Launched(f'%{self.pid}', self.pid, post.now().isoformat(), pool, None, ['fake'], 'synthetic', 'fake')
-        launched.write(seat.folder / 'launch.json')
+        launched.write(seat.trusted / 'launch.json')
         if shown:
             self.show(launched.pane, launched.pid, dead=dead)
         return launched
@@ -256,7 +257,7 @@ def test_a_launch_replaced_during_the_observation_names_no_failure(world):
         pane = world.panes.get(ident)
         if ident == old.pane:  # a relaunch lands while the old dead pane is being read
             Launched('%9999', 9999, post.now().isoformat(), 'fake-a', None, ['fake'], 'synthetic', 'fake').write(
-                seat.folder / 'launch.json')
+                seat.trusted / 'launch.json')
         return pane
 
     world.tmux.pane = racing
@@ -277,7 +278,7 @@ def test_an_unresolved_selection_is_pending(world):
 def test_an_unreadable_launch_holds_its_group_without_a_notice(world):
     root, copies = world.submit()
     world.launch('reviewer-1')
-    (world.seat('reviewer-1').folder / 'launch.json').write_text('{torn')
+    (world.seat('reviewer-1').trusted / 'launch.json').write_text('{torn')
     assert world.advance() == [(root.id, 'group evidence is malformed JSON')]  # names no journal it did not read
     assert world.notices() == [] and json.loads(world.journal(root).read_text())['failed'] == {}
 

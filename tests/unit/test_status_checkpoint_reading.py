@@ -93,9 +93,9 @@ def test_status_reuses_accounted_history_even_when_today_is_zero(tmp_path, monke
         writer = synthetic_record.ClaudeShape(seat.home, tmp_path, f'synthetic-{number}', 'synthetic-model')
         writer.begin('synthetic input', 'synthetic-model', 'high')
         writer.end('synthetic output')
-        record_owner.register(seat.folder, writer.path, 'fake')
+        record_owner.register(seat.trusted, writer.path, 'fake')
         writers.append(writer)
-    (seat.folder / 'record').write_text(str(writers[-1].path))
+    (seat.trusted / 'record').write_text(str(writers[-1].path))
     svc = Service(ship, tmux)
     svc.resolved_seats = lambda: [seat]
     try:

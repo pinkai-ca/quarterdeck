@@ -58,12 +58,12 @@ def bind(svc, old, name, path):
     svc.ship.pools[pool.name] = replace(pool, provider=harness.provider_of(name))
     svc.ship.seats[old.name] = replace(old.spec, harness=name)
     seat = svc.seat(old.name)
-    launch_path = seat.folder / "launch.json"
+    launch_path = seat.trusted / "launch.json"
     data = json.loads(launch_path.read_text())
     data.update(harness=name, argv=[{"claude": "claude", "antigravity": "agy"}[name]])
     launch_path.write_text(json.dumps(data))
-    (seat.folder / "record").write_text(str(path) + "\n")
-    register(seat.folder, path, name)
+    (seat.trusted / "record").write_text(str(path) + "\n")
+    register(seat.trusted, path, name)
     return seat
 
 
@@ -143,12 +143,13 @@ def test_corrupt_journal_does_not_block_another_seats_confirmation(setup, broken
     svc.ship.seats["second"] = spec
     other = svc.seat("second")
     other.folder.mkdir(parents=True)
-    (other.folder / "launch.json").write_text((seat.folder / "launch.json").read_text())
+    other.trusted.mkdir(parents=True, exist_ok=True)
+    (other.trusted / "launch.json").write_text((seat.trusted / "launch.json").read_text())
     second_record = other.home / "sessions" / "synthetic.jsonl"
     second_record.parent.mkdir(parents=True)
     second_record.write_text(record.read_text())
-    (other.folder / "record").write_text(str(second_record) + "\n")
-    register(other.folder, second_record, "codex")
+    (other.trusted / "record").write_text(str(second_record) + "\n")
+    register(other.trusted, second_record, "codex")
     second, intact = seed_proof(svc, other)
     input_row(second_record, intact.data["payload"], post.now())
     damaged.path.write_text(broken)

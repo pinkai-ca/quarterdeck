@@ -82,7 +82,9 @@ def seat_at(base: Path) -> Seat:
     ship = Ship(base, "example", "admiral", base, pools, {"crew": Session("crew", "crew")}, {"worker": spec})
     seat = Seat(ship, spec, SimpleNamespace(pane=lambda ident: None))
     seat.folder.mkdir(parents=True, exist_ok=True)
+    seat.trusted.mkdir(parents=True, exist_ok=True)
     seat.home.mkdir(parents=True, exist_ok=True)
+    seat.trusted.mkdir(parents=True, exist_ok=True)
     return seat
 
 
@@ -157,25 +159,25 @@ def journal_update(base, monkeypatch):
 
 def launch_replace(base, monkeypatch):
     seat = seat_at(base)
-    launched("%1", 1001).write(seat.folder / "launch.json")
-    path = seat.folder / "launch.json"
-    return [path, seat.folder / "launch-price.json"], lambda: launched("%2", 1002).write(path), \
+    launched("%1", 1001).write(seat.trusted / "launch.json")
+    path = seat.trusted / "launch.json"
+    return [path, seat.trusted / "launch-price.json"], lambda: launched("%2", 1002).write(path), \
         lambda: (lambda found: found and (found.pane, found.price))(seat_at(base).launched())
 
 
 def record_pointer(base, monkeypatch):
     seat = seat_at(base)
-    launched("%1", 1001).write(seat.folder / "launch.json")
+    launched("%1", 1001).write(seat.trusted / "launch.json")
     record = seat.home / "synthetic-record.jsonl"
     record.write_text("{}\n")
     monkeypatch.setattr(seat.harness, "join", lambda *args: Join(record))
-    return [seat.folder / "record"], seat.join, lambda: seat_at(base).join()
+    return [seat.trusted / "record"], seat.join, lambda: seat_at(base).join()
 
 
 def pool_selection(base, monkeypatch):
     seat = seat_at(base)
     seat.move_to("pool-a")
-    return [seat.folder / "pool"], lambda: seat.move_to("pool-b"), lambda: (seat_at(base).folder / "pool").read_text()
+    return [seat.trusted / "pool"], lambda: seat.move_to("pool-b"), lambda: (seat_at(base).trusted / "pool").read_text()
 
 
 SCENARIOS = [post_new, ack_new_beside_posts, attempt_open, attempt_close, journal_new, journal_update,
@@ -257,8 +259,8 @@ def test_the_shared_writer_removes_its_temporary_on_an_ordinary_failure(tmp_path
 def test_an_emptied_or_unreadable_record_pointer_joins_no_record(tmp_path, pointer):
     """What the crash left for una: a pointer emptied after its launch; nothing is guessed from it."""
     seat = seat_at(tmp_path)
-    launched("%1", 1001).write(seat.folder / "launch.json")
-    (seat.folder / "record").write_bytes(pointer)
+    launched("%1", 1001).write(seat.trusted / "launch.json")
+    (seat.trusted / "record").write_bytes(pointer)
     joined = seat.join()
     assert joined.record is None
     assert joined.reason.startswith("record pointer empty" if pointer.strip() == b"" else "record pointer unreadable")

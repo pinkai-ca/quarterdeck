@@ -120,7 +120,7 @@ def test_real_launch_writer_keeps_old_launch_and_model_readers_usable(tmp_path, 
     launched = seat.launched()
     expected = Price.parse(RATES).snapshot('m') if priced else None
     assert launched.price == expected
-    assert 'price' not in json.loads((seat.folder / 'launch.json').read_text())
+    assert 'price' not in json.loads((seat.trusted / 'launch.json').read_text())
     output = old('''
 import sys,json
 from dataclasses import asdict,replace
@@ -128,19 +128,19 @@ from types import SimpleNamespace
 from quarterdeck.seat import Seat
 from quarterdeck import endpoint,harness
 from quarterdeck.ship import Pool,SeatSpec,load
-p=Path(sys.argv[1]); name=sys.argv[2]
+p=Path(sys.argv[1]); name=sys.argv[2]; h=Path(sys.argv[3])
 launch=Seat.launched(SimpleNamespace(folder=p))
 assert launch.pool=='local'
 if name!='fake':
     assert load(p.parents[2]).pools['local'].endpoint=='http://127.0.0.1:1/v1'
-    choice=endpoint.Choice.read(p/'home'); assert choice.model=='m'
+    choice=endpoint.Choice.read(h); assert choice.model=='m'
     endpoint.choose=lambda pool,model: endpoint.Choice('local','m',4096,1024)
     pool=Pool('local','local',endpoint='http://127.0.0.1:1/v1')
-    harness.get(name).build_home(p/'home',SeatSpec('worker','crew','worker',name,('local',)),pool,None)
+    harness.get(name).build_home(h,SeatSpec('worker','crew','worker',name,('local',)),pool,None)
 path=p/'launch.json'
 path.write_text(json.dumps(asdict(replace(launch,pid=3))))
 print('old launch/model read and rewrite passed')
-''', seat.folder, reader)
+''', seat.trusted, reader, seat.home)
     assert output.strip() == 'old launch/model read and rewrite passed'
     assert seat.launched().price is None
     if reader != 'fake':

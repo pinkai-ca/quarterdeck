@@ -40,15 +40,16 @@ def setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     svc = Service(ship, tmux)
     seat = svc.seat("worker")
     seat.folder.mkdir(parents=True)
+    seat.trusted.mkdir(parents=True, exist_ok=True)
     launch = {"pane": "%1", "pid": 123, "at": (post.now() - timedelta(minutes=1)).isoformat(),
               "pool": "test", "argv": ["codex"], "harness": "codex", "resume": None, "version": "synthetic"}
-    (seat.folder / "launch.json").write_text(json.dumps(launch))
+    (seat.trusted / "launch.json").write_text(json.dumps(launch))
     record = seat.home / "sessions" / "synthetic.jsonl"
     record.parent.mkdir(parents=True)
     record.write_text(json.dumps({"type": "session_meta", "timestamp": launch["at"], "payload": {"id": "synthetic"}}) + "\n")
-    (seat.folder / "record").write_text(str(record) + "\n")
+    (seat.trusted / "record").write_text(str(record) + "\n")
     from quarterdeck.record_owner import register
-    register(seat.folder, record, "codex")
+    register(seat.trusted, record, "codex")
     original = Door.confirm
     monkeypatch.setattr(Door, "confirm", lambda self, text: original(self, text, seconds=0))
     yield svc, seat, live, record
@@ -126,7 +127,7 @@ def test_pending_ownership_rejects_changed_text_and_identity(setup, change) -> N
     elif change in ("pane", "pid"):
         live["pane"] = replace(live["pane"], **({"id": "%2"} if change == "pane" else {"pid": 456}))
     else:
-        path = seat.folder / "launch.json"
+        path = seat.trusted / "launch.json"
         data = json.loads(path.read_text())
         data["at"] = post.now().isoformat()
         path.write_text(json.dumps(data))
@@ -318,9 +319,9 @@ def test_explicit_resend_requires_empty_box_and_never_claims_prior_delivery(setu
 def test_new_launch_empty_door_progresses_but_old_uncertainty_remains_visible(setup) -> None:
     svc, seat, live, record = setup
     old, proof = send(svc, seat)
-    data = json.loads((seat.folder / "launch.json").read_text())
+    data = json.loads((seat.trusted / "launch.json").read_text())
     data["at"] = post.now().isoformat()
-    (seat.folder / "launch.json").write_text(json.dumps(data))
+    (seat.trusted / "launch.json").write_text(json.dumps(data))
     live["box"] = ""
     assert Door(seat).reading().open
     facts = watch.facts(svc.ship, svc.tmux, walls=[], login=[])

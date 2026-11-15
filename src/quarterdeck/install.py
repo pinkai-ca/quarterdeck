@@ -25,6 +25,7 @@ from uuid import uuid4
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import trusted_files
 from . import copy_state, durable, resources, servicectl
 from .ship import Ship, ShipError, fence
 from .tmux import Tmux
@@ -69,7 +70,7 @@ def brief_snapshot(ship: Ship) -> dict:
     before, launches = {}, {}
     for name in ship.seats:
         brief = ship.runtime / 'brief' / f'{name}.md'
-        launch = ship.runtime / 'seats' / name / 'launch.json'
+        launch = trusted_files.path(ship.runtime, name, trusted_files.LAUNCH)
         before[name] = hashlib.sha256(brief.read_bytes()).hexdigest() if brief.exists() else None
         launches[name] = launch_stamp(launch)
     return dict(before=before, launches=launches)

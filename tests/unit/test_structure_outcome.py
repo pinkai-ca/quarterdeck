@@ -56,7 +56,7 @@ def structures(tmp_path, monkeypatch):
         (locks / f'{name}.lock').touch()
         pane = Pane(launch.pane, 'Synthetic', 'Synthetic', launch.pid, 100, 40, False, False, None)
         seat = SimpleNamespace(name=name, ship=ship, spec=specs[name], pool=ship.pools['fake'],
-                               home=home, folder=home.parent, session=ship.sessions['crew'], harness=FakeHarness(),
+                               home=home, folder=home.parent, trusted=home.parent, session=ship.sessions['crew'], harness=FakeHarness(),
                                _lifecycle=lambda **kwargs: nullcontext(), current_launch=launch, current_pane=pane,
                                shown='────────────────\n> \n────────────────\nfake pi · model synthetic-model · effort low · idle')
         seat.launched = lambda: seat.current_launch
@@ -208,7 +208,7 @@ def test_activity_or_unknown_evidence_resets_candidate(structures, monkeypatch, 
     elif change == 'missing-footer':
         seat.shown = '\n'.join(seat.shown.splitlines()[:-1])
     elif change == 'reader-unknown':
-        (seat.folder / record_owner.REGISTRY).write_text(
+        (seat.trusted / record_owner.REGISTRY).write_text(
             json.dumps(dict(record=str(program.record.path), harness=None)) + '\n')
     else:
         seat.current_launch = replace(seat.current_launch, at=(post.now() + timedelta(seconds=1)).isoformat())

@@ -10,6 +10,7 @@ import time
 
 import pytest
 
+from quarterdeck import trusted_files
 from quarterdeck import accounting_slices, quota, record_owner, service, watch
 from quarterdeck.accounting_slices import Driver
 from quarterdeck.harness.fake import FakeHarness
@@ -27,9 +28,9 @@ def world(tmp_path, monkeypatch, count=1):
         writer.begin('synthetic input', 'synthetic-model', 'high')
         writer.tool('synthetic-tool', 'synthetic argument', 'synthetic result', False)
         writer.end('synthetic output')
-    record_owner.register(home.parent, writer.path, 'fake')
+    record_owner.register(trusted_files.of_home(home), writer.path, 'fake')
     reader = FakeHarness()
-    seat = SimpleNamespace(name='worker', home=home, harness=reader, session=SimpleNamespace(human=False),
+    seat = SimpleNamespace(name='worker', home=home, trusted=trusted_files.of_home(home), harness=reader, session=SimpleNamespace(human=False),
                            pane=lambda: None, launched=lambda: None, record=lambda: writer.path)
     svc = Service(ship, SimpleNamespace())
     pulses, notices = [], []
@@ -165,7 +166,7 @@ def test_changed_reader_identity_discards_old_plans_then_retries(tmp_path, monke
         if len(starts) == 1:
             # Change the binding after the job and its identities are captured,
             # regardless of how much work a single service slice can finish.
-            with record_owner.registry(seat.home.parent).open('a') as stream:
+            with record_owner.registry(seat.trusted).open('a') as stream:
                 stream.write('\n')
 
     monkeypatch.setattr(Driver, 'start', change_identity_after_snapshot)
@@ -275,8 +276,8 @@ def test_identity_retry_keeps_stable_seats_and_never_reopens_history(tmp_path, m
     for _ in range(10):
         writer.begin('synthetic input', 'synthetic-model', 'high')
         writer.end('synthetic output')
-    record_owner.register(home.parent, writer.path, 'fake')
-    other = SimpleNamespace(name='synthetic-other', home=home, harness=FakeHarness(),
+    record_owner.register(trusted_files.of_home(home), writer.path, 'fake')
+    other = SimpleNamespace(name='synthetic-other', home=home, trusted=trusted_files.of_home(home), harness=FakeHarness(),
                             session=SimpleNamespace(human=False), pane=lambda: None,
                             launched=lambda: None, record=lambda: writer.path)
     svc.resolved_seats = lambda: [changed, other]
@@ -295,7 +296,7 @@ def test_identity_retry_keeps_stable_seats_and_never_reopens_history(tmp_path, m
     class Measured(Driver):
         touched = False
         def touch(self):
-            with record_owner.registry(changed.home.parent).open('a') as stream:
+            with record_owner.registry(changed.trusted).open('a') as stream:
                 stream.write('\n')
             self.touched = True
         def start(self, service):
@@ -306,7 +307,7 @@ def test_identity_retry_keeps_stable_seats_and_never_reopens_history(tmp_path, m
                 self.touch()
             elif len(starts) == 2:
                 # Unrelated churn must not invalidate the affected seat's retry.
-                with record_owner.registry(other.home.parent).open('a') as stream:
+                with record_owner.registry(other.trusted).open('a') as stream:
                     stream.write('\n')
         def pump(self):
             before = len(self.ready)

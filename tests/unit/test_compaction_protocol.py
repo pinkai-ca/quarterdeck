@@ -30,12 +30,13 @@ def world(tmp_path, monkeypatch, request):
     monkeypatch.setattr(post, 'now', lambda: clock[0])
     seat = svc.seat('worker')
     seat.folder.mkdir(parents=True)
+    seat.trusted.mkdir(parents=True, exist_ok=True)
     source = [Native(seat.home/'synthetic-record', program)]
     monkeypatch.setattr(post, 'now', lambda: AT + timedelta(seconds=source[0].serial + 0.5))
-    Launched('%1', 123, AT.isoformat(), 'synthetic', None, [program], 'synthetic', harness=program).write(seat.folder/'launch.json')
+    Launched('%1', 123, AT.isoformat(), 'synthetic', None, [program], 'synthetic', harness=program).write(seat.trusted/'launch.json')
     def pin():
-        (seat.folder/'record').write_text(str(source[0].path))
-        record_owner.register(seat.folder, source[0].path, program)
+        (seat.trusted/'record').write_text(str(source[0].path))
+        record_owner.register(seat.trusted, source[0].path, program)
     pin()
     monkeypatch.setattr(seat, 'record', lambda: source[0].path)
     monkeypatch.setattr(seat, 'join', lambda: Join(source[0].path))
@@ -51,7 +52,7 @@ def world(tmp_path, monkeypatch, request):
         if not resume:
             source[0] = Native(seat.home/f'synthetic-record-{len(calls)}', program, f'synthetic-successor-{len(calls)}')
         Launched('%1', 123, (AT + timedelta(microseconds=len(calls))).isoformat(), 'synthetic', source[0].conversation if resume else None,
-                 [program], 'synthetic', harness=program).write(seat.folder/'launch.json')
+                 [program], 'synthetic', harness=program).write(seat.trusted/'launch.json')
         pin()
         return 'synthetic launch'
     monkeypatch.setattr(seat, '_down', down)
@@ -489,7 +490,7 @@ def test_outside_cancel_works_when_down_and_never_closes_posts(world, monkeypatc
     from quarterdeck import cli
     w = world
     _, hand, _ = ready(w)
-    (w.seat.folder/'launch.json').unlink()
+    (w.seat.trusted/'launch.json').unlink()
     monkeypatch.delenv('QD_SEAT', raising=False)
     monkeypatch.setattr(cli, 'load_ship', lambda _: w.seat.ship)
     monkeypatch.setattr(cli, 'seat_of', lambda *_: w.seat)
@@ -528,7 +529,7 @@ def test_other_native_origin_without_new_launch_is_unknown(world):
     w = world
     request = threshold(w)
     other = Native(w.seat.home/'synthetic-other-record', w.program, 'synthetic-other-origin')
-    record_owner.register(w.seat.folder, other.path, w.program)
+    record_owner.register(w.seat.trusted, other.path, w.program)
     w.source[0] = other
     compaction.tick(w.seat)
     assert 'count unknown' in compaction.status(w.seat) and not w.calls

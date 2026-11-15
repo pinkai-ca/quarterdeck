@@ -92,7 +92,8 @@ def launched_seat(tmp_path, tmux):
                 {"crew": Session("crew", "crew")}, {"worker": spec})
     seat = Seat(ship, spec, tmux)
     seat.folder.mkdir(parents=True)
-    Launched("%3", 1003, SECOND.isoformat(), pool.name, None, ["fake"], "synthetic").write(seat.folder / "launch.json")
+    seat.trusted.mkdir(parents=True, exist_ok=True)
+    Launched("%3", 1003, SECOND.isoformat(), pool.name, None, ["fake"], "synthetic").write(seat.trusted / "launch.json")
     return seat
 
 

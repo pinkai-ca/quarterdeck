@@ -45,7 +45,10 @@ class Case:
         self.ship, self.tmp, self.monkeypatch = ship, tmp_path, monkeypatch
         self.runtime = ship.runtime
         self.folder = self.runtime / 'seats' / SEAT
+        self.trusted = self.runtime / 'trusted' / SEAT
         self.folder.mkdir(parents=True, exist_ok=True)
+        self.trusted.mkdir(parents=True, exist_ok=True)
+        self.trusted.mkdir(parents=True, exist_ok=True)
         self.base = datetime.now(timezone.utc) - timedelta(seconds=60)
         self.record = tmp_path / 'record-hazel.jsonl'
         self.session = 'session-hazel'
@@ -54,7 +57,7 @@ class Case:
         self.actions: list[str] = []
         self.launch(os.getpid(), self.base)
         self.seat = SimpleNamespace(
-            name=SEAT, folder=self.folder, ship=ship, session=SimpleNamespace(human=True),
+            name=SEAT, folder=self.folder, trusted=self.trusted, ship=ship, session=SimpleNamespace(human=True),
             spec=SimpleNamespace(pools=('pool-alder', 'pool-birch'), pool_choices=False, harness='claude'),
             pool=SimpleNamespace(name='pool-alder'), is_up=True, harness=self.harness,
             launched=lambda: self.launched, record=lambda: self.record,
@@ -69,7 +72,7 @@ class Case:
         return self.base + timedelta(seconds=seconds)
 
     def launch(self, pid: int, at: datetime) -> None:
-        (self.folder / 'launch.json').write_text(json.dumps(dict(pid=pid, at=at.isoformat())) + '\n')
+        (self.trusted / 'launch.json').write_text(json.dumps(dict(pid=pid, at=at.isoformat())) + '\n')
         self.launched = SimpleNamespace(pane='%41', pid=pid, at=at.isoformat(), harness='claude', resume=None, version=None)
 
     def write(self, calls, *, unresolved_delegation=False, extra=()) -> None:
