@@ -3,7 +3,8 @@ name: Tests and drill
 "on": [push, pull_request]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # Other refs need a group per run: a shared group would replace an older pending run.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref != 'refs/heads/main' && github.run_id || '' }}
   cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
 
 permissions:
