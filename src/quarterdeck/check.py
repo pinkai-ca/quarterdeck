@@ -24,6 +24,7 @@ from pathlib import Path
 import secrets
 import signal
 import threading
+import time
 from dataclasses import dataclass
 
 from . import check_outcome, harness as harnesses, durable, human_wake, pending, post, providers, record_owner, sandbox, standing
@@ -472,19 +473,53 @@ def _probe_wake(seat: Seat, orders: list[post.Message], observed: dict) -> list[
                         observed['reason'] or 'wake receipt not confirmed'))
     if not received:
         return checks
-    armed = wait_for(lambda: (reading := post.watch_reading(seat.ship.runtime, seat.name)).armed is not None
-                     and reading.generation is not None and reading.generation != generation, PATIENCE)
+
+    pace: dict = {}
+
+    def served(predicate):
+        """A jailed wait is served by a broker; with no service up, as under qd setup, the check is its broker."""
+        def poll():
+            serve_own_watch(seat, observed, pace)
+            return predicate()
+        return poll
+
+    armed = wait_for(served(lambda: (reading := post.watch_reading(seat.ship.runtime, seat.name)).armed is not None
+                            and reading.generation is not None and reading.generation != generation), PATIENCE)
     checks.append(Check('human-session waking line: seat armed its inbox watch', bool(armed),
                         'durable watch registration observed' if armed else 'watch not armed after confirmed wake'))
-    read = wait_for(lambda: any(a.result == 'watch' for a in attempts.for_message(order.id)), PATIENCE) if armed else None
+    read = wait_for(served(lambda: any(a.result == 'watch' for a in attempts.for_message(order.id))),
+                    PATIENCE) if armed else None
     checks.append(Check('human-session waking line: watch read the waiting message', bool(read),
                         'ordinary watch receipt' if read else 'waiting message has no watch receipt'))
-    report = wait_for(lambda: closing_report(seat, store, order), PATIENCE) if read else None
+    report = wait_for(served(lambda: closing_report(seat, store, order)), PATIENCE) if read else None
     checks.append(Check('human-session waking line: seat answered the message',
                         bool(report and report.body.strip() == token),
                         'answer closed the waiting order' if report and report.body.strip() == token else
                         'matching answer not received'))
     return checks
+
+
+BROKER_SECONDS = 0.5  # the check's broker passes, at most this often while it waits on its wake seat
+
+
+def serve_own_watch(seat: Seat, observed: dict, pace: dict) -> None:
+    """Serve the check's own jailed wake seat as the service would, while no service owns the ship.
+
+    A jailed `qd inbox --wait` asks a broker to open its attempts and offer them (watch_broker); only the service
+    did, so under qd setup, which checks before any service is up, the wait was never served. A failed pass is
+    kept as evidence and tried again on the next poll, as the service logs it and tries on its next tick.
+    """
+    from . import watch_broker
+
+    at = time.monotonic()
+    if at < pace.get('next', 0.0):
+        return
+    pace['next'] = at + BROKER_SECONDS
+    try:
+        if watch_broker.serve_check_seat(seat.ship, seat.name):
+            observed['broker_passes'] = observed.get('broker_passes', 0) + 1
+    except Exception as error:  # the service's own step logs a broker failure and goes on; so does the check
+        observed['broker_error'] = repr(error)[:256]
 
 
 def retain_wake_evidence(seat: Seat, observed: dict) -> None:

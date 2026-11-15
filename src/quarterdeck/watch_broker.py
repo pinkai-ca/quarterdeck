@@ -16,6 +16,9 @@ own seat folder allows instead, and the service does the rest on its behalf:
 - The service closes an attempt as a watch delivery only when it is still open, is this seat's, and is named by
   this seat's offer. A receipt that is not a regular file is never read.
 
+While no service owns the ship, ``qd check`` serves its own waking-line seat with the same pass (serve_check_seat):
+``qd setup`` checks before it starts anything, and a jailed wait with no broker is never offered its message.
+
 Locks: the waiting seat holds only its own lease, in a folder only its own jail sees, and the service only tests
 that lease, never waits on it. The service's locks here (the seat's admission, the attempts lock) are visible in
 every jail, so the service waits on each for at most ``WAIT`` and skips the seat for that pass.
@@ -266,7 +269,6 @@ def check_seats(ship) -> list:
     qd inbox uses for such a seat) does, and only a human one. Each is a stand-in with the name and the ship.
     """
     from types import SimpleNamespace
-    from .pending import check_inbox_owner
 
     folder = ship.runtime / 'seats'
     try:
@@ -274,17 +276,47 @@ def check_seats(ship) -> list:
                        if entry.is_dir(follow_symlinks=False) and entry.name not in ship.seats)
     except OSError:
         return []
-    found = []
-    for name in names:
-        if request(ship.runtime, name) is None:
-            continue
-        try:
-            owner = check_inbox_owner(ship.runtime, name)
-        except ShipError:
-            continue
-        if owner.get('human') is True:
-            found.append(SimpleNamespace(name=name, ship=ship))
-    return found
+    return [SimpleNamespace(name=name, ship=ship) for name in names if check_admitted(ship.runtime, name)]
+
+
+def check_admitted(runtime: Path, name: str) -> bool:
+    """A seat that asked for brokering and that a live check owns, by its lease, as a person's seat."""
+    from .pending import check_inbox_owner
+
+    if request(runtime, name) is None:
+        return False
+    try:
+        owner = check_inbox_owner(runtime, name)
+    except ShipError:
+        return False
+    return owner.get('human') is True
+
+
+class CheckHost:
+    """What the broker needs of a service, for a check that serves its own seat: the store, the attempts, a log."""
+
+    def __init__(self, runtime: Path, log=None):
+        self.store, self.attempts = post.Store(runtime), post.Attempts(runtime)
+        self.log = log or (lambda event, **data: None)
+
+
+def serve_check_seat(ship, name: str, log=None) -> bool:
+    """One broker pass for a live check's own human seat, while no service owns the ship.
+
+    qd setup runs qd check before any service is up, so nothing else would open the attempts and publish the offer
+    a jailed wait asks for, and the check's wake proof would wait for a receipt that cannot come. The admission is
+    the service's own (check_admitted: the check's live lease on a person's seat, as check_seats has it; the check's
+    temporary seat is undeclared by construction), and so is the pass
+    (run, under the seat's admission, every lock bounded). A live service owns the broker: the check stands aside,
+    and two brokers in turn meet the same offer under the same admission. True when a pass ran.
+    """
+    from types import SimpleNamespace
+    from . import servicectl
+
+    if servicectl.alive(ship.runtime) or not check_admitted(ship.runtime, name):
+        return False
+    run(CheckHost(ship.runtime, log), SimpleNamespace(name=name, ship=ship))
+    return True
 
 
 def run(service, seat) -> None:
