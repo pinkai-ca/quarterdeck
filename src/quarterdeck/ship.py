@@ -143,6 +143,7 @@ class Ship:
     carry_bytes: int = CARRY_BYTES  # first message and each index page, UTF-8 bytes; [ship] carry_bytes
     kind: str = "crew"  # an office has only the desk and the person's own seats
     forward: dict[str, str] = field(default_factory=dict)
+    push_reminder: str | None = None  # the seat ordered to read the hosted runs after pushes of main; [ship] push_reminder
 
     @property
     def file(self) -> Path:
@@ -342,7 +343,14 @@ def _from_text(text: str, folder: Path) -> Ship:
         carry_bytes=_carry_bytes(head.get("carry_bytes", CARRY_BYTES)),
         kind=head.get("kind", "crew"),
         forward=_forward(data.get('forward', {})),
+        push_reminder=_push_reminder(head.get("push_reminder")),
     )
+
+
+def _push_reminder(value: object) -> str | None:
+    if value is not None and (not isinstance(value, str) or not valid_name(value)):
+        raise ShipError(f"ship.push_reminder must name a declared seat, such as \"reviewer\"; got {value!r}")
+    return value
 
 
 def _forward(table):
@@ -491,6 +499,10 @@ def _validate(ship: Ship) -> None:
                 "operations", "systems", "security", "lead", "reviewer", "orchestrator", "ring"}
         if any(seat.role in crew for seat in ship.seats.values()) or ship.groups or ship.cascade:
             raise ShipError('an office has no captain or crew, groups or cascade; declare only the desk and office seats')
+
+    if ship.push_reminder is not None and ship.push_reminder not in ship.seats:
+        raise ShipError(f"ship.push_reminder names {ship.push_reminder!r}, which is not a declared seat; "
+                        f"declared: {', '.join(ship.seats)}")
 
     for name, target in ship.forward.items():
         if name in ship.groups or name in ('ship', ship.operator.lower()):

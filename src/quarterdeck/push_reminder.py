@@ -1,6 +1,7 @@
 """Local push observations and one durable post after a quiet twenty minutes.
 
 The service is the only writer. No network, credentials or GitHub client is used.
+The order goes to the seat named by ``push_reminder`` under ``[ship]``; without it the reminder is off.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -31,7 +32,8 @@ def timestamp(value):
     return parsed
 
 
-def load(runtime):
+def load(runtime, seat):
+    """The saved journal, or None; a saved intent must be an order to the declared seat."""
     try:
         data = json.loads(post_dir.read_text(path(runtime)))
     except FileNotFoundError:
@@ -50,7 +52,7 @@ def load(runtime):
             timestamp(data['due'])
         if data['intent'] is not None:
             message = post.Message.from_json(data['intent'])
-            if (message.kind != 'order' or message.sender != post.SHIP or message.to != 'una'
+            if (message.kind != 'order' or message.sender != post.SHIP or message.to != seat
                     or not message.id or '/' in message.id or message.id in {'.', '..'}
                     or message.re is not None or message.due is None):
                 raise ValueError('invalid push reminder intent')
@@ -99,9 +101,10 @@ def publish(service, data):
 
 def run(service):
     """One service pass; wall-clock deadlines persist across a service restart."""
-    if 'una' not in service.ship.seats:
-        return
-    data = load(service.runtime)
+    seat = service.ship.push_reminder
+    if seat is None:
+        return  # off: nothing read and nothing written
+    data = load(service.runtime, seat)
     if data is not None:
         publish(service, data)
     at = now()
@@ -132,11 +135,10 @@ def run(service):
         return
     body = ('Read GitHub\'s run on each of these pushed main tips:\n'
             + ''.join(f'- {tip}\n' for tip in data['pending'])
-            + '\nReport a failed run to the captain at once, with its cause where the log shows it. '
-            'If a run is still going, read it to its end with the ship\'s key: '
-            '`gh run watch RUN_ID --exit-status` blocks until it ends; no seat polls. '
-            'You remain the only reader of GitHub\'s runs.')
-    message = service.store.prepare('order', post.SHIP, 'una', body,
+            + '\nReport a failed run at once, with its cause where the log shows it, to the seat that answers for main. '
+            'If a run is still going, read it to its end: '
+            '`gh run watch RUN_ID --exit-status` blocks until it ends; no seat polls.')
+    message = service.store.prepare('order', post.SHIP, seat, body,
                                     subject='Read GitHub runs after pushes of main', due=data['due'])
     data.update(pending=[], due=None, intent=message.to_json())
     save(service.runtime, data)  # immutable publication identity precedes the post

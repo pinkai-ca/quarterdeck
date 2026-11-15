@@ -15,6 +15,7 @@ operator = "Admiral"                 # what this ship calls its human
 workspace = "~/dev/quarterdeck"      # the default working directory of every seat
 tick = 1.0                           # the service's wait after each pass, in seconds: the default
 carry_bytes = 100000                 # policy bound for first message and each index page, UTF-8 bytes
+# push_reminder = "reviewer"         # optional: the seat ordered to read the hosted runs after pushes of main
 
 [pools.claude-primary]
 provider = "anthropic"
@@ -123,6 +124,8 @@ An omitted human-session title is its capital-first key (`office` becomes `Offic
 One plain service process belongs to whoever ran `qd up`, outlives that shell and is restarted by up when dead. It renders inboxes, delivers messages, records attempts, applies deferred controls, moves seats at limits, writes its heartbeat and samples the machine. A ship may run it under a user unit; the framework installs none.
 
 `ship.tick` is the wait after each service pass: 1 second by default, or a finite number from 0.05 to 5 inclusive. Each pass reloads the declaration; invalid edits retain the last valid ship and tick. Every duty and heartbeat still runs once per pass. The stale heartbeat bound remains 10 seconds. No environment variable overrides tick.
+
+`ship.push_reminder` optionally names a declared seat. Twenty minutes after the framework checkout's `refs/remotes/origin/main` last moved, the service files that seat one order to read the hosted runs on the pushed tips ([post](post.md) describes it). Without the key the reminder is off and nothing is read or written. A name that is no declared seat is refused when the ship file is loaded.
 
 `--ship` or `QD_SHIP` selects a ship explicitly. Up sets `QD_SHIP` in each seat. Without either, a person's shell uses `ships/.default`, managed by `qd default`; without a mark it uses the sole non-template, non-practice ship. An invalid mark or several eligible ships without a mark refuses rather than guesses. The selected folder is forwarded through installed-copy handoff, shown in the act's text proof and exposed as JSON `default_ship`. A seat never reads the default mark. Doctor warns about `QD_SHIP` in a shell that is no seat.
 

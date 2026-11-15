@@ -73,15 +73,17 @@ keeps format-1 offers. A service without forwarding support refuses format 2 rat
 old envelope as a delivered forwarded post. This declares routing only: an office move still needs
 the person's separate instruction and its offline proof.
 
-For a ship declaring `una`, the service observes the framework checkout's local
-`refs/remotes/origin/main`. The first reading establishes a baseline; each later
-observed tip change starts a twenty-minute deadline. Further changes collect in
-one batch and move its deadline to twenty minutes after the newest observation.
-At that deadline the service files one order from `ship` to `una`, listing every
-observed tip in the batch. Una alone reads GitHub with the ship's key, reports a
-failed run to the captain at once with its logged cause, and uses blocking
-`gh run watch RUN_ID --exit-status` for a run still going. The service makes no
-network or provider call. Transitions entirely between service observations
+For a ship whose file names a seat in `push_reminder` under `[ship]`, the service
+observes the framework checkout's local `refs/remotes/origin/main`. Without that
+key the reminder is off: nothing is read and no journal is written. The first
+reading establishes a baseline; each later observed tip change starts a
+twenty-minute deadline. Further changes collect in one batch and move its deadline
+to twenty minutes after the newest observation. At that deadline the service files
+one order from `ship` to the declared seat, listing every observed tip in the
+batch. The order asks the seat to read GitHub's run on each tip, to report a failed
+run at once with its logged cause to the seat that answers for main, and to use
+blocking `gh run watch RUN_ID --exit-status` for a run still going. The service
+makes no network or provider call. Transitions entirely between service observations
 cannot be reconstructed; a restart observes the current ref against its saved
 baseline, with downtime pushes timed from that observation.
 
@@ -92,8 +94,9 @@ publication through ordinary post admission; recovery checks existing post bytes
 and reuses the same identity before clearing it. A restart on either side of the
 post write therefore neither loses nor duplicates a reminder. A missing or
 temporarily unreadable ref does not discard a pending batch; invalid journal
-state is retained and logged by the service's isolated duty. No new ship setting,
-polling seat, timer process or change to signing is involved.
+state, a saved order addressed to a seat other than the declared one included, is
+retained and logged by the service's isolated duty. One optional ship setting names
+the seat; no polling seat, timer process or change to signing is involved.
 Intent recovery compares the existing immutable post before using the public
 `Store.write` path for a missing post; publication hooks and recipient admission
 remain owned by the store. Within a service process an unchanged unavailable-ref

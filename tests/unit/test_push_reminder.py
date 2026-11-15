@@ -7,19 +7,20 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import durable, post, push_reminder
+from quarterdeck import durable, post, push_reminder, ship as shipmod
 from quarterdeck.service import Service
 from quarterdeck.ship import ShipError
 
 
 START = datetime(2026, 1, 1, tzinfo=timezone.utc)
 BASE, FIRST, SECOND, THIRD = (char * 40 for char in 'abcd')
+SEAT = 'reviewer'  # any declared seat; the framework names none of its own
 
 
 @pytest.fixture
 def scene(tmp_path, monkeypatch):
     clock = SimpleNamespace(at=START, tip=BASE)
-    ship = SimpleNamespace(runtime=tmp_path / 'runtime', seats={'una': object()})
+    ship = SimpleNamespace(runtime=tmp_path / 'runtime', seats={SEAT: object()}, push_reminder=SEAT)
     def service():
         return SimpleNamespace(ship=ship, runtime=ship.runtime, store=post.Store(ship.runtime),
                                log=lambda *args, **kwargs: None)
@@ -45,11 +46,10 @@ def test_one_push_files_one_order_at_twenty_minutes(scene):
     clock.at = deadline
     Service.push_reminders(svc)
     [message] = svc.store.all()
-    assert (message.kind, message.sender, message.to) == ('order', post.SHIP, 'una')
+    assert (message.kind, message.sender, message.to) == ('order', post.SHIP, SEAT)
     assert FIRST in message.body and BASE not in message.body
-    assert 'captain at once' in message.body
+    assert 'failed run at once' in message.body
     assert 'gh run watch RUN_ID --exit-status' in message.body
-    assert 'only reader' in message.body
     assert datetime.fromisoformat(message.due) == deadline
     for _ in range(3):
         clock.at += push_reminder.DELAY
@@ -114,13 +114,13 @@ def test_interrupted_publication_recovers_same_post_identity(scene, monkeypatch,
         patch.setattr(post.Store, '_write', cut)
         with pytest.raises(OSError, match='interrupted publication'):
             push_reminder.run(svc)
-    intent = post.Message.from_json(push_reminder.load(svc.runtime)['intent'])
+    intent = post.Message.from_json(push_reminder.load(svc.runtime, SEAT)['intent'])
     assert len(svc.store.all()) == int(after_post)
     push_reminder.run(service())
     push_reminder.run(service())
     [message] = svc.store.all()
     assert message.to_json() == intent.to_json()
-    assert push_reminder.load(svc.runtime)['intent'] is None
+    assert push_reminder.load(svc.runtime, SEAT)['intent'] is None
 
 
 def test_absent_ref_can_appear_and_missing_ref_does_not_erase_pending(scene):
@@ -150,10 +150,10 @@ def test_failed_ref_read_does_not_lose_already_due_reminder(scene, monkeypatch):
     assert FIRST in svc.store.all()[0].body
 
 
-def test_no_recipient_does_not_read_repository_or_create_state(scene, monkeypatch):
+def test_no_declared_seat_is_off_and_reads_and_writes_nothing(scene, monkeypatch):
     _, service = scene
     svc = service()
-    svc.ship.seats = {}
+    svc.ship.push_reminder = None  # the seat still exists; only the key is absent
     monkeypatch.setattr(push_reminder, 'current_tip', lambda ship: pytest.fail('unexpected read'))
     push_reminder.run(svc)
     assert not svc.runtime.exists()
@@ -195,7 +195,7 @@ def test_saved_intent_uses_public_store_publication(scene, monkeypatch):
     original = post.Store.write
     published = []
     def write(store, message):
-        assert push_reminder.load(svc.runtime)['intent'] == message.to_json()
+        assert push_reminder.load(svc.runtime, SEAT)['intent'] == message.to_json()
         published.append(message.id)
         return original(store, message)
     monkeypatch.setattr(post.Store, 'write', write)
@@ -233,3 +233,64 @@ def test_ref_error_logs_only_when_changed_or_cleared(scene, monkeypatch):
     push_reminder.run(svc)
     assert len(logged) == 4
     assert logged[-1] == logged[0]
+
+
+def test_an_unpublished_order_to_the_declared_seat_is_found_again_and_filed_once(scene, monkeypatch):
+    clock, service = scene
+    svc = service()
+    push_reminder.run(svc)
+    clock.tip = FIRST
+    push_reminder.run(svc)
+    clock.at += push_reminder.DELAY
+    def cut(store, message):
+        raise OSError('synthetic cut before the post')
+    with monkeypatch.context() as patch:
+        patch.setattr(post.Store, 'write', cut)
+        with pytest.raises(OSError, match='synthetic cut'):
+            push_reminder.run(svc)
+    intent = post.Message.from_json(push_reminder.load(svc.runtime, SEAT)['intent'])
+    assert (intent.kind, intent.sender, intent.to) == ('order', post.SHIP, SEAT)
+    with pytest.raises(ShipError, match='journal invalid'):
+        push_reminder.load(svc.runtime, 'other')  # an order saved for one seat is never replayed to another
+    push_reminder.run(service())
+    [message] = svc.store.all()
+    assert (message.id, message.to) == (intent.id, SEAT)
+    assert push_reminder.load(svc.runtime, SEAT)['intent'] is None
+
+
+SHIP_TEXT = """[ship]
+name = "synthetic"
+operator = "operator"
+{line}
+[pools.example]
+provider = "fake"
+[sessions.crew]
+[seats.reviewer]
+session = "crew"
+role = "worker"
+harness = "fake"
+pool = "example"
+"""
+
+
+def load_ship(tmp_path, line=''):
+    folder = tmp_path / 'synthetic'
+    folder.mkdir(exist_ok=True)
+    (folder / 'ship.toml').write_text(SHIP_TEXT.format(line=line))
+    return shipmod.load(folder)
+
+
+def test_the_ship_file_declares_the_seat_or_leaves_the_reminder_off(tmp_path):
+    assert load_ship(tmp_path).push_reminder is None
+    assert load_ship(tmp_path, 'push_reminder = "reviewer"').push_reminder == 'reviewer'
+
+
+@pytest.mark.parametrize('line,refusal', [
+    ('push_reminder = "una"', r"ship\.push_reminder names 'una', which is not a declared seat; declared: reviewer"),
+    ('push_reminder = ""', r'ship\.push_reminder must name a declared seat'),
+    ('push_reminder = true', r'ship\.push_reminder must name a declared seat'),
+    ('push_reminder = ["reviewer"]', r'ship\.push_reminder must name a declared seat'),
+])
+def test_a_reminder_seat_that_is_not_declared_is_refused_at_load(tmp_path, line, refusal):
+    with pytest.raises(ShipError, match=refusal):
+        load_ship(tmp_path, line)
