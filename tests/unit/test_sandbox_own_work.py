@@ -110,12 +110,20 @@ def test_an_absolute_cwd_reaching_the_work_folder_through_a_link_is_refused(tmp_
         check(office(root, str(alias / 'work' / 'desk')))
 
 
-def test_a_cwd_outside_work_or_at_work_itself_is_not_this_checks(tmp_path):
+def test_a_cwd_outside_work_is_not_this_checks_and_work_itself_is_walked_as_shared(tmp_path):
+    """Neither is a folder of the seat's own for setup; work/ itself is the ship's shared work folder, walked and made
+    private before a jailed launch binds it (test_sandbox_shared_work.py), and a folder elsewhere is left alone."""
     root = tmp_path / 'office'
     (root / 'work').mkdir(parents=True, mode=0o755)
-    (tmp_path / 'project').mkdir()
-    for cwd in ('work', str(tmp_path / 'project')):
-        ship = office(root, cwd)
-        assert sandbox.own_work_folder(ship, ship.seat('desk')) is None
-        check(ship)
+    (root / 'work').chmod(0o755)
+    (tmp_path / 'project').mkdir(mode=0o755)
+    (tmp_path / 'project').chmod(0o755)
+    ship = office(root, str(tmp_path / 'project'))
+    assert sandbox.own_work_folder(ship, ship.seat('desk')) is None
+    check(ship)
+    assert stat.S_IMODE((tmp_path / 'project').stat().st_mode) == 0o755
     assert stat.S_IMODE((root / 'work').stat().st_mode) == 0o755
+    ship = office(root, 'work')
+    assert sandbox.own_work_folder(ship, ship.seat('desk')) is None
+    check(ship)
+    assert stat.S_IMODE((root / 'work').stat().st_mode) == 0o700
