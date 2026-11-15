@@ -79,9 +79,40 @@ def _tokens(message: dict) -> Tokens:
     return Tokens.from_usage(usage, ("cacheRead", "input", "cacheWrite", "output"), total="totalTokens")
 
 
+def _compaction_row(entry):
+    """The measured native checkpoint, not new input or evidence ending a tool."""
+    fields = {'type': str, 'id': str, 'parentId': str, 'timestamp': str,
+              'summary': str, 'firstKeptEntryId': str, 'tokensBefore': int,
+              'fromHook': bool, 'details': dict}
+    if (not isinstance(entry, dict) or entry.keys() != fields.keys()
+            or any(type(entry[key]) is not kind for key, kind in fields.items())
+            or entry['type'] != 'compaction' or entry['fromHook'] is not False
+            or entry['tokensBefore'] < 0
+            or not all(entry[key] for key in ('id', 'parentId', 'summary', 'firstKeptEntryId'))):
+        return False
+    details = entry['details']
+    if (details.keys() != {'readFiles', 'modifiedFiles'}
+            or type(details['readFiles']) is not list or not details['readFiles']
+            or any(type(name) is not str for name in details['readFiles'])
+            or type(details['modifiedFiles']) is not list or details['modifiedFiles']):
+        return False
+    try:
+        return datetime.fromisoformat(entry['timestamp']).tzinfo is not None
+    except ValueError:
+        return False
+
+
 class _Reader(JsonLinesReader):
     kinds = ('session', 'message', 'model_change', 'thinking_level_change')
     label = "pi"
+
+    @classmethod
+    def read_snapshot(cls, record, snapshot):
+        state, turns = super().read_snapshot(record, snapshot)
+        if (snapshot.rows and snapshot.rows[-1][0] > snapshot.complete_lines
+                and snapshot.rows[-1][1].get('type') == 'compaction'):
+            state = replace(state, pending_tools=None)
+        return state, turns
 
     def take(self, entry: dict) -> None:
         kind, at = entry.get("type"), when(entry.get("timestamp"))
@@ -91,7 +122,7 @@ class _Reader(JsonLinesReader):
             self.effort = entry.get("thinkingLevel") or self.effort
         elif kind == "message" and isinstance(entry.get("message"), dict):
             self.message(entry["message"], at)
-        elif kind != 'session':
+        elif kind != 'session' and not (kind == 'compaction' and _compaction_row(entry)):
             self.tools_known = False
         self.native_entry(entry)
 
@@ -247,7 +278,12 @@ turns = _Reader.read_turns
 read = _Reader.read
 
 
-@input_reader(lambda row: row.get('type') not in ('session', 'model_change', 'thinking_level_change'))
+def _input_relevant(row):
+    return (row.get('type') not in ('session', 'model_change', 'thinking_level_change')
+            and not (row.get('type') == 'compaction' and _compaction_row(row)))
+
+
+@input_reader(_input_relevant)
 def inputs(record: Path) -> list[Input]:
     """Every user message with the time it entered the record, for the delivery receipt."""
     found = Inputs()
@@ -255,6 +291,8 @@ def inputs(record: Path) -> list[Input]:
     for line, entry in input_rows(record, _Reader.kinds, _Reader.label, found):
         try:
             kind = entry.get('type')
+            if kind == 'compaction' and _compaction_row(entry):
+                continue
             if kind not in _Reader.kinds:
                 found.skip(line, 'unknown', 'unknown row kind')
                 continue
