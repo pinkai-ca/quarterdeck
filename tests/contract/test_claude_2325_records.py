@@ -105,4 +105,4 @@ def test_an_unmeasured_row_stays_unknown_after_the_known_newer_metadata(tmp_path
     state = reader.state(record)
     assert state.pending_tools is None
     assert idle.check(state).dimension == 'tools-unknown'
-    assert any(item.reason == 'unknown row kind' for item in reader.inputs(record).skipped)
+    assert any(item['reason'] == 'unknown row kind' for item in reader.inputs(record).skipped)
