@@ -175,7 +175,7 @@ quarterdeck/                       the project folder: the framework repository
     <yours>/       a nested repository, ignored above: ship.toml  orders.md  roles/  harnesses/  homes/  runtime/
     */runtime/     a nested repository with no commits: the fence around a ship's state
   work/            worktrees for work on the framework itself, ignored; the checkout above is what a running ship uses
-  .testruns/       ignored: the test tool's registrations, run scratch, results and reports, and the native test sockets
+  .testruns/       ignored: the test tool's registrations, run scratch, results and reports (test sockets use a derived short private root)
   tests/           unit/ contract/ fixtures/ integration/; testrun.py and testrunner/, the test tool (standard library only)
     shared_install.py  worker-local session wheel/install fixtures; immutable seeds and writable relocated copies
 
