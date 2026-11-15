@@ -10,7 +10,6 @@ import fcntl
 import hashlib
 import json
 import os
-import re
 from pathlib import Path
 import stat
 import time
@@ -21,6 +20,7 @@ from .ship import ShipError
 
 SEAT_KINDS = frozenset({'relaunch', 'control', 'select', 'stop', 'submit', 'press', 'type'})
 QUICK_KINDS = frozenset({'submit', 'resend'})
+NOTICE_RECEIPTS = 'request-notices.json'  # canonical trusted file; service alone writes it
 RESTART_SETTLEMENT = 'settled without applying: the service that claimed it restarted'
 
 
@@ -163,65 +163,94 @@ def load(path):
 
 
 
-def notice_path(runtime, identifier):
-    """The exact request named by a ship notice; never interpret it as a path."""
-    if (not isinstance(identifier, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', identifier)):
-        raise ShipError('notice request name unsupported')
-    return runtime / 'requests' / (identifier + '.json')
+def notice_path(runtime, seat):
+    """Only the service's canonical trusted receipt file, never a filed request."""
+    from . import trusted_files
+    if (not isinstance(seat, str) or not seat or Path(seat).name != seat
+            or seat.startswith('.') or '\\' in seat or not seat.isprintable()):
+        raise ShipError('notice seat name unsupported')
+    return trusted_files.path(runtime, seat, NOTICE_RECEIPTS)
 
 
-def notice_stamp(runtime, identifier):
-    """Queue-owned payload, metadata and answer observations for a notice reading."""
-    path = notice_path(runtime, identifier)
-    result = []
-    for item in (path, state_path(path), path.with_suffix('.done'),
-                 path.with_suffix('.claimed'), path.parent / 'failed' / path.name):
-        try:
-            info = item.lstat()
-        except FileNotFoundError:
-            result.append(None)
-            continue
-        if not stat.S_ISREG(info.st_mode):
-            raise ShipError('notice request record is not a regular file')
-        result.append((info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
-                       info.st_ctime_ns, info.st_mode))
-    return tuple(result)
-
-
-def notice_state(runtime, identifier, seat):
-    """Read only this request's surviving evidence; absence is not completion."""
-    path = notice_path(runtime, identifier)
+def notice_stamp(runtime, seat):
     try:
-        data = load(path)
+        info = notice_path(runtime, seat).lstat()
     except FileNotFoundError:
-        data = None
-    if data is not None and (data.get('kind') != 'relaunch' or data.get('seat') != seat):
-        raise ShipError('notice request does not name this relaunch seat')
+        return (None,)
+    if not stat.S_ISREG(info.st_mode):
+        raise ShipError('notice receipt is not a regular file')
+    return ((info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_mode),)
+
+
+def notice_records(runtime, seat):
+    """Read-only terminal evidence; an absent receipt proves no completion."""
     try:
-        meta = metadata(path)
+        data = json.loads(notice_path(runtime, seat).read_text())
     except FileNotFoundError:
-        meta = None
-    if meta is not None and 'terminal' in meta:
-        if data is None or not isinstance(meta['terminal'], str) or not meta['terminal']:
-            raise ShipError('notice request terminal intent unreadable')
-        return 'retired'
+        return {}
+    if (not isinstance(data, dict) or type(data.get('version')) is not int or data['version'] != 1
+            or set(data) != {'version', 'receipts'} or not isinstance(data['receipts'], dict)):
+        raise ShipError('notice receipts unsupported')
+    for key, row in data['receipts'].items():
+        if (not isinstance(row, dict) or set(row) != {'request', 'seat', 'notice', 'state', 'at', 'stamp'}
+                or row['seat'] != seat or row['notice'] != key or not isinstance(key, str) or not key
+                or not isinstance(row['request'], str) or not row['request']
+                or row['state'] not in ('applied', 'withdrawn', 'retired')
+                or not isinstance(row['stamp'], list) or len(row['stamp']) != 6
+                or any(type(value) is not int for value in row['stamp'])
+                or not isinstance(row['at'], str) or datetime.fromisoformat(row['at']).tzinfo is None):
+            raise ShipError('notice receipt record unsupported')
+    return data['receipts']
+
+
+def notice_state(runtime, identifier, seat, notice, *, records=None):
+    records = notice_records(runtime, seat) if records is None else records
+    row = records.get(notice)
+    return row['state'] if row is not None and row['request'] == identifier and row['seat'] == seat else None
+
+
+def record_notice_completion(path, data, meta, state):
+    """Service-only completion writer. Clients leave a terminal intent for that service."""
+    if data.get('kind') != 'relaunch' or not isinstance(meta.get('told'), str) or not meta['told']:
+        return
+    from . import post_dir, post_notices, trusted_files
+    notice, seat = meta['told'], data.get('seat')
+    if Path(notice).name != notice or notice in ('.', '..'):
+        raise ShipError('notice name unsupported')
+    runtime = path.parent.parent
     try:
-        proof = path.with_suffix('.done').read_text()
+        message = post.Message.from_json(post_dir.read_text(runtime / 'post' / 'store' / (notice + '.json')))
     except FileNotFoundError:
-        proof = None
-    if proof is not None:
-        if not proof.strip():
-            raise ShipError('notice request answer unreadable')
-        return 'completed'
-    if data is None:
-        try:
-            failed = load(path.parent / 'failed' / path.name)
-        except FileNotFoundError:
-            return None
-        if failed.get('kind') != 'relaunch' or failed.get('seat') != seat:
-            raise ShipError('notice archived request does not name this relaunch seat')
-        return 'retired'
-    return 'pending'
+        return  # no published notice to bind; never invent a settlement
+    if (message.id != notice or message.to != seat or post_notices.held_request(message) != path.stem
+            or state not in ('applied', 'withdrawn', 'retired')):
+        return  # only the service's exact notice about this request can acquire evidence
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode):
+        raise ShipError('notice request is not a regular file')
+    stamp = [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_mode]
+    records = notice_records(runtime, seat)
+    old = records.get(notice)
+    if old is not None and (old['request'], old['state'], old['stamp']) == (path.stem, state, stamp):
+        return
+    records[notice] = dict(request=path.stem, seat=seat, notice=notice, state=state,
+                           at=post.now().isoformat(), stamp=stamp)
+    trusted_files.make(runtime, seat)
+    durable.replace_file(notice_path(runtime, seat), json.dumps(dict(version=1, receipts=records), sort_keys=True)+'\n')
+
+
+def prune_notice_records(runtime, seat, launched, *, records):
+    """Service-only pruning; a canonical later launch already settles every removed notice."""
+    if launched is None:
+        return
+    kept = {key: row for key, row in records.items() if not datetime.fromisoformat(row['at']) < launched}
+    if len(kept) == len(records):
+        return
+    path = notice_path(runtime, seat)
+    if kept:
+        durable.replace_file(path, json.dumps(dict(version=1, receipts=kept), sort_keys=True)+'\n')
+    else:
+        path.unlink()
 
 
 def created(path, data):
@@ -472,13 +501,20 @@ def settle(path, proof, *, clear_claim=False):
     retire(path, clear_claim=clear_claim)
 
 
-def terminal(path, data, proof):
+def terminal(path, data, proof, *, notice_state='retired'):
     """Durable retirement intent, protected from both new and older service replay."""
     durable.replace_file(path.with_suffix('.claimed'), path.read_text())
     meta = metadata(path)
     meta['terminal'] = proof
+    if data.get('kind') == 'relaunch' and meta.get('told'):
+        meta['notice_terminal_state'] = notice_state
     save_metadata(path, meta)
-    settle(path, proof, clear_claim=True)
+    if data.get('kind') == 'relaunch' and meta.get('told'):
+        # A client may withdraw or supersede, but never write trusted completion.
+        # The payload/intent survives acknowledgment until the service finishes it.
+        answer(path, proof)
+    else:
+        settle(path, proof, clear_claim=True)
 
 
 def _retire(runtime, name, reason, identifier=None):
@@ -509,7 +545,7 @@ def _retire(runtime, name, reason, identifier=None):
         raise ShipError(f'no pending request {identifier} for {name}; nothing cancelled')
     for path, data, meta in paths:
         proof = meta.get('terminal') or f'{name}: {data["kind"]} request {path.stem} {reason}; never applied by this request'
-        terminal(path, data, proof)
+        terminal(path, data, proof, notice_state='withdrawn' if reason == 'cancelled' else 'retired')
     return [path.stem for path, _, _ in paths]
 
 

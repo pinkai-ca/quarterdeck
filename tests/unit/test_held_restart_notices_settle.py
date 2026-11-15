@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import post, post_notices, request_queue
+from quarterdeck import post, post_notices, request_queue, ship as shipmod
 from quarterdeck.service import Service
 from tests.unit.test_rebrief_notices_settle import AT, store, launch, reader
 
@@ -26,6 +26,23 @@ def held(store, monkeypatch, *, resume=True, own=True, refused=False):
                       'refused: synthetic ended turn held' if refused else None)
     request_queue.save_metadata(path, meta)
     return path, store.get(meta['told'])
+
+
+def service_for(store, proof='reader: restarted in synthetic pane'):
+    service = object.__new__(Service)
+    service.runtime = store.dir.parent.parent
+    service.ship = shipmod.load(service.runtime.parent)
+    service.store = store
+    service.answer = lambda data: proof
+    service.log = lambda *args, **kwargs: None
+    return service
+
+
+def finish(store, path, proof='reader: restarted in synthetic pane'):
+    service = service_for(store, proof)
+    assert Service._requests(service, (path,)) is True
+    assert not path.exists()
+    return service
 
 
 @pytest.mark.parametrize('resume', [True, False])
@@ -49,11 +66,16 @@ def test_completed_request_notice_is_history_and_not_carried(store, monkeypatch,
     path, message = held(store, monkeypatch)
     before = (store.dir / (message.id + '.json')).read_bytes()
     if ending == 'applied':
-        request_queue.settle(path, 'reader: restarted in synthetic pane')
+        finish(store, path)
     elif ending == 'withdrawn':
         request_queue.cancel(store.dir.parent.parent, 'reader', path.stem)
     else:
         request_queue.terminal(path, request_queue.load(path), 'reader: request retired without applying')
+    if ending != 'applied':
+        assert message.id not in store.settled_notices('reader')
+        finish(store, path)
+    receipt = request_queue.notice_records(store.dir.parent.parent, 'reader')[message.id]
+    assert receipt['state'] == {'applied': 'applied', 'withdrawn': 'withdrawn', 'retired': 'retired'}[ending]
     settled = store.settled_notices('reader')
     assert settled[message.id] == 'held restart: settled by completion of its request'
     assert post.Attempts(store.dir.parent.parent).undelivered(store, 'reader') == []
@@ -84,7 +106,7 @@ def test_absence_without_record_is_not_completion(store, monkeypatch):
     path, message = held(store, monkeypatch)
     path.unlink()
     request_queue.clear_metadata(path)
-    assert request_queue.notice_state(store.dir.parent.parent, path.stem, 'reader') is None
+    assert request_queue.notice_state(store.dir.parent.parent, path.stem, 'reader', message.id) is None
     assert message.id not in store.settled_notices('reader')
 
 
@@ -101,7 +123,7 @@ def test_near_form_remains_deliverable(store, monkeypatch, change):
     path, original = held(store, monkeypatch)
     message = replace(change(original), id='rep-synthetic-nearform')
     store.write(message)
-    request_queue.settle(path, 'reader: request ended')
+    finish(store, path, 'reader: request ended')
     assert post_notices.held_request(message) is None
     assert message in post.Attempts(store.dir.parent.parent).undelivered(store, 'reader')
 
@@ -114,35 +136,72 @@ def aged_clock(monkeypatch):
 def test_quiet_pass_reads_no_request_record_and_next_change_is_seen(store, monkeypatch):
     path, message = held(store, monkeypatch)
     aged_clock(monkeypatch)
-    original = request_queue.notice_state
+    original = request_queue.notice_records
     calls = []
 
     def read(*args):
         calls.append(args)
         return original(*args)
 
-    monkeypatch.setattr(request_queue, 'notice_state', read)
+    monkeypatch.setattr(request_queue, 'notice_records', read)
     assert message.id not in store.settled_notices('reader')
     assert len(calls) == 1
     assert message.id not in store.settled_notices('reader')
     assert len(calls) == 1
-    request_queue.settle(path, 'reader: request ended')
+    finish(store, path, 'reader: request ended')
     assert message.id in store.settled_notices('reader')
     assert len(calls) == 2
     assert message.id in store.settled_notices('reader')
     assert len(calls) == 2
 
 
-def test_young_or_unreadable_request_is_not_cached(store, monkeypatch):
+def test_young_or_unreadable_receipt_is_not_cached(store, monkeypatch):
     path, message = held(store, monkeypatch)
-    original = request_queue.notice_state
+    finish(store, path)
+    original = request_queue.notice_records
     calls = []
-    monkeypatch.setattr(request_queue, 'notice_state', lambda *args: calls.append(args) or original(*args))
-    assert message.id not in store.settled_notices('reader')
-    assert message.id not in store.settled_notices('reader')
+    monkeypatch.setattr(request_queue, 'notice_records', lambda *args: calls.append(args) or original(*args))
+    assert message.id in store.settled_notices('reader')
+    assert message.id in store.settled_notices('reader')
     assert len(calls) == 2
-    path.write_text('{incomplete')
+    request_queue.notice_path(store.dir.parent.parent, 'reader').write_text('{incomplete')
     aged_clock(monkeypatch)
     assert message.id not in store.settled_notices('reader')
     assert message.id not in store.settled_notices('reader')
     assert len(calls) == 4
+
+
+def test_service_down_intent_stays_unsettled_and_reader_grows_nothing(store, monkeypatch):
+    path, message = held(store, monkeypatch)
+    request_queue.cancel(store.dir.parent.parent, 'reader', path.stem)
+    assert path.exists() and request_queue.metadata(path)['notice_terminal_state'] == 'withdrawn'
+    before = {str(p.relative_to(path.parent.parent)): p.read_bytes()
+              for p in path.parent.parent.rglob('*') if p.is_file()}
+    for _ in range(3):
+        assert message.id not in store.settled_notices('reader')
+    after = {str(p.relative_to(path.parent.parent)): p.read_bytes()
+             for p in path.parent.parent.rglob('*') if p.is_file()}
+    assert before == after
+    assert not request_queue.notice_path(store.dir.parent.parent, 'reader').exists()
+
+
+def test_acknowledgment_preserves_receipt_then_later_launch_prunes_it(store, monkeypatch):
+    path, message = held(store, monkeypatch)
+    service = finish(store, path)
+    receipt = request_queue.notice_records(service.runtime, 'reader')[message.id]
+    assert receipt['request'] == path.stem and receipt['seat'] == 'reader' and receipt['notice'] == message.id
+    assert receipt['state'] == 'applied' and len(receipt['stamp']) == 6
+    path.with_suffix('.done').unlink()
+    request_queue.acknowledged(path)
+    assert message.id in store.settled_notices('reader')
+    launch(store, message.at + timedelta(seconds=1))
+    Service.prune_request_notices(service)
+    assert not request_queue.notice_path(service.runtime, 'reader').exists()
+    assert store.settled_notices('reader')[message.id] == 'held restart: settled by a later launch'
+
+
+def test_request_without_told_does_not_acquire_a_receipt(store, monkeypatch):
+    runtime = store.dir.parent.parent
+    path = request_queue.enqueue(runtime, 'relaunch', {'seat': 'reader', 'resume': True}, name=STEM)
+    finish(store, path)
+    assert not request_queue.notice_path(runtime, 'reader').exists()

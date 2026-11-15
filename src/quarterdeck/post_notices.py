@@ -126,14 +126,20 @@ def launched_at(runtime, seat, *, cache=None):
 
 
 
-def request_state(runtime, identifier, seat, *, cache):
-    """Use the queue's own record API under the launch cache's same tick rule."""
+def request_records(runtime, seat, *, cache):
+    """The queue's trusted record API, under the launch cache's same tick rule."""
+    from . import request_queue
+    return _observed(cache.requests, seat,
+                     lambda: request_queue.notice_stamp(runtime, seat),
+                     lambda: request_queue.notice_records(runtime, seat))
+
+
+def request_state(runtime, identifier, seat, notice, *, cache):
     from . import request_queue
     from .ship import ShipError
     try:
-        return _observed(cache.requests, (identifier, seat),
-                         lambda: request_queue.notice_stamp(runtime, identifier),
-                         lambda: request_queue.notice_state(runtime, identifier, seat))
+        records = request_records(runtime, seat, cache=cache)
+        return request_queue.notice_state(runtime, identifier, seat, notice, records=records)
     except (OSError, ValueError, TypeError, ShipError):
         return None
 
@@ -170,7 +176,7 @@ def settled(store, seat, *, brief_at=None):
     for message, request in held:
         if launch is not None and message.at < launch:
             result[message.id] = 'held restart: settled by a later launch'
-        elif request_state(store.dir.parent.parent, request, seat, cache=cache) in ('completed', 'retired'):
+        elif request_state(store.dir.parent.parent, request, seat, message.id, cache=cache) in ('applied', 'withdrawn', 'retired'):
             result[message.id] = 'held restart: settled by completion of its request'
     # A saved group/cascade terminal notice has no further duty after its own
     # root is closed. An arbitrary report on a closed root proves no such thing.

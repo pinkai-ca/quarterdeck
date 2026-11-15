@@ -1108,6 +1108,7 @@ class Service:
                             margin_ns=post.POST_TIMESTAMP_TICK_NS)
                     request_queue.save_metadata(path, meta)  # intent precedes log, answer and retirement
                     self.log_claim_settlement(path, data, meta)
+                    Service.complete_request_notice(self, path, data, meta, meta['terminal'])
                     request_queue.settle(path, meta['terminal'], clear_claim=True)
                 except FileNotFoundError:
                     continue
@@ -1123,6 +1124,7 @@ class Service:
         again; its error is raised once every other request has had its answer, and the tick logs it.
         """
         from . import request_queue
+        Service.prune_request_notices(self)
         self._requests(path for path in request_queue.arrival_paths(self.runtime) if path is not None)
 
     def _requests(self, paths, *, kinds=None) -> bool:
@@ -1153,6 +1155,7 @@ class Service:
                             raise ShipError('request retirement intent unknown; retained')
                         if meta.get('settlement') == 'service-restarted':
                             self.log_claim_settlement(path, data, meta)
+                        Service.complete_request_notice(self, path, data, meta, meta['terminal'])
                         request_queue.settle(path, meta['terminal'], clear_claim=True)
                         continue  # recover cancellation/supersession without ever dispatching it
                     data = request_queue.load(path)
@@ -1203,6 +1206,7 @@ class Service:
                     retired = meta.get('retired')
                     if retired:
                         answer += f'; retired pending relaunch request(s): {", ".join(retired)}'
+                    Service.complete_request_notice(self, path, data, meta, answer)
                     request_queue.answer(path, answer)
                     self.log("request", **data, answer=answer)
                     request_queue.retire(path)
@@ -1230,6 +1234,40 @@ class Service:
             raise retry[0]
         return True
 
+    def complete_request_notice(self, path, data, meta, proof):
+        """Only the service promotes a told relaunch's terminal intent to trusted evidence."""
+        if data.get('kind') != 'relaunch' or not meta.get('told'):
+            return
+        from . import request_queue
+        state = meta.get('notice_terminal_state')
+        if state is None:
+            state = 'retired' if proof.startswith(('refused:', 'failed:', 'settled without applying:')) else 'applied'
+        meta['terminal'], meta['notice_terminal_state'] = proof, state
+        try:
+            request_queue.save_metadata(path, meta)  # a receipt retry must never dispatch the act again
+            request_queue.record_notice_completion(path, data, meta, state)
+        except (OSError, ValueError, TypeError, ShipError):
+            raise request_queue.RequestHold('notice-receipt', 'trusted request receipt unavailable; terminal intent retained') from None
+
+    def prune_request_notices(self):
+        """After a later canonical launch, terminal receipts no longer carry any evidence."""
+        from . import post_notices, request_queue
+        store = getattr(self, 'store', None)
+        if store is None:
+            return
+        cache = getattr(store, '_notice_launch_cache', None)
+        if cache is None:
+            cache = store._notice_launch_cache = post_notices._LaunchCache()
+        for name in getattr(getattr(self, 'ship', None), 'seats', {}):
+            try:
+                if request_queue.notice_stamp(self.runtime, name) == (None,):
+                    continue
+                records = post_notices.request_records(self.runtime, name, cache=cache)
+                launched = post_notices.launched_at(self.runtime, name, cache=cache)
+                request_queue.prune_notice_records(self.runtime, name, launched, records=records)
+            except (OSError, ValueError, TypeError, ShipError) as error:
+                self.log('error', step='request-notice-prune', seat=name, error=type(error).__name__)
+
     def clear_request_claim(self, claim: Path) -> None:
         claim.unlink(missing_ok=True)
 
@@ -1238,6 +1276,13 @@ class Service:
         claim = path.with_suffix(".claimed")
         if not claim.exists():
             durable.replace_file(claim, path.read_text())  # malformed input also leaves the active queue on a terminal error
+        from . import request_queue
+        try:
+            data, meta = request_queue.load(path), request_queue.metadata(path)
+        except (OSError, ValueError, TypeError, ShipError):
+            pass  # unreadable request evidence grants no notice settlement
+        else:
+            Service.complete_request_notice(self, path, data, meta, 'failed: ' + type(error).__name__)
         kept = path.parent / "failed" / path.name
         self.log("error", step="requests", request=path.name, error=repr(error), trace=traceback.format_exc())
         try:
