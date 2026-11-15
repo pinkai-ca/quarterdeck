@@ -16,7 +16,7 @@ class Hold:
 NO_RECORD = 'no record yet: nothing has run'
 
 
-RECORD, RECORD_AND_SCREEN = 'record', 'record and screen'
+RECORD, RECORD_AND_SCREEN, RECORD_AND_WORD = 'record', 'record and screen', 'record and its own word'
 
 
 class _Pair(NamedTuple):
@@ -177,8 +177,7 @@ def second(seat, state: State, hold: Hold, *, explicit=False, screen=None):
         # does not answer or a line it cannot parse is that wrapper's own error. It never leaves the proof and it
         # is never rest: the record's unknown stands.
         return unknown('its screen could not be read')
-    if (screen is None or screen.box != '' or screen.working is not False or screen.queued
-            or screen.unknown or screen.interruption or screen.starting or screen.fresh):
+    if not at_rest(screen):
         return unknown('its screen is not the composer at rest')
     names = seat.harness.background(screen, version)
     if names is None:
@@ -191,6 +190,44 @@ def second(seat, state: State, hold: Hold, *, explicit=False, screen=None):
     if names == WATCH_ALONE:
         saw += ', not proved to be its inbox watch alone'
     return state, Hold('tools-pending', f'tools pending: its screen shows {saw}'), saw
+
+
+def at_rest(screen) -> bool:
+    """The door's own reading of a composer at rest: its box read and empty, and nothing else on the screen."""
+    return not (screen is None or screen.box != '' or screen.working is not False or screen.queued
+                or screen.unknown or screen.interruption or screen.starting or screen.fresh)
+
+
+BOX = Hold('box', 'the box is not proved empty and idle')
+
+
+def release(seat, state: State | None, hold: Hold | None, asked) -> Hold | None:
+    """The seat's own word, where neither its record nor its screen settles what it has running.
+
+    ``asked`` is when the seat itself, proved as its own request is proved, said that what it has running may
+    be lost. Returns the hold that still stands, or None. Only a hold of the tool state is the seat's to lift,
+    since only what it started is its own to give up. The word covers what runs at the end of the turn it was
+    given in and no more: the record must show that turn ended, timed, spanning the moment of asking, with no
+    input since, an error-free empty queue and the input's completion, and the door must read the composer at
+    rest. A word given in an earlier turn than the one that last ended lifts nothing, and neither does one
+    whose time is unknown.
+    """
+    if (hold is None or hold.dimension not in ('tools-unknown', 'tools-pending') or state is None
+            or asked is None or asked.tzinfo is None):
+        return hold
+    if check(replace(state, pending_tools=(), active_tools=()), explicit=True) is not None:
+        return hold  # the turn, the queue and the completion are never the seat's to release
+    ending = state.completed_turns[-1] if state.completed_turns else None
+    if (ending is None or not ending.timed or ending.started is None or ending.ended is None
+            or not ending.started <= asked <= ending.ended
+            or state.last_input_at is None or state.last_input_at > asked):
+        return hold  # the turn that last ended is not the one the word was given in
+    from .door import Door
+    try:
+        screen = Door(seat).screen()
+    except OSError:
+        return BOX
+    return None if at_rest(screen) else BOX
 
 
 def reading(seat, *, explicit=False, relaunch=False):

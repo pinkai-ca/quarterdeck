@@ -145,9 +145,15 @@ def build_parser() -> argparse.ArgumentParser:
     p = verb("restart", cmd_restart, "relaunch a seat with resume: the conversation continues")
     p.add_argument("seat", nargs="?", help="default: this seat (QD_SEAT)")
     p.add_argument('--cancel', nargs='?', const='*', metavar='REQUEST', help='cancel this request id, or all pending relaunches of the seat')
+    p.add_argument('--release', action='store_true',
+                   help="the seat's own word, for its own request alone: apply at the end of this turn without "
+                        "waiting for what the seat has running, which is lost")
     p = verb("fresh", cmd_fresh, "relaunch a seat without resume: a new conversation, briefed, with its open messages")
     p.add_argument("seat", nargs="?", help="default: this seat (QD_SEAT)")
     p.add_argument('--cancel', nargs='?', const='*', metavar='REQUEST', help='cancel this request id, or all pending relaunches of the seat')
+    p.add_argument('--release', action='store_true',
+                   help="the seat's own word, for its own request alone: apply at the end of this turn without "
+                        "waiting for what the seat has running, which is lost")
     p = verb('fresh-ready', cmd_fresh_ready, 'attest a natural break with an open handoff, or cancel prepared readiness')
     p.add_argument('seat', nargs='?', help='default: this seat; outside-seat cancellation is supported')
     p.add_argument('--request')
@@ -403,11 +409,13 @@ def cmd_attach(args: argparse.Namespace) -> None:
 
 
 def cmd_restart(args: argparse.Namespace) -> str:
-    return relaunch(load_ship(args), args.seat, resume=True, cancel=getattr(args, 'cancel', None))
+    return relaunch(load_ship(args), args.seat, resume=True, cancel=getattr(args, 'cancel', None),
+                    release=getattr(args, 'release', False))
 
 
 def cmd_fresh(args: argparse.Namespace) -> str:
-    return relaunch(load_ship(args), args.seat, resume=False, cancel=getattr(args, 'cancel', None))
+    return relaunch(load_ship(args), args.seat, resume=False, cancel=getattr(args, 'cancel', None),
+                    release=getattr(args, 'release', False))
 
 
 @lifecycle.explicit()
@@ -427,19 +435,24 @@ def cmd_fresh_ready(args: argparse.Namespace) -> str:
 
 
 @lifecycle.explicit()
-def relaunch(ship: shipmod.Ship, name: str | None, resume: bool, cancel=None) -> str:
-    """Retain known-idle manual recovery; working seats use the service's queued proof."""
+def relaunch(ship: shipmod.Ship, name: str | None, resume: bool, cancel=None, release=False) -> str:
+    """Retain known-idle manual recovery; working seats use the service's queued proof. ``release`` is the
+    seat's own word that what it has running may be lost: only the seat itself can give it, for itself."""
     from . import request_queue
     target = this_seat(ship, name)
     if cancel is not None:
         return request_queue.cancel(ship.runtime, target, None if cancel == '*' else cancel)
     seat = seat_of(ship, target)
+    if release and os.environ.get('QD_SEAT') != seat.name:
+        raise ShipError(f"--release is {seat.name}'s own word: only {seat.name} itself can release what it has "
+                        'running; nothing asked')
+    word = dict(release=True) if release else {}
     from . import write_bound
     write_bound.lift(ship.runtime, seat.name, f"qd {'restart' if resume else 'fresh'} by {caller_of(ship)}")
     if not resume:
         relaunch_intent.clear(ship.runtime, seat.name, f'qd fresh by {caller_of(ship)}')  # the person's own relaunch
     if seat.is_working():
-        return service.request(ship.runtime, 'relaunch', seat=seat.name, resume=resume,
+        return service.request(ship.runtime, 'relaunch', seat=seat.name, resume=resume, **word,
                                caller=os.environ.get('QD_SEAT'), origin=request_queue.launch_binding(seat))
     kind = 'restart' if resume else 'fresh'
     with request_queue.direct(ship.runtime, seat.name, kind) as retired:
@@ -455,7 +468,7 @@ def relaunch(ship: shipmod.Ship, name: str | None, resume: bool, cancel=None) ->
         return proof + suffix
     # The existing working guard is rechecked after writer coordination, so
     # waiting for that lock never turns a direct act into an unexamined restart.
-    return service.request(ship.runtime, 'relaunch', seat=seat.name, resume=resume,
+    return service.request(ship.runtime, 'relaunch', seat=seat.name, resume=resume, **word,
                            caller=os.environ.get('QD_SEAT'), origin=request_queue.launch_binding(seat)) + suffix
 
 

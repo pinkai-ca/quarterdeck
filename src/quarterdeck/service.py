@@ -1147,6 +1147,7 @@ class Service:
                         if isinstance(data, dict) and data.get("kind") == "rebrief":
                             raise  # an immutable notice conflict must retain the rebrief's durable baseline/notices
                         answer = f"refused: {error}"  # a refusal is an answer: its asker reads why
+                    self.tell_held(data, meta, answer)
                     if answer is None:
                         if isinstance(data, dict) and data.get('kind') in request_queue.SEAT_KINDS:
                             dimension, reason = self.request_wait or ('unknown', 'service decision unknown')
@@ -1275,6 +1276,35 @@ class Service:
             return self.select(seat, str(data["pool"]))
         return f"unknown request {kind!r}"
 
+    def tell_held(self, data, meta, answer) -> None:
+        """Tell a seat once, through the post, that a relaunch of it stops at its tool state, and what its own
+        word does. Where neither its record nor its screen settles what it has running, the seat itself is the
+        one that knows: it lets that end or stops it, or it releases it. A report from the ship, never an
+        obligation; one for each request, whether the request still waits or was retired at its turn's end."""
+        wait = getattr(self, 'request_wait', None)
+        if (not isinstance(data, dict) or data.get('kind') != 'relaunch' or meta.get('told')
+                or not isinstance(wait, tuple) or wait[0] not in ('tools-unknown', 'tools-pending')
+                or not isinstance(data.get('seat'), str)):
+            return
+        seat, own = data['seat'], meta.get('caller') == data['seat']
+        if answer is not None and not (own and answer.startswith('refused:')):
+            return  # applied, or refused to another asker, who has the answer
+        verb, name = ('restart', 'restart') if data.get('resume') else ('fresh', 'fresh start')
+        word = f'give your own word as the last act of a turn: qd {verb} {seat} --release'
+        if answer is not None:
+            said = (f'your own {name} was not applied: your turn ended with it held · {wait[1]} · ask again once '
+                    f'that has ended; or, losing what you have running, {word}')
+        else:
+            head = (f'your own {name} waits' if own else
+                    f"a {name} of this seat, asked by {meta.get('caller') or 'the operator'}, waits")
+            said = (f'{head} · {wait[1]} · it applies once that has ended; to apply it without waiting, losing '
+                    f'what you have running, {word}')
+        try:
+            store = getattr(self, 'store', None) or Store(self.runtime)
+            meta['told'] = store.new('report', post.SHIP, seat, said).id
+        except (OSError, ShipError) as error:
+            self.log('error', step='tell-held', seat=seat, error=repr(error))
+
     def relaunch_request(self, data):
         """The person's later input retires an own restart; framework work waits for the next quiet break.
 
@@ -1289,8 +1319,9 @@ class Service:
         origin = request_queue.launch_binding(seat)
         if data.get('origin') is not None and data['origin'] != origin:
             return f'refused: {seat.name} launch changed; request retired without applying'
+        released = self.released_at(seat, data, origin)
         if not seat.session.human:
-            return self.relaunch(seat, bool(data['resume']))
+            return self.relaunch(seat, bool(data['resume']), released=released)
         pane = seat.pane()
         if pane is None or pane.dead:
             return self.relaunch(seat, bool(data['resume']))
@@ -1307,7 +1338,7 @@ class Service:
             return self.relaunch(seat, bool(data['resume']), reading=proved)
         own = request_queue.proved_own(seat.name, data, origin)
         if own and not data['resume'] and asked.tzinfo is not None:
-            handed = self.handoff_fresh(seat, asked, proved)
+            handed = self.handoff_fresh(seat, asked, proved, released=released)
             if handed is not OWN_TURN_RULE:
                 return handed
         if data.get('caller') == seat.name and asked.tzinfo is not None and asked <= post.now():
@@ -1318,7 +1349,7 @@ class Service:
                 self.request_wait = self.handoff_quiet(seat, state, hold)
                 if self.request_wait is not None:
                     return None
-                return self.relaunch(seat, bool(data['resume']), reading=proved)
+                return self.relaunch(seat, bool(data['resume']), reading=proved, released=released)
         if (state is None or state.last_input_at is None or asked.tzinfo is None
                 or state.last_input_at.tzinfo is None or state.last_input_at > asked or asked > post.now()):
             return f'refused: {seat.name} asking turn unknown or superseded by later input; no deferred restart'
@@ -1351,7 +1382,7 @@ class Service:
         if (ending is None or not ending.timed or ending.started is None or ending.ended is None
                 or not ending.started <= asked <= ending.ended):
             return f'refused: {seat.name} exact asking-turn end not proved; no deferred restart'
-        answer = self.relaunch(seat, bool(data['resume']), reading=proved)
+        answer = self.relaunch(seat, bool(data['resume']), reading=proved, released=released)
         return answer if answer is not None else f'refused: {seat.name} asking turn ended with {(self.request_wait or (None, "idle proof unknown"))[1]}; request retired, never applied at a later turn'
 
     def relaunch_person_input(self, seat):
@@ -1367,7 +1398,21 @@ class Service:
                       for form in post.delivered_forms(message)))
         return person_quiet.read(seat, post.now(), excluded=excluded)
 
-    def handoff_fresh(self, seat: Seat, asked: datetime, reading):
+    @staticmethod
+    def released_at(seat: Seat, data: dict, origin) -> datetime | None:
+        """When the seat itself released what it has running, or None. Only the seat's own request can: one that
+        names the seat as its caller with the proof enqueue made, for the launch it still runs. The flag of any
+        other request, and one whose asking time is unreadable, releases nothing."""
+        from . import request_queue
+        if data.get('release') is not True or not request_queue.proved_own(seat.name, data, origin):
+            return None
+        try:
+            asked = datetime.fromisoformat(data['created_at'])
+        except (KeyError, TypeError, ValueError):
+            return None
+        return asked if asked.tzinfo is not None else None
+
+    def handoff_fresh(self, seat: Seat, asked: datetime, reading, *, released=None):
         """A human seat's own fresh start, asked once it has an open handoff to itself, applies at its next quiet
         moment. What reaches it later, a delivery or the program's own notice, is carried into the fresh start as
         an open message and never retires the request; the person's own input does. Where no such handoff was
@@ -1399,7 +1444,7 @@ class Service:
         self.request_wait = self.handoff_quiet(seat, state, hold)
         if self.request_wait is not None:
             return None  # a turn, a queued input, an unconfirmed delivery or the box: the next quiet moment
-        return self.relaunch(seat, False, reading=reading)  # its own hold, if any, also waits
+        return self.relaunch(seat, False, reading=reading, released=released)  # its own hold, if any, also waits
 
     def handoff_quiet(self, seat: Seat, state, hold) -> tuple[str, str] | None:
         """Why this is not yet a quiet moment for a fresh start that carries every delivery, or None."""
@@ -1423,8 +1468,10 @@ class Service:
             return ('box', 'the box is not proved empty and idle')
         return None
 
-    def relaunch(self, seat: Seat, resume: bool, *, reading=None) -> str | None:
-        """Explicit recovery alone may interrupt a proven question-only wait."""
+    def relaunch(self, seat: Seat, resume: bool, *, reading=None, released=None) -> str | None:
+        """Explicit recovery alone may interrupt a proven question-only wait. ``released`` is when the seat
+        itself released what it has running, by its own proved request: it lifts a hold of the tool state alone,
+        at the end of the turn it was given in."""
         if reason := recovery.held(seat):
             if self is not None:
                 self.request_wait = ('recovery', reason)
@@ -1435,16 +1482,23 @@ class Service:
             proved = reading if reading is not None else idle.reading(seat, explicit=True, relaunch=True)
             state, hold = proved
             if state is None or not seat.harness.waiting_for_human(state):
+                witness = getattr(proved, 'witness', idle.RECORD)
+                if hold is not None and released is not None:
+                    hold = idle.release(seat, state, hold, released)
+                    witness = idle.RECORD_AND_WORD if hold is None else witness
                 if hold is not None:
                     if self is not None:
                         self.request_wait = (hold.dimension, hold.reason)
                     return None  # deferred-request answers/lifetime are separate; the reason is shared
-                witness = getattr(proved, 'witness', idle.RECORD)
         from . import relaunch_intent
         with relaunch_intent.section(self, seat, 'relaunch', resume=resume):
             proof = seat.restart() if resume else seat.fresh()
         # The proof line says which witness settled the tool state where the record alone could not.
-        return f'{proof}\nat rest by its record and its screen' if witness == idle.RECORD_AND_SCREEN else proof
+        if witness == idle.RECORD_AND_SCREEN:
+            return f'{proof}\nat rest by its record and its screen'
+        if witness == idle.RECORD_AND_WORD:
+            return f'{proof}\nat rest by its record and its own word: what it had running was released'
+        return proof
 
     def control(self, seat: Seat, name: str, value: str) -> str | None:
         """Apply a control by its in-session form, through the door, when the seat is idle."""
