@@ -141,6 +141,7 @@ Bring the crew up, and down:
 qd up      # start the service and the agents, each resuming its conversation if it has one
 qd attach  # open the crew in this terminal; qd --ship <office folder> attach opens your office
 qd down    # end every agent and the service; qd down captain ends one
+qd init    # bring your office's desk up again; qd up and qd down act on the crew's ship
 ```
 
 Give work, and follow it:
