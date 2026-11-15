@@ -1147,7 +1147,7 @@ class Service:
                         if isinstance(data, dict) and data.get("kind") == "rebrief":
                             raise  # an immutable notice conflict must retain the rebrief's durable baseline/notices
                         answer = f"refused: {error}"  # a refusal is an answer: its asker reads why
-                    self.tell_held(data, meta, answer)
+                    Service.tell_held(self, data, meta, answer)  # by the class: a stand-in service has no method of its own
                     if answer is None:
                         if isinstance(data, dict) and data.get('kind') in request_queue.SEAT_KINDS:
                             dimension, reason = self.request_wait or ('unknown', 'service decision unknown')
