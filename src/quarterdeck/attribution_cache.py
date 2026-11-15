@@ -24,11 +24,11 @@ class TurnIntervals:
     """
 
     def __init__(self, rows):
-        intervals = [(moment(row['started']), moment(row['ended'])) for row in rows]
-        closed = [(start, end) for start, end in intervals
+        intervals = [(row, moment(row['started']), moment(row['ended'])) for row in rows]
+        self.closed = [(row, start, end) for row, start, end in intervals
                   if start is not None and end is not None and start <= end]
-        self.starts = sorted(start for start, _ in closed)
-        self.ends = sorted(end for _, end in closed)
+        self.starts = sorted(start for _, start, _ in self.closed)
+        self.ends = sorted(end for _, _, end in self.closed)
 
     def count(self, at):
         at = moment(at)
@@ -46,25 +46,63 @@ class ReplayBounds:
     """
 
     def __init__(self, by_seat, graph):
-        self.intervals = {seat: TurnIntervals(rows) for seat, rows in by_seat.items()}
-        posts = defaultdict(set)
-        for message in graph.messages:
-            if (at := moment(message.at)) is not None and graph.valid(message):
-                posts[message.sender].add(at)
-        self.posts = {seat: sorted(times) for seat, times in posts.items()}
+        self.by_seat, self.graph = by_seat, graph
+        self.intervals, self.keys = {}, {}
+        # Threads is an immutable message snapshot (its own scope index has the
+        # same lifetime). A changed Store snapshot creates a different graph.
+        if not hasattr(graph, '_replay_post_times'):
+            posts = defaultdict(set)
+            for message in graph.messages:
+                if (at := moment(message.at)) is not None and graph.valid(message):
+                    posts[message.sender].add(at)
+            graph._replay_post_times = {seat: sorted(times) for seat, times in posts.items()}
+            graph._replay_scope_keys = {}
+        self.posts = graph._replay_post_times
 
-    def posted_overlap(self, seat, at):
-        return self.intervals[seat].count(at) > 1
+    def prepare(self, seat):
+        """One closed-interval index and post-overlap vector per seat/job.
 
-    def key(self, seat, turns):
-        own = [row for row in turns if row['seat'] == seat]
-        posts, selected = self.posts.get(seat, ()), set()
-        for row in own:
-            start, end = moment(row['started']), moment(row['ended'])
-            if start is not None and end is not None and start <= end:
-                selected.update(posts[bisect_left(posts, start):bisect_right(posts, end)])
-        overlap = [(at.isoformat(), self.posted_overlap(seat, at)) for at in sorted(selected)]
-        return hashlib.sha256(json.dumps([own, overlap], sort_keys=True).encode()).hexdigest()
+        Build all record keys in that one pass. Record visits only look them up;
+        they never rebuild intervals, recount post overlaps or parse bounds.
+        """
+        if seat in self.keys:
+            return
+        rows = self.by_seat[seat]
+        index = self.intervals[seat] = TurnIntervals(rows)
+        posts = self.posts.get(seat, ())
+        overlap = [json.dumps((at.isoformat(), index.count(at) > 1)).encode() for at in posts]
+        own, selected = defaultdict(list), defaultdict(set)
+        for row in rows:
+            own[row['record']].append((row['turn'], row['started'], row['ended']))
+        for row, start, end in index.closed:
+            selected[row['record']].update(range(bisect_left(posts, start), bisect_right(posts, end)))
+        keys = {}
+        for record, turns in own.items():
+            digest = hashlib.sha256(json.dumps((record, seat, turns)).encode())
+            for i in sorted(selected[record]):
+                digest.update(overlap[i])
+            keys[record] = digest.hexdigest()
+        self.keys[seat] = keys
+
+    def key(self, seat, record):
+        self.prepare(seat)
+        return self.keys[seat][record]
+
+    def intervals_for(self, seat):
+        self.prepare(seat)
+        return self.intervals[seat]
+
+    def scope(self, seat, ended):
+        # Post scope is a pure function of this immutable graph and time, not
+        # ledger rows or speculative writes. Reuse it across worker jobs. Bound
+        # the cache even when a long-lived graph sees ever newer turn endings.
+        cache, key = self.graph._replay_scope_keys, (seat, ended)
+        if key not in cache:
+            value = self.graph.scope(seat, ended)
+            if len(cache) >= 8192:
+                cache.clear()
+            cache[key] = value
+        return cache[key]
 
 
 def source_evidence(source):
@@ -180,7 +218,7 @@ class Attribution:
                     ended = max((end for end in ends if end is not None), default=None)
                     # A record can contain several established seat identities.
                     seats = sorted({row['seat'] for row in by_record[record]})
-                    scope = [(seat, bounds.key(seat, by_record[record]), graph.scope(seat, ended)) for seat in seats]
+                    scope = [(seat, bounds.key(seat, record), bounds.scope(seat, ended)) for seat in seats]
                     evidence = hashlib.sha256(json.dumps([reader_keys[reader], stamp, sorted(names), scope]).encode()).hexdigest()
                     old = self.db.execute('SELECT evidence FROM attribution_records WHERE record=?', (record,)).fetchone()
                     if record not in invalid_records and old == (evidence,):
@@ -284,7 +322,7 @@ class Attribution:
                 stamp = (reader, record_fingerprint(Path(record)))
                 ends = [moment(row['ended']) for row in turns]
                 ended = max((end for end in ends if end is not None), default=None)
-                scope = [(seat, bounds.key(seat, turns), graph.scope(seat, ended)) for seat in owners]
+                scope = [(seat, bounds.key(seat, record), bounds.scope(seat, ended)) for seat in owners]
                 if reader_keys.get(reader) is not None and stamp[1][0][0]:
                     certificate = hashlib.sha256(json.dumps([reader_keys[reader], stamp, sorted(names), scope]).encode()).hexdigest()
                     old = self.db.execute('SELECT evidence FROM attribution_records WHERE record=?', (record,)).fetchone()
@@ -337,7 +375,7 @@ class Attribution:
                 received = [dict(item, retained=True) for item in json.loads(old[1])]
         received = list({json.dumps(e, sort_keys=True):e for e in received}.values())
         verdict = graph.decide(row['seat'], row['started'], row['ended'], received, error)
-        intervals = bounds.intervals[row['seat']] if bounds is not None else TurnIntervals(by_seat[row['seat']])
+        intervals = bounds.intervals_for(row['seat']) if bounds is not None else TurnIntervals(by_seat[row['seat']])
         posted_overlap = any(e['route'] == 'posted' and intervals.count(e['at']) > 1 for e in verdict.evidence)
         if posted_overlap:
             verdict = Verdict('unresolved', verdict.orders, 'posted message overlaps recorded turn intervals', verdict.evidence)

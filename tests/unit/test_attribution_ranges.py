@@ -8,10 +8,10 @@ from types import SimpleNamespace
 import pytest
 
 from quarterdeck import harness
-from quarterdeck.attribution_cache import TurnIntervals
+from quarterdeck.attribution_cache import ReplayBounds, TurnIntervals
 from quarterdeck.harness import reader_stamp
 from quarterdeck.ledger import Ledger
-from quarterdeck.order_attribution import moment
+from quarterdeck.order_attribution import Threads, moment
 from quarterdeck.post_message import Message
 
 
@@ -63,7 +63,7 @@ class History:
                                      ORIGIN + timedelta(minutes=minute), 'Ordinary progress',
                                      re='ord-ordinary-work'))
 
-    def replay(self, *, full=False):
+    def replay(self, *, full=False, graph=None):
         if full:
             self.book.db.execute('DELETE FROM attribution_records')
             self.cache.sources.clear()
@@ -72,7 +72,7 @@ class History:
         self.visits.clear()
         if self.mode == 'stream':
             self.cache.replay_stream(self.store, self.root, 'ordinary-framework',
-                                     lambda *args: None, lambda: None)
+                                     lambda *args: None, lambda: None, graph=graph)
         else:
             self.cache.replay(self.store, self.root, framework='ordinary-framework')
         return list(dict.fromkeys(self.visits))
@@ -212,3 +212,66 @@ def test_interval_index_equals_the_original_closed_interval_predicate():
         expected = sum(moment(row['started']) is not None and moment(row['ended']) is not None
                        and moment(row['started']) <= point <= moment(row['ended']) for row in rows)
         assert intervals.count(point) == expected
+
+
+def test_post_overlaps_and_record_keys_are_prepared_once_per_seat(monkeypatch):
+    rows = [dict(record=f'ordinary-{i}', turn=1, seat='builder', started=at(i * 20), ended=at(i * 20 + 10))
+            for i in range(128)]
+    messages = [Message(f'ans-ordinary-{i}', 'answer', 'builder', 'supervisor',
+                        ORIGIN + timedelta(minutes=i * 20 + 5), 'Ordinary progress') for i in range(128)]
+    graph = Threads(SimpleNamespace(all=lambda: messages))
+    calls, count = [], TurnIntervals.count
+    def counted(self, point):
+        calls.append(point)
+        return count(self, point)
+    monkeypatch.setattr(TurnIntervals, 'count', counted)
+    bounds = ReplayBounds({'builder': rows}, graph)
+    first = bounds.key('builder', rows[0]['record'])
+    assert len(calls) == 128
+    for _ in range(3):
+        for row in rows:
+            bounds.key('builder', row['record'])
+    assert bounds.key('builder', rows[0]['record']) == first
+    assert len(calls) == 128
+
+
+def test_immutable_post_scopes_reused_but_fresh_graph_changes_them(monkeypatch):
+    messages = [Message('ord-ordinary-scope', 'order', 'supervisor', 'builder',
+                        ORIGIN, 'Ordinary work')]
+    store = SimpleNamespace(all=lambda: messages)
+    graph = Threads(store)
+    calls, scope = [], graph.scope
+    def counted(seat, ended):
+        calls.append((seat, ended))
+        return scope(seat, ended)
+    monkeypatch.setattr(graph, 'scope', counted)
+    first = ReplayBounds({}, graph).scope('builder', moment(at(10)))
+    assert ReplayBounds({}, graph).scope('builder', moment(at(10))) == first
+    assert len(calls) == 1
+    messages.append(Message('rep-ordinary-scope', 'report', 'builder', 'supervisor',
+                            ORIGIN + timedelta(minutes=5), 'Ordinary work finished', re='ord-ordinary-scope'))
+    assert ReplayBounds({}, Threads(store)).scope('builder', moment(at(10))) != first
+
+
+def test_post_scope_cache_is_bounded():
+    graph = Threads(SimpleNamespace(all=lambda: []))
+    bounds = ReplayBounds({}, graph)
+    for i in range(8200):
+        bounds.scope('builder', moment(at(i)))
+    assert len(graph._replay_scope_keys) <= 8192
+    assert bounds.scope('builder', moment(at(0))) == graph.scope('builder', moment(at(0)))
+
+
+def test_retained_post_graph_rebuilds_closed_intervals_each_job(history):
+    history.turn('ordinary-older', 0, 10)
+    history.posted('older', 5)
+    history.turn('ordinary-open', 4, None)
+    graph = Threads(history.store)
+    history.replay(graph=graph)
+    assert history.status('ordinary-older')[0] == 'attributed'
+    history.turn('ordinary-open', 4, 6)
+    assert set(history.replay(graph=graph)) == {'ordinary-older', 'ordinary-open'}
+    assert history.status('ordinary-older')[0] == 'unresolved'
+    incremental = history.rows()
+    history.replay(full=True, graph=graph)
+    assert history.rows() == incremental
