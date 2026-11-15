@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from quarterdeck import cli, ledger, post, seat as seatmod, service, servicectl, ship as shipmod
+from quarterdeck import cli, inbox_watch, ledger, post, seat as seatmod, service, servicectl, ship as shipmod
 from quarterdeck.door import CONFIRM_SECONDS
 from quarterdeck.harness.base import Usage, Window
 from quarterdeck.tmux import Tmux
@@ -441,14 +441,25 @@ def test_an_ack_wakes_nobody_and_a_resend_to_the_office_goes_to_its_watch(ship: 
     message = store.get(question)
     attempts.close(attempts.open(message, "desk", None, None, None), "blind", "a watch that died mid-print")
     service.start(ship)
-    proof = qd(capsys, "post", "resend", question)
-    assert proof.startswith(f"{question} re-offered to desk's watch") and "no watch is armed yet" in proof
-    assert attempts.undelivered(store, "desk") == [message], "offered to the watch again"
-    desk = seatmod.Seat(ship, ship.seat("desk"), tmux)
-    assert desk.harness.screen(tmux.capture(desk.pane().id)).box == "", "and no key was pressed in the human's session"  # law: one-door
+    # Once the resend offers the message again with no watch armed, the service's next tick may lawfully type the
+    # fixed waking line into the desk's empty box (law: one-door). So the desk's watch is armed first, by this live
+    # process through the watch's own registration, under the admission the wake also takes: from then on no wake
+    # may type, and the box shows only what the resend itself did.
+    watch = inbox_watch.register(ship.runtime, "desk")
+    try:
+        proof = qd(capsys, "post", "resend", question)
+        assert proof.startswith(f"{question} re-offered to desk's watch") and "it prints it now" in proof
+        assert attempts.undelivered(store, "desk") == [message], "offered to the watch again"
+        desk = seatmod.Seat(ship, ship.seat("desk"), tmux)
+        assert desk.harness.screen(tmux.capture(desk.pane().id)).box == "", "and no key was pressed in the human's session"  # law: one-door
+    finally:
+        inbox_watch.retire(ship.runtime, "desk", watch)
     printed = qd(capsys, "inbox", "--wait", "desk")
     assert printed.startswith(f"qd > second delivery of {message.id}; you may have it already: act on it once\n")
     assert post.typed([message]).strip() in printed, "the watch printed it once more, saying it is a second delivery"
+    # With no watch armed the resend says so; the waking line the service may type after it is lawful.
+    proof = qd(capsys, "post", "resend", question)
+    assert proof.startswith(f"{question} re-offered to desk's watch") and "no watch is armed yet" in proof
 
 
 def test_status_shows_what_the_seat_runs_and_never_the_ship_file_as_a_fact(ship: shipmod.Ship, tmux: Tmux, capsys):
