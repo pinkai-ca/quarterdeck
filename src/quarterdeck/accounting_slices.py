@@ -444,7 +444,7 @@ class Driver:
                 return
             if not self.active:
                 if self.process is not None and self.process.poll() is not None:
-                    self.close()
+                    raise OSError('accounting child ended')
                 if not self.gate.allowed(service, retry=bool(self.retry_seats)):
                     return
                 self.active = True
