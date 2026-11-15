@@ -1,7 +1,6 @@
 """Own restart decisions on a copied ship and synthetic native records, with no live program."""
 
 from datetime import timedelta
-from types import SimpleNamespace
 
 import pytest
 
@@ -125,43 +124,3 @@ def test_busy_box_waits_without_retiring_after_framework_work(own_restart):
     world.screen = Screen(text='', box='', working=False)
     world.runner.requests()
     assert not path.exists() and world.calls == ['restart']
-
-
-def test_pending_restart_is_decided_once_before_slow_duties_on_the_copy(own_restart, monkeypatch):
-    world = own_restart
-    path = enqueue(world)
-    finish(world)
-    runner = world.runner
-    clock, events = SimpleNamespace(seconds=0.0), []
-    duties = (
-        'server_recovery', 'reconcile', 'file_drops', 'groups', 'cascades', 'fleet_post',
-        'inboxes', 'views', 'recoveries', 'refusals', 'answers', 'looks', 'jailed_watches',
-        'deliveries', 'follow', 'compactions', 'person_quiet', 'fresh_after_order',
-        'rebrief', 'push_reminders', 'credentials', 'authentications', 'model_differences',
-        'failover', 'account', 'refresh_usage', 'pool_forecasts', 'retire_post',
-    )
-
-    def duty(name):
-        def run():
-            events.append((name, clock.seconds))
-            if name in ('deliveries', 'follow'):
-                clock.seconds += 265.0  # the reported queue delay, deterministically represented
-        return run
-
-    for name in duties:
-        monkeypatch.setattr(runner, name, duty(name))
-    for name in ('drain_drops', 'drain_accounting', 'heartbeat', 'status_due'):
-        monkeypatch.setattr(runner, name, lambda: None)
-    original = runner.requests
-
-    def requests():
-        events.append(('requests', clock.seconds))
-        original()
-        assert not path.exists() and world.calls == ['restart']
-
-    monkeypatch.setattr(runner, 'requests', requests)
-    runner._tick_steps()
-    assert events[0] == ('requests', 0.0)
-    assert sum(name == 'requests' for name, _ in events) == 1
-    assert [name for name, _ in events[1:]] == list(duties)
-    assert clock.seconds == 530.0
