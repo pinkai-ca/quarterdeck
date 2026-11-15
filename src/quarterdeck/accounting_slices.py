@@ -238,7 +238,8 @@ def worker():
                                                   seats=set(job['scope']) if job.get('scope') is not None else None,
                                                   records=owners, graph=graph)
                 context(None, [])
-                staged.finish_catchup(job['epoch'])
+                if job.get('scope') is None:
+                    staged.finish_catchup(job['epoch'])
             if last_attribution[0] is not None:
                 release(last_attribution[0])
             send(('done',))
@@ -328,6 +329,10 @@ class Driver:
             yield
 
     def start(self, service):
+        self.gate.configure(service, self.seats, self.scope)
+        if self.gate.begin(service, (path for item in self.seats for path, *_ in item['sources'])) is False:
+            self.active = False
+            return False  # inventory raced a barrier/outside seat; the next duty starts full
         if self.process is None:
             environment = dict(os.environ, PYTHONDONTWRITEBYTECODE='1', OPENBLAS_NUM_THREADS='1')
             for name in ('QD_SEAT', 'QD_SHIP', 'QD_TMUX_SOCKET', 'TMUX', 'TMUX_PANE'):
@@ -350,12 +355,12 @@ class Driver:
                                         scope=sorted(self.scope) if self.scope is not None else None)))
         self.reset_child = False
         self.started = time.monotonic()
-        self.gate.begin(service, (path for item in self.seats for path, *_ in item['sources']))
         self.job += 1
         service.log('accounting-gate-start', job=self.job, decision=self.gate.decision)
         service.log('accounting-job-start', job=self.job, seats=len(self.seats),
                     scope=sorted(self.scope) if self.scope is not None else None,
                     sources=sum(len(item['sources']) for item in self.seats))
+        return True
 
     def pump(self):
         moved = False
@@ -442,10 +447,11 @@ class Driver:
                 service.log('accounting-job-end', job=self.job, seconds=time.monotonic() - self.started,
                             records=len(self.records), counts=dict(self.counts),
                             retry=sorted(self.invalid), pending=service.ledger.catching_up())
-                if self.changed and not self.invalid:
+                if self.scope is None and self.changed and not self.invalid:
                     service.log('accounting-caught-up', seconds=time.monotonic() - self.started)
                 self.gate.finish(service, self.step_changes, full=self.scope is None and not self.invalid
-                                 and not service.ledger.catching_up())
+                                 and not service.ledger.catching_up(),
+                                 committed=not self.invalid and not service.ledger.catching_up())
         return not self.active
 
     def step(self, service, *, seconds=None, wait=True):
@@ -453,6 +459,20 @@ class Driver:
         before = service.accounting_health.shown()
         self.step_changes = service.ledger.db.total_changes
         try:
+            if (self.active and self.scope is not None
+                    and (self.gate.full_due() or service.ledger.catching_up())):
+                # Each prior slice is already committed. Discard only the remaining
+                # private plan, so a long scoped job cannot postpone the full scan.
+                self.close()
+                self.active = False
+                self.inventory = self.observations = None
+                self.incoming.clear()
+                self.outgoing.clear()
+                self.ready.clear()
+                self.events.clear()
+                self.retry_seats.clear()
+                self.reset_child = True
+                service.log('accounting-job-reset', job=self.job, seats=[], reason='full-scan-due')
             if self.events and self.callbacks(service, deadline):
                 return
             if not self.active:
@@ -467,7 +487,7 @@ class Driver:
                 self.started = None
                 self.changed = False
                 self.invalid = set()
-                self.scope = self.retry_seats or None
+                self.scope = None if self.gate.force_full else (self.retry_seats or self.gate.scope)
                 self.retry_seats = set()
                 self.completion = []
                 self.counts, self.records = Counter(), set()
@@ -501,7 +521,8 @@ class Driver:
                     row[0] for row in service.ledger.db.execute('SELECT DISTINCT seat FROM turns')} | (self.scope or set())
                 self.identities = {name: self.identity(service.runtime, name) for name in names}
                 self.watched = set(names) if self.scope is None else set(self.scope)
-                self.start(service)
+                if self.start(service) is False:
+                    return
             with service.ledger.record_pass() as book:
                 while time.monotonic() < deadline:
                     self.pump()

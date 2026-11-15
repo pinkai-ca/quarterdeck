@@ -13,6 +13,7 @@ import time
 
 from . import post, record_owner, record_location
 from .harness import reader_stamp
+from .accounting_scope import Partitions
 
 BACKSTOP = 600.0
 
@@ -23,9 +24,10 @@ class Reading:
     sql: tuple
     checked_at: int = field(compare=False)
     classes: tuple = field(default=(), compare=False, repr=False)
+    young: tuple = field(default=(), compare=False, repr=False)
 
 
-def capture(service, records, *, issues=None):
+def capture(service, records, *, issues=None, retain=False):
     """Metadata must precede this read by a whole filesystem timestamp tick.
 
     Post bodies are immutable: folder identity/times establish publication and
@@ -35,6 +37,7 @@ def capture(service, records, *, issues=None):
     started = time.time_ns()
     valid = True
     current_class = 'settings'
+    young = []
     def note(reason, kind):
         if issues is not None:
             issues.setdefault(reason, Counter())[kind] += 1
@@ -46,6 +49,7 @@ def capture(service, records, *, issues=None):
             return None
         if max(info.st_mtime_ns, info.st_ctime_ns) + post.POST_TIMESTAMP_TICK_NS >= started:
             valid = False
+            young.append(str(path))
             note('tick-young', kind)
         return (info.st_dev, info.st_ino, info.st_mode, info.st_size,
                 info.st_mtime_ns, info.st_ctime_ns)
@@ -96,8 +100,8 @@ def capture(service, records, *, issues=None):
         current_class = 'hashes'
         readers = reader_stamp.attributions()
         if not readers or not all(readers.values()):
-            valid = False
             note('unreadable', 'hashes')
+            return None
         # Keep the full declaration too: unresolved/disabled seats can change
         # even when they are absent from the resolved working-seat list.
         current_class = 'settings'
@@ -105,8 +109,8 @@ def capture(service, records, *, issues=None):
         ended = time.time_ns()
         if started > ended:
             note('unreadable', 'settings')
-        return (Reading(inputs, sql, ended, tuple(file_classes))
-                if valid and started <= ended else None)
+        return (Reading(inputs, sql, ended, tuple(file_classes), tuple(young))
+                if (valid or retain) and started <= ended else None)
     except (OSError, ValueError, TypeError, AttributeError, sqlite3.Error):
         note('unreadable', current_class)
         return None  # the ordinary job owns failures; blindness never certifies idle
@@ -158,14 +162,63 @@ class Gate:
         self.decision = {}
         self.previous = {}
         self.begin_issues = {}
+        self.partitions = None
+        self.scope = self.job_scope = None
+        self.job_retry = False
+        self.force_full = False
+
+    def configure(self, service, inventory, scope):
+        if self.partitions is None:
+            self.partitions = Partitions()
+        self.partitions.configure(service, inventory, scope)
+        self.job_scope = None if scope is None else set(scope)
+        self.job_retry = bool(self.decision.get('retry'))
+
+    @staticmethod
+    def catching_up(service):
+        return getattr(service.ledger, 'catching_up', lambda: False)()
+
+    def full_due(self):
+        return (self.partitions is not None and self.partitions.baseline is not None
+                and time.monotonic() >= self.partitions.due)
 
     def reject(self):
         self.previous = dict(completed=0, rejected=1, begin_valid=int(self.started is not None),
                              begin=evidence(None, None, self.begin_issues))
         self.completed = self.started = None
         self.own_changes = 0
+        if self.partitions is not None:
+            self.partitions.reject()
 
     def allowed(self, service, *, retry=False):
+        self.scope = None
+        self.force_full = False
+        if self.partitions is not None and (self.catching_up(service) or self.full_due()):
+            self.force_full = True
+            self.decision = {'catch-up' if self.catching_up(service) else 'backstop': 1}
+            if self.previous:
+                self.decision['previous-job'] = self.previous
+            return True
+        if self.partitions is not None and not retry:
+            p = self.partitions
+            now = time.monotonic()
+            if p.baseline is None or self.catching_up(service) or now >= p.due:
+                reason = ('no-completed-certificate' if p.baseline is None else
+                          'catch-up' if self.catching_up(service) else 'backstop')
+                self.decision = {reason: 1}
+                if self.previous:
+                    self.decision['previous-job'] = self.previous
+                return True
+            issues = {}
+            reading = capture(service, self.records, issues=issues, retain=True)
+            self.scope = p.choose(reading, now)
+            allowed = self.scope is None or bool(self.scope)
+            self.decision = evidence(p.baseline, reading, issues) if allowed else {}
+            if self.scope:
+                self.decision['scoped-seats'] = len(self.scope)
+            if allowed and self.previous:
+                self.decision['previous-job'] = self.previous
+            return allowed
         if retry or self.completed is None or time.monotonic() >= self.due:
             reason = ('retry' if retry else 'no-completed-certificate' if self.completed is None
                       else 'backstop')
@@ -186,23 +239,34 @@ class Gate:
         self.records.update(sources)
         try:
             self.records.update(row[0] for row in service.ledger.db.execute('SELECT DISTINCT record FROM turns'))
-            self.started = capture(service, self.records, issues=self.begin_issues)
+            if self.partitions is None:
+                self.started = capture(service, self.records, issues=self.begin_issues)
+            else:
+                self.started = capture(service, self.records, issues=self.begin_issues, retain=True)
         except (AttributeError, sqlite3.Error):
             self.started = None
             self.begin_issues = {'unreadable': {'sql-revision': 1}}
         self.own_changes = 0
         # A partial job cannot leave an older certificate usable.
         self.completed = None
+        if self.partitions is not None and self.job_scope is not None and not self.job_retry:
+            if self.partitions.choose(self.started, time.monotonic(),
+                                      catching_up=self.catching_up(service)) != self.job_scope:
+                self.reject()
+                return False
+        return True
 
     def own(self, before, after):
         if self.started is not None:
             self.own_changes += after - max(before, self.started.sql[2])
 
-    def finish(self, service, step_before, *, full):
+    def finish(self, service, step_before, *, full, committed=True):
         issues = {}
-        before, after = self.started, capture(service, self.records, issues=issues)
+        before = self.started
+        after = (capture(service, self.records, issues=issues) if self.partitions is None else
+                 capture(service, self.records, issues=issues, retain=True))
         extra = (service.ledger.db.total_changes - max(step_before, before.sql[2])) if before else 0
-        if (full and before is not None and after is not None
+        if (full and before is not None and after is not None and not before.young and not after.young
                 and before.inputs == after.inputs
                 and before.sql[:2] == after.sql[:2] and before.sql[3:] == after.sql[3:]
                 and after.sql[2] - before.sql[2] == self.own_changes + extra):
@@ -210,9 +274,16 @@ class Gate:
             self.due = time.monotonic() + BACKSTOP
         else:
             self.completed = None
+        if self.partitions is not None:
+            self.partitions.finish(before, after, self.own_changes + extra, time.monotonic(), BACKSTOP,
+                                   scope=self.job_scope, full=full, committed=committed, retry=self.job_retry)
+            self.due = self.partitions.due
         self.previous = dict(completed=int(self.completed is not None), full=int(full),
-                             begin_valid=int(before is not None), end_valid=int(after is not None),
+                             begin_valid=int(before is not None and not before.young),
+                             end_valid=int(after is not None and not after.young),
                              begin=evidence(None, None, self.begin_issues),
                              end=evidence(before, after, issues, own=self.own_changes + extra))
+        if self.partitions is not None:
+            self.previous['dirty-records'] = len(self.partitions.dirty)
         self.started = None
         self.own_changes = 0
