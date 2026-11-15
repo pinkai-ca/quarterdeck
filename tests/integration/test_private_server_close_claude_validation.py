@@ -33,6 +33,9 @@ def server(tmp_path, monkeypatch):
             os.kill(pid, signal.SIGCONT)
         if not started.close():
             os.kill(pid, signal.SIGKILL)  # this test's own server, proved by the pid it recorded at birth
+            # Then its creator closes it, or the test that made it fails: a namespace is never left to the session.
+            if not started.close():
+                pytest.fail(f'private tmux cleanup held: {started.held}')
 
 
 def alive(pid):

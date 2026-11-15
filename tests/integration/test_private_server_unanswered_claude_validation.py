@@ -58,6 +58,9 @@ def stopped(tmp_path, monkeypatch):
             # Still held: end this test's own server by its own socket, never through the ship's server or tmux's default.
             subprocess.run(['tmux', '-S', socket, '-N', '-f', '/dev/null', 'kill-server'],
                            capture_output=True, timeout=10, check=False)
+            # Then its creator closes it, or the test that made it fails: a namespace is never left to the session.
+            if not server.close():
+                pytest.fail(f'private tmux cleanup held: {server.held}')
 
 
 def test_close_of_a_stopped_server_returns_within_the_bound_and_holds_it_signalling_nothing(stopped, monkeypatch):

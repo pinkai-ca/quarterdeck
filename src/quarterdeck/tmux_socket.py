@@ -253,6 +253,16 @@ class OwnedSocket:
             return False
         return True
 
+    def accepts(self, held) -> bool:
+        """Whether this owner's own socket still takes a connection. Refused, or gone, means its server is exiting
+        or has exited: no other socket is ever probed."""
+        if not self.current(held):
+            return False
+        with socket.socket(socket.AF_UNIX) as probe:
+            probe.settimeout(.1)
+            code = probe.connect_ex(str(self.path))
+        return code not in (errno.ECONNREFUSED, errno.ENOENT)
+
     def remove_dead(self, held):
         present = self.current(held)
         if not self.ended():

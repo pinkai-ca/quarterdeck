@@ -254,6 +254,7 @@ class Tmux:
         self._buffers = itertools.count()
         self._owned = _owned
         self.held = None
+        self.found_gone = False  # its own private server was already ending when the close came
         self._closed = False
         self.ship = ship or legacy
         self.legacy = legacy
@@ -472,9 +473,15 @@ class Tmux:
                         guard = '#{&&:#{==:#{pid},%s},#{==:#{%s},%s}}' % (self._owned.pid, OWNER, self._owned.nonce)
                         try:
                             self._run('if-shell', '-F', guard, 'kill-server')
+                        except TmuxUnanswered:
+                            raise  # stopped or hung: held at once, nothing signalled
                         except TmuxError:
-                            if not self._owned.ended():
+                            # A hold only while its own socket still takes a connection. Refused or gone, its own
+                            # server is exiting (a kill-server it queued while stopped, say): its exit is waited
+                            # for below, its proved-dead socket unlinked.
+                            if not self._owned.ended() and self._owned.accepts(held):
                                 raise
+                            self.found_gone = True
                     self._remove_ended(held)
                 return
             except (OSError, ValueError, OwnershipError) as error:

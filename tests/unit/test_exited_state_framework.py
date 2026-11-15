@@ -108,4 +108,5 @@ def test_a_private_server_caught_as_it_is_reaped_closes_not_held(monkeypatch):
             if fields and fields[0] not in EXITED:
                 subprocess.run(['tmux', '-S', server.socket, '-N', 'kill-server'],
                                capture_output=True, timeout=5, check=False)
-            server.close()
+            if not server.close():
+                pytest.fail(f'private tmux cleanup held: {server.held}')
