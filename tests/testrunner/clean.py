@@ -1,6 +1,6 @@
 """Registration of a change, retirement of a run's scratch, same-change recovery of abandoned runs, ``clean``
-after a change is merged or deliberately dropped, and ``keep``. Eligibility comes from the registration and
-Git state, never from a file's name; anything unrecorded refuses."""
+after a change is merged or deliberately dropped, ``keep`` and ``release``. Eligibility comes from
+registration and Git state, never from a file's name; anything unrecorded refuses."""
 from __future__ import annotations
 
 import fcntl
@@ -52,20 +52,20 @@ def kept(root: Root, run: str) -> dict | None:
         os.close(fd)
 
 
-def retire_run(root: Root, runs_fd: int, run: str, state: dict) -> dict:
+def retire_run(root: Root, runs_fd: int, run: str, state: dict, *, releasing=False) -> dict:
     """Cleanup is reported separately from the first test outcome, including ordinary cleanup errors."""
     try:
-        return _retire_run(root, runs_fd, run, state)
+        return _retire_run(root, runs_fd, run, state, releasing=releasing)
     except Exception as error:
         # The finalization alarm is a BaseException: its emergency ending still owns that deadline.
         return {'outcome': 'held', 'scratch': str(storage.path(root, run)),
                 'reason': f'{type(error).__name__}: {error}; exact remainder retained'}
 
 
-def _retire_run(root: Root, runs_fd: int, run: str, state: dict) -> dict:
+def _retire_run(root: Root, runs_fd: int, run: str, state: dict, *, releasing=False) -> dict:
     """Remove a finished run's scratch by its recorded identity, and its checkout's Git admin entry."""
     note = kept(root, run)
-    if note:
+    if note and not releasing:
         return {'outcome': 'kept', 'reason': note['reason'], 'scratch': str(storage.path(root, run))}
     admin = state.get('admin')
     independent = state.get('repository_kind') == 'independent'
@@ -174,7 +174,12 @@ def retirement_result(root: Root, run: str, cleanup: dict) -> None:
         os.close(fd)
 
 
-def retire(args) -> int:
+def release(args) -> int:
+    """Release one explicit keep through the same bounded, ownership-checked retirement."""
+    return retire(args, releasing=True)
+
+
+def retire(args, *, releasing=False) -> int:
     """Retry exactly one recorded crashed run, retaining its first result and every other run."""
     # Reuse the landed finalization policy; the local import avoids the runner/cleanup import cycle.
     from .run import Runner, FinalizationTimeout, FINALIZATION_SECONDS, EMERGENCY_SECONDS, FINALIZATION_EXIT
@@ -190,10 +195,12 @@ def retire(args) -> int:
     acquired = False
     timer = Runner(args, [])
     try:
-        slot.acquire({'verb': 'retire', 'run': run, 'seat': os.environ.get('QD_SEAT')}, args.wait)
+        if releasing and not kept(root, run):
+            raise Refused(f'run {run}: not kept by this tool; nothing removed')
+        slot.acquire({'verb': 'release' if releasing else 'retire', 'run': run, 'seat': os.environ.get('QD_SEAT')}, args.wait)
         acquired = True
         with timer.alarm(FINALIZATION_SECONDS, timer.on_finalization_timeout):
-            return retire_within(root, run)
+            return retire_within(root, run, releasing=releasing)
     except FinalizationTimeout:
         where = root.path / RESULTS / run
         try:
@@ -215,19 +222,32 @@ def retire(args) -> int:
         root.close()
 
 
-def retire_within(root: Root, run: str) -> int:
-    guard = RunGuard(root, run)
+def retire_within(root: Root, run: str, *, releasing=False) -> int:
+    try:
+        guard = RunGuard(root, run)
+    except FileNotFoundError:
+        if releasing:
+            raise Refused(f'run {run}: no recorded result directory; nothing removed') from None
+        raise
     try:
         guard.acquire()
-        return _retire_within(root, run)
+        return _retire_within(root, run, releasing=releasing)
     finally:
         guard.release()
 
 
-def _retire_within(root: Root, run: str) -> int:
+def _retire_within(root: Root, run: str, *, releasing=False) -> int:
     where = storage.path(root, run)
-    results = runs = scratch = lock = None
+    results = runs = scratch = lock = keeps_fd = None
     try:
+        if releasing:
+            keeps_fd = root.child(KEEPS)
+            # Keep can be requested while a run is active. Serialize its validation/publication
+            # with release so that it cannot publish a stale note after scratch is removed.
+            fcntl.flock(keeps_fd, fcntl.LOCK_EX)
+            note = read_json(keeps_fd, run + '.json', root.path / KEEPS / (run + '.json'))
+            if not note or note.get('run') != run:
+                raise Refused(f'run {run}: not kept by this tool; nothing removed')
         results = root.child(RESULTS, run, create=False)
         try:
             runs = storage.parent(root, run, create=False)
@@ -273,6 +293,8 @@ def _retire_within(root: Root, run: str) -> int:
                             pass
                         else:
                             raise Refused(f'{name}: recovery metadata remains without ownership; held')
+                    if releasing:
+                        owned.unlink_file(keeps_fd, run + '.json', root.path / KEEPS / (run + '.json'))
                     print(f'run {run}: already retired; first result/report/failures retained')
                     return 0
             finally:
@@ -281,7 +303,10 @@ def _retire_within(root: Root, run: str) -> int:
                         os.close(fd)
         if not state or state.get('run') != run or not state.get('scratch') or not state.get('owner'):
             raise Refused(f'{where}: no exact recorded run identity and owner; nothing inferred or removed')
-        if kept(root, run):
+        if releasing:
+            if note.get('scratch') != state['scratch']:
+                raise Refused(f'{where}: keep note and recorded scratch differ; nothing removed')
+        elif kept(root, run):
             raise Refused(f'{where}: kept by note; nothing removed')
         first = read_json(results, 'result.json', root.path / RESULTS / run / 'result.json')
         if first is None and scratch is None:
@@ -297,11 +322,16 @@ def _retire_within(root: Root, run: str) -> int:
         require_gone(state, where)
         record(root, run, state)
         finish_abandoned(root, run, state, scratch_fd=scratch)
-        cleanup = retire_run(root, runs, run, state)
+        cleanup = retire_run(root, runs, run, state, releasing=releasing)
         retirement_result(root, run, cleanup)  # durable completion before the last recovery record goes
         cleanup = discard_records(root, run, state, cleanup)
+        if releasing and cleanup['outcome'] == 'complete':
+            # Completion precedes releasing the keep. A partial cleanup retains its note and
+            # ownership proof so that the same explicit command can retry it.
+            owned.unlink_file(keeps_fd, run + '.json', root.path / KEEPS / (run + '.json'))
         retirement_result(root, run, cleanup)
-        print(f'run {run}: retirement {cleanup["outcome"]} · {where} · '
+        action = 'release' if releasing else 'retirement'
+        print(f'run {run}: {action} {cleanup["outcome"]} · {where} · '
               f'{root.path / RETIREMENTS / (run + ".json")}')
         if cleanup.get('reason'):
             print(cleanup['reason'])
@@ -309,7 +339,7 @@ def _retire_within(root: Root, run: str) -> int:
     except OSError as error:
         raise Refused(f'{where}: retirement held ({error}); remaining paths and first result retained') from None
     finally:
-        for fd in (lock, scratch, runs, results):
+        for fd in (lock, scratch, runs, results, keeps_fd):
             if fd not in (None, -1):
                 os.close(fd)
 
@@ -597,7 +627,10 @@ def keep(args) -> int:
         raise Refused('keep needs --reason TEXT')
     project = gitops.resolve(Path.cwd()).project
     root = Root(project, create=False)
+    keeps_fd = None
     try:
+        keeps_fd = root.child(KEEPS)
+        fcntl.flock(keeps_fd, fcntl.LOCK_EX)
         try:
             fd = storage.child(root, run, create=False)
         except (Refused, FileNotFoundError):
@@ -609,15 +642,13 @@ def keep(args) -> int:
                 raise Refused(f'run {run}: scratch identity unrecorded or changed; nothing kept')
         finally:
             os.close(fd)
-        keeps_fd = root.child(KEEPS)
-        try:
-            write_json(keeps_fd, run + '.json', {'run': run, 'change': state.get('change'), 'reason': args.reason,
-                                                 'at': now(), 'seat': os.environ.get('QD_SEAT'),
-                                                 'scratch': state['scratch']})
-        finally:
-            os.close(keeps_fd)
+        write_json(keeps_fd, run + '.json', {'run': run, 'change': state.get('change'), 'reason': args.reason,
+                                         'at': now(), 'seat': os.environ.get('QD_SEAT'),
+                                         'scratch': state['scratch']})
         print(f'kept run {run} scratch at {storage.path(root, run)}: {args.reason} · its end and its change\'s clean '
               'leave it; the note is ' + str(root.path / KEEPS / (run + '.json')))
         return 0
     finally:
+        if keeps_fd is not None:
+            os.close(keeps_fd)
         root.close()

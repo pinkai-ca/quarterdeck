@@ -227,7 +227,7 @@ Each template holds a `ship.toml` and an `orders.md`.
 | `testrunner/gitops.py` | Git as the authority on what is tested |
 | `testrunner/environment.py` | the run's environment: the caller's own, less what changes where the target is imported from or how Python, pip, pytest and git start |
 | `testrunner/scratch.py` | a run's working storage; durable evidence stays in `.testruns/results` |
-| `testrunner/clean.py` | a change's registration, a run's retirement and recovery, `clean` and `keep` |
+| `testrunner/clean.py` | a change's registration, a run's retirement and recovery, `clean`, `keep` and `release` |
 | `testrunner/evidence_plugin.py`, `testrunner/evidence.py`, `testrunner/report.py` | the events and session layout a run records, what the events prove, and the result and report a run leaves |
 | `testrunner/sessions.py`, `testrunner/servers.py` | the records of a run's session containers and private tmux servers, and the servers' bounded shutdown |
 | `testrunner/usersite.py` | the ordinary interpreter's user site, made visible to the run's environment, nested CI runs included |
