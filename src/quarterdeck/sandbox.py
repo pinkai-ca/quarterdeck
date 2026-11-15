@@ -402,42 +402,73 @@ def refuse_shared_workspace(ship: Ship, seat_name: str, workspace: Path) -> None
                             f"Give {seat_name} a cwd outside every other seat's")
 
 
+def work_roots(ship: Ship) -> tuple[Path, ...]:
+    """The folders, as declared, whose work/ a jailed seat's declared cwd is walked from: the ship's own folder, then
+    the workspace the ship declares (the framework's folder, whose work/hands/<name> are the hands' folders).
+
+    A workspace changed after load without its declaration (a test's replace) is taken as it now is.
+    """
+    own = Path(os.path.normpath(ship.folder))
+    declared = ship.declared_workspace
+    if declared is None or Path(os.path.realpath(declared)) != Path(os.path.realpath(ship.workspace)):
+        declared = ship.workspace
+    workspace = Path(os.path.normpath(declared))
+    return (own,) if workspace == own else (own, workspace)
+
+
+def declared_work(ship: Ship, spec) -> tuple[Path, Path] | None:
+    """A seat's declared cwd strictly below the work/ of one of the ship's work roots, as the declaration writes it
+    (no link followed), with the root the walk starts at: the ship's own first, so a folder under both (a ship folder
+    inside its workspace's work/) stays its own, made at qd init as before. Else None."""
+    declared = spec.declared_cwd
+    if declared is None:
+        return None
+    return next(((root, declared) for root in work_roots(ship)
+                 if declared != root / OWN_WORK and declared.is_relative_to(root / OWN_WORK)), None)
+
+
 def own_work_folder(ship: Ship, spec) -> Path | None:
     """A seat's declared cwd below its ship's work/, as the declaration writes it (no link followed), or None."""
-    declared = spec.declared_cwd
-    own = Path(os.path.normpath(ship.folder / OWN_WORK))
-    if declared is None or declared == own or not declared.is_relative_to(own):
+    found = declared_work(ship, spec)
+    if found is None or found[0] != Path(os.path.normpath(ship.folder)):
         return None
-    return declared
+    return found[1]
 
 
 def check_own_work(ship: Ship, seat_name: str, spec, *, make: bool = False) -> None:
-    """Check a jailed seat's own working folder under its ship's work/, as declared, before anything of a start.
+    """Check a jailed seat's working folder under its ship's work/ or its workspace's, as declared, before a start.
 
-    The path is walked as the declaration writes it, with lstat from the ship folder down, never through a link:
-    each step must be a real folder of this user, and the folder itself is set to 0700 when its mode is anything
-    else. A link, anything but a folder, or another user's folder refuses, as does a folder the ship, when it was
-    read, found somewhere else (a link since removed). With ``make``, as at qd init, a missing step is made, the
-    folder itself empty and 0700; at a launch a missing folder refuses, since qd makes nothing outside its folder
-    there. A declared cwd elsewhere that reaches the ship's work/ through a link (an absolute path through a link to
-    the office) refuses too: the walk could not see it. The caller says whether the seat is jailed.
+    The path is walked as the declaration writes it, with lstat from the ship folder (or the workspace) down, never
+    through a link: each step must be a real folder of this user, and the folder itself is set to 0700 when its mode
+    is anything else; under the workspace, which may lie outside the project folder, such a mode refuses instead. A link, anything but a folder, or another user's folder refuses, as does a folder the ship,
+    when it was read, found somewhere else (a link since removed). With ``make``, as at qd init, a missing step under
+    the ship's own work/ is made, the folder itself empty and 0700; at a launch, and anywhere under the workspace, a
+    missing folder refuses, since qd makes nothing outside its folder there. A declared cwd elsewhere that reaches
+    either work/ through a link (an absolute path through a link to the office) refuses too: the walk could not see
+    it. The caller says whether the seat is jailed.
 
     law: one-folder. A folder is made only at qd init, inside the office, where the office's repository ignores it.
     """
     declared = spec.declared_cwd
     if declared is None:
         return
-    base = Path(os.path.normpath(ship.folder))
-    folder = own_work_folder(ship, spec)
-    if folder is None:
-        work = Path(os.path.realpath(base / OWN_WORK))
+    found = declared_work(ship, spec)
+    if found is None:
         real = Path(os.path.realpath(declared))
-        if real.is_relative_to(work) and real != work:
-            raise ShipError(f"{seat_name}: its working directory {declared} reaches {real}, inside its ship's work "
-                            "folder, through a link; a jailed seat's working folder is declared as the path under "
-                            f"its ship's folder and reached without links. Declare it as "
-                            f"{base / OWN_WORK / real.relative_to(work)}, then start again")
+        for root in work_roots(ship):
+            work = Path(os.path.realpath(root / OWN_WORK))
+            if real.is_relative_to(work) and real != work:
+                whose = "its ship's" if root == work_roots(ship)[0] else "its workspace's"
+                under = "its ship's folder" if root == work_roots(ship)[0] else "its workspace"
+                raise ShipError(f"{seat_name}: its working directory {declared} reaches {real}, inside {whose} work "
+                                "folder, through a link; a jailed seat's working folder is declared as the path under "
+                                f"{under} and reached without links. Declare it as "
+                                f"{root / OWN_WORK / real.relative_to(work)}, then start again")
         return
+    base, folder = found
+    own = base == work_roots(ship)[0]
+    whose = "its ship" if own else "its workspace"
+    make = make and own
     remedy = f"put a private folder of your own at {folder} (mkdir -p -m 700 {folder}), then start again"
     part = base
     for name in folder.relative_to(base).parts:
@@ -445,23 +476,32 @@ def check_own_work(ship: Ship, seat_name: str, spec, *, make: bool = False) -> N
         try:
             info = os.lstat(part)
         except FileNotFoundError:
-            if not make:
+            if not make and own:
                 raise ShipError(f"{seat_name}: its working folder {folder} does not exist, and qd makes nothing outside "
                                 f"its folder at a launch. Run qd init, which makes the office's, or {remedy}") from None
+            if not make:
+                raise ShipError(f"{seat_name}: its working folder {folder} does not exist, and qd makes nothing in its "
+                                f"workspace. Put a private folder of your own at {folder} (mkdir -p -m 700 {folder}), "
+                                "then start again") from None
             try:
                 os.mkdir(part, 0o700) if part == folder else os.mkdir(part)
             except FileExistsError:
                 pass  # made meanwhile: judged below, as it is
             info = os.lstat(part)
         if stat.S_ISLNK(info.st_mode):
-            raise ShipError(f"{seat_name}: {part} is a link; a jailed seat's working folder is a real folder of its "
-                            f"ship, reached without links. Remove the link and {remedy}")
+            raise ShipError(f"{seat_name}: {part} is a link; a jailed seat's working folder is a real folder of {whose}, "
+                            f"reached without links. Remove the link and {remedy}")
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
             raise ShipError(f"{seat_name}: {part} is not this user's own folder; a jailed seat's working folder is a "
-                            f"real folder of its ship, its operator's. Remove it and {remedy}")
+                            f"real folder of {whose}, its operator's. Remove it and {remedy}")
     if spec.cwd is not None and Path(os.path.realpath(spec.cwd)) != Path(os.path.realpath(folder)):
         raise ShipError(f"{seat_name}: its working folder {folder} was found at {spec.cwd} when the ship was read, "
                         "through a link since changed; start again, so the ship is read afresh")
+    if stat.S_IMODE(info.st_mode) != 0o700 and not own:
+        # law: one-folder. A workspace may lie outside the project folder, so qd never changes a mode there.
+        raise ShipError(f"{seat_name}: {folder} has mode {stat.S_IMODE(info.st_mode):04o}; a jailed seat's working "
+                        "folder in its workspace is private (0700), and qd changes nothing in a workspace. "
+                        f"chmod 700 {folder}, then start again")
     if stat.S_IMODE(info.st_mode) != 0o700:
         # Private, as when it is made: through a descriptor of the folder walked, never a link put there since.
         descriptor = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)

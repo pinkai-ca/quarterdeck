@@ -648,8 +648,8 @@ class Seat:
         if self.ship.jailed(self.spec, self.pool):
             from . import sandbox  # the sandbox reads the ship and the standing orders, so it is imported here, not above
 
-            # A jailed seat's own folder under its ship's work/, as declared, never through a link, before anything
-            # of the launch is made (law: one-folder).
+            # A jailed seat's own folder under its ship's work/ or its workspace's, as declared, never through a
+            # link, before anything of the launch is made (law: one-folder).
             sandbox.check_own_work(self.ship, self.name, self.spec)
         version, effort_note = observation if observation is not None else self._observe_selection()
         shipmod.fence(self.ship)

@@ -150,6 +150,9 @@ class Ship:
     forward: dict[str, str] = field(default_factory=dict)
     push_reminder: str | None = None  # the seat ordered to read the hosted runs after pushes of main; [ship] push_reminder
     status_refresh: float = STATUS_REFRESH  # [ship] status_refresh; file changes still request collection
+    # The workspace as the declaration writes it, joined to the ship folder but never resolved: ``workspace`` is
+    # resolved at load when relative. The jail's work check walks a seat's declared cwd from this one.
+    declared_workspace: Path | None = field(default=None, compare=False)
 
     @property
     def file(self) -> Path:
@@ -339,6 +342,7 @@ def _from_text(text: str, folder: Path) -> Ship:
         name=head.get("name", folder.name),
         operator=head.get("operator", "operator"),
         workspace=_path(head.get("workspace", "."), folder),
+        declared_workspace=_declared_path(head.get("workspace", "."), folder),
         pools=pools,
         sessions=sessions,
         seats=seats,
