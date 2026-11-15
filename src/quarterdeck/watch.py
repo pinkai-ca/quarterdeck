@@ -1105,6 +1105,7 @@ def collect(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[
                                  for path in sorted((ship.runtime / "requests").glob("*.claimed"))]
     now = post.now()
     from . import compaction_alert, jail_end, ledger_recovery, model_mismatch, pr_screen, stop_barrier, write_bound
+    from . import human_wake
     from .harness import record_file
     outcomes, outcome_errors = check_reading if check_reading is not None else check_outcome.collect(ship.runtime)
     from . import usage_forecast
@@ -1116,7 +1117,7 @@ def collect(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[
         server_recovery=server_recovery.status(ship.runtime) + stop_barrier.status(ship.runtime),
         write_bounds=write_bound.status(ship),
         jail_sweeps=jail_end.status(ship),
-        record_bounds=record_file.alarms(readable),
+        record_bounds=record_file.alarms(readable, owned=human_wake.owned_record),
         screening=pr_screen.status(ship.runtime),
         model_mismatches=model_mismatch.unrouted(ship, readable, pending_model=request_queue.pending_model),
         held=held,

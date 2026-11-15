@@ -249,3 +249,63 @@ def test_one_large_read_at_a_time(seats, monkeypatch):
     monkeypatch.setattr(record_file, 'LARGE', path.stat().st_size)
     record_file.read_bytes(path, record_file.LINES_BOUND)
     assert entered == [True], 'a small read does not wait'
+
+
+def test_an_owned_seats_record_is_named_from_its_pointer_near_and_past_its_bound_with_no_read(seats, monkeypatch):
+    """The desk's and the office's conversations are the ship's longest: named from the owned pointer, never read."""
+    from types import SimpleNamespace
+    from quarterdeck import human_wake, trusted_files
+    path = record_of(seats, 'desk-example')
+    trusted = seats.parent / 'trusted' / 'desk-example'
+    trusted.mkdir(parents=True)
+    (trusted / trusted_files.RECORD).write_text(f'{path}\n')
+
+    def conversation(*args, **kwargs):
+        pytest.fail('an owned seat\'s conversation was read')
+    desk = SimpleNamespace(name='desk-example', session=SimpleNamespace(human=True), record=conversation,
+                           trusted=trusted, home=seats / 'desk-example' / 'home',
+                           harness=SimpleNamespace(home_variable='CLAUDE_CONFIG_DIR'))
+    monkeypatch.setattr(record_file, 'read_from', conversation)
+    monkeypatch.setattr(record_file, 'open_record', conversation)
+    assert human_wake.owned_record(desk) == path
+    size = path.stat().st_size
+    monkeypatch.setattr(record_file, 'LINES_BOUND', int(size / 0.8))
+    [near] = record_file.alarms([desk], owned=human_wake.owned_record)
+    assert near.startswith('desk-example: record ') and near.endswith('start it fresh at a natural break')
+    monkeypatch.setattr(record_file, 'LINES_BOUND', size - 1)
+    [past] = record_file.alarms([desk], owned=human_wake.owned_record)
+    assert past.startswith('desk-example: record past the read bound')
+    elsewhere = seats / 'other-example' / 'home' / 'record.jsonl'
+    (trusted / trusted_files.RECORD).write_text(f'{elsewhere}\n')
+    assert human_wake.owned_record(desk) is None, 'a pointer outside its own home names nothing'
+
+
+def test_a_link_on_the_way_or_at_the_name_gives_no_figure_never_a_followed_size(seats, monkeypatch):
+    theirs = record_of(seats, 'other-example')
+    mine = seats / 'worker-example' / 'home'
+    mine.mkdir(parents=True)
+    (mine / 'projects').symlink_to(theirs.parent.parent)
+    through = mine / 'projects' / theirs.parent.name / theirs.name
+    assert os.path.getsize(through) == theirs.stat().st_size > 0, 'a plain lstat would follow it'
+    assert record_file.size_of(through) is None
+    named = theirs.with_name('linked.jsonl')
+    named.symlink_to(theirs)
+    assert record_file.size_of(named) is None
+    assert record_file.size_of(theirs) == theirs.stat().st_size
+    assert record_file.size_of(theirs.with_name('absent.jsonl')) is None
+    monkeypatch.setattr(record_file, 'LINES_BOUND', 1)
+    assert record_file.alarm('worker-example', through) is None, 'unknown: no figure, so no line from a followed size'
+
+
+def test_a_databases_size_counts_its_log_and_a_linked_log_gives_no_figure(seats, tmp_path):
+    home = seats / 'worker-example' / 'home'
+    home.mkdir(parents=True)
+    path = home / 'opencode.db'
+    path.write_bytes(b'x' * 100)
+    assert record_file.size_of(path) == 100
+    (home / 'opencode.db-wal').write_bytes(b'y' * 20)
+    assert record_file.size_of(path) == 120
+    (home / 'opencode.db-wal').unlink()
+    (tmp_path / 'big').write_bytes(b'z' * 50)
+    (home / 'opencode.db-wal').symlink_to(tmp_path / 'big')
+    assert record_file.size_of(path) is None

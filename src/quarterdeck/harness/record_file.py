@@ -186,19 +186,44 @@ def bound_of(path: Path) -> int:
     return DATABASE_BOUND if Path(path).suffix == '.db' else LINES_BOUND
 
 
+def _named_size(path: Path) -> int | None:
+    """One file's size by its name, found by the same walk as the read: no link on the way from the seat folder, and
+    a link, fifo, socket or device at the name gives no figure (None), never a followed one. Nothing there at all
+    raises FileNotFoundError."""
+    found = seat_files.seat_root(path)
+    folder = None
+    try:
+        if found is not None and found[1]:
+            folder = seat_files._walk(found[0], found[1][:-1], create=False)
+            name = found[1][-1]
+        else:
+            name = str(path)
+        named = os.stat(name, dir_fd=folder, follow_symlinks=False)
+    except FileNotFoundError:
+        raise
+    except (OSError, seat_files.LinkRefused):  # a link on the way: no figure
+        return None
+    finally:
+        if folder is not None:
+            os.close(folder)
+    return named.st_size if stat.S_ISREG(named.st_mode) else None
+
+
 def size_of(path: Path) -> int | None:
-    """What one read of the record would take, by lstat alone, never a read: a database counts with its log."""
+    """What one read of the record would take, by the read's own walk and never a read: a database counts with its
+    log. None when it cannot be told without following a link, or nothing is there."""
     path = Path(path)
     try:
-        size = os.lstat(path).st_size
-    except OSError:
+        size = _named_size(path)
+    except FileNotFoundError:
         return None
-    if path.suffix == '.db':
-        try:
-            size += os.lstat(f'{path}-wal').st_size
-        except OSError:
-            pass
-    return size
+    if size is None or path.suffix != '.db':
+        return size
+    try:
+        log = _named_size(Path(f'{path}-wal'))
+    except FileNotFoundError:
+        return size
+    return None if log is None else size + log
 
 
 def alarm(seat: str, path: Path) -> str | None:
@@ -211,18 +236,25 @@ def alarm(seat: str, path: Path) -> str | None:
     return f'{seat}: record {_size(size)} of its {_size(bound)} read bound; start it fresh at a natural break'
 
 
-def alarms(seats) -> list[str]:  # law: nothing-waits-silently
-    """One line for each seat whose current record nears or passes its read bound."""
+def alarms(seats, owned=None) -> list[str]:  # law: nothing-waits-silently
+    """One line for each seat whose current record nears or passes its read bound. A seat the operator owns (the
+    desk, the office) is named from its owned record pointer (``owned(seat)``), never by reading its conversation:
+    those are the longest conversations on the ship, and so the likeliest to reach the bound first."""
     lines = []
     for seat in seats:
         try:
             human = seat.session.human
         except (AttributeError, KeyError, ValueError):
             human = getattr(getattr(seat, 'spec', None), 'human_session', False)
-        if human or not callable(getattr(seat, 'record', None)):
-            continue  # a seat the operator owns is read from its owned metadata alone, never by its conversation
         try:
-            record = seat.record()
+            if human:
+                if owned is None:
+                    continue
+                record = owned(seat)
+            elif callable(getattr(seat, 'record', None)):
+                record = seat.record()
+            else:
+                continue
         except (OSError, ValueError):
             continue  # the seat's own reading says why its record cannot be named
         if record is not None and (line := alarm(seat.name, record)) is not None:

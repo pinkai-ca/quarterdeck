@@ -117,6 +117,26 @@ def record_stamp(seat) -> dict:
     return {'record': name, 'fingerprint': json.loads(json.dumps(record_fingerprint(Path(name))))}
 
 
+def owned_record(seat):
+    """The record a seat the operator owns is joined to, by its owned pointer: metadata only, never the conversation.
+    None when no pointer is there, or it names nothing of this seat's own home."""
+    from pathlib import Path
+    from .harness.base import inside_home
+    trusted = getattr(seat, 'trusted', None)
+    if trusted is None:
+        return None  # a seat with no trusted folder names no record
+    try:
+        name = metadata(trusted / trusted_files.RECORD).strip()
+    except FileNotFoundError:
+        return None
+    if not name:
+        return None
+    record = Path(name)
+    if seat.harness.home_variable is not None and not inside_home(record, seat.home):
+        return None  # a pin through a link in the home is never this seat's record
+    return record
+
+
 def service_failure_reason(phase, error) -> str:
     """Fixed local categories only: never exception text, values or traceback."""
     if phase not in ('ownership', 'pass', 'alarm', 'observation'):
