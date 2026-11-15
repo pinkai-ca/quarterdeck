@@ -283,8 +283,9 @@ class Store:
 
     def _refresh_messages(self, children, context, started):
         """Reuse immutable files only after a complete, unchanged identity inventory."""
-        from .fleet_post import local_view, provenance, stable_bytes
+        from .fleet_post import local_view, provenance, stable_bytes, unrouted
         runtime = self.dir.parent.parent
+        local = unrouted(runtime)  # in a reading pass, one listing answers for every message without an import
         previous = self._validated
         self._validated = {}  # a failed refresh cannot leave a partial certificate
         self._validated_context, old_context = context, self._validated_context
@@ -301,7 +302,7 @@ class Store:
                 post_dir._link_held(path)
             if not stat.S_ISREG(info.st_mode) and not stat.S_ISLNK(info.st_mode):
                 continue
-            record = provenance(runtime, path.stem)
+            record = None if local is not None and local(path.stem) else provenance(runtime, path.stem)
             key = identity(info)
             cached = previous.get(path.name)
             if cached is not None and (cached[0] != key or cached[1] != record):
@@ -483,10 +484,12 @@ class Store:
         return found[0]
 
     def for_seat(self, seat: str) -> list[Message]:
-        from .fleet_post import context_only
+        from .fleet_post import context_only, unrouted
         runtime = self.dir.parent.parent
         def read():
-            return [m for m in self.all() if m.to == seat and not context_only(runtime, m.id)]
+            local = unrouted(runtime)  # in a reading pass, one listing answers for every message without a route
+            return [m for m in self.all() if m.to == seat
+                    and (local is not None and local(m.id) or not context_only(runtime, m.id))]
         return list(reading_value('seat', (self.dir.absolute(), seat), read))
 
     def replies(self, message: Message) -> list[Message]:

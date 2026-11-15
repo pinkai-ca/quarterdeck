@@ -5,7 +5,7 @@ from inspect import isroutine
 import time
 
 INTERVAL = 60.0
-FIXED_NAMES = frozenset(('pass', 'sleep', 'status', 'status_checks',
+FIXED_NAMES = frozenset(('pass', 'sleep', 'status', 'status_post', 'status_checks',
                          'drain_drops', 'drain_accounting', 'drain_requests'))
 
 

@@ -844,8 +844,190 @@ def _post_listing(ship, store):
 @reading_scope.reading_pass()
 def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tuple[str, str]] | None = None,
           *, store=None, attempts=None, request_rows: list[dict] | None = None, check_reading=None,
-          post_held=None) -> Facts:
-    """Everything the status line says; cheap enough for tmux to ask every few seconds."""
+          post_held=None, keep: list | None = None) -> Facts:
+    """Everything the status line says; cheap enough for tmux to ask every few seconds. ``keep``, a list, receives
+    the collection a post refresh reuses (refresh_post)."""
+    facts, collection = collect(ship, tmux, walls, login, store=store, attempts=attempts, request_rows=request_rows,
+                                check_reading=check_reading, post_held=post_held)
+    if keep is not None:
+        keep.append(collection)
+    return facts
+
+
+# A seat's reading is a fixed sequence of steps. Each is the post's (it reads only what the post's traffic changes:
+# the store, the attempts, the pending journals, the seat's watch) or the slow part's (records, screens, launches,
+# sign-ins, compactions). Each step records what it appends, in order; a step that raises ends the seat's reading
+# there, said for that seat alone. A full collection runs every step. A post refresh reruns only the post steps,
+# and the door step of a seat whose own pending or drop folder changed, over the slow steps kept from the last full
+# collection, then replays every seat's appends in step order: the facts are those a full collection would give.
+POST, SLOW, DOOR = 'post', 'slow', 'door'
+_HUMAN_STEPS = (('pending', POST), ('unresolved', SLOW), ('ending', SLOW), ('launch', SLOW), ('auth', SLOW),
+                ('obstruction', POST), ('compaction', SLOW), ('route', SLOW), ('human-held', SLOW),
+                ('human-wake', SLOW), ('unarmed', POST))
+_CREW_STEPS = (('pending', POST), ('unresolved', SLOW), ('ending', SLOW), ('launch', SLOW), ('auth', SLOW),
+               ('obstruction', POST), ('compaction', SLOW), ('route', SLOW), ('queue', SLOW), ('door', DOOR),
+               ('detached', POST))
+_SEAT_LISTS = ('waiting', 'needs_human', 'unarmed', 'pending', 'routes', 'unknown', 'queue_unknown', 'compactions',
+               'turn_errors', 'sign_in_failures', 'ending', 'pane_obstructions', 'seat_holds')
+
+
+@dataclass
+class _Step:
+    ops: list  # (list, value, how): how is 'append', 'extend' or 'once' (append if absent)
+    stop: bool = False  # the seat's reading ends after this step: it raised, or the seat is unresolved
+
+
+@dataclass
+class Collection:
+    """What a full collection keeps for the post refreshes that follow it, until the next full collection."""
+    ship: Ship
+    tmux: Tmux
+    selected: list
+    readable: list
+    steps: dict  # seat name -> list of _Step, as many as ran
+    contexts: dict  # seat name -> values later steps read (authentication, launched, pending)
+    prefix: dict  # list name -> what comes before the seats' appends
+    suffix: dict  # list name -> what comes after them
+    slow: dict  # every other Facts field from the slow part, as collected
+    request_rows: list | None = None
+
+
+def _held_line(name: str, error: Exception) -> str:
+    text = str(error)[:200]
+    return text if text.startswith(f"{name}:") else f"{name}: held for this seat alone: {type(error).__name__}: {text}"
+
+
+def _steps_of(seat):
+    return _HUMAN_STEPS if getattr(getattr(seat, 'session', None), 'human', False) else _CREW_STEPS
+
+
+def _run_step(step: str, seat, ctx: dict, store, attempts, latest) -> _Step:
+    ops, name = [], seat.name
+    try:
+        if step == 'pending':
+            ctx['pending'] = pending = attempts.undelivered(store, name, results=latest)
+            ops.append(('waiting', pending, 'extend'))
+        elif step == 'unresolved':
+            if isinstance(seat, UnresolvedSeat):
+                ops.append(('needs_human', name, 'append'))
+                ops.append(('unknown', str(seat.error).partition(';')[0], 'append'))
+                return _Step(ops, stop=True)
+        elif step == 'ending':
+            if (refused := getattr(seat, "relaunch_refused", None)) and (words := refused()):
+                ops.append(('ending', words, 'append'))  # law: nothing-waits-silently
+        elif step == 'launch':
+            ctx['launched'] = launched = seat.launched()
+            if refused_pool := launch_pool_refusal(seat, launched):
+                ops.append(('seat_holds', refused_pool, 'append'))  # law: nothing-waits-silently
+        elif step == 'auth':
+            from .auth_failure import status as authentication_status, waiting as authentication_waiting
+            ctx['authentication'] = authentication = authentication_status(seat)
+            if reason := authentication:
+                ops.append(('sign_in_failures', f"{name}: {reason}", 'append'))  # law: nothing-waits-silently
+                if not authentication_waiting(reason):
+                    ops.append(('needs_human', name, 'append'))
+        elif step == 'obstruction':
+            from .turn_failure import obstruction as failure_obstruction
+            if not ctx.get('authentication') and (reason := failure_obstruction(seat, store)):
+                ops.append(('turn_errors', f"{name}: {reason}", 'append'))  # law: nothing-waits-silently
+                ops.append(('needs_human', name, 'append'))
+        elif step == 'compaction':
+            from .compaction import status as compaction_status
+            if detail := compaction_status(seat, alerts_only=True):
+                ops.append(('compactions', f"{name}: {detail}", 'append'))
+        elif step == 'route':
+            launched = ctx.get('launched')
+            if launched is not None and launched.pool in seat.spec.pools[1:]:
+                ops.append(('routes', f"{name} on {seat.harness.name}/{launched.pool}", 'append'))
+        elif step == 'human-held':
+            if reason := recovery.held(seat):
+                ops.append(('needs_human', name, 'once'))
+                ops.append(('pending', f"{name}: {reason}", 'append'))
+        elif step == 'human-wake':
+            from . import human_wake
+            reason = human_wake.status(seat)
+            if human_wake.action_required(seat, reason):
+                ops.append(('needs_human', name, 'once'))
+                ops.append(('pending', f"{name}: {reason}", 'append'))
+        elif step == 'unarmed':
+            watch = post.watch_reading(seat.ship.runtime, name)
+            if ctx.get('pending') and watch.armed is False:
+                ops.append(('unarmed', name, 'append'))
+        elif step == 'queue':
+            # Human alarms use owned metadata only; never read their conversation here.
+            if seat.harness.reads_queue_error and (record := seat.record()) is not None:
+                try:
+                    from . import record_follow
+                    queue_error = record_follow.state(seat, record).queue_error
+                except OSError:
+                    queue_error = None  # ordinary unreadable-record reporting remains independent
+                if queue_error:
+                    ops.append(('queue_unknown', f"{name}: queue unknown: {queue_error}", 'append'))
+        elif step == 'door':
+            from .auth_failure import waiting as authentication_waiting
+            door, obstruction = Door(seat).human_obstruction()
+            if diagnostic := getattr(door, "diagnostic", ""):
+                ops.append(('pane_obstructions', f"{name}: {diagnostic}", 'append'))
+            if obstruction and not authentication_waiting(ctx.get('authentication')):
+                ops.append(('needs_human', name, 'once'))
+            if door.waiting or "pending" in door.reason or "; qd submit " in door.reason:
+                ops.append(('pending', f"{name}: {door.reason}", 'append'))
+        elif step == 'detached':
+            for reason in pending_delivery.detached(seat):
+                ops.append(('needs_human', name, 'once'))
+                ops.append(('pending', f"{name}: {reason}", 'append'))
+    except Exception as error:  # law: nothing-waits-silently
+        ops.append(('seat_holds', _held_line(name, error), 'append'))
+        return _Step(ops, stop=True)
+    return _Step(ops)
+
+
+def _replay(reading: Collection) -> dict:
+    lists = {name: list(reading.prefix.get(name, [])) for name in _SEAT_LISTS}
+    for seat in reading.selected:
+        for step in reading.steps.get(seat.name, []):
+            for target, value, how in step.ops:
+                if how == 'extend':
+                    lists[target] += value
+                elif how == 'once':
+                    if value not in lists[target]:
+                        lists[target].append(value)
+                else:
+                    lists[target].append(value)
+            if step.stop:
+                break
+    for name, values in reading.suffix.items():
+        lists[name] += values
+    return lists
+
+
+def _post_fields(ship, store, attempts, post_held, records, latest, waiting, reading: Collection) -> dict:
+    """Every Facts field read from the post alone, beside the seats' replayed appends."""
+    from . import cascade_runtime, group_post, relaunch_intent, structure_outcome, fleet_post
+    now = post.now()
+    queued = [a for a in records if a.result == "queued" and latest.get(a.message) == 'queued']
+    state = service_state(ship.runtime)
+    return dict(
+        service=state,
+        accounting=accounting_reading(ship.runtime, state),  # said by the service's state, read with it
+        post_waits=fleet_post.status(ship, store) + post.filing_waits(ship.runtime) + post.drop_waits(ship.runtime),
+        waiting=len(waiting),
+        oldest=int(max(((now - m.at).total_seconds() for m in waiting), default=0) // 60),
+        blind=sum(result == 'blind' for result in latest.values()),
+        unsettled=sum(result in post.UNSETTLED for result in latest.values()),
+        queued=len(queued),
+        oldest_queued=int(max(((now - a.when).total_seconds() for a in queued), default=0) // 60),
+        relaunches=relaunch_intent.status(ship, {seat.name: seat for seat in reading.selected
+                                                 if not isinstance(seat, UnresolvedSeat)}),
+        post_held=list(post_held),
+        group_held=group_post.holds(ship.runtime),
+        drop_held=post.drop_alarms(ship.runtime),
+        cascade_held=cascade_runtime.holds(ship.runtime),
+        structure_waiting=structure_outcome.waits(ship, reading.readable),
+    )
+
+
+def _post_reading(ship, store, attempts, post_held):
     store = post.Store(ship.runtime) if store is None else store
     if post_held is None:
         if isinstance(store, post.Store):
@@ -854,140 +1036,97 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
             post_held = []
     attempts = post.Attempts(ship.runtime) if attempts is None else attempts
     records = attempts.all()
-    latest = attempts.latest(attempts=records)
-    waiting, needs_human, unarmed, pending_lines, routes, unknown, queue_unknown, compactions, turn_errors = [], [], [], [], [], [], [], [], []
-    sign_in_failures, ending = [], []
-    pane_obstructions = []
-    seat_holds = service_holds(ship.runtime)
+    return store, attempts, post_held, records, attempts.latest(attempts=records)
+
+
+def _facts(reading: Collection, lists: dict, fields: dict) -> Facts:
+    values = dict(reading.slow)
+    values.update(fields)
+    for name in _SEAT_LISTS:
+        if name != 'waiting':
+            values[name] = lists[name]
+    return Facts(**values)
+
+
+@post.reading_pass()
+@reading_scope.reading_pass()
+def collect(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tuple[str, str]] | None = None,
+            *, store=None, attempts=None, request_rows: list[dict] | None = None, check_reading=None,
+            post_held=None) -> tuple[Facts, Collection]:
+    """A full collection: the facts, and what a post refresh reuses until the next full collection."""
+    store, attempts, post_held, records, latest = _post_reading(ship, store, attempts, post_held)
     selected = seats(ship, tmux, False)
     # Seats whose launch record reads: a refused record holds its seat alone, said by that seat's own line.
     readable = [seat for seat in selected if not isinstance(seat, UnresolvedSeat) and _launch_reads(seat)]
     held, limit_unknown, move_reasons = limit_state(ship, selected)
-    pending_lines += limit_unknown
+    reading = Collection(ship, tmux, selected, readable, {}, {}, prefix=dict(pending=list(limit_unknown),
+                      seat_holds=service_holds(ship.runtime)), suffix={}, slow={}, request_rows=request_rows)
     for seat in selected:
-        with _one_seat(seat.name, seat_holds):
-            pending = attempts.undelivered(store, seat.name, results=latest)
-            waiting += pending
-            if isinstance(seat, UnresolvedSeat):
-                needs_human.append(seat.name)
-                unknown.append(str(seat.error).partition(';')[0])
-                continue
-            if (refused := getattr(seat, "relaunch_refused", None)) and (words := refused()):
-                ending.append(words)  # law: nothing-waits-silently
-            launched = seat.launched()
-            if refused_pool := launch_pool_refusal(seat, launched):
-                seat_holds.append(refused_pool)  # law: nothing-waits-silently
-            from .turn_failure import obstruction as failure_obstruction
-            from .auth_failure import status as authentication_status, waiting as authentication_waiting
-            authentication = authentication_status(seat)
-            if reason := authentication:
-                sign_in_failures.append(f"{seat.name}: {reason}")  # law: nothing-waits-silently
-                if not authentication_waiting(reason):
-                    needs_human.append(seat.name)
-            elif reason := failure_obstruction(seat, store):
-                turn_errors.append(f"{seat.name}: {reason}")  # law: nothing-waits-silently
-                needs_human.append(seat.name)
-            from .compaction import status as compaction_status
-            if detail := compaction_status(seat, alerts_only=True):
-                compactions.append(f"{seat.name}: {detail}")
-            if launched is not None and launched.pool in seat.spec.pools[1:]:
-                routes.append(f"{seat.name} on {seat.harness.name}/{launched.pool}")
-            if seat.session.human:
-                if reason := recovery.held(seat):
-                    if seat.name not in needs_human:
-                        needs_human.append(seat.name)
-                    pending_lines.append(f"{seat.name}: {reason}")
-                from . import human_wake
-                watch = post.watch_reading(ship.runtime, seat.name)
-                reason = human_wake.status(seat)
-                if human_wake.action_required(seat, reason):
-                    if seat.name not in needs_human:
-                        needs_human.append(seat.name)
-                    pending_lines.append(f"{seat.name}: {reason}")
-                if pending and watch.armed is False:
-                    unarmed.append(seat.name)
-            else:
-                # Human alarms use owned metadata only; never read their conversation here.
-                if seat.harness.reads_queue_error and (record := seat.record()) is not None:
-                    try:
-                        queue_error = seat.harness.state(record).queue_error
-                    except OSError:
-                        queue_error = None  # ordinary unreadable-record reporting remains independent
-                    if queue_error:
-                        queue_unknown.append(f"{seat.name}: queue unknown: {queue_error}")
-                door, obstruction = Door(seat).human_obstruction()
-                if diagnostic := getattr(door, "diagnostic", ""):
-                    pane_obstructions.append(f"{seat.name}: {diagnostic}")
-                if (obstruction and not authentication_waiting(authentication)
-                        and seat.name not in needs_human):
-                    needs_human.append(seat.name)
-                if door.waiting or "pending" in door.reason or "; qd submit " in door.reason:
-                    pending_lines.append(f"{seat.name}: {door.reason}")
-                for reason in pending_delivery.detached(seat):
-                    if seat.name not in needs_human:
-                        needs_human.append(seat.name)
-                    pending_lines.append(f"{seat.name}: {reason}")
-    pending_lines += [f"request claimed: {path.name}; inspect requests/ before retrying"
-                      for path in sorted((ship.runtime / "requests").glob("*.claimed"))]
+        ctx, ran = {}, []
+        for step, _ in _steps_of(seat):
+            ran.append(result := _run_step(step, seat, ctx, store, attempts, latest))
+            if result.stop:
+                break
+        reading.steps[seat.name], reading.contexts[seat.name] = ran, ctx
+    reading.suffix['pending'] = [f"request claimed: {path.name}; inspect requests/ before retrying"
+                                 for path in sorted((ship.runtime / "requests").glob("*.claimed"))]
     now = post.now()
-    from . import cascade_runtime, compaction_alert, group_post, ledger_recovery, model_mismatch, relaunch_intent, structure_outcome
-    from . import pr_screen, write_bound
-    oldest = int(max(((now - m.at).total_seconds() for m in waiting), default=0) // 60)
-    queued = [a for a in records if a.result == "queued" and latest.get(a.message) == 'queued']
+    from . import compaction_alert, ledger_recovery, model_mismatch, pr_screen, write_bound
     outcomes, outcome_errors = check_reading if check_reading is not None else check_outcome.collect(ship.runtime)
-    from . import fleet_post, usage_forecast
-    return Facts(
-        service=(state := service_state(ship.runtime)),
-        post_waits=fleet_post.status(ship, store) + post.filing_waits(ship.runtime) + post.drop_waits(ship.runtime),
+    from . import usage_forecast
+    lists = _replay(reading)
+    fields = _post_fields(ship, store, attempts, post_held, records, latest, lists['waiting'], reading)
+    reading.slow = dict(
         pool_forecasts=[forecast.describe() for forecast in usage_forecast.readings(ship, now) if forecast.warning],
-        waiting=len(waiting),
-        oldest=oldest,
-        blind=sum(result == 'blind' for result in latest.values()),
-        unsettled=sum(result in post.UNSETTLED for result in latest.values()),
-        queued=len(queued),
-        oldest_queued=int(max(((now - a.when).total_seconds() for a in queued), default=0) // 60),
-        needs_human=needs_human,
-        pending=pending_lines,
-        routes=routes,
-        unknown=unknown,
-        queue_unknown=queue_unknown,
-        compactions=compactions,
         manual_fresh=compaction_alert.unrouted(ship, readable),
         server_recovery=server_recovery.status(ship.runtime),
         write_bounds=write_bound.status(ship),
-        seat_holds=seat_holds,
         screening=pr_screen.status(ship.runtime),
-        relaunches=relaunch_intent.status(ship, {seat.name: seat for seat in selected
-                                                 if not isinstance(seat, UnresolvedSeat)}),
-        model_mismatches=model_mismatch.unrouted(ship, readable,
-                                               pending_model=request_queue.pending_model),
+        model_mismatches=model_mismatch.unrouted(ship, readable, pending_model=request_queue.pending_model),
         held=held,
         move_holds=move_reasons,
-        ending=ending,
         leftover_checks=leftover_checks(ship),
         request_waits=[request_queue.headline(row) for row in
                        (request_queue.pending(ship.runtime) if request_rows is None else request_rows)],
         cutover=(f"tmux: still on the default server {tmux.socket}; qd down, then qd up, moves it"
                  if getattr(tmux, "legacy", False) else ""),
-        turn_errors=turn_errors,
-        sign_in_failures=sign_in_failures,
-        pane_obstructions=pane_obstructions,
-        post_held=list(post_held),
-        group_held=group_post.holds(ship.runtime),
-        drop_held=post.drop_alarms(ship.runtime),
-        cascade_held=cascade_runtime.holds(ship.runtime),
-        structure_waiting=structure_outcome.waits(ship, readable),
-        accounting=accounting_reading(ship.runtime, state),
         retirement=post_retirement.reading(ship.runtime),
         ledger_recovery=ledger_recovery.alarms(ship.runtime),
         check_failed=check_outcome.alarms(outcomes),
         check_unknown=outcome_errors,
-        unarmed=unarmed,
         walls=walls if walls is not None else ledger_walls(ship),
         usage=headline_readings(ship),
         disks=disks([ship.runtime, ship.workspace, Path(tempfile.gettempdir())]),
         login=login if login is not None else credential.login_needed(ship),
     )
+    return _facts(reading, lists, fields), reading
+
+
+@post.reading_pass()
+@reading_scope.reading_pass()
+def refresh_post(reading: Collection, *, store=None, attempts=None, door_seats=frozenset()) -> Facts | None:
+    """The facts after post traffic alone: the post steps and fields read again, the rest as last collected.
+
+    ``door_seats`` are seats whose own pending or drop folder changed: their door step is read again too. None
+    when a seat's last reading stopped at a post step, whose later steps never ran: only a full collection can
+    say what they give."""
+    ship = reading.ship
+    store, attempts, post_held, records, latest = _post_reading(ship, store, attempts, None)
+    for seat in reading.selected:
+        ran, ctx = reading.steps.get(seat.name, []), reading.contexts.get(seat.name, {})
+        kinds = dict(_steps_of(seat))
+        order = [step for step, _ in _steps_of(seat)]
+        if ran and ran[-1].stop and kinds[order[len(ran) - 1]] != SLOW:
+            return None
+        for index, result in enumerate(ran):
+            kind = kinds[order[index]]
+            if kind == POST or kind == DOOR and seat.name in door_seats:
+                ran[index] = _run_step(order[index], seat, ctx, store, attempts, latest)
+                if ran[index].stop:
+                    return None  # a post step now stops the seat: the steps after it need a full collection
+    lists = _replay(reading)
+    return _facts(reading, lists, _post_fields(ship, store, attempts, post_held, records, latest, lists['waiting'],
+                                               reading))
 
 
 @contextmanager

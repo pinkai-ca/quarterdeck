@@ -242,6 +242,23 @@ def local_view(runtime, message, *, data=None):
     return projected(runtime, replace(message, sender=view(message.sender), to=view(message.to)))
 
 
+def unrouted(runtime):
+    """Inside a reading pass: a test of whether a message id has neither an import nor a forwarding file, from one
+    listing of each folder per pass. Such a message is local, never context only, and has no provenance or saved
+    route: its checks need not be made. None outside a pass, where every message is checked as before."""
+    from . import post, post_dir
+    imports = post.reading_names(runtime / 'post' / 'imports')
+    forwarded = post.reading_names(runtime / 'post' / 'forwarded')
+    if imports is None or forwarded is None:
+        return None
+    routed = imports | forwarded
+
+    def test(identifier):
+        name = identifier + '.json'
+        return post_dir._plain_name(name) and name not in routed
+    return test
+
+
 def context_only(runtime, identifier):
     imported = provenance(runtime, identifier)
     if not imported or not imported['context']:

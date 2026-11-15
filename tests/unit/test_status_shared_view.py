@@ -1,4 +1,5 @@
 """Read-only presentation shares post work and refreshes between collections."""
+import sys
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -50,20 +51,39 @@ def test_attempt_views_are_separate_for_each_runtime(tmp_path):
 
 def test_post_view_reuses_seat_projection_and_refreshes_next_reading(tmp_path, monkeypatch):
     runtime, store, _, message, _ = inventory(tmp_path)
-    checks = []
-    original = fleet_post.context_only
+    projections, checks = [], []
+    original_unrouted, original_context = fleet_post.unrouted, fleet_post.context_only
+    def projected(folder):
+        if sys._getframe(1).f_code.co_name == 'read':  # for_seat's own projection, not the store's load
+            projections.append(folder)
+        return original_unrouted(folder)
     def checked(folder, identifier):
         checks.append(identifier)
-        return original(folder, identifier)
+        return original_context(folder, identifier)
+    monkeypatch.setattr(fleet_post, 'unrouted', projected)
     monkeypatch.setattr(fleet_post, 'context_only', checked)
     with post.reading_pass(store=store):
         assert post.Store(runtime).for_seat('reader') == [message]
         assert store.for_seat('reader') == [message]
-    assert checks == [message.id]
+    assert len(projections) == 1, 'one projection for the pass, shared by both readers'
+    assert checks == [], 'a message with neither an import nor a forwarding file needs no check of its own'
     another = store.new('order', 'issuer', 'reader', 'New status work')
     with post.reading_pass(store=store):
         assert [m.id for m in post.Store(runtime).for_seat('reader')] == [message.id, another.id]
-    assert len(checks) == 3
+    assert len(projections) == 2, 'the next reading projects again'
+
+
+@pytest.mark.parametrize('folder', ['imports', 'forwarded'])
+def test_a_message_with_an_import_or_forwarding_file_is_still_checked_one_by_one(tmp_path, monkeypatch, folder):
+    runtime, store, _, message, _ = inventory(tmp_path)
+    (runtime / 'post' / folder).mkdir(parents=True, exist_ok=True)
+    (runtime / 'post' / folder / f'{message.id}.json').write_text('{}')
+    checks = []
+    monkeypatch.setattr(fleet_post, 'context_only', lambda runtime, identifier: checks.append(identifier) or True)
+    with post.reading_pass(store=store):
+        assert store.for_seat('reader') == [], 'judged by its own check, here context only'
+    assert checks == [message.id]
+    assert store.for_seat('reader') == [] and checks == [message.id, message.id], 'outside a pass, as before'
 
 
 def test_metadata_directory_inventory_is_local_to_the_presentation(tmp_path, monkeypatch):

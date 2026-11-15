@@ -117,7 +117,10 @@ def current(seat: Seat) -> TurnFailure | None:
     read = getattr(seat, 'record', None)  # a reading-only stand-in without a record shows no failure
     try:
         record = read() if read is not None else None
-        return getattr(seat.harness.state(record), 'failure', None) if record is not None else None  # law: record-first
+        if record is None:
+            return None
+        from . import record_follow  # each collection reads only what the record gained since (law: record-first)
+        return getattr(record_follow.state(seat, record), 'failure', None)
     except OSError:
         return None  # the unreadable record is reported by the ordinary reading
 

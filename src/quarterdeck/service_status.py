@@ -57,3 +57,24 @@ def inputs(ship):
         return tuple((str(path), fingerprint(path)) for path in paths)
     except OSError:
         return None  # an unreadable hint cannot certify that nothing changed
+
+
+def split(ship, files):
+    """The inputs the post's traffic changes (everything under runtime/post), and the rest. A change to the post's
+    alone needs only a post refresh; any other needs a full collection."""
+    post = str(ship.runtime / 'post')
+    ours = tuple(item for item in files if item[0] == post or item[0].startswith(post + '/'))
+    return ours, tuple(item for item in files if not (item[0] == post or item[0].startswith(post + '/')))
+
+
+def door_seats(ship, before, after):
+    """Seats whose own pending or drop folder changed between two post readings: their door is read again."""
+    old, changed = dict(before or ()), set()
+    for path, stamp in after:
+        if old.get(path) == stamp:
+            continue
+        for kind in ('pending', 'drop'):
+            prefix = str(ship.runtime / 'post' / kind) + '/'
+            if path.startswith(prefix) and '/' not in path[len(prefix):]:
+                changed.add(path[len(prefix):])
+    return frozenset(changed)

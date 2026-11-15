@@ -48,6 +48,7 @@ from .tmux import Tmux, TmuxError, ship_sessions
 
 TYPING_QUIET = 30  # seconds since a client's last key or mouse input before its session may be switched
 STATUS_INTERVAL = 0.7  # cheap change checks; deadlines start after the check/collection finishes
+FULL_STATUS_INTERVAL = 5.0  # a non-post change collects in full at most this often; post traffic refreshes post facts
 ACCOUNT_RETRY = 60.0  # unchanged transient source failures, never provider pacing
 QUICK_REQUEST_SECONDS = 0.02
 QUICK_REQUEST_OPERATIONS = 128
@@ -148,6 +149,10 @@ class Service:
         self.status_checked: float | None = None
         self.status_inputs = None
         self.status_refresh = 0.0
+        self.status_full_after = 0.0  # a non-post change waits until then for its full collection
+        self.status_kept = None  # the last full collection, which a post refresh reuses (watch.Collection)
+        self.status_request = ('full', frozenset())  # what publish_status is asked for: full, or post with door seats
+        self.status_done = None  # what publish_status did: 'full' or 'post'
         from .structure_outcome import Passes
         self.structure_passes = Passes()
         self.earlier_installer: tuple[int, str] | None = None  # an earlier-code installer that started this service
@@ -377,22 +382,40 @@ class Service:
             if demand is False:
                 return
             files = service_status.inputs(self.ship)
-            # Beside the files: the service's own accounting state, held in memory. It changes only on a
-            # transition (unknown, healthy, failing since a time with its cause), never on a pass, so a
-            # transition is published at once and the service's own churn still forces nothing.
-            inputs = None if files is None else (files, self.accounting_health.shown())
-            if (reversed_clock or inputs is None or inputs != getattr(self, 'status_inputs', None)
-                    or now >= getattr(self, 'status_refresh', 0.0)):
-                self.heartbeat()
-                with self.timings().measure('status'):
-                    published = self.publish_status()
-                if published is False:
-                    return
-                # Remember the observation BEFORE collection: a change during it
-                # remains owed. No read or failed collection renews the rendering.
-                self.status_inputs = inputs
-                finished = time.monotonic()
+            # The post's traffic (store, attempts, journals, drops) refreshes only the post facts, over the last full
+            # collection; any other change collects in full, at most once every FULL_STATUS_INTERVAL; the periodic
+            # refresh collects in full. Beside the files: the service's own accounting state, held in memory and
+            # read with the service's state at every publish. It changes only on a transition, never on a pass, so
+            # a transition is published at once, by a post refresh, and the service's own churn forces nothing.
+            accounting = self.accounting_health.shown()
+            post_now, other_now = (service_status.split(self.ship, files) if isinstance(files, tuple)
+                                   else ((), files))
+            last = getattr(self, 'status_inputs', None)
+            # (A post refresh with no kept collection collects in full: publish_status falls back.)
+            forced = reversed_clock or files is None or last is None or now >= getattr(self, 'status_refresh', 0.0)
+            other_due = last is not None and other_now != last[1] and now >= getattr(self, 'status_full_after', 0.0)
+            post_changed = last is not None and (post_now != last[0] or accounting != last[2])
+            if forced or other_due:
+                request = ('full', frozenset())
+            elif post_changed:
+                request = ('post', service_status.door_seats(self.ship, last[0], post_now))
+            else:
+                return
+            self.heartbeat()
+            self.status_request, self.status_done = request, None
+            with self.timings().measure('status' if request[0] == 'full' else 'status_post'):
+                published = self.publish_status()
+            if published is False:
+                return
+            # Remember the observation BEFORE collection: a change during it remains owed. No read or failed
+            # collection renews the rendering. A post refresh keeps the other inputs owed as they were.
+            finished = time.monotonic()
+            if (self.status_done or request[0]) == 'full':
+                self.status_inputs = (post_now, other_now, accounting)
                 self.status_refresh = finished + self.ship.status_refresh
+                self.status_full_after = finished + FULL_STATUS_INTERVAL
+            else:
+                self.status_inputs = (post_now, last[1], accounting)
         except Exception as error:
             self.log('error', step='publish_status', error=repr(error), trace=traceback.format_exc())
         finally:
@@ -401,10 +424,26 @@ class Service:
             self.next_status = time.monotonic() + STATUS_INTERVAL
 
     def publish_status(self) -> bool:
+        """Publish what status_request asks: a full collection, or a post refresh over the kept one, which falls back
+        to a full collection when it declines. status_done says which ran."""
         if getattr(self, 'journal_reader', None) is None:
             self.journal_reader = pending_delivery.JournalReader()
+        mode, door_seats = getattr(self, 'status_request', ('full', frozenset()))
+        self.status_request = ('full', frozenset())  # a request is used once; a direct call collects in full
+        kept = getattr(self, 'status_kept', None)
         with pending_delivery.journal_reading(self.journal_reader):
-            return presentation.publish(self.ship, self.tmux, self.status_framework, self.store, self.attempts)
+            if mode == 'post' and kept is not None:
+                written, _ = presentation.publish_collected(self.ship, self.tmux, self.status_framework, self.store,
+                                                            self.attempts, kept=kept, door_seats=door_seats)
+                if written is not None:
+                    self.status_done = 'post'
+                    return written
+            keep = []
+            written = presentation.publish(self.ship, self.tmux, self.status_framework, self.store, self.attempts,
+                                           keep)
+            self.status_done = 'full'
+            self.status_kept = keep[0] if keep else None
+            return written
 
     def push_reminders(self) -> None:
         """A local origin/main change starts a durable reminder, without reading GitHub."""

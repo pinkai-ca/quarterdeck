@@ -151,31 +151,50 @@ def collected_line(line, publication_age):
     return f'{lead} · publication {publication_age}s old, collected here' + separator + alerts
 
 
-def publish(ship, tmux, framework, store, attempts):
-    """A failed/refused collection cannot leave its prior healthy rendering available."""
+def publish(ship, tmux, framework, store, attempts, keep: list | None = None) -> bool:
+    """A failed/refused collection cannot leave its prior healthy rendering available. ``keep``, a list, receives
+    the full collection a post refresh reuses, when one was published."""
+    written, collection = publish_collected(ship, tmux, framework, store, attempts)
+    if keep is not None and written is True and collection is not None:
+        keep.append(collection)
+    return written is True
+
+
+def publish_collected(ship, tmux, framework, store, attempts, *, kept=None, door_seats=frozenset()):
+    """As publish. Without ``kept``, a full collection: returns (written, the collection a post refresh reuses).
+    With ``kept``, a post refresh over it (watch.refresh_post); (None, kept) when it declines and a full collection
+    is owed, which leaves the rendering as it was."""
     written = False
     try:
-        written = _publish(ship, tmux, framework, store, attempts)
-        return written
+        written, collection = _publish(ship, tmux, framework, store, attempts, kept, door_seats)
+        return written, collection
     finally:
-        if not written:
+        if written is False:
             (ship.runtime / NAME).unlink(missing_ok=True)
 
 
-def _publish(ship, tmux, framework, store, attempts):
+def _publish(ship, tmux, framework, store, attempts, kept=None, door_seats=frozenset()):
     """Only the service writes this rendering, dating collection and publication separately."""
     from . import ship as shipmod, watch
 
     wall, monotonic = time.time_ns(), time.monotonic_ns()
     stamp = fingerprint(ship.file)
-    current = shipmod.load(ship.folder)
-    facts = watch.facts(current, tmux, store=store, attempts=attempts)
+    if kept is None:
+        current = shipmod.load(ship.folder)
+        keep = []
+        facts = watch.facts(current, tmux, store=store, attempts=attempts, keep=keep)
+        collection = keep[0] if keep else None  # none kept: the next post change collects in full
+    else:
+        collection = kept
+        facts = watch.refresh_post(kept, store=store, attempts=attempts, door_seats=door_seats)
+        if facts is None:
+            return None, kept
     line = facts.line()
     beat = servicectl.read_heartbeat(ship.runtime)
     start = process_start(os.getpid())
     if (facts.service != 'ok' or beat is None or beat[0] != os.getpid() or start is None
             or not servicectl.alive(ship.runtime) or fingerprint(ship.file) != stamp):
-        return False
+        return False, None
     data = dict(format=1, wall=wall, written=time.time_ns(), monotonic=monotonic, pid=os.getpid(), process_start=start,
                 ship=stamp, framework=framework, line=line, accounting=getattr(facts, 'accounting', None),
                 ledger_recovery=getattr(facts, 'ledger_recovery', []),
@@ -184,7 +203,7 @@ def _publish(ship, tmux, framework, store, attempts):
     temporary = path.with_suffix('.tmp')
     temporary.write_text(json.dumps(data, allow_nan=False) + '\n')
     os.replace(temporary, path)
-    return True
+    return True, collection
 
 
 def command_folder(argv):

@@ -72,14 +72,33 @@ def test_the_service_uses_the_ship_files_refresh_interval(scheduled):
     assert published == [0.0, 45.5]
 
 
-@pytest.mark.parametrize('change', ['arrival', 'attempt', 'journal', 'seat', 'heartbeat'])
-def test_a_changed_input_is_published_without_waiting_for_the_periodic_refresh(scheduled, monkeypatch, change):
+def hints(service, post_stamp, other_stamp):
+    """Inputs as service_status gives them: one under the post, one elsewhere."""
+    runtime = service.ship.runtime
+    return ((str(runtime / 'post' / 'store'), post_stamp), (str(runtime / 'seats' / 'worker'), other_stamp))
+
+
+@pytest.mark.parametrize('change, post_traffic', [('arrival', True), ('attempt', True), ('journal', True),
+                                                  ('seat', False), ('heartbeat', False)])
+def test_a_changed_input_is_published_without_waiting_for_the_periodic_refresh(scheduled, monkeypatch, change,
+                                                                               post_traffic):
     service, clock, published = scheduled
+    monkeypatch.setattr(service_status, 'inputs', lambda ship: hints(service, 'before', 'before'))
     service.status_due()
-    monkeypatch.setattr(service_status, 'inputs', lambda ship: change)
+    changed = hints(service, change, 'before') if post_traffic else hints(service, 'before', change)
+    monkeypatch.setattr(service_status, 'inputs', lambda ship: changed)
     clock[0] = 0.8
     service.status_due()
-    assert published == [0.0, 0.8]
+    if post_traffic:
+        assert published == [0.0, 0.8] and service.status_request[0] == 'post', 'post traffic: a post refresh at once'
+        return
+    assert published == [0.0], "another change waits for the full collection's interval"
+    clock[0] = servicemod.FULL_STATUS_INTERVAL - 1.0
+    service.status_due()
+    assert published == [0.0]
+    clock[0] = servicemod.FULL_STATUS_INTERVAL
+    service.status_due()
+    assert published == [0.0, servicemod.FULL_STATUS_INTERVAL] and service.status_request[0] == 'full'
 
 
 def test_an_accounting_transition_forces_exactly_one_collection(scheduled):
@@ -127,10 +146,12 @@ def test_an_unchanged_accounting_state_forces_nothing_across_many_checks(schedul
     assert published == [0.0], 'thirty-six unchanged checks within the refresh collect nothing'
 
 
-def test_changes_during_collection_remain_owed(scheduled, monkeypatch):
+@pytest.mark.parametrize('post_traffic', [True, False])
+def test_changes_during_collection_remain_owed(scheduled, monkeypatch, post_traffic):
     service, clock, published = scheduled
     hint = ['before']
-    monkeypatch.setattr(service_status, 'inputs', lambda ship: hint[0])
+    monkeypatch.setattr(service_status, 'inputs', lambda ship: (
+        hints(service, hint[0], 'before') if post_traffic else hints(service, 'before', hint[0])))
     def collect():
         published.append(clock[0])
         hint[0] = 'after'
@@ -138,7 +159,11 @@ def test_changes_during_collection_remain_owed(scheduled, monkeypatch):
     service.status_due()
     clock[0] = 0.8
     service.status_due()
-    assert published == [0.0, 0.8]
+    if not post_traffic:
+        assert published == [0.0], 'owed, until the full interval comes round'
+        clock[0] = servicemod.FULL_STATUS_INTERVAL
+        service.status_due()
+    assert published == [0.0, clock[0]]
 
 
 def test_a_failed_collection_keeps_the_same_input_owed(scheduled):
@@ -487,3 +512,30 @@ def test_failed_or_refused_collection_still_has_one_collection_measurement(sched
     assert service.timings().status_checks == 2
     assert service.timings().rows['status']['calls'] == 1
     assert service.timings().rows['status']['wall'] == 2.0
+
+
+def test_a_declined_post_refresh_collects_in_full(scheduled, monkeypatch):
+    service, clock, published = scheduled
+    del service.publish_status  # the service's own, not the fixture's stand-in
+    calls = []
+    monkeypatch.setattr(servicemod.presentation, 'publish_collected',
+                        lambda *args, **kwargs: calls.append('post') or (None, kwargs['kept']))
+    monkeypatch.setattr(servicemod.presentation, 'publish',
+                        lambda *args: calls.append('full') or args[5].append('a new collection') or True)
+    service.status_kept, service.status_request = 'a kept collection', ('post', frozenset())
+    assert service.publish_status() is True
+    assert calls == ['post', 'full'] and service.status_done == 'full'
+    assert service.status_kept == 'a new collection' and service.status_request[0] == 'full', 'a request is used once'
+
+
+def test_the_door_is_read_again_only_for_seats_whose_own_pending_or_drop_folder_changed(tmp_path):
+    ship = hinted_ship(tmp_path)
+    post = str(ship.runtime / 'post')
+    before = ((post + '/store', 1), (post + '/pending/worker', 1), (post + '/drop/worker', 1),
+              (post + '/pending/other', 1), (post + '/drop/other', 1))
+    after = ((post + '/store', 2), (post + '/pending/worker', 2), (post + '/drop/worker', 1),
+             (post + '/pending/other', 1), (post + '/drop/other', 2))
+    assert service_status.door_seats(ship, before, after) == {'worker', 'other'}
+    assert service_status.door_seats(ship, before, before) == frozenset()
+    posted, other = service_status.split(ship, before + ((str(ship.runtime / 'seats/worker'), 1),))
+    assert posted == before and other == ((str(ship.runtime / 'seats/worker'), 1),)
