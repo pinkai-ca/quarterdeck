@@ -159,6 +159,8 @@ class Store:
         self.dir = runtime / "post" / "store"
         self._cache: tuple[tuple[object, ...], list[Message], dict[str, list[Message]]] | None = None
         self._cache_at: int | None = None
+        self._validated: dict[str, tuple[tuple[int, ...], object, Message, int | None]] = {}
+        self._validated_context: tuple[object, ...] | None = None
         self._reference_messages: list[Message] | None = None
         self._references: dict[str, list[Message]] = {}
         self._short_messages: list[Message] | None = None
@@ -278,6 +280,63 @@ class Store:
             return reading_value('store', key, reader._load_current)
         return self._load_current()
 
+    def _refresh_messages(self, paths, context, started):
+        """Reuse immutable files only after a complete, unchanged identity inventory."""
+        from .fleet_post import local_view, provenance, stable_bytes
+        runtime = self.dir.parent.parent
+        previous = self._validated
+        self._validated = {}  # a failed refresh cannot leave a partial certificate
+        self._validated_context, old_context = context, self._validated_context
+        identity = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns, s.st_mode)
+        inventory = []
+        reread = context != old_context
+        for path in paths:
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                continue
+            if not stat.S_ISREG(info.st_mode) and not stat.S_ISLNK(info.st_mode):
+                continue
+            record = provenance(runtime, path.stem)
+            key = identity(info)
+            cached = previous.get(path.name)
+            if cached is not None and (cached[0] != key or cached[1] != record):
+                reread = True
+            inventory.append((path, info, key, record, cached))
+        if previous.keys() - {path.name for path, *_ in inventory}:
+            reread = True
+        messages, validated = [], {}
+        for path, info, key, record, cached in inventory:
+            if cached is not None and cached[3] is not None and cached[3] <= started and not reread:
+                message = cached[2]
+                validated[path.name] = cached
+            else:
+                try:
+                    if record is None:
+                        message = local_view(runtime, Message.from_json(post_dir.read_text(path)))
+                    else:
+                        data = stable_bytes(path)
+                        message = local_view(runtime, Message.from_json(data.decode('utf-8')), data=data)
+                except post_dir.NotRegular:
+                    continue
+                except FileNotFoundError:
+                    if not post_dir.gone(path):
+                        raise
+                    continue
+                try:
+                    after = path.lstat()
+                except FileNotFoundError:
+                    after = None
+                checked = time.time_ns()
+                # A recent read cannot certify a coarse or racing file timestamp.
+                if after is not None and identity(after) == key and stat.S_ISREG(info.st_mode):
+                    certified = (started if max(info.st_mtime_ns, info.st_ctime_ns)
+                                 + POST_TIMESTAMP_TICK_NS < started <= checked else None)
+                    validated[path.name] = (key, record, message, certified)
+            messages.append(message)
+        self._validated = validated
+        return messages
+
     def _load_current(self) -> tuple[list[Message], dict[str, list[Message]]]:
         """Immutable messages and replies; recent directory listings stay untrusted."""
         cached_at = self._cache_at
@@ -344,6 +403,7 @@ class Store:
             descriptor = post_dir.open_directory(self.dir, create=False)
         except FileNotFoundError:
             self._cache = None
+            self._validated = {}
             return [], {}
         try:
             info = os.fstat(descriptor)
@@ -354,36 +414,7 @@ class Store:
             if (self._cache is None or self._cache[0] != stamp or cached_at is None
                     or not cached_at <= started <= checked):
                 paths = post_dir.json_paths(self.dir)
-                from .fleet_post import local_view, provenance, stable_bytes
-
-                messages = []
-                runtime = self.dir.parent.parent
-                for path in paths:
-                    # A store name that is not a regular file is not a message. A symlink is a hold,
-                    # raised by the read. An imports record that is not regular stops the listing.
-                    try:
-                        file_info = path.lstat()
-                    except FileNotFoundError:
-                        continue
-                    if not stat.S_ISREG(file_info.st_mode) and not stat.S_ISLNK(file_info.st_mode):
-                        continue
-                    record = provenance(runtime, path.stem)
-                    try:
-                        if record is None:
-                            raw = post_dir.read_text(path)
-                        else:
-                            data = stable_bytes(path)
-                    except post_dir.NotRegular:
-                        continue  # the store file changed to a special file during the read
-                    except FileNotFoundError:
-                        if not post_dir.gone(path):
-                            raise
-                        continue
-                    if record is None:
-                        message = local_view(runtime, Message.from_json(raw))
-                    else:
-                        message = local_view(runtime, Message.from_json(data.decode('utf-8')), data=data)
-                    messages.append(message)
+                messages = self._refresh_messages(paths, (stamp[0], stamp[1], stamp[4]), started)
                 messages.sort(key=lambda m: (m.at, m.id))
                 replies: dict[str, list[Message]] = {}
                 for message in messages:
@@ -407,7 +438,9 @@ class Store:
                 finished = time.time_ns()
                 # Certify only a listing begun after the entire timestamp bucket.
                 # An unsafe listing must be refreshed even when its stamp has aged.
-                if max(info.st_mtime_ns, info.st_ctime_ns) + POST_TIMESTAMP_TICK_NS < started <= checked <= finished:
+                if (all(entry[3] is not None for entry in self._validated.values())
+                        and max(info.st_mtime_ns, info.st_ctime_ns) + POST_TIMESTAMP_TICK_NS
+                        < started <= checked <= finished):
                     self._cache_at = started
             else:
                 self._cache_at = cached_at
