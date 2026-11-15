@@ -51,7 +51,7 @@ Office name:    Office
 
 Ship name:      Endeavour
 Project path:   ~/code/my-app
-Office folder: ~/quarterdeck/office
+Office folder: /home/you/quarterdeck/office
 The office holds your desk; the ship holds its crew. The captain takes orders from desk@office.
 
 Where    Seat       Name     Harness       Model             Effort
@@ -60,9 +60,9 @@ Ship     Captain    Picard   Codex         gpt-6-astra       xhigh
 Ship     Engineer   Geordi   pi            qwen3.8-27b       medium
 
 Runs on
-  Claude Code   a subscription you are signed in to (~/.claude)
   Codex         a subscription you are signed in to (~/.codex)
   pi            a local model at http://127.0.0.1:8000/v1
+  Claude Code   a subscription you are signed in to (~/.claude)
 ```
 
 Then it checks the machine, and brings the crew up when you say so.
