@@ -16,7 +16,7 @@ from .json_record import object_lines, when
 from .types import ActiveTool
 
 VERSION = '2.1.325'
-ENDS = frozenset({'end_turn', 'max_tokens', 'stop_sequence'})
+ENDS = frozenset({'end_turn'})  # the explicit child return measured on this version
 FINISHED = frozenset({'ended', 'ended-by-relaunch'})
 
 
@@ -120,6 +120,9 @@ class Leaf:
                     continue
             at = when(row.get('timestamp'))
             if kind == 'assistant':
+                if not isinstance(row['message'].get('content'), list):
+                    self.known = False
+                    continue
                 self.open = True
                 self.started = self.started or at
                 for block in blocks(row, 'tool_use'):
