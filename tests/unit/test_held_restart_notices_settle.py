@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import post, post_notices, request_queue, ship as shipmod
+from quarterdeck import post, post_notices, request_queue, post_threads, ship as shipmod
 from quarterdeck.service import Service
 from tests.unit.test_rebrief_notices_settle import AT, store, launch, reader
 
@@ -84,6 +84,10 @@ def test_completed_request_notice_is_history_and_not_carried(store, monkeypatch,
     assert 'held restart: settled by completion of its request' in carriage.history
     data = post.inbox_reading(store, 'reader')
     assert message in data['received'] and message.id in data['settled']
+    assert 'held restart: settled by completion of its request' in post.inbox_text(store, 'reader')
+    thread = post_threads.render(post_threads.whole(store, message.id, 'reader'))
+    assert 'settled by completion of its request · received history' in thread
+    assert message.body in thread
     assert (store.dir / (message.id + '.json')).read_bytes() == before
     assert store.read_ids('reader') == set()
 
@@ -149,10 +153,12 @@ def test_quiet_pass_reads_no_request_record_and_next_change_is_seen(store, monke
     assert message.id not in store.settled_notices('reader')
     assert len(calls) == 1
     finish(store, path, 'reader: request ended')
+    assert len(calls) == 2  # one service-writer registry read, separate from delivery
+    calls.clear()
     assert message.id in store.settled_notices('reader')
-    assert len(calls) == 2
+    assert len(calls) == 1
     assert message.id in store.settled_notices('reader')
-    assert len(calls) == 2
+    assert len(calls) == 1  # the quiet next reading uses the stamped receipt
 
 
 def test_young_or_unreadable_receipt_is_not_cached(store, monkeypatch):
