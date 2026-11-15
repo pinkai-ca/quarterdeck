@@ -1541,7 +1541,7 @@ class Service:
         """Read each closing-turn decision once; start fresh outside that read-only view."""
         for seat in self.resolved_seats():
             with post.reading_pass(store=self.store, attempts=getattr(self, 'attempts', None)):
-                ready = self._fresh_after_order_ready(seat)
+                ready = Service._fresh_after_order_ready(self, seat)
             if ready:
                 proof = seat.fresh()  # law: context-is-cache
                 self.log("fresh", seat=seat.name, proof=proof)
@@ -1549,7 +1549,8 @@ class Service:
     def _fresh_after_order_ready(self, seat) -> bool:
         """The current orders, recovery and recorded completion; never a lifecycle action."""
         from . import compaction
-        if seat.session.human or recovery.held(seat) or seat.spec.fresh != "after-order" or not seat.is_up or self.store.open_for(seat.name):
+        if (seat.session.human or seat.spec.fresh != "after-order" or not seat.is_up
+                or self.store.open_for(seat.name) or recovery.held(seat)):
             return False
         launched = seat.launched()
         if launched is None:

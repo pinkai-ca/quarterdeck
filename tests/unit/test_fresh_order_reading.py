@@ -1,6 +1,10 @@
 """Closing-order decisions share one post view, then leave it before restarting."""
 
-from quarterdeck import post, post_dir
+from dataclasses import replace
+
+import pytest
+
+from quarterdeck import post, post_dir, recovery
 from .test_fresh_after_order import worker
 
 
@@ -62,3 +66,30 @@ def test_changed_post_and_record_are_read_on_the_next_pass(worker):
     w.svc.store.new('report', 'worker', 'operator', 'More done', re=next_order.id)
     w.svc.fresh_after_order()
     assert w.fresh == [True]
+
+
+# Each cheap guard independently vetoes a restart. A recovery hold still wins
+# whenever the other guards permit a restart; an eligible seat still restarts.
+@pytest.mark.parametrize('case', ['human', 'policy', 'pane', 'open-order', 'recovery', 'eligible'])
+def test_pure_guards_preserve_the_restart_decision(worker, monkeypatch, case):
+    w = worker
+    w.record.begin()
+    w.record.finish()
+    if case == 'human':
+        monkeypatch.setitem(w.seat.ship.sessions, 'crew', replace(w.seat.session, human=True))
+    elif case == 'policy':
+        monkeypatch.setattr(w.seat, 'spec', replace(w.seat.spec, fresh=None))
+    elif case == 'pane':
+        monkeypatch.setattr(w.seat, 'pane', lambda: None)
+    elif case == 'open-order':
+        w.svc.store.new('order', 'operator', 'worker', 'Next task')
+    reads = []
+
+    def held(seat):
+        reads.append(seat.name)
+        return 'recovery remains unresolved' if case == 'recovery' else None
+
+    monkeypatch.setattr(recovery, 'held', held)
+    w.svc.fresh_after_order()
+    assert bool(w.fresh) == (case == 'eligible')
+    assert reads == (['worker'] if case in ('recovery', 'eligible') else [])
