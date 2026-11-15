@@ -14,7 +14,7 @@ from quarterdeck import sandbox, setup, ship as shipmod
 
 
 def ship_with_hand(tmp_path: Path, cwd: Path | None = None, workspace: str | None = None) -> shipmod.Ship:
-    """An office whose workspace is <tmp>/framework and whose desk is declared as a hand: work/hands/bert there."""
+    """An office whose workspace is <tmp>/framework and whose desk is declared as a hand: work/hands/hand there."""
     folder = tmp_path / 'office'
     folder.mkdir(exist_ok=True)
     (tmp_path / 'framework').mkdir(exist_ok=True)
@@ -26,7 +26,7 @@ def ship_with_hand(tmp_path: Path, cwd: Path | None = None, workspace: str | Non
 
 
 def hand(tmp_path: Path) -> Path:
-    return tmp_path / 'framework' / 'work' / 'hands' / 'bert'
+    return tmp_path / 'framework' / 'work' / 'hands' / 'hand'
 
 
 def check(ship: shipmod.Ship, **kwargs) -> None:
@@ -93,10 +93,10 @@ def test_the_steps_above_keep_their_modes(tmp_path):
     assert all(stat.S_IMODE(step.lstat().st_mode) == 0o755 for step in (folder.parent, folder.parent.parent))
 
 
-@pytest.mark.parametrize('where', ['work/hands/bert', 'work/hands', 'work'])
+@pytest.mark.parametrize('where', ['work/hands/hand', 'work/hands', 'work'])
 def test_a_link_at_any_step_is_refused_and_its_target_untouched(tmp_path, where):
     """The link stands for the step named; what it points at holds the rest of the path, a real folder at 0755."""
-    rest = Path('work/hands/bert').relative_to(where)
+    rest = Path('work/hands/hand').relative_to(where)
     elsewhere = tmp_path / 'elsewhere'
     target = elsewhere / rest
     target.mkdir(parents=True, mode=0o755)
@@ -144,7 +144,7 @@ def test_an_absolute_cwd_reaching_the_workspaces_work_through_a_link_is_refused(
     hand(tmp_path).mkdir(parents=True, mode=0o700)
     alias = tmp_path / 'alias'
     alias.symlink_to(tmp_path / 'framework')
-    ship = ship_with_hand(tmp_path, cwd=alias / 'work' / 'hands' / 'bert')
+    ship = ship_with_hand(tmp_path, cwd=alias / 'work' / 'hands' / 'hand')
     with pytest.raises(shipmod.ShipError, match='its workspace\'s work folder, through a link.*Declare it as '
                        + str(hand(tmp_path))):
         check(ship)

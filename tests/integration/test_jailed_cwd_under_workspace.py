@@ -27,10 +27,10 @@ pytestmark = pytest.mark.skipif(not namespaces_allowed(), reason="bubblewrap is 
 
 
 def hand_like(newcomer, capsys) -> tuple[Path, Path]:
-    """The office set up, its desk down and declared as a hand: cwd = <workspace>/work/hands/bert, a real folder."""
+    """The office set up, its desk down and declared as a hand: cwd = <workspace>/work/hands/hand, a real folder."""
     office, _ = set_up(newcomer, capsys)
     workspace = newcomer.workspace
-    folder = workspace / 'work' / 'hands' / 'bert'
+    folder = workspace / 'work' / 'hands' / 'hand'
     folder.mkdir(parents=True, mode=0o700)
     text = (office / 'ship.toml').read_text()
     text = shipmod.edit(text, 'ship', 'workspace', str(workspace))
@@ -43,7 +43,7 @@ def hand_like(newcomer, capsys) -> tuple[Path, Path]:
 def test_a_link_planted_at_the_hands_folder_refuses_the_next_up_and_launches_nothing(newcomer, capsys):
     office, folder = hand_like(newcomer, capsys)
     before = launch_file(office)
-    elsewhere = newcomer.tmp / 'elsewhere-bert'
+    elsewhere = newcomer.tmp / 'elsewhere-hand'
     elsewhere.mkdir(mode=0o755)
     elsewhere.chmod(0o755)
     folder.rmdir()
@@ -60,7 +60,7 @@ def test_a_link_planted_at_work_hands_refuses_the_next_up_and_launches_nothing(n
     office, folder = hand_like(newcomer, capsys)
     before = launch_file(office)
     elsewhere = newcomer.tmp / 'elsewhere-hands'
-    (elsewhere / 'bert').mkdir(parents=True, mode=0o700)
+    (elsewhere / 'hand').mkdir(parents=True, mode=0o700)
     folder.rmdir()
     folder.parent.rmdir()
     folder.parent.symlink_to(elsewhere, target_is_directory=True)
@@ -106,7 +106,7 @@ def test_an_absolute_cwd_through_a_link_to_the_workspace_fails_closed(newcomer, 
     before = launch_file(office)
     alias = newcomer.tmp / 'workspace-alias'
     alias.symlink_to(newcomer.workspace, target_is_directory=True)
-    text = shipmod.edit((office / 'ship.toml').read_text(), 'seats.desk', 'cwd', str(alias / 'work' / 'hands' / 'bert'))
+    text = shipmod.edit((office / 'ship.toml').read_text(), 'seats.desk', 'cwd', str(alias / 'work' / 'hands' / 'hand'))
     (office / 'ship.toml').write_text(text)
     code, said = qd(capsys, office, 'up', 'desk')
     assert code != 0 and 'through a link' in said and f'Declare it as {folder}' in said, said[-3000:]
