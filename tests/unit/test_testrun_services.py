@@ -95,3 +95,27 @@ def test_servicectl_records_each_service_it_starts_for_the_test_run(tmp_path, mo
     assert data['unit'] == 'qd-service-x-0000.scope' and data['python'] == sys.executable
     assert (Path(data['package']) / 'quarterdeck' / 'servicectl.py').is_file()
     assert servicectl.TEST_RUN_RECORDS == services.RECORD_ENV, 'the tool and the framework name one folder'
+
+
+def test_a_record_naming_a_ship_outside_the_scratch_is_never_stopped_and_holds_the_cleanup(tmp_path):
+    """Whatever process wrote it, a record of a ship outside the run's own scratch never leads the tool to stop that
+    service: it is left running, named in the result, and the cleanup is held."""
+    scratch = tmp_path / 'scratch'
+    scratch.mkdir()
+    elsewhere = tmp_path / 'real-ship'
+    elsewhere.mkdir()
+    process, start = sleeper(elsewhere)
+    try:
+        folder = tmp_path / 'records'
+        folder.mkdir()
+        (folder / f'{process.pid}-{start}.json').write_text(json.dumps(dict(
+            ship=str(elsewhere), runtime=str(elsewhere / 'runtime'), pid=process.pid, start=start,
+            python=sys.executable, package=str(tmp_path / 'package'))))
+        stopped = services.stop(folder, scratch)
+        assert stopped['outcome'] == 'held'
+        [entry] = stopped['entries']
+        assert entry['outcome'] == 'held' and 'outside' in entry['reason'] and 'own_stop' not in entry
+        assert process.poll() is None and procs.alive({process.pid: start}), 'left running, never signalled'
+    finally:
+        process.kill()
+        process.wait()

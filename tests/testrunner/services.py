@@ -58,6 +58,14 @@ def _ship_of(argv: list[str]) -> str | None:
     return argv[at + 1]
 
 
+def inside(ship, scratch: Path) -> bool:
+    """Whether a ship's folder lies in the run's own scratch: the one test for what this run may stop."""
+    if not isinstance(ship, str) or not ship:
+        return False
+    where, scratch = Path(os.path.realpath(ship)), Path(os.path.realpath(scratch))
+    return where == scratch or scratch in where.parents
+
+
 def running_in(scratch: Path) -> list[dict]:
     """This user's processes running a ship service whose ship lies in ``scratch``: the run's own, by its path."""
     scratch = Path(os.path.realpath(scratch))
@@ -72,9 +80,8 @@ def running_in(scratch: Path) -> list[dict]:
         ship = _ship_of([part.decode(errors='replace') for part in raw.split(b'\0')[:-1]])
         if ship is None:
             continue
-        where = Path(os.path.realpath(ship))
         start = procs.start_time(pid)
-        if start is not None and (where == scratch or scratch in where.parents):
+        if start is not None and inside(ship, scratch):
             found.append({'pid': pid, 'start': start, 'ship': ship, 'found_by': 'its command line'})
     return found
 
@@ -120,6 +127,12 @@ def stop(folder: Path | None, scratch: Path) -> dict:
             continue
         if not procs.alive({pid: start}):
             entries.append({**entry, 'outcome': 'ended'})
+            continue
+        if not inside(service.get('ship'), scratch):
+            # A record names a ship outside this run's scratch: whatever wrote it, that service is not the run's to
+            # stop. It is never signalled; it is named, and it holds the cleanup until a person looks.
+            held = True
+            entries.append({**entry, 'outcome': 'held', 'reason': "its ship lies outside the run's scratch; left running"})
             continue
         entry['own_stop'] = _own_stop(service)
         left = procs.alive({pid: start})
