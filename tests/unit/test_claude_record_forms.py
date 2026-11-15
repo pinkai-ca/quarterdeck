@@ -1,6 +1,6 @@
 """Five crew-measured native forms, recreated without native identities or content."""
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -99,7 +99,10 @@ def test_taskstop_of_known_monitor_never_becomes_an_unbound_bash_stop(tmp_path):
 
 
 def test_monitor_stop_does_not_end_another_background_command(tmp_path):
-    rows = initial() + load('monitor-stop')[1:]
+    chain = load('monitor-stop')[1:]
+    for entry in chain:
+        entry['timestamp'] = (datetime.fromisoformat(entry['timestamp']) + timedelta(seconds=4)).isoformat()
+    rows = initial() + [prompt(4)] + chain
     _, state = read(tmp_path, rows)
     assert state.pending_tools == ('Bash',)
 

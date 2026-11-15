@@ -284,11 +284,19 @@ def test_exact_prior_launch_resume_forms_admit_only_relaunch(tmp_path, monkeypat
     assert seat.harness.state(seat.record()) == original
 
 
-@pytest.mark.parametrize('launch_second', [1, 2, 5.5])
-def test_current_launch_or_no_resume_notice_since_launch_still_holds(tmp_path, monkeypatch, launch_second):
+@pytest.mark.parametrize('launch_second', [1, 2])
+def test_current_launch_task_still_holds(tmp_path, monkeypatch, launch_second):
     seat, service, calls = resumed_seat(tmp_path, monkeypatch, stopped=True, launch_second=launch_second)
     assert idle.reading(seat, explicit=True, relaunch=True).hold.dimension == 'tools-unknown'
     assert service.relaunch(seat, True) is None and calls == []
+
+
+@pytest.mark.parametrize('launch_second', [5.5, 10])
+def test_a_later_measured_launch_settles_an_older_resume_notice(tmp_path, monkeypatch, launch_second):
+    seat, service, calls = resumed_seat(tmp_path, monkeypatch, stopped=True, launch_second=launch_second)
+    assert idle.reading(seat, explicit=True, relaunch=True).hold is None
+    assert service.relaunch(seat, True) == 'synthetic restart applied' and calls == ['restart']
+    assert seat.harness.state(seat.record()).pending_tools is None
 
 
 @pytest.mark.parametrize('launch_time', ['synthetic-unknown-time', None, '2032-04-05T06:07:04'])
@@ -333,14 +341,14 @@ def test_other_task_evidence_is_never_hidden_by_the_resume_allowance(tmp_path, m
     elif difference == 'delegated':
         rows[1]['message']['content'][0]['name'] = 'Agent'
     elif difference == 'other-task':
-        rows += [row('user', 3.1, message=dict(role='user', content='synthetic other input')),
-                 row('assistant', 3.2, message=dict(role='assistant', content=[dict(
+        rows += [row('user', 4.1, message=dict(role='user', content='synthetic other input')),
+                 row('assistant', 4.2, message=dict(role='assistant', content=[dict(
                      type='tool_use', id='call-oak', name='Bash',
                      input=dict(command='synthetic other work', run_in_background=True))])),
-                 row('user', 3.3, message=dict(role='user', content=[dict(
+                 row('user', 4.3, message=dict(role='user', content=[dict(
                      type='tool_result', tool_use_id='call-oak', content='synthetic result')]),
                      toolUseResult=dict(backgroundTaskId='task-ash')),
-                 row('system', 3.4, subtype='turn_duration')]
+                 row('system', 4.4, subtype='turn_duration')]
     seat, service, calls = resumed_seat(tmp_path, monkeypatch, stopped=True, rows=rows + [entry])
     assert idle.reading(seat, explicit=True, relaunch=True).hold is not None
     assert service.relaunch(seat, True) is None and calls == []
