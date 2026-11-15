@@ -218,6 +218,7 @@ def hold(seat) -> str | None:
             return 'ship server recovery stopped'
     except (OSError, ShipError, ValueError, KeyError):
         return 'ship server recovery state unreadable'
+    from . import write_bound  # noqa: F401  registers its reader, wherever this is read
     for reader in HOLDS:
         if reason := reader(seat):
             return reason

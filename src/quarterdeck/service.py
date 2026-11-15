@@ -172,6 +172,8 @@ class Service:
         beat.start()
         watch = threading.Thread(target=self.watch_credentials, args=(beat_stop,), name='service-credentials', daemon=True)
         watch.start()
+        from . import write_bound
+        bound = write_bound.Alarm(self).start()  # its own thread and period: a hung pass never delays it
         arrivals = service_wait.Arrivals(self.runtime)
         try:
             with Stop(self.runtime, self.lock).installed():
@@ -198,6 +200,7 @@ class Service:
             beat_stop.set()
             beat.join(timeout=0.2)
             watch.join(timeout=0.2)
+            bound.close()
             if driver := getattr(self, 'account_driver', None):
                 driver.close()
 

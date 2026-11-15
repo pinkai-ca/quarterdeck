@@ -687,6 +687,8 @@ class Seat:
             launchable()  # a socket too long or not this user's refuses before anything of the launch is made
         from .recovery import require_clear
         require_clear(self)
+        from . import write_bound
+        write_bound.require_clear(self)  # a seat stopped at its write bound stays down until a person lifts it
         if (held := self.retiring()) is not None:
             if not isinstance(held.get("pid"), int) or process_alive(held["pid"], held.get("start")):
                 raise ShipError(f"{self.name}: the program its last launch ran is still ending (pid {held.get('pid')}); "
@@ -1360,8 +1362,11 @@ def bring_up(ship: Ship, tmux: Tmux) -> list[str]:
     proofs = [shipmod.fence(ship)]
     if not ship.is_repository:
         proofs.append(f"{ship.folder.name} is not its own repository: its declaration travels with the folder above")
+    from . import write_bound
     for seat in seats(ship, tmux, launching=True):
-        if seat.spec.up and not seat.is_up:
+        if seat.spec.up and not seat.is_up and (held := write_bound.reason(ship.runtime, seat.name)):
+            proofs.append(f"{seat.name} left down: {held}")  # only a word for this seat lifts it
+        elif seat.spec.up and not seat.is_up:
             proofs.append(seat.up(resume=True))
         elif seat.is_up:
             proofs.append(f"{seat.name} already up in {seat.pane().id}")

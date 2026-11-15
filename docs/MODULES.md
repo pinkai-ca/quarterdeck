@@ -161,6 +161,7 @@ The modules that the framework table does not list, the module of each part amon
 | `unconfirmed_alert.py` | the alarm for a seat whose earlier launch left a delivery unconfirmed, raised through the common alarms |
 | `watch.py` | the Watch: a seat's activity and door, and the status line |
 | `watch_broker.py` | a jailed seat's inbox watch, kept by the service on the seat's behalf, so that nothing under `runtime/post` is writable inside the jail |
+| `write_bound.py` | the write-bound alarm: a jailed seat whose writable folders pass their bound, walked by descriptors in a thread of the service's own, has its jail killed and is held down until a person's word for it |
 
 ### Under `src/quarterdeck/harness/`
 

@@ -1,0 +1,548 @@
+"""The write-bound alarm: a jailed seat whose writable folders pass their bound is stopped, and held down.
+
+A jail's root and the operator's home are memory with a size (sandbox), but the folders it writes lie on the
+machine's disk: its own seat folder, its workspace, its drop, its check folder and an endpoint seat's relay folder.
+Nothing bounds those but this alarm. It needs no daemon and no root:
+
+- It finds each jail by its process: the outermost ``bwrap`` of this user that binds a seat's own folder writable
+  and has a pid namespace of its own. What that process binds writable (``--bind``, ``--bind-try``) is what is
+  measured, so a folder the jail writes is never missed, and the jail's launch record, which the jail itself can
+  write, is never trusted for a pid or a folder.
+- Each folder is walked by descriptors: ``openat`` with ``O_NOFOLLOW`` from the held descriptor of its parent and
+  ``fstatat`` without following, so no path is ever longer than one name and no link is followed. It stays on the
+  folder's own device and counts each inode once in a group, by its blocks on the disk.
+- Files the jail's processes hold open after unlinking them, which no walk can see, are read from
+  ``/proc/<pid>/fd`` and counted against the largest bound on their device, where their folder is no longer known.
+- A walk is bounded by entries (``ENTRIES``, the open files counted too), by time (``SECONDS``) and by depth
+  (``DEPTH``). A walk that reaches a bound reads as over: a jail cannot hide its writes behind a costly tree.
+- Over a bound, the hold is placed first, then the jail's whole process tree is stopped with SIGSTOP and killed with
+  SIGKILL, an endpoint seat's relay included. The hold (``runtime/post/write-bound/<seat>.json``, which no jail is
+  shown) registers in ``relaunch_intent.HOLDS`` and clears the seat's relaunch intent where it is placed, so no
+  service brings the seat back. Every launch refuses while it stands (``require_clear``), and the status line names
+  it (``status``). Only a person's word for that seat lifts it: ``qd up``, ``qd fresh`` or ``qd restart`` with the
+  seat named (``lift``). A whole ship's ``qd up`` leaves it down and says so.
+
+The service runs the alarm in a thread of its own, every ``PERIOD`` seconds, so a pass that hangs never delays it.
+Beside it, the jail's launcher sets ``RLIMIT_FSIZE`` (jail_environment.FILE_BYTES), so one file can never grow past it.
+
+law: nothing-waits-silently
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import signal
+import stat
+import threading
+import time
+
+from . import post_dir, relaunch_intent
+from .ship import ShipError
+
+MiB = 1024 ** 2
+GiB = 1024 ** 3
+SEAT, WORKSPACE, SMALL = 'seat folder', 'workspace', 'drop, check and relay'
+# The captain's sizes (15 Nov). A hand's seat folder held 101 to 642 MiB on that day, transcripts most of it; its
+# workspace under 10 MiB. The drop holds messages a few kilobytes long, the check folder one proof, the relay a socket.
+BOUNDS = {SEAT: 4 * GiB, WORKSPACE: 2 * GiB, SMALL: 64 * MiB}
+ENTRIES = 200_000  # a hand's seat folder held about 30,000 entries; a walk of 200,000 took about 0.4 s (measured)
+SECONDS = 2.0  # one seat's whole measure, its open files included
+DEPTH = 512  # folders held open at once; real trees are a few dozen deep, and the service's descriptors are finite
+# Measured (15 Nov): a writer at full speed against a 2 GiB bound, looked at every 1 s, was stopped 0.08 GiB over;
+# every 5 s, 1.97 GiB over. The overshoot is the write rate times the period, so the period is the short one.
+PERIOD = 1.0
+FOLDER = 'write-bound'
+LIMIT = 4096  # a hold is a few hundred bytes; a larger file is not one
+
+
+class Over(Exception):
+    """A walk that reached a bound, or a folder it could not read: either reads as over."""
+
+
+@dataclass
+class Budget:
+    entries: int = ENTRIES
+    seconds: float = SECONDS
+    depth: int = DEPTH
+    deadline: float = 0.0
+    seen: int = 0
+
+    def start(self) -> 'Budget':
+        self.deadline = time.monotonic() + self.seconds
+        return self
+
+    def tick(self) -> None:
+        self.seen += 1
+        if self.seen > self.entries:
+            raise Over(f'the walk passed {self.entries} entries')
+        if time.monotonic() > self.deadline:
+            raise Over(f'the walk passed {self.seconds:g} s')
+
+
+@dataclass
+class Group:
+    label: str
+    folders: list[str]
+    bound: int
+    held: int = 0
+    devices: set = field(default_factory=set)
+    inodes: set = field(default_factory=set)
+
+
+@dataclass
+class Jail:
+    """One seat's jail as its processes show it."""
+
+    seat: str
+    root: int  # the outermost bwrap
+    binds: list[str]  # its writable folders, as given on its command line
+    pids: dict[int, str]  # the root, its descendants and an endpoint seat's relay: pid -> its start
+
+
+@dataclass
+class Reading:
+    seat: str
+    groups: list[Group]
+    over: tuple[str, int, int, str] | None  # (group, held, bound, why) of the first group over, or None
+    pids: dict[int, str]
+
+
+# -- processes -------------------------------------------------------------------------
+
+
+def _processes() -> dict[int, tuple[int, str, list[str]]]:
+    """This user's processes: pid -> (parent pid, start, command line). One that ends while read is left out."""
+    found = {}
+    uid = os.getuid()
+    for name in os.listdir('/proc'):
+        if not name.isdigit():
+            continue
+        try:
+            if os.stat(f'/proc/{name}').st_uid != uid:
+                continue
+            with open(f'/proc/{name}/stat', 'rb') as stream:
+                fields = stream.read().rpartition(b')')[2].split()
+            with open(f'/proc/{name}/cmdline', 'rb') as stream:
+                argv = [part.decode(errors='replace') for part in stream.read().split(b'\0')[:-1]]
+        except (OSError, IndexError):
+            continue
+        if len(fields) > 19 and fields[1].isdigit():
+            found[int(name)] = (int(fields[1]), fields[19].decode(), argv)  # its start, in ticks since boot
+    return found
+
+
+def _binds(argv: list[str]) -> list[str]:
+    """The folders a bwrap command line binds writable, by their outside path, up to its command."""
+    binds, at = [], 1
+    while at < len(argv) and argv[at] != '--':
+        if argv[at] in ('--bind', '--bind-try') and at + 2 < len(argv):
+            binds.append(argv[at + 1])
+            at += 3
+        else:
+            at += 1
+    return binds
+
+
+def _is_jail_of(argv: list[str], folders: set[str]) -> bool:
+    options = argv[:argv.index('--')] if '--' in argv else argv
+    if not argv or os.path.basename(argv[0]) != 'bwrap' or '--unshare-pid' not in options:
+        return False
+    return any(folder in folders for folder in _binds(argv))
+
+
+def _descendants(processes, roots) -> list[int]:
+    children: dict[int, list[int]] = {}
+    for pid, row in processes.items():
+        children.setdefault(row[0], []).append(pid)
+    found: dict[int, None] = {}
+    stack = list(roots)
+    while stack:
+        pid = stack.pop()
+        if pid in found:
+            continue
+        found[pid] = None
+        stack += children.get(pid, [])
+    return list(found)
+
+
+def seat_folder(ship, name: str) -> Path:
+    return ship.runtime / 'seats' / name
+
+
+def jails(ship, processes=None) -> dict[str, Jail]:
+    """Every declared seat's running jail, found by its process; a seat with no jail running is absent."""
+    processes = _processes() if processes is None else processes
+    names = {}
+    for name in ship.seats:
+        folder = seat_folder(ship, name)
+        names[str(folder)] = name
+        names[os.path.realpath(folder)] = name
+    roots: dict[int, str] = {}
+    for pid, (_, _, argv) in processes.items():
+        if _is_jail_of(argv, set(names)):
+            roots[pid] = next(names[folder] for folder in _binds(argv) if folder in names)
+    found = {}
+    for pid, seat in sorted(roots.items()):
+        parent, ancestors = processes[pid][0], set()
+        while parent in processes and parent not in ancestors:
+            ancestors.add(parent)
+            parent = processes[parent][0]
+        if ancestors & set(roots):
+            continue  # a bwrap inside a jail: part of that jail's tree, never a measure of its own
+        pids = {child: processes[child][1] for child in _descendants(processes, [pid])}
+        relay = processes[pid][0]
+        if relay in processes and 'quarterdeck.endpoint_relay' in processes[relay][2]:
+            pids[relay] = processes[relay][1]  # an endpoint seat's pane runs the relay, which runs the jail
+        binds = _binds(processes[pid][2])
+        if seat in found:
+            found[seat].pids.update(pids)
+            found[seat].binds += [b for b in binds if b not in found[seat].binds]
+        else:
+            found[seat] = Jail(seat, pid, binds, pids)
+    return found
+
+
+# -- the measure ----------------------------------------------------------------------------
+
+
+def _flags() -> int:
+    return os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+
+
+def walk(folder: str, group: Group, budget: Budget) -> None:
+    """Add what ``folder`` holds on its own device to ``group``: by descriptors, no link followed, an inode once."""
+    try:
+        top = os.open(folder, _flags())
+    except FileNotFoundError:
+        return  # a bind-try folder that is not there holds nothing
+    except OSError as error:
+        raise Over(f'{folder} could not be opened ({type(error).__name__})') from None
+    stack: list[tuple[int, list[str]]] = []
+    try:
+        info = os.fstat(top)
+        device = info.st_dev
+        group.devices.add(device)
+        _count(group, info)
+        stack.append((top, _scan(top, device, group, budget)))
+        top = None
+        while stack:
+            fd, pending = stack[-1]
+            if not pending:
+                os.close(stack.pop()[0])
+                continue
+            name = pending.pop()
+            try:
+                child = os.open(name, _flags(), dir_fd=fd)
+            except FileNotFoundError:
+                continue  # gone since it was listed
+            except OSError as error:
+                raise Over(f'a folder in {folder} could not be opened ({type(error).__name__})') from None
+            if os.fstat(child).st_dev != device:
+                os.close(child)
+                continue
+            if len(stack) >= budget.depth:
+                os.close(child)
+                raise Over(f'the walk passed {budget.depth} folders deep')
+            stack.append((child, []))
+            stack[-1] = (child, _scan(child, device, group, budget))
+    finally:
+        if top is not None:
+            os.close(top)
+        for fd, _ in stack:
+            os.close(fd)
+
+
+def _scan(fd: int, device: int, group: Group, budget: Budget) -> list[str]:
+    """Count one folder's entries; return the names of its subfolders on the same device."""
+    folders = []
+    try:
+        listing = os.scandir(fd)
+    except OSError as error:
+        raise Over(f'a folder could not be listed ({type(error).__name__})') from None
+    with listing:
+        for entry in listing:
+            budget.tick()
+            try:
+                info = os.stat(entry.name, dir_fd=fd, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            except OSError as error:
+                raise Over(f'an entry could not be read ({type(error).__name__})') from None
+            if info.st_dev != device:
+                continue  # a mount point of another device: not this folder's disk
+            _count(group, info)
+            if stat.S_ISDIR(info.st_mode):
+                folders.append(entry.name)
+    return folders
+
+
+def _count(group: Group, info) -> None:
+    key = (info.st_dev, info.st_ino)
+    if key not in group.inodes:
+        group.inodes.add(key)
+        group.held += info.st_blocks * 512
+
+
+def open_deleted(pids, budget: Budget) -> dict[tuple[int, int], int]:
+    """Regular files the processes hold open after their last name went: (device, inode) -> bytes on the disk."""
+    found = {}
+    for pid in pids:
+        try:
+            fds = os.listdir(f'/proc/{pid}/fd')
+        except OSError:
+            continue  # ended, or not ours to read
+        for fd in fds:
+            budget.tick()
+            path = f'/proc/{pid}/fd/{fd}'
+            try:
+                if not os.readlink(path).endswith(' (deleted)'):
+                    continue
+                info = os.stat(path)
+            except OSError:
+                continue
+            if stat.S_ISREG(info.st_mode):
+                found[(info.st_dev, info.st_ino)] = info.st_blocks * 512
+    return found
+
+
+def groups(ship, jail: Jail, bounds=None) -> list[Group]:
+    """The jail's writable folders in their groups: its seat folder, its small folders, and the rest as workspace."""
+    bounds = {**BOUNDS, **(bounds or {})}
+    seat = {str(seat_folder(ship, jail.seat)), os.path.realpath(seat_folder(ship, jail.seat))}
+    from . import endpoint_relay, sandbox
+    small = {str(ship.runtime / 'post' / 'drop' / jail.seat), str(sandbox.check_proof_folder(ship.runtime, jail.seat)),
+             str(endpoint_relay.folder_for(seat_folder(ship, jail.seat)))}
+    small |= {os.path.realpath(folder) for folder in small}
+    found = {label: Group(label, [], bounds[label]) for label in (SEAT, WORKSPACE, SMALL)}
+    for folder in jail.binds:
+        label = SEAT if folder in seat else SMALL if folder in small else WORKSPACE
+        found[label].folders.append(folder)
+    return list(found.values())
+
+
+def measure(ship, jail: Jail, *, bounds=None, budget: Budget | None = None) -> Reading:
+    """What the jail holds in each group, and the first group over its bound, if any."""
+    budget = (budget or Budget()).start()
+    found = groups(ship, jail, bounds)
+    current = found[0]
+    try:
+        for current in found:
+            for folder in current.folders:
+                walk(folder, current, budget)
+        current = max(found, key=lambda group: group.bound)
+        for key, size in open_deleted(jail.pids, budget).items():
+            # Its folder is unknown once its name is gone: the largest bound on its device takes it.
+            places = [group for group in found if key[0] in group.devices]
+            if places:
+                place = max(places, key=lambda group: group.bound)
+                if key not in place.inodes:
+                    place.inodes.add(key)
+                    place.held += size
+    except Over as why:
+        return Reading(jail.seat, found, (current.label, current.held, current.bound, str(why)), jail.pids)
+    for group in found:
+        if group.held > group.bound:
+            return Reading(jail.seat, found, (group.label, group.held, group.bound, 'over its bound'), jail.pids)
+    return Reading(jail.seat, found, None, jail.pids)
+
+
+# -- the stop and the hold ------------------------------------------------------------------
+
+
+def folder(runtime) -> Path:
+    return Path(runtime) / 'post' / FOLDER
+
+
+def path(runtime, seat: str) -> Path:
+    return folder(runtime) / f'{seat}.json'
+
+
+def size(count: int) -> str:
+    return f'{count / GiB:.2f} GiB' if count >= GiB else f'{count / MiB:.1f} MiB'
+
+
+def place(runtime, reading: Reading, who: str = 'the write-bound alarm') -> dict:
+    """Write the hold, then clear the seat's relaunch intent: from here nothing brings the seat back by itself."""
+    label, held, bound, why = reading.over
+    data = dict(version=1, seat=reading.seat, at=datetime.now(timezone.utc).isoformat(), group=label,
+                held=held, bound=bound, why=why, by=who)
+    post_dir.ensure_directory(folder(runtime))
+    post_dir.replace_bytes(path(runtime, reading.seat), (json.dumps(data) + '\n').encode())
+    relaunch_intent.clear(runtime, reading.seat, f'its write-bound hold, placed by {who}')
+    return data
+
+
+def kill(pids: dict[int, str], rounds: int = 10) -> list[int]:
+    """SIGSTOP the tree so nothing in it forks on, then SIGKILL every process of it; the pids signalled.
+
+    A process is known by its pid and its start, so a pid the system gave to another process since is never
+    signalled; a child is taken into the tree only while its parent is still the known process.
+    """
+    known = dict(pids)
+    signalled: list[int] = []
+    for _ in range(rounds):
+        processes = _processes()
+        live = [pid for pid, start in known.items() if pid in processes and processes[pid][1] == start]
+        for child in _descendants(processes, live):
+            known.setdefault(child, processes[child][1])
+        live = [pid for pid, start in known.items() if pid in processes and processes[pid][1] == start
+                and _state(pid) not in ('Z', 'X')]
+        if not live:
+            break
+        for sig in (signal.SIGSTOP, signal.SIGKILL):
+            for pid in live:
+                try:
+                    os.kill(pid, sig)
+                except (ProcessLookupError, PermissionError):
+                    pass
+        signalled += [pid for pid in live if pid not in signalled]
+        time.sleep(0.05)
+    return signalled
+
+
+def _state(pid: int) -> str:
+    try:
+        with open(f'/proc/{pid}/stat', 'rb') as stream:
+            return stream.read().rpartition(b')')[2].split()[0].decode()
+    except (OSError, IndexError):
+        return 'X'
+
+
+def stop(ship, reading: Reading, log, who: str = 'the write-bound alarm') -> dict:
+    data = place(ship.runtime, reading, who)
+    killed = kill(reading.pids)
+    log('write-bound', seat=reading.seat, group=data['group'], held=data['held'], bound=data['bound'],
+        why=data['why'], killed=len(killed))
+    return data
+
+
+def read(runtime, seat: str) -> dict | None:
+    """The seat's hold, or None; a hold that cannot be read is still a hold (ShipError says why)."""
+    target = path(runtime, seat)
+    try:
+        mode = post_dir.mode(target)
+    except FileNotFoundError:
+        return None
+    except (OSError, ShipError) as error:
+        raise ShipError(f'its write-bound hold is unreadable ({type(error).__name__})') from None
+    if mode is None:
+        return None
+    if not stat.S_ISREG(mode):
+        raise ShipError('its write-bound hold is not a plain file')
+    try:
+        data = json.loads(post_dir.read_bytes(target, limit=LIMIT))
+    except (OSError, ShipError, ValueError) as error:
+        raise ShipError(f'its write-bound hold is unreadable ({type(error).__name__})') from None
+    if not isinstance(data, dict) or data.get('seat') != seat:
+        raise ShipError('its write-bound hold is not one the alarm wrote')
+    return data
+
+
+def reason(runtime, seat: str) -> str | None:
+    """Why the seat stays down for its write bound, in the status line's words; None when nothing holds it."""
+    try:
+        data = read(runtime, seat)
+    except ShipError as error:
+        return f'{error}; held: qd up {seat} lifts it'
+    if data is None:
+        return None
+    try:
+        what = f"{data['group']} {size(int(data['held']))} of {size(int(data['bound']))}"
+    except (KeyError, TypeError, ValueError):
+        what = 'its write bound'
+    why = data.get('why') if isinstance(data.get('why'), str) else ''
+    detail = f'{what}' if why in ('', 'over its bound') else f'{what}, {why}'
+    return f'stopped at its write bound ({detail}); held: qd up {seat} lifts it'
+
+
+def require_clear(seat) -> None:
+    """Every launch refuses while a write-bound hold stands."""
+    if words := reason(seat.ship.runtime, seat.name):
+        raise ShipError(f'{seat.name}: {words}')
+
+
+def lift(runtime, seat: str, who: str) -> bool:
+    """A person's word for this seat: its hold goes, logged with who lifted it. A link is left where it is."""
+    target = path(runtime, seat)
+    try:
+        mode = post_dir.mode(target)
+    except (OSError, ShipError):
+        return False
+    if mode is None or not stat.S_ISREG(mode):
+        return False
+    try:
+        post_dir.remove(target)
+    except FileNotFoundError:
+        return False
+    relaunch_intent._log(runtime, 'write-bound', seat=seat, outcome='lifted', reason=f'lifted by {who}')
+    return True
+
+
+def status(ship) -> list[str]:
+    """One line for each seat held at its write bound: law: nothing-waits-silently."""
+    try:
+        names = sorted(name[:-5] for name in os.listdir(folder(ship.runtime)) if name.endswith('.json'))
+    except FileNotFoundError:
+        return []  # no hold was ever placed: the seats need not be read
+    except OSError as error:
+        return [f'write-bound holds unreadable ({type(error).__name__}); qd status reads them']
+    lines = []
+    for name in names:
+        if words := reason(ship.runtime, name):
+            lines.append(f'{name}: {words}')  # law: nothing-waits-silently
+    return lines
+
+
+def _held(seat) -> str | None:
+    return reason(seat.ship.runtime, seat.name)
+
+
+if _held not in relaunch_intent.HOLDS:
+    relaunch_intent.HOLDS.append(_held)
+
+
+# -- the service's thread -------------------------------------------------------------------
+
+
+def look(ship, log, *, bounds=None, budget: Budget | None = None) -> list[str]:
+    """One look over every running jail; the seats stopped."""
+    stopped = []
+    for name, jail in sorted(jails(ship).items()):
+        try:
+            fresh = Budget(budget.entries, budget.seconds, budget.depth) if budget else None
+            reading = measure(ship, jail, bounds=bounds, budget=fresh)
+            if reading.over is not None:
+                stop(ship, reading, log)
+                stopped.append(name)
+        except Exception as error:  # one seat's failure never keeps the alarm from the others
+            log('error', step='write-bound', seat=name, error=repr(error))
+    return stopped
+
+
+class Alarm:
+    """The alarm's own thread, with its own period: a service pass that hangs never delays it."""
+
+    def __init__(self, service, period: float = PERIOD):
+        self.service = service
+        self.period = period
+        self.stopping = threading.Event()
+        self.thread = threading.Thread(target=self.run, name='service-write-bound', daemon=True)
+
+    def start(self) -> 'Alarm':
+        self.thread.start()
+        return self
+
+    def close(self, timeout: float = 0.2) -> None:
+        self.stopping.set()
+        self.thread.join(timeout=timeout)
+
+    def run(self) -> None:
+        while not self.stopping.wait(self.period):
+            try:
+                look(self.service.ship, self.service.log)
+            except Exception as error:  # the alarm never stops the service; the next look tries again
+                self.service.log('error', step='write-bound', error=repr(error))

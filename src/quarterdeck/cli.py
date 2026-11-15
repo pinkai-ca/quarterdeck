@@ -328,6 +328,8 @@ def cmd_up(args: argparse.Namespace) -> list[str] | str:
     ship = load_ship(args)
     if args.seat:
         ship.seat(args.seat)
+        from . import write_bound
+        write_bound.lift(ship.runtime, args.seat, f'qd up by {caller_of(ship)}')  # the person's word for this seat
     elif getattr(args, 'pool', None):
         raise ShipError('--pool names one launch: give the seat, as in qd up <seat> --pool <choice>')
     proofs, reload_required = install.prepare_up(ship)
@@ -432,6 +434,8 @@ def relaunch(ship: shipmod.Ship, name: str | None, resume: bool, cancel=None) ->
     if cancel is not None:
         return request_queue.cancel(ship.runtime, target, None if cancel == '*' else cancel)
     seat = seat_of(ship, target)
+    from . import write_bound
+    write_bound.lift(ship.runtime, seat.name, f"qd {'restart' if resume else 'fresh'} by {caller_of(ship)}")
     if not resume:
         relaunch_intent.clear(ship.runtime, seat.name, f'qd fresh by {caller_of(ship)}')  # the person's own relaunch
     if seat.is_working():

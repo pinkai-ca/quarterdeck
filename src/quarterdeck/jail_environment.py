@@ -11,6 +11,9 @@ operator's desktop shell, which carries secrets. Inside, only the names below ar
 
 Nothing that ``looks_secret`` passes, whatever list names it: a declared name that looks secret refuses the launch.
 
+The launcher also caps the size of any one file the jail writes (``FILE_BYTES``, as ``RLIMIT_FSIZE``), beside the
+service's write-bound alarm (write_bound), and gives ``SIGXFSZ`` its default action, which this interpreter ignores.
+
 Standard library only: the launcher runs before each jail starts, and imports nothing of the framework.
 """
 
@@ -18,10 +21,16 @@ from __future__ import annotations
 
 import os
 import re
+import resource
 import shutil
+import signal
 import sys
 
 CLEAR = '--clearenv'  # bwrap's own: the jail's environment starts empty
+# One file a jail writes, at most. Below every folder's bound but the small folders' (write_bound.BOUNDS): no file of a
+# seat's comes near it (a hand's largest transcript was well under 100 MiB on 15 Nov). A write past it fails with
+# EFBIG, or the writer ends at SIGXFSZ, as measured for Python, Node, Bun and dd.
+FILE_BYTES = 1024 ** 3
 ALLOWED = ('PATH', 'HOME', 'USER', 'LOGNAME', 'XDG_RUNTIME_DIR', 'TMPDIR', 'TMP', 'TEMP', 'QD_SHIP', 'QD_SEAT',
            'BASH_FUNC_qd%%',  # this ship's qd for the seat's shells (law: can-post)
            'GIT_AUTHOR_NAME', 'GIT_COMMITTER_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_EMAIL')
@@ -114,6 +123,10 @@ def main(argv: list[str]) -> int:
     command[at:at] = pane_settings(os.environ)
     path = os.environ.get('PATH', os.defpath)
     program = shutil.which(command[0], path=path) or command[0]
+    hard = resource.getrlimit(resource.RLIMIT_FSIZE)[1]
+    cap = FILE_BYTES if hard == resource.RLIM_INFINITY else min(FILE_BYTES, hard)
+    resource.setrlimit(resource.RLIMIT_FSIZE, (cap, cap))
+    signal.signal(signal.SIGXFSZ, signal.SIG_DFL)  # a program run from a shell has it so; Python ignores it
     os.execve(program, command, {'PATH': path})
     return 127  # not reached
 
