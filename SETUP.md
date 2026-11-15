@@ -12,14 +12,14 @@ cd quarterdeck
 python3 -m venv --system-site-packages .venv
 .venv/bin/pip install -e .  # ends: Successfully installed quarterdeck-0.1.0
 mkdir -p ~/.local/bin  # your folder for commands, made if it is missing
-ln -sf "$PWD/.venv/bin/qd" ~/.local/bin/qd  # qd is linked into it, so that it runs from any folder
+ln -sf "$PWD/.venv/bin/qd" ~/.local/bin/qd  # qd is linked into it, replacing any qd already there, so that it runs from any folder
 ```
 
 Run everything after this from inside the checkout, where `qd` is `.venv/bin/qd`. The last line makes `qd` a command in every folder for your person; if `~/.local/bin` is not on their PATH, tell them.
 
 ## 2. Look at the machine
 
-`command -v claude codex grok agy opencode pi` shows which harnesses are installed (`agy` is Antigravity; `qd doctor` later names the version each one runs). `command -v bwrap` shows whether bubblewrap is installed: an agent on a local model or other endpoint runs in a bubblewrap sandbox unless the ship's file says otherwise, and cannot start without it. Tell your person what you found, and that the agents run without approval prompts: Claude Code with its permission prompts bypassed, Codex with full access.
+`for p in claude codex grok agy opencode pi; do command -v "$p"; done` shows which harnesses are installed (`agy` is Antigravity; `qd doctor` later names the version each one runs). `command -v bwrap` shows whether bubblewrap is installed: an agent on a local model or other endpoint runs in a bubblewrap sandbox unless the ship's file says otherwise, and cannot start without it. `git config --global user.name` and `git config --global user.email` must each print a value, which is your person's to set: setup commits what it writes, and stops halfway without them. Tell your person what you found, and that the agents run without approval prompts: Claude Code with its permission prompts bypassed, Codex with full access.
 
 ## 3. Ask your person
 

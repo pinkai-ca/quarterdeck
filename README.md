@@ -18,7 +18,7 @@ Quarterdeck is a command, `qd`, and one small service for each ship, on your mac
 
 ## Quick start
 
-You need Linux, with Python 3.12 or later, tmux 3.x and git; Quarterdeck itself uses Python's standard library only. macOS is not supported yet. You also need at least one of the supported harnesses listed at the top, installed and with something to run on: a subscription you are signed in to, an API key, or a local model. Any of those harnesses will do, though Antigravity needs a second beside it, since setup gives it one seat only: a crew can sit on one harness or on several, so use what you already have and like.
+You need Linux, with Python 3.12 or later, tmux 3.x and git; Quarterdeck itself uses Python's standard library only. macOS is not supported yet. Git needs your name and e-mail, set with `git config --global user.name` and `user.email`: setup commits what it writes, and stops halfway without them. You also need at least one of the supported harnesses listed at the top, installed and with something to run on: a subscription you are signed in to, an API key, or a local model. Any of those harnesses will do, though Antigravity needs a second beside it, since setup gives it one seat only: a crew can sit on one harness or on several, so use what you already have and like.
 
 The agents run without approval prompts: Claude Code with its permission prompts bypassed, Codex with full access. An agent on a local model or other endpoint runs in a sandbox unless the ship's file says otherwise: for such an agent you need bubblewrap installed, and the model answering at its address.
 
@@ -87,7 +87,7 @@ cd quarterdeck
 python3 -m venv --system-site-packages .venv
 .venv/bin/pip install -e .  # ends: Successfully installed quarterdeck-0.1.0
 mkdir -p ~/.local/bin  # your folder for commands, made if it is missing
-ln -sf "$PWD/.venv/bin/qd" ~/.local/bin/qd  # qd is linked into it, so that it runs from any folder
+ln -sf "$PWD/.venv/bin/qd" ~/.local/bin/qd  # qd is linked into it, replacing any qd already there, so that it runs from any folder
 ```
 
 If `~/.local/bin` is not on your PATH, add it, or run `.venv/bin/qd` from the `quarterdeck` folder in place of `qd`.
