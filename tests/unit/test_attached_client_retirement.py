@@ -1,9 +1,13 @@
-"""Real-process retirement of the ordinary terminal-client helper."""
+"""Controlled-state and real-process retirement of the terminal-client helper."""
 
+from contextlib import nullcontext
 from pathlib import Path
 import shlex
+import signal
+import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -58,13 +62,84 @@ def test_nested_clients_retire_independently(tmp_path):
     assert outer.poll() is not None
 
 
-def test_force_retirement_stays_bounded_by_the_explicit_window(tmp_path):
+@pytest.mark.parametrize('reaps_after_kill', [True, False])
+def test_force_retirement_stays_bounded_by_the_explicit_window(tmp_path, monkeypatch, reaps_after_kill):
+    clock = SimpleNamespace(now=0.0)
+    waits, signals = [], []
+    proc = tmp_path / 'proc'
+    group = proc / '102'
+    group.mkdir(parents=True)
+    children = proc / '101' / 'task' / '101' / 'children'
+    children.parent.mkdir(parents=True)
+    children.write_text('102')
+    (group / 'task' / '102').mkdir(parents=True)
+    (group / 'task' / '102' / 'children').write_text('')
+
+    def group_state(state):
+        fields = [state, '101', '102', '102'] + ['0'] * 16
+        fields[19] = '1'
+        (group / 'stat').write_text('102 (synthetic-client) ' + ' '.join(fields))
+
+    group_state('S')
+
+    class Client:
+        pid = 101
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout):
+            waits.append(timeout)
+            clock.now += timeout
+            raise subprocess.TimeoutExpired('synthetic-client', timeout)
+
+        def kill(self):
+            signals.append(('client', signal.SIGKILL, clock.now))
+            if reaps_after_kill:
+                self.returncode = -signal.SIGKILL
+
+    client = Client()
+
+    def signal_group(pid, signum):
+        assert pid == 102
+        signals.append(('group', signum, clock.now))
+        if signum == signal.SIGKILL and reaps_after_kill:
+            group_state('Z')
+
+    monkeypatch.setattr(waiting, 'Path', lambda path: proc if path == '/proc' else Path(path))
+    monkeypatch.setattr(waiting, 'time', SimpleNamespace(monotonic=lambda: clock.now))
+    monkeypatch.setattr(waiting, 'os', SimpleNamespace(environ=waiting.os.environ, killpg=signal_group))
+    monkeypatch.setattr(waiting, 'subprocess', SimpleNamespace(
+        Popen=lambda *args, **kwargs: client, DEVNULL=subprocess.DEVNULL,
+        STDOUT=subprocess.STDOUT, TimeoutExpired=subprocess.TimeoutExpired))
+
+    patience = 0.1
+    outcome = nullcontext() if reaps_after_kill else pytest.raises(subprocess.TimeoutExpired)
+    with outcome as error:
+        with waiting.attached_client('synthetic-client', lambda: True, patience=patience) as attached:
+            assert attached is client
+            assert client.poll() is None
+    assert signals == [
+        ('group', signal.SIGTERM, 0.0),
+        ('group', signal.SIGKILL, pytest.approx(patience)),
+        ('client', signal.SIGKILL, pytest.approx(patience)),
+    ]
+    assert all(0 < timeout <= patience for timeout in waits)
+    assert sum(waits) == pytest.approx(patience if reaps_after_kill else 2 * patience)
+    if reaps_after_kill:
+        assert client.poll() == -signal.SIGKILL
+    else:
+        assert client.poll() is None
+        assert error.value.cmd == 'synthetic-client'
+        assert error.value.timeout == patience
+
+
+def test_term_ignoring_client_is_reaped(tmp_path):
     ready = tmp_path / 'ready'
     with waiting.attached_client(command(ready, ignore=True), ready.exists, patience=0.1) as client:
-        before = time.monotonic()
-    elapsed = time.monotonic() - before
+        assert client.poll() is None
     assert client.poll() is not None
-    assert 0.07 <= elapsed < 1.5
 
 
 def test_owned_group_member_retires_even_when_the_wrapper_exits_first(tmp_path):
