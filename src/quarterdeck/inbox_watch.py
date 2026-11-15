@@ -127,14 +127,19 @@ def retire(runtime, name, registration, *, admitted=True):
 
 
 def children(pid):
-    """A live process's children as the kernel lists them, or None where it does not say."""
+    """The live processes whose parent is ``pid``, each read from its own stat, or None where the process table
+    cannot be read or ``pid`` is no live process. The kernel's per-task list of children is exact only for stopped
+    tasks: a sibling that exits during the read can hide a live child, so it is not used."""
     try:
-        if type(pid) is not int or pid <= 0:
+        if type(pid) is not int or pid <= 0 or process(pid) is None:
             return None
-        tasks = list(Path(f'/proc/{pid}/task').iterdir())
-        if not tasks:
-            return None
-        return {int(word) for task in tasks for word in (task / 'children').read_text().split()}
+        found = set()
+        for entry in Path('/proc').iterdir():
+            if entry.name.isdigit():
+                seen = process(int(entry.name))
+                if seen is not None and seen[0] == pid:
+                    found.add(int(entry.name))
+        return found
     except (OSError, ValueError, UnicodeError):
         return None
 

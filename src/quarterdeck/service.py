@@ -89,6 +89,7 @@ def person_only(reason: str) -> bool:
     return reason.startswith((*PERSON_ONLY, AUTHENTICATION))
 BLIND_INTERVAL = 60.0  # how often the blind attempts are read against the records
 OWN_TURN_RULE = object()  # handoff_fresh does not decide: the asking turn's own rule does
+TELL_HELD_AFTER = 60.0  # seconds one tool-state hold of a waiting relaunch stands before its seat is told; when to tell, never proof
 
 
 def ship_file_stamp(ship) -> tuple | None:
@@ -1320,7 +1321,11 @@ class Service:
         word does. Where neither its record nor its screen settles what it has running, the seat itself is the
         one that knows: it lets that end or stops it, or it releases it. A report from the ship, never an
         obligation; one for each request, whether the request still waits or was retired at its turn's end. It
-        ends by naming that request, so that a reader can tell when the request, and the report with it, is over."""
+        ends by naming that request, so that a reader can tell when the request, and the report with it, is over.
+        A waiting request is told only once the same hold has stood for TELL_HELD_AFTER seconds, by the request's
+        own waiting record: a program draws passing hints on its bottom line (a helper that just ended), and a
+        request that applies by itself a moment later needs no report and no turn of the seat's. A seat's own
+        request that was retired at its turn's end has no later moment, and is told at once."""
         wait = getattr(self, 'request_wait', None)
         if (not isinstance(data, dict) or data.get('kind') != 'relaunch' or meta.get('told')
                 or not isinstance(wait, tuple) or wait[0] not in ('tools-unknown', 'tools-pending')
@@ -1329,6 +1334,16 @@ class Service:
         seat, own = data['seat'], meta.get('caller') == data['seat']
         if answer is not None and not (own and answer.startswith('refused:')):
             return  # applied, or refused to another asker, who has the answer
+        if answer is None:
+            standing = meta.get('waiting')
+            try:
+                since = (datetime.fromisoformat(standing['since'])
+                         if isinstance(standing, dict) and (standing.get('dimension'), standing.get('reason')) == wait
+                         else None)
+            except (KeyError, TypeError, ValueError):
+                since = None
+            if since is None or since.tzinfo is None or (post.now() - since).total_seconds() < TELL_HELD_AFTER:
+                return  # not yet the same hold for long enough: the next pass looks again
         verb, name = ('restart', 'restart') if data.get('resume') else ('fresh', 'fresh start')
         request = getattr(self, 'request_path', None)
         word = (f'give your own word as the last act of a turn: qd {verb} {seat} --release'

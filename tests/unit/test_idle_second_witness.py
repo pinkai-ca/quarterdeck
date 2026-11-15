@@ -3,11 +3,13 @@
 The record is read first and its reading is unchanged. Only where it shows the turn ended, nothing queued and its
 last input complete, and still cannot say whether a tool is open, the screen is read: the composer at rest, and the
 program's own bottom line in a form measured on the launched version. Nothing named there is rest; one shell is
-rest only where it is the seat's registered watch alone; anything else named is work, held under its name; a screen
-that does not say settles nothing, and the hold says what it lacked (law: record-first).
+rest only where it is the seat's registered watch alone, which the record must name as the exact watch command,
+the last call it still shows active; anything else named is work, held under its name; a screen that does not say
+settles nothing, and the hold says what it lacked (law: record-first).
 
-Synthetic states and synthetic screens of the measured shapes only. The watch's own proof from the process table
-has its tests in test_inbox_watch_alone.py; here it is a given.
+Synthetic states and synthetic screens of the measured shapes only. The watch's own proofs, its registration and
+its shape in the process table, have their tests in test_idle_watch_claude_validation.py and
+test_inbox_watch_alone.py; here each is a given, set by the test.
 """
 
 from dataclasses import replace
@@ -37,17 +39,24 @@ def text(bottom, *below, box='❯\xa0', sign=None):
     return '\n'.join(lines) + '\n'
 
 
+WATCH_CALL = ActiveTool('Bash', AT + timedelta(seconds=4), AT + timedelta(seconds=3.9))  # the exact watch command
+OLDER_CALL = ActiveTool('Bash', AT + timedelta(seconds=1))  # an earlier call the record never saw end
+
+
 def unread(**changes):
-    """A record that shows the turn ended and its input complete, and cannot say whether a tool is open."""
+    """A record that shows the turn ended and its input complete, and cannot say whether a tool is open. The
+    last call it still shows active is the exact own-watch command; an older one it never saw end stands beside."""
     turn = Turn(0, AT, AT + timedelta(seconds=5), 'synthetic input', 'synthetic reply', None, Tokens())
     state = State(turn_open=False, pending_tools=None, last_input_at=AT, completed_turns=(turn,),
-                  active_tools=(ActiveTool('Bash', AT),))
+                  active_tools=(OLDER_CALL, WATCH_CALL))
     return replace(state, **changes)
 
 
 class Case:
-    def __init__(self, tmp_path, monkeypatch, state, shown, *, alone=False, version=VERSION, human=False):
+    def __init__(self, tmp_path, monkeypatch, state, shown, *, alone=False, registered=True, version=VERSION,
+                 human=False):
         self.state, self.shown, self.alone, self.reads, self.moved = state, shown, alone, 0, []
+        self.registered, self.asked = registered, []  # the registration's own proof, and the call times it was asked
         self.launch = SimpleNamespace(pane='%pane-fern', pid=101001, at=AT.isoformat(), harness='claude',
                                       version=version)
         native = ClaudeHarness()
@@ -75,8 +84,13 @@ class Case:
                     raise case.shown
                 return native.screen(case.shown) if case.shown is not None else None
 
+        def current(seat, called_at):
+            self.asked.append(called_at)
+            return self.registered
+
         monkeypatch.setattr(door, 'Door', Door)
         monkeypatch.setattr(inbox_watch, 'alone', lambda seat: self.alone)
+        monkeypatch.setattr(inbox_watch, 'current', current)
 
     def second(self, **options):
         return idle.second(self.seat, self.state, UNKNOWN, **options)
@@ -184,6 +198,83 @@ def test_a_capture_that_raises_never_leaves_the_proof_and_is_never_rest(case, mo
     assert 'tool state unknown' in service.select(built.seat, 'pool-oak')
     service.failover()
     assert built.moved == [], 'no path acted, and none raised'
+
+
+# -- one shell: the record must name it, and the process table must show it alone -------------------------------
+
+LATER = AT + timedelta(seconds=8)
+
+
+@pytest.mark.parametrize(('tools', 'registered', 'why'), [
+    ((OLDER_CALL, WATCH_CALL, ActiveTool('Bash', LATER)), True, 'a later call that is not the exact watch command'),
+    ((OLDER_CALL,), True, 'no watch call at all'),
+    ((), True, 'the record shows no active call'),
+    ((OLDER_CALL, WATCH_CALL), False, 'the watch call does not fit the live registration'),
+    ((WATCH_CALL, ActiveTool('Bash', None)), True, 'a call whose start the record does not give'),
+    ((WATCH_CALL, ActiveTool('Bash', WATCH_CALL.started)), True, 'two calls started at the same latest moment'),
+    ((ActiveTool('Bash', LATER, LATER), ActiveTool('Agent', LATER + timedelta(seconds=1))), True,
+     'a later call of another tool'),
+])
+def test_one_shell_is_not_the_watch_unless_the_record_names_it_as_its_last_active_call(  # law: record-first
+        case, tools, registered, why):
+    """The process table proves a shape, never a command: a watch run inside a longer command shows program,
+    shell, watch while its watch stage runs. Its call is not the exact command, so the record does not name it."""
+    built = case(unread(active_tools=tools), text(ONE_SHELL), alone=True, registered=registered)
+    assert idle.own_watch_call(built.seat, built.state) is False, why
+    state, hold, saw = built.second()
+    assert state is built.state and hold == idle.Hold(
+        'tools-pending', 'tools pending: its screen shows 1 shell in the background, not proved to be its inbox '
+                         'watch alone'), why
+    assert idle.reading(built.seat).hold == hold
+
+
+def test_the_record_names_the_watch_by_its_last_active_call_and_its_call_time(case):
+    newer = ActiveTool('Bash', LATER, LATER - timedelta(seconds=0.1))
+    built = case(unread(active_tools=(WATCH_CALL, OLDER_CALL, newer)), text(ONE_SHELL), alone=True)
+    assert idle.own_watch_call(built.seat, built.state) is True
+    assert built.asked == [newer.inbox_watch_started], 'the registration is asked with that call\'s own time'
+    assert built.second()[1] is None
+    built.alone = False
+    assert built.second()[1].dimension == 'tools-pending', 'the record\'s word alone is not the shape'
+
+
+def test_nothing_named_needs_neither_the_record_s_watch_call_nor_the_registration(case):
+    built = case(unread(active_tools=(OLDER_CALL,)), text(NOTHING), alone=False, registered=False)
+    assert built.second()[1] is None and built.asked == []
+
+
+# -- the relaunch's own view and the ordinary one ----------------------------------------------------------------
+
+def relaunch_views(built, ordinary, scoped):
+    """An adapter with a launch-scoped view, as Claude's: the ordinary reading and the relaunch's may differ."""
+    built.state = ordinary
+    built.seat.harness.name = 'claude'
+    built.seat.harness.state_for_relaunch = lambda record, launched_at: scoped
+
+
+def test_the_screen_settles_the_relaunch_view_and_the_published_hold_together(case):
+    built = case(unread(), text(NOTHING))
+    relaunch_views(built, unread(), unread(active_tools=(OLDER_CALL,)))
+    reading = idle.reading(built.seat, explicit=True, relaunch=True)
+    assert reading.hold is None and reading.witness == idle.RECORD_AND_SCREEN
+    assert move_hold.reading(built.seat) is None, 'what runs now is the same for both views'
+
+
+def test_work_on_the_screen_holds_both_views_under_its_name(case):
+    built = case(unread(), text(MODE + ' · 2 shells'))
+    relaunch_views(built, unread(), unread())
+    reading = idle.reading(built.seat, explicit=True, relaunch=True)
+    assert reading.hold.reason == 'tools pending: its screen shows 2 shells in the background'
+    assert move_hold.reading(built.seat) == reading.hold.reason
+
+
+def test_a_relaunch_view_the_record_settles_leaves_the_ordinary_hold_as_it_was(case):
+    """A relaunch allowance must not clear the ordinary move hold: the screen is not asked for it here."""
+    built = case(unread(), text(NOTHING))
+    relaunch_views(built, unread(), unread(pending_tools=(), active_tools=()))
+    reading = idle.reading(built.seat, explicit=True, relaunch=True)
+    assert reading.hold is None and reading.witness == idle.RECORD and built.reads == 0
+    assert move_hold.reading(built.seat) == 'tool state unknown'
 
 
 # -- only together with the record ------------------------------------------------------------------------------

@@ -141,6 +141,23 @@ def named(names) -> str:
     return ' and '.join(f"{count} {kind}{'' if count == 1 else 's'}" for kind, count in names)
 
 
+def own_watch_call(seat, state: State) -> bool:
+    """The record's own word for a single shell on the screen, where it cannot say the whole tool state: the most
+    recently started call it still shows active is the exact own-watch command, and that call fits this seat's
+    live registration. The process table proves a shape, never a command: a watch run inside a longer command
+    shows the same shape while its watch stage runs, but its call is not the exact command, so it is a later
+    active call that is no candidate, and the one shell is not proved. A call whose start the record does not
+    give, or two calls started at the same latest moment, prove nothing either."""
+    from . import inbox_watch
+    tools = state.active_tools
+    if not tools or any(tool.started is None for tool in tools):
+        return False
+    latest = max(tool.started for tool in tools)
+    newest = [tool for tool in tools if tool.started == latest]
+    return (len(newest) == 1 and newest[0].inbox_watch_started is not None
+            and inbox_watch.current(seat, newest[0].inbox_watch_started))
+
+
 def second(seat, state: State, hold: Hold, *, explicit=False, screen=None):
     """The screen, read second, where the record cannot say whether a tool is open (law: record-first).
 
@@ -148,8 +165,10 @@ def second(seat, state: State, hold: Hold, *, explicit=False, screen=None):
     settles the tool state only together with the record: the record shows the turn ended, nothing queued and its
     last input complete, and the door reads the composer at rest. The program's own bottom line then names what
     it runs in its background, in a form measured on the launched version. Nothing named is rest. One shell is
-    rest only where it is this seat's registered watch, proved alone in a shell of its own under the launched
-    program. Anything else it names is work, held under its name. A screen that does not say settles nothing:
+    rest only where it is this seat's registered watch: the record names the exact watch command as the last
+    call it still shows active (own_watch_call), and the process table shows the registered watch alone in a
+    shell of its own under the launched program. Anything else it names is work, held under its name. A screen
+    that does not say settles nothing:
     the record's unknown stands, and the hold says what the screen lacked. A program version with no measured
     bottom line has no second witness in its screen, and the screen is not read for it.
     """
@@ -184,7 +203,7 @@ def second(seat, state: State, hold: Hold, *, explicit=False, screen=None):
         return unknown("its screen's bottom line is not a measured form")
     if names == ():
         return rest, None, 'nothing in the background'
-    if names == WATCH_ALONE and inbox_watch.alone(seat):
+    if names == WATCH_ALONE and own_watch_call(seat, state) and inbox_watch.alone(seat):
         return rest, None, 'only its inbox watch in the background'
     saw = f'{named(names)} in the background'
     if names == WATCH_ALONE:
@@ -215,8 +234,8 @@ def release(seat, state: State | None, hold: Hold | None, asked) -> Hold | None:
     if (hold is None or hold.dimension not in ('tools-unknown', 'tools-pending') or state is None
             or asked is None or asked.tzinfo is None):
         return hold
-    if check(replace(state, pending_tools=(), active_tools=()), explicit=True) is not None:
-        return hold  # the turn, the queue and the completion are never the seat's to release
+    if check(replace(state, pending_tools=(), active_tools=())) is not None:
+        return hold  # the turn, the queue (an unresolved one too) and the completion are never the seat's to release
     ending = state.completed_turns[-1] if state.completed_turns else None
     if (ending is None or not ending.timed or ending.started is None or ending.ended is None
             or not ending.started <= asked <= ending.ended
