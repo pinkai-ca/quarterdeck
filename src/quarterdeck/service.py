@@ -479,12 +479,19 @@ class Service:
 
         Live owners keep their confirm window; queued inputs need consumption.
         Blind attempts are re-read at their existing minute cadence, never resent.
+        Journal recovery owns the first inventory. Reuse is local to this call;
+        a metadata-only recheck sees intervening in-place or atomic changes. Settlements
+        remain outside read-only views and retain their fresh write-owner checks.
         """
+        self.loaded_attempts = None
+        self._reconcile_attempt_inventory = None
         tracked = pending_delivery.reconcile(self)
         retry_blind = time.monotonic() - self.blind_checked >= BLIND_INTERVAL
         if retry_blind:
             self.blind_checked = time.monotonic()
-        records = self.attempts.all()
+        snapshot = self._reconcile_attempt_inventory
+        self._reconcile_attempt_inventory = None
+        records = self.attempts.recheck_inventory(snapshot) if snapshot is not None else self.attempts.all()
         self.loaded_attempts = records
         latest = self.attempts.latest(attempts=records)
         queued = {message for message, result in latest.items() if result == 'queued'}

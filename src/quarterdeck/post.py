@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+from heapq import merge
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 import os
@@ -1460,13 +1461,20 @@ class Attempts:
                     self._write(target)
         return 'settled'
 
-    def abandon(self, seat: str, detail: str) -> list[Attempt]:
-        """Retire uncertainty, never a confirmed receipt; keep every historical file."""
+    def abandon(self, seat: str, detail: str, *, attempts=None) -> list[Attempt]:
+        """Plan from the supplied inventory, but read each candidate again under the write lock."""
         changed = []
         with self._locked():
-            for attempt in self.all():
+            for attempt in self.all() if attempts is None else attempts:
                 if attempt.path.parent != self.dir or attempt.seat != seat or attempt.result in ("delivered", "launch", "watch", "abandoned", "not-in-closed-record"):
                     continue
+                if attempts is not None:
+                    source = attempt_path(self.dir.parent.parent, attempt.path.name)
+                    if source.parent != self.dir:
+                        continue
+                    attempt = Attempt(**json.loads(post_dir.read_text(source)), path=source)
+                    if attempt.seat != seat or attempt.result in ("delivered", "launch", "watch", "abandoned", "not-in-closed-record"):
+                        continue
                 done = replace(attempt, result="abandoned",
                                detail=f"{detail}; previous result: {attempt.result or 'unfinished'}")
                 self._write(done)
@@ -1477,19 +1485,21 @@ class Attempts:
         data = {k: v for k, v in asdict(attempt).items() if k != "path"}
         durable.replace_file(attempt.path, json.dumps(data, indent=2) + "\n")
 
-    def _retired(self, progress=None) -> dict[str, Attempt]:
+    def _retired(self, progress=None, *, children=None) -> dict[str, Attempt]:
         """Immutable batch metadata: stat batches, never every retained receipt."""
         folder = self.dir.parent / 'retired' / 'index'
         found, cache = {}, {}
-        for path in post_dir.json_paths(folder):
+        if children is None:
+            children = self._inventory_children(folder)
+        for name, info in children:
+            path = folder / name
             if progress is not None:
                 progress()
-            try:
-                info = path.lstat()
-            except FileNotFoundError:
-                self._retired_cache.pop(path.name, None)
-                continue
-            stamp = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+            if stat.S_ISLNK(info.st_mode):
+                if post_dir.gone(path):
+                    continue
+                post_dir._link_held(path)
+            stamp = self._inventory_stamp(info)
             cached = self._retired_cache.get(path.name)
             if cached is None or cached[0] != stamp:
                 try:
@@ -1524,15 +1534,55 @@ class Attempts:
             return list(reading_value('attempts', key, lambda: reader._all_current(progress=progress)))
         return self._all_current(progress=progress)
 
-    def _all_current(self, *, progress=None) -> list[Attempt]:
+    @staticmethod
+    def _inventory_stamp(info):
+        return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_mode)
+
+    @staticmethod
+    def _inventory_children(folder):
+        try:
+            return [(name, info) for name, info in post_dir.list_children(folder, with_stat=True)
+                    if name.endswith('.json')]
+        except FileNotFoundError:
+            return []
+
+    def _inventory_metadata(self):
+        """One no-follow stat per name, including the retired index batches."""
+        # Retirement publishes its index before moving the current receipt. Keep
+        # the original read order: a move during the current scan is seen next pass.
+        retired = self._inventory_children(self.dir.parent / 'retired/index')
+        return self._inventory_children(self.dir), retired
+
+    def inventory_snapshot(self, records):
+        """Pass-local read boundary, captured immediately after the first inventory.
+
+        This is never authority to settle: writers still reread under their locks.
+        A later legacy read must recheck every current file and retired batch.
+        """
+        return (records, {name: item[0] for name, item in self._cache.items()},
+                {name: item[0] for name, item in self._retired_cache.items()})
+
+    def recheck_inventory(self, snapshot):
+        """Re-stat before legacy handling; decode changes, preserving in-place visibility.
+
+        Nothing is certified across passes. Changed listings get a full sort;
+        otherwise only changed rows are sorted and merged into the earlier order.
+        Any failed listing or read propagates without publishing a partial result.
+        """
+        records, current, retired = snapshot
+        metadata = self._inventory_metadata()
+        stamps = tuple({name: self._inventory_stamp(info) for name, info in children}
+                       for children in metadata)
+        if stamps == (current, retired):
+            return records
+        same_names = (stamps[0].keys() == current.keys() and stamps[1].keys() == retired.keys())
+        return self._all_current(metadata=metadata, ordered=records if same_names else None)
+
+    def _all_current(self, *, progress=None, metadata=None, ordered=None) -> list[Attempt]:
         # Attempts are mutable, including writes from another process. Directory
         # times alone miss same-path edits; stat every entry, parse only changes.
-        retired = self._retired(progress)
-        try:
-            children = post_dir.list_children(self.dir, with_stat=True)
-        except FileNotFoundError:
-            self._cache = {}
-            return sorted(retired.values(), key=lambda a: (a.at, a.path.name))
+        children, retired_children = self._inventory_metadata() if metadata is None else metadata
+        retired = self._retired(progress, children=retired_children)
         current = {}
         for index, (name, info) in enumerate(children):
             if progress is not None and index % 200 == 0:
@@ -1545,7 +1595,7 @@ class Attempts:
                     continue
                 post_dir._link_held(self.dir / name)
             path = self.dir / name
-            stamp = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_mode)
+            stamp = self._inventory_stamp(info)
             cached = self._cache.get(name)
             if cached is None or cached[0] != stamp:
                 try:
@@ -1562,7 +1612,13 @@ class Attempts:
         # A failed scan/read must propagate, never certify a partial snapshot.
         self._cache = current
         retired.update((name, value[1]) for name, value in current.items())
-        return sorted(retired.values(), key=lambda a: (a.at, a.path.name))
+        key = lambda a: (a.at, a.path.name)
+        if ordered is None or {a.path.name for a in ordered} != retired.keys():
+            return sorted(retired.values(), key=key)
+        unchanged = [a for a in ordered if retired[a.path.name] == a]
+        unchanged_names = {a.path.name for a in unchanged}
+        changed = [a for a in retired.values() if a.path.name not in unchanged_names]
+        return list(merge(unchanged, sorted(changed, key=key), key=key))
 
     def for_message(self, message_id: str) -> list[Attempt]:
         return [a for a in self.all() if a.message == message_id]

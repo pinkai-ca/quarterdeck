@@ -667,14 +667,16 @@ def check_inbox_owner(runtime: Path, name: str) -> dict:
             os.close(descriptor)
 
 
-def abandon(runtime: Path, name: str, reason: str, *, attempts: post.Attempts | None = None) -> None:
+def abandon(runtime: Path, name: str, reason: str, *, attempts: post.Attempts | None = None,
+            inventory=None) -> None:
     """Retain the history, but retire unresolved transport for a seat that is gone."""
     proofs, _ = _journals(runtime, name)
     for proof in proofs:
         if proof.data["phase"] not in TERMINAL:
             proof.save(phase="abandoned", resolution=reason)
     reader = attempts if attempts is not None else post.Attempts(runtime)
-    changed = reader.abandon(name, reason)
+    changed = (reader.abandon(name, reason) if inventory is None else
+               reader.abandon(name, reason, attempts=inventory))
     if changed:
         path = runtime / "log" / "service.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -686,17 +688,36 @@ def abandon(runtime: Path, name: str, reason: str, *, attempts: post.Attempts | 
 
 
 def reconcile(service: Service) -> set[Path]:
+    """Read once before planning; snapshots never authorize settlement.
+
+    Active/unfinished journals are reread before ordinary record-first recovery,
+    whose writers revalidate under their locks. Settled terminal journals need
+    no action. Publish the pass-local inventory only after successful recovery;
+    Service rechecks every attempt/index identity before legacy handling.
+    """
+    service.loaded_attempts = None
+    service._reconcile_attempt_inventory = None
+    records = service.attempts.all()  # the original first inventory site
+    snapshot = (service.attempts.inventory_snapshot(records)
+                if hasattr(service.attempts, 'inventory_snapshot') else None)
+    paths = _reconcile_inventory(service, records)
+    service._reconcile_attempt_inventory = snapshot
+    return paths
+
+
+def _reconcile_inventory(service, records):
     from .seat import SelectionError
 
     paths = set()
-    attempts = {a.path.name: a for a in service.attempts.all()}
+    attempts = {a.path.name: a for a in records}
+    latest = {a.message: a for a in records}
     names = {a.seat for a in attempts.values()}
     names.update(post_dir.directory_names(service.runtime / "post" / "pending"))
     for name in names - service.ship.seats.keys():
         with transient_lock(service.runtime, name) as unowned:
             if unowned:
                 abandon(service.runtime, name, "seat no longer declared; submission unconfirmed and never resent",
-                        attempts=service.attempts)
+                        attempts=service.attempts, inventory=records)
         paths.update(a.path for a in attempts.values() if a.seat == name)
     for name in service.ship.seats:
         try:
@@ -708,15 +729,44 @@ def reconcile(service: Service) -> set[Path]:
         from . import lifecycle
         try:
             with lifecycle.claim(service.runtime, name):
-                paths.update(_reconcile_claimed(service, seat, attempts))
+                paths.update(_reconcile_claimed(service, seat, attempts, latest=latest))
         except lifecycle.Busy:
             paths.update(a.path for a in attempts.values() if a.seat == name)
     return paths
 
 
-def _reconcile_claimed(service: Service, seat: Seat, attempts: dict[str, post.Attempt]) -> set[Path]:
-    """One seat's journal work; the lifecycle claim excludes retirement writers."""
+def _settled_terminal(data, attempts, latest):
+    from .receipt_refresh import unfinished
+    from .post_retirement import FINISHED
+    if data['phase'] not in TERMINAL or unfinished(data):
+        return False
+    settled = FINISHED | set(post.UNSETTLED)
+    for name in data['attempts']:
+        attempt = attempts.get(name)
+        if (attempt is None or attempt.seat != data['seat'] or attempt.result not in settled
+                or latest.get(attempt.message) is None
+                or latest[attempt.message].result not in settled):
+            return False
+        # Preserve the old recovery path for any outcome it would still change.
+        if data['phase'] == 'delivered' and attempt.result not in (
+                'delivered', 'abandoned', closed_record.PHASE, *post.UNSETTLED):
+            return False
+        if data['phase'] == closed_record.PHASE and attempt.result not in (
+                closed_record.PHASE, 'abandoned', *post.UNSETTLED):
+            return False
+    return True
+
+
+def _reconcile_claimed(service: Service, seat: Seat, attempts: dict[str, post.Attempt], *, latest=None) -> set[Path]:
+    """Read phase once for settled terminals; reread active data before any recovery action.
+
+    The lifecycle claim excludes retirement writers. The reread handles a journal
+    turning terminal during planning; record receipts and attempt write owners
+    retain their existing fresh checks, with no read-only scope around actions.
+    """
     name, paths = seat.name, set()
+    if latest is None:
+        latest = {a.message: a for a in sorted(attempts.values(), key=lambda a: (a.at, a.path.name))}
     proofs, errors = journals(seat)
     if errors:
         from .pending_lifecycle import retire_missing_identity
@@ -730,6 +780,30 @@ def _reconcile_claimed(service: Service, seat: Seat, attempts: dict[str, post.At
         paths.update(a.path for a in attempts.values() if a.seat == name)
         service.log("error", step="reconcile", seat=name, error=inspection(seat, "pending journal unreadable; never resent"), files=errors)
     for proof in proofs:
+        if _settled_terminal(proof.data, attempts, latest):
+            paths.update(attempts[n].path for n in proof.data['attempts'])
+            continue
+        try:
+            data = json.loads(post_dir.read_text(proof.path))
+            validate(data, name)
+            proof = Proof(proof.path, data)
+        except FileNotFoundError:
+            if post_dir.gone(proof.path):
+                continue
+            paths.update(a.path for a in attempts.values() if a.seat == name)
+            service.log('error', step='reconcile', seat=name,
+                        error=inspection(seat, 'pending journal unreadable; never resent'),
+                        files=[proof.path.name])
+            continue
+        except (OSError, ValueError, TypeError, KeyError):
+            paths.update(a.path for a in attempts.values() if a.seat == name)
+            service.log('error', step='reconcile', seat=name,
+                        error=inspection(seat, 'pending journal unreadable; never resent'),
+                        files=[proof.path.name])
+            continue
+        if _settled_terminal(proof.data, attempts, latest):
+            paths.update(attempts[n].path for n in proof.data['attempts'])
+            continue
         if any(n not in attempts for n in proof.data["attempts"]):
             paths.update(a.path for a in attempts.values() if a.seat == name)
             service.log("error", step="reconcile", seat=name, error=inspection(seat, "pending attempt receipt missing; never resent", proof.data["attempts"], message=proof.data.get('message')))
