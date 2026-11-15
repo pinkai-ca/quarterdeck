@@ -207,3 +207,34 @@ def test_task_and_unmeasured_agent_forms_remain_unknown(tmp_path):
     rows = root_rows();rows[1]['message']['content'][0]['name'] = 'Task'
     record, _ = fixture(tmp_path, children=child_rows(False), root=rows)
     assert claude.state(record).pending_tools is None
+
+
+def test_an_older_child_return_cannot_settle_a_new_agent_invocation(tmp_path):
+    rows = root_rows()
+    rows[1]['timestamp'] = (AT+timedelta(seconds=8)).isoformat()
+    rows[2]['timestamp'] = (AT+timedelta(seconds=9)).isoformat()
+    record, _ = fixture(tmp_path, children=child_rows(False), root=rows)
+    assert claude.state(record).pending_tools == ('Agent',)
+
+
+def test_a_child_record_arriving_after_the_root_notice_refreshes_the_read(tmp_path, monkeypatch):
+    monkeypatch.setattr(reading_scope, '_TIMESTAMP_TICK_NS', 0)
+    entry = notice()
+    record, child = fixture(tmp_path, children=False, root=[*root_rows(), entry, consume(entry)])
+    with reading_scope.reading_pass():
+        assert claude.ClaudeHarness.state(record).pending_tools is None
+        write(child, child_rows(ended=8))
+        assert claude.ClaudeHarness.state(record).pending_tools == ()
+
+
+def test_naive_launch_time_does_not_end_a_child_command(tmp_path):
+    root = tmp_path/'runtime/seats/synthetic/home/projects/synthetic'
+    record, _ = fixture(root)
+    launch(record)
+    folder = record.parent.parent.parent.parent
+    data = json.loads((folder/'launch.json').read_text())
+    data['at'] = '2032-04-05T06:07:05'
+    (folder/'launch.json').write_text(json.dumps(data))
+    (folder/'record-launches.jsonl').write_text(json.dumps(dict(record=str(record), at=data['at'],
+        pool=data['pool'], harness='claude'))+'\n')
+    assert claude.state(record).pending_tools == ('Bash', 'Agent')

@@ -6,6 +6,7 @@ re-reads child evidence, including a child which changed without a root write.
 """
 from copy import deepcopy
 from dataclasses import dataclass, replace
+from datetime import datetime
 import json
 from pathlib import Path
 import re
@@ -32,7 +33,8 @@ def child_paths(record):
             return []
     paths = sorted(folder.glob('agent-*.jsonl'))
     for path in paths:
-        if not stat.S_ISREG(path.lstat().st_mode):
+        if (re.fullmatch(r'agent-[A-Za-z0-9_-]+\.jsonl', path.name) is None
+                or not stat.S_ISREG(path.lstat().st_mode)):
             raise OSError('child record is not a native file')
     return paths
 
@@ -61,7 +63,7 @@ def current_launch(record):
                 or data.get('resume') != Path(record).stem or type(data.get('pid')) is not int
                 or data['pid'] <= 0 or text('record').strip() != str(record)):
             return None
-        at = when(data.get('at'))
+        at = datetime.fromisoformat(data['at'].replace('Z', '+00:00'))
         expected = dict(record=str(record), at=data.get('at'), pool=data.get('pool'), harness='claude')
         joined = [json.loads(line) for line in text('record-launches.jsonl').splitlines() if line.strip()]
         if at is not None and at.tzinfo is not None and any(
@@ -250,7 +252,8 @@ class Children:
                 continue  # its native root call is still pending until the launch result
             associated.add(agent.child)
             leaf = leaves.get(agent.child)
-            settled = leaf is not None and leaf.known and leaf.open is False and not leaf.live and not leaf.queued
+            settled = (leaf is not None and leaf.known and leaf.open is False and not leaf.live
+                       and not leaf.queued and leaf.ended_at is not None and leaf.ended_at >= agent.started)
             if leaf is not None:
                 tasks = [task for key, task in view.tasks.items() if ownership.get(key) == agent.child]
                 settled = settled and all(task.phase in FINISHED and not task.invalid for task in tasks)
