@@ -2,7 +2,8 @@
 
 Every form was measured on the ship's own seats on 15 November 2026, through `qd --json watch`: 2.1.317 on the
 crew's and the office's seats, 2.1.325 on the desk's, where a helper agent was started in the background to see its
-panel appear below the line and go when it ended. The screens here are synthetic copies of those shapes: the
+panel appear below the line and go when it ended; the same was then captured for 2.1.317 on a throwaway seat by a
+builder, where no seat of the ship had ever run one. The screens here are synthetic copies of those shapes: the
 composer's rules, its box, a status row and the bottom line, with synthetic words in place of every reply and name.
 
 A form is read whole and only on the version it was measured on. Anything else says nothing: the proof then has
@@ -45,9 +46,21 @@ def test_each_measured_bottom_line_names_what_runs_in_the_background(version, na
 
 
 def test_a_panel_below_the_line_is_not_a_measured_rest():
-    """2.1.325 lists a helper agent running in the background under the bottom line: the line is not the last."""
-    screen = fixture('2.1.325', 'rest-agent-panel')
-    assert screen.box == '' and ClaudeHarness().background(screen, '2.1.325') is None
+    """Both versions list a helper agent running in the background under the bottom line: the line is not the last.
+    On 2.1.325 the line itself keeps its count of shells; on 2.1.317 it gains a hint, measured on a throwaway seat."""
+    for version in ('2.1.317', '2.1.325'):
+        screen = fixture(version, 'rest-agent-panel')
+        assert screen.box == '' and ClaudeHarness().background(screen, version) is None, version
+
+
+@pytest.mark.parametrize('name', [
+    'rest-agent-ended-hint',  # for some thirty seconds after a helper ended: no panel, a hint beside the line
+    'rest-agents-hint',       # for the first seconds after a launch, with no helper at all
+])
+def test_a_hint_beside_the_line_on_2_1_317_is_neither_work_nor_rest(name):
+    screen = fixture('2.1.317', name)
+    assert screen.box == '' and screen.working is False
+    assert ClaudeHarness().background(screen, '2.1.317') is None
 
 
 @pytest.mark.parametrize(('version', 'bottom'), [
@@ -74,6 +87,8 @@ def test_a_panel_below_the_line_is_not_a_measured_rest():
     # hints the program draws beside or in place of the line
     ('2.1.317', MODE + ' (shift+tab to cycle) · ← for agents'),
     ('2.1.317', MODE + ' (shift+tab to cycle) · esc to interrupt'),
+    ('2.1.317', MODE + ' (shift+tab to cycle) · ↓ to manage'),
+    ('2.1.317', MODE + ' (shift+tab to cycle) · /tasks to see subagents'),
     ('2.1.317', MODE),
     ('2.1.317', '  paste again to expand'),
     ('2.1.317', '  ? for shortcuts'),

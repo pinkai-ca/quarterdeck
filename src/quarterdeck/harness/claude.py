@@ -679,7 +679,9 @@ WORKING = re.compile(r"esc to interrupt|^[*✻✶✳✢✽·⠂⠄⠆] \S+… \(
 # The composer's bottom line names what the program runs in its background. Each form is matched whole and only
 # on the version it was measured on, through the ship's own captures of its seats on 15 November 2026:
 #   2.1.317  with nothing in the background the mode is followed by its cycling hint; with work the hint gives
-#            way to the count of shells, and of one monitor beside them
+#            way to the count of shells, and of one monitor beside them. A helper agent running in the background
+#            adds a hint beside the cycling hint and a panel of its own below the line (a throwaway seat's capture);
+#            for some thirty seconds after it ended, and for the first seconds after a launch, a hint alone
 #   2.1.325  the same two bodies, each followed by the name of the session's published page; a helper agent
 #            running in the background adds a panel of its own below the line, gone when the helper ends
 # Any other bottom line, or one that is not the screen's last, says nothing here.
