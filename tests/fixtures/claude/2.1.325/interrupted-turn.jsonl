@@ -1,0 +1,17 @@
+{"type":"user","timestamp":"2026-01-01T00:00:07+00:00","version":"2.1.325","isSidechain":false,"message":{"role":"user","content":"Reply OK."}}
+{"type":"assistant","timestamp":"2026-01-01T00:00:31+00:00","version":"2.1.325","isSidechain":false,"message":{"role":"assistant","content":[{"type":"text","text":""}],"id":"fixture-id-1","model":"claude-haiku-5-5","stop_reason":"end_turn"}}
+{"type":"system","timestamp":"2026-01-01T00:00:33+00:00","version":"2.1.325","isSidechain":false,"subtype":"turn_duration"}
+{"type":"user","timestamp":"2026-01-01T00:00:45+00:00","version":"2.1.325","isSidechain":false,"message":{"role":"user","content":"Run true with Bash, then reply OK."}}
+{"type":"assistant","timestamp":"2026-01-01T00:00:48+00:00","version":"2.1.325","isSidechain":false,"message":{"role":"assistant","content":[{"type":"tool_use","id":"fixture-id-2","name":"Bash","input":{}}],"id":"fixture-id-3","model":"claude-haiku-5-5","stop_reason":"tool_use"}}
+{"type":"user","timestamp":"2026-01-01T00:00:49+00:00","version":"2.1.325","isSidechain":false,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"fixture-id-2","is_error":false,"content":""}]}}
+{"type":"assistant","timestamp":"2026-01-01T00:00:53+00:00","version":"2.1.325","isSidechain":false,"message":{"role":"assistant","content":[{"type":"text","text":""}],"id":"fixture-id-4","model":"claude-haiku-5-5","stop_reason":"end_turn"}}
+{"type":"system","timestamp":"2026-01-01T00:00:54+00:00","version":"2.1.325","isSidechain":false,"subtype":"turn_duration"}
+{"type":"user","timestamp":"2026-01-01T00:00:58+00:00","version":"2.1.325","isSidechain":false,"message":{"role":"user","content":"Try Bash false once, then stop."}}
+{"type":"assistant","timestamp":"2026-01-01T00:01:03+00:00","version":"2.1.325","isSidechain":false,"message":{"role":"assistant","content":[{"type":"tool_use","id":"fixture-id-5","name":"Bash","input":{}}],"id":"fixture-id-6","model":"claude-haiku-5-5","stop_reason":"tool_use"}}
+{"type":"user","timestamp":"2026-01-01T00:01:04+00:00","version":"2.1.325","isSidechain":false,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"fixture-id-5","is_error":true,"content":""}]}}
+{"type":"assistant","timestamp":"2026-01-01T00:01:06+00:00","version":"2.1.325","isSidechain":false,"message":{"role":"assistant","content":[{"type":"text","text":""}],"id":"fixture-id-7","model":"claude-haiku-5-5","stop_reason":"end_turn"}}
+{"type":"system","timestamp":"2026-01-01T00:01:07+00:00","version":"2.1.325","isSidechain":false,"subtype":"turn_duration"}
+{"type":"user","timestamp":"2026-01-01T00:01:11+00:00","version":"2.1.325","isSidechain":false,"message":{"role":"user","content":"Run sleep 30."}}
+{"type":"assistant","timestamp":"2026-01-01T00:01:17+00:00","version":"2.1.325","isSidechain":false,"message":{"role":"assistant","content":[{"type":"tool_use","id":"fixture-id-8","name":"Bash","input":{}}],"id":"fixture-id-9","model":"claude-haiku-5-5","stop_reason":"tool_use"}}
+{"type":"user","timestamp":"2026-01-01T00:01:18+00:00","version":"2.1.325","isSidechain":false,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"fixture-id-8","is_error":true,"content":""}]}}
+{"type":"user","timestamp":"2026-01-01T00:01:20+00:00","version":"2.1.325","isSidechain":false,"message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}

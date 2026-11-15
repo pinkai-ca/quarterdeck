@@ -1,0 +1,5 @@
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-01-01T00:04:44+00:00","content":"Reply QUEUED."}
+{"type":"queue-operation","operation":"dequeue","timestamp":"2026-01-01T00:04:54+00:00"}
+{"type":"user","timestamp":"2026-01-01T00:05:01+00:00","version":"2.1.325","isSidechain":false,"message":{"role":"user","content":"Reply QUEUED."}}
+{"type":"assistant","timestamp":"2026-01-01T00:05:03+00:00","version":"2.1.325","isSidechain":false,"message":{"role":"assistant","content":[{"type":"text","text":""}],"id":"fixture-id-10","model":"claude-haiku-5-5","stop_reason":"end_turn"}}
+{"type":"system","timestamp":"2026-01-01T00:05:04+00:00","version":"2.1.325","isSidechain":false,"subtype":"turn_duration"}
