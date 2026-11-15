@@ -46,13 +46,15 @@ def enqueue(world, resume=True):
 
 
 def finish(world):
+    world.native.serial = max(world.native.serial, int((world.now - AT).total_seconds()))
     world.native.finish()
     world.now = AT + timedelta(seconds=world.native.serial + 20)
 
 
 def later_input(world, text):
-    world.native.serial = max(world.native.serial, 20)
+    world.native.serial = max(world.native.serial, int((world.now - AT).total_seconds()))
     world.native.begin(text)
+    world.now = AT + timedelta(seconds=world.native.serial + 1)
 
 
 @pytest.mark.parametrize('framework_input', ['wake', 'notice', 'delivery'])
@@ -70,9 +72,9 @@ def test_framework_input_does_not_retire_an_own_request(own_restart, framework_i
         assert path.exists() and not world.calls
         finish(world)
     elif framework_input == 'notice':
-        world.native.serial = 20
-        world.native.add('user', message=dict(role='user', content='synthetic background completion'),
-                         origin=dict(kind='task-notification'))
+        world.native.serial = int((world.now - AT).total_seconds())
+        world.native.add('user', message=dict(role='user', content='synthetic compacted context'),
+                         isCompactSummary=True)
         world.now += timedelta(seconds=30)
     else:
         message = world.runner.store.new('answer', 'synthetic-peer', world.seat.name, 'synthetic delivery')
