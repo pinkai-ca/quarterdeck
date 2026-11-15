@@ -187,7 +187,7 @@ def test_recovery_retires_records_after_reboot_removes_memory_scratch(project, m
 PLAIN_EXAMPLE = """import os
 from pathlib import Path
 
-from tests.conftest import socket_parent
+from tests.conftest import socket_project
 from tests.testrunner import layout, scratch
 
 
@@ -199,7 +199,7 @@ def test_ordinary_temp(tmp_path):
     if os.environ['EXPECT_STORAGE'] == 'memory':
         assert scratch.in_memory(tmp_path)
     else:
-        assert tmp_path.is_relative_to(socket_parent().parent / layout.PLAIN_TEMP)
+        assert tmp_path.is_relative_to(socket_project() / layout.ROOT_NAME / layout.PLAIN_TEMP)
 """
 
 FORCE_DISK = """import tests.testrunner.scratch as scratch
@@ -210,8 +210,8 @@ scratch.choose = lambda *args, **kwargs: None
 
 def plain_pytest(tmp_path, expect, plugins=()):
     """Direct pytest of one example under the project's conftest, as a contributor runs it. The inner run
-    keeps the socket anchor this session validated: a checkout path too long for its own .testruns/s anchor,
-    GitHub's among them, is given a short TMUX_TMPDIR, and storage has nothing to do with sockets."""
+    keeps the socket anchor this session validated; the separate project temp root is
+    independent of that fixed-length socket anchor."""
     import subprocess
     import sys
     root = Path(__file__).resolve().parents[2]

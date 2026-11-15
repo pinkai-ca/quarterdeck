@@ -29,6 +29,8 @@ def socket_project():
         text=True, stderr=subprocess.PIPE).strip())
     if common.name != '.git' or common.is_symlink() or not common.is_dir():
         raise OSError(f'Git common directory {common} is not a plain .git folder')
+    if common.parent.lstat().st_uid != os.getuid():
+        raise OSError(f'Git common project {common.parent} is not this user\'s directory')
     if common.parent.resolve() != common.parent:
         raise OSError(f'Git common project {common.parent} is reached through a link')
     return common.parent

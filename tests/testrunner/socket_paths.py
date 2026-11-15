@@ -42,7 +42,8 @@ def check(anchor: Path) -> None:
         raise Refused(
             f'test socket anchor {anchor} gives sockets of {generated} bytes (named probes {named}); '
             f'the native Unix socket path limit is {SOCKET_LIMIT} bytes and the suite keeps a margin '
-            f'of {SOCKET_MARGIN}; the longest socket anchor path is {anchor_limit()} bytes '
+            f'of {SOCKET_MARGIN}; the socket anchor is too long; '
+            f'the longest socket anchor path is {anchor_limit()} bytes '
             '(absolute filesystem path, including separators). Checkout length does not limit the derived short root')
 
 
