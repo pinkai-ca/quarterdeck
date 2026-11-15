@@ -160,14 +160,14 @@ def test_json_and_unrecognized_arguments_never_take_the_text_shortcut(live):
     assert presentation.command_line(['--ship',str(ship.folder),'status','--line','--help']) is None
 
 
-def test_unreadable_fallback_is_an_unknown_alarm_never_an_empty_cached_success(live,capsys):
+def test_text_uses_publication_while_json_reports_unreadable_current_facts(live,capsys):
     from quarterdeck import cli
     ship,svc,lock=live
     attempts=ship.runtime/'post/attempts';attempts.mkdir(parents=True,exist_ok=True)
     (attempts/'synthetic.json').write_text('{ malformed')
     assert cli.main(['--ship',str(ship.folder),'status','--line'])==0
     text=capsys.readouterr().out
-    assert 'status unknown' in text and '0 waiting' not in text
+    assert text.strip() == presentation.cached_line(ship.folder)
     assert cli.main(['--json','--ship',str(ship.folder),'status','--line'])==0
     data=json.loads(capsys.readouterr().out)
     assert data['facts'] is None and data['error']=='status evidence unavailable'

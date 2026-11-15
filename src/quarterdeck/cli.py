@@ -173,7 +173,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = verb("attach", cmd_attach, "open the ship in this terminal: a session on the ship's own tmux server")
     p.add_argument("session", nargs="?", help="a session's name or title (default: the person's own session)")
     p = verb("status", cmd_status, "every seat on one screen, then the open orders")
-    p.add_argument("--line", action="store_true", help="the one line every ship session's status bar shows")
+    p.add_argument("--line", action="store_true", help="published operational alerts; stale or unavailable readings are marked")
     p = verb("watch", cmd_watch, "read a seat: activity from its record, the door from its screen")
     p.add_argument("seat", nargs="?")
     p.add_argument("--save-screen", action="store_true", help="save the screen for the adapter's next fixture")
@@ -682,12 +682,20 @@ def cmd_status(args: argparse.Namespace) -> Reading:
     ship = load_ship(args)
     if args.line:
         warning = copy_state.select(ship.folder, mode=ship.code, mode_known=True).warning
+        from .presentation import collected_line
+        publication_age = None
+        if not getattr(args, 'json', False):
+            from .presentation import published_reading
+            line, publication_age = published_reading(ship.folder)
+            if line is not None:
+                return Reading(dict(line=line, copy_warning=warning),
+                               lambda d: d['line'] + (' · ' + warning if warning else ''))
         try:
             facts = watch.facts(ship, Tmux.for_ship(ship))
             if warning:
                 return Reading({**output.value(facts), 'copy_warning': warning},
-                               lambda _: facts.line() + ' · ' + warning)
-            return Reading(facts, watch.Facts.line)
+                               lambda _: collected_line(facts.line(), publication_age) + ' · ' + warning)
+            return Reading(facts, lambda f: collected_line(f.line(), publication_age))
         except sqlite3.DatabaseError as error:
             from .ledger_recovery import malformed
             if not malformed(error):
@@ -695,12 +703,14 @@ def cmd_status(args: argparse.Namespace) -> Reading:
             state = watch.service_state(ship.runtime)
             lead = 'SERVICE DOWN' if state == 'down' else f'service {state}'
             reason = 'ledger malformed; stop the service, then qd ledger --recover'
-            return Reading(dict(service=state, facts=None, error=reason), lambda _: lead + ' · ' + reason)
+            return Reading(dict(service=state, facts=None, error=reason),
+                           lambda _: collected_line(lead + ' · ' + reason, publication_age))
         except (OSError, ValueError, TypeError, KeyError):
             state = watch.service_state(ship.runtime)
             lead = 'SERVICE DOWN' if state == 'down' else f'service {state}'
             return Reading(dict(service=state, facts=None, error='status evidence unavailable', copy_warning=warning),
-                           lambda _: lead + ' · status unknown: evidence unavailable; inspect qd status'
+                           lambda _: collected_line(lead + ' · status unknown: evidence unavailable; inspect qd status',
+                                                   publication_age)
                            + (' · ' + warning if warning else ''))
     return Reading(watch.status_reading(ship, Tmux.for_ship(ship)), watch.render_table)
 

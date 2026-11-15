@@ -126,7 +126,7 @@ The modules that the framework table does not list, the module of each part amon
 | `post_message.py` | a message's immutable identity, its JSON and the envelope the message is typed in |
 | `post_retirement.py` | finished delivery evidence moved, unchanged, out of the service's working folders into batches that every reader still resolves |
 | `post_threads.py` | the thread indexes, and a thread read whole for `qd thread` |
-| `presentation.py` | optional, bounded status text, never evidence for a lifecycle or receipt decision |
+| `presentation.py` | published operational text, independent service liveness, stale age and bounded fallback to current facts; never lifecycle, receipt or usage evidence |
 | `procstat.py` | the states `/proc` gives a process that has exited, each read as ended |
 | `program_use.py` | each program's current activity, and its last use bound to saved launch evidence |
 | `push_reminder.py` | after a push of `main`, seen on the local tracking ref alone, one order twenty quiet minutes later to the seat named `una`, where the ship has one, to read the hosted runs of the pushed tips |

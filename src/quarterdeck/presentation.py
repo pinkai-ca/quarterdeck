@@ -1,4 +1,4 @@
-"""Optional bounded status text, never evidence for a lifecycle or receipt decision."""
+"""Published status text, never evidence for a lifecycle or receipt decision."""
 
 import json
 import hashlib
@@ -13,6 +13,7 @@ from .procstat import EXITED
 NAME = 'status-line.json'
 MAX_AGE_NS = 3_000_000_000  # covers long actor duties; independent owner checks still run on every job
 CLOCK_SKEW_NS = 50_000_000
+COLLECT_AFTER_NS = 60_000_000_000
 
 
 def fingerprint(path):
@@ -85,6 +86,65 @@ def cached_line(folder):
         return None
 
 
+def published_line(folder):
+    """Read a running service's rendering; None asks for independent collection."""
+    return published_reading(folder)[0]
+
+
+def published_reading(folder):
+    """Return text and, when a publication expired, its age for the collector's lead.
+
+    The lock/heartbeat are read independently even when the publication is old.
+    Stale alerts remain visible, but their old service heading never claims liveness.
+    """
+    folder = Path(folder).expanduser().resolve()
+    line = cached_line(folder)
+    if line is not None:
+        return line, None
+    lead = service_lead(folder / 'runtime')
+    if lead != 'service ok' and not lead.startswith('service busy'):
+        return None, None  # a stopped service cannot keep the named waits up to date
+    try:
+        path = folder / 'runtime' / NAME
+        if path.stat().st_size > 65536:
+            raise ValueError('publication too large')
+        data = json.loads(path.read_text())
+        line = data['line']
+        if (type(data['format']) is not int or data['format'] != 1
+                or not isinstance(line, str) or not line.startswith('service ok · ')
+                or '\n' in line or '\r' in line
+                or type(data['wall']) is not int or type(data['monotonic']) is not int
+                or ('written' in data and type(data['written']) is not int)
+                or type(data['pid']) is not int or data['pid'] <= 0
+                or not isinstance(data['process_start'], str) or not data['process_start']):
+            raise ValueError('invalid publication')
+        written = data.get('written')
+        age = time.time_ns() - written if written is not None else -1
+        if age < 0:
+            return None, None  # an undated/reversed clock cannot bound reuse
+        if age > COLLECT_AFTER_NS:
+            return None, age // 1_000_000_000
+        if lead == 'service ok' and 0 <= age <= servicectl.STALE_SECONDS * 1_000_000_000:
+            beat = servicectl.read_heartbeat(folder / 'runtime')
+            if (beat is not None and beat[0] == data['pid'] and 0 <= beat[1] <= servicectl.STALE_SECONDS
+                    and process_start(beat[0]) == data['process_start']
+                    and data['ship'] == fingerprint(folder / 'ship.toml')
+                    and data['framework'] == framework_stamp()):
+                return line, None
+        dated = f'published {age // 1_000_000_000}s ago'
+        return f'{lead} · status stale: {dated}; inspect qd status · {line.partition(" · ")[2]}', None
+    except (OSError, ValueError, TypeError, KeyError, UnicodeError):
+        return None, None
+
+
+def collected_line(line, publication_age):
+    """Keep fresh alerts, explicitly saying why the independent collector ran."""
+    if publication_age is None:
+        return line
+    lead, separator, alerts = line.partition(' · ')
+    return f'{lead} · publication {publication_age}s old, collected here' + separator + alerts
+
+
 def publish(ship, tmux, framework, store, attempts):
     """A failed/refused collection cannot leave its prior healthy rendering available."""
     written = False
@@ -97,7 +157,7 @@ def publish(ship, tmux, framework, store, attempts):
 
 
 def _publish(ship, tmux, framework, store, attempts):
-    """Only the service writes this disposable rendering, dated at collection start."""
+    """Only the service writes this rendering, dating collection and publication separately."""
     from . import ship as shipmod, watch
 
     wall, monotonic = time.time_ns(), time.monotonic_ns()
@@ -108,10 +168,9 @@ def _publish(ship, tmux, framework, store, attempts):
     beat = servicectl.read_heartbeat(ship.runtime)
     start = process_start(os.getpid())
     if (facts.service != 'ok' or beat is None or beat[0] != os.getpid() or start is None
-            or not servicectl.alive(ship.runtime) or fingerprint(ship.file) != stamp
-            or not fresh(wall, monotonic)):
+            or not servicectl.alive(ship.runtime) or fingerprint(ship.file) != stamp):
         return False
-    data = dict(format=1, wall=wall, monotonic=monotonic, pid=os.getpid(), process_start=start,
+    data = dict(format=1, wall=wall, written=time.time_ns(), monotonic=monotonic, pid=os.getpid(), process_start=start,
                 ship=stamp, framework=framework, line=line, accounting=getattr(facts, 'accounting', None),
                 ledger_recovery=getattr(facts, 'ledger_recovery', []),
                 retirement=getattr(facts, 'retirement', None))
@@ -141,11 +200,7 @@ def command_line(argv):
     folder = command_folder(argv)
     if folder is None:
         return None
-    line = cached_line(folder)
-    if line is not None:
-        return line
-    from . import ship as shipmod, watch
-    from .tmux import Tmux, TmuxError
+    from . import ship as shipmod
 
     try:
         ship = shipmod.load(shipmod.find(folder))
@@ -155,12 +210,33 @@ def command_line(argv):
     if selected.warning or (selected.qd is not None
                             and Path(sys.executable).parent.resolve() != selected.qd.parent.resolve()):
         return None
+    line, publication_age = published_reading(ship.folder)
+    if line is not None:
+        return line
+    from . import watch
+    from .tmux import Tmux, TmuxError
+
     try:
-        return watch.facts(ship, Tmux.for_ship(ship)).line()
+        return collected_line(watch.facts(ship, Tmux.for_ship(ship)).line(), publication_age)
     except (TmuxError, shipmod.ShipError):
         return None  # preserve the CLI's native failure exit and independent alarm
     except (OSError, ValueError, KeyError, TypeError):
         return unavailable_line(argv)
+
+
+def service_lead(runtime):
+    """Only the live lock and heartbeat establish the service heading."""
+    try:
+        if not servicectl.alive(runtime):
+            return 'SERVICE DOWN'
+        beat = servicectl.read_heartbeat(runtime)
+        if beat is None or beat[1] < 0:
+            return 'service busy (heartbeat unknown)'
+        if beat[1] > servicectl.STALE_SECONDS:
+            return f'service busy {int(beat[1])}s'
+        return 'service ok'
+    except OSError:
+        return 'service unknown'
 
 
 def unavailable_line(argv):
@@ -172,17 +248,9 @@ def unavailable_line(argv):
         folder = Path(folder).expanduser().resolve()
         if folder.is_file():
             folder = folder.parent
-        runtime = folder / 'runtime'
-        if not servicectl.alive(runtime):
-            lead = 'SERVICE DOWN'
-        else:
-            beat = servicectl.read_heartbeat(runtime)
-            if beat is None or beat[1] < 0:
-                lead = 'service busy (heartbeat unknown)'
-            elif beat[1] > servicectl.STALE_SECONDS:
-                lead = f'service busy {int(beat[1])}s'
-            else:
-                lead = 'service ok'
+        lead = service_lead(folder / 'runtime')
+        publication_age = published_reading(folder)[1]
     except OSError:
         lead = 'service unknown'
-    return lead + ' · status unknown: reading unavailable; inspect qd status'
+        publication_age = None
+    return collected_line(lead + ' · status unknown: reading unavailable; inspect qd status', publication_age)

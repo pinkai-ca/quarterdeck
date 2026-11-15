@@ -4,7 +4,7 @@ __version__ = "0.1.0"
 
 
 def main():
-    """Keep a fresh tmux status job small; all other commands use the ordinary CLI."""
+    """Keep text status jobs small; all other commands use the ordinary CLI."""
     import sys
     from .presentation import command_line, unavailable_line
 

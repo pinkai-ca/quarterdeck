@@ -547,7 +547,15 @@ seat's pool.
 An alarm typed into a pane would need the door, and the door holds while a box
 is not clear. The status line of every ship session needs no door. Tmux draws
 the line and refreshes the line itself, by running `qd status --line`, so a dead
-service never looks like a healthy idle ship. The line names every withheld or
+service never looks like a healthy idle ship. While the service is running, the
+command reads its valid published line. With an ok service lead, a publication
+written no more than ten seconds ago reads plain, however long collection took.
+An older publication, or a busy service, reads stale with its write age for up
+to sixty seconds. Beyond sixty seconds the command collects current facts
+itself and says `publication <age>s old, collected here` in the lead. It also
+collects the facts itself when the service is down, nothing valid is published,
+or the publication's write age cannot be known. Thus a stopped publisher cannot
+hide a newly waiting alert behind its last line. The line names every withheld or
 blind delivery, every seat that needs a human, every seat held at a limit with
 nowhere to move, a filling disk, a grant about to expire and a dead service
 (law `nothing-waits-silently`). A disk shows on the line as the filesystem that
