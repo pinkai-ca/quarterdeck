@@ -103,6 +103,7 @@ class Service:
         self.store = Store(self.runtime)
         from .fleet_post import ExportWorklist
         self.fleet_exports = ExportWorklist()
+        self.inbox_certificate = None  # a new service always renders its first inbox pass
         self.attempts = Attempts(self.runtime)
         self.drop_filer = post.FilingSlice()
         self.quick_request_scan = None
@@ -808,18 +809,8 @@ class Service:
         return launched is not None and sandbox.seats_hidden(launched.argv) is not False and seat.is_up
 
     def inboxes(self) -> None:
-        for name in self.ship.seats:
-            path = self.runtime / "post" / "inbox" / f"{name}.md"
-            try:
-                text = post.inbox_text(self.store, name)
-                try:
-                    current = post_dir.read_text(path)
-                except FileNotFoundError:
-                    current = None
-                if current != text:
-                    post.render_inbox(self.runtime, self.store, name)
-            except ShipError as error:
-                self.log("error", step="inbox", seat=name, error=str(error))
+        from . import service_inbox
+        service_inbox.refresh(self)
 
     def file_drops(self) -> None:
         """File each seat's drop. The service sets the sender from the folder; a refusal is held and logged once."""

@@ -4,6 +4,28 @@ A page of [the design](../DESIGN.md).
 
 ## 7. Post
 
+### Inbox rendering
+
+The service reuses a completed inbox pass only while the declared seats, ship
+declaration, immutable store/import/addressed/forwarding directory stamps,
+per-seat refusal and compaction journals, and rendered inbox files are unchanged.
+Ancestor identity is included; links and unreadable fingerprints never permit a
+skip. Mutable files have individual identity, size and change-time stamps.
+Directory stamps cover immutable publication and removal, as in the Store.
+Every stamp must predate the pass by more than `POST_TIMESTAMP_TICK_NS`; a recent
+observation cannot become a certificate merely by aging. A failed pass or service
+restart has no certificate. Changes during a pass remain owed to the next one.
+
+The received tail has a 24-hour age bound as well as count and byte bounds. Its
+earliest visible entry's expiry ends reuse, even without a file change; the exact
+cutoff remains inclusive. A reversed clock also forces a new reading. Due times
+are literal text, with no overdue mark or relative age. Attempts are not inputs
+to inbox rendering. Full passes share one reading and retain the service's warm
+Store for ordinary arrivals. Changes to the ship declaration, import/addressed/
+forwarding records or seat journals replace that reader, so address projections
+also reflect ancillary changes without a new message. A failed or uncertified
+reading cannot certify that reuse either.
+
 ### Across ships
 
 A cross-ship address is `seat@ship`, where the ship is its project folder name. The fixed
