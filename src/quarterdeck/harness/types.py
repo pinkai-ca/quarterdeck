@@ -476,7 +476,8 @@ def _pi_wrap(line: str, columns: int) -> list[str] | None:
 
 
 def _box_matches(text: str, shown: str, columns: int | None = None, slack: int = 0,
-                 textwrap_ascii: bool = False, pi_word_wrap: bool = False) -> bool:
+                 textwrap_ascii: bool = False, pi_word_wrap: bool = False,
+                 wrap_hyphens: bool = True) -> bool:
     # ``slack``: columns a program keeps clear at the right when it wraps at a word, below the
     # width at which it breaks a word that has no space (the adapter supplies that margin).
     # Adapters omit the trailing blank box rows; no interior whitespace is
@@ -535,9 +536,9 @@ def _box_matches(text: str, shown: str, columns: int | None = None, slack: int =
             return False
         # Leading hyphens belong to the next piece (for example a command
         # flag); they do not make it an empty word that could fit anywhere.
-        word = re.match(r"-*[^\s-]+-?|-+", tail[spaces:])
+        word = re.match(r"-*[^\s-]+-?|-+" if wrap_hyphens else r"[^\s]+", tail[spaces:])
         piece = _cells(word[0]) if word else None
-        if (spaces or row.endswith("-")) and piece and width + spaces + piece > columns - slack:
+        if (spaces or wrap_hyphens and row.endswith("-")) and piece and width + spaces + piece > columns - slack:
             pos += spaces  # the expected separator hangs off the rendered row
             continue
         return False
@@ -603,6 +604,7 @@ class Box:
     folded: str | None = None
     textwrap_ascii: bool = False
     pi_word_wrap: bool = False
+    wrap_hyphens: bool = True  # Claude keeps a hyphenated word together when it fits a fresh row
 
     def wrapped_rows(self, columns: int | None, slack: int = 0) -> list[str] | None:
         """A measured row layout for a scrolled comparison, or unknown.
@@ -642,7 +644,8 @@ class Box:
     def matches(self, shown: str | None, columns: int | None = None, slack: int = 0) -> bool:
         if shown is None:
             return False
-        if _box_matches(self.text, shown, columns, slack, self.textwrap_ascii, self.pi_word_wrap):
+        if _box_matches(self.text, shown, columns, slack, self.textwrap_ascii, self.pi_word_wrap,
+                        self.wrap_hyphens):
             return True
         return bool(self.folded) and re.fullmatch(self.folded, shown.strip()) is not None
 

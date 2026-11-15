@@ -1278,7 +1278,9 @@ class ClaudeHarness(Harness):
         newlines, a trailing one too, and names no count at all for a paste without any."""
         newlines = text.count("\n")
         lines = rf" \+{newlines} lines" if newlines else ""
-        return ClaudeBox(text, folded=rf"\[Pasted text #\d+{lines}\]")
+        # 2.1.317's literal composer wraps before a whole whitespace-delimited
+        # word, including its hyphens; only a word wider than the text area splits.
+        return ClaudeBox(text, folded=rf"\[Pasted text #\d+{lines}\]", wrap_hyphens=False)
 
     def controls(self) -> tuple[Control, ...]:
         return (
