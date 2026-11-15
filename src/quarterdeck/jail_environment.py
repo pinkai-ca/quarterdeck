@@ -10,6 +10,8 @@ operator's desktop shell, which carries secrets. Inside, only the names below ar
 - the variables the seat's harness declares for its program (Launch.env), so it reaches its local endpoint.
 
 Nothing that ``looks_secret`` passes, whatever list names it: a declared name that looks secret refuses the launch.
+Nothing that ``refused`` names reaches any seat, jailed or not, nor the ship's server nor the service, whatever list
+names it: SUDO_ASKPASS, dropped.
 
 The launcher also caps the size of any one file the jail writes (``FILE_BYTES``, as ``RLIMIT_FSIZE``), beside the
 service's write-bound alarm (write_bound), and gives ``SIGXFSZ`` its default action, which this interpreter ignores.
@@ -48,11 +50,20 @@ COUNTING = ('MAX', 'MIN', 'LIMIT', 'COUNT', 'BUDGET')
 SOCKETS = ('SOCK', 'SOCKET')
 
 
+# Names no seat, server or service ever holds, whatever list names them: dropped, not refused, so a list that names
+# one still launches. SUDO_ASKPASS would let a seat's sudo raise a password prompt on the operator's screen; root beyond
+# the security door goes only through pkexec, after the desk has told the operator what the prompt is for.
+REFUSED = ('SUDO_ASKPASS',)
+
+
 # Unjailed panes: the ship's own tmux server starts from this second list, never the caller's whole environment, and
 # every unjailed seat inherits what the server holds. It is the framework's names the jail also has, the pane's own
-# TERM, LANG, TZ and LC_*, and the desktop session's (DESKTOP), which a jail never receives. Filtered by
-# looks_secret like the jail's: no secret-named variable reaches any seat, jailed or not.
-DESKTOP = ('DISPLAY', 'WAYLAND_DISPLAY', 'XDG_CURRENT_DESKTOP', 'DBUS_SESSION_BUS_ADDRESS', 'SSH_AUTH_SOCK')
+# TERM, LANG, TZ and LC_*, and the desktop session's (DESKTOP), which a jail never receives. XAUTHORITY is the X
+# cookie's path: with DISPLAY it lets an X program reach the desktop through XWayland, and an unjailed seat can read
+# the file anyway. Filtered by looks_secret and refused like the jail's: no secret-named variable, and no refused one,
+# reaches any seat, jailed or not.
+DESKTOP = ('DISPLAY', 'WAYLAND_DISPLAY', 'XDG_CURRENT_DESKTOP', 'DBUS_SESSION_BUS_ADDRESS', 'SSH_AUTH_SOCK',
+           'XAUTHORITY')
 DESKTOP_PREFIXES = ('XDG_SESSION_',)
 UNJAILED = (*ALLOWED, *FROM_PANE, *DESKTOP)
 UNJAILED_PREFIXES = (*FROM_PANE_PREFIXES, *DESKTOP_PREFIXES)
@@ -73,10 +84,12 @@ NEVER = ('QD_SEAT',)
 
 def declared(environ, names, prefixes, keys=()) -> dict[str, str]:
     """The variables of ``environ`` a list names, by name or prefix, but never QD_SEAT nor a secret-looking name; then
-    the ``keys`` named, a ship file's declared pool keys. Names are judged, never values."""
+    the ``keys`` named, a ship file's declared pool keys. A refused name is dropped from both, whatever names it.
+    Names are judged, never values."""
     kept = {name: value for name, value in environ.items()
-            if name not in NEVER and (name in names or name.startswith(prefixes)) and not looks_secret(name)}
-    kept.update({name: environ[name] for name in keys if name in environ and name not in NEVER})
+            if name not in NEVER and (name in names or name.startswith(prefixes)) and not looks_secret(name)
+            and not refused(name)}
+    kept.update({name: environ[name] for name in keys if name in environ and name not in NEVER and not refused(name)})
     return kept
 
 
@@ -102,8 +115,19 @@ def looks_secret(name: str) -> bool:
     return False
 
 
+def refused(name: str) -> bool:
+    """Whether a variable never reaches a seat, the ship's server or the service, whatever list names it (REFUSED).
+    Every list passes through here: the jail's, the unjailed panes', the service's and a seat's declared ones."""
+    return name in REFUSED
+
+
+def without_refused(environment) -> dict[str, str]:
+    """``environment`` with every refused name dropped."""
+    return {name: value for name, value in environment.items() if not refused(name)}
+
+
 def from_pane(name: str) -> bool:
-    return (name in FROM_PANE or name.startswith(FROM_PANE_PREFIXES)) and not looks_secret(name)
+    return (name in FROM_PANE or name.startswith(FROM_PANE_PREFIXES)) and not looks_secret(name) and not refused(name)
 
 
 def pane_settings(environ) -> list[str]:

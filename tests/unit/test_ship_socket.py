@@ -288,10 +288,10 @@ def test_attach_to_an_unknown_session_names_the_ships_sessions(drydock, monkeypa
 def test_launch_words_cut_the_seat_off_from_the_server_it_runs_in(tmp_path):
     words = seatmod.launch_words("/bin", ["prog", "a b"], socket="/r/tmux/server", tmux_tmpdir=tmp_path / "t",
                                  markers=["CLAUDECODE"])
-    assert words == ["env", "-u", "TMUX", "-u", "TMUX_PANE", "-u", "CLAUDECODE", "QD_TMUX_SOCKET=/r/tmux/server",
-                     f"TMUX_TMPDIR={tmp_path / 't'}", "PATH=/bin", "prog", "a b"]
+    assert words == ["env", "-u", "TMUX", "-u", "TMUX_PANE", "-u", "CLAUDECODE", "-u", "SUDO_ASKPASS",
+                     "QD_TMUX_SOCKET=/r/tmux/server", f"TMUX_TMPDIR={tmp_path / 't'}", "PATH=/bin", "prog", "a b"]
     unnamed = seatmod.launch_words("/bin", ["prog"], socket=None, tmux_tmpdir=tmp_path)
-    assert unnamed[5:7] == ["-u", "QD_TMUX_SOCKET"]
+    assert unnamed[5:9] == ["-u", "SUDO_ASKPASS", "-u", "QD_TMUX_SOCKET"]
 
 
 def test_the_markers_removed_are_the_adapters_named_session_marks_only():

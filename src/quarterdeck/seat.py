@@ -163,10 +163,14 @@ def launch_words(path: str, argv: list[str], *, socket: str | None, tmux_tmpdir:
     seat's shell that ran ``tmux kill-server`` would stop the whole ship. So both go; TMUX_TMPDIR names
     a fresh private folder of this launch's own, where a bare tmux finds no server but one it starts
     itself; QD_TMUX_SOCKET names the ship's server for qd alone. The ``markers`` are the session marks
-    another program left in the server's environment, removed by name.
+    another program left in the server's environment, removed by name; the refused names
+    (jail_environment.REFUSED) are removed always.
     """
+    from .jail_environment import REFUSED
+
     reach = ["QD_TMUX_SOCKET=" + socket] if socket else ["-u", "QD_TMUX_SOCKET"]
-    unset = [word for name in markers for word in ("-u", name)]
+    # The refused names go too, whatever the server or the session holds (jail_environment.REFUSED).
+    unset = [word for name in (*markers, *(name for name in REFUSED if name not in markers)) for word in ("-u", name)]
     # Add this after launch.sh's sh: a shell may discard imported function variables. Child Bash
     # shells import it before reading their rc files, so a later PATH prepend cannot shadow qd.
     function = ([f'BASH_FUNC_qd%%=() {{ {shlex.quote(str(qd_command))} "$@"; }}']
@@ -181,7 +185,8 @@ def refuse_secret_names(seat: str, env: dict[str, str], pool) -> None:
     which is how its program pays. That variable is found by holding the key, never by its name or by showing it."""
     from . import jail_environment
 
-    secret = sorted(name for name in env if jail_environment.looks_secret(name))
+    # A refused name is dropped at the window, never judged here: naming it does not stop the launch.
+    secret = sorted(name for name in env if jail_environment.looks_secret(name) and not jail_environment.refused(name))
     if secret and getattr(pool, 'api_key', None):
         from .harness.home import key_environment
 
@@ -1082,7 +1087,9 @@ class Seat:
             self.tmux.new_session(session.title, env=ship_env)
             status = shlex.join([str(qd_bin() / "qd"), "--ship", str(self.ship.folder), "status", "--line"])
             self.tmux.status_line(session.title, status)
-        env = {**env, **ship_env, "QD_SEAT": self.name}
+        from .jail_environment import without_refused
+
+        env = without_refused({**env, **ship_env, "QD_SEAT": self.name})  # a refused name reaches no pane
         cwd = self.ship.cwd_of(self.spec)
         if not cwd.is_dir():
             raise ShipError(f"{self.name}: working directory {cwd} does not exist; qd creates nothing outside its folder")  # law: one-folder

@@ -18,7 +18,8 @@ from quarterdeck.tmux import Tmux
 from .test_ship_server import ship  # noqa: F401  the drydock in a short folder, so its own socket fits
 
 DECOYS = ('QD_DECOY_OPENAI_API_KEY', 'QD_DECOY_JMAP_TOKEN', 'DECOY_CLIENT_SECRET', 'DECOY_HARMLESS')
-SESSION = ('DISPLAY', 'SSH_AUTH_SOCK', 'DBUS_SESSION_BUS_ADDRESS')  # the desktop's: kept for unjailed panes
+SESSION = ('DISPLAY', 'SSH_AUTH_SOCK', 'DBUS_SESSION_BUS_ADDRESS', 'XAUTHORITY')  # the desktop's: kept for unjailed panes
+ASKPASS = 'SUDO_ASKPASS'  # reaches no seat, no server and no service, whatever list names it
 POOL_KEY = 'DECOY_POOL_API_KEY'  # declared in the ship file as a pool's key: the service reads it
 
 
@@ -35,6 +36,7 @@ def seeded(monkeypatch) -> None:
         monkeypatch.setenv(name, 'decoy-value')
     monkeypatch.setenv('QD_SEAT', 'una')  # the pane that ran qd sync
     monkeypatch.setenv(POOL_KEY, 'decoy-key')
+    monkeypatch.setenv(ASKPASS, '/usr/bin/ssh-askpass')
 
 
 def test_the_service_holds_only_its_declared_environment(drydock: Path, tmux, monkeypatch):
@@ -52,6 +54,7 @@ def test_the_service_holds_only_its_declared_environment(drydock: Path, tmux, mo
         names = environ_names(pid)
         print('service:', ' '.join(sorted(names)))  # names only
         assert not names & set(DECOYS), sorted(names & set(DECOYS))
+        assert ASKPASS not in names, 'the service never holds the sudo helper'
         assert 'QD_SEAT' not in names, 'the service carries no seat'
         assert not names & {'QD_TMUX_SOCKET', 'GIT_DIR'}, 'a caller\'s socket and repository stay with the caller'
         assert 'service started' in proof and ('in its own scope qd-service-' in proof
@@ -77,7 +80,7 @@ def test_the_ships_own_tmux_server_starts_from_the_declared_environment(ship, mo
         names = {line.split('=', 1)[0] for line in shown if '=' in line}
         copied = {line.split('=', 1)[0] for line in session if '=' in line}  # tmux's update-environment copies
         print('server:', ' '.join(sorted(names)), '| session:', ' '.join(sorted(copied)))  # names only
-        everything = set(DECOYS) | {'QD_SEAT', POOL_KEY}
+        everything = set(DECOYS) | {'QD_SEAT', POOL_KEY, ASKPASS}
         assert not names & everything, sorted(names & everything)
         assert not copied & everything, sorted(copied & everything)
         assert {'PATH', *SESSION} <= names, 'the desktop names an unjailed pane keeps'
@@ -87,7 +90,7 @@ def test_the_ships_own_tmux_server_starts_from_the_declared_environment(ship, mo
 
 DESKTOP = {'DISPLAY': ':0', 'WAYLAND_DISPLAY': 'wayland-0', 'XDG_SESSION_TYPE': 'wayland', 'XDG_SESSION_ID': '2',
            'XDG_CURRENT_DESKTOP': 'GNOME', 'DBUS_SESSION_BUS_ADDRESS': 'unix:path=/run/user/0/bus',
-           'SSH_AUTH_SOCK': '/run/user/0/keyring/ssh'}
+           'SSH_AUTH_SOCK': '/run/user/0/keyring/ssh', 'XAUTHORITY': '/run/user/0/.mutter-Xwaylandauth.QD'}
 SECRET_DECOYS = ('QD_DECOY_OPENAI_API_KEY', 'QD_DECOY_JMAP_TOKEN', 'DECOY_CLIENT_SECRET', 'DECOY_HARMLESS')
 
 
@@ -124,6 +127,7 @@ def test_an_unjailed_pane_has_the_desktop_names_and_no_decoy_and_a_jailed_one_ha
         monkeypatch.setenv(name, value)
     for name in SECRET_DECOYS:
         monkeypatch.setenv(name, 'decoy-value')
+    monkeypatch.setenv(ASKPASS, '/usr/bin/ssh-askpass')
     server = Tmux.for_ship(ship)
     open_seat = seatmod.Seat(ship, ship.seat('captain'), server)
     jailed_seat = seatmod.Seat(ship, ship.seat('worker-1'), server)
@@ -138,6 +142,7 @@ def test_an_unjailed_pane_has_the_desktop_names_and_no_decoy_and_a_jailed_one_ha
         print('unjailed:', ' '.join(sorted(unjailed)))  # names only
         assert set(DESKTOP) <= unjailed, sorted(set(DESKTOP) - unjailed)
         assert not unjailed & set(SECRET_DECOYS), sorted(unjailed & set(SECRET_DECOYS))
+        assert ASKPASS not in unjailed, 'no unjailed seat holds the sudo helper'
         assert sandbox.seats_hidden(jailed_seat.launched().argv) is True
         inside = set()
         while not inside and time.monotonic() < deadline + 10:
@@ -147,6 +152,7 @@ def test_an_unjailed_pane_has_the_desktop_names_and_no_decoy_and_a_jailed_one_ha
         print('jailed:', ' '.join(sorted(inside)))  # names only
         assert inside and not inside & set(DESKTOP), sorted(inside & set(DESKTOP))
         assert not inside & set(SECRET_DECOYS)
+        assert ASKPASS not in inside, 'nor a jailed one'
     finally:
         seatmod.bring_down(ship, server)
 
@@ -172,7 +178,8 @@ def test_a_running_servers_environment_is_cleaned_at_the_service_start(ship, mon
     from quarterdeck.tmux import ship_socket
     socket = ship_socket(ship)
     socket.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    old = dict(os.environ, **DESKTOP, QD_DECOY_OPENAI_API_KEY='decoy', DECOY_CLIENT_SECRET='decoy', QD_SEAT='una')
+    old = dict(os.environ, **DESKTOP, QD_DECOY_OPENAI_API_KEY='decoy', DECOY_CLIENT_SECRET='decoy', QD_SEAT='una',
+               SUDO_ASKPASS='/usr/bin/ssh-askpass')
     subprocess.run(['tmux', '-S', str(socket), 'new-session', '-d', '-s', 'Old', 'sleep 600'], env=old, check=True)
     subprocess.run(['tmux', '-S', str(socket), 'set-environment', '-g', 'DECOY_JMAP_TOKEN', 'decoy'], check=True)
     for name, value in DESKTOP.items():
@@ -196,7 +203,8 @@ def test_a_running_servers_environment_is_cleaned_at_the_service_start(ship, mon
                                 if '"server-environment-cleaned"' in line), None)
             time.sleep(0.1)
         assert cleaned is not None, 'the service cleaned the running server'
-        assert {'QD_DECOY_OPENAI_API_KEY', 'DECOY_CLIENT_SECRET', 'DECOY_JMAP_TOKEN', 'QD_SEAT'} <= set(cleaned['names'])
+        assert {'QD_DECOY_OPENAI_API_KEY', 'DECOY_CLIENT_SECRET', 'DECOY_JMAP_TOKEN', 'QD_SEAT',
+                ASKPASS} <= set(cleaned['names'])
         assert all('decoy' not in str(value) for value in cleaned.values()), 'names only'
         captain = seatmod.Seat(ship, ship.seat('captain'), server)
         captain.up(resume=False)
@@ -208,7 +216,35 @@ def test_a_running_servers_environment_is_cleaned_at_the_service_start(ship, mon
         print('unjailed after the clean:', ' '.join(sorted(names)))  # names only
         from quarterdeck import jail_environment
         assert not [name for name in names if jail_environment.looks_secret(name)], 'none secret'
+        assert ASKPASS not in names, 'the sudo helper was cleaned too'
         assert set(DESKTOP) <= names, 'the desktop names are still there'
     finally:
         servicectl.stop(ship.runtime)
+        seatmod.bring_down(ship, server)
+
+
+def test_a_server_or_session_that_holds_askpass_still_gives_it_to_no_seat(ship, monkeypatch):  # noqa: F811
+    """Whatever the running server or the seat's session came to hold, the launch unsets the sudo helper by name."""
+    import time
+    from quarterdeck import seat as seatmod
+    for name, value in DESKTOP.items():
+        monkeypatch.setenv(name, value)
+    server = Tmux.for_ship(ship)
+    captain = seatmod.Seat(ship, ship.seat('captain'), server)
+    try:
+        server.new_session(captain.session.title, env={'QD_SHIP': str(ship.folder)})
+        subprocess.run(['tmux', '-S', server.socket, 'set-environment', '-g', ASKPASS, '/usr/bin/ssh-askpass'], check=True)
+        subprocess.run(['tmux', '-S', server.socket, 'set-environment', '-t', captain.session.title, ASKPASS,
+                        '/usr/bin/ssh-askpass'], check=True)
+        captain.up(resume=False)
+        names = environ_names(captain.pane().pid)
+        deadline = time.monotonic() + 10
+        while 'QD_SEAT' not in names and time.monotonic() < deadline:
+            time.sleep(0.05)
+            names = environ_names(captain.pane().pid)
+        print('unjailed under a server holding the helper:', ' '.join(sorted(names)))  # names only
+        assert 'QD_SEAT' in names, 'the program started'
+        assert ASKPASS not in names, 'the launch unset it'
+        assert 'XAUTHORITY' in names, 'and the cookie path is kept'
+    finally:
         seatmod.bring_down(ship, server)

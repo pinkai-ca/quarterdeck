@@ -843,7 +843,7 @@ def command(jail: Jail, argv: list[str], environment: dict[str, str] | None = No
     copied in by the launcher, and ``environment``, the variables the seat's harness declares for its program. A
     declared name that looks secret refuses the launch: nothing secret-named enters a jail, whatever names it.
     """
-    environment = dict(environment or {})
+    environment = jail_environment.without_refused(environment or {})  # dropped, whatever declares them
     if secret := sorted(name for name in environment if jail_environment.looks_secret(name)):
         why = (" (a keyed endpoint's key: give the pool an endpoint that takes none, or run the seat open with "
                "sandbox = false)" if endpoint_key_variable() in secret else '')
@@ -948,7 +948,7 @@ def command(jail: Jail, argv: list[str], environment: dict[str, str] | None = No
         if value:
             args += ["--setenv", variable, value]
     args += ["--setenv", "XDG_RUNTIME_DIR", str(runtime_dir())]
-    for variable, value in (*jail.environment, *environment.items()):
+    for variable, value in (*jail_environment.without_refused(dict(jail.environment)).items(), *environment.items()):
         args += ["--setenv", variable, value]
     # The launch's TMPDIR may name a filesystem the jail mounts read-only; the program
     # uses the jail's own /tmp for scratch, including spooled tool output.
