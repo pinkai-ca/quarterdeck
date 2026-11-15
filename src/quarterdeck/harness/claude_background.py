@@ -22,9 +22,9 @@ STATUS_VERSIONS = MEASURED  # a running local_bash task_status attachment
 STOP_VERSIONS = frozenset({VERSION})  # TaskStop call and result: no 2.1.322 instance measured
 NOTICE_VERSIONS = {  # a task notification, by its carrier
     ('queue-operation', 'enqueue'): MEASURED | {'2.1.325'},
-    ('queue-operation', 'remove'): frozenset({VERSION}),  # no 2.1.322 remove carrier measured
+    ('queue-operation', 'remove'): frozenset({VERSION, '2.1.325'}),  # no 2.1.322 remove carrier measured
     ('user', 'task-notification'): MEASURED | {'2.1.325'},
-    ('attachment', 'queued_command'): frozenset({VERSION}),  # no 2.1.322 attachment carrier measured
+    ('attachment', 'queued_command'): frozenset({VERSION, '2.1.325'}),  # no 2.1.322 attachment carrier measured
 }
 TERMINAL = frozenset({'completed', 'failed', 'killed'})
 # The Monitor tool's own notices, measured on 2.1.317 only, on every notice carrier: its call, its result
@@ -179,7 +179,7 @@ class Task:
 
 class BackgroundBash:
     def __init__(self, record: Path | None = None):
-        self.watch_commands = {'qd inbox --wait'}
+        self.watch_commands = set()
         # A Claude record belongs to home/projects/<slug>/<record>.jsonl. Only the
         # framework's fixed seat-home layout supplies its ship; neither the caller's
         # environment nor text inside the command chooses which qd may be a watch.
