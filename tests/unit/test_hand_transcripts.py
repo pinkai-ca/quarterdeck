@@ -368,3 +368,28 @@ def test_a_screening_record_leaves_even_before_the_next_launch_has_a_record(tmp_
         assert w.current.is_file(), 'only the screening record moves'
     finally:
         w.svc.ledger.close()
+
+
+@pytest.mark.parametrize('kind', ['pi', 'opencode'])
+def test_the_home_sweep_keeps_a_screening_records_whole_unit_for_the_retirement(tmp_path, monkeypatch, kind):
+    w = world(tmp_path, monkeypatch, kind, age=timedelta(minutes=2))
+    try:
+        live = pr_screen.LiveHands(w.svc.ship, Path('qd'), tmp_path / 'hands')
+        assert live.home('hand') == w.seat.home
+        kept = live.kept_in_home('hand', [str(w.record)])
+        unit = w.record if kind == 'pi' else w.record.parent
+        assert kept == [str(unit.relative_to(w.seat.home))], 'the adapter\'s own retirement unit, whole'
+        if kind == 'opencode':
+            (w.record.parent / 'planted.txt').write_text('written by a fooled hand')
+            (w.record.parent / 'opencode.db-wal').write_bytes(b'wal')
+            kept = live.kept_in_home('hand', [str(w.record)])
+            assert sorted(kept) == sorted(str(p.relative_to(w.seat.home)) for p in
+                                          (w.record, w.record.parent / 'opencode.db-wal'))
+            before = {k: v for k, v in pr_screen.folder_listing(w.seat.home).items() if 'planted' not in k
+                      and 'log' not in k and 'repos' not in k and 'snapshot' not in k}
+            moved = pr_screen.move_aside_new(w.seat.home, before, tmp_path / 'aside', keep=kept)
+            assert w.record.is_file() and (w.record.parent / 'opencode.db-wal').is_file()
+            assert not (w.record.parent / 'planted.txt').exists() and moved
+            assert w.seat.harness.retirement_bundle(w.seat.home, w.record, record_location.destination(w.record))
+    finally:
+        w.svc.ledger.close()

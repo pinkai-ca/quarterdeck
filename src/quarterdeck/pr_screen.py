@@ -473,6 +473,39 @@ class LiveHands:
     def folder(self, name: str) -> Path:
         return self.root / name
 
+    def home(self, name: str) -> Path:
+        return self.ship.runtime / 'seats' / self.ship.seat(name).name / 'home'
+
+    def kept_in_home(self, name: str, records: list[str]) -> list[str]:
+        """What the home sweep leaves where it is, relative to the home: each listed screening record's whole
+        retirement unit (a launch's own data folder, or a single session file), for the retirement to move with its ledger
+        key; and the credential file each of the hand's programs keeps there, which qd reseeds and rewrites. Where
+        the adapter refuses the unit (a file it does not know beside the record), the record and its own companion
+        files (a database's -wal and -shm) stay, and the rest is swept: the unit is then whole again for the move."""
+        from . import harness as harnesses, record_location
+        spec, home = self.ship.seat(name), self.home(name)
+        adapters = [harnesses.get(program) for program in sorted({spec.for_pool(pool).harness for pool in spec.pools})]
+        kept = [home / Path(adapter.credential_file).name for adapter in adapters if adapter.credential_file]
+        for record in map(Path, records):
+            unit = None
+            for adapter in adapters:
+                try:
+                    bundle = adapter.retirement_bundle(home, record, record_location.destination(record))
+                except (OSError, ShipError, ValueError):
+                    bundle = None
+                if bundle is not None:
+                    unit = bundle[0]
+                    break
+            if unit is not None:
+                kept.append(unit)
+                continue
+            kept.append(record)
+            try:
+                kept += [path for path in record.parent.iterdir() if path.name.startswith(f'{record.name}-')]
+            except OSError:
+                pass
+        return [str(path.relative_to(home)) for path in kept if path.is_relative_to(home)]
+
     def records(self, name: str) -> list[Path]:
         """Every record in the hand's home, by each program its declared pools run."""
         from . import harness as harnesses
@@ -621,14 +654,18 @@ def _changed(before: tuple | None, now: tuple) -> bool:
     return not stat.S_ISDIR(now[0]) and before != now
 
 
-def move_aside_new(folder: Path, before: dict, aside: Path) -> list[str]:
-    """Every entry of the hand's folder that is new or changed since ``before``, moved under ``aside`` at the same
-    path, a link as a link and a new folder whole; what was there before and is unchanged stays. A fooled hand may
-    have written the outsider's words anywhere in its folder, where the next seat that orders it would read them.
-    Returns the paths moved, which are never shown to a seat."""
+def move_aside_new(folder: Path, before: dict, aside: Path, keep=()) -> list[str]:
+    """Every entry of the hand's folder (or its home) that is new or changed since ``before``, moved under ``aside``
+    at the same path, a link as a link and a new folder whole; what was there before and is unchanged stays. A fooled
+    hand may have written the outsider's words anywhere it can write, where a later context would read them.
+    ``keep`` names paths left where they are, for another to move or to rewrite: a new folder that holds one is not
+    moved whole, and what else is new inside it is judged entry by entry. Returns the paths moved, never shown."""
+    keep = {str(path).strip('/') for path in keep}
     now, moved = folder_listing(folder), []
     for name in sorted(now):  # a folder sorts before everything inside it
         if any(name.startswith(f'{done}/') for done in moved) or not _changed(before.get(name), now[name]):
+            continue
+        if name in keep or any(name.startswith(f'{kept}/') or kept.startswith(f'{name}/') for kept in keep):
             continue
         target = aside / name
         target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -669,13 +706,17 @@ def screen_piece(runtime: Path, hands, hand: str, key: str, index: int, prepared
     record.mkdir(parents=True, exist_ok=True, mode=0o700)
     durable.replace_file(record / f'piece-{index}-{hand}.json', json.dumps(dict(
         folder=folder, names=names, planted=f'f{planted_slot:02d}', planted_lines=sorted(lines))) + '\n')
-    before = folder_listing(hands.folder(hand))  # what the hand's folder holds before any outsider's word is in it
-    piece = _write_piece(hands.folder(hand), folder, dict(sorted(files.items())))
     hold(runtime, hand, key)
-    answer, moved, instruction, aside, screened = None, None, None, None, []
+    answer = moved = instruction = aside = piece = before = home_before = None
+    screened, home_aside = [], []
     records_before = record_listing(hands.records(hand))  # the home's records before the screening launch
     try:
         hands.fresh(hand)
+        # The fresh start has rewritten what qd writes into the home at each launch. The home and the hand's folder
+        # are listed now, before any outsider's word is in reach: the piece goes in after.
+        home_before = folder_listing(hands.home(hand))
+        before = folder_listing(hands.folder(hand))
+        piece = _write_piece(hands.folder(hand), folder, dict(sorted(files.items())))
         instruction = hands.instruct(hand, INSTRUCTION.format(files=', '.join(sorted(files)), folder=folder))
         deadline = clock() + answer_seconds
         answer = _read_answer(piece)
@@ -692,14 +733,23 @@ def screen_piece(runtime: Path, hands, hand: str, key: str, index: int, prepared
         try:
             hands.down(hand)
             moved = sweep(runtime, hand)
-            keep_and_remove(piece, record / f'piece-{index}-{hand}')
-            aside = move_aside_new(hands.folder(hand), before, Path(runtime) / ROOT / 'held' / hand
-                                   / f'folder-{key}-{index}-{time.time_ns()}')
+            held_here = Path(runtime) / ROOT / 'held' / hand
+            stamp = f'{key}-{index}-{time.time_ns()}'
+            if piece is not None:
+                keep_and_remove(piece, record / f'piece-{index}-{hand}')
+            if before is not None:
+                aside = move_aside_new(hands.folder(hand), before, held_here / f'folder-{stamp}')
             # The records the screening launch wrote, new or changed in the home: listed, so that no launch resumes
             # while one is there and the retirement moves each out of the home once it is accounted.
             screened = [path for path, now in record_listing(hands.records(hand)).items()
                         if now is not None and records_before.get(path) != now]
             mark_screening(runtime, hand, screened)
+            # The home is the jail's HOME and writable too: everything else new or changed there since the listing is
+            # moved aside, as in the folder. The listed records stay for the retirement, which keeps their ledger
+            # keys, and the credential file for qd.
+            if home_before is not None:
+                home_aside = move_aside_new(hands.home(hand), home_before, held_here / f'home-{stamp}',
+                                            keep=hands.kept_in_home(hand, screened))
             if instruction is not None:
                 # Delivered once while the hand screened; listed now, while the hand is down and the hold stands,
                 # so that no later delivery and no later launch of the hand brings it back.
@@ -709,12 +759,13 @@ def screen_piece(runtime: Path, hands, hand: str, key: str, index: int, prepared
             if cleared:
                 release(runtime, hand)  # a sweep, a move or a listing that failed leaves the hold, and the line says so
     # The hand is started fresh, so the record a seat watches (qd watch) is a new one that never held the outsider's
-    # text; the old one stays in the home for the accounting alone.
+    # text; the screening one leaves the home with the retirement, once accounted.
     hands.fresh(hand)
     verdict = judge(hand, answer, names, (f'f{planted_slot:02d}', lines))
     durable.replace_file(record / f'piece-{index}-{hand}.verdict.json', json.dumps(dict(
         clean=verdict.clean, reason=verdict.reason, places=verdict.places, moved_aside=moved,
-        folder_moved_aside=len(aside), screening_records=len(screened))) + '\n')
+        folder_moved_aside=len(aside or []), home_moved_aside=len(home_aside), screening_records=len(screened)))
+        + '\n')
     return verdict
 
 

@@ -42,6 +42,14 @@ class Obedient:
     def records(self, name):
         return []
 
+    def home(self, name):
+        path = self.ship.runtime / 'seats' / name / 'home'
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def kept_in_home(self, name, records):
+        return []
+
     def fresh(self, name):
         self.calls.append('fresh')
 
@@ -78,6 +86,17 @@ class WritesElsewhere(Obedient):
         (folder / 'answer.txt').write_text('CLEAN')
         self.calls.append('instruct')
         return 'ans-screen-note'
+
+
+class WritesHome(WritesElsewhere):
+    """A stand-in hand that obeys the planted text by writing its word into a file in its home, its jail's HOME."""
+
+    def instruct(self, name, body):
+        (self.home(name) / 'notes.txt').write_text('GODWIT')
+        (self.folder(name) / 'note.txt').unlink(missing_ok=True)
+        result = super().instruct(name, body)
+        (self.folder(name) / 'note.txt').unlink()  # this case writes into the home alone
+        return result
 
 
 class Outcomes:
@@ -180,3 +199,18 @@ def test_a_hand_with_a_screening_record_in_its_home_is_never_resumed(ship, tmux)
     assert ' · resumed ' not in proof and 'fresh: a record of a launch that screened' in proof
     assert seat.launched().resume is None, 'a new conversation'
     assert seat.join().reason in ('no record yet', None), 'the screening record is not the seat\'s any more'
+
+
+def test_a_hand_told_to_write_into_its_home_ends_the_screen_with_that_file_moved_aside(ship, tmux, tmp_path):
+    hands = WritesHome(ship, tmp_path / 'hands')
+    home = hands.home('worker-1')
+    (home / 'mine.txt').write_text('the hand\'s own, from before')
+    results = pr_screen.run(ship.runtime, pr_screen.FixtureSource(FIXTURES, ['home-note']), hands, Outcomes(),
+                            seat_names=tuple(ship.seats),
+                            repository='owner/project', hand_names=('worker-1',), answer_seconds=0, poll=0.01,
+                            corpus=pr_screen.load_corpus(FIXTURES / 'planted-test-corpus.json'))
+    assert [r['outcome'] for r in results] == ['flagged'], 'it answered CLEAN and missed the planted check'
+    assert sorted(path.name for path in home.iterdir()) == ['mine.txt'], 'nothing of the screen is left in the home'
+    aside = next((ship.runtime / 'pr-screen' / 'held' / 'worker-1').glob('home-*'))
+    assert (aside / 'notes.txt').read_text() == 'GODWIT'
+    assert not pr_screen.held(ship.runtime, 'worker-1')

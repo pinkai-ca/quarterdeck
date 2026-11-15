@@ -54,6 +54,14 @@ class Hands:
     def records(self, name):
         return sorted((self.root.parent / 'homes' / name).glob('*.jsonl'))
 
+    def home(self, name):
+        path = self.root.parent / 'homes' / name
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def kept_in_home(self, name, records):
+        return ['credential.json', *(str(Path(record).relative_to(self.home(name))) for record in records)]
+
     def fresh(self, name):
         # Started for a piece under the hold; started again after it, once the hold is released and the piece gone.
         self.calls.append(('fresh', name) if pr_screen.held(self.runtime, name) else ('fresh after', name))
@@ -323,7 +331,7 @@ def test_while_a_hand_screens_the_service_files_nothing_it_posts(world):
 # -- the whole pass ------------------------------------------------------------------------------------------------
 
 OUTSIDER_WORDS = ('OSPREY', 'KESTREL', 'PLOVER', 'CURLEW', 'DUNLIN', 'MERLIN', 'PUFFIN', 'SHRIKE', 'WIGEON',
-                  'TURNSTONE', 'authorized_keys', 'IGNORE_PREVIOUS', 'Reviewer bot', 'already screened', 'recieve')
+                  'TURNSTONE', 'GODWIT', 'authorized_keys', 'IGNORE_PREVIOUS', 'Reviewer bot', 'already screened', 'recieve')
 
 
 def test_a_pass_tells_una_of_clean_requests_and_the_desk_of_flagged_ones_quoting_nothing(world):
@@ -528,6 +536,55 @@ def test_the_records_the_screening_launch_wrote_are_listed_and_no_other(world, t
     assert kept['screening_records'] == 1
     (home / 'screening.jsonl').unlink()  # as the retirement moves it out of the home
     assert not pr_screen.screening_left(runtime, 'hand-a')
+
+
+def test_everything_new_or_changed_in_the_hands_home_is_moved_aside_but_its_records_and_credential(world, tmp_path):
+    home = tmp_path / 'homes' / 'hand-a'
+    (home / '.config').mkdir(parents=True)
+    (home / '.config' / 'settings.json').write_text('{"theme": "dark"}')
+    (home / 'earlier.jsonl').write_text('a launch before the screen\n')
+    (home / 'credential.json').write_text('{"token": "a"}')
+    (home / 'unchanged.txt').write_text('as it was')
+
+    def writes_into_home(hands, name, order_id, folder):
+        (home / 'screening.jsonl').write_text('the screening launch read the piece\n')
+        (home / 'notes.txt').write_text('GODWIT')
+        (home / '.config' / 'settings.json').write_text('{"theme": "GODWIT"}')
+        (home / '.cache' / 'deep').mkdir(parents=True)
+        (home / '.cache' / 'deep' / 'x').write_text('GODWIT')
+        (home / 'credential.json').write_text('{"token": "refreshed"}')
+        honest(hands, name, order_id, folder)
+    verdict, hands, runtime = one_piece(world, writes_into_home)
+    left = sorted(str(path.relative_to(home)) for path in home.rglob('*'))
+    assert left == ['.config', 'credential.json', 'earlier.jsonl', 'screening.jsonl', 'unchanged.txt']
+    assert (home / 'credential.json').read_text() == '{"token": "refreshed"}', 'the credential is qd\'s to reseed'
+    aside = next((runtime / 'pr-screen' / 'held' / 'hand-a').glob('home-key-0-*'))
+    assert sorted(str(path.relative_to(aside)) for path in aside.rglob('*')) == [
+        '.cache', '.cache/deep', '.cache/deep/x', '.config', '.config/settings.json', 'notes.txt']
+    assert pr_screen.screening_records(runtime, 'hand-a') == [str(home / 'screening.jsonl')], 'left to the retirement'
+    kept = json.loads((runtime / 'pr-screen' / 'screens' / 'key' / 'piece-0-hand-a.verdict.json').read_text())
+    assert kept['home_moved_aside'] == 3
+
+
+def test_the_home_and_folder_are_listed_after_the_fresh_start_and_before_the_piece(world, tmp_path):
+    home = tmp_path / 'homes' / 'hand-a'
+    seen = []
+
+    class Rewrites(Hands):
+        def fresh(self, name):
+            super().fresh(name)
+            if not seen:  # the screening launch's start: qd rewrites what it writes at each launch
+                home.mkdir(parents=True, exist_ok=True)
+                (home / 'launch-config.json').write_text(f'{{"launch": {len(self.calls)}}}')
+                seen.append(not any((self.root / name).glob('screen-*')))
+    runtime, hands_root = world
+    hands = Rewrites(runtime, hands_root, honest)
+    clock = Clock()
+    prepared = pr_screen.prepare(texts('post-elsewhere'))
+    pr_screen.screen_piece(runtime, hands, 'hand-a', 'key', 0, prepared, list(prepared.files), corpus=CORPUS,
+                           answer_seconds=30, poll=1.0, clock=clock, sleep=clock.sleep)
+    assert seen == [True], 'the piece goes in only after the fresh start'
+    assert (home / 'launch-config.json').is_file(), 'what qd wrote at the launch is not moved aside'
 
 
 def test_an_unreadable_list_of_screening_records_keeps_launches_fresh(world):
