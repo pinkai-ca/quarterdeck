@@ -3,8 +3,9 @@
 from contextlib import ExitStack
 from datetime import datetime, timezone
 import json
+import re
 
-from . import compaction, durable, post
+from . import compaction, durable, post, post_dir
 from .ship import ShipError
 
 
@@ -106,6 +107,44 @@ def taking(service, reports, *, ship=None):
     return None
 
 
+REPORT_ID = re.compile(r'rep-[A-Za-z0-9-]{1,80}')  # a report's plain name; an existing one is only compared
+
+
+def _rebuilt(service, runtime, name, channel, prior, intent, current, allowed, accepts=None) -> str | None:
+    """The report to publish for a saved one: rebuilt by the service, or None when refused (logged once).
+
+    The journal sits in the seat's folder, which its jail can write. So a saved report not yet filed is published
+    only as the service builds it now: from the file it keeps only the id and the recipient, each checked (an id of
+    the store's shape for a report from ship, and a recipient the ship file names for alarms); the body is this
+    pass's own reading of the alarm. One already in the store is only compared, never filed again.
+    """
+    message = compaction.decode(intent)
+    if post_dir.exists(post.Store(runtime).dir / f'{message.id}.json'):
+        return intent  # filed before: the store's own bytes decide, and nothing new is filed
+    reason = ('not a plain report from ship' if (message.kind != 'report' or message.sender != post.SHIP
+                                                 or message.re is not None or message.subject is not None
+                                                 or message.due is not None or message.speed is not None
+                                                 or REPORT_ID.fullmatch(message.id) is None) else
+              f'recipient {message.to!r} is not one the ship file names for alarms' if message.to not in allowed else
+              None)
+    if reason is not None:
+        refused = service.__dict__.setdefault('alarm_refused', set())
+        if (name, channel, message.id) not in refused:
+            refused.add((name, channel, message.id))
+            service.log('alarm-refused', seat=name, channel=channel, message=message.id, reason=reason)
+        return None
+    if current is None:
+        return None  # no reading of this alarm stands on this pass: nothing of the file's words is published
+    if message.body == current or (accepts is not None and accepts(message.body)):
+        return intent  # the very words the service builds for this standing reading
+    stamp = message.at if abs((now() - message.at).total_seconds()) < 86400 else now()
+    rebuilt = post.Message(message.id, 'report', post.SHIP, message.to, stamp, current).to_json()
+    if rebuilt != intent:
+        prior['reports'][prior['reports'].index(intent)] = rebuilt
+        save(runtime, name, channel, prior)  # the service's own bytes, saved before they are filed
+    return rebuilt
+
+
 def publish(service, runtime, name, channel, data, intent):
     from .compaction_alert import publish as publish_intent
     message = compaction.decode(intent)
@@ -116,7 +155,7 @@ def publish(service, runtime, name, channel, data, intent):
 
 
 def notify(service, name, human, key, body, *, channel='human', ship=None, up=None, desk_now=False,
-           initial=None, recover_initial=True):
+           initial=None, recover_initial=True, accepts=None):
     """Observe once on the existing pass, saving identities before publication.
 
     Committed initial notifications survive a changed reading. A cleared or
@@ -130,23 +169,33 @@ def notify(service, name, human, key, body, *, channel='human', ship=None, up=No
     prior = load(runtime, name, channel)
     if not prior['reports'] and (key is UNKNOWN or key is None and prior['key'] is None):
         return
-    # Recover initial reports through the existing sink, including across a
-    # clear. Timed desk escalation is deliberately excluded from this recovery.
+    # The journal sits in the seat's folder, which its jail can write: a saved report is published only as the
+    # service would write it now. Its body must be this pass's own reading of the same alarm, and its recipient one
+    # the ship file names for alarms (a systems seat or the desk, or the caller's own list). Anything else is
+    # refused, logged once, and never published.
+    current = (body() if callable(body) else body) if key is not UNKNOWN and key is not None else None
+    allowed = set(initial or ()) | {spec.name for spec in getattr(ship, 'seats', {}).values()
+                                     if spec.role in ('systems', 'desk') and spec.name != name}
+    # Recover initial reports through the existing sink while their reading stands: across a changed or cleared
+    # reading the old words are only in the file, which its seat's jail can write, so they are not published.
+    # Timed desk escalation is deliberately excluded from this recovery.
     names = {name, *(compaction.decode(intent).to for intent in prior['reports'])}
+    standing = current if key == prior['key'] else None
     with ExitStack() as held:
-        for recipient in sorted(names):
+        for recipient in sorted(names & (allowed | {name})):
             held.enter_context(post.admission(runtime, recipient))
-        for intent in prior['reports']:
+        for intent in list(prior['reports']):
             identity = compaction.decode(intent).id
             if recover_initial and identity not in prior['published'] and identity not in prior['escalations']:
-                publish(service, runtime, name, channel, prior, intent)
+                if (rebuilt := _rebuilt(service, runtime, name, channel, prior, intent, standing, allowed, accepts)):
+                    publish(service, runtime, name, channel, prior, rebuilt)
     if key is UNKNOWN:
         return
     if key is None and prior['key'] is None and not prior['reports']:
         return
     observed = now()
     if key != prior['key']:
-        text = (body() if callable(body) else body) if key is not None else None
+        text = current
         prior = dict(version=1, key=key, body=text,
                      reports=[], first_at=observed.isoformat() if key is not None else None, taken=None,
                      published=[], escalations=[])
@@ -197,5 +246,6 @@ def notify(service, name, human, key, body, *, channel='human', ship=None, up=No
         save(runtime, name, channel, prior)
         for intent in prior['reports']:
             message = compaction.decode(intent)
-            if message.to in eligible and message.id not in prior['published']:
-                publish(service, runtime, name, channel, prior, intent)
+            if (message.to in eligible and message.id not in prior['published']
+                    and (rebuilt := _rebuilt(service, runtime, name, channel, prior, intent, current, allowed, accepts))):
+                publish(service, runtime, name, channel, prior, rebuilt)

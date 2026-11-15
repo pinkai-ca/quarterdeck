@@ -447,7 +447,7 @@ def _advance_one(path: Path, store: post.Store, failures, outcomes=None) -> None
 
 
 def _error_reason(error: Exception) -> str:
-    if isinstance(error, json.JSONDecodeError):
+    if isinstance(error, json.JSONDecodeError) or getattr(error, 'malformed', False):
         return 'group evidence is malformed JSON'
     if isinstance(error, (ShipError, ValueError, KeyError, TypeError)):
         return 'group evidence is inconsistent'
@@ -520,6 +520,7 @@ def current_seat_failure(service, name: str) -> str | None:
     evidence. No readiness is disarmed and no provider allowance is refreshed.
     """
     from . import watch
+    from .seat import LaunchUnreadable
     from .tmux import TmuxError
 
     if name not in service.ship.seats:
@@ -543,5 +544,7 @@ def current_seat_failure(service, name: str) -> str | None:
                 if name in held and not unknown:
                     reason = 'held at limit with no eligible destination'
             return reason if seat.launched() == launched else None
+    except LaunchUnreadable:
+        raise  # a refused launch record holds its group by name, as malformed evidence always has
     except (ShipError, OSError, TmuxError):
         return None

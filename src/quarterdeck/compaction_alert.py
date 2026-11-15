@@ -117,6 +117,10 @@ def publish(runtime, intent):
         compaction.publish(runtime, intent)
 
 
+TAIL = ("Notification only; execution may remain unknown. The outside controller "
+        "must choose the idle break under the ship's orders.")
+
+
 def step(service, seat):
     from . import alarms
     key, data = observation(seat)
@@ -126,14 +130,31 @@ def step(service, seat):
     def body():
         open_handoffs = ', '.join(handoffs(service.store, seat.name, data)) or 'none open'
         return (f'Observed {seat.name}: idle in its record; {key["reading"]}. '
-                f'Open compaction handoff(s) at observation: {open_handoffs}. '
-                'Notification only; execution may remain unknown. The outside controller '
-                "must choose the idle break under the ship's orders.")
+                f'Open compaction handoff(s) at observation: {open_handoffs}. ' + TAIL)
+
+    def accepts(text):
+        """A saved body of this standing reading, as body() wrote it at its first observation: the reading is this
+        pass's own, and every handoff it names is a real self-handoff of this seat in the store."""
+        head = f'Observed {seat.name}: idle in its record; {key["reading"]}. Open compaction handoff(s) at observation: '
+        if not (text.startswith(head) and text.endswith('. ' + TAIL)):
+            return False
+        named = text[len(head):-len('. ' + TAIL)]
+        if named == 'none open':
+            return True
+        for ident in named.split(', '):
+            try:
+                found = service.store.get(ident)
+            except ShipError:
+                return False
+            if found.id != ident or found.kind != 'order' or found.sender != seat.name or found.to != seat.name:
+                return False
+        return True
     active = key is not None and key is not alarms.UNKNOWN
     session = getattr(seat, 'session', None)
     human = session.human if active and session is not None else None
     up = service.systems_recipients(seat) if active else None
-    alarms.notify(service, seat.name, human, key, body, channel='manual-fresh', ship=seat.ship, up=up)
+    alarms.notify(service, seat.name, human, key, body, channel='manual-fresh', ship=seat.ship, up=up,
+                  accepts=accepts if active else None)
 
 
 def unrouted(ship, selected):

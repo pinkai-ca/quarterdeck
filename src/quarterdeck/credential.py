@@ -40,7 +40,7 @@ from urllib.parse import quote
 
 from . import harness as harnesses
 from .seat import Seat
-from .ship import Pool, Ship
+from .ship import Pool, Ship, ShipError
 
 WARN_AHEAD = timedelta(hours=48)
 WATCH_SECONDS = 0.5  # how often the service's watch looks at the linked credential names
@@ -62,11 +62,33 @@ def usage_home(ship: Ship, pool: Pool) -> Path:
     return ship.runtime / "pool-usage" / component
 
 
+def source_refusal(ship: Ship, seat: Seat) -> str | None:
+    """Why a seat's home never takes part in a pool's credential: neither a source for the pool nor a link to it.
+
+    Its home is trusted only for a pool the ship file declares for the seat, and only outside a jail and off an
+    endpoint pool. A jail can write its whole seat folder, launch record and home included, so a jailed seat, or
+    a launch record naming another pool, would otherwise install a file of its choosing as that pool's credential.
+    """
+    from .seat import launch_pool_refusal
+    if seat.pool.kind == "endpoint":
+        return f"{seat.name}: on an endpoint pool"
+    spec = getattr(seat, "spec", None)  # every Seat carries its declaration; a test's stand-in may carry none
+    if spec is not None and ship.jailed(spec, seat.pool):
+        return f"{seat.name}: jailed"
+    try:
+        launched = seat.launched()
+    except ShipError as error:
+        return str(error)
+    return launch_pool_refusal(seat, launched, every_seat=True)
+
+
 def participants(ship: Ship, seats: list[Seat]) -> list[Participant]:
     result = []
     for seat in seats:
+        if source_refusal(ship, seat) is not None:
+            continue
         launched = seat.launched()
-        pool = launched.pool if launched and launched.pool in ship.pools else seat.pool.name
+        pool = launched.pool if launched is not None else seat.pool.name
         result.append(Participant(seat.name, seat.home, pool))
     for pool in ship.pools.values():
         if pool.kind == "subscription" and getattr(harnesses.native_for(pool.provider), "private_usage_home", False):

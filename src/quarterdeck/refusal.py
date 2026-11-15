@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -258,13 +259,60 @@ def step(service: Service, seat: Seat) -> None:
         _tell(service, seat, event)
 
 
+CODE = re.compile(r'[A-Za-z0-9_.:-]{1,80}')
+NOTICE_ID = re.compile(r'rep-[A-Za-z0-9-]{1,80}')  # a report's plain name
+
+
+def checked(service: Service, seat: Seat, event: dict, entry: dict, record: dict) -> tuple[dict, dict] | str:
+    """The event and entry a notice may be built from, every field checked against the service's own; else why not.
+
+    The journal sits in the seat's folder, which its jail can write. So the notice's recipient, and the kind it
+    names, come from the refused message in the store, addressed to this seat; its sender must be a seat the ship
+    declares, as when the notice was made. The code and the turn must be a short token and a time. Nothing of the
+    file's own words reaches the notice.
+    """
+    if not isinstance(record.get('id'), str) or NOTICE_ID.fullmatch(record['id']) is None:
+        return 'its notice id is not a plain report id'
+    try:
+        datetime.fromisoformat(record['at'])
+    except (TypeError, ValueError):
+        return 'its notice time is not a time'
+    try:
+        refused = service.store.get(entry['message'])
+    except ShipError:
+        return 'it names no message in the store'
+    if refused.id != entry['message'] or refused.to != seat.name:
+        return 'it names a message not addressed to this seat'
+    if refused.sender not in service.ship.seats:
+        return 'the refused message was not sent by a seat of this ship'
+    code, turn = event.get('code'), event.get('turn')
+    if code is not None and (not isinstance(code, str) or CODE.fullmatch(code) is None):
+        return 'its code is not a short token'
+    if turn is not None:
+        try:
+            datetime.fromisoformat(turn)
+        except (TypeError, ValueError):
+            return 'its turn is not a time'
+    return ({**event, 'code': code, 'turn': turn},
+            {'message': refused.id, 'sender': refused.sender, 'kind': refused.kind})
+
+
 def _tell(service: Service, seat: Seat, event: dict) -> None:
     """Publish each notice not yet published. One already published is recognized by its id and never rebuilt,
-    so a later change of the notice's words never conflicts with a notice an earlier version wrote."""
+    so a later change of the notice's words never conflicts with a notice an earlier version wrote. A notice whose
+    fields are not the service's own (``checked``) is refused, logged once, and never published."""
     for entry in event['quarantined']:
         record = next((n for n in event['notices'] if n['message'] == entry['message']), None)
-        if record is not None and not (service.store.dir / f"{record['id']}.json").exists():
-            _publish(service.store, notice(event, entry, seat.name))
+        if record is None or (service.store.dir / f"{record['id']}.json").exists():
+            continue
+        found = checked(service, seat, event, entry, record)
+        if isinstance(found, str):
+            refused = service.__dict__.setdefault('refusal_notices_refused', set())
+            if (seat.name, record.get('id')) not in refused:
+                refused.add((seat.name, record.get('id')))
+                service.log('refusal-notice-refused', seat=seat.name, notice=str(record.get('id'))[:80], reason=found)
+            continue
+        _publish(service.store, notice(*found, seat.name))
 
 
 def relaunch(service: Service, seat: Seat, events: list[dict], event: dict) -> None:

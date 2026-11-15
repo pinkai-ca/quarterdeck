@@ -236,14 +236,14 @@ def test_transition_crash_cannot_replay_fresh(world, monkeypatch):
 def test_fixed_intent_recovers_publication_without_duplicates(world, monkeypatch, kind):
     w = world
     original, failures = compaction.publish, []
-    def publish(runtime, intent):
+    def publish(runtime, intent, **checked):  # the seat's name and journal the real publish checks the intent by
         message = post.Message.from_json(intent)
         target = ('request' if message.sender == post.SHIP else
                   'report' if message.kind == 'report' else 'handoff')
         if target == kind and not failures:
             failures.append(message.id)
             raise OSError('synthetic publication crash')
-        return original(runtime, intent)
+        return original(runtime, intent, **checked)
     if kind != 'handoff':
         monkeypatch.setattr(compaction, 'publish', publish)
     request = threshold(w)

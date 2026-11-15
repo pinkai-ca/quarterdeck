@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter, deque
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import datetime
 import os
@@ -29,7 +30,8 @@ from .harness.json_record import release
 from .harness.base import record_fingerprint
 from .ledger import Ledger
 from .order_attribution import Threads
-from .provenance import Provenance
+from .provenance import UNKNOWN, Provenance
+from .seat import launch_pool_refusal
 from .usage_cache import UsageCache
 from .accounting_gate import Gate
 
@@ -299,20 +301,30 @@ class Driver:
         for seat in service.resolved_seats():
             if self.scope is not None and seat.name not in self.scope:
                 continue
-            pane, launch = seat.pane(), seat.launched()
-            if pane is not None and pane.dead:
-                service.pane_died(seat, pane)
-                pane = None
-            record = seat.record()
-            sources = [(str(item.path), item.name, item.reason, item.transient) for item in record_owner.records(seat)]
-            screen = Door(seat).screen() if pane is not None and seat.harness.screen_walls else None
+            # One seat's bad file (its folder is its jail's to write) holds that seat alone, never the job.
+            guard = getattr(service, 'seat_guard', None)
+            collected = False
+            with guard('accounting', seat) if guard is not None else nullcontext():
+                pane, launch = seat.pane(), seat.launched()
+                if pane is not None and pane.dead:
+                    service.pane_died(seat, pane)
+                    pane = None
+                record = seat.record()
+                sources = [(str(item.path), item.name, item.reason, item.transient) for item in record_owner.records(seat)]
+                screen = Door(seat).screen() if pane is not None and seat.harness.screen_walls else None
+                # law: every-turn-accounted -- a pool not declared for the seat is never charged; its turns count unattributed
+                pool = launch.pool if launch is not None and launch_pool_refusal(seat, launch) is None else UNKNOWN
+                entry = dict(name=seat.name, home=str(seat.home), harness=seat.harness.name,
+                             human=seat.session.human, record=str(record) if record else None,
+                             pane=dict(pid=pane.pid, dead=False) if pane else None,
+                             launch=dict(at=launch.at, pool=pool, harness=record_owner.launch_reader(launch),
+                                         price=getattr(launch, 'price', None)) if launch else None,
+                             sources=sources)
+                collected = True
+            if not collected:
+                continue
             self.screens.append((seat, screen, launch))
-            self.seats.append(dict(name=seat.name, home=str(seat.home), harness=seat.harness.name,
-                                   human=seat.session.human, record=str(record) if record else None,
-                                   pane=dict(pid=pane.pid, dead=False) if pane else None,
-                                   launch=dict(at=launch.at, pool=launch.pool, harness=record_owner.launch_reader(launch),
-                                               price=getattr(launch, 'price', None)) if launch else None,
-                                   sources=sources))
+            self.seats.append(entry)
             yield
 
     def start(self, service):

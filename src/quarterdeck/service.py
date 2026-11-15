@@ -18,7 +18,8 @@ import time
 import traceback
 import threading
 from copy import deepcopy
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
+from typing import Iterator
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -35,7 +36,7 @@ from .harness.capabilities import validate_effort, validate_mode
 from .ledger import Ledger
 from .provenance import UNKNOWN
 from .post import Attempts, Store
-from .seat import Seat, SelectionError, UnresolvedSeat, seats
+from .seat import SEAT_HOLDS, Seat, SelectionError, UnresolvedSeat, launch_pool_refusal, seats
 from .servicectl import (  # noqa: F401  (the process control, reachable as service.* too)
     acquire_lock, alive, heartbeat_path, locked, read_heartbeat, request, stale, start, stop, write_heartbeat,
 )
@@ -159,6 +160,7 @@ class Service:
         servicectl.acknowledge(self.runtime, self.copy_identity, self.copy_start_token)
         self.log("start", pid=os.getpid())
         self.clean_server_environment()
+        (self.runtime / SEAT_HOLDS).unlink(missing_ok=True)  # an earlier service's holds are its own; this one observes anew
         from .shutdown import Stop
         beat_stop = threading.Event()
         def keep_heartbeat():
@@ -479,6 +481,47 @@ class Service:
                       f'{reason}; seat held, restore its declared selection', channel='selection',
                       up=self.systems_recipients(spec))
 
+    @contextmanager
+    def seat_guard(self, step: str, seat) -> Iterator[None]:
+        """One seat's failure in a step over every seat holds that seat alone: logged once, named on the line.
+
+        A seat's folder is written by its own jail, so a bad file there must never stop the step for the others.
+        """
+        try:
+            yield
+        except Exception as error:
+            Service.seat_hold(self, step, seat, error)
+        else:
+            Service.seat_hold(self, step, seat, None)
+
+    def seat_hold(self, step: str, seat, error: Exception | None) -> None:
+        """Record (or, with None, clear) one seat's hold in one step: logged once, published for the line."""
+        holds = self.__dict__.setdefault('seat_holds', {})
+        key = (seat.name, step)
+        if error is None:
+            holds.pop(key, None)
+        else:
+            text = f'{type(error).__name__}: {str(error)[:200]}'
+            if holds.get(key) != text:
+                holds[key] = text
+                self.log('error', step=step, seat=seat.name, error=text, held='this seat alone')
+        Service._publish_seat_holds(self)
+
+    def _publish_seat_holds(self) -> None:
+        """runtime/seat-holds.json, written by the service alone, outside every seat's folder, when it changes."""
+        holds = self.__dict__.get('seat_holds', {})
+        if self.__dict__.get('seat_holds_written', {}) == holds:
+            return  # nothing new to say; the start of the service clears what an earlier one wrote
+        shown = {}
+        for (name, step), text in sorted(holds.items()):
+            shown.setdefault(name, {})[step] = text
+        try:
+            durable.replace_file(self.runtime / SEAT_HOLDS, json.dumps(shown, indent=2, sort_keys=True) + "\n")
+        except OSError as error:
+            self.log('error', step='seat-holds', error=repr(error))
+            return
+        self.seat_holds_written = dict(holds)
+
     def resolved_seats(self) -> list[Seat]:
         found = []
         for seat in seats(self.ship, self.tmux, False):
@@ -593,30 +636,31 @@ class Service:
         with post.reader_scope(store=self.store, attempts=self.attempts):
             results = self.attempts.latest()
             for seat in self.resolved_seats():
-                if seat.name in getattr(self.ship, 'forward', {}):
-                    continue  # declared forwarding disables dispatch at the old address
-                if seat.session.human:
-                    from . import human_wake, turn_failure
-                    from .auth_failure import status as authentication_status, waiting as authentication_waiting
-                    phase = 'ownership'
-                    try:
-                        signin = authentication_status(seat)  # a sign-in failure the waking line may cure reads as waiting
-                        if seat.is_up and not (recovery.held(seat) or signin and not authentication_waiting(signin)
-                                               or turn_failure.obstruction(seat, self.store)):
-                            phase = 'pass'
-                            human_wake.run(seat)
-                    except Exception as error:
-                        self.human_wake_error(seat, phase, error)
-                    try:
-                        self.needs_human(seat)  # genuine alarms survive a down seat or failed wake
-                    except Exception as error:
-                        self.human_wake_error(seat, 'alarm', error)
-                    continue
-                with post.reading_pass(store=self.store, attempts=self.attempts):
-                    pending = [m for m in self.attempts.undelivered(self.store, seat.name, results=results) if self._due(m, seat)]
-                if pending and seat.is_up:
-                    self.deliver(seat, pending)
-                self.needs_human(seat)
+                with Service.seat_guard(self, 'deliveries', seat):
+                    if seat.name in getattr(self.ship, 'forward', {}):
+                        continue  # declared forwarding disables dispatch at the old address
+                    if seat.session.human:
+                        from . import human_wake, turn_failure
+                        from .auth_failure import status as authentication_status, waiting as authentication_waiting
+                        phase = 'ownership'
+                        try:
+                            signin = authentication_status(seat)  # a sign-in failure the waking line may cure reads as waiting
+                            if seat.is_up and not (recovery.held(seat) or signin and not authentication_waiting(signin)
+                                                   or turn_failure.obstruction(seat, self.store)):
+                                phase = 'pass'
+                                human_wake.run(seat)
+                        except Exception as error:
+                            self.human_wake_error(seat, phase, error)
+                        try:
+                            self.needs_human(seat)  # genuine alarms survive a down seat or failed wake
+                        except Exception as error:
+                            self.human_wake_error(seat, 'alarm', error)
+                        continue
+                    with post.reading_pass(store=self.store, attempts=self.attempts):
+                        pending = [m for m in self.attempts.undelivered(self.store, seat.name, results=results) if self._due(m, seat)]
+                    if pending and seat.is_up:
+                        self.deliver(seat, pending)
+                    self.needs_human(seat)
 
     def human_wake_error(self, seat: Seat, phase: str, error: Exception, *, publish: bool = True) -> None:
         """One seat's failure cannot stop the crew; no arbitrary exception data escapes."""
@@ -1515,17 +1559,18 @@ class Service:
         resize the window shown.
         """
         for seat in self.resolved_seats():
-            if seat.session.human:
-                continue  # law: one-door; the human's session is theirs
-            working = self._working(seat)
-            if working is None:
-                continue  # an unreadable or uncertain record is no transition
-            before = self.working.get(seat.name)
-            self.working[seat.name] = working
-            if working and before is False:
-                refused = self.show_window(seat)
-                self.log("followed" if refused is None else "not followed", seat=seat.name,
-                         **({"reason": refused} if refused else {}))
+            with Service.seat_guard(self, 'follow', seat):
+                if seat.session.human:
+                    continue  # law: one-door; the human's session is theirs
+                working = self._working(seat)
+                if working is None:
+                    continue  # an unreadable or uncertain record is no transition
+                before = self.working.get(seat.name)
+                self.working[seat.name] = working
+                if working and before is False:
+                    refused = self.show_window(seat)
+                    self.log("followed" if refused is None else "not followed", seat=seat.name,
+                             **({"reason": refused} if refused else {}))
 
     def _working(self, seat: Seat) -> bool | None:
         if seat.launched() is None:
@@ -1634,13 +1679,14 @@ class Service:
     def fresh_after_order(self) -> None:
         """Read each closing-turn decision once; start fresh outside that read-only view."""
         for seat in self.resolved_seats():
-            with post.reading_pass(store=self.store, attempts=getattr(self, 'attempts', None)):
-                ready = Service._fresh_after_order_ready(self, seat)
-            if ready:
-                from . import relaunch_intent
-                with relaunch_intent.section(self, seat, 'after-order', resume=False):
-                    proof = seat.fresh()  # law: context-is-cache
-                self.log("fresh", seat=seat.name, proof=proof)
+            with Service.seat_guard(self, 'fresh_after_order', seat):
+                with post.reading_pass(store=self.store, attempts=getattr(self, 'attempts', None)):
+                    ready = Service._fresh_after_order_ready(self, seat)
+                if ready:
+                    from . import relaunch_intent
+                    with relaunch_intent.section(self, seat, 'after-order', resume=False):
+                        proof = seat.fresh()  # law: context-is-cache
+                    self.log("fresh", seat=seat.name, proof=proof)
 
     def _fresh_after_order_ready(self, seat) -> bool:
         """The current orders, recovery and recorded completion; never a lifecycle action."""
@@ -1793,8 +1839,9 @@ class Service:
             return
         self.usage_pending = False
         for seat in self.resolved_seats():
-            pane = seat.pane()
-            quota.refresh(self, seat, pane is not None and not pane.dead, seat.launched())
+            with Service.seat_guard(self, 'refresh_usage', seat):
+                pane = seat.pane()
+                quota.refresh(self, seat, pane is not None and not pane.dead, seat.launched())
         quota.refresh_declared(self)
 
     def account_records(self, *, source_records=None, source_screens=None, source_walls=None,
@@ -1810,7 +1857,12 @@ class Service:
         checkpoints = {}
         reader_keys = reader_stamp.readers() if source_reader_keys is None else source_reader_keys
         for seat in self.resolved_seats():
-            pane, launched = seat.pane(), seat.launched()
+            try:
+                pane, launched = seat.pane(), seat.launched()
+            except ShipError as error:  # its own launch record refused: that seat alone is held, never the pass
+                Service.seat_hold(self, 'account_records', seat, error)
+                continue
+            Service.seat_hold(self, 'account_records', seat, None)
             live = pane is not None and not pane.dead
             if pane is not None and pane.dead:
                 self.pane_died(seat, pane)
@@ -1824,7 +1876,9 @@ class Service:
             reads = []
             for owned in (source_records[seat.name] if source_records is not None else record_owner.records(seat)):  # law: every-turn-accounted
                 record = owned.path
-                pool = launched.pool if (record == current and launched) else UNKNOWN
+                # law: every-turn-accounted -- a pool not declared for the seat is never charged; the turn counts unattributed
+                pool = (launched.pool if (record == current and launched and launch_pool_refusal(seat, launched) is None)
+                        else UNKNOWN)
                 stamp, evidence = None, None
                 if owned.reader is None and not owned.transient:
                     # law: every-turn-accounted -- a record whose reader is unknown is settled once

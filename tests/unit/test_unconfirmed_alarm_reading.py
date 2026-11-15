@@ -175,7 +175,10 @@ def test_fixed_intents_recover_publication_interruption(alarm, monkeypatch, publ
     assert notice(alarm) == recovered
 
 
-def test_committed_initial_notifications_survive_clear_before_recovery(alarm, monkeypatch):
+def test_committed_initial_notifications_are_not_published_from_the_file_after_a_clear(alarm, monkeypatch):
+    """A cleared reading leaves its unpublished words only in the journal, which the seat's own jail can write:
+    they are never published from it. (While the reading stands they are rebuilt and published: see
+    test_fixed_intents_recover_publication_interruption.)"""
     publish = compaction_alert.publish
     monkeypatch.setattr(compaction_alert, 'publish', lambda *args: (_ for _ in ()).throw(
         OSError('synthetic publication interruption')))
@@ -184,7 +187,7 @@ def test_committed_initial_notifications_survive_clear_before_recovery(alarm, mo
     monkeypatch.setattr(compaction_alert, 'publish', publish)
     alarm.actor = alarm.restart()
     alarm.detached = []
-    assert {message.to for message in notice(alarm)} == {'systems', 'desk'}
+    assert notice(alarm) == []
     assert unconfirmed_alert.load(alarm.ship.runtime, 'worker')['key'] is None
 
 

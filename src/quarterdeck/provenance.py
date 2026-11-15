@@ -44,6 +44,27 @@ def remember_launch(folder: Path, record: Path, launched) -> None:
             stream.write(json.dumps(event) + "\n")
 
 
+def declared_events(seat, events):
+    """The seat's launch history as accounting may use it. The file sits in the seat's folder, which a jail can
+    write: a line that is not a launch qd wrote is dropped, and for a jailed seat a pool not declared for it is
+    charged nothing (UNKNOWN), so no jail's turns, walls or prices land on another pool. An unjailed seat's
+    history keeps its pools: it holds the operator's power, and a switch leaves its old pool behind it."""
+    from .seat import declared_pools, jailed_seat
+    declared = declared_pools(seat) if jailed_seat(seat) else None  # an unjailed seat's history is its own
+    kept = []
+    for event in events:
+        if (not isinstance(event, dict) or not isinstance(event.get('record'), str)
+                or not isinstance(event.get('at'), str) or not isinstance(event.get('pool'), str)):
+            continue
+        try:
+            datetime.fromisoformat(event['at'])
+        except ValueError:
+            continue
+        kept.append(event if declared is None or event['pool'] in declared
+                    else {**event, 'pool': UNKNOWN, 'price': None})
+    return kept
+
+
 def canonical_launch(event):
     """One join, with omitted price and harness meaning the same as null."""
     if not isinstance(event, dict) or not isinstance(event.get('record'), str):
@@ -113,9 +134,15 @@ class Provenance:
         stamp = (record_fingerprint(path), json.dumps(active, sort_keys=True))
         if self.sources.get(path) == stamp and path in self.launch_events:
             return path, stamp, None
-        events = [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path.is_file() else []
+        events = []
+        for line in (path.read_text().splitlines() if path.is_file() else []):
+            try:
+                events.append(json.loads(line)) if line.strip() else None
+            except ValueError:
+                continue  # not a line qd wrote: dropped, as declared_events drops any other
         if active is not None:
             events.append(active)
+        events = declared_events(seat, events)
         self.launch_events[path] = events
         return path, stamp, events
 

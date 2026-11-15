@@ -231,6 +231,15 @@ def acknowledge(runtime: Path, identity: dict | None, token: str | None) -> None
         pid=os.getpid(), process_start=process_start(os.getpid()), copy=identity, startup_token=token)) + '\n')
 
 
+def append_log(runtime: Path, event: str, **data) -> None:
+    """One line in the service's log, as the service writes its own, from code that holds no Service."""
+    log = Path(runtime) / "log" / "service.jsonl"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with log.open("a") as stream:
+        stream.write(json.dumps({"at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                                 "event": event, **data}) + "\n")
+
+
 def start(ship: Ship, qd: Path | None = None, *, expected: dict | None = None,
           startup_token: str | None = None) -> str:
     """Start the service detached, logging under the runtime; a proof line. It runs the ``qd`` given, else this one."""

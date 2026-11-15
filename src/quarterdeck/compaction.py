@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 import secrets
 
@@ -133,7 +134,7 @@ def disarm_locked(seat, reason, *, disabled=None, clear_transition=True, adopt_s
             data['reading_unknown'] = True
             reason = f'{reason}; {error}'
     try:
-        recover(seat.ship.runtime, data)
+        recover(seat.ship.runtime, data, seat.name)
     except (OSError, ShipError):
         data['error'] = 'immutable intent publication unresolved; automatic fresh held'
     release(data, reason)
@@ -156,7 +157,7 @@ def admitting(runtime, message):
     if data.get('transition'):
         return
     try:
-        recover(runtime, data)
+        recover(runtime, data, message.to)
     except (OSError, ShipError):
         data['error'] = 'immutable intent publication unresolved; automatic fresh held'
         release(data, data['error'])
@@ -210,22 +211,97 @@ def decode(intent):
         raise ShipError('compaction immutable intent invalid; automatic fresh held') from error
 
 
-def publish(runtime, intent):
-    """Recover a fixed intent under admission, refusing conflicting immutable bytes."""
+THRESHOLD_BODY = (
+    'Compaction threshold reached. Post an open self-addressed handoff replying to this request: '
+    'qd post order --to SELF --re REQUEST --body-file handoff.txt. Leave that handoff open. '
+    'If status says ready for manual fresh, report that you left the handoff and let the outside '
+    'controller choose the idle break. From outside the seat, qd fresh-ready SEAT --cancel '
+    'releases the reservation, then explicit qd fresh SEAT carries the open handoff. '
+    'For proved automatic readiness at a natural break, run qd fresh-ready --request '
+    'REQUEST --handoff HANDOFF --at-break with the actual ids. This explicitly attests '
+    'no review, signature or landing is half done and that this turn will finish without '
+    'starting another task. Readiness alone does not fresh until that exact turn completes. '
+    'Human-owned sessions remain manual-only; qd fresh-ready --cancel releases readiness '
+    'and preserves all posts. Use qd fresh at the chosen moment.')
+ATTESTATION_BODY = ('Ready at a natural break for request {request}, open handoff {handoff}. '
+                    'I attest no review, signature or landing is half done; I will finish this turn '
+                    'without starting another task.')
+
+
+def _id_of(message) -> bool:
+    """A plain id of this kind's prefix. One already in the store is only compared, never written again."""
+    return re.fullmatch(rf'{re.escape(message.kind[:3])}-[A-Za-z0-9-]{{1,80}}', message.id) is not None
+
+
+def _request(name, data):
+    """The journal's threshold request, when it is exactly the service's own to this seat; else None."""
+    try:
+        request = decode(data['request']) if data.get('request') else None
+    except ShipError:
+        return None
+    if (request is None or request.kind != 'order' or request.sender != post.SHIP or request.to != name
+            or request.re is not None or request.body != THRESHOLD_BODY or not _id_of(request)
+            or (request.subject, request.due, request.speed) != (None, None, None)):
+        return None
+    return request
+
+
+def refusal(name, data, message) -> str | None:
+    """Why a saved compaction message may not be published from the journal; None when it may.
+
+    The journal sits in the seat's folder, which its jail can write. Only the protocol's two messages the service
+    builds itself are published from it, each checked here against the service's own words: the threshold request
+    (ship to the seat) and the seat's attestation report (the seat to ship, re that request, naming its reserved
+    handoff). The one other is the seat's own handoff: an order from the seat to itself, re that request, which is
+    the post the seat files itself and names no other seat.
+    """
+    if not _id_of(message):
+        return 'not a message the compaction protocol writes'
+    request = _request(name, data)
+    if request is not None and message.id == request.id:
+        return None if message == request else 'not the threshold request the service wrote'
+    if (request is not None and message.kind == 'report' and message.sender == name and message.to == request.sender
+            and message.re == request.id and isinstance(data.get('reserved'), str)
+            and (message.subject, message.due, message.speed) == (None, None, None)
+            and message.body == ATTESTATION_BODY.format(request=request.id, handoff=data['reserved'])):
+        return None
+    if (request is not None and message.kind == 'order' and message.sender == name and message.to == name
+            and message.re == request.id and (message.due, message.speed) == (None, None)):
+        return None  # the seat's own handoff to itself, the very post its own qd post files: no other seat's name
+    return 'not a message the compaction protocol writes'
+
+
+def publish(runtime, intent, *, name=None, data=None):
+    """Recover a fixed intent under admission, refusing conflicting immutable bytes.
+
+    A message not yet in the store is written only when ``refusal`` finds it is the service's own for ``name``.
+    """
     message = decode(intent)
     store = post.Store(runtime)
     target = store.dir / (message.id + '.json')
     if target.exists():
         if target.read_text() != intent:
             raise ShipError('compaction immutable post conflict')
-    else:
-        store._write(message)
+        return message
+    reason = 'no seat to check it against' if name is None else refusal(name, data or {}, message)
+    if reason is not None:
+        raise IntentRefused(f'compaction intent {message.id} refused: {reason}')
+    store._write(message)
     return message
 
 
-def recover(runtime, data):
+class IntentRefused(ShipError):
+    """A saved compaction message that is not the service's own: never published."""
+
+
+def recover(runtime, data, name):
+    """Publish each saved intent that is the service's own; a refused one is dropped and logged, never published."""
+    from .servicectl import append_log
     for intent in data['intents']:
-        publish(runtime, intent)
+        try:
+            publish(runtime, intent, name=name, data=data)
+        except IntentRefused as error:
+            append_log(runtime, 'compaction-intent-refused', seat=name, reason=str(error))
     data['intents'] = []  # the immutable post is now durable; keep only pending publication intents here
 
 
@@ -274,7 +350,7 @@ def observe(seat, data, record, reading, launched):
         if not fresh or same:
             raise ShipError('conversation changed without a proved fresh successor')
         replacement = new()
-        recover(seat.ship.runtime, data)
+        recover(seat.ship.runtime, data, seat.name)
         replacement['protocol_requests'] = data['protocol_requests']
         replacement['reason'] = 'proved fresh successor'
         data.clear()
@@ -297,24 +373,13 @@ def observe(seat, data, record, reading, launched):
 def threshold(seat, data):
     runtime = seat.ship.runtime
     if data.get('request') is None:
-        message = post.Store(runtime).prepare('order', post.SHIP, seat.name,
-            'Compaction threshold reached. Post an open self-addressed handoff replying to this request: '
-            'qd post order --to SELF --re REQUEST --body-file handoff.txt. Leave that handoff open. '
-            'If status says ready for manual fresh, report that you left the handoff and let the outside '
-            'controller choose the idle break. From outside the seat, qd fresh-ready SEAT --cancel '
-            'releases the reservation, then explicit qd fresh SEAT carries the open handoff. '
-            'For proved automatic readiness at a natural break, run qd fresh-ready --request '
-            'REQUEST --handoff HANDOFF --at-break with the actual ids. This explicitly attests '
-            'no review, signature or landing is half done and that this turn will finish without '
-            'starting another task. Readiness alone does not fresh until that exact turn completes. '
-            'Human-owned sessions remain manual-only; qd fresh-ready --cancel releases readiness '
-            'and preserves all posts. Use qd fresh at the chosen moment.')
+        message = post.Store(runtime).prepare('order', post.SHIP, seat.name, THRESHOLD_BODY)
         data['request'] = message.to_json()
         data['protocol_requests'].append(message.id)
         data['intents'].append(message.to_json())
         data['reason'] = 'threshold reached; waiting for open handoff/readiness'
         save(runtime, seat.name, data)
-    publish(runtime, data['request'])
+    publish(runtime, data['request'], name=seat.name, data=data)
 
 
 def binding(seat, data, reading):
@@ -370,15 +435,13 @@ def prepare_ready(seat, request_ref, handoff_ref):
             raise ShipError(data['reason'])
         if intent is None:
             report = store.prepare('report', seat.name, request.sender,
-                f'Ready at a natural break for request {request.id}, open handoff {handoff.id}. '
-                'I attest no review, signature or landing is half done; I will finish this turn '
-                'without starting another task.', re=request.id)
+                                   ATTESTATION_BODY.format(request=request.id, handoff=handoff.id), re=request.id)
             intent = dict(revision=secrets.token_hex(16), binding=bound, report=report.to_json())
             data['attestation'] = intent
             data['intents'].append(report.to_json())
             data['reason'] = 'attestation report prepared; readiness control unconfirmed'
             save(runtime, seat.name, data)
-        report = publish(runtime, intent['report'])
+        report = publish(runtime, intent['report'], name=seat.name, data=data)
         return dict(revision=intent['revision'], report=report.id, binding=bound)
 
 
@@ -486,7 +549,7 @@ def tick(seat):
                 if declared is None or not declared.fresh_after_compactions:
                     return  # a declaration edit won admission before this tick's older view
             observe(seat, data, record, reading, launched)
-            recover(runtime, data)
+            recover(runtime, data, seat.name)
             manual = None
             if reading.count >= seat.spec.fresh_after_compactions:
                 threshold(seat, data)

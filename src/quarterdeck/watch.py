@@ -9,9 +9,11 @@ refreshed by tmux itself, so a dead service never looks like a healthy idle ship
 
 from __future__ import annotations
 
+import json
 import shutil
 import sqlite3
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -21,7 +23,7 @@ from .door import Door, Reading
 from .harness.capabilities import selection_label
 from .harness import reading_scope
 from .harness.base import record_fingerprint
-from .seat import Seat, UnresolvedSeat, leftover_checks, seats
+from .seat import SEAT_HOLDS, Seat, UnresolvedSeat, launch_pool_refusal, leftover_checks, seats
 from .ship import Ship, ShipError
 from .servicectl import STALE_SECONDS
 from .tmux import Tmux
@@ -522,6 +524,7 @@ class Facts:
     request_waits: list[str] = field(default_factory=list)
     cutover: str = ""  # the ship still runs on tmux's default server, until one qd down and qd up
     server_recovery: list[str] = field(default_factory=list)  # a gone ship server: stopped or unknown
+    seat_holds: list[str] = field(default_factory=list)  # one seat held alone by a bad file or a refused record
     relaunches: list[str] = field(default_factory=list)  # a relaunch a stopped service left unfinished (relaunch_intent)
     write_bounds: list[str] = field(default_factory=list)  # a jailed seat stopped at its write bound (write_bound)
     retirement: str | None = None
@@ -550,6 +553,7 @@ class Facts:
         if self.unsettled:
             parts.append(f"{self.unsettled} unsettled after an error")  # law: nothing-waits-silently
         parts += self.unknown
+        parts += self.seat_holds
         parts += self.queue_unknown
         parts += [detail for detail in self.compactions
                   if not any(fallback.startswith(detail + ';') for fallback in self.manual_fresh)]
@@ -712,9 +716,25 @@ def limit_holds(ship: Ship, selected: list[Seat | UnresolvedSeat]) -> tuple[list
     return held, unknown
 
 
+def _launch_reads(seat: Seat) -> bool:
+    try:
+        seat.launched()
+        return True
+    except ShipError:
+        return False
+
+
+def _readable_up(seat: Seat) -> bool:
+    """Up by its launch record; a record refused is not up here, and the seat's own line names the refusal."""
+    try:
+        return seat.is_up
+    except ShipError:
+        return False
+
+
 def limit_state(ship: Ship, selected: list[Seat | UnresolvedSeat]):
     """Up seats at a limit with no eligible destination in the recorded evidence."""
-    up = [seat for seat in selected if not isinstance(seat, UnresolvedSeat) and seat.is_up]
+    up = [seat for seat in selected if not isinstance(seat, UnresolvedSeat) and _readable_up(seat)]
     if not up:
         return [], [], []
     try:
@@ -724,8 +744,11 @@ def limit_state(ship: Ship, selected: list[Seat | UnresolvedSeat]):
         with book:
             held, walled = [], []
             for seat in up:
-                if not quota.current_walled(seat, book):
-                    continue
+                try:
+                    if not quota.current_walled(seat, book):
+                        continue
+                except ShipError:
+                    continue  # a seat whose own record is refused: its own line names it
                 walled.append(seat)
                 if not any(quota.cached_open(ship, book, pool, seat) for pool in quota.candidate_pools(seat)):
                     label = seat.name
@@ -821,69 +844,75 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
     waiting, needs_human, unarmed, pending_lines, routes, unknown, queue_unknown, compactions, turn_errors = [], [], [], [], [], [], [], [], []
     sign_in_failures, ending = [], []
     pane_obstructions = []
+    seat_holds = service_holds(ship.runtime)
     selected = seats(ship, tmux, False)
+    # Seats whose launch record reads: a refused record holds its seat alone, said by that seat's own line.
+    readable = [seat for seat in selected if not isinstance(seat, UnresolvedSeat) and _launch_reads(seat)]
     held, limit_unknown, move_reasons = limit_state(ship, selected)
     pending_lines += limit_unknown
     for seat in selected:
-        pending = attempts.undelivered(store, seat.name, results=latest)
-        waiting += pending
-        if isinstance(seat, UnresolvedSeat):
-            needs_human.append(seat.name)
-            unknown.append(str(seat.error).partition(';')[0])
-            continue
-        if (refused := getattr(seat, "relaunch_refused", None)) and (words := refused()):
-            ending.append(words)  # law: nothing-waits-silently
-        launched = seat.launched()
-        from .turn_failure import obstruction as failure_obstruction
-        from .auth_failure import status as authentication_status, waiting as authentication_waiting
-        authentication = authentication_status(seat)
-        if reason := authentication:
-            sign_in_failures.append(f"{seat.name}: {reason}")  # law: nothing-waits-silently
-            if not authentication_waiting(reason):
+        with _one_seat(seat.name, seat_holds):
+            pending = attempts.undelivered(store, seat.name, results=latest)
+            waiting += pending
+            if isinstance(seat, UnresolvedSeat):
                 needs_human.append(seat.name)
-        elif reason := failure_obstruction(seat, store):
-            turn_errors.append(f"{seat.name}: {reason}")  # law: nothing-waits-silently
-            needs_human.append(seat.name)
-        from .compaction import status as compaction_status
-        if detail := compaction_status(seat, alerts_only=True):
-            compactions.append(f"{seat.name}: {detail}")
-        if launched is not None and launched.pool in seat.spec.pools[1:]:
-            routes.append(f"{seat.name} on {seat.harness.name}/{launched.pool}")
-        if seat.session.human:
-            if reason := recovery.held(seat):
-                if seat.name not in needs_human:
+                unknown.append(str(seat.error).partition(';')[0])
+                continue
+            if (refused := getattr(seat, "relaunch_refused", None)) and (words := refused()):
+                ending.append(words)  # law: nothing-waits-silently
+            launched = seat.launched()
+            if refused_pool := launch_pool_refusal(seat, launched):
+                seat_holds.append(refused_pool)  # law: nothing-waits-silently
+            from .turn_failure import obstruction as failure_obstruction
+            from .auth_failure import status as authentication_status, waiting as authentication_waiting
+            authentication = authentication_status(seat)
+            if reason := authentication:
+                sign_in_failures.append(f"{seat.name}: {reason}")  # law: nothing-waits-silently
+                if not authentication_waiting(reason):
                     needs_human.append(seat.name)
-                pending_lines.append(f"{seat.name}: {reason}")
-            from . import human_wake
-            watch = post.watch_reading(ship.runtime, seat.name)
-            reason = human_wake.status(seat)
-            if human_wake.action_required(seat, reason):
-                if seat.name not in needs_human:
-                    needs_human.append(seat.name)
-                pending_lines.append(f"{seat.name}: {reason}")
-            if pending and watch.armed is False:
-                unarmed.append(seat.name)
-        else:
-            # Human alarms use owned metadata only; never read their conversation here.
-            if seat.harness.reads_queue_error and (record := seat.record()) is not None:
-                try:
-                    queue_error = seat.harness.state(record).queue_error
-                except OSError:
-                    queue_error = None  # ordinary unreadable-record reporting remains independent
-                if queue_error:
-                    queue_unknown.append(f"{seat.name}: queue unknown: {queue_error}")
-            door, obstruction = Door(seat).human_obstruction()
-            if diagnostic := getattr(door, "diagnostic", ""):
-                pane_obstructions.append(f"{seat.name}: {diagnostic}")
-            if (obstruction and not authentication_waiting(authentication)
-                    and seat.name not in needs_human):
+            elif reason := failure_obstruction(seat, store):
+                turn_errors.append(f"{seat.name}: {reason}")  # law: nothing-waits-silently
                 needs_human.append(seat.name)
-            if door.waiting or "pending" in door.reason or "; qd submit " in door.reason:
-                pending_lines.append(f"{seat.name}: {door.reason}")
-            for reason in pending_delivery.detached(seat):
-                if seat.name not in needs_human:
+            from .compaction import status as compaction_status
+            if detail := compaction_status(seat, alerts_only=True):
+                compactions.append(f"{seat.name}: {detail}")
+            if launched is not None and launched.pool in seat.spec.pools[1:]:
+                routes.append(f"{seat.name} on {seat.harness.name}/{launched.pool}")
+            if seat.session.human:
+                if reason := recovery.held(seat):
+                    if seat.name not in needs_human:
+                        needs_human.append(seat.name)
+                    pending_lines.append(f"{seat.name}: {reason}")
+                from . import human_wake
+                watch = post.watch_reading(ship.runtime, seat.name)
+                reason = human_wake.status(seat)
+                if human_wake.action_required(seat, reason):
+                    if seat.name not in needs_human:
+                        needs_human.append(seat.name)
+                    pending_lines.append(f"{seat.name}: {reason}")
+                if pending and watch.armed is False:
+                    unarmed.append(seat.name)
+            else:
+                # Human alarms use owned metadata only; never read their conversation here.
+                if seat.harness.reads_queue_error and (record := seat.record()) is not None:
+                    try:
+                        queue_error = seat.harness.state(record).queue_error
+                    except OSError:
+                        queue_error = None  # ordinary unreadable-record reporting remains independent
+                    if queue_error:
+                        queue_unknown.append(f"{seat.name}: queue unknown: {queue_error}")
+                door, obstruction = Door(seat).human_obstruction()
+                if diagnostic := getattr(door, "diagnostic", ""):
+                    pane_obstructions.append(f"{seat.name}: {diagnostic}")
+                if (obstruction and not authentication_waiting(authentication)
+                        and seat.name not in needs_human):
                     needs_human.append(seat.name)
-                pending_lines.append(f"{seat.name}: {reason}")
+                if door.waiting or "pending" in door.reason or "; qd submit " in door.reason:
+                    pending_lines.append(f"{seat.name}: {door.reason}")
+                for reason in pending_delivery.detached(seat):
+                    if seat.name not in needs_human:
+                        needs_human.append(seat.name)
+                    pending_lines.append(f"{seat.name}: {reason}")
     pending_lines += [f"request claimed: {path.name}; inspect requests/ before retrying"
                       for path in sorted((ship.runtime / "requests").glob("*.claimed"))]
     now = post.now()
@@ -909,12 +938,13 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         unknown=unknown,
         queue_unknown=queue_unknown,
         compactions=compactions,
-        manual_fresh=compaction_alert.unrouted(ship, [seat for seat in selected if not isinstance(seat, UnresolvedSeat)]),
+        manual_fresh=compaction_alert.unrouted(ship, readable),
         server_recovery=server_recovery.status(ship.runtime),
         write_bounds=write_bound.status(ship),
+        seat_holds=seat_holds,
         relaunches=relaunch_intent.status(ship, {seat.name: seat for seat in selected
                                                  if not isinstance(seat, UnresolvedSeat)}),
-        model_mismatches=model_mismatch.unrouted(ship, [seat for seat in selected if not isinstance(seat, UnresolvedSeat)],
+        model_mismatches=model_mismatch.unrouted(ship, readable,
                                                pending_model=request_queue.pending_model),
         held=held,
         move_holds=move_reasons,
@@ -931,7 +961,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         group_held=group_post.holds(ship.runtime),
         drop_held=post.drop_alarms(ship.runtime),
         cascade_held=cascade_runtime.holds(ship.runtime),
-        structure_waiting=structure_outcome.waits(ship, selected),
+        structure_waiting=structure_outcome.waits(ship, readable),
         accounting=accounting_reading(ship.runtime, state),
         retirement=post_retirement.reading(ship.runtime),
         ledger_recovery=ledger_recovery.alarms(ship.runtime),
@@ -943,6 +973,32 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         disks=disks([ship.runtime, ship.workspace, Path(tempfile.gettempdir())]),
         login=login if login is not None else credential.login_needed(ship),
     )
+
+
+@contextmanager
+def _one_seat(name: str, lines: list[str]):
+    """One seat's reading that fails is said for that seat alone; the rest of the line still reads."""
+    try:
+        yield
+    except Exception as error:  # law: nothing-waits-silently
+        text = str(error)[:200]
+        lines.append(text if text.startswith(f"{name}:") else f"{name}: held for this seat alone: "
+                     f"{type(error).__name__}: {text}")
+
+
+def service_holds(runtime) -> list[str]:
+    """The service's steps held for one seat alone (Service.seat_guard), from the file only it writes."""
+    try:
+        data = json.loads((runtime / SEAT_HOLDS).read_text())
+    except FileNotFoundError:
+        return []
+    except (OSError, ValueError) as error:
+        return [f"seat holds unreadable: {type(error).__name__}"]
+    if not isinstance(data, dict):
+        return ["seat holds unreadable: not an object"]
+    return [f"{name}: {step} held for this seat alone: {str(text)[:160]}"
+            for name, steps in sorted(data.items()) if isinstance(steps, dict)
+            for step, text in sorted(steps.items())]
 
 
 def line(ship: Ship, tmux: Tmux) -> str:

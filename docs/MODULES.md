@@ -10,7 +10,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `check_capacity.py` | a nightly check's one-pass reservation of an existing shared test slot, held through its cleanup |
 | `compaction_alert.py` | an idle seat that is ready for a fresh start by hand: one report to the systems seats for each such reading, and a named alarm while no systems seat is up |
 | `cost_evidence.py` | a turn's cost evidence, kept beside the Ledger's turns |
-| `credential.py` | the one link a seat shares with its pool, reseeded and relinked on the tick |
+| `credential.py` | the one link a seat shares with its pool, reseeded and relinked on the tick, never from a jailed seat, a seat on an endpoint pool, or a launch naming a pool not declared for the seat |
 | `daily_live.py` | the daily live test: a minimal check of each program the day's readings do not show was used, and one report to the desk |
 | `doctor.py` | `qd doctor`, the installation checked and handed to a seat to fix |
 | `endpoint.py` | endpoint pools: what a server serves, the model a seat takes from it, the key beside it |
@@ -31,7 +31,7 @@ The modules that grew beside the parts, in `src/quarterdeck/` and in its `harnes
 | `providers.py` | normalizes declared companies and builds public identity metadata |
 | `quota.py` | quota walls and the usage refresh |
 | `record_owner.py` | which program a record belongs to |
-| `refusal.py` | a provider-refused crew seat started fresh once, the refused message withheld and its sender told |
+| `refusal.py` | a provider-refused crew seat started fresh once, the refused message withheld and its sender told by a notice built from the store, never from the journal's words |
 | `sandbox.py` | the bubblewrap jail around a sandboxed seat's program |
 | `servicectl.py` | the service's heartbeat, lock, start (in a systemd scope of its own, from a declared environment), stop and requests |
 | `ship_locks.py` | the ship's lock files, all under runtime/locks where every jail hides them, and the one bounded wait for each |
@@ -92,7 +92,7 @@ The modules that the framework table does not list, the module of each part amon
 | `accounting_slices.py` | the Ledger's catch-up in slices: a low-priority child process reads the records and plans the rows, and the service commits the plan in bounded steps |
 | `accounting_gate.py` | private, tick-bounded input evidence lets a completed accounting job wait for a change, with a ten-minute backstop and bounded class/count start diagnostics |
 | `acts.py` | `qd press` and `qd type`: a systems seat's answer to a screen the door does not know, through the door's own path, recorded before the key is pressed, and never into a session the human owns |
-| `alarms.py` | the alarms' saved readings, their reports to the systems seats, or to the desk where no systems seat is up or an alarm stays untaken, and the reply that takes an alarm |
+| `alarms.py` | the alarms' saved readings, their reports to the systems seats, or to the desk where no systems seat is up or an alarm stays untaken, each rebuilt by the service from checked fields, and the reply that takes an alarm |
 | `attribution_cache.py` | the attribution the service writes beside the turn rows, which any turn write invalidates |
 | `auth_failure.py` | recorded sign-in failures: the next delivery first, then bounded resumes once the pool's sign-in is renewed |
 | `carriage.py` | what a launch carries, and the byte checks on the final command |
@@ -140,7 +140,7 @@ The modules that the framework table does not list, the module of each part amon
 | `relaunch_intent.py` | a relaunch the service makes as one section a stop waits out: its intent written and a line logged before the down, a line after the up, and an intent a killed service left finished once by the next service, or said on the status line |
 | `request_queue.py` | one owner for queued seat requests, their visible waits and their answers |
 | `resources.py` | the framework's resource files, for packaging and `qd sync` |
-| `seat.py` | the Seat: one program in one tmux pane under one role, and its lifecycle: up, down, restart, fresh and a move to another pool |
+| `seat.py` | the Seat: one program in one tmux pane under one role, and its lifecycle: up, down, restart, fresh and a move to another pool; its launch record read whole, and the pools it may name |
 | `seat_command.py` | the exact `qd` command a seat is told to run, shell quoting included, shared by the brief and the record readers |
 | `server_recovery.py` | a ship brought back when its own tmux server has gone: only when the server is proved gone, at most twice in an hour, and through `qd up`'s own path |
 | `service.py` | the service: the ship's one long-running process, not a seat, which renders inboxes, delivers, writes attempts, answers requests, the quick ones in short bounded turns between its other duties, re-briefs seats, writes the heartbeat and alone writes the Ledger |

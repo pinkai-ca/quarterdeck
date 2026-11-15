@@ -203,6 +203,101 @@ def launch_script(seat: str, words: list[str]) -> str:
             f"exec {shlex.join(words)}\n")
 
 
+SEAT_HOLDS = "seat-holds.json"  # runtime/seat-holds.json: the service's steps held for one seat alone, for the line
+
+
+class LaunchUnreadable(ShipError, ValueError):
+    """A launch record that is not one qd wrote. The service holds that seat alone; no reader acts on it.
+
+    ``malformed``: the file is not JSON at all, which readers that name evidence say as such."""
+
+    malformed = False
+
+
+# The fields qd writes in launch.json, and the types each may hold. The record sits in the seat's folder, which the
+# seat's jail can write, so it is read as a claim: an unknown key, a missing one or a wrong type is refused whole.
+_LAUNCH_FIELDS = {
+    'pane': (str,), 'pid': (int,), 'at': (str,), 'pool': (str,), 'resume': (str, type(None)), 'argv': (list,),
+    'version': (str, type(None)), 'harness': (str, type(None)), 'records_before': (list,),
+    'recovery': (dict, type(None)), 'notice': (str, type(None)), 'answered': (list, type(None)),
+    'start': (str, type(None)),
+}
+_LAUNCH_REQUIRED = ('pane', 'pid', 'at', 'pool', 'resume', 'argv', 'version')
+
+
+def parse_launch(text: str, name: str) -> dict:
+    """The launch record's fields, checked whole; LaunchUnreadable says why not."""
+    def refuse(why: str):
+        return LaunchUnreadable(f"{name}: launch record refused ({why}); this seat is held, no other")
+    try:
+        data = json.loads(text)
+    except ValueError:
+        error = refuse('not JSON')
+        error.malformed = True
+        raise error from None
+    if not isinstance(data, dict):
+        raise refuse('not an object')
+    if unknown := sorted(set(data) - set(_LAUNCH_FIELDS)):
+        raise refuse(f"unknown field {unknown[0]!r}")
+    if missing := [key for key in _LAUNCH_REQUIRED if key not in data]:
+        raise refuse(f"missing field {missing[0]!r}")
+    for key, value in data.items():
+        if not isinstance(value, _LAUNCH_FIELDS[key]) or isinstance(value, bool):
+            raise refuse(f"field {key!r} of the wrong type")
+    if data['pid'] <= 0 or not all(isinstance(item, str) for item in [*data['argv'], *data.get('records_before', [])]):
+        raise refuse('a field out of its range')
+    try:
+        datetime.fromisoformat(data['at'])
+    except ValueError:
+        raise refuse("field 'at' is not a time") from None
+    return data
+
+
+def declared_pools(seat) -> tuple[str, ...] | None:
+    """The pools the ship file declares for the seat: the only ones its launch record may name.
+
+    Every Seat carries its declaration. None only for an object that carries none (a test's stand-in), which the
+    service never builds: there the launch's pool is not judged.
+    """
+    spec = getattr(seat, 'spec', None)
+    pools = getattr(spec, 'pools', None)
+    return tuple(pools) if pools is not None else None
+
+
+def jailed_seat(seat) -> bool:
+    """Whether the ship jails this seat: then its own folder, launch record included, is its jail's to write."""
+    spec, ship = getattr(seat, 'spec', None), getattr(seat, 'ship', None)
+    if spec is None or ship is None or not hasattr(ship, 'jailed'):
+        return False
+    try:
+        return ship.jailed(spec, seat.pool)
+    except (ShipError, AttributeError, KeyError):
+        return True  # a seat whose jail cannot be read is judged as jailed
+
+
+def launch_pool_refusal(seat, launched, *, every_seat: bool = False) -> str | None:
+    """Why a launch record's pool is refused: it names a pool not declared for the seat. None when it is declared.
+
+    For accounting, walls and the line this is judged for jailed seats alone: the threat is a jail writing its own
+    folder, and an unjailed seat already holds the operator's power, so its launch is charged to the pool it names
+    (a harness or pool switch still charges a running launch's turns to its old pool). Credentials judge every
+    seat (``every_seat``).
+    """
+    if not every_seat and not jailed_seat(seat):
+        return None
+    declared = declared_pools(seat)
+    if launched is not None and declared is not None and launched.pool not in declared:
+        return (f"{seat.name}: launch record names pool {launched.pool!r}, not one declared for it; "
+                + ("refused for credentials, accounting and walls" if jailed_seat(seat) else "refused for credentials"))
+    return None
+
+
+def declared_launch_pool(seat, launched, default):
+    """The launch's pool where the ship file declares it for the seat, else ``default``: what accounting, walls and
+    usage may charge or read."""
+    return launched.pool if launched is not None and launch_pool_refusal(seat, launched) is None else default
+
+
 class SelectionError(ShipError):
     """One seat's saved selection cannot establish its current program and pool."""
 
@@ -361,10 +456,17 @@ class Seat:
             text = path.read_text()
         except FileNotFoundError:
             return None
-        data = json.loads(text)
+        except (OSError, UnicodeError) as error:
+            raise LaunchUnreadable(f"{self.folder.name}: launch record unreadable ({type(error).__name__}); "
+                                   "this seat is held, no other") from None
+        data = parse_launch(text, self.folder.name)
         if data.get('recovery') is not None:
             from .harness.thinking import validate_launch
-            validate_launch(data['recovery'])
+            try:
+                validate_launch(data['recovery'])
+            except ValueError as error:
+                raise LaunchUnreadable(f"{self.folder.name}: launch record refused ({error}); "
+                                       "this seat is held, no other") from None
         return Launched(**data, price=saved_price(path))
 
     def pane(self) -> Pane | None:

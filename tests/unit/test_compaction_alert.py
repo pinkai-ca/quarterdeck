@@ -364,7 +364,9 @@ def test_postpublication_restart_recovers_exact_saved_intent(env, monkeypatch):
     assert [report.to_json() for report in reports(env)] == [intent]
 
 
-def test_pending_intent_survives_compaction_generation_change(env, monkeypatch):
+def test_a_pending_intent_is_not_published_from_the_file_once_its_reading_cleared(env, monkeypatch):
+    """A generation change clears the reading. Its unpublished words then exist only in the seat's journal, which
+    the seat's own jail can write, so they are never published from it."""
     publish = compaction_alert.publish
     monkeypatch.setattr(compaction_alert, 'publish', lambda *args: (_ for _ in ()).throw(OSError('synthetic stop')))
     with pytest.raises(OSError):
@@ -373,5 +375,5 @@ def test_pending_intent_survives_compaction_generation_change(env, monkeypatch):
     change(env, generation='generation-willow', count=1)
     monkeypatch.setattr(compaction_alert, 'publish', publish)
     step(env)
-    assert [report.to_json() for report in reports(env)] == [intent]
+    assert intent and reports(env) == []
     assert compaction_alert.load(env.ship.runtime, SUBJECT)['key'] is None

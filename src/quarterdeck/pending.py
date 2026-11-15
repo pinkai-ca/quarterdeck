@@ -91,9 +91,12 @@ class NoCurrentLaunch(ShipError):
 
 
 def current_identity(seat: Seat) -> dict[str, str | int] | None:
-    """A complete snapshot from Seat.pane's existing owned-pane view."""
-    launch = seat.launched()
-    bound = identity(seat)
+    """A complete snapshot from Seat.pane's existing owned-pane view. A launch record refused is no identity."""
+    try:
+        launch = seat.launched()
+        bound = identity(seat)
+    except ShipError:
+        return None
     try:
         if (launch is None or not isinstance(bound['pane'], str) or not bound['pane']
                 or type(bound['pid']) is not int or bound['pid'] <= 0

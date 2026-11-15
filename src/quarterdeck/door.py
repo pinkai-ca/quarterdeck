@@ -141,7 +141,8 @@ class Door:
         on its own tick, and a banner the book already knows, even an expired one, is not news.
         """
         launched = self.seat.launched()
-        pool = launched.pool if launched else self.seat.pool.name
+        from .seat import declared_launch_pool
+        pool = declared_launch_pool(self.seat, launched, self.seat.pool.name)
         shown = self.harness.quota_wall(screen.quota, datetime.now(timezone.utc)) if screen and screen.quota else None
         book = ledgermod.Ledger.reading(self.seat.ship.runtime / "ledger.sqlite")
         if book is not None:

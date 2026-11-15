@@ -328,7 +328,8 @@ def observe_screen(book, seat, screen, launched, now: datetime | None = None, *,
         from .watch import running_settings
         event = replace(event, model=running_settings(seat, screen=screen).get("model"))
     source = f"screen:{seat.name}:{launched.at if launched else 'unknown-launch'}"
-    book.quota.observe(source, seat.name, launched.pool if launched else UNKNOWN,
+    from .seat import declared_launch_pool
+    book.quota.observe(source, seat.name, declared_launch_pool(seat, launched, UNKNOWN),
                        replace(event, key=event.error_id or event.key), now, commit=commit)
 
 
@@ -419,7 +420,8 @@ def refresh_declared(service) -> None:
             sources = []
             for seat in service.resolved_seats():
                 launched = seat.launched()
-                if (launched is not None and launched.pool == pool.name
+                from .seat import launch_pool_refusal
+                if (launched is not None and launched.pool == pool.name and launch_pool_refusal(seat, launched) is None
                         and launch_reader(launched) == reader.name and seat.spec.harness == reader.name):
                     sources.append((seat.record(), launched.when))
             usage = replace(reader.usage_from_records(sources, datetime.now(timezone.utc))
@@ -437,7 +439,9 @@ def refresh(service, seat, live: bool, launched) -> None:
     reader = seat.harness
     if not live or reader.background_usage:
         return
-    pool = service.ship.pools[launched.pool] if launched and launched.pool in service.ship.pools else seat.pool
+    from .seat import declared_launch_pool
+    name = declared_launch_pool(seat, launched, seat.pool.name)
+    pool = service.ship.pools[name] if name in service.ship.pools else seat.pool
     if (pool.kind == "subscription" and not held(service, pool.name)
             and time.monotonic() - last_read(service, pool.name) >= reader.usage_interval):
         service.usage_read[pool.name] = time.monotonic()
