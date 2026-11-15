@@ -15,7 +15,8 @@ from types import SimpleNamespace
 import pytest
 
 from tests.integration.testrun_synthetic import (WAIT_TEST, add_worktree, admin_entries, make, result, results,
-                                               scratch, start, started_marker, tool, wait_for, working_paths)
+                                               scratch, skip_without_ci_memory, start, started_marker, tool, wait_for,
+                                               working_paths)
 from tests.testrunner import procs as storage_procs, scratch as storage
 
 HOLDING = '''
@@ -32,6 +33,12 @@ def memory_available():
 
 
 pytestmark = pytest.mark.skipif(not memory_available(), reason='no tmpfs or ramfs with 4 GiB free for working storage')
+
+
+@pytest.fixture(autouse=True)
+def memory_reservation():
+    """The nested runs need the full reservation and margin, just like the CI-layout tests."""
+    skip_without_ci_memory()
 
 
 def abandoned(tmp_path, *, change='feature', live=False):
