@@ -52,7 +52,7 @@ def opened(paths):
 def _unit(record, name):
     """SQLite's database and sidecars move in one directory rename, never one by one."""
     if name == 'pi':
-        return record, [record]
+        return (None, []) if record.is_symlink() else (record, [record])
     if name == 'opencode':
         allowed = {record.name + suffix for suffix in ('', '-wal', '-shm')}
         ancillary = {'log', 'repos', 'snapshot'}  # native, per-launch data beside the database
@@ -137,5 +137,8 @@ def due(service):
     now = time.monotonic()
     if now < getattr(service, 'hand_transcripts_due', 0):
         return
+    driver = getattr(service, 'account_driver', None)
+    if service.ledger.catching_up() or driver is not None and driver.active:
+        return  # retry at the next completed-job boundary, without delaying another five minutes
     service.hand_transcripts_due = now + INTERVAL
     run(service)

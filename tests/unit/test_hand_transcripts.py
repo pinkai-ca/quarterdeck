@@ -171,6 +171,10 @@ def test_changed_epoch_replay_of_copy_keeps_all_measurements_byte_identical(tmp_
             return {t: json.dumps(db.execute(f'SELECT * FROM {t} ORDER BY 1,2').fetchall(),
                                   sort_keys=True).encode() for t in tables}
         expected = rows(book.db)
+        def verdicts(db):
+            return json.dumps(db.execute('SELECT record,turn,identity,received,status,orders,reason,grouping,valid '
+                                         'FROM turn_attribution ORDER BY record,turn').fetchall()).encode()
+        expected_verdicts = verdicts(book.db)
         assert hand_transcripts.run(w.svc, now=w.now) == 1
         book.close()
         w.svc.ledger = book = Ledger(copy)
@@ -184,11 +188,20 @@ def test_changed_epoch_replay_of_copy_keeps_all_measurements_byte_identical(tmp_
         w.svc.account_records(process_table={}, source_reader_keys=keys)
         assert not book.catching_up()
         assert rows(book.db) == expected
+        assert verdicts(book.db) == expected_verdicts
         assert book.db.execute('SELECT * FROM records').fetchall() == []
         assert book.db.execute('SELECT COUNT(*) FROM turn_attribution WHERE valid=0').fetchone() == (0,)
         # Measurements are also idempotent on a second complete accounting pass.
         w.svc.account_records(process_table={}, source_reader_keys=keys)
         assert rows(book.db) == expected
+        # A wholly new ledger also rediscovers and replays retained sources.
+        book.close()
+        w.svc.ledger = book = Ledger(tmp_path / 'rebuilt-ledger.sqlite')
+        book.begin_catchup(w.svc.accounting_epoch)
+        w.svc.read_marks.clear()
+        w.svc.account_records(process_table={}, source_reader_keys=keys)
+        assert rows(book.db) == expected
+        assert verdicts(book.db) == expected_verdicts
     finally:
         book.close()
 
@@ -234,3 +247,49 @@ def test_pi_retired_conversation_refuses_native_resume(tmp_path, monkeypatch):
                                  tmp_path / 'brief', 'old', None)
     finally:
         w.svc.ledger.close()
+
+
+@pytest.mark.parametrize('kind', ['pi', 'opencode'])
+def test_unknown_reader_stays_and_retired_binding_cannot_be_rejoined(tmp_path, monkeypatch, kind):
+    from quarterdeck.provenance import remember_launch
+    from quarterdeck.seat import Seat
+    w = world(tmp_path, monkeypatch, kind)
+    try:
+        record_owner.register(w.seat.folder, w.record, 'fake')
+        assert hand_transcripts.run(w.svc, now=w.now) == 0
+        assert w.record.is_file()
+        # A separate eligible record exercises both logical and physical retired bindings.
+        name = 'eligible' if kind == 'pi' else 'data-003'
+        old = datetime.fromtimestamp(w.now, timezone.utc) - timedelta(days=9)
+        eligible = transcript(w.seat.home, name, kind, old)
+        record_owner.register(w.seat.folder, eligible, kind)
+        with (w.seat.folder / 'record-launches.jsonl').open('a') as journal:
+            journal.write(json.dumps(dict(record=str(eligible), at=(old-timedelta(seconds=2)).isoformat(),
+                                          pool='local', harness=kind)) + '\n')
+        w.svc.account_records(process_table={})
+        assert hand_transcripts.run(w.svc, now=w.now) == 1
+        kept = record_location.resolve(eligible)
+        for path in (eligible, kept):
+            assert record_location.retired(path)
+            with pytest.raises(ShipError, match='retired'):
+                remember_launch(w.seat.folder, path, w.seat.launched())
+            (w.seat.folder / 'record').write_text(str(path)+'\n')
+            with pytest.raises(ShipError, match='conversation is retired'):
+                Seat._resume_id(w.seat)
+    finally:
+        w.svc.ledger.close()
+
+
+def test_busy_planner_does_not_delay_next_retirement_opportunity(monkeypatch):
+    svc = SimpleNamespace(ledger=SimpleNamespace(catching_up=lambda: False),
+                          account_driver=SimpleNamespace(active=True))
+    calls = []
+    monkeypatch.setattr(hand_transcripts, 'run', lambda service: calls.append(service))
+    monkeypatch.setattr(hand_transcripts.time, 'monotonic', lambda: 1000)
+    hand_transcripts.due(svc)
+    assert calls == [] and not hasattr(svc, 'hand_transcripts_due')
+    svc.account_driver.active = False
+    hand_transcripts.due(svc)
+    assert calls == [svc] and svc.hand_transcripts_due == 1300
+    hand_transcripts.due(svc)
+    assert calls == [svc]
