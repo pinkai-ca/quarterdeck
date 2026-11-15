@@ -44,6 +44,8 @@ from .tmux import Tmux, TmuxError, ship_sessions
 TYPING_QUIET = 30  # seconds since a client's last key or mouse input before its session may be switched
 STATUS_INTERVAL = 0.7  # presentation only; rendering age and owner are checked independently
 ACCOUNT_RETRY = 60.0  # unchanged transient source failures, never provider pacing
+QUICK_REQUEST_SECONDS = 0.02
+QUICK_REQUEST_OPERATIONS = 128
 
 
 def empty_record(fingerprint: tuple) -> bool:
@@ -100,6 +102,8 @@ class Service:
         self.store = Store(self.runtime)
         self.attempts = Attempts(self.runtime)
         self.drop_filer = post.FilingSlice()
+        self.quick_request_scan = None
+        self.quick_request_retry = None
         self.log_path = self.runtime / "log" / "service.jsonl"
         self.withheld: dict[tuple[str, str], str] = {}  # (message, seat) -> the screen it was withheld on
         self.told: dict[str, str | None] = {}  # seat -> the obstruction the desk was last told of
@@ -236,6 +240,7 @@ class Service:
         # Operational duties keep their order and never wait behind the slice.
         self.drain_drops()
         self.drain_accounting()
+        self.drain_requests()
         for step in (self.server_recovery, self.reconcile, self.file_drops, self.groups, self.cascades, self.fleet_post, self.inboxes, self.views, self.recoveries, self.refusals, self.answers, self.looks, self.jailed_watches, self.deliveries, self.follow, self.requests, self.compactions, self.person_quiet, self.fresh_after_order,
                      self.rebrief, self.push_reminders, self.credentials, self.authentications, self.model_differences, self.failover, self.account, self.refresh_usage, self.pool_forecasts, self.retire_post):
             self.heartbeat()  # before every step: a slow delivery or usage read reads as busy, never as dead
@@ -245,6 +250,7 @@ class Service:
                 self.log("error", step=step.__name__, error=repr(error), trace=traceback.format_exc())
             self.drain_drops()
             self.drain_accounting()
+            self.drain_requests()
             self.status_due()
 
     def drain_drops(self) -> None:
@@ -253,6 +259,35 @@ class Service:
             self.file_drops()
         except Exception as error:
             self.log('error', step='file_drops', error=repr(error), trace=traceback.format_exc())
+
+    def drain_requests(self) -> None:
+        """Quick requests between duties, under the existing request owner.
+
+        Like filing, the budget is cooperative: a file inspection or one quick
+        request finishes before yielding, within its existing door/lock bounds.
+        Lifecycle requests never run here; the full request step still owns them.
+        """
+        from . import request_queue
+        if self.quick_request_scan is None:
+            self.quick_request_scan = request_queue.arrival_paths(self.runtime, kinds=request_queue.QUICK_KINDS)
+        deadline = time.monotonic() + QUICK_REQUEST_SECONDS
+        try:
+            for _ in range(QUICK_REQUEST_OPERATIONS):
+                path = self.quick_request_retry
+                self.quick_request_retry = None
+                if path is None:
+                    path = next(self.quick_request_scan)
+                if path is not None and not self._requests((path,), kinds=request_queue.QUICK_KINDS):
+                    self.quick_request_retry = path
+                    break  # a busy owner cannot let a later arrival overtake this one
+                if time.monotonic() >= deadline:
+                    break
+        except StopIteration:
+            self.quick_request_scan = None
+        except Exception as error:
+            self.quick_request_scan = None
+            self.quick_request_retry = None
+            self.log('error', step='quick_requests', error=repr(error), trace=traceback.format_exc())
 
     @record_owner.reader_pass()
     def drain_accounting(self):
@@ -745,31 +780,43 @@ class Service:
 
 
     def requests(self) -> None:
-        """Each request answered alone, in name order: none keeps a later one waiting.
+        """Each request answered alone, in arrival order: none keeps a later one waiting.
 
         A rebrief persists its intent and posts each notice once, so one that fails stays to be tried
         again; its error is raised once every other request has had its answer, and the tick logs it.
         """
-        folder = self.runtime / "requests"
+        from . import request_queue
+        self._requests(path for path in request_queue.arrival_paths(self.runtime) if path is not None)
+
+    def _requests(self, paths, *, kinds=None) -> bool:
+        """The one claim/dispatch/settlement path; False defers a busy quick candidate."""
         retry = []
-        for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
+        for path in paths:
             from . import request_queue
             with ExitStack() as ownership:
                 if not ownership.enter_context(request_queue.coordination(self.runtime, wait=False)):
+                    if kinds is not None:
+                        return False
                     continue  # owner busy: defer without delaying the remaining service duties
                 if not path.exists():
                     continue
                 data = None
                 try:
+                    if kinds is not None and request_queue.load(path).get('kind') not in kinds:
+                        continue
                     claim = path.with_suffix(".claimed")
                     meta = request_queue.metadata(path)
                     if 'terminal' in meta:
                         data = request_queue.load(path)
+                        if kinds is not None and data.get('kind') not in kinds:
+                            continue
                         if not isinstance(meta['terminal'], str) or not meta['terminal'] or data.get('kind') not in request_queue.SEAT_KINDS:
                             raise ShipError('request retirement intent unknown; retained')
                         request_queue.settle(path, meta['terminal'], clear_claim=True)
                         continue  # recover cancellation/supersession without ever dispatching it
                     data = request_queue.load(path)
+                    if kinds is not None and data.get('kind') not in kinds:
+                        continue
                     try:
                         continuation = request_queue.control_continuation(path, data, meta)
                     except (OSError, ValueError, TypeError, ShipError):
@@ -839,6 +886,7 @@ class Service:
                     continue
         if retry:
             raise retry[0]
+        return True
 
     def clear_request_claim(self, claim: Path) -> None:
         claim.unlink(missing_ok=True)

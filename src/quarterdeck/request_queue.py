@@ -19,6 +19,32 @@ from .ship import ShipError
 
 
 SEAT_KINDS = frozenset({'relaunch', 'control', 'select', 'stop', 'submit', 'press', 'type'})
+QUICK_KINDS = frozenset({'submit', 'resend'})
+
+
+def arrival_paths(runtime, *, kinds=None):
+    """One in-memory scan, yielding after each file, then paths in arrival order.
+
+    The caller may pause between yields; no writer lock spans that pause. Files
+    remain the only queue. A missing or malformed entry still has its ordinary
+    dispatch/error path in the full request step.
+    """
+    ordered = []
+    for path in (runtime / 'requests').glob('*.json'):
+        try:
+            if kinds is None or load(path).get('kind') in kinds:
+                try:
+                    at = datetime.fromisoformat(created(path, metadata(path)))
+                except (OSError, ValueError, TypeError, ShipError):
+                    # Preserve a named error through the ordinary writer; sorting
+                    # never settles or silently discards an unreadable request.
+                    at = datetime.min.replace(tzinfo=timezone.utc)
+                ordered.append((at, path.stat().st_mtime_ns, path.name, path))
+        except (OSError, ValueError, TypeError, ShipError):
+            pass  # unknown kinds are never dispatched at a duty boundary
+        yield None  # directory/file inspection is one cooperative scan unit
+    for _, _, _, path in sorted(ordered):
+        yield path
 
 
 class RequestHold(ShipError):

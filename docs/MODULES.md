@@ -97,7 +97,7 @@ quarterdeck/                       the project folder: the framework repository
     paste_refusal.py   owned unsubmitted-paste cleanup and scoped negative evidence
     turn_failure.py    a turn ended in a recorded error: the door's hold, its alarm, and the receipts it unsettles
     refusal.py     a provider-refused crew seat started fresh once, the refused message withheld and its sender told
-    service.py     the ship's one long-running process: inboxes, deliveries, attempts, deferred controls, the heartbeat,
+    service.py     the ship's one long-running process: inboxes, deliveries, attempts, bounded quick-request slices, deferred controls, the heartbeat,
                    the machine sample; the one writer of the Ledger
     servicectl.py  the service's lock, heartbeat, start, stop and requests
     request_queue.py   one queued-request owner: visible holds, terminal cancellation/supersession and writer coordination
