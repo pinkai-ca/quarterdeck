@@ -115,6 +115,7 @@ The modules that the framework table does not list, the module of each part amon
 | `human_wake.py` | the one fixed waking line for a human seat, through the door, once per watch |
 | `idle.py` | the one live idle proof that relaunch, failover and selection share |
 | `inbox_watch.py` | a seat's own inbox watch: its registration and its live generation |
+| `jail_environment.py` | what a jailed program's environment may hold, named once: the allowlist, the pattern of names that look secret, and the launcher that starts each jail from bwrap's `--clearenv` |
 | `ledger.py` | the Ledger: turns, tokens, tool calls and machine use, by pool, seat and order; the service writes the Ledger, and every reading opens the Ledger read-only |
 | `lifecycle.py` | the seat-transition claim that lifecycle acts and ordinary delivery share: an explicit act waits a bounded time for it, a delivery never waits |
 | `model_mismatch.py` | differences between a seat's recorded model and the ship file, and one fixed notice to the systems seats for each |
