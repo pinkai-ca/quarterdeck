@@ -7,7 +7,7 @@ git pull  # get the latest Quarterdeck code into the folder you cloned
 qd sync   # move your ship onto that code
 ```
 
-- `qd sync --all` does the same for every ship you have, one after another, and stops at the first ship whose new copy fails its check.
+- `qd sync --all` does the same for each of your ships under `ships/`, one after another, and stops at the first ship whose new copy fails its check. It leaves your office out: from the folder you cloned, `qd --ship office sync` does the same for the office.
 - Typed in any folder, a `qd` command for a ship runs that ship's copy, so pulling or editing the cloned folder does not affect the running crew until you sync.
 - Only committed code goes into the ship's copy: sync says when the cloned folder holds uncommitted changes, and leaves them out.
 

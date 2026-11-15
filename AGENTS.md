@@ -6,7 +6,7 @@
 
 ## What Quarterdeck is
 
-Quarterdeck runs AI coding agents from different companies as one crew, on your person's machine. It is a command, `qd`, and one small service; every agent runs in its normal terminal interface, in a tmux pane. Your person directs the crew by talking to its desk, one of its agents, in plain words, and may type any of its commands themselves.
+Quarterdeck runs AI coding agents from different companies as one crew, on your person's machine. It is a command, `qd`, and one small service for each ship; every agent runs in its normal terminal interface, in a tmux pane. Your person directs the crew by talking to its desk, one of its agents, in plain words, and may type any of its commands themselves.
 
 ## Commands
 
@@ -16,7 +16,7 @@ Your person works with the desk. If they ask you to give an order or to look for
 - `qd inbox --wait`: wait for the next message to the operator and print it. Keep it running in the background if your harness wakes you when it ends; otherwise wait in the foreground, one order at a time.
 - `qd status`: every seat, then the open orders.
 - `qd watch <seat>`: one seat in full.
-- `qd ledger --by order`: what each order cost.
+- `qd ledger --by order`: each order's turns, tokens and time, and its cost where one is known.
 - `qd doctor`: is the machine ready for this ship.
 - `qd up`, `qd down`: bring the crew up; end every seat and the service.
 - `qd drill`: stand-in programs; spends nothing.

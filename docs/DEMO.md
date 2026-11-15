@@ -1,6 +1,6 @@
 # The recording
 
-The recording at the top of the README is one run of a three-seat ship, made on 10 November 2026 with asciinema and shown at real speed. This page says what is real in it, what was arranged for the camera, and what was edited afterwards.
+The recording at the top of the README is one run of a three-seat ship, made on 10 November 2026 with asciinema and shown at real speed, with three idle pauses shortened. This page says what is real in it, what was arranged for the camera, and what was edited afterwards.
 
 ## What happens
 
