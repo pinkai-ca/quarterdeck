@@ -57,9 +57,8 @@ class Hands:
         assert pr_screen.held(self.runtime, name), 'the hand goes down before the hold is released'
         self.calls.append(('down', name))
 
-    def instruct(self, name, body, before_send):
+    def instruct(self, name, body):
         message_id = f'ans-screen-{len(self.orders) + 1:03d}'
-        before_send(message_id)
         self.orders[message_id] = (name, body)
         folder = self.folder(name) / re.search(r'in the folder (screen-[0-9a-f]+) ', body).group(1)
         self.behaviour(self, name, message_id, folder)
@@ -272,10 +271,9 @@ def test_the_instruction_asks_for_no_report_and_leaves_nothing_open(world):
     runtime, hands_root = world
     ship = SimpleNamespace(runtime=runtime, folder=runtime.parent)
     live = pr_screen.LiveHands(ship, Path('qd'), hands_root)
-    listed = []
     message = post.Store(runtime).get(live.instruct('hand-a', pr_screen.INSTRUCTION.format(
-        files='f01.txt', folder='screen-0a0a0a0a0a0a'), before_send=listed.append))
-    assert listed == [message.id], 'its id is known, and listed, before it is written'
+        files='f01.txt', folder='screen-0a0a0a0a0a0a')))
+    assert pr_screen.spent_instructions(runtime, 'hand-a') == frozenset(), 'written unlisted: delivered once'
     assert message.kind == 'answer' and message.sender == post.SHIP and message.re is None
     assert not post.Store(runtime).open_for('hand-a'), 'nothing open: the idle rule finds the hand free'
     assert 'report on' not in message.body.replace('report on nothing', '') and 'post nothing' in message.body
@@ -368,14 +366,37 @@ def test_flagged_before_any_hand_goes_to_no_hand(world):
 def instruction(runtime, hand='hand-a'):
     ship = SimpleNamespace(runtime=runtime, folder=runtime.parent)
     body = pr_screen.INSTRUCTION.format(files='f01.txt', folder='screen-0b0b0b0b0b0b')
-    return pr_screen.LiveHands(ship, Path('qd'), runtime / 'hands').instruct(
-        hand, body, before_send=lambda message_id: pr_screen.note_instruction(runtime, hand, message_id))
+    return pr_screen.LiveHands(ship, Path('qd'), runtime / 'hands').instruct(hand, body)
+
+
+def test_the_instruction_is_listed_when_its_piece_ends_and_not_before(world):
+    seen = []
+
+    def looks(hands, name, message_id, folder):
+        seen.append(pr_screen.spent_instructions(hands.runtime, name))
+        honest(hands, name, message_id, folder)
+    verdict, hands, runtime = one_piece(world, looks)
+    assert seen == [frozenset()], 'while the hand screens, nothing is listed: the service may type it'
+    assert pr_screen.spent_instructions(runtime, 'hand-a') == {'ans-screen-001'}, 'listed once the piece ended'
+    assert not pr_screen.held(runtime, 'hand-a')
+
+
+def test_a_listing_that_fails_leaves_the_hold(world, monkeypatch):
+    def fails(*args):
+        raise OSError('cannot write the list')
+    monkeypatch.setattr(pr_screen, 'note_instruction', fails)
+    with pytest.raises(OSError):
+        one_piece(world, honest)
+    assert pr_screen.held(world[0], 'hand-a'), 'its posts stay held, and the status line says so'
 
 
 def test_a_listed_instruction_is_never_delivered_again_even_unconfirmed_or_with_a_spoiled_list(world):
     runtime, _ = world
     store = post.Store(runtime)
     listed = instruction(runtime)
+    undelivered = lambda: [m.id for m in post.Attempts(runtime).undelivered(post.Store(runtime), 'hand-a')]
+    assert listed in undelivered(), 'unlisted, it is delivered once, as any message'
+    pr_screen.note_instruction(runtime, 'hand-a', listed)
     other = store.new('answer', post.SHIP, 'hand-a', 'an ordinary answer from ship').id
     replied = store.new('answer', post.SHIP, 'hand-a', pr_screen.INSTRUCTION.split('{')[0] + 'x', re=other).id
     undelivered = lambda: [m.id for m in post.Attempts(runtime).undelivered(post.Store(runtime), 'hand-a')]

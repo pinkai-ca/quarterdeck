@@ -11,6 +11,9 @@ from pathlib import Path
 import pytest
 
 from quarterdeck import post, pr_screen, seat as seatmod, service, ship as shipmod
+from quarterdeck.door import Door
+
+from .waiting import wait_for
 
 FIXTURES = Path(__file__).resolve().parents[1] / 'fixtures' / 'pr_screen'
 
@@ -42,8 +45,7 @@ class Obedient:
     def down(self, name):
         self.calls.append('down')
 
-    def instruct(self, name, body, before_send):
-        before_send('ans-screen-alarm')
+    def instruct(self, name, body):
         own = self.ship.runtime / 'seats' / name
         own.mkdir(parents=True, exist_ok=True)
         at = '2026-11-15T08:00:00+00:00'
@@ -95,23 +97,40 @@ def test_an_obeyed_alarm_journal_and_a_forwarded_post_reach_no_seat(ship, tmux, 
     assert len(held) == 1, 'its forwarded post was moved aside while the hold stood, never filed'
 
 
-def test_an_unconfirmed_instruction_never_comes_back_at_the_hands_next_fresh_start(ship, tmux):
-    """The instruction is sent while the hand is down, so its delivery is never confirmed; the next launch's carriage,
-    previewed by the seat's own path, holds none of it, and a deliveries pass types nothing of it. An unlisted answer
-    beside it shows the path would carry one. A spoiled list hides it all the same."""
-    store = post.Store(ship.runtime)
-    body = pr_screen.INSTRUCTION.format(files='f01.txt', folder='screen-0c0c0c0c0c0c')
-    live = pr_screen.LiveHands(ship, Path('qd'), ship.runtime / 'hands')
-    listed = live.instruct('captain', body,
-                           before_send=lambda message_id: pr_screen.note_instruction(ship.runtime, 'captain', message_id))
-    beside = store.new('answer', post.SHIP, 'captain', 'an ordinary answer from ship, never delivered').id
+def test_an_instruction_is_typed_once_and_never_comes_back_after_its_piece(drydock, tmux):
+    """On a drydock with a fake program: one instruction to an up hand is typed exactly once by real deliveries passes.
+    After its piece (the hand down, the instruction listed), it is neither typed nor carried at the next launch, with
+    the list intact or spoiled; an unlisted answer sent beside it while the hand is down shows that path would carry."""
+    file = drydock / 'ship.toml'
+    file.write_text(file.read_text() + '\n[seats.captain.settings]\nstep_seconds = "0.05"\n')
+    ship = shipmod.load(drydock)
     seat = seatmod.Seat(ship, ship.seat('captain'), tmux)
-    for spoiled in (False, True):
-        if spoiled:
-            (ship.runtime / 'pr-screen' / 'instructions' / 'captain.json').write_text('[1, 2')
-        opening, carried = seat.first_message()
-        assert listed not in {m.id for m in carried} and 'screen-0c0c0c0c0c0c' not in (opening or '')
-        assert beside in {m.id for m in carried}, 'the same path carries an unlisted answer'
-        assert listed not in {m.id for m in post.Attempts(ship.runtime).undelivered(post.Store(ship.runtime), 'captain')}
-    service.Service(ship, tmux).deliveries()
-    assert all(attempt.message != listed for attempt in post.Attempts(ship.runtime).all()), 'nothing of it typed'
+    seat.up()
+    wait_for(lambda: Door(seat).reading().open)
+    svc = service.Service(ship, tmux)
+    try:
+        body = pr_screen.INSTRUCTION.format(files='f01.txt', folder='screen-0c0c0c0c0c0c')
+        listed = pr_screen.LiveHands(ship, Path('qd'), ship.runtime / 'hands').instruct('captain', body)
+
+        def typed():
+            svc.reconcile(); svc.looks(); svc.deliveries()
+            return [a for a in post.Attempts(ship.runtime).for_message(listed) if a.result == 'delivered']
+        wait_for(lambda: typed() and seat.record() and 'screen-0c0c0c0c0c0c' in seat.record().read_text())
+        for _ in range(3):
+            assert len(typed()) == 1, 'typed exactly once'
+        assert seat.record().read_text().count('screen-0c0c0c0c0c0c') == 1
+
+        seat.down()  # the piece ends: the hand down, then its instruction listed, as the screen does
+        pr_screen.note_instruction(ship.runtime, 'captain', listed)
+        beside = post.Store(ship.runtime).new('answer', post.SHIP, 'captain', 'an ordinary answer, while down').id
+        for spoiled in (False, True):
+            if spoiled:
+                (ship.runtime / 'pr-screen' / 'instructions' / 'captain.json').write_text('[1, 2')
+            opening, carried = seat.first_message()
+            assert listed not in {m.id for m in carried} and 'screen-0c0c0c0c0c0c' not in (opening or '')
+            assert beside in {m.id for m in carried}, 'the same path carries an unlisted answer'
+            svc.deliveries()
+            assert len(post.Attempts(ship.runtime).for_message(listed)) == 1, 'never typed again'
+    finally:
+        svc.ledger.close()
+        seat.down()

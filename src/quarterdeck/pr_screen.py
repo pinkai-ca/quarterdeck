@@ -304,9 +304,10 @@ def release(runtime: Path, seat: str) -> None:
 
 # -- the screen's instructions never come back ------------------------------------------------------------------
 # An instruction a hand was given for one piece must never reach a later context of that hand: not at its next fresh
-# start (carriage indexes an answer whose delivery was never confirmed) and not by a later delivery pass. The screen
-# lists each instruction's id before it is sent, under the hold, in runtime/pr-screen/instructions/<hand>.json, outside
-# every jail; carriage and undelivered skip what is listed. A list that cannot be read hides more, never less: then
+# start (carriage indexes an answer whose delivery was never confirmed) and not by a later delivery pass. It goes out
+# unlisted, so the service types it once, as any message. At the end of its piece, with the hand down and before the
+# hold is released, the screen lists its id in runtime/pr-screen/instructions/<hand>.json, outside every jail; from
+# then on carriage and undelivered skip it. A crash before the listing leaves the hold, which the status line names. A list that cannot be read hides more, never less: then
 # every answer from ship to that hand, with no re, that opens as the instruction does, is skipped.
 
 INSTRUCTIONS = 'instructions'
@@ -428,15 +429,11 @@ class LiveHands:
     def down(self, name: str) -> None:
         self._qd('down', name)
 
-    def instruct(self, name: str, body: str, before_send) -> str:
+    def instruct(self, name: str, body: str) -> str:
         """The screen's instruction, from ship, as an answer: a non-obligation that wakes the hand and leaves
-        nothing open, so the hand owes no report and stays idle for the next screen once its piece is done.
-        ``before_send`` receives its id before it is written, so it is listed before it can be delivered."""
-        store = post.Store(self.ship.runtime)
-        message = store.prepare('answer', post.SHIP, name, body)
-        before_send(message.id)
-        store.write(message)
-        return message.id
+        nothing open, so the hand owes no report and stays idle for the next screen once its piece is done. It is
+        written unlisted, for the service to type once; the screen lists it when the piece ends."""
+        return post.Store(self.ship.runtime).new('answer', post.SHIP, name, body).id
 
     def folder(self, name: str) -> Path:
         return self.root / name
@@ -500,11 +497,10 @@ def screen_piece(runtime: Path, hands, hand: str, key: str, index: int, prepared
         folder=folder, names=names, planted=f'f{planted_slot:02d}', planted_lines=sorted(lines))) + '\n')
     piece = _write_piece(hands.folder(hand), folder, dict(sorted(files.items())))
     hold(runtime, hand, key)
-    answer, moved = None, None
+    answer, moved, instruction = None, None, None
     try:
         hands.fresh(hand)
-        hands.instruct(hand, INSTRUCTION.format(files=', '.join(sorted(files)), folder=folder),
-                       before_send=lambda message_id: note_instruction(runtime, hand, message_id))
+        instruction = hands.instruct(hand, INSTRUCTION.format(files=', '.join(sorted(files)), folder=folder))
         deadline = clock() + answer_seconds
         answer = _read_answer(piece)
         while answer is None and clock() < deadline:
@@ -513,12 +509,18 @@ def screen_piece(runtime: Path, hands, hand: str, key: str, index: int, prepared
     finally:
         # However the wait ended, the hand goes down while the hold still stands, and its drops are swept: only
         # then is the hold released, so nothing written in a context that read the outsider's text is ever filed.
+        cleared = False
         try:
             hands.down(hand)
             moved = sweep(runtime, hand)
+            if instruction is not None:
+                # Delivered once while the hand screened; listed now, while the hand is down and the hold stands,
+                # so that no later delivery and no later launch of the hand brings it back.
+                note_instruction(runtime, hand, instruction)
+            cleared = True
         finally:
-            if moved is not None:
-                release(runtime, hand)  # a sweep that failed leaves the hold, and the line says so
+            if cleared:
+                release(runtime, hand)  # a sweep or a listing that failed leaves the hold, and the line says so
     verdict = judge(hand, answer, names, (f'f{planted_slot:02d}', lines))
     durable.replace_file(record / f'piece-{index}-{hand}.verdict.json', json.dumps(dict(
         clean=verdict.clean, reason=verdict.reason, places=verdict.places, moved_aside=moved)) + '\n')
