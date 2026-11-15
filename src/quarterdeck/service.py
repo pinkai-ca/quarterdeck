@@ -1755,12 +1755,13 @@ class Service:
         A walled program never takes its queue, so a seat with input queued there would be held at its wall for
         good (its own notices of background commands are queued so). When its only hold is that queue, its turn
         is ended and nothing else is pending, and its pool is walled, it may move: the framework's own queued
-        deliveries are carried into the new launch, as every relaunch carries them.
+        deliveries are carried into the new launch, as every relaunch carries them. Never in a person's session,
+        where a queued input may be the person's own typing, which no carriage brings back.
         """
         state, hold = idle.reading(seat)
         if hold is None:
             return None
-        if (hold.dimension == 'queue-pending' and state is not None
+        if (hold.dimension == 'queue-pending' and state is not None and not seat.session.human
                 and idle.check(replace(state, queued=())) is None
                 and quota.current_walled(seat, self.ledger)):
             return None

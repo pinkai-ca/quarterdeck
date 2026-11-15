@@ -290,8 +290,11 @@ def test_legacy_pool_list_also_requires_record_proof_at_the_move_boundary(tmp_pa
     try:
         usage(svc, 'one', 1.0)
         svc.failover()
-        assert bool(calls) == (evidence == 'terminal')
-        assert seat.pool.name == ('two' if evidence == 'terminal' else 'one')
+        # A queued input alone no longer holds a seat at its wall, where the program never takes its queue: the
+        # framework's own queued deliveries are carried into the new launch. Every other doubt still holds it.
+        moves = evidence in ('terminal', 'queued')
+        assert bool(calls) == moves
+        assert seat.pool.name == ('two' if moves else 'one')
     finally:
         svc.ledger.close()
 

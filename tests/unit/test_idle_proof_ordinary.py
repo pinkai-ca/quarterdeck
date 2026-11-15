@@ -218,3 +218,12 @@ def test_queued_input_without_a_wall_still_holds_a_selection(tmp_path, monkeypat
     monkeypatch.setattr(quota, 'current_walled', lambda *args: False)
     assert 'input is queued' in service.select(seat, 'pool-oak')
     assert moved == []
+
+
+def test_a_person_s_walled_seat_with_queued_input_is_never_moved(tmp_path, monkeypatch):
+    """In a person's session a queued input may be the person's own typing: no allowance there."""
+    service, seat, moved = service_case(tmp_path, monkeypatch, replace(completed(), **QUEUED))
+    seat.session = SimpleNamespace(human=True)
+    service.failover()
+    assert 'input is queued' in service.select(seat, 'pool-oak')
+    assert moved == []
