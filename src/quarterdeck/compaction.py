@@ -21,6 +21,8 @@ from .ship import ShipError
 
 VERSION = 1
 MANUAL = 'ready for manual fresh: '
+GATE_UNKNOWN = MANUAL + 'execution unknown'
+NOT_ATTESTED = MANUAL + 'not attested; choose an idle break'
 
 
 def digest(text):
@@ -486,6 +488,25 @@ def arm(seat, revision, report, binding):
         return data['reason']
 
 
+def manual_reading(seat, data):
+    """What the tick names before the gate reads: a human-owned session; while readiness stands, the gate's own
+    last 'execution unknown'; and a seat that has neither attested nor armed once the bound has run from its
+    threshold request (law: nothing-waits-silently). The bound is the ship's alarm bound, alarms.ESCALATE_SECONDS."""
+    from .alarms import ESCALATE_SECONDS
+    if seat.session.human:
+        return f'{MANUAL}human-owned session; choose an idle break'
+    if data.get('ready'):
+        kept = data.get('manual')
+        return kept if isinstance(kept, str) and kept.startswith(GATE_UNKNOWN) else None
+    if data.get('attestation') is not None or not data.get('request'):
+        return None
+    try:
+        asked = decode(data['request']).at
+    except ShipError:
+        return None
+    return NOT_ATTESTED if (post.now() - asked).total_seconds() >= ESCALATE_SECONDS else None
+
+
 def obstruction(seat, data, record, reading):
     """Why the automatic fresh start may not go now, or None. The tool state is read here and nowhere else in the
     protocol, once, from the shared idle proof. Where that proof cannot settle it, ``data['manual']`` says ready for
@@ -526,7 +547,7 @@ def obstruction(seat, data, record, reading):
     hold = proved.hold
     if hold is not None:
         if hold.dimension == 'tools-unknown':
-            data['manual'] = f'{MANUAL}execution unknown ({hold.reason}); choose an idle break'
+            data['manual'] = f'{GATE_UNKNOWN} ({hold.reason}); choose an idle break'
             return data['manual']
         if hold.dimension == 'tools-pending':
             data['manual'] = None
@@ -577,18 +598,14 @@ def tick(seat):
                     return  # a declaration edit won admission before this tick's older view
             observe(seat, data, record, reading, launched)
             recover(runtime, data, seat.name)
-            manual = None
             if reading.count >= seat.spec.fresh_after_compactions:
                 threshold(seat, data)
-                if seat.session.human:
-                    manual = f'{MANUAL}human-owned session; choose an idle break'
             else:
                 data['reason'] = 'below compaction threshold'
             prepared = data.get('ready') or (data.get('attestation') or {}).get('binding')
             if prepared and not valid_binding(seat, data, reading, prepared):
                 release(data, 'readiness stale; prepare a new handoff and renew readiness')
-            if manual is None and data.get('ready') and reading.count >= seat.spec.fresh_after_compactions:
-                manual = data.get('manual')  # the gate's own last reading stands until the gate reads again
+            manual = (manual_reading(seat, data) if reading.count >= seat.spec.fresh_after_compactions else None)
             data['manual'] = manual
             save(runtime, seat.name, data)
         if (reading.count < seat.spec.fresh_after_compactions or seat.session.human

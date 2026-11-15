@@ -180,3 +180,32 @@ def test_a_resumed_launch_keeps_the_same_conversations_observed_count(ship_view)
     before = compaction.path(ship.runtime, seat.name).read_bytes()
     assert compaction.status(seat) == expected == 'compactions 1/2: below compaction threshold'
     assert compaction.path(ship.runtime, seat.name).read_bytes() == before
+
+
+def test_a_seat_past_its_threshold_unattested_past_the_alarm_bound_reads_ready_for_manual_fresh(ship_view, monkeypatch):
+    """Nothing waits silently: the line names the seat at once as waiting, and once the ship's alarm bound has run
+    from the threshold request with no attestation, as ready for manual fresh, which the systems alert reads too.
+    Attesting clears it."""
+    from quarterdeck import alarms, compaction_alert
+    ship, tmux, add = ship_view
+    seat, native = add('worker')
+    native.compact()
+    native.compact()
+    compaction.tick(seat)
+    assert 'worker: compactions 2/2: threshold reached; waiting for open handoff/readiness' in watch.facts(ship, tmux).line()
+    monkeypatch.setattr(post, 'now', lambda: AT + timedelta(seconds=alarms.ESCALATE_SECONDS - 1))
+    compaction.tick(seat)
+    assert 'manual' not in compaction.status(seat)
+    monkeypatch.setattr(post, 'now', lambda: AT + timedelta(seconds=alarms.ESCALATE_SECONDS))
+    compaction.tick(seat)
+    expected = 'compactions 2/2: ready for manual fresh: not attested; choose an idle break'
+    assert compaction.status(seat, alerts_only=True) == expected
+    assert f'worker: {expected}' in watch.facts(ship, tmux).line()
+    assert compaction_alert.observation(seat)[0]['reading'] == expected, 'the systems report reads it as manual'
+    request = post.Message.from_json(compaction.load(ship.runtime, seat.name)['request'])
+    hand = post.Store(ship.runtime).new('order', seat.name, seat.name, 'Synthetic durable handoff', re=request.id)
+    native.begin()
+    native.call()
+    compaction.prepare_ready(seat, request.id, hand.id)  # the attestation alone ends 'not attested'
+    compaction.tick(seat)
+    assert 'not attested' not in compaction.status(seat)
