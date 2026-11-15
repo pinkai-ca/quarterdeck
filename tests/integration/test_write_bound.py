@@ -384,7 +384,7 @@ def test_a_whole_ship_up_leaves_a_held_seat_down_and_its_own_word_lifts_it(ship,
         if seat.is_up:
             seat.down()
     monkeypatch.setenv('QD_TMUX_SOCKET', tmux.socket)
-    monkeypatch.setenv('QD_SEAT', 'spock')
+    monkeypatch.setenv('QD_SEAT', 'crew-seat')
     monkeypatch.setattr(cli.service, 'start', lambda ship: 'service not started in this test')
     monkeypatch.setattr(cli.install, 'delegate_up', lambda *a, **k: None)
     monkeypatch.setattr(cli.install, 'prepare_up', lambda ship: ([], False))
@@ -392,7 +392,7 @@ def test_a_whole_ship_up_leaves_a_held_seat_down_and_its_own_word_lifts_it(ship,
     seat = seatmod.Seat(ship, ship.seat('worker-1'), tmux)
     try:
         assert seat.is_up and write_bound.reason(ship.runtime, 'worker-1') is None
-        assert any(entry.get('event') == 'write-bound' and entry['reason'] == 'lifted by qd up by spock'
+        assert any(entry.get('event') == 'write-bound' and entry['reason'] == 'lifted by qd up by crew-seat'
                    for entry in service_log(ship))
     finally:
         seat.down()
