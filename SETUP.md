@@ -1,6 +1,6 @@
 # Setting up a ship
 
-For an agent whose person said "set up a ship for me". A person at their own terminal runs `qd setup` after step 1 instead, and answers the same questions there. It takes a few minutes, and spends nothing until the crew is checked or brought up.
+For an agent whose person said "set up a ship for me". A person at their own terminal runs `qd setup` after step 1 instead, and answers the same questions there. It takes a few minutes, and spends nothing until the desk is started, or the crew is checked or brought up.
 
 A ship is one crew, with its orders and its record. You are commissioning one for your person: they name it, choose its crew, and say what each of the crew runs on. Keep it quick and make it enjoyable: this is where a person makes the ship theirs.
 
@@ -19,7 +19,7 @@ Run everything after this from inside the checkout, where `qd` is `.venv/bin/qd`
 
 ## 2. Look at the machine
 
-`command -v claude codex grok agy opencode pi` shows which harnesses are installed (`agy` is Antigravity; `qd doctor` later names the version each one runs). Tell your person what you found.
+`command -v claude codex grok agy opencode pi` shows which harnesses are installed (`agy` is Antigravity; `qd doctor` later names the version each one runs). `command -v bwrap` shows whether bubblewrap is installed: an agent on a local model or other endpoint runs in a bubblewrap sandbox unless the ship's file says otherwise, and cannot start without it. Tell your person what you found, and that the agents run without approval prompts: Claude Code with its permission prompts bypassed, Codex with full access.
 
 ## 3. Ask your person
 
@@ -33,7 +33,7 @@ Ask in this order, a question or two at a time. Offer a suggestion with each, so
    - a name: the default ship's are Maeve, Picard and Geordi;
    - a harness, from those installed;
    - a model and an effort. `qd --json controls --harness <name>` gives the efforts that harness takes, where they are measured, and a model and an effort to suggest. No suggestion is checked against their account: say so when you offer one.
-6. **What each harness runs on**: a subscription they are signed in to, an API key, or a local model. For a key, ask for the name of the variable that holds it, never its value. For a local model, ask for its address. Where a seat may fall back on a second of these, in which order.
+6. **What each harness runs on**: a subscription they are signed in to, an API key, or a local model. For a key, ask for the name of the variable that holds it, never its value. For a local model, ask for its address: the model must be running there. Where a seat may fall back on a second of these, in which order.
 
 ## 4. Show them the ship
 
