@@ -4,6 +4,7 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 import re
+import time
 
 from . import post
 
@@ -19,19 +20,82 @@ def notice_class(message):
     return None
 
 
-def launched_at(runtime, seat):
+class _LaunchCache:
+    def __init__(self):
+        self.declarations = {}
+        self.owner_ship = None
+        self.owners = {}
+        self.launches = {}
+
+
+def _stamp(path):
+    try:
+        info = path.stat()
+    except FileNotFoundError:
+        return None
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+            info.st_ctime_ns, info.st_mode)
+
+
+def _old(stamp, started):
+    return stamp is not None and all(
+        max(item[3:5]) + post.POST_TIMESTAMP_TICK_NS < started
+        for item in stamp if item is not None)
+
+
+def _observed(cache, key, stamp, read):
+    """Reuse only an unchanged, previously aged observation; never cache a failed read."""
+    started = time.time_ns()
+    previous = cache.pop(key, None)
+    before = stamp()
+    checked = time.time_ns()
+    if (previous is not None and previous[0] == before and previous[1] <= started <= checked
+            and _old(before, started)):
+        cache[key] = previous
+        return previous[2]
+    value = read()
+    after = stamp()
+    finished = time.time_ns()
+    if before != after:
+        raise ValueError('notice input changed while reading')
+    if started <= checked <= finished and _old(before, started):
+        cache[key] = before, started, value
+    return value
+
+
+def launched_at(runtime, seat, *, cache=None):
     """Only a readable, validated recorded launch can settle earlier notices."""
     from .seat import Seat
     from . import ship as shipmod
     if Path(seat).name != seat or seat in ('', '.', '..'):
         return None
+    cache = cache if cache is not None else _LaunchCache()
     try:
-        ship = post.reading_value('notice-ship', runtime, lambda: shipmod.load(runtime.parent))
-        launched = Seat(ship, ship.seat(seat), None).launched()
-        if launched is None:
-            return None
-        at = launched.when
-        return at if at.tzinfo is not None else None
+        ship = _observed(cache.declarations, runtime,
+                         lambda: (_stamp(runtime.parent / 'ship.toml'),),
+                         lambda: shipmod.load(runtime.parent))
+        if cache.owner_ship is not ship:
+            cache.owner_ship = ship
+            cache.owners.clear()
+            cache.launches.clear()
+        owner = cache.owners.get(seat)
+        fresh = owner is None
+        if fresh:
+            owner = Seat(ship, ship.seat(seat), None)
+            cache.owners[seat] = owner
+
+        def read_launch():
+            current = owner if fresh else Seat(ship, ship.seat(seat), None)
+            cache.owners[seat] = current
+            launched = current.launched()
+            if launched is None:
+                return None
+            at = launched.when
+            if at.tzinfo is None:
+                raise ValueError('notice launch time has no timezone')
+            return at
+
+        return _observed(cache.launches, seat, owner.launch_stamp, read_launch)
     except (OSError, ValueError, shipmod.ShipError):
         return None  # missing/unreadable evidence grants no settlement
 
@@ -45,7 +109,13 @@ def settled(store, seat, *, brief_at=None):
     incoming = store.for_seat(seat)
     candidates = [(m, notice_class(m)) for m in incoming]
     candidates = [(m, kind) for m, kind in candidates if kind is not None and m.at.tzinfo is not None]
-    launch = launched_at(store.dir.parent.parent, seat) if candidates else None
+    if candidates:
+        cache = getattr(store, '_notice_launch_cache', None)
+        if cache is None:
+            cache = store._notice_launch_cache = _LaunchCache()
+        launch = launched_at(store.dir.parent.parent, seat, cache=cache)
+    else:
+        launch = None
     if isinstance(brief_at, datetime) and brief_at.tzinfo is not None:
         launch = max(launch, brief_at) if launch is not None else brief_at
     latest = {}

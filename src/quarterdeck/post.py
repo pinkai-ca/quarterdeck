@@ -1703,7 +1703,6 @@ class Attempts:
 
         reserved = set()
         read = store.read_ids(seat)  # messages this seat has already read whole are not delivered again
-        read |= store.settled_notices(seat).keys()
         from .pr_screen import spent_instructions  # a screen's instruction is never delivered again (pr_screen)
         read |= spent_instructions(store.dir.parent.parent, seat, store)
         if not for_launch:
@@ -1712,8 +1711,14 @@ class Attempts:
             if transitioning:
                 return []
         # Only the seat's own messages are judged, never every message's latest result.
-        return [m for m in store.for_seat(seat)
-                if m.id not in reserved and m.id not in read and not skipped(m.id) and m.kind != "ack"]  # law: open-until-closed
+        waiting = [m for m in store.for_seat(seat)
+                   if m.id not in reserved and m.id not in read and not skipped(m.id) and m.kind != "ack"]  # law: open-until-closed
+        # Settlement can affect only informational ship reports still eligible
+        # for delivery. Accepted history must not trigger another notice scan.
+        if not any(m.sender == SHIP and m.kind == 'report' for m in waiting):
+            return waiting
+        settled = store.settled_notices(seat)
+        return [m for m in waiting if m.id not in settled]
 
 
 WAIT_RESCAN_SECONDS = 60.0  # a waiting watch reads every attempt in full at least this often

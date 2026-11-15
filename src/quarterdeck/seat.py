@@ -463,6 +463,22 @@ class Seat:
             self.harness = harnesses.get(selected.harness)
         return stopped + '\n' + self._up(resume=same_program, observation=observation)
 
+    def launch_stamp(self) -> tuple | None:
+        """Canonical launch/selection/readability metadata, without reading a launch."""
+        from . import seat_migration
+        result = []
+        for name in (trusted_files.LAUNCH, trusted_files.POOL, seat_migration.UNCONFIRMED):
+            try:
+                info = trusted_files.path(self.ship.runtime, self.name, name).stat()
+            except FileNotFoundError:
+                result.append(None)
+                continue
+            except OSError:
+                return None
+            result.append((info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+                           info.st_ctime_ns, info.st_mode))
+        return tuple(result)
+
     def launched(self) -> Launched | None:
         path = self.trusted / trusted_files.LAUNCH
         from . import seat_migration

@@ -20,6 +20,15 @@ notices, and labels settled amendments inside any otherwise selected thread.
 Planning a launch can use its freshly supplied brief provisionally; a failed
 startup does not persist settlement before a launch record exists.
 
+Repeated passes reuse a validated ship declaration and launch observation only
+under unchanged identity, size and change times read through the seat's canonical
+launch-stamp API. Selection metadata and the migration hold are part of that
+observation. Files younger than the metadata tick, failed or unstable reads and
+backward clocks grant no reusable certificate. A changed declaration or launch
+is read again on the next pass; unchanged passes do not reread launch bodies.
+Delivery asks for notice settlement only when an informational ship report is
+otherwise eligible, so already accepted history adds no notice scan to a pass.
+
 ### Message ids
 
 New messages use six random hexadecimal digits after their kind, timestamp and

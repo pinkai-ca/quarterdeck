@@ -3,6 +3,7 @@
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import json
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -152,6 +153,95 @@ def test_launch_time_comes_from_the_seat_api(store, monkeypatch):
     monkeypatch.setattr(Seat, 'launched', launched)
     assert message.id in store.settled_notices('reader')
     assert calls == [('reader', store.dir.parent.parent)]
+
+
+def cached_pass(store):
+    attempts = post.Attempts(store.dir.parent.parent)
+    with post.reader_scope(store=store, attempts=attempts):
+        with post.reading_pass(store=store, attempts=attempts):
+            return attempts.undelivered(store, 'reader')
+
+
+def count_launch_reads(monkeypatch):
+    calls = []
+    original = Seat.launched
+
+    def launched(seat):
+        calls.append(seat.name)
+        return original(seat)
+
+    monkeypatch.setattr(Seat, 'launched', launched)
+    return calls
+
+
+def age_observations(monkeypatch):
+    # Advance the reader's clock past the real metadata tick; no timestamp is forged.
+    future = time.time_ns() + post.POST_TIMESTAMP_TICK_NS + 1_000_000_000
+    monkeypatch.setattr(time, 'time_ns', lambda: future)
+
+
+def test_unchanged_deliveries_pass_reads_no_launch(store, monkeypatch):
+    message = notice(store)
+    launch(store, AT - timedelta(seconds=1))
+    age_observations(monkeypatch)
+    calls = count_launch_reads(monkeypatch)
+    assert cached_pass(store) == [message]
+    assert calls == ['reader']
+    calls.clear()
+    assert cached_pass(store) == [message]
+    assert calls == []
+
+
+def test_changed_launch_is_seen_in_the_next_deliveries_pass(store, monkeypatch):
+    message = notice(store)
+    launch(store, AT - timedelta(seconds=1))
+    age_observations(monkeypatch)
+    calls = count_launch_reads(monkeypatch)
+    assert cached_pass(store) == [message]
+    launch(store, AT + timedelta(seconds=1))
+    calls.clear()
+    assert not cached_pass(store)
+    assert calls == ['reader']
+
+
+def test_first_launch_is_seen_after_a_cached_absence(store, monkeypatch):
+    message = notice(store)
+    age_observations(monkeypatch)
+    assert cached_pass(store) == [message]
+    launch(store, AT + timedelta(seconds=1))
+    assert not cached_pass(store)
+
+
+def test_declaration_change_invalidates_the_cached_seat(store, monkeypatch):
+    notice(store)
+    launch(store, AT + timedelta(seconds=1))
+    age_observations(monkeypatch)
+    calls = count_launch_reads(monkeypatch)
+    assert not cached_pass(store)
+    declaration = store.dir.parent.parent.parent / 'ship.toml'
+    declaration.write_text(declaration.read_text().replace('role = "worker"', 'role = "reader"'))
+    calls.clear()
+    assert not cached_pass(store)
+    assert calls == ['reader']
+
+
+def test_young_launch_does_not_seed_a_reusable_observation(store, monkeypatch):
+    message = notice(store)
+    path = launch(store, AT - timedelta(seconds=1))
+    young = path.stat().st_ctime_ns
+    monkeypatch.setattr(time, 'time_ns', lambda: young)
+    calls = count_launch_reads(monkeypatch)
+    assert cached_pass(store) == [message]
+    assert cached_pass(store) == [message]
+    assert calls == ['reader', 'reader']
+
+
+def test_ordinary_waiting_messages_need_no_notice_observation(store, monkeypatch):
+    report = notice(store, sender='origin', body='ordinary report')
+    order = notice(store, 1, kind='order', sender='origin')
+    monkeypatch.setattr(post.Store, 'settled_notices',
+                        lambda *a, **k: pytest.fail('ordinary delivery needs no notice lookup'))
+    assert cached_pass(store) == [report, order]
 
 
 def test_thread_and_inbox_label_received_history_and_keep_complete_body(store):
