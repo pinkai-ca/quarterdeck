@@ -200,9 +200,51 @@ def test_numeric_timing_summaries_are_bounded_to_one_per_minute(monkeypatch):
     assert sum(row['passes'] for _, row in lines) == 120
     for event, row in lines:
         assert event == 'service-timing'
-        assert set(row) == {'seconds', 'passes', 'duties'}
+        assert set(row) == {'seconds', 'passes', 'status_checks', 'duties'}
+        assert row['status_checks'] == 0
         assert set(row['duties']) == {'pass', 'status'}
         assert row['duties']['status']['max_cpu'] == pytest.approx(0.1)
         assert row['duties']['status']['max_wall'] == pytest.approx(0.2)
     timing.publish(log)
     assert len(lines) == 2, 'reading the summary must not emit another line'
+
+
+def test_status_summaries_count_full_collections_separately_from_cheap_checks(scheduled, monkeypatch):
+    from quarterdeck import service_timing
+    service, clock, published = scheduled
+    cpu = [0.0]
+    monkeypatch.setattr(service_timing.time, 'process_time', lambda: cpu[0])
+    def collect():
+        published.append(clock[0])
+        clock[0] += 2.0
+        cpu[0] += 1.0
+    service.publish_status = collect
+    for _ in range(100):
+        service.status_due()
+    clock[0] = 3.0
+    service.status_due()  # a real input check, unchanged; no collection
+    timing = service.timings()
+    assert timing.status_checks == 101
+    assert timing.rows['status'] == dict(calls=1, wall=2.0, cpu=1.0, max_wall=2.0, max_cpu=1.0)
+    lines = []
+    clock[0] = 60.0
+    timing.publish(lambda event, **row: lines.append(row))
+    assert lines[0]['status_checks'] == 101
+    assert lines[0]['duties']['status']['calls'] == 1
+    assert timing.status_checks == 0 and timing.rows == {}
+
+
+@pytest.mark.parametrize('raises', [False, True])
+def test_failed_or_refused_collection_still_has_one_collection_measurement(scheduled, raises):
+    service, clock, published = scheduled
+    def failed():
+        clock[0] += 2.0
+        if raises:
+            raise OSError('synthetic collection failure')
+        return False
+    service.publish_status = failed
+    service.status_due()
+    service.status_due()  # deadline still spares another collection
+    assert service.timings().status_checks == 2
+    assert service.timings().rows['status']['calls'] == 1
+    assert service.timings().rows['status']['wall'] == 2.0

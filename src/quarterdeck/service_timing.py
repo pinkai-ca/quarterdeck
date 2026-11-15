@@ -11,6 +11,7 @@ class Timings:
     def __init__(self):
         self.since = time.monotonic()
         self.rows = {}
+        self.status_checks = 0
 
     @contextmanager
     def measure(self, name):
@@ -36,7 +37,8 @@ class Timings:
         if now - self.since < INTERVAL:
             return
         log('service-timing', seconds=now - self.since,
-            passes=self.rows.get('pass', {}).get('calls', 0),
+            passes=self.rows.get('pass', {}).get('calls', 0), status_checks=self.status_checks,
             duties={name: dict(row) for name, row in self.rows.items()})
         self.rows.clear()
+        self.status_checks = 0
         self.since = now

@@ -325,8 +325,8 @@ class Service:
         post_retirement.due(self, idle=idle_pass)
 
     def status_due(self) -> None:
-        with self.timings().measure('status'):
-            self._status_due()
+        self.timings().status_checks += 1
+        self._status_due()
 
     def _status_due(self) -> None:
         now = time.monotonic()
@@ -343,7 +343,9 @@ class Service:
             if (reversed_clock or inputs is None or inputs != getattr(self, 'status_inputs', None)
                     or now >= getattr(self, 'status_refresh', 0.0)):
                 self.heartbeat()
-                if self.publish_status() is False:
+                with self.timings().measure('status'):
+                    published = self.publish_status()
+                if published is False:
                     return
                 # Remember the observation BEFORE collection: a change during it
                 # remains owed. No read or failed collection renews the rendering.
