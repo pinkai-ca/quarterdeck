@@ -655,6 +655,8 @@ class Service:
 
     def model_differences(self) -> None:
         from . import model_mismatch, request_queue
+        if not hasattr(self, 'model_records'):
+            self.model_records = model_mismatch.RecordModels()
         for seat in self.resolved_seats():
             try:
                 model_mismatch.step(self, seat, request_queue.pending_model)

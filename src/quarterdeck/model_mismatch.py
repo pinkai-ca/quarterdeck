@@ -9,6 +9,8 @@ from contextlib import ExitStack
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import stat
+import time
 
 from . import durable, post, record_owner
 from .door import Door
@@ -25,6 +27,36 @@ class Reading:
     reason: str = ''
 
 
+class RecordModels:
+    """A service's last successful model reads, keyed by seat and native file identity.
+
+    A read made inside the filesystem timestamp tick cannot become reusable merely
+    by waiting. Missing files, changed pointers and failed reads discard the old value.
+    """
+
+    def __init__(self):
+        self._readings = {}
+
+    def read(self, seat, record):
+        previous = self._readings.pop(seat.name, None)
+        if record is None:
+            return None
+        started = time.time_ns()
+        info = record.lstat()  # one metadata read; never follow a record link
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        stamp = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        key = seat.harness.name, record, stamp
+        if previous is not None and previous[0] == key:
+            self._readings[seat.name] = previous
+            return previous[1]
+        model = seat.harness.record_model(record)
+        if (model is not None and max(stamp[-2:]) + post.POST_TIMESTAMP_TICK_NS
+                < started <= time.time_ns()):
+            self._readings[seat.name] = key, model
+        return model
+
+
 def compare(harness, declared, running, *, version=None, source=None) -> Reading:
     """Only the adapter's identity rule equates names; no generic prefix/punctuation aliases."""
     expected = harness.model_identity(declared, version=version)
@@ -34,7 +66,7 @@ def compare(harness, declared, running, *, version=None, source=None) -> Reading
     return Reading('match' if expected == actual else 'mismatch', expected, actual, source)
 
 
-def observe(seat) -> Reading:
+def observe(seat, *, records=None) -> Reading:
     if seat.spec.model_mode == 'program-default' or not seat.spec.model:
         return Reading('not-declared', reason='the program chooses its model')
     try:
@@ -44,7 +76,8 @@ def observe(seat) -> Reading:
             return Reading('unknown', reason='current model launch is not proved')
         record = seat.record()
         try:
-            model = seat.harness.record_model(record) if record is not None else None
+            model = (records.read(seat, record) if records is not None else
+                     seat.harness.record_model(record) if record is not None else None)
         except (OSError, ValueError, TypeError, RecordError):
             model = None
         source = 'record'
@@ -144,7 +177,8 @@ def step(service, seat, pending_model):
                 prior['active'] = False
                 save(runtime, seat.name, prior)
             return  # a proved matching pending control suppresses even an unreadable current model
-        reading = observe(seat)
+        records = getattr(service, 'model_records', None)
+        reading = observe(seat, records=records) if records is not None else observe(seat)
         if reading.status == 'unknown':
             return  # unknown cannot clear a previously observed difference
         active = reading.status == 'mismatch'
