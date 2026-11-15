@@ -5,14 +5,13 @@ On 15 Nov the alarm killed a hand whose seat folder held 531 MB of its 4 GB boun
 passed its 2 s bound on the clock at load 12 to 16, because the alarm thread was starved by the busy service it
 shares the interpreter with. These gates make that machine here, in the test's own processes: CPU burners outside the
 jail, each ending by itself and killed at the end, and a thread of this interpreter that holds the interpreter's lock
-in one long call, as a busy service does, started from inside the walk so that the walk is surely starved while it
-runs. No tmux is used.
+for a set time on the clock, as a busy service does, started from inside the walk so that the walk is surely starved
+while it runs. No tmux is used.
 """
 
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 import sys
 import threading
@@ -105,42 +104,39 @@ def hand_home(ship) -> Path:
     return home
 
 
-PATTERN = re.compile(r'(x+x+)+y')
-
-
-def holding(seconds: float) -> str:
-    """A subject the pattern takes at least ``seconds`` to refuse, in one call that never lets go of the lock: the
-    first size whose own call took that long, measured on the machine as busy as it is, and one more x, which
-    doubles it, for the margin."""
-    for size in range(16, 40):
-        began = time.monotonic()
-        PATTERN.match('x' * size)
-        if time.monotonic() - began >= seconds:
-            return 'x' * (size + 1)
-    raise AssertionError('no subject long enough to hold the lock')
+HOLD = 4.0  # on the clock: past SECONDS, the old bound the walk failed on 15 Nov, and well under WALL
 
 
 @contextmanager
-def starved(monkeypatch, where, seconds: float = 2.5):
-    """The first scan of the folder ``where`` names is starved: another thread of this interpreter takes its lock in
-    one call of at least ``seconds`` while the walk is in it. Yields what was seen: the hold's length, once run."""
-    subject, seen = holding(seconds), {}
+def starved(monkeypatch, where, seconds: float = HOLD):
+    """The first scan of the folder ``where`` names is starved: another thread of this interpreter keeps its lock for
+    ``seconds`` on the clock while the walk is in it, as a busy service does. The interval at which a waiting thread
+    may ask for the lock is raised past the hold; the thread spins until the clock has passed it and puts the
+    interval back, so the hold lasts as long as the clock says, however busy the machine is. Yields what was seen: the hold's
+    length, once run. On leaving, the thread has ended: the next look runs with no hold."""
+    seen = {}
     scan = write_bound._scan
 
-    def hog(began):
-        began.set()  # from here this thread keeps the lock: the call below never lets go of it
+    def hog(began, interval):
         start = time.monotonic()
-        PATTERN.match(subject)
-        seen['held'] = time.monotonic() - start
+        began.set()
+        try:
+            while time.monotonic() - start < seconds:
+                pass
+        finally:
+            sys.setswitchinterval(interval)
+            seen['held'] = time.monotonic() - start
 
     def starving(fd, device, group, budget):
-        if 'held' not in seen and where(os.readlink(f'/proc/self/fd/{fd}')):
+        if 'thread' not in seen and where(os.readlink(f'/proc/self/fd/{fd}')):
             seen['held'] = None
             began = threading.Event()
-            thread = threading.Thread(target=hog, args=(began,), daemon=True)
-            thread.start()
+            seen['thread'] = threading.Thread(target=hog, args=(began, sys.getswitchinterval()), daemon=True)
+            # Raised before the thread starts, so that this thread, once it has let go of the lock to wait for the
+            # other, cannot ask for it back before the hold is over; the other puts the interval back when it ends.
+            sys.setswitchinterval(seconds + 60)
+            seen['thread'].start()
             began.wait()
-            seen['thread'] = thread
         return scan(fd, device, group, budget)
 
     monkeypatch.setattr(write_bound, '_scan', starving)
@@ -149,7 +145,8 @@ def starved(monkeypatch, where, seconds: float = 2.5):
     finally:
         monkeypatch.setattr(write_bound, '_scan', scan)
         if 'thread' in seen:
-            seen['thread'].join(timeout=120)
+            seen['thread'].join(timeout=seconds + 60)
+            assert not seen['thread'].is_alive(), 'the thread holding the lock has ended'
 
 
 def cpu_and_clock(function):
@@ -175,10 +172,12 @@ def test_a_hand_shaped_seat_folder_on_a_busy_machine_stays_up_unmeasured_then_me
             # under it in CPU. It is measured, and the seat stays up.
             with starved(monkeypatch, lambda path: path == home) as seen:
                 stopped, clock, cpu = cpu_and_clock(lambda: write_bound.look(ship, log))
-            assert seen['held'] and seen['held'] > write_bound.SECONDS, 'the walk was starved past the old 2 s bound'
-            assert clock > write_bound.SECONDS > cpu, f'{clock:.2f} s on the clock, {cpu:.3f} s of CPU'
+            held = seen.get('held') or 0.0
+            figures = f'held {held:.2f} s; the walk {clock:.2f} s on the clock, {cpu:.3f} s of CPU'
+            assert write_bound.SECONDS < held < write_bound.WALL, f'past the old bound, under the clock: {figures}'
+            assert clock > write_bound.SECONDS > cpu, figures
             assert stopped == [] and write_bound.path(ship.runtime, 'worker-1').exists() is False
-            assert write_bound.unmeasured_read(ship.runtime, 'worker-1') is None, 'measured, under its bound'
+            assert write_bound.unmeasured_read(ship.runtime, 'worker-1') is None, f'measured: {figures}'
 
             # Starved past the clock's own bound (a short one here, 1 s, in place of 10 s): unmeasured, never over.
             with starved(monkeypatch, lambda path: path == home):
