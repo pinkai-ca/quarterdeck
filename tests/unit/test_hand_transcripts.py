@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import hand_transcripts, record_location, record_owner, trusted_files
+from quarterdeck import hand_transcripts, pr_screen, record_location, record_owner, trusted_files
 from quarterdeck.harness import get, reader_stamp
 from quarterdeck.harness.base import record_fingerprint
 from quarterdeck.harness.opencode import OpenCodeHarness
@@ -18,12 +18,12 @@ from quarterdeck.service import Service
 from quarterdeck.ship import Pool, SeatSpec, Session, Ship, ShipError
 
 
-def transcript(home, name, kind, at, *, complete=True):
+def transcript(home, name, kind, at, *, complete=True, task=None):
     if kind == 'pi':
         path = home / 'sessions' / (name + '.jsonl')
         rows = [dict(type='session', id=name, timestamp=at.isoformat(), cwd='/synthetic'),
                 dict(type='message', id='u', parentId=None, timestamp=at.isoformat(),
-                     message=dict(role='user', content='Synthetic task ' + name))]
+                     message=dict(role='user', content=task or 'Synthetic task ' + name))]
         rows.append(dict(type='message', id='a', parentId='u', timestamp=(at + timedelta(seconds=1)).isoformat(),
             message=dict(role='assistant', model='synthetic-model', provider='synthetic',
                 content=[dict(type='text', text='Synthetic answer')], stopReason='stop',
@@ -46,7 +46,7 @@ def transcript(home, name, kind, at, *, complete=True):
             db.execute('INSERT INTO message VALUES (?,?,?,?,?)', ('u', name, ms, ms,
                 json.dumps(dict(role='user', time=dict(created=ms), model=dict(modelID='synthetic-model')))))
             db.execute('INSERT INTO part VALUES (?,?,?,?,?,?)', ('text', 'u', name, ms, ms,
-                json.dumps(dict(type='text', text='Synthetic task ' + name))))
+                json.dumps(dict(type='text', text=task or 'Synthetic task ' + name))))
             db.execute('INSERT INTO message VALUES (?,?,?,?,?)', ('a', name, ms+1000, ms+1000,
                 json.dumps(dict(role='assistant', parentID='u', modelID='synthetic-model', finish='stop',
                     time=dict(created=ms+1000, completed=ms+1001), tokens=dict(input=3, output=2), cost=.25))))
@@ -67,9 +67,9 @@ def transcript(home, name, kind, at, *, complete=True):
     return path
 
 
-def world(tmp_path, monkeypatch, kind='pi', *, complete=True):
+def world(tmp_path, monkeypatch, kind='pi', *, complete=True, age=timedelta(days=9), task=None):
     now = datetime.now(timezone.utc)
-    old = now - timedelta(days=9)
+    old = now - age
     spec = SeatSpec('hand', 'crew', 'hand', kind, ('local',), cwd=tmp_path)
     ship = Ship(tmp_path, 'synthetic', 'operator', tmp_path,
         {'local': Pool('local', 'synthetic-endpoint', endpoint='http://127.0.0.1:1/v1')},
@@ -77,7 +77,7 @@ def world(tmp_path, monkeypatch, kind='pi', *, complete=True):
     home = ship.runtime / 'seats' / 'hand' / 'home'
     trusted = trusted_files.folder(ship.runtime, 'hand')
     trusted.mkdir(parents=True)
-    record = transcript(home, 'old' if kind == 'pi' else 'data-001', kind, old, complete=complete)
+    record = transcript(home, 'old' if kind == 'pi' else 'data-001', kind, old, complete=complete, task=task)
     current = transcript(home, 'current' if kind == 'pi' else 'data-002', kind, now)
     launched = SimpleNamespace(at=(now-timedelta(seconds=1)).isoformat(), pool='local', harness=kind, price=None)
     seat = SimpleNamespace(name='hand', folder=home.parent, trusted=trusted, home=home, spec=spec, harness=get(kind),
@@ -309,3 +309,62 @@ def test_without_ledger_retirement_step_does_nothing_and_reads_nothing(monkeypat
     hand_transcripts.due(service)
     assert hand_transcripts.run(service) == 0
     assert vars(service) == {}
+
+
+# -- a screening launch's record (pr_screen) ------------------------------------------------------------------------
+
+FIXTURES = Path(__file__).resolve().parents[1] / 'fixtures' / 'pr_screen'
+
+
+def case_strings(name):
+    """The planted case's own distinctive strings: its title and each line of its files longer than twenty letters."""
+    case = json.loads((FIXTURES / name / 'pr.json').read_text())
+    return [case['title'], *(line[1:].strip() for f in case['files'] for line in f['content'].splitlines()
+                             if line.startswith('+') and len(line.strip()) > 20)]
+
+
+def holds(home, strings):
+    return sorted(str(path.relative_to(home)) for path in home.rglob('*') if path.is_file()
+                  and any(s.encode() in path.read_bytes() for s in strings))
+
+
+@pytest.mark.parametrize('kind', ['pi', 'opencode'])
+def test_a_screening_record_leaves_the_home_once_accounted_without_the_weeks_wait(tmp_path, monkeypatch, kind):
+    strings = case_strings('note-elsewhere')
+    w = world(tmp_path, monkeypatch, kind, age=timedelta(minutes=2), task='\n'.join(strings))
+    try:
+        assert holds(w.seat.home, strings), 'the screening launch read the case'
+        reading = w.seat.harness.read(w.record)
+        assert hand_transcripts.run(w.svc, now=w.now) == 0, 'an ordinary record two minutes old waits its week'
+        pr_screen.mark_screening(w.svc.runtime, 'hand', [str(w.record)])
+        assert pr_screen.screening_left(w.svc.runtime, 'hand')
+        assert hand_transcripts.run(w.svc, now=w.now) == 1
+        assert holds(w.seat.home, strings) == [], 'nothing under the hand\'s home holds the case\'s text'
+        kept = record_location.resolve(w.record)
+        assert kept.is_relative_to(w.svc.runtime / 'retired' / 'hand-transcripts')
+        assert w.seat.harness.read(w.record) == reading, 'the ledger reads it under its own name, figures kept'
+        assert not pr_screen.screening_left(w.svc.runtime, 'hand'), 'nothing left: launches may resume again'
+    finally:
+        w.svc.ledger.close()
+
+
+def test_a_screening_record_still_open_stays_and_keeps_every_launch_fresh(tmp_path, monkeypatch):
+    w = world(tmp_path, monkeypatch, 'pi', complete=False, age=timedelta(minutes=2))
+    try:
+        pr_screen.mark_screening(w.svc.runtime, 'hand', [str(w.record)])
+        assert hand_transcripts.run(w.svc, now=w.now) == 0, 'an open conversation is never moved'
+        assert w.record.is_file() and pr_screen.screening_left(w.svc.runtime, 'hand')
+    finally:
+        w.svc.ledger.close()
+
+
+def test_a_screening_record_leaves_even_before_the_next_launch_has_a_record(tmp_path, monkeypatch):
+    w = world(tmp_path, monkeypatch, 'pi', age=timedelta(minutes=2))
+    try:
+        monkeypatch.setattr(w.seat, 'record', lambda: None)  # the fresh launch after the screen has written nothing yet
+        assert hand_transcripts.run(w.svc, now=w.now) == 0, 'without a screening record the hand waits, as before'
+        pr_screen.mark_screening(w.svc.runtime, 'hand', [str(w.record)])
+        assert hand_transcripts.run(w.svc, now=w.now) == 1 and not w.record.exists()
+        assert w.current.is_file(), 'only the screening record moves'
+    finally:
+        w.svc.ledger.close()

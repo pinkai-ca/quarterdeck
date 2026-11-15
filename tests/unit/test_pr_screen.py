@@ -51,6 +51,9 @@ class Hands:
     def idle(self, name):
         return self.idle_answer
 
+    def records(self, name):
+        return sorted((self.root.parent / 'homes' / name).glob('*.jsonl'))
+
     def fresh(self, name):
         # Started for a piece under the hold; started again after it, once the hold is released and the piece gone.
         self.calls.append(('fresh', name) if pr_screen.held(self.runtime, name) else ('fresh after', name))
@@ -508,6 +511,30 @@ def test_a_folder_that_cannot_be_cleared_keeps_the_hold(world, monkeypatch):
     with pytest.raises(OSError):
         one_piece(world, honest)
     assert pr_screen.held(world[0], 'hand-a'), 'its posts stay held, and the status line says so'
+
+
+def test_the_records_the_screening_launch_wrote_are_listed_and_no_other(world, tmp_path):
+    home = tmp_path / 'homes' / 'hand-a'
+    home.mkdir(parents=True)
+    (home / 'earlier.jsonl').write_text('a launch before the screen\n')
+
+    def writes_a_record(hands, name, order_id, folder):
+        (home / 'screening.jsonl').write_text('the screening launch read the piece\n')
+        honest(hands, name, order_id, folder)
+    verdict, hands, runtime = one_piece(world, writes_a_record)
+    assert pr_screen.screening_records(runtime, 'hand-a') == [str(home / 'screening.jsonl')]
+    assert pr_screen.screening_left(runtime, 'hand-a') and not pr_screen.screening_left(runtime, 'hand-b')
+    kept = json.loads((runtime / 'pr-screen' / 'screens' / 'key' / 'piece-0-hand-a.verdict.json').read_text())
+    assert kept['screening_records'] == 1
+    (home / 'screening.jsonl').unlink()  # as the retirement moves it out of the home
+    assert not pr_screen.screening_left(runtime, 'hand-a')
+
+
+def test_an_unreadable_list_of_screening_records_keeps_launches_fresh(world):
+    runtime, _ = world
+    (runtime / 'pr-screen' / 'records').mkdir(parents=True)
+    (runtime / 'pr-screen' / 'records' / 'hand-a.json').write_text('not a list')
+    assert pr_screen.screening_left(runtime, 'hand-a')
 
 
 def test_a_missing_or_malformed_corpus_refuses_the_screen_before_anything_is_read(world, tmp_path):

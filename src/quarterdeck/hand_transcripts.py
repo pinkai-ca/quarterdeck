@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import time
 
-from . import lifecycle, record_location, record_owner, trusted_files
+from . import lifecycle, pr_screen, record_location, record_owner, trusted_files
 from .harness import reader_stamp
 from .harness.base import record_fingerprint
 from .provenance import owning_launch_evidence
@@ -66,8 +66,12 @@ def run(service, *, now=None, limit=1):
         try:
             with lifecycle.claim(service.runtime, seat.name):
                 launched, current = seat.launched(), seat.record()
-                if launched is None or current is None:
-                    continue  # the current launch/record is not established
+                try:
+                    screened = set(pr_screen.screening_records(service.runtime, seat.name))
+                except (OSError, ValueError):
+                    screened = set()  # unreadable: every launch of the hand starts fresh, and nothing moves early
+                if launched is None or current is None and not screened:
+                    continue  # the current launch/record is not established; a screening record needs only the launch
                 launch_at = datetime.fromisoformat(launched.at).astimezone(timezone.utc)
                 events = record_owner.events(seat.trusted / trusted_files.LAUNCHES)
                 for owned in record_owner.records(seat):
@@ -79,15 +83,18 @@ def run(service, *, now=None, limit=1):
                         continue
                     if not record.is_relative_to(seat.home):
                         continue
+                    # A screening launch's record holds an outsider's text: it leaves the home as soon as it is
+                    # accounted and closed, without the week's wait (pr_screen); every other check stands.
+                    screening = str(record) in screened
                     joins = [event for event in events if event['record'] == str(record)]
                     if not joins or any((at := datetime.fromisoformat(e['at']).astimezone(timezone.utc))
-                                        >= launch_at or at.timestamp() >= cutoff for e in joins):
+                                        >= launch_at or not screening and at.timestamp() >= cutoff for e in joins):
                         continue
                     bundle = owned.reader.retirement_bundle(seat.home, record, kept)
                     if bundle is None:
                         continue
                     unit, target, files = bundle
-                    if any(p.stat().st_mtime >= cutoff for p in files):
+                    if not screening and any(p.stat().st_mtime >= cutoff for p in files):
                         continue
                     stamp = (owned.name, record_fingerprint(record))
                     checkpoint = book.accounting_evidence(seat.name, stamp, owned.reason,

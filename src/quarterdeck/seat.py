@@ -453,7 +453,8 @@ class Seat:
         observation = self._observe_selection(selected, self.ship.pool(pool))
         same_program = selected.harness == self.spec.harness
         if same_program:
-            self.harness.preflight_resume(selected, self.home, self._resume_id)
+            if not self._screened():
+                self.harness.preflight_resume(selected, self.home, self._resume_id)
         self.record()
         credential.reseed(self.ship, [self], wait=credential.DOWN_WAIT)
         stopped = self._relaunch_down()
@@ -774,7 +775,7 @@ class Seat:
             selected = replace(self.spec.for_pool(target), human_session=self.session.human)
             observation = self._observe_selection(selected, self.ship.pool(target))
             same_program = selected.harness == self.spec.harness
-            if same_program and resume:
+            if same_program and resume and not self._screened():
                 self.harness.preflight_resume(selected, self.home, self._resume_id)
             if self.launched() is not None:
                 self._relaunch_down()  # retain the old record and reseed its source pool before changing selection
@@ -833,8 +834,17 @@ class Seat:
         from . import seat_migration
         return seat_migration.migrate(self.ship, self.spec, self.tmux)
 
+    def _screened(self) -> bool:
+        """A record a launch of this hand wrote while screening a pull request is still in its home: no launch of it
+        resumes, whatever asked for one (a restart, a relaunch intent's finish, a failover), until the retirement
+        has moved that record out (pr_screen, hand_transcripts)."""
+        from . import pr_screen
+        return pr_screen.screening_left(self.ship.runtime, self.name)
+
     def _up(self, resume: bool = True, *, observation=None) -> str:
         self.migrate()
+        if resume and self._screened():
+            resume = False  # a screening launch is never resumed
         self._accept_pool()
         if launchable := getattr(self.tmux, "launchable", None):
             launchable()  # a socket too long or not this user's refuses before anything of the launch is made
@@ -1284,9 +1294,13 @@ class Seat:
             require_clear(self)
             if moved := self._relaunch_off_wall(resume=True):
                 return moved
-            self.harness.preflight_resume(self.spec, self.home, self._resume_id)
+            screened = self._screened()
+            if not screened:
+                self.harness.preflight_resume(self.spec, self.home, self._resume_id)
             observation = self._observe_selection()
-            return self._relaunch_down() + "\n" + self._up(resume=True, observation=observation)
+            return (self._relaunch_down() + "\n" + self._up(resume=True, observation=observation)
+                    + (" · fresh: a record of a launch that screened a pull request is still in its home"
+                       if screened else ""))
 
     def fresh(self) -> str:
         """Relaunch without resume: a new conversation that begins with the brief and the open messages."""

@@ -39,6 +39,9 @@ class Obedient:
     def idle(self, name):
         return True
 
+    def records(self, name):
+        return []
+
     def fresh(self, name):
         self.calls.append('fresh')
 
@@ -162,3 +165,18 @@ def test_a_hand_told_to_write_elsewhere_in_its_folder_ends_the_screen_with_that_
     aside = next((ship.runtime / 'pr-screen' / 'held' / 'worker-1').glob('folder-*'))
     assert (aside / 'note.txt').read_text() == 'TURNSTONE'
     assert not pr_screen.held(ship.runtime, 'worker-1') and hands.calls == ['fresh', 'instruct', 'down', 'fresh']
+
+
+def test_a_hand_with_a_screening_record_in_its_home_is_never_resumed(ship, tmux):
+    seat = seatmod.Seat(ship, ship.seat('captain'), tmux)
+    seat.up()
+    wait_for(lambda: seat.harness.screen(tmux.capture(seat.pane().id)).box is not None)
+    tmux.paste(seat.pane().id, 'the screening launch reads a piece')
+    tmux.keys(seat.pane().id, 'Enter')
+    record = wait_for(seat.record)
+    wait_for(lambda: seat.harness.state(record).turns == 1)
+    pr_screen.mark_screening(ship.runtime, 'captain', [str(record)])
+    proof = seat.restart()
+    assert ' · resumed ' not in proof and 'fresh: a record of a launch that screened' in proof
+    assert seat.launched().resume is None, 'a new conversation'
+    assert seat.join().reason in ('no record yet', None), 'the screening record is not the seat\'s any more'
