@@ -168,9 +168,9 @@ def second(seat, state: State, hold: Hold, *, explicit=False, screen=None):
     rest only where it is this seat's registered watch: the record names the exact watch command as the last
     call it still shows active (own_watch_call), and the process table shows the registered watch alone in a
     shell of its own under the launched program. Anything else it names is work, held under its name. A screen
-    that does not say settles nothing:
-    the record's unknown stands, and the hold says what the screen lacked. A program version with no measured
-    bottom line has no second witness in its screen, and the screen is not read for it.
+    that does not say settles nothing: the record's unknown stands, and the hold says what the screen lacked.
+    A program version with no measured bottom line has no second witness in its screen, and the screen is not
+    read for it.
     """
     if hold.dimension != 'tools-unknown' or state is None or state.pending_tools is not None:
         return state, hold, None
