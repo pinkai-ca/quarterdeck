@@ -234,6 +234,7 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
             raise ShipError(f"{seat_name}: sandboxed with its working directory at {workspace}, inside the fleet folder "
                             f"{inside}; a jailed seat may work inside its ship's folder only in {own_work}. Give the "
                             f"seat a working directory there, or outside {inside}")
+    refuse_shared_workspace(ship, seat_name, workspace)
     programs = (program, *FRAMEWORK_TOOLS)
     qd = shutil.which('qd', path=path)
     if qd is not None and (elsewhere := ship_runtime_of(Path(os.path.realpath(qd)))) is not None \
@@ -298,6 +299,49 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
     for folder in fleet:
         fence_point(seat_name, folder)
     return jail
+
+
+def framework_checkouts(ship: Ship) -> tuple[Path, ...]:
+    """The framework checkouts a jailed seat must never work in, by real path.
+
+    The project folder that holds the fleet (``ships/`` and ``office/``) is the framework's checkout in the
+    ship's own layout, and the checkout this code runs from is one when it is a checkout at all. Either holds
+    the framework's code and every ship's folder, and a jail writes its working directory.
+    """
+    found = []
+    if roots := fleet_roots(ship.folder):
+        found.append(Path(os.path.realpath(roots[0].parent)))
+    executing = Path(__file__).resolve().parents[2]
+    if (executing / '.git').exists() and (executing / 'src' / 'quarterdeck' / 'sandbox.py').is_file():
+        found.append(Path(os.path.realpath(executing)))
+    return tuple(dict.fromkeys(found))
+
+
+def refuse_shared_workspace(ship: Ship, seat_name: str, workspace: Path) -> None:
+    """Refuse a jailed seat whose working directory is not its own, by real path (links resolved).
+
+    A jail binds its working directory writable. Where that folder is another declared seat's, or holds one,
+    the jailed seat would write the other seat's work, and what it leaves there the other seat reads and may run
+    outside any jail. The framework's checkout, or a folder holding it, is refused the same way, first: it holds
+    the framework's code and every ship's folder.
+    """
+    real = Path(os.path.realpath(workspace))
+    for checkout in framework_checkouts(ship):
+        if checkout.is_relative_to(real):
+            what = 'is' if checkout == real else 'holds'
+            raise ShipError(f"{seat_name}: sandboxed with its working directory at {real}, which {what} the "
+                            f"framework's checkout {checkout}; a jailed seat never works there, since it holds the "
+                            f"framework's code and every ship's folder. Give {seat_name} a cwd of its own, such as "
+                            "a folder under the checkout's work/hands/")
+    for other, spec in ship.seats.items():
+        if other == seat_name:
+            continue
+        theirs = Path(os.path.realpath(ship.cwd_of(spec)))
+        if theirs == real or theirs.is_relative_to(real):
+            what = 'is also' if theirs == real else 'holds'
+            raise ShipError(f"{seat_name}: sandboxed with its working directory at {real}, which {what} seat "
+                            f"{other}'s working directory ({theirs}); a jailed seat works in a folder of its own. "
+                            f"Give {seat_name} a cwd that no other seat uses and that holds no other seat's")
 
 
 def fence_point(seat_name: str, folder: Path) -> None:
