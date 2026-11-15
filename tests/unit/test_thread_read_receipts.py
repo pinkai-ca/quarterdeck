@@ -209,3 +209,71 @@ def test_busy_receipt_writer_does_not_wait_indefinitely(world, monkeypatch):
     with pytest.raises(ShipError, match='receipt writer busy'):
         post_reads.record(world.ship.runtime, 'builder', ['synthetic-notice'])
     assert post_reads.read(world.ship.runtime, 'builder') == frozenset()
+
+
+@pytest.mark.parametrize('json_output', [False, True])
+@pytest.mark.parametrize('large', [False, True])
+def test_closed_stdout_thread_read_exits_quietly_without_a_read_receipt(world, json_output, large):
+    """Close the actual pipe after collecting the thread, before its write/flush."""
+    import os
+    from pathlib import Path
+    import select
+    import subprocess
+
+    notice = world.store.new('report', post.SHIP, 'builder',
+                             'Synthetic notice. ' * (60000 if large else 1))
+    attempt = world.attempts.open(notice, 'builder', '%synthetic', 71, 'synthetic-launch')
+    attempt = world.attempts.close(attempt, 'launch', post_threads.INDEXED_LAUNCH_DETAIL)
+    original_attempt = attempt.path.read_bytes()
+    driver = r'''
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import quarterdeck
+from quarterdeck import cli
+folder, reference, as_json = sys.argv[2], sys.argv[3], bool(int(sys.argv[4]))
+ready, proceed = int(sys.argv[5]), int(sys.argv[6])
+original = cli.emit
+def emit(args, result, **kwargs):
+    os.write(ready, b'1')
+    assert os.read(proceed, 1) == b'1'
+    return original(args, result, **kwargs)
+cli.emit = emit
+sys.argv = ['qd', '--ship', folder, *(['--json'] if as_json else []), 'thread', reference]
+sys.exit(quarterdeck.main())
+'''
+    ready_read, ready_write = os.pipe()
+    release_read, release_write = os.pipe()
+    process = None
+    try:
+        process = subprocess.Popen(
+            [sys.executable, '-I', '-c', driver, str(Path(cli.__file__).resolve().parents[1]),
+             str(world.ship.folder), notice.id, str(int(json_output)), str(ready_write), str(release_read)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, pass_fds=(ready_write, release_read))
+        os.close(ready_write)
+        ready_write = None
+        os.close(release_read)
+        release_read = None
+        assert select.select([ready_read], [], [], 15)[0], 'thread did not reach its final output'
+        assert os.read(ready_read, 1) == b'1'
+        process.stdout.close()
+        process.stdout = None
+        os.write(release_write, b'1')
+        _, stderr = process.communicate(timeout=15)
+        assert process.returncode == 0
+        assert stderr == b'', 'no traceback or interpreter shutdown-flush warning'
+    finally:
+        for descriptor in (ready_read, ready_write, release_read, release_write):
+            if descriptor is not None:
+                os.close(descriptor)
+        if process is not None:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+            if process.stderr is not None:
+                process.stderr.close()
+            if process.stdout is not None:
+                process.stdout.close()
+    assert not post_reads.path(world.ship.runtime, 'builder').exists()
+    assert notice.id not in world.store.read_ids('builder')
+    assert notice.id in rows(world), 'incomplete output cannot settle the next fresh index'
+    assert attempt.path.read_bytes() == original_attempt
