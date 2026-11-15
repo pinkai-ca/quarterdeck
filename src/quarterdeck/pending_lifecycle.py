@@ -12,6 +12,41 @@ from . import pending, post, post_dir, record_owner
 from .ship import ShipError
 
 UNKNOWN = 'delivery journal had no complete launch identity; outcome unknown; never resent'
+REPORTED = 'its message was reported; an earlier launch'
+
+
+def settle_reported(service, seat, proof, attempts):
+    """A recipient's report ends an old launch's transport, never proves receipt.
+
+    The caller holds the lifecycle claim. Missing or unreadable post evidence
+    cannot authorize settlement; acknowledgments and other senders do not close it.
+    """
+    if proof.data['phase'] in pending.TERMINAL or proof.same_launch(seat):
+        return False
+    with post.admission(service.runtime, seat.name):
+        try:
+            carried = [attempts[n] for n in proof.data['attempts']]
+            bound = proof.data['identity']
+            if any(a.seat != seat.name or (a.pane, a.pid, a.launched_at) != (
+                    bound['pane'], bound['pid'], bound['launch']) for a in carried):
+                return False
+            for identifier in {a.message for a in carried}:
+                message = service.store.get(identifier)
+                if message.to != seat.name or service.store.closing_report(message) is None:
+                    return False
+            current = json.loads(post_dir.read_text(proof.path))
+            if current != proof.data or proof.same_launch(seat):
+                return False
+        except (OSError, ValueError, TypeError, KeyError, ShipError):
+            return False
+        updated = service.attempts.settle_unresolved(carried, REPORTED)
+        if updated is None:
+            return False
+        attempts.update((a.path.name, a) for a in updated)
+        proof.save(phase='abandoned', resolution=REPORTED)
+        service.log('pending-settled', seat=seat.name, journal=proof.path.name,
+                    result='abandoned', detail=REPORTED)
+        return True
 
 
 def _ordinary_unbound(data, name):

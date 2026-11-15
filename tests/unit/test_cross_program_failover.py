@@ -205,7 +205,8 @@ def test_unconfirmed_closed_submission_settles_absence_on_its_original_identity(
     assert 'worker' not in facts.needs_human and not facts.pending
 
 
-def test_closed_submission_with_skipped_old_record_stays_held_on_its_original_identity(running):
+def test_reported_submission_with_skipped_old_record_settles_on_its_original_identity(running):
+    from quarterdeck.pending_lifecycle import REPORTED
     r = running
     message = r.svc.store.new('order', 'issuer', 'worker', 'unconfirmed synthetic transport')
     attempt = r.svc.attempts.open(message, 'worker', '%1', 101, r.seat.launched().at)
@@ -213,21 +214,32 @@ def test_closed_submission_with_skipped_old_record_stays_held_on_its_original_id
     proof.save(phase='submitted', shown=post.typed([message]))
     r.svc.attempts.close(attempt, 'pending')
     r.svc.store.new('report', 'worker', 'issuer', 'closed by the worker', re=message.id)
-    original = proof.path.read_bytes()
+    original = dict(proof.data)
     attempts = r.svc.attempts.for_message(message.id)
     r.svc.failover()
     # The same closed launch is now unreadable as complete input evidence.
     with r.source.path.open('a') as stream:
         stream.write(json.dumps(dict(type='unknown-input-kind', timestamp=post.now().isoformat())) + '\n')
+    record = r.source.path.read_bytes()
     r.svc.reconcile()
     r.svc.reconcile()
-    assert proof.path.read_bytes() == original and not proof.same_launch(r.seat)
-    assert r.svc.attempts.for_message(message.id) == attempts and len(attempts) == 1
-    assert r.svc.attempts.latest()[message.id] == 'pending'
+    settled = json.loads(proof.path.read_text())
+    assert settled['phase'] == 'abandoned' and settled['resolution'] == REPORTED
+    assert not proof.same_launch(r.seat) and r.source.path.read_bytes() == record
+    assert {key: settled[key] for key in original if key != 'phase'} == {
+        key: value for key, value in original.items() if key != 'phase'}
+    updated = r.svc.attempts.for_message(message.id)
+    assert len(updated) == len(attempts) == 1 and updated[0].path == attempts[0].path
+    assert (updated[0].at, updated[0].pane, updated[0].pid, updated[0].launched_at) == (
+        attempt.at, attempt.pane, attempt.pid, attempt.launched_at)
+    assert updated[0].result == 'abandoned' and updated[0].detail == REPORTED
+    before = (proof.path.read_bytes(), attempt.path.read_bytes())
+    r.svc.reconcile()
+    assert before == (proof.path.read_bytes(), attempt.path.read_bytes())
     assert '--first' not in r.launches[0], 'a closed uncertain submission was not resent'
-    assert not r.svc.store.is_open(message) and pending.detached(r.seat)
+    assert not r.svc.store.is_open(message) and not pending.detached(r.seat)
     facts = watch.facts(r.seat.ship, r.seat.tmux, walls=[], login=[])
-    assert 'worker' in facts.needs_human and facts.pending
+    assert 'worker' not in facts.needs_human and not facts.pending
 
 
 def test_failed_destination_launch_keeps_its_selected_program_without_a_retry_loop(running, monkeypatch):

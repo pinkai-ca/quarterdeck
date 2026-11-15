@@ -762,6 +762,10 @@ def _reconcile_claimed(service: Service, seat: Seat, attempts: dict[str, post.At
                 phase = closed_record.PHASE
         if result:
             proof.finish(result)
+        from .pending_lifecycle import settle_reported
+        if settle_reported(service, seat, proof, attempts):
+            paths.update(attempts[n].path for n in proof.data['attempts'])
+            continue
         for filename in proof.data["attempts"]:
             attempt = attempts[filename]
             paths.add(attempt.path)

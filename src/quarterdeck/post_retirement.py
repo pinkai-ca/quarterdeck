@@ -176,25 +176,31 @@ class SliceEnded(Exception):
 
 
 def _settled(store, records, progress):
+    from .pending_lifecycle import REPORTED
     latest = {}
     for index, attempt in enumerate(records):
         if index % 200 == 0:
             progress()
-        latest[attempt.message] = attempt.result
+        latest[attempt.message] = attempt
     # One immutable post snapshot. Repeated Store.closing calls would re-read
     # every message while a newly written directory is inside its timestamp bucket.
     messages = progress.read('store read', store.all)
     progress.phase = 'eligibility'
     by_id = {m.id: m for m in messages}
     closed = set()
+    reported = set()
     for index, message in enumerate(messages):
         if index % 200 == 0:
             progress()
         parent = by_id.get(message.re)
+        if parent is not None and message.kind == 'report' and message.sender == parent.to:
+            reported.add(parent.id)
         if parent is not None and (parent.kind == 'question' and message.kind == 'answer'
                 or parent.kind == 'order' and message.kind == 'report' and message.sender == parent.to):
             closed.add(parent.id)
-    return {m.id for m in messages if latest.get(m.id) in SETTLED
+    return {m.id for m in messages if (a := latest.get(m.id)) is not None
+            and (a.result in SETTLED or m.id in reported and a.seat == m.to
+                 and a.result == 'abandoned' and a.detail == REPORTED)
             and (not m.obligation or m.id in closed)}
 
 

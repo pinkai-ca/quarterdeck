@@ -30,7 +30,7 @@ def journal(world, tmp_path, monkeypatch):
     w.seat.ship = SimpleNamespace(runtime=runtime)
     w.seat.pane = lambda: w.live['pane']
     w.seat.harness = harness.get(w.name)
-    service = SimpleNamespace(runtime=runtime, attempts=attempts,
+    service = SimpleNamespace(runtime=runtime, attempts=attempts, store=store,
                               ship=SimpleNamespace(seats={'worker': None}),
                               seat=lambda name: w.seat, log=lambda *a, **kw: None)
     return service, store, message, attempt

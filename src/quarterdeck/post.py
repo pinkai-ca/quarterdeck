@@ -1316,6 +1316,10 @@ class Attempts:
 
     def settle_missing_identity(self, expected: list[Attempt], detail: str) -> list[Attempt] | None:
         """Retire only matching legacy uncertainty; another verdict is never overwritten."""
+        return self.settle_unresolved(expected, detail)
+
+    def settle_unresolved(self, expected: list[Attempt], detail: str) -> list[Attempt] | None:
+        """Abandon matching unresolved attempts, preserving every terminal verdict."""
         unresolved = {None, 'pending', 'blind', 'typed', 'queued', 'withheld', 'cancelled'}
         terminal = {'delivered', 'watch', 'launch', 'abandoned', 'not-in-closed-record', *UNSETTLED}
         with self._locked():

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import check, credential, lifecycle, pending, post
+from quarterdeck import check, credential, lifecycle, pending, post, post_retirement
 from quarterdeck.harness.claude import ClaudeHarness
 from quarterdeck.harness.synthetic_record import ClaudeShape
 from quarterdeck.seat import Launched, Seat
@@ -311,4 +311,81 @@ def test_fresh_links_and_settles_submission_from_the_exact_old_record(tmp_path, 
     assert later.path.read_bytes() == carried
     assert writer.path.read_bytes() == original
     assert seat.record() is None
+    assert pending.detached(seat) == []
+
+
+@pytest.mark.parametrize('reply,current,settled', [
+    ('report', False, True), (None, False, False), ('ack', False, False),
+    ('report', True, False), ('foreign-report', False, False),
+    ('answer', False, False), ('missing-message', False, False),
+    ('unreadable-report', False, False),
+])
+def test_report_settles_only_a_detached_journal(tmp_path, monkeypatch, reply, current, settled):
+    seat = SyntheticSeat(tmp_path, 'worker')
+    service = service_for(tmp_path, seat)
+    service.ledger = SimpleNamespace(catching_up=lambda: False)
+    service.heartbeat = lambda: None
+    message = service.store.new('order', 'sender', seat.name, 'synthetic work')
+    attempt = open_attempt(service, seat, message)
+    proof = pending.Proof.begin(seat, attempt, post.typed([message]))
+    proof.save(phase='submitted')
+    service.attempts.close(attempt, 'pending', 'synthetic unresolved submission')
+    original = proof.path.read_bytes()
+    if not current:
+        seat._write_launch(post.now(), [])
+    if reply in ('report', 'ack', 'answer', 'foreign-report', 'unreadable-report'):
+        report = service.store.new('report' if 'report' in reply else reply,
+                                   'other' if reply == 'foreign-report' else seat.name,
+                                   'sender', 'synthetic reply', re=message.id)
+        if reply == 'unreadable-report':
+            (service.store.dir / (report.id + '.json')).write_text('{')
+    if reply == 'missing-message':
+        (service.store.dir / (message.id + '.json')).unlink()
+    monkeypatch.setattr(service, 'deliver', lambda *a, **k: pytest.fail('settlement must never type'))
+    monkeypatch.setattr(pending.Proof, 'confirmed', lambda *a: None)
+    monkeypatch.setattr('quarterdeck.harness.closed_record.not_in_closed_record', lambda *a: False)
+
+    pending.reconcile(service)
+    pending.reconcile(service)
+
+    if settled:
+        from quarterdeck.pending_lifecycle import REPORTED
+        data = json.loads(proof.path.read_text())
+        assert data['phase'] == 'abandoned' and data['resolution'] == REPORTED
+        assert pending.detached(seat) == []
+        saved = proof.path.read_bytes()
+        receipt = service.attempts.for_message(message.id)[0]
+        assert receipt.result == 'abandoned' and receipt.detail == REPORTED
+        assert message.id not in service.attempts.accepted_ids()
+        rows = [json.loads(line) for line in service.log_path.read_text().splitlines()]
+        assert [row['event'] for row in rows] == ['pending-settled']
+        assert post_retirement.run(service) == dict(attempts=1, journals=1)
+        assert not proof.path.exists()
+        assert pending.journal_path(tmp_path, seat.name, proof.path.name).read_bytes() == saved
+        assert post_retirement.run(service) == dict(attempts=0, journals=0)
+    else:
+        assert proof.path.read_bytes() == original
+        assert service.attempts.for_message(message.id)[0].result == 'pending'
+        assert bool(pending.detached(seat)) is not current
+        if reply not in ('missing-message', 'unreadable-report'):
+            assert post_retirement.run(service) == dict(attempts=0, journals=0)
+
+
+def test_report_settlement_recovers_after_attempts_written(tmp_path, monkeypatch):
+    seat = SyntheticSeat(tmp_path, 'worker')
+    service = service_for(tmp_path, seat)
+    message = service.store.new('order', 'sender', seat.name, 'synthetic work')
+    attempt = open_attempt(service, seat, message)
+    proof = pending.Proof.begin(seat, attempt, post.typed([message]))
+    proof.save(phase='submitted')
+    seat._write_launch(post.now(), [])
+    service.store.new('report', seat.name, 'sender', 'done', re=message.id)
+    with monkeypatch.context() as patch:
+        patch.setattr(pending.Proof, 'save', lambda *a, **k: (_ for _ in ()).throw(OSError('synthetic interruption')))
+        with pytest.raises(OSError, match='synthetic interruption'):
+            pending.reconcile(service)
+    assert service.attempts.for_message(message.id)[0].result == 'abandoned'
+    assert json.loads(proof.path.read_text())['phase'] == 'submitted'
+    pending.reconcile(service)
+    assert json.loads(proof.path.read_text())['phase'] == 'abandoned'
     assert pending.detached(seat) == []
