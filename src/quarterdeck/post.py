@@ -280,7 +280,7 @@ class Store:
             return reading_value('store', key, reader._load_current)
         return self._load_current()
 
-    def _refresh_messages(self, paths, context, started):
+    def _refresh_messages(self, children, context, started):
         """Reuse immutable files only after a complete, unchanged identity inventory."""
         from .fleet_post import local_view, provenance, stable_bytes
         runtime = self.dir.parent.parent
@@ -290,11 +290,14 @@ class Store:
         identity = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns, s.st_mode)
         inventory = []
         reread = context != old_context
-        for path in paths:
-            try:
-                info = path.lstat()
-            except FileNotFoundError:
+        for name, info in sorted(children):
+            if not name.endswith('.json'):
                 continue
+            path = self.dir / name
+            if stat.S_ISLNK(info.st_mode):
+                if post_dir.gone(path):
+                    continue
+                post_dir._link_held(path)
             if not stat.S_ISREG(info.st_mode) and not stat.S_ISLNK(info.st_mode):
                 continue
             record = provenance(runtime, path.stem)
@@ -413,8 +416,11 @@ class Store:
                      forwarding_stamp(self.dir.parent.parent))
             if (self._cache is None or self._cache[0] != stamp or cached_at is None
                     or not cached_at <= started <= checked):
-                paths = post_dir.json_paths(self.dir)
-                messages = self._refresh_messages(paths, (stamp[0], stamp[1], stamp[4]), started)
+                try:
+                    children = post_dir.list_children(self.dir, with_stat=True)
+                except FileNotFoundError:
+                    children = []
+                messages = self._refresh_messages(children, (stamp[0], stamp[1], stamp[4]), started)
                 messages.sort(key=lambda m: (m.at, m.id))
                 replies: dict[str, list[Message]] = {}
                 for message in messages:
@@ -1454,28 +1460,23 @@ class Attempts:
         # times alone miss same-path edits; stat every entry, parse only changes.
         retired = self._retired(progress)
         try:
-            children = post_dir.list_children(self.dir)
+            children = post_dir.list_children(self.dir, with_stat=True)
         except FileNotFoundError:
             self._cache = {}
             return sorted(retired.values(), key=lambda a: (a.at, a.path.name))
         current = {}
-        for index, (name, mode) in enumerate(children):
+        for index, (name, info) in enumerate(children):
             if progress is not None and index % 200 == 0:
                 progress()
             if not name.endswith('.json'):
                 continue
-            if stat.S_ISLNK(mode):
+            if stat.S_ISLNK(info.st_mode):
                 if post_dir.gone(self.dir / name):
                     self._cache.pop(name, None)
                     continue
                 post_dir._link_held(self.dir / name)
             path = self.dir / name
-            try:
-                info = path.lstat()
-            except FileNotFoundError:
-                self._cache.pop(name, None)
-                continue
-            stamp = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+            stamp = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_mode)
             cached = self._cache.get(name)
             if cached is None or cached[0] != stamp:
                 try:

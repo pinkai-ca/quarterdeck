@@ -97,6 +97,8 @@ def test_malformed_refresh_does_not_retain_a_partial_certificate(tmp_path, monke
 
 @pytest.mark.parametrize('age', [0, post.POST_TIMESTAMP_TICK_NS])
 def test_changed_identity_within_tick_cannot_certify_the_listing(tmp_path, monkeypatch, age):
+    from contextlib import contextmanager
+    import os
     from pathlib import Path
     from types import SimpleNamespace
 
@@ -112,6 +114,19 @@ def test_changed_identity_within_tick_cannot_certify_the_listing(tmp_path, monke
     original = Path.lstat
     monkeypatch.setattr(Path, 'lstat', lambda p, *a, **kw:
                         observed if p == path else original(p, *a, **kw))
+    # Supply the same coarse timestamp at the listing and post-read check.
+    scan = os.scandir
+    class Entry:
+        def __init__(self, entry, folder):
+            self.entry, self.name, self.folder = entry, entry.name, folder
+        def stat(self, **kwargs):
+            return observed if self.folder / self.name == path else self.entry.stat(**kwargs)
+    @contextmanager
+    def coarse_scan(folder):
+        located = Path(os.readlink(folder)) if str(folder).startswith('/proc/self/fd/') else Path(folder)
+        with scan(folder) as entries:
+            yield (Entry(entry, located) for entry in entries)
+    monkeypatch.setattr(os, 'scandir', coarse_scan)
     invalidate(store)
     assert changed in store.all()
     assert len(reads) == 3

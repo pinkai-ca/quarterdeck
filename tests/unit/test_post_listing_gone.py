@@ -27,13 +27,21 @@ def interleave(monkeypatch, victim, stage, callback):
     """Fire once at the exact per-name operation, after directory enumeration."""
     fired = []
     if stage == 'stat':
-        original = Path.lstat
-        def run(path, *args, **kwargs):
-            if path == victim and not fired:
-                fired.append(True)
-                callback()
-            return original(path, *args, **kwargs)
-        monkeypatch.setattr(Path, 'lstat', run)
+        scan = os.scandir
+        class Entry:
+            def __init__(self, entry, folder):
+                self.entry, self.name, self.folder = entry, entry.name, folder
+            def stat(self, **kwargs):
+                if self.folder / self.name == victim and not fired:
+                    fired.append(True)
+                    callback()
+                return self.entry.stat(**kwargs)
+        @contextmanager
+        def run(path):
+            folder = Path(os.readlink(path)) if str(path).startswith('/proc/self/fd/') else Path(path)
+            with scan(path) as entries:
+                yield (Entry(entry, folder) for entry in entries)
+        monkeypatch.setattr(os, 'scandir', run)
     else:
         original = post_dir.read_text
         def run(path, *args, **kwargs):

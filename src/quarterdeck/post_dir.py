@@ -333,8 +333,12 @@ def exists_dir(path) -> bool:
     return True
 
 
-def list_children(directory, *, limit: int | None = None):
-    """Child metadata without following links; limit bounds names collected before any stat."""
+def list_children(directory, *, limit: int | None = None, with_stat: bool = False):
+    """Child modes, or full lstat metadata; limit bounds names collected before any stat.
+
+    Full metadata comes from the DirEntry's single no-follow stat, so readers
+    needing an identity do not have to stat each listed name again.
+    """
     directory = Path(directory)
     if limit is not None and limit < 0:
         raise ValueError("directory limit must be nonnegative")
@@ -346,12 +350,12 @@ def list_children(directory, *, limit: int | None = None):
                 if entry.name in ('.', '..'):
                     continue
                 try:
-                    kind = entry.stat(follow_symlinks=True).st_mode
+                    info = entry.stat(follow_symlinks=not with_stat)
                 except FileNotFoundError:
                     if not gone(directory / entry.name):
                         raise
                     continue
-                found.append((entry.name, kind))
+                found.append((entry.name, info if with_stat else info.st_mode))
         return found
     descriptor = open_directory(directory, create=False)
     try:
@@ -362,10 +366,10 @@ def list_children(directory, *, limit: int | None = None):
                 if entry.name in ('.', '..'):
                     continue
                 try:
-                    kind = entry.stat(follow_symlinks=False).st_mode
+                    info = entry.stat(follow_symlinks=False)
                 except FileNotFoundError:
                     continue
-                found.append((entry.name, kind))
+                found.append((entry.name, info if with_stat else info.st_mode))
         return found
     finally:
         os.close(descriptor)
