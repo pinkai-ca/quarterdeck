@@ -761,3 +761,24 @@ def test_a_crew_seat_at_the_offices_work_folder_is_still_refused(tmp_path, monke
     ship, _ = own_cwd_ship(tmp_path, hand_a_cwd=tmp_path / 'project' / 'office' / 'work' / 'other')
     with pytest.raises(ShipError, match='hand-a: sandboxed with its working directory at '):
         plan_seat(ship, 'hand-a', tmp_path / 'operator-home')
+
+
+def test_an_office_given_through_a_link_of_another_name_is_ruled_by_its_real_path(tmp_path, monkeypatch):
+    """The checkout is found from the office's real folder, not its name: through a link called myoffice, a desk cwd
+    in the checkout's code is refused, and the office's own work/desk still plans."""
+    from dataclasses import replace
+    monkeypatch.setattr(sandbox, 'available', lambda: True)
+    office = office_with_desk(tmp_path)
+    project = tmp_path / 'project'
+    (tmp_path / 'myoffice').symlink_to(project / 'office')
+    linked = replace(office, folder=tmp_path / 'myoffice')
+    assert sandbox.fleet_roots(linked.folder) == (project.resolve() / 'ships', project.resolve() / 'office')
+    assert project.resolve() in sandbox.framework_checkouts(linked)
+    code = replace(linked, seats={'desk': replace(linked.seats['desk'], cwd=project / 'src' / 'quarterdeck')})
+    with pytest.raises(ShipError) as caught:
+        plan_seat(code, 'desk', tmp_path / 'operator-home')
+    assert str(caught.value).startswith(f"desk: sandboxed with its working directory at "
+                                        f"{(project / 'src' / 'quarterdeck').resolve()}, inside the framework's "
+                                        f"checkout {project.resolve()}"), caught.value
+    jail = plan_seat(linked, 'desk', tmp_path / 'operator-home')
+    assert jail.workspace == (project / 'office' / 'work' / 'desk').resolve()

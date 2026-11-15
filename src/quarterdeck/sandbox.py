@@ -315,8 +315,9 @@ def framework_checkouts(ship: Ship) -> tuple[Path, ...]:
     not a checkout is the fleet's own business: its fence keeps the other ships out of a jail working there.
     """
     found = []
-    if roots := fleet_roots(ship.folder):
-        found.append(roots[0].parent)
+    for folder in (ship.folder, Path(os.path.realpath(ship.folder))):  # by its real folder, and as it is given
+        if roots := layout_roots(folder):
+            found.append(roots[0].parent)
     found.append(Path(__file__).resolve().parents[2])
     return tuple(dict.fromkeys(Path(os.path.realpath(folder)) for folder in found if is_framework_checkout(folder)))
 
@@ -402,9 +403,15 @@ def fence_point(seat_name: str, folder: Path) -> None:
 def fleet_roots(ship_folder: Path) -> tuple[Path, ...]:
     """The project's ``ships/`` and ``office/`` when this ship sits in that layout, else nothing.
 
-    ``covering`` refuses a jail when one of these is the home or contains it.
+    ``covering`` refuses a jail when one of these is the home or contains it. The layout is read from the ship folder's
+    real path, links resolved, so an office given through a link of another name is still the checkout's office; and
+    from the folder as given only when its real path shows no layout, as for an office that is itself a link.
     """
-    folder = Path(ship_folder)
+    return layout_roots(Path(os.path.realpath(ship_folder))) or layout_roots(Path(ship_folder))
+
+
+def layout_roots(folder: Path) -> tuple[Path, ...]:
+    """``ships/`` and ``office/`` beside a folder named as a ship's in that layout, read from the path as it is."""
     if folder.parent.name == 'ships':
         project = folder.parent.parent
     elif folder.name == 'office':
