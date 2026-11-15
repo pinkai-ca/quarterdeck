@@ -19,6 +19,7 @@ import os
 import re
 import secrets
 import stat
+import time
 from pathlib import Path
 from typing import Any, Iterator, Sequence, TYPE_CHECKING
 
@@ -311,6 +312,7 @@ class JournalReader:
         return [Proof(path, deepcopy(data)) for path, data in found], list(errors)
 
     def _read(self, runtime, name, folder):
+        started = time.time_ns()
         found, errors = [], []
         try:
             descriptor = post_dir.open_directory(folder, create=False)
@@ -343,7 +345,11 @@ class JournalReader:
                         # A complete replacement during the guarded read may be returned,
                         # but is cached only if it still matches the identity we inspected.
                         after = os.stat(filename, dir_fd=descriptor, follow_symlinks=False)
-                        if self._stamp(after) == stamp:
+                        # Recent timestamps can hide a same-stamp replacement within
+                        # one filesystem tick. Aging an earlier read cannot certify it.
+                        if (self._stamp(after) == stamp
+                                and max(stamp[-2:]) + post.POST_TIMESTAMP_TICK_NS
+                                < started <= time.time_ns()):
                             current[filename] = stamp, data
                     else:
                         data = cached[1]

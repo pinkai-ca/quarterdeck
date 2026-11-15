@@ -48,6 +48,8 @@ def count_reads(monkeypatch, folder):
 def test_unchanged_journals_are_parsed_once_and_return_independent_proofs(tmp_path, monkeypatch):
     runtime = tmp_path / 'runtime'
     path, data = journal(runtime)
+    started = max(path.stat().st_mtime_ns, path.stat().st_ctime_ns) + post.POST_TIMESTAMP_TICK_NS + 1
+    monkeypatch.setattr(pending, 'time', SimpleNamespace(time_ns=lambda: started))
     reader = pending.JournalReader()
     reads = count_reads(monkeypatch, path.parent)
     first, errors = collect(reader, runtime)
@@ -58,8 +60,46 @@ def test_unchanged_journals_are_parsed_once_and_return_independent_proofs(tmp_pa
         found, errors = collect(reader, runtime)
         assert not errors and found[0].data == data
     assert reads == [path.name]
-    # Outside the service presentation the ordinary journal reader still reads.
-    pending.journals(SimpleNamespace(name='reader', ship=SimpleNamespace(runtime=runtime)))
+
+
+@pytest.mark.parametrize('age_ns', [0, post.POST_TIMESTAMP_TICK_NS])
+def test_same_stamp_replacement_within_timestamp_tick_is_read_again(tmp_path, monkeypatch, age_ns):
+    runtime = tmp_path / 'runtime'
+    path, data = journal(runtime, payload='before')
+    reader = pending.JournalReader()
+    stamp = reader._stamp(path.stat())
+    now = [max(stamp[-2:]) + age_ns]
+    monkeypatch.setattr(pending, 'time', SimpleNamespace(time_ns=lambda: now[0]))
+    # Model coarse timestamps and inode reuse: both complete files have one stamp.
+    monkeypatch.setattr(reader, '_stamp', lambda info: stamp)
+    reads = count_reads(monkeypatch, path.parent)
+    assert collect(reader, runtime)[0][0].data['payload'] == 'before'
+    data['payload'] = 'after!'
+    temporary = path.with_suffix('.tmp')
+    temporary.write_text(json.dumps(data))
+    os.replace(temporary, path)
+    # Merely waiting cannot certify the observation made within the tick.
+    now[0] = max(stamp[-2:]) + post.POST_TIMESTAMP_TICK_NS + 1
+    assert collect(reader, runtime)[0][0].data['payload'] == 'after!'
+    assert collect(reader, runtime)[0][0].data['payload'] == 'after!'
+    assert reads == [path.name, path.name]
+
+
+def test_journals_outside_status_scope_reads_disk_after_a_cached_collection(tmp_path, monkeypatch):
+    runtime = tmp_path / 'runtime'
+    path, data = journal(runtime, payload='before')
+    started = max(path.stat().st_mtime_ns, path.stat().st_ctime_ns) + post.POST_TIMESTAMP_TICK_NS + 1
+    monkeypatch.setattr(pending, 'time', SimpleNamespace(time_ns=lambda: started))
+    reader = pending.JournalReader()
+    reads = count_reads(monkeypatch, path.parent)
+    assert collect(reader, runtime)[0][0].data['payload'] == 'before'
+    assert collect(reader, runtime)[0][0].data['payload'] == 'before'
+    assert reads == [path.name]
+    data['payload'] = 'after!'
+    path.write_text(json.dumps(data))
+    seat = SimpleNamespace(name='reader', ship=SimpleNamespace(runtime=runtime))
+    found, errors = pending.journals(seat)
+    assert not errors and found[0].data['payload'] == 'after!'
     assert reads == [path.name, path.name]
 
 
