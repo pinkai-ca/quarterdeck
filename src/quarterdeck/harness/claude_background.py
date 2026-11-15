@@ -178,6 +178,7 @@ class Task:
     resume_stopped_at: datetime | None = None
     other_evidence_at: datetime | None = None
     version: str | None = None
+    called_at: datetime | None = None
     acknowledged_at: datetime | None = None
     running_seen: bool = False
 
@@ -258,7 +259,7 @@ class BackgroundBash:
                     or call in self.tasks or task in self.task_calls):
                 self.unknown_calls.add(call)
                 return
-            self.tasks[call] = Task(call, task, called_at, at, other_evidence_at=at, version=version, acknowledged_at=at,
+            self.tasks[call] = Task(call, task, at, at, other_evidence_at=at, version=version, called_at=called_at, acknowledged_at=at,
                                     inbox_watch_started=called_at if watch else None)
             self.task_calls[task] = call
             for early in self.early.pop(call, ()):
@@ -287,7 +288,7 @@ class BackgroundBash:
             task.other_evidence_at = max(at, task.other_evidence_at)
         before_ack = (at is not None and task.phase == 'pending' and status in TERMINAL
                       and not task.running_seen and task.latest == task.acknowledged_at
-                      and at >= task.started)
+                      and task.called_at is not None and at >= task.called_at)
         if at is None or at < task.latest and not before_ack or task.invalid:
             task.phase, task.invalid = 'unknown', True
         elif task.phase == 'ended' and task.terminal != status:

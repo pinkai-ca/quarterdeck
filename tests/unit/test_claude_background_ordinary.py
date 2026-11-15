@@ -79,7 +79,7 @@ def test_returned_background_handle_survives_closed_and_later_turns(tmp_path):
     _, state = read(tmp_path, rows)
     assert state.turn_open is False
     assert state.pending_tools == ('Bash',)
-    assert state.active_tools[0].started == AT + timedelta(seconds=1)
+    assert state.active_tools[0].started == AT + timedelta(seconds=2)
     assert idle.check(state).dimension == 'tools-pending'
 
 
@@ -202,7 +202,7 @@ def test_running_attachment_is_pending_and_keeps_original_start(tmp_path):
                 taskType='local_bash', status='running', description='synthetic description'))
     _, state = read(tmp_path, initial() + [entry])
     assert state.pending_tools == ('Bash',)
-    assert state.active_tools[0].started == AT + timedelta(seconds=1)
+    assert state.active_tools[0].started == AT + timedelta(seconds=2)
 
 
 def test_duplicate_terminal_carriers_do_not_create_unjoined_results(tmp_path):

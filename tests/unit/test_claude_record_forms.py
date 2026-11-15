@@ -59,7 +59,8 @@ def test_terminal_notice_between_call_and_handle_result_ends_the_matching_task(t
     record, state = read(tmp_path, load('notice-before-result'))
     assert state.pending_tools == () and state.active_tools == ()
     task = claude._Reader(record).background.tasks[CALL]
-    assert task.started == AT + timedelta(seconds=1)
+    assert task.started == AT + timedelta(seconds=2)
+    assert task.called_at == AT + timedelta(seconds=1)
     assert task.latest == AT + timedelta(seconds=1.5)
     assert task.terminal == 'failed' and not task.invalid
 

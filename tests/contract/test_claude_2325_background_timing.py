@@ -51,7 +51,7 @@ def write(record, rows, mode='w'):
 
 
 @pytest.mark.parametrize('difference', ['before-call-time', 'status', 'task', 'older-copy-time'])
-def test_a_nonmatching_early_notice_stays_unknown(tmp_path, difference):
+def test_early_notices_are_judged_from_call_time_and_matching_identity(tmp_path, difference):
     record = tmp_path/'record.jsonl'; rows = initial()
     rows.insert(1, notice(0.5 if difference == 'before-call-time' else 2))
     copy = notice(1.5 if difference == 'older-copy-time' else 2, 'attachment',
@@ -59,26 +59,36 @@ def test_a_nonmatching_early_notice_stays_unknown(tmp_path, difference):
                   'synthetic-other' if difference == 'task' else 'synthetic-task')
     write(record, [*rows, notice(4, 'remove'), copy, row('system', 5, subtype='turn_duration')])
     state = claude.state(record)
-    assert state.pending_tools is None and len(state.active_tools) == 1
-    assert idle.check(state).dimension == 'tools-unknown'
     task = claude._Reader(record).background.tasks['synthetic-call']
-    assert task.invalid
+    if difference == 'older-copy-time':
+        assert state.pending_tools == () and state.active_tools == ()
+        assert idle.check(state) is None
+        assert not task.invalid and task.latest == AT + timedelta(seconds=2)
+    else:
+        assert state.pending_tools is None and len(state.active_tools) == 1
+        assert idle.check(state).dimension == 'tools-unknown'
+        assert task.invalid
 
 
 @pytest.mark.parametrize('carrier', ['remove', 'attachment'])
-def test_a_buffered_copy_cannot_supply_the_early_enqueue_exception(tmp_path, carrier):
+def test_a_buffered_terminal_after_the_call_time_is_supported(tmp_path, carrier):
     record = tmp_path/'record.jsonl'; rows = initial()
     rows.insert(1, notice(2, carrier))
     write(record, [*rows, row('system', 5, subtype='turn_duration')])
     state = claude.state(record)
-    assert state.pending_tools is None
-    assert claude._Reader(record).background.tasks['synthetic-call'].invalid
+    assert state.pending_tools == ()
+    task = claude._Reader(record).background.tasks['synthetic-call']
+    assert not task.invalid and task.latest == AT + timedelta(seconds=2)
 
 
-def test_an_unbuffered_terminal_still_requires_the_result_time(tmp_path):
+def test_an_unbuffered_terminal_between_call_and_result_is_supported(tmp_path):
     record = tmp_path/'record.jsonl'
     write(record, [*initial(), notice(2), row('system', 5, subtype='turn_duration')])
-    assert claude.state(record).pending_tools is None
+    assert claude.state(record).pending_tools == ()
+    task = claude._Reader(record).background.tasks['synthetic-call']
+    assert task.started == AT + timedelta(seconds=3)
+    assert task.called_at == AT + timedelta(seconds=1)
+    assert task.latest == AT + timedelta(seconds=2)
 
 
 def test_the_normal_mid_turn_chain_is_unchanged(tmp_path):
@@ -137,19 +147,23 @@ def test_a_matching_duplicate_changes_nothing_after_its_start(tmp_path, status, 
     assert reader.state().pending_tools == ()
 
 
-@pytest.mark.parametrize('difference', ['status', 'task', 'before-start', 'carrier-version'])
-def test_a_late_copy_cannot_hide_a_real_conflict(tmp_path, difference):
+@pytest.mark.parametrize('difference', ['status', 'task', 'between-call-and-result', 'carrier-version'])
+def test_a_late_copy_obeys_call_time_and_carrier_validation(tmp_path, difference):
     record = tmp_path/'record.jsonl'
-    copy = notice(2.5 if difference == 'before-start' else 4, 'attachment',
+    copy = notice(2.5 if difference == 'between-call-and-result' else 4, 'attachment',
                   'failed' if difference == 'status' else 'completed',
                   'synthetic-other' if difference == 'task' else 'synthetic-task')
     if difference == 'carrier-version':
         copy['version'] = '2.1.322'
     write(record, [*initial(), notice(4.5), notice(5, 'remove'), copy,
                    row('system', 6, subtype='turn_duration')])
-    assert claude.state(record).pending_tools is None
     task = claude._Reader(record).background.tasks['synthetic-call']
-    assert task.invalid and task.phase == 'unknown'
+    if difference == 'between-call-and-result':
+        assert claude.state(record).pending_tools == ()
+        assert not task.invalid and task.latest == AT + timedelta(seconds=4.5)
+    else:
+        assert claude.state(record).pending_tools is None
+        assert task.invalid and task.phase == 'unknown'
 
 
 def test_incremental_older_copy_and_fresh_parse_agree(tmp_path):
@@ -178,5 +192,28 @@ def test_unmeasured_or_conflicting_running_evidence_stays_unknown(tmp_path, diff
     if difference == 'running-after-end':
         rows.append(notice(3.5))
     write(record, [*rows, running, notice(5), notice(6, 'remove'), row('system', 7, subtype='turn_duration')])
+    assert claude.state(record).pending_tools is None
+    assert claude._Reader(record).background.tasks['synthetic-call'].invalid
+
+
+@pytest.mark.parametrize('carrier', ['enqueue', 'remove', 'attachment', 'user'])
+@pytest.mark.parametrize('order', ['before-call-row', 'after-result', 'after-terminal'])
+def test_each_terminal_carrier_before_call_time_stays_invalid_in_each_order(tmp_path, carrier, order):
+    record = tmp_path / 'record.jsonl'
+    rows = initial()
+    early = notice(.5, carrier)
+    if order == 'before-call-row': rows.insert(1, early)
+    elif order == 'after-result': rows.append(early)
+    else: rows.extend([notice(4.5), early])
+    write(record, [*rows, row('system', 6, subtype='turn_duration')])
+    assert claude.state(record).pending_tools is None
+    assert claude._Reader(record).background.tasks['synthetic-call'].invalid
+
+
+def test_a_pre_result_notice_never_hides_a_later_running_event(tmp_path):
+    record = tmp_path / 'record.jsonl'
+    running = json.loads(RUNNING.read_text())
+    running['timestamp'] = (AT + timedelta(seconds=4)).isoformat()
+    write(record, [*initial(), running, notice(2), row('system', 5, subtype='turn_duration')])
     assert claude.state(record).pending_tools is None
     assert claude._Reader(record).background.tasks['synthetic-call'].invalid
