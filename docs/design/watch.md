@@ -80,3 +80,22 @@ Malformed/unreadable outcome evidence remains visibly unknown and is not overwri
 Ship sessions retain 50,000 scrollback lines. Framework behavior is configured only through a declared ship-file field when needed; presentation caches and operational observations are never configuration.
 
 The service log adds at most one `service-timing` summary per minute, after a duty or rest returns. It gives completed measurement counts, wall/CPU totals and maxima for every pass step, the between-duty `drain_drops`, `drain_accounting` and `drain_requests` calls, status collections, passes and sleep. Step names come from the code's methods and new names are carried automatically without a separate list edit. A carried name must be a Python identifier naming a Service method or one of the fixed pass, sleep, status, status_post, status_checks and drain labels; anything else is counted under `other` without retaining its name. The status count and cost cover actual full collection calls, including failed or refused calls, and status_post counts post refreshes apart; cheap scheduling checks have a separate numeric `status_checks` count and do not enter the collection timing. Pass time includes its duties, so those figures are not additive. A long duty belongs to the window in which it returns; summaries are observations, never scheduling or delivery evidence. The summary carries only numbers and duty names supplied by code, never runtime identities.
+
+### JSON status served by the service
+
+Every successful whole status collection also publishes its complete JSON reading
+atomically at `runtime/trusted/status-reading.json`, outside every jail. It retains
+all feed fields, its collection start time, the declaration and code identities,
+and the owning service's process identity. `qd --json status` can serve it for less
+than 60 seconds, while the same service holds its lock and has a fresh heartbeat.
+Missing, partial, unreadable or older publications, uncertain ownership, changed
+code/declaration or a stopped service use the ordinary cold reading. JSON adds a
+`reading` object naming the mode, time and the served/cold label. This publication
+is presentation only and supplies no delivery or lifecycle evidence.
+
+Each JSON call atomically updates `runtime/trusted/status-demand.json`. A command
+unable to write that stamp uses the cold reader. With clients attached, the
+existing status schedule is unchanged. Without them, the service performs only
+its periodic whole collections while a call has arrived within five minutes;
+post traffic alone adds no headless collection. Demand aging and reading aging
+are independent, and both require chronological wall/monotonic observations.
