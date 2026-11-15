@@ -14,6 +14,7 @@ def test_submitted_control_keeps_its_claim_and_later_requests_still_finish(tmp_p
     pending.write_text(json.dumps(dict(kind='control', seat='synthetic-seat', name='model', value='next-model')))
     healthy.write_text(json.dumps(dict(kind='synthetic-operation')))
     service = SimpleNamespace(runtime=tmp_path, log=lambda *args, **kwargs: None)
+    service._requests = MethodType(Service._requests, service)
     service.clear_request_claim = MethodType(Service.clear_request_claim, service)
     service.failed_request = MethodType(Service.failed_request, service)
     observations, commands = [], []
@@ -82,6 +83,7 @@ def test_first_fake_model_input_confirms_only_in_its_new_launch_record(tmp_path)
     path = folder / 'first-model.json'
     path.write_text(json.dumps(dict(kind='control', seat=seat.name, name='model', value='synthetic-next')))
     service = SimpleNamespace(runtime=tmp_path, log=lambda *args, **kwargs: None)
+    service._requests = MethodType(Service._requests, service)
     service.clear_request_claim = MethodType(Service.clear_request_claim, service)
     service.failed_request = MethodType(Service.failed_request, service)
     service.continue_model_control = MethodType(Service.continue_model_control, service)

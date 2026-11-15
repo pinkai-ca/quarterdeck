@@ -130,7 +130,7 @@ def test_a_ship_file_that_stops_loading_keeps_the_last_valid_tick(monkeypatch, t
     from quarterdeck.structure_outcome import Passes
     service.structure_passes = Passes()
     for name in ('reconcile', 'account', 'groups', 'cascades', 'inboxes', 'recoveries', 'refusals', 'deliveries',
-                 'follow', 'requests', 'compactions', 'fresh_after_order', 'rebrief', 'credentials', 'failover'):
+                 'follow', 'requests', 'drain_requests', 'compactions', 'fresh_after_order', 'rebrief', 'credentials', 'failover'):
         setattr(service, name, lambda: None)
     ship.file.write_text(HEAD + 'tick = 9\n')
     service.tick()

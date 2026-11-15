@@ -1,6 +1,7 @@
 """Ordinary queue scheduling: quick work yields, while lifecycle work keeps its step."""
 from contextlib import contextmanager
 import os
+from pathlib import Path
 
 import pytest
 
@@ -128,3 +129,23 @@ def test_a_path_selected_by_an_earlier_scan_is_rechecked_before_dispatch(owner):
     assert not owner.calls and path.exists()
     owner.requests()
     assert [row['kind'] for row in owner.calls] == ['select']
+
+
+def test_a_failed_second_stat_leaves_the_full_writer_its_candidate(owner, monkeypatch):
+    path = publish(owner, 'stat-failure', 'submit', 1)
+    original, calls = Path.stat, []
+
+    def second_stat_fails(self, *args, **kwargs):
+        if self == path:
+            calls.append(self)
+            if len(calls) == 2:
+                raise OSError('synthetic second stat failed')
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'stat', second_stat_fails)
+    candidates = [p for p in request_queue.arrival_paths(owner.runtime) if p is not None]
+    assert candidates == [path] and not owner.calls
+    assert not path.with_suffix('.claimed').exists() and not path.with_suffix('.done').exists()
+    owner._requests(candidates)
+    assert [row['kind'] for row in owner.calls] == ['submit']
+    assert path.with_suffix('.done').read_text() == 'answered submit\n'

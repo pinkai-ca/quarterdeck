@@ -29,7 +29,7 @@ def arrival_paths(runtime, *, kinds=None):
     remain the only queue. A missing or malformed entry still has its ordinary
     dispatch/error path in the full request step.
     """
-    ordered = []
+    ordered, unranked = [], []
     for path in (runtime / 'requests').glob('*.json'):
         try:
             if kinds is None or load(path).get('kind') in kinds:
@@ -41,10 +41,15 @@ def arrival_paths(runtime, *, kinds=None):
                     at = datetime.min.replace(tzinfo=timezone.utc)
                 ordered.append((at, path.stat().st_mtime_ns, path.name, path))
         except (OSError, ValueError, TypeError, ShipError):
-            pass  # unknown kinds are never dispatched at a duty boundary
+            if kinds is None:
+                # The full writer still owns this path and its named outcome;
+                # an unreadable sort key never discards or authorizes it.
+                unranked.append(path)
+            # Unknown kinds/order stay out of the duty-boundary slice.
         yield None  # directory/file inspection is one cooperative scan unit
     for _, _, _, path in sorted(ordered):
         yield path
+    yield from unranked
 
 
 class RequestHold(ShipError):
