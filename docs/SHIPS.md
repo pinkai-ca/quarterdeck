@@ -31,7 +31,7 @@ Where one of your ships under `ships/` already has a desk in a session with `hum
 
 Further office seats are yours to declare. Add each seat to `office/ship.toml` with a role such as counsel or communications, in a session with `human = true`, then bring each seat up with `.venv/bin/qd --ship office up <seat>`. `qd init`, run again, starts the desk alone, even with other office seats marked up.
 
-While no office exists, `qd setup` runs `qd init`, and ends with the desk ready.
+While no office exists, `qd setup` makes the office first, then goes on to a project ship and its crew unless you stop at the office.
 
 ## Ask your desk for a project ship
 
