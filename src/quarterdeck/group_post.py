@@ -108,7 +108,11 @@ def submit(ship: Ship, store: post.Store, group_name: str, sender: str, body: st
                    for key, value in (('subject', subject), ('due', due), ('speed', speed))):
                 raise ShipError('group --re cannot change the original order fields')
         else:
-            root = store.prepare('order', sender, group.lead, body, subject=subject, due=due, speed=speed)
+            root = None
+        taken = post.window_shorts(ship.runtime)  # each drop folder listed once, within its window
+        if root is None:
+            root = store.prepare('order', sender, group.lead, body, subject=subject, due=due, speed=speed,
+                                 taken=taken)
         path = _folder(ship) / f'{root.id}.json'
         if path.exists():
             data = _load(path)
@@ -120,17 +124,7 @@ def submit(ship: Ship, store: post.Store, group_name: str, sender: str, body: st
                 raise ShipError('cannot start a group review of a closed order')
             # Root may not be published yet, so construct copies without Store.prepare's
             # ordinary reference lookup. The journal reserves all identities together.
-            copies = []
-            taken = {root.short}
-            for member in group.members:
-                while True:
-                    copy = store.prepare('order', group.lead, member, root.body,
-                                         subject=root.subject, due=root.due, speed=root.speed)
-                    if copy.short not in taken:
-                        break
-                taken.add(copy.short)
-                copies.append(post.Message(copy.id, copy.kind, copy.sender, copy.to, copy.at,
-                                           copy.body, root.id, copy.subject, copy.due, copy.speed))
+            copies = _copies(store, group, root, taken)
             data = dict(format=1, group=group_name, lead=group.lead,
                         root=_encoded(root), copies=[_encoded(m) for m in copies], notice=None, failed={})
             _save(path, data)  # intent precedes every immutable post
@@ -144,17 +138,19 @@ def _fanout(store: post.Store, data: dict) -> None:
         _publish(store, _message(item))
 
 
-def _copies(store: post.Store, group, root: post.Message) -> list[post.Message]:
-    """Child orders from the lead, one per member, in the root's own words."""
+def _copies(store: post.Store, group, root: post.Message, taken: set[str] | None = None) -> list[post.Message]:
+    """Child orders from the lead, one per member, in the root's own words.
+
+    Their shorts avoid the root's, each other's, and the round's ``taken`` (the drop windows the round has
+    listed); without a round, each drop folder's window is listed once here, never past it.
+    """
     copies = []
-    taken = {root.short}
+    if taken is None:
+        taken = post.window_shorts(store.dir.parent.parent)
+    taken.add(root.short)
     for member in group.members:
-        while True:
-            copy = store.prepare('order', group.lead, member, root.body,
-                                 subject=root.subject, due=root.due, speed=root.speed)
-            if copy.short not in taken:
-                break
-        taken.add(copy.short)
+        copy = store.prepare('order', group.lead, member, root.body,
+                             subject=root.subject, due=root.due, speed=root.speed, taken=taken)
         copies.append(post.Message(copy.id, copy.kind, copy.sender, copy.to, copy.at,
                                    copy.body, root.id, copy.subject, copy.due, copy.speed))
     return copies
@@ -208,6 +204,7 @@ def staged_steps(ship: Ship, store: post.Store):
     except (OSError, ShipError):
         yield ('drop', 'drop unreadable')
         return
+    taken: set[str] = set()  # this round's: the windows listed so far and the ids prepared
     for name, mode in sorted(seats):
         yield None
         folder_name = f'drop/{name}'
@@ -222,17 +219,26 @@ def staged_steps(ship: Ship, store: post.Store):
         except (OSError, ShipError):
             yield (folder_name, 'drop unreadable')
             continue
-        yield from staged_folder_steps(ship, store, name, files)
+        taken |= post.queued_shorts(files)
+        yield from staged_folder_steps(ship, store, name, files, taken=taken)
 
 
-def staged_folder_steps(ship: Ship, store: post.Store, name: str, files):
-    """Process only the caller's bounded no-follow snapshot, before its ordinary drops."""
+def staged_folder_steps(ship: Ship, store: post.Store, name: str, files, *, taken: set[str] | None = None):
+    """Process only the caller's bounded no-follow snapshot, before its ordinary drops.
+
+    ``taken`` is the round's set of shorts: the windows it has listed and the ids it has prepared. Without
+    one, the set is this folder's window alone, with the ids prepared here.
+    """
+    if taken is None:
+        taken = post.queued_shorts(files)
     for file in sorted(file for file, _ in files if file.endswith('.group.json')):
         with post.admission(ship.runtime, '@groups'):
             try:
-                reason = _file_intent(ship, store, name, post.drop_dir(ship.runtime, name) / file)
+                reason = _file_intent(ship, store, name, post.drop_dir(ship.runtime, name) / file, taken)
             except post_dir.ReadLimit:
                 reason = post.DROP_SIZE_REASON
+            except post.IdSpaceExhausted:
+                reason = post.ID_SPACE_REASON
         yield (f'drop/{name}', reason) if reason else None
 
 
@@ -254,7 +260,7 @@ INTENT_REASONS = (INTENT_UNREADABLE, INTENT_MALFORMED, INTENT_OTHER_ROOT, NO_GRO
                   JOURNAL_MALFORMED)
 
 
-def _file_intent(ship: Ship, store: post.Store, seat: str, path: Path) -> str | None:
+def _file_intent(ship: Ship, store: post.Store, seat: str, path: Path, taken: set[str]) -> str | None:
     """File one intent. Return a hold reason, or None when it is published and removed."""
     if not post._regular(path):
         if post_dir.gone(path):
@@ -310,12 +316,14 @@ def _file_intent(ship: Ship, store: post.Store, seat: str, path: Path) -> str | 
                 return 'id already stored'
             elif not post._regular(stored):
                 store.write(message)
-            copies = _copies(store, group, message)
+            copies = _copies(store, group, message, taken)
             payload = dict(format=1, group=data['group'], lead=group.lead,
                            root=_encoded(message), copies=[_encoded(item) for item in copies],
                            notice=None, failed={})
             _save(journal, payload)
             _fanout(store, payload)
+    except post.IdSpaceExhausted:
+        raise  # its own fixed reason, given by the caller
     except ShipError as error:
         return LINK_HELD if str(error).startswith(post_dir.LINK_HELD) else PUBLICATION_REFUSED
     except OSError:

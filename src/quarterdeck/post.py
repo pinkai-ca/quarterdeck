@@ -161,6 +161,8 @@ class Store:
         self._cache_at: int | None = None
         self._reference_messages: list[Message] | None = None
         self._references: dict[str, list[Message]] = {}
+        self._short_messages: list[Message] | None = None
+        self._short_set: frozenset[str] = frozenset()
 
     def new(self, kind: str, sender: str, to: str, body: str, **fields) -> Message:
         fixed = _FIXED_REPORT.get()
@@ -177,8 +179,11 @@ class Store:
         return projected(self.dir.parent.parent, local_view(self.dir.parent.parent, message),
                          open_obligation=message.kind in ("order", "question"))
 
-    def prepare(self, kind: str, sender: str, to: str, body: str, **fields) -> Message:
-        """Construct an immutable intent before publication, without changing its format."""
+    def prepare(self, kind: str, sender: str, to: str, body: str, *, taken: set[str] | None = None,
+                **fields) -> Message:
+        """Construct an immutable intent before publication, without changing its format.
+
+        ``taken`` is a filing round's set of shorts (see ``_new_id``); the short chosen here is added to it."""
         if kind not in KINDS:
             raise ShipError(f"no message kind {kind!r}; the kinds are {', '.join(KINDS)}")
         if fields.get("speed") not in (None, *SPEEDS):
@@ -188,18 +193,36 @@ class Store:
         from .fleet_post import wire_parties
         sender, to = wire_parties(self.dir.parent.parent, sender, to)
         at = now()
-        message = Message(self._new_id(kind, sender, at), kind, sender, to, at, body, **fields)
+        message = Message(self._new_id(kind, sender, at, taken=taken), kind, sender, to, at, body, **fields)
         return message
 
-    def _new_id(self, kind: str, sender: str, at: datetime) -> str:
-        taken = {m.short for m in self.all()}
-        taken.update(_drop_shorts(self.dir.parent / "drop"))
+    def _new_id(self, kind: str, sender: str, at: datetime, *, taken: set[str] | None = None) -> str:
+        """A fresh id whose short no stored message and no listed drop holds, in a bounded number of draws.
+
+        Avoided: the store's shorts, and either a filing round's ``taken`` (the shorts it has prepared and the
+        drop windows it has listed, to which the chosen short is added) or, outside a round, each drop folder's
+        window of DROP_MAX_FILES names. No drop folder is listed past its window: a queued short beyond it may
+        be drawn again, and Store.get then refuses that short as ambiguous, never guesses. The sender's own
+        drop is asked by name for the exact candidate, which no window can miss. After ID_DRAWS draws it
+        refuses with a fixed reason; it never spins.
+        """
+        avoid = set(self._shorts())
+        avoid.update(window_shorts(self.dir.parent.parent) if taken is None else taken)
         from .post_view import taken_shorts
-        taken.update(taken_shorts(self.dir.parent))  # inside a jail's view, the shorts other seats' messages hold
-        while True:
+        avoid.update(taken_shorts(self.dir.parent))  # inside a jail's view, the shorts other seats' messages hold
+        try:
+            own = drop_dir(self.dir.parent.parent, sender)
+        except ShipError:
+            own = None
+        for _ in range(ID_DRAWS):
             candidate = f"{kind[:3]}-{at.strftime('%Y%m%d-%H%M')}-{sender}-{secrets.token_hex(2)}"
-            if short_of(candidate) not in taken:
-                return candidate
+            short = short_of(candidate)
+            if short in avoid or (own is not None and not _absent(own / f"{candidate}.json")):
+                continue
+            if taken is not None:
+                taken.add(short)
+            return candidate
+        raise IdSpaceExhausted(ID_SPACE_REASON)
 
     def write(self, message: Message) -> Path:
         return self._admitted(message, lambda: self._write(message))
@@ -396,6 +419,13 @@ class Store:
         """Every message, oldest first."""
         return list(self._loaded()[0])
 
+    def _shorts(self) -> frozenset[str]:
+        """The stored shorts, built once for each load of the store as get's index is, not once for each id."""
+        messages = self._loaded()[0]
+        if messages is not self._short_messages:
+            self._short_messages, self._short_set = messages, frozenset(m.short for m in messages)
+        return self._short_set
+
     def get(self, ref: str) -> Message:
         """A message by its id or its short form; ambiguity refused, never guessed."""
         messages = self._loaded()[0]
@@ -465,6 +495,8 @@ class Store:
 
 # A seat writes a new message only here. The service files it and is the one that sets the sender.
 DROP_MAX_FILES = 128
+ID_DRAWS = 64  # a short's suffix has 65,536 values per kind; a draw this many times taken refuses, never spins
+ID_SPACE_REASON = "no free short id"
 DROP_COUNT_REASON = "drop filing budget reached repeatedly"
 DROP_STALLED_REASON = "drop filing window made no progress"
 DROP_BACKLOG_ROUNDS = 3
@@ -493,7 +525,12 @@ DROP_HOLD_REASONS = (
     DROP_SIZE_REASON,
     DROP_COUNT_REASON,
     DROP_STALLED_REASON,
+    ID_SPACE_REASON,
 )
+
+
+class IdSpaceExhausted(ShipError):
+    """No free short drawn in ID_DRAWS tries: refused with the one fixed reason."""
 
 
 def drop_dir(runtime: Path, seat: str) -> Path:
@@ -567,27 +604,40 @@ def _read_regular(path: Path, *, limit: int | None = None) -> str | None:
         return None
 
 
-def _drop_shorts(root: Path) -> set[str]:
-    """Short ids already sitting in drop folders, so a second post does not reuse one.
+def _absent(path: Path) -> bool:
+    """True only when the name is certainly missing; a link, an unreadable way or any other name is taken."""
+    try:
+        return _mode(path) is None
+    except (OSError, ShipError):
+        return False
+
+
+def window_shorts(runtime: Path) -> set[str]:
+    """Short ids queued in each drop folder's window: at most DROP_MAX_FILES names listed per folder.
 
     Nothing here raises for a link: a seat's planted link must not stop another writer's id.
     """
-    found: set[str] = set()
+    root = runtime / "post" / "drop"
     try:
         seats = post_dir.list_children(root)
     except (OSError, ShipError):
-        return found
+        return set()
+    found: set[str] = set()
     for name, mode in seats:
         if not stat.S_ISDIR(mode):
             continue
         try:
-            files = post_dir.list_children(root / name)
+            found |= queued_shorts(post_dir.list_children(root / name, limit=DROP_MAX_FILES))
         except (OSError, ShipError):
             continue
-        for file, kind in files:
-            if stat.S_ISREG(kind) and file.endswith(".json") and not file.endswith(".group.json"):
-                found.add(short_of(file[:-5]))
     return found
+
+
+def queued_shorts(files) -> set[str]:
+    """The shorts of the queued messages in one listed window of (name, mode) pairs."""
+    return {short_of(file[:-5]) for file, kind in files
+            if stat.S_ISREG(kind) and file.endswith(".json") and not file.endswith(".group.json")
+            and "-" in file[:-5]}
 
 
 DROP_WAIT_SECONDS = 120.0
@@ -920,11 +970,13 @@ def _drop_steps(store: Store, ship=None, *, seats: frozenset[str] | None = None,
             hold(folder, "drop unreadable")
             continue
         windows.append((name, files))
-    # Group and ordinary passes share exactly these windows; no second folder listing.
+    # Group and ordinary passes share exactly these windows; no second folder listing. The round's ids avoid
+    # the shorts queued in them and the shorts this round prepares.
     if ship is not None and seats is None:
         from . import group_post
+        taken = set().union(*(queued_shorts(files) for _, files in windows))
         for name, files in windows:
-            for held in group_post.staged_folder_steps(ship, store, name, files):
+            for held in group_post.staged_folder_steps(ship, store, name, files, taken=taken):
                 if held is not None:
                     hold(*held)
                 yield
