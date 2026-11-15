@@ -301,30 +301,38 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
     return jail
 
 
-def framework_checkouts(ship: Ship) -> tuple[Path, ...]:
-    """The framework checkouts a jailed seat must never work in, by real path.
+def is_framework_checkout(folder: Path) -> bool:
+    """Whether a folder is a checkout of the framework, by what it holds."""
+    return ((folder / '.git').exists() and (folder / 'pyproject.toml').is_file()
+            and (folder / 'src' / 'quarterdeck' / 'sandbox.py').is_file())
 
-    The project folder that holds the fleet (``ships/`` and ``office/``) is the framework's checkout in the
-    ship's own layout, and the checkout this code runs from is one when it is a checkout at all. Either holds
-    the framework's code and every ship's folder, and a jail writes its working directory.
+
+def framework_checkouts(ship: Ship) -> tuple[Path, ...]:
+    """The framework checkouts a seat's own cwd must never be or hold, by real path.
+
+    The project folder that holds the fleet (``ships/`` and ``office/``) when it is a checkout, as in the ship's
+    own layout, and the checkout this code runs from when it runs from one. A project that holds a fleet and is
+    not a checkout is the fleet's own business: its fence keeps the other ships out of a jail working there.
     """
     found = []
     if roots := fleet_roots(ship.folder):
-        found.append(Path(os.path.realpath(roots[0].parent)))
-    executing = Path(__file__).resolve().parents[2]
-    if (executing / '.git').exists() and (executing / 'src' / 'quarterdeck' / 'sandbox.py').is_file():
-        found.append(Path(os.path.realpath(executing)))
-    return tuple(dict.fromkeys(found))
+        found.append(roots[0].parent)
+    found.append(Path(__file__).resolve().parents[2])
+    return tuple(dict.fromkeys(Path(os.path.realpath(folder)) for folder in found if is_framework_checkout(folder)))
 
 
 def refuse_shared_workspace(ship: Ship, seat_name: str, workspace: Path) -> None:
-    """Refuse a jailed seat whose working directory is not its own, by real path (links resolved).
+    """Refuse a jailed seat whose declared cwd is not its own, by real path (links resolved).
 
-    A jail binds its working directory writable. Where that folder is another declared seat's, or holds one,
-    the jailed seat would write the other seat's work, and what it leaves there the other seat reads and may run
-    outside any jail. The framework's checkout, or a folder holding it, is refused the same way, first: it holds
-    the framework's code and every ship's folder.
+    A jail binds its working directory writable. Where a seat declares a cwd of its own (a hand's
+    ``work/hands/<name>``) and that folder is another declared seat's, or holds one, the jailed seat would write the
+    other seat's work, which that seat reads and may run outside any jail. The framework's checkout, or a folder
+    holding it, is refused the same way, first: it holds the framework's code and every ship's folder. A seat at the
+    ship's common workspace, which declares no cwd, and qd check's seats, which no ship file declares, are not bound.
     """
+    spec = ship.seats.get(seat_name)
+    if spec is None or spec.cwd is None:
+        return
     real = Path(os.path.realpath(workspace))
     for checkout in framework_checkouts(ship):
         if checkout.is_relative_to(real):
@@ -333,10 +341,10 @@ def refuse_shared_workspace(ship: Ship, seat_name: str, workspace: Path) -> None
                             f"framework's checkout {checkout}; a jailed seat never works there, since it holds the "
                             f"framework's code and every ship's folder. Give {seat_name} a cwd of its own, such as "
                             "a folder under the checkout's work/hands/")
-    for other, spec in ship.seats.items():
+    for other, theirs_spec in ship.seats.items():
         if other == seat_name:
             continue
-        theirs = Path(os.path.realpath(ship.cwd_of(spec)))
+        theirs = Path(os.path.realpath(ship.cwd_of(theirs_spec)))
         if theirs == real or theirs.is_relative_to(real):
             what = 'is also' if theirs == real else 'holds'
             raise ShipError(f"{seat_name}: sandboxed with its working directory at {real}, which {what} seat "
