@@ -181,6 +181,8 @@ class Task:
     called_at: datetime | None = None
     acknowledged_at: datetime | None = None
     running_seen: bool = False
+    kind: str = 'Bash'
+    evidence_errors: tuple[str, ...] = ()
 
 
 class BackgroundBash:
@@ -283,6 +285,11 @@ class BackgroundBash:
             return
         self.end(self.tasks[target], 'task-stop', at)
 
+    def invalidate(self, task, reason):
+        task.phase, task.invalid = 'unknown', True
+        if reason not in task.evidence_errors:
+            task.evidence_errors += (reason,)
+
     def end(self, task, status, at):
         if at is not None:
             task.other_evidence_at = max(at, task.other_evidence_at)
@@ -290,9 +297,9 @@ class BackgroundBash:
                       and not task.running_seen and task.latest == task.acknowledged_at
                       and task.called_at is not None and at >= task.called_at)
         if at is None or at < task.latest and not before_ack or task.invalid:
-            task.phase, task.invalid = 'unknown', True
+            self.invalidate(task, 'terminal-time-or-status-conflict')
         elif task.phase == 'ended' and task.terminal != status:
-            task.phase, task.invalid = 'unknown', True
+            self.invalidate(task, 'terminal-time-or-status-conflict')
         elif task.phase != 'ended':
             task.phase, task.terminal, task.latest = 'ended', status, at
         # Matching duplicate carriers keep the first terminal time.
@@ -359,7 +366,7 @@ class BackgroundBash:
         for identity in identities(text):
             target = identity if identity in self.tasks else self.task_calls.get(identity)
             if target is not None:
-                self.tasks[target].phase, self.tasks[target].invalid = 'unknown', True
+                self.invalidate(self.tasks[target], 'unparsed-task-notification')
 
     def notice(self, task, identity, status, note, at, version, carrier):
         resumed = (status == 'stopped' and note in RESUME_NOTES
@@ -375,7 +382,7 @@ class BackgroundBash:
         if at is not None and not resumed:
             task.other_evidence_at = max(at, task.other_evidence_at)
         if not supported:
-            task.phase, task.invalid = 'unknown', True
+            self.invalidate(task, 'unmeasured-or-conflicting-task-notification')
         elif terminal:
             self.end(task, status, at)
         else:
@@ -398,16 +405,20 @@ class BackgroundBash:
             task.other_evidence_at = max(at, task.other_evidence_at)
         if (version not in STATUS_VERSIONS or attachment.get('status') != 'running' or at is None
                 or at < task.latest or task.phase == 'ended' or task.invalid):
-            task.phase, task.invalid = 'unknown', True
+            self.invalidate(task, 'unmeasured-or-conflicting-task-status')
         else:
             task.phase, task.latest = 'pending', at
 
     def task_states(self, launched_at=None):
         """Launch-scoped death is its own state, without changing native completion evidence."""
         for task in self.tasks.values():
+            if (launched_at is not None and task.kind == 'Bash' and task.version in EXIT_VERSIONS
+                    and task.invalid and task.called_at is not None and task.called_at < launched_at):
+                yield replace(task, phase='ended-by-relaunch-after-unreadable-evidence', terminal=None)
+                continue
             measured = task.phase == 'pending' or (task.resume_stopped_at is not None
                                                   and task.latest == task.resume_stopped_at)
-            if (launched_at is not None and task.version in EXIT_VERSIONS and measured
+            if (launched_at is not None and task.kind == 'Bash' and task.version in EXIT_VERSIONS and measured
                     and not task.invalid and task.phase != 'ended'
                     and task.started < launched_at
                     and (task.latest < launched_at or task.resume_stopped_at is not None
@@ -420,7 +431,7 @@ class BackgroundBash:
     def state(self, state, *, launched_at=None):
         # A separate admission view; the cached native tasks and their completion state stay unchanged.
         active = [task for task in self.task_states(launched_at)
-                  if task.phase not in ('ended', 'ended-by-relaunch')]
+                  if task.phase not in ('ended', 'ended-by-relaunch', 'ended-by-relaunch-after-unreadable-evidence')]
         unknown = (self.unbound or self.early or self.unknown_calls
                    or any(task.phase == 'unknown' for task in active))
         return replace(state,

@@ -137,14 +137,40 @@ def test_old_pending_command_ends_by_measured_program_exit(tmp_path, version):
     assert reader.state(launched_at=AT + timedelta(seconds=10)).pending_tools == ()
 
 
-@pytest.mark.parametrize('fault', ['no-launch', 'new-command', 'new-result', 'new-running', 'invalid', 'unclassified-notice'])
+@pytest.mark.parametrize('fault', ['no-launch', 'new-command', 'new-result', 'new-running', 'unclassified-notice'])
 def test_relaunch_never_settles_unproved_or_current_work(tmp_path, fault):
     rows = load('old-resume-stopped');launch = AT + timedelta(seconds=10)
     if fault == 'no-launch': launch = None
     elif fault == 'new-command': launch = AT + timedelta(seconds=1)
     elif fault == 'new-result': rows[2]['timestamp'] = (AT + timedelta(seconds=11)).isoformat()
     elif fault == 'new-running': rows.append(row('attachment', 11, attachment=dict(type='task_status', taskId=TASK, taskType='local_bash', status='running')))
-    elif fault == 'invalid': rows.append(notice('user', 6, task='synthetic wrong task'))
     elif fault == 'unclassified-notice': rows[-1]['message']['content'] = text(status='stopped', note=True)
     record, _ = read(tmp_path, rows)
     assert claude._Reader(record).state(launched_at=launch).pending_tools != ()
+
+
+@pytest.mark.parametrize('current', [False, True])
+@pytest.mark.parametrize('kind', ['Bash', 'Monitor', 'synthetic-unmeasured-kind'])
+def test_only_an_old_invalid_measured_bash_task_ends_by_relaunch(tmp_path, current, kind):
+    rows = initial()
+    malformed = ('<task-notification><task-id>' + TASK + '</task-id>'
+                 '<summary>synthetic unparsed notice</summary></task-notification>')
+    rows.append(row('user', 4, origin=dict(kind='task-notification'),
+                    message=dict(role='user', content=malformed)))
+    record, native = read(tmp_path, rows)
+    assert native.pending_tools is None
+    reader = claude._Reader(record)
+    task = reader.background.tasks[CALL]
+    assert task.invalid and task.evidence_errors == ('unparsed-task-notification',)
+    task.kind = kind
+    launch = AT + timedelta(seconds=1 if current else 10)
+    projected = list(reader.background.task_states(launch))[0]
+    if not current and kind == 'Bash':
+        assert projected.phase == 'ended-by-relaunch-after-unreadable-evidence'
+        assert projected.terminal is None and projected.invalid
+        assert projected.evidence_errors == ('unparsed-task-notification',)
+        assert reader.state(launched_at=launch).pending_tools == ()
+    else:
+        assert projected.phase == 'unknown'
+        assert reader.state(launched_at=launch).pending_tools is None
+    assert task.phase == 'unknown' and task.invalid
