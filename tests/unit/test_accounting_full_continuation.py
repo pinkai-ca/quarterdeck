@@ -1,9 +1,11 @@
 """Only a parent's current full generation can finish its identity retry."""
 
 import time
+import os
+import signal
 from types import SimpleNamespace
 
-from quarterdeck import accounting_gate, record_owner
+from quarterdeck import accounting_gate, accounting_slices, record_owner
 from quarterdeck.accounting_slices import Driver, FullContinuation
 from .test_accounting_slices import finish, world
 
@@ -100,6 +102,32 @@ def test_identity_retry_is_refused_when_its_full_generation_moves(tmp_path, monk
         assert driver.scope is None, 'stale retry must be replaced by a full job'
         assert not svc.ledger.catching_up()
         assert driver.full_continuation is None
+    finally:
+        driver.close()
+        svc.ledger.close()
+
+
+def test_active_record_scope_yields_to_the_full_backstop(tmp_path, monkeypatch):
+    svc, seat, _, driver = ready(tmp_path, monkeypatch)
+    start = driver.start
+    def stopped(service):
+        result = start(service)
+        assert driver.scope == {seat.name}
+        os.kill(driver.process.pid, signal.SIGSTOP)
+        assert os.WIFSTOPPED(os.waitpid(driver.process.pid, os.WUNTRACED)[1])
+        return result
+    monkeypatch.setattr(driver, 'start', stopped)
+    monkeypatch.setattr(accounting_slices, 'BUDGET', 0.02)
+    try:
+        driver.step(svc)
+        assert driver.active and driver.scope == {seat.name}
+        scoped_generation = driver.full_generation
+        driver.gate.partitions.due = time.monotonic() - 1
+        monkeypatch.setattr(driver, 'start', start)
+        finish(driver, svc)
+        assert driver.scope is None and not svc.ledger.catching_up()
+        assert driver.full_generation > scoped_generation
+        assert driver.gate.partitions.due > time.monotonic()
     finally:
         driver.close()
         svc.ledger.close()
