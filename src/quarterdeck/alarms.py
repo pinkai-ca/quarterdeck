@@ -12,7 +12,8 @@ from .ship import ShipError
 ESCALATE_SECONDS = 600
 UNKNOWN = object()
 FILES = {'human': 'human-alert.json', 'detached': 'unconfirmed-delivery-alert.json',
-         'selection': 'selection-alert.json', 'manual-fresh': 'manual-fresh-alert.json'}
+         'selection': 'selection-alert.json', 'manual-fresh': 'manual-fresh-alert.json',
+         'write-bound-floor': 'write-bound-floor-alert.json'}
 
 
 def now():

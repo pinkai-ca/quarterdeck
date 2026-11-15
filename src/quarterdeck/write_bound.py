@@ -24,6 +24,13 @@ Nothing bounds those but this alarm. It needs no daemon and no root:
   over now. A jail can raise the machine's load on purpose, so unmeasured is no free window: ``PASSES`` unmeasured
   passes in a row stop the seat as a measured over does, and a measured pass starts the count again
   (``runtime/post/write-bound/unmeasured/<seat>.json``, which no jail is shown).
+- One look over every jail has a budget on the clock (``LOOK``). A seat it did not reach is measured first on the
+  next look, so no seat waits behind another's slow walk for more than one look.
+- A backstop no walk can be starved out of: at the end of each look, one ``statvfs`` for each device (``disk_space``) a jail writes.
+  Under its floor (``floor``), or fallen more than ``FALL`` since the last look, the device stops every jailed seat
+  that went unmeasured there this look or whose bytes there grew since their last whole measure. A seat measured
+  whole there and not grown stays up; its first measure is its baseline. The hold says why, the status line names
+  it, and the service tells the desk (``floor_reason``).
 - Over a bound, the hold is placed first, then the jail's whole process tree is stopped with SIGSTOP and killed with
   SIGKILL, an endpoint seat's relay included. The hold (``runtime/post/write-bound/<seat>.json``, which no jail is
   shown) registers in ``relaunch_intent.HOLDS`` and clears the seat's relaunch intent where it is placed, so no
@@ -62,8 +69,19 @@ ENTRIES = 200_000  # a hand's seat folder held about 30,000 entries; a walk of 2
 SECONDS = 2.0  # the alarm thread's own CPU time for one seat's whole measure, its open files included
 # On the clock. On 15 Nov a walk of a 47-entry home passed 2 s at load 12 to 16 with the alarm thread starved: the
 # clock read the service's load, not the jail's tree. Passing this bound reads as unmeasured, never as over.
-WALL = 30.0
-PASSES = 5  # unmeasured passes in a row that stop a seat as a measured over does
+# La'an's terms (15 Nov): an unmeasured window of about 30 s at most, three looks, where a writer at full speed puts
+# some 0.4 GiB a second on the disk. A hand's walk takes well under a second on a machine that is not starved.
+WALL = 10.0
+PASSES = 3  # unmeasured passes in a row that stop a seat as a measured over does
+LOOK = 10.0  # on the clock, for one look over every jail; a walk once started runs to its own bounds
+# The free-space floor of a device a jail writes, judged on its free space as a user's write sees it (f_bavail): the
+# smaller of these two (La'an, 15 Nov), 50 GiB on / and about 2.2 GiB on /tmp. The larger was under both disks' free
+# space that day: / held 369.3 GiB free of 7389 GiB, 5% being 369.5 GiB, and /tmp is 44.9 GiB in all. On /tmp an
+# endpoint seat's relay folder is in the 64 MiB group, so its walk catches a jail there long before any floor; the
+# floor is the backstop for the disk.
+FLOOR_BYTES = 50 * GiB
+FLOOR_SHARE = 0.05  # of the device's size
+FALL = 20 * GiB  # a fall of more than this between two looks trips the floor as well
 DEPTH = 512  # folders held open at once; real trees are a few dozen deep, and the service's descriptors are finite
 # Measured (15 Nov): a writer at full speed against a 2 GiB bound, looked at every 1 s, was stopped 0.08 GiB over;
 # every 5 s, 1.97 GiB over. The overshoot is the write rate times the period, so the period is the short one.
@@ -115,6 +133,7 @@ class Group:
     held: int = 0
     devices: set = field(default_factory=set)
     inodes: set = field(default_factory=set)
+    on: dict = field(default_factory=dict)  # device -> bytes counted on it
 
 
 @dataclass
@@ -135,6 +154,18 @@ class Reading:
     pids: dict[int, str]
     # (group, held, bound, why) where the clock cut the walk short and nothing it reached was over; else None
     unmeasured: tuple[str, int, int, str] | None = None
+    walked: set = field(default_factory=set)  # the folders walked whole
+    opened: bool = False  # the processes' open files were read whole
+    on: dict = field(default_factory=dict)  # device -> bytes counted on it, open files included
+
+
+@dataclass
+class State:
+    """What one look leaves the next: the seats it did not reach, each device's free space, each seat's bytes."""
+
+    unreached: list = field(default_factory=list)
+    free: dict = field(default_factory=dict)  # device -> free bytes at the last look
+    sizes: dict = field(default_factory=dict)  # seat -> {device: bytes at its last whole measure there}
 
 
 # -- processes -------------------------------------------------------------------------
@@ -311,6 +342,7 @@ def _count(group: Group, info) -> None:
     if key not in group.inodes:
         group.inodes.add(key)
         group.held += info.st_blocks * 512
+        group.on[info.st_dev] = group.on.get(info.st_dev, 0) + info.st_blocks * 512
 
 
 def open_deleted(pids, budget: Budget) -> dict[tuple[int, int], int]:
@@ -351,35 +383,58 @@ def groups(ship, jail: Jail, bounds=None) -> list[Group]:
 
 
 def measure(ship, jail: Jail, *, bounds=None, budget: Budget | None = None) -> Reading:
-    """What the jail holds in each group, and the first group over its bound, if any."""
+    """What the jail holds in each group, and the first group over its bound, if any.
+
+    The processes' open files are read first and the small folders walked first, so a walk the clock cuts short has
+    most often read whole every device but the one it was cut on: the free-space floor judges a seat by device.
+    """
     budget = (budget or Budget()).start()
     found = groups(ship, jail, bounds)
-    current = found[0]
+    current = max(found, key=lambda group: group.bound)
+    deleted: dict = {}
+    reading = Reading(jail.seat, found, None, jail.pids)
     try:
-        for current in found:
+        deleted = open_deleted(jail.pids, budget)
+        reading.opened = True
+        for current in sorted(found, key=lambda group: group.label != SMALL):
             for folder in current.folders:
                 walk(folder, current, budget)
-        current = max(found, key=lambda group: group.bound)
-        for key, size in open_deleted(jail.pids, budget).items():
-            # Its folder is unknown once its name is gone: the largest bound on its device takes it.
-            places = [group for group in found if key[0] in group.devices]
-            if places:
-                place = max(places, key=lambda group: group.bound)
-                if key not in place.inodes:
-                    place.inodes.add(key)
-                    place.held += size
+                reading.walked.add(folder)
     except Over as why:
-        return Reading(jail.seat, found, (current.label, current.held, current.bound, str(why)), jail.pids)
+        reading.over = (current.label, current.held, current.bound, str(why))
+        return reading
     except Unmeasured as why:
+        _deleted(found, deleted, reading)
         for group in found:  # what the walk reached still counts: over already is over now
             if group.held > group.bound:
-                return Reading(jail.seat, found, (group.label, group.held, group.bound,
-                                                  f'over its bound before {why}'), jail.pids)
-        return Reading(jail.seat, found, None, jail.pids, (current.label, current.held, current.bound, str(why)))
+                reading.over = (group.label, group.held, group.bound, f'over its bound before {why}')
+                return reading
+        reading.unmeasured = (current.label, current.held, current.bound, str(why))
+        return reading
+    _deleted(found, deleted, reading)
     for group in found:
         if group.held > group.bound:
-            return Reading(jail.seat, found, (group.label, group.held, group.bound, 'over its bound'), jail.pids)
-    return Reading(jail.seat, found, None, jail.pids)
+            reading.over = (group.label, group.held, group.bound, 'over its bound')
+            return reading
+    return reading
+
+
+def _deleted(found: list[Group], deleted: dict, reading: Reading) -> None:
+    """Add the open files whose names are gone; then the bytes on each device, those files included."""
+    for key, size in deleted.items():
+        # Its folder is unknown once its name is gone: the largest bound on its device takes it.
+        places = [group for group in found if key[0] in group.devices]
+        if places:
+            place = max(places, key=lambda group: group.bound)
+            if key not in place.inodes:
+                place.inodes.add(key)
+                place.held += size
+                place.on[key[0]] = place.on.get(key[0], 0) + size
+        elif all(key not in group.inodes for group in found):
+            reading.on[key[0]] = reading.on.get(key[0], 0) + size  # its device's folders were not reached
+    for group in found:
+        for device, count in group.on.items():
+            reading.on[device] = reading.on.get(device, 0) + count
 
 
 # -- the stop and the hold ------------------------------------------------------------------
@@ -397,11 +452,13 @@ def size(count: int) -> str:
     return f'{count / GiB:.2f} GiB' if count >= GiB else f'{count / MiB:.1f} MiB'
 
 
-def place(runtime, reading: Reading, who: str = 'the write-bound alarm') -> dict:
+def place(runtime, reading: Reading, who: str = 'the write-bound alarm', floor: bool = False) -> dict:
     """Write the hold, then clear the seat's relaunch intent: from here nothing brings the seat back by itself."""
     label, held, bound, why = reading.over
     data = dict(version=1, seat=reading.seat, at=datetime.now(timezone.utc).isoformat(), group=label,
                 held=held, bound=bound, why=why, by=who)
+    if floor:
+        data['floor'] = True  # held, bound: the device's free space and its floor
     post_dir.ensure_directory(folder(runtime))
     post_dir.replace_bytes(path(runtime, reading.seat), (json.dumps(data) + '\n').encode())
     relaunch_intent.clear(runtime, reading.seat, f'its write-bound hold, placed by {who}')
@@ -444,11 +501,11 @@ def _state(pid: int) -> str:
         return 'X'
 
 
-def stop(ship, reading: Reading, log, who: str = 'the write-bound alarm') -> dict:
-    data = place(ship.runtime, reading, who)
+def stop(ship, reading: Reading, log, who: str = 'the write-bound alarm', floor: bool = False) -> dict:
+    data = place(ship.runtime, reading, who, floor)
     killed = kill(reading.pids)
     log('write-bound', seat=reading.seat, group=data['group'], held=data['held'], bound=data['bound'],
-        why=data['why'], killed=len(killed))
+        why=data['why'], killed=len(killed), **({'floor': True} if floor else {}))
     return data
 
 
@@ -482,6 +539,8 @@ def reason(runtime, seat: str) -> str | None:
         return f'{error}; held: qd up {seat} lifts it'
     if data is None:
         return None
+    if data.get('floor') is True and isinstance(data.get('why'), str):
+        return f"stopped by its disk's free-space floor ({data['why']}); held: qd up {seat} lifts it"
     try:
         what = f"{data['group']} {size(int(data['held']))} of {size(int(data['bound']))}"
     except (KeyError, TypeError, ValueError):
@@ -489,6 +548,15 @@ def reason(runtime, seat: str) -> str | None:
     why = data.get('why') if isinstance(data.get('why'), str) else ''
     detail = f'{what}' if why in ('', 'over its bound') else f'{what}, {why}'
     return f'stopped at its write bound ({detail}); held: qd up {seat} lifts it'
+
+
+def floor_reason(runtime, seat: str) -> str | None:
+    """The status line's words for a seat held by its disk's free-space floor, for the desk; None otherwise."""
+    try:
+        data = read(runtime, seat)
+    except ShipError:
+        return None
+    return reason(runtime, seat) if data is not None and data.get('floor') is True else None
 
 
 def require_clear(seat) -> None:
@@ -602,19 +670,32 @@ if _held not in relaunch_intent.HOLDS:
 # -- the service's thread -------------------------------------------------------------------
 
 
-def look(ship, log, *, bounds=None, budget: Budget | None = None) -> list[str]:
-    """One look over every running jail; the seats stopped.
+def look(ship, log, *, bounds=None, budget: Budget | None = None, state: State | None = None, space=None,
+         seconds: float | None = None) -> list[str]:
+    """One look over every running jail, within ``LOOK`` on the clock; the seats stopped.
 
     A seat whose walk the clock cut short is counted unmeasured and retried on the next look with the same bounds;
     ``PASSES`` such looks in a row stop it as a measured over does. A seat with no jail running has nothing left to
-    measure, and its count ends with it.
+    measure, and its count ends with it. The seats the look did not reach go first on the next (``state``), and the
+    look ends with the free-space floor of every device a jail writes (``space``, the seam a test simulates).
     """
-    stopped = []
+    state = State() if state is None else state
+    seconds = LOOK if seconds is None else seconds
+    began = time.monotonic()
+    stopped, readings, unreached = [], {}, []
     running = jails(ship)
-    for name, jail in sorted(running.items()):
+    order = [name for name in state.unreached if name in running]
+    order += [name for name in sorted(running) if name not in order]
+    for name in order:
+        if readings and time.monotonic() - began >= seconds:
+            unreached.append(name)  # first on the next look
+            continue
+        jail = running[name]
+        readings[name] = None
         try:
             fresh = replace(budget, deadline=0.0, wall_deadline=0.0, seen=0) if budget else None
             reading = measure(ship, jail, bounds=bounds, budget=fresh)
+            readings[name] = reading
             if reading.over is None and reading.unmeasured is not None:
                 passes = unmeasured(ship.runtime, reading)
                 label, held, bound, why = reading.unmeasured
@@ -630,6 +711,14 @@ def look(ship, log, *, bounds=None, budget: Budget | None = None) -> list[str]:
                 measured(ship.runtime, name)
         except Exception as error:  # one seat's failure never keeps the alarm from the others
             log('error', step='write-bound', seat=name, error=repr(error))
+    state.unreached = unreached
+    if unreached:
+        log('write-bound', outcome='unreached', seats=unreached, seconds=round(time.monotonic() - began, 3))
+    try:
+        stopped += floor_look(ship, log, state, {name: jail for name, jail in running.items() if name not in stopped},
+                              readings, space)
+    except Exception as error:  # the floor never stops the look; the next look reads it again
+        log('error', step='write-bound-floor', error=repr(error))
     try:
         left = [entry[:-5] for entry in os.listdir(unmeasured_folder(ship.runtime)) if entry.endswith('.json')]
     except OSError:
@@ -643,6 +732,89 @@ def look(ship, log, *, bounds=None, budget: Budget | None = None) -> list[str]:
     return stopped
 
 
+# -- the free-space floor --------------------------------------------------------------------------
+
+
+def disk_space(folder: str) -> tuple[int, int]:
+    """The free bytes a user's write can still take on the folder's device, and the device's size."""
+    info = os.statvfs(folder)
+    return info.f_bavail * info.f_frsize, info.f_blocks * info.f_frsize
+
+
+def floor(total: int) -> int:
+    return min(FLOOR_BYTES, int(total * FLOOR_SHARE))
+
+
+def _devices(jail: Jail) -> dict[str, int | None]:
+    """Each writable folder's device, by one stat; None where it cannot be read. A folder not there is left out."""
+    found = {}
+    for folder in jail.binds:
+        try:
+            found[folder] = os.stat(folder).st_dev
+        except FileNotFoundError:
+            continue  # a bind-try folder that is not there holds nothing
+        except OSError:
+            found[folder] = None
+    return found
+
+
+def floor_look(ship, log, state: State, running: dict[str, Jail], readings: dict, space=None) -> list[str]:
+    """Read each device the jails write once; where one is under its floor or fell past ``FALL``, stop the seats
+    that went unmeasured there this look or grew there since their last whole measure. The seats stopped."""
+    space = disk_space if space is None else space
+    devices = {name: _devices(jail) for name, jail in running.items()}
+    where: dict[int, str] = {}
+    for name in sorted(devices):
+        for folder, device in devices[name].items():
+            if device is not None:
+                where.setdefault(device, folder)
+    free, floors, tripped = {}, {}, {}
+    for device, folder in where.items():
+        try:
+            free[device], total = space(folder)
+        except OSError as error:
+            log('error', step='write-bound-floor', folder=folder, error=repr(error))
+            continue
+        before, floors[device] = state.free.get(device), floor(total)
+        if free[device] < floors[device]:
+            tripped[device] = f'{folder}: {size(free[device])} free, under its floor of {size(floors[device])}'
+        elif before is not None and before - free[device] > FALL:
+            tripped[device] = (f'{folder}: free space fell {size(before - free[device])} since the last look, '
+                               f'more than {size(FALL)}')
+    state.free = free
+    stopped = []
+    for name, jail in sorted(running.items()):
+        reading, last = readings.get(name), state.sizes.get(name, {})
+        # A folder whose device cannot be read is judged on no device: its own walk reads as over.
+        mine = {device for device in devices[name].values() if device is not None}
+        whole = set()
+        if reading is not None and reading.opened:
+            whole = mine - {devices[name][folder] for folder in devices[name] if folder not in reading.walked}
+        why = None
+        for device in sorted(mine & set(tripped)):
+            if device not in whole:
+                why = f'{tripped[device]}; this seat went unmeasured there'
+            elif device in last and reading.on.get(device, 0) > last[device]:
+                why = (f'{tripped[device]}; this seat grew {size(reading.on[device] - last[device])} there since its '
+                       f'last measure')
+            if why:
+                break
+        if why is None:
+            state.sizes[name] = {**last, **{device: reading.on.get(device, 0) for device in whole}}
+            continue
+        try:
+            stop(ship, Reading(name, [], ('free space', free[device], floors[device], why), jail.pids), log, floor=True)
+        except Exception as error:
+            log('error', step='write-bound-floor', seat=name, error=repr(error))
+            continue
+        stopped.append(name)
+        measured(ship.runtime, name)
+    for name in list(state.sizes):
+        if name not in running or name in stopped:
+            del state.sizes[name]
+    return stopped
+
+
 class Alarm:
     """The alarm's own thread, with its own period: a service pass that hangs never delays it."""
 
@@ -650,6 +822,7 @@ class Alarm:
         self.service = service
         self.period = period
         self.stopping = threading.Event()
+        self.state = State()  # what one look leaves the next
         self.thread = threading.Thread(target=self.run, name='service-write-bound', daemon=True)
 
     def start(self) -> 'Alarm':
@@ -663,6 +836,6 @@ class Alarm:
     def run(self) -> None:
         while not self.stopping.wait(self.period):
             try:
-                look(self.service.ship, self.service.log)
+                look(self.service.ship, self.service.log, state=self.state)
             except Exception as error:  # the alarm never stops the service; the next look tries again
                 self.service.log('error', step='write-bound', error=repr(error))

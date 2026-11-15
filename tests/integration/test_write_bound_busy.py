@@ -93,7 +93,7 @@ def busy_machine():
             burner.wait(timeout=10)
 
 
-def rocky_home(ship) -> Path:
+def hand_home(ship) -> Path:
     """A seat folder of a hand's shape: 47 entries in its home, a data folder for each launch, 84 MiB in all."""
     home = ship.runtime / 'seats' / 'worker-1' / 'home'
     home.mkdir(parents=True, exist_ok=True)
@@ -158,14 +158,14 @@ def cpu_and_clock(function):
     return value, time.monotonic() - began, time.thread_time() - cpu
 
 
-# -- a seat folder like Rocky's, on a busy machine -----------------------------------------------------------------
+# -- a hand-shaped seat folder, on a busy machine ------------------------------------------------------------------
 
 
 @jailed
-def test_a_seat_folder_like_rockys_on_a_busy_machine_stays_up_unmeasured_then_measured(ship, tmp_path, monkeypatch):
+def test_a_hand_shaped_seat_folder_on_a_busy_machine_stays_up_unmeasured_then_measured(ship, tmp_path, monkeypatch):
     workspace = tmp_path / 'work'
     workspace.mkdir()
-    home = os.path.realpath(rocky_home(ship))
+    home = os.path.realpath(hand_home(ship))
     jail = jailed_program(ship, workspace, IDLE)
     logs, log = logger()
     try:
@@ -180,7 +180,7 @@ def test_a_seat_folder_like_rockys_on_a_busy_machine_stays_up_unmeasured_then_me
             assert stopped == [] and write_bound.path(ship.runtime, 'worker-1').exists() is False
             assert write_bound.unmeasured_read(ship.runtime, 'worker-1') is None, 'measured, under its bound'
 
-            # Starved past the clock's own bound (a short one here, 1 s, in place of 30 s): unmeasured, never over.
+            # Starved past the clock's own bound (a short one here, 1 s, in place of 10 s): unmeasured, never over.
             with starved(monkeypatch, lambda path: path == home):
                 stopped = write_bound.look(ship, log, budget=write_bound.Budget(wall=1.0))
             assert stopped == [], 'the clock alone never stops a seat'
@@ -188,8 +188,8 @@ def test_a_seat_folder_like_rockys_on_a_busy_machine_stays_up_unmeasured_then_me
             event, data = logs[-1]
             assert event == 'write-bound' and data['outcome'] == 'unmeasured' and data['passes'] == 1
             assert data['why'] == 'the walk passed 1 s on the clock'
-            line = ('worker-1: write bound unmeasured, 1 of 5 passes in a row (the walk passed 1 s on the clock); '
-                    'retried each pass, stopped at 5')
+            line = ('worker-1: write bound unmeasured, 1 of 3 passes in a row (the walk passed 1 s on the clock); '
+                    'retried each pass, stopped at 3')
             assert write_bound.status(ship) == [line]
         # The machine quiet again: the next pass, with the same bounds, measures it, and the count ends.
         assert write_bound.look(ship, log, budget=write_bound.Budget(wall=1.0)) == []
@@ -203,11 +203,11 @@ def test_the_status_line_names_a_seat_left_unmeasured(ship, tmux):
     from quarterdeck import watch
 
     reading = write_bound.Reading('worker-1', [], None, {}, (write_bound.SEAT, 531 * MiB, 4 * write_bound.GiB,
-                                                              'the walk passed 30 s on the clock'))
+                                                              'the walk passed 10 s on the clock'))
     assert write_bound.unmeasured(ship.runtime, reading) == 1
     assert write_bound.unmeasured(ship.runtime, reading) == 2
-    words = ('worker-1: write bound unmeasured, 2 of 5 passes in a row (the walk passed 30 s on the clock); '
-             'retried each pass, stopped at 5')
+    words = ('worker-1: write bound unmeasured, 2 of 3 passes in a row (the walk passed 10 s on the clock); '
+             'retried each pass, stopped at 3')
     facts = watch.facts(ship, tmux)
     assert facts.write_bounds == [words] and words in facts.line()  # law: nothing-waits-silently
     write_bound.measured(ship.runtime, 'worker-1')
@@ -263,7 +263,7 @@ def test_a_walk_cut_short_counts_what_it_reached_and_stops_the_jail_at_once(ship
 
 
 @jailed
-def test_five_unmeasured_passes_in_a_row_stop_a_jail_that_burns_cpu_and_writes(ship, tmp_path, small):
+def test_three_unmeasured_passes_in_a_row_stop_a_jail_that_burns_cpu_and_writes(ship, tmp_path, small):
     workspace = tmp_path / 'work'
     workspace.mkdir()
     jail = jailed_program(ship, workspace, BURNING)
@@ -275,13 +275,14 @@ def test_five_unmeasured_passes_in_a_row_stop_a_jail_that_burns_cpu_and_writes(s
         jail.wait(timeout=10)
     finally:
         ended(jail)
-    assert passes == [[], [], [], [], ['worker-1']], 'up for four passes, stopped on the fifth'
+    assert write_bound.PASSES == 3 and write_bound.WALL == 10.0, 'about 30 s unmeasured at most'
+    assert passes == [[], [], ['worker-1']], 'up for two passes, stopped on the third'
     counted = [data['passes'] for event, data in logs if event == 'write-bound' and data.get('outcome') == 'unmeasured']
-    assert counted == [1, 2, 3, 4, 5]
+    assert counted == [1, 2, 3]
     stop = [data for event, data in logs if event == 'write-bound' and 'killed' in data]
-    assert len(stop) == 1 and stop[0]['why'] == 'unmeasured 5 passes in a row, the walk passed 0 s on the clock'
+    assert len(stop) == 1 and stop[0]['why'] == 'unmeasured 3 passes in a row, the walk passed 0 s on the clock'
     assert stop[0]['killed'] >= 1 and jail.returncode == -9
-    assert 'unmeasured 5 passes in a row' in write_bound.reason(ship.runtime, 'worker-1')
+    assert 'unmeasured 3 passes in a row' in write_bound.reason(ship.runtime, 'worker-1')
     assert write_bound.unmeasured_read(ship.runtime, 'worker-1') is None, 'the stop ends the count; the hold stands'
 
 
@@ -341,3 +342,203 @@ def test_the_cpu_bound_reads_as_over_and_the_clock_as_unmeasured(tmp_path):
         write_bound.walk(str(tmp_path), group, write_bound.Budget(entries=0, wall=0).start())
     with pytest.raises(write_bound.Over, match='of CPU time'):
         write_bound.walk(str(tmp_path), group, write_bound.Budget(seconds=0, wall=0).start())
+
+
+# -- one look over many seats ---------------------------------------------------------------------------------------
+
+
+def fake_jails(ship, monkeypatch, names):
+    """Jails as the alarm finds them, for seats with no process: each binds its own seat folder alone."""
+    running = {}
+    for name in names:
+        folder = write_bound.seat_folder(ship, name)
+        folder.mkdir(parents=True, exist_ok=True)
+        running[name] = write_bound.Jail(name, 0, [str(folder)], {})
+    monkeypatch.setattr(write_bound, 'jails', lambda ship, processes=None: dict(running))
+    return running
+
+
+def roomy(folder):
+    return 300 * write_bound.GiB, 1000 * write_bound.GiB
+
+
+def test_a_look_with_four_slow_seats_reaches_the_last_within_two_looks(ship, monkeypatch):
+    assert write_bound.LOOK == 10.0 and write_bound.WALL == 10.0
+    names = ['slow-a', 'slow-b', 'slow-c', 'slow-d']
+    fake_jails(ship, monkeypatch, names)
+    folders = {str(write_bound.seat_folder(ship, name)): name for name in names}
+    scan, walked = write_bound._scan, []
+
+    def slow(fd, device, group, budget):
+        if (name := folders.get(os.readlink(f'/proc/self/fd/{fd}'))):
+            walked.append(name)
+            time.sleep(0.4)  # on the clock, not in CPU: each seat's walk takes 0.4 s of a look of 1 s
+        return scan(fd, device, group, budget)
+
+    monkeypatch.setattr(write_bound, '_scan', slow)
+    state, (logs, log) = write_bound.State(), logger()
+    assert write_bound.look(ship, log, state=state, space=roomy, seconds=1.0) == []
+    assert walked == ['slow-a', 'slow-b', 'slow-c'] and state.unreached == ['slow-d']
+    assert ('write-bound', {'outcome': 'unreached', 'seats': ['slow-d'], 'seconds': logs[-1][1]['seconds']}) in logs
+    walked.clear()
+    assert write_bound.look(ship, log, state=state, space=roomy, seconds=1.0) == []
+    assert walked[0] == 'slow-d', 'the seat the last look did not reach goes first'
+    assert walked == ['slow-d', 'slow-a', 'slow-b'] and state.unreached == ['slow-c']
+    assert all(write_bound.unmeasured_read(ship.runtime, name) is None for name in names), 'none cut short'
+
+
+# -- the free-space floor --------------------------------------------------------------------------------------------
+
+
+def test_the_floor_is_the_smaller_of_fifty_gib_and_five_percent():
+    GiB = write_bound.GiB
+    assert write_bound.floor(7389 * GiB) == 50 * GiB
+    assert write_bound.floor(int(44.9 * GiB)) == int(44.9 * GiB * 0.05)
+    assert write_bound.FALL == 20 * GiB
+
+
+def test_the_floor_stops_only_seats_unmeasured_or_grown_on_its_disk_and_names_why(ship, monkeypatch, tmux):
+    from quarterdeck import watch
+
+    GiB = write_bound.GiB
+    running = fake_jails(ship, monkeypatch, ['steady', 'grower', 'cut'])
+    folder = {name: write_bound.seat_folder(ship, name) for name in ['steady', 'grower', 'cut', 'fresh']}
+    for name in running:
+        with open(folder[name] / 'data', 'wb') as stream:
+            os.posix_fallocate(stream.fileno(), 0, MiB)
+    free = {'bytes': 300 * GiB}
+    asked = []
+
+    def space(path):
+        asked.append(path)
+        return free['bytes'], 1000 * GiB
+
+    state, (logs, log) = write_bound.State(), logger()
+    assert write_bound.look(ship, log, state=state, space=space) == [], 'a first look is every seat\'s baseline'
+    assert len(asked) == 1, 'one statvfs for the one device, not one for each seat'
+
+    # Between the looks 'grower' writes, 'fresh' starts, and 'cut' will be cut short by the clock; 30 GiB go.
+    with open(folder['grower'] / 'more', 'wb') as stream:
+        os.posix_fallocate(stream.fileno(), 0, MiB)
+    folder['fresh'].mkdir(parents=True)
+    running['fresh'] = write_bound.Jail('fresh', 0, [str(folder['fresh'])], {})
+    free['bytes'] = 270 * GiB
+    scan = write_bound._scan
+
+    def cut(fd, device, group, budget):
+        if os.readlink(f'/proc/self/fd/{fd}') == str(folder['cut']):
+            raise write_bound.Unmeasured('the walk passed 10 s on the clock')
+        return scan(fd, device, group, budget)
+
+    monkeypatch.setattr(write_bound, '_scan', cut)
+    assert write_bound.look(ship, log, state=state, space=space) == ['cut', 'grower']
+    monkeypatch.setattr(write_bound, '_scan', scan)
+    fell = f"{folder['cut']}: free space fell 30.00 GiB since the last look, more than 20.00 GiB"
+    assert write_bound.reason(ship.runtime, 'cut') == (
+        f"stopped by its disk's free-space floor ({fell}; this seat went unmeasured there); held: qd up cut lifts it")
+    assert write_bound.reason(ship.runtime, 'grower') == (
+        f"stopped by its disk's free-space floor ({fell}; this seat grew 1.0 MiB there since its last measure); "
+        f"held: qd up grower lifts it")
+    assert write_bound.reason(ship.runtime, 'steady') is None, 'measured whole and not grown: it stays up'
+    assert write_bound.reason(ship.runtime, 'fresh') is None, 'its first measure is its baseline'
+    assert write_bound.unmeasured_read(ship.runtime, 'cut') is None, 'the stop ends its count'
+    stops = [data for event, data in logs if event == 'write-bound' and data.get('floor')]
+    assert [data['seat'] for data in stops] == ['cut', 'grower'] and all(data['why'].startswith(fell) for data in stops)
+    line = watch.facts(ship, tmux).line()
+    assert "cut: stopped by its disk's free-space floor" in line and "grower: stopped by its disk's" in line
+
+    # Under the floor itself, the seats left are judged the same way: unchanged stays up, grown is stopped.
+    del running['cut'], running['grower']
+    free['bytes'] = 40 * GiB
+    assert write_bound.look(ship, log, state=state, space=space) == []
+    with open(folder['fresh'] / 'more', 'wb') as stream:
+        os.posix_fallocate(stream.fileno(), 0, MiB)
+    assert write_bound.look(ship, log, state=state, space=space) == ['fresh']
+    assert ('40.00 GiB free, under its floor of 50.00 GiB; this seat grew 1.0 MiB there'
+            in write_bound.reason(ship.runtime, 'fresh'))
+    assert write_bound.reason(ship.runtime, 'steady') is None
+    assert write_bound.lift(ship.runtime, 'fresh', 'the test') and write_bound.reason(ship.runtime, 'fresh') is None
+
+
+def test_the_floor_judges_a_seat_only_on_the_disk_it_went_unmeasured_on(ship, monkeypatch):
+    """An endpoint seat cut short in its seat folder is not stopped for the floor of /tmp, where its relay folder,
+    in the small group and walked first, was measured whole and has not grown."""
+    import shutil
+    from quarterdeck import endpoint_relay
+
+    GiB = write_bound.GiB
+    running = fake_jails(ship, monkeypatch, ['worker-1'])
+    seat = write_bound.seat_folder(ship, 'worker-1')
+    relay = endpoint_relay.folder_for(seat)
+    if os.stat(relay.parent).st_dev == os.stat(seat).st_dev:
+        pytest.skip('the relay folder and the seat folder share a device here')
+    relay.mkdir()
+    try:
+        running['worker-1'].binds.append(str(relay))
+        low = os.stat(relay).st_dev
+
+        def space(path):
+            return (1 * GiB, 44 * GiB) if os.stat(path).st_dev == low else (300 * GiB, 1000 * GiB)
+
+        scan = write_bound._scan
+
+        def cut(fd, device, group, budget):
+            if os.readlink(f'/proc/self/fd/{fd}') == str(seat):
+                raise write_bound.Unmeasured('the walk passed 10 s on the clock')
+            return scan(fd, device, group, budget)
+
+        logs, log = logger()
+        state = write_bound.State()
+        assert write_bound.look(ship, log, state=state, space=space) == [], 'the baseline'
+        monkeypatch.setattr(write_bound, '_scan', cut)
+        assert write_bound.look(ship, log, state=state, space=space) == [], 'cut on the roomy disk, whole on the low one'
+        assert write_bound.unmeasured_read(ship.runtime, 'worker-1')['passes'] == 1
+        assert write_bound.reason(ship.runtime, 'worker-1') is None
+        (relay / 'grown').write_bytes(b'x' * 65536)
+        assert write_bound.look(ship, log, state=state, space=space) == ['worker-1'], 'grown on the low disk'
+        assert 'this seat grew' in write_bound.reason(ship.runtime, 'worker-1')
+    finally:
+        shutil.rmtree(relay)
+
+
+@jailed
+def test_a_jail_that_burns_cpu_and_writes_with_every_walk_cut_is_stopped_by_the_floor(ship, tmp_path, small):
+    workspace = tmp_path / 'work'
+    workspace.mkdir()
+    jail = jailed_program(ship, workspace, BURNING)
+    logs, log = logger()
+    low = lambda folder: (40 * write_bound.GiB, 1000 * write_bound.GiB)  # noqa: E731
+    try:
+        assert until(lambda: (workspace / 'ready').exists(), 60)
+        stopped = write_bound.look(ship, log, budget=write_bound.Budget(wall=0.0), space=low)
+        jail.wait(timeout=10)
+    finally:
+        ended(jail)
+    assert stopped == ['worker-1'], 'on its first look, by the floor, though its walk never measured it'
+    assert jail.returncode == -9 and write_bound.jails(ship) == {}
+    words = write_bound.reason(ship.runtime, 'worker-1')
+    assert words.startswith("stopped by its disk's free-space floor (") and 'this seat went unmeasured there' in words
+
+
+def test_the_service_tells_the_desk_of_a_floor_hold_and_not_of_a_bound_hold(ship):
+    from quarterdeck import alarms, post, service as servicemod
+
+    actor = servicemod.Service.__new__(servicemod.Service)
+    actor.runtime, actor.ship, actor.store = ship.runtime, ship, post.Store(ship.runtime)
+    actor.logs, actor.log = logger()
+    actor._up = lambda name: False
+    bound = write_bound.Reading('captain', [], (write_bound.SEAT, 5 * write_bound.GiB, 4 * write_bound.GiB,
+                                                'over its bound'), {})
+    write_bound.place(ship.runtime, bound)
+    why = '/x: 40.00 GiB free, under its floor of 50.00 GiB; this seat went unmeasured there'
+    write_bound.place(ship.runtime, write_bound.Reading('worker-1', [], ('free space', 40, 50, why), {}), floor=True)
+    actor.write_bound_floor()
+    sent = actor.store.all()
+    assert [(message.to, message.sender) for message in sent] == [('desk', post.SHIP)]
+    assert sent[0].body == f"worker-1: stopped by its disk's free-space floor ({why}); held: qd up worker-1 lifts it"
+    actor.write_bound_floor()
+    assert len(actor.store.all()) == 1, 'told once while the hold stands'
+    write_bound.lift(ship.runtime, 'worker-1', 'the test')
+    actor.write_bound_floor()
+    assert alarms.load(ship.runtime, 'worker-1', 'write-bound-floor')['key'] is None, 'the lift clears it'
+    assert actor.logs == []
