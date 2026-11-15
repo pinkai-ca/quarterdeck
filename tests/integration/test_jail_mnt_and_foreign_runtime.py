@@ -321,3 +321,38 @@ print(json.dumps(dict(
     assert seen['alpha'] is None and seen['beta'] is None and seen['office'] is None, seen
     allowed = {*sandbox.RUNTIME_SHOWN, 'seats', 'tmux', 'locks', 'post', 'check', 'brief'}
     assert set(seen['own']) <= allowed and 'ledger.sqlite' not in seen['own'], seen['own']
+
+
+@pytest.mark.parametrize('entry', ['ships/alpha', 'office', 'ships'])
+def test_a_path_entry_inside_the_fleet_is_never_bound_and_no_other_runtime_shows(drydock: Path, tmp_path: Path, entry):
+    """A folder inside the fleet other than this ship's own is never bound back: the fence alone shows the fleet,
+    whatever the order of mounts at the same path."""
+    project = tmp_path / 'project'
+    own_folder = project / 'ships' / 'own'
+    shutil.copytree(drydock, own_folder)
+    alpha = project / 'ships' / 'alpha'
+    (alpha / 'runtime' / 'post' / 'store').mkdir(parents=True)
+    (alpha / 'ship.toml').write_text('[ship]\nname = "alpha"\n')
+    (alpha / 'runtime' / 'post' / 'store' / 'secret.json').write_text('another ship\'s post')
+    office = project / 'office'
+    (office / 'runtime' / 'post').mkdir(parents=True)
+    (office / 'ship.toml').write_text('[ship]\nname = "office"\nkind = "office"\n')
+    (office / 'runtime' / 'post' / 'secret.json').write_text("the office's post")
+    ship = shipmod.load(own_folder)
+    shipmod.fence(ship)
+    own = own_seat(ship)
+    (tmp_path / 'work').mkdir()
+    path = os.pathsep.join([str(project / entry), str(Path(sys.executable).parent), '/usr/bin', '/bin'])
+    jail = sandbox.plan(ship, 'worker-1', own, own / 'home', tmp_path / 'work', sys.executable, path, home=HOME)
+    fleet = (project / 'ships', project / 'office')
+    assert not any(f == root or f.is_relative_to(root) for f in jail.read_only for root in fleet), jail.read_only
+    probe = r"""
+import json, os, sys
+project = sys.argv[1]
+def listing(path):
+    return sorted(os.listdir(path)) if os.path.isdir(path) else None
+print(json.dumps(dict(alpha=listing(os.path.join(project, 'ships', 'alpha', 'runtime')),
+                      office=listing(os.path.join(project, 'office', 'runtime')))))
+"""
+    seen = run_probe(jail, probe, str(project), path=path)
+    assert seen == dict(alpha=None, office=None), seen

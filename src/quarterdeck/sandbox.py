@@ -243,7 +243,10 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
                         "Run qd from this ship's own installed copy, or from the framework's checkout")
     folders = [f for f in (*program_folders(programs, path, home), *hidden_folders(programs, path, home))
                if f != workspace and workspace not in f.parents and ship.folder not in f.parents and f != ship.folder
-               and inside_foreign_runtime(f, ship) is None]  # never another ship's runtime, nor a folder inside one
+               and inside_foreign_runtime(f, ship) is None  # never another ship's runtime, nor a folder inside one
+               # Never a folder inside the fleet (ships/, office/, a peer's folder) but this ship's own, dropped above:
+               # the fence shows only this ship's folder and the peers' ship files there, whatever the mount order.
+               and not any(f == root or f.is_relative_to(root) for root in fleet)]
     # A folder bound back that holds another ship's runtime (the framework's checkout holds every ship's) keeps it
     # covered by an empty tmpfs; this ship's own runtime is shown as always, with its seats and tmux hidden.
     # So does a test run's folder (.testruns): its live tmux servers listen there, and a path socket ignores the
