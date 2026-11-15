@@ -14,7 +14,8 @@ SECRETS = re.compile(r"sk-ant-|\beyJ[A-Za-z0-9_-]{20,}|\"accessToken\": \"[^\"]{
 TEXT = {".py", ".md", ".toml", ".txt", ".json", ".cfg", ".gitignore"}
 KINDS = "ord|rep|que|ans|ack"
 # A post id, long (kind-yyyymmdd-hhmm-seat-xxxx) or short (kind-xxxx), whole words only: record-first is no id.
-POST_ID = re.compile(rf"\b(?:{KINDS})-(?:[0-9]{{8}}-[0-9]{{4}}-[A-Za-z0-9_.-]+?-)?[0-9a-f]{{4}}\b")
+# The suffix is four hex digits (every short allocated before the wider ids) or six (every short allocated since).
+POST_ID = re.compile(rf"\b(?:{KINDS})-(?:[0-9]{{8}}-[0-9]{{4}}-[A-Za-z0-9_.-]+?-)?(?:[0-9a-f]{{6}}|[0-9a-f]{{4}})\b")
 # Exact values only, never a pattern. The documented examples may stand anywhere they are explained.
 EXAMPLES = {"ord-7f3a", "ord-20261106-2101-desk-7f3a", "ord-9c21", "ord-1a2b"}
 # Invented values that tests and their scrubbed fixtures type, read or match; under tests/ only.
@@ -89,6 +90,18 @@ def test_the_post_id_guard_reads_both_forms_and_no_ordinary_word():
     assert post_ids("qd > order from desk · ord-1234", "tests/unit/x.py") == []
     assert post_ids("qd > order from desk · ord-1234", "src/x.py") == ["ord-1234"], "a test sample stays in tests/"
     assert post_ids("such as ord-7f3a", "docs/DESIGN.md") == []
+    # Six-digit suffixes, the width allocated since the wider ids, in both forms and every kind.
+    long6, short6 = "-".join(["que", "20261115", "1204", "worker8", "9c8a7e"]), "-".join(["ord", "c304ab"])
+    assert post_ids(f"see {long6}.", "src/x.py") == [long6]
+    assert post_ids(f"(per {short6})", "src/x.py") == [short6]
+    assert post_ids(f"{short6}: reworded", "commit message") == [short6]
+    assert post_ids(f"{long6} and {short}", "tests/unit/x.py") == [long6, short]
+    for kind in ("ord", "rep", "que", "ans", "ack"):
+        assert post_ids(f"x {kind}-{'beefed'} y", "docs/x.md") == [f"{kind}-beefed"]
+    # Near misses at the wider width: five or seven digits, a non-hex digit, a long form of the wrong suffix width.
+    long5, long7 = long6[:-1], f"{long6}0"
+    assert post_ids("ord-12345, ord-1234567, ord-12345678, ord-12g4ab, ord-abcdeg, order-123456, word-c304ab, "
+                    f"{long5}, {long7}, rep-orted-123456", "src/x.py") == []
 
 
 def test_every_law_is_carried_in_code_and_tried_by_a_test_and_every_tag_names_a_law():
