@@ -46,11 +46,16 @@ def capture(service, records):
         runtime = Path(service.runtime)
         seats = service.resolved_seats()
         paths = {service.ship.folder / 'ship.toml', runtime / 'seats'}
-        declarations = []
-        for seat in seats:
-            folder = runtime / 'seats' / seat.name
+        folders = {runtime / 'seats' / name for name in service.ship.seats}
+        if (runtime / 'seats').is_dir():
+            folders.update(path for path in (runtime / 'seats').iterdir() if path.is_dir())
+        folders.update(runtime / 'seats' / seat.name for seat in seats)
+        for folder in folders:
             paths.update(folder / name for name in ('launch.json', 'launch-price.json', 'record',
                          'pool', record_owner.REGISTRY, 'record-launches.jsonl'))
+            paths.add(folder / 'home' / 'conversations.owned')
+        declarations = []
+        for seat in seats:
             paths.add(seat.home / 'conversations.owned')
             declarations.append((seat.name, str(seat.home), seat.harness.name, repr(seat.spec),
                                  seat.pool.name, seat.session.human))

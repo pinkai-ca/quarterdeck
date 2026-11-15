@@ -94,6 +94,21 @@ def test_each_file_or_immutable_post_publication_starts_a_job(example, name):
     assert not e.gate.allowed(e.service)
 
 
+@pytest.mark.parametrize('declared', [False, True])
+def test_retired_and_unresolved_seat_binding_changes_start_jobs(example, declared):
+    e = example
+    folder = e.runtime / 'seats' / 'ordinary-unresolved-or-retired'
+    folder.mkdir()
+    journal = folder / 'record-launches.jsonl'
+    journal.write_text('Ordinary retained launch evidence.\n')
+    if declared:
+        e.service.ship.seats.append(folder.name)
+    # This seat is deliberately absent from resolved_seats in both cases.
+    e.complete()
+    journal.write_text('Changed ordinary retained launch evidence.\n')
+    assert e.gate.allowed(e.service)
+
+
 def test_changed_settings_reader_epoch_and_seat_declaration_are_inputs(example):
     e = example
     for change in (lambda: setattr(e.seat.spec, 'model', 'another-model'),
