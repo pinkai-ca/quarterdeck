@@ -45,8 +45,11 @@ raise SystemExit(simulator.main())
 '''
 
 
-@pytest.fixture
-def literal_claude(drydock, tmux, tmp_path, monkeypatch):
+@pytest.fixture(params=[False, True], ids=['idle', 'turn-starting'])
+def literal_claude(drydock, tmux, tmp_path, monkeypatch, request):
+    declaration = drydock / 'ship.toml'
+    declaration.write_text(declaration.read_text() +
+                           '\n[seats.captain.settings]\nsteps = "30"\nstep_seconds = "1"\n')
     current = shipmod.load(drydock)
     seat = seatmod.Seat(current, current.seat('captain'), tmux)
     fake, claude = seat.harness, harness.get('claude')
@@ -61,10 +64,20 @@ def literal_claude(drydock, tmux, tmp_path, monkeypatch):
     monkeypatch.setattr(fake, 'launch', synthetic_launch)
     seat.up()
     wait_for(lambda: Door(seat).reading().open)
-    monkeypatch.setattr(fake, 'screen', claude.screen)
+    fake_screen = fake.screen
+
+    def screen(text):
+        # The fake's status supplies its synthetic activity; the real Claude
+        # parser and matcher read the literal composer layout under test.
+        return replace(claude.screen(text), working=fake_screen(text).working)
+
+    monkeypatch.setattr(fake, 'screen', screen)
     monkeypatch.setattr(fake, 'box', claude.box)
     monkeypatch.setattr(fake, 'box_columns', claude.box_columns)
     wait_for(lambda: Door(seat).reading().open)
+    if request.param:
+        assert Door(seat).deliver('Begin an ordinary synthetic turn.').result == 'delivered'
+        wait_for(lambda: Door(seat).screen().working)
     calls = dict(paste=0, submit=0)
     paste, keys = tmux.paste, tmux.keys
 
@@ -79,7 +92,7 @@ def literal_claude(drydock, tmux, tmp_path, monkeypatch):
 
     monkeypatch.setattr(tmux, 'paste', track_paste)
     monkeypatch.setattr(tmux, 'keys', track_keys)
-    return seat, calls
+    return seat, calls, request.param
 
 
 def report(seat, kind):
@@ -98,18 +111,18 @@ def report(seat, kind):
 
 @pytest.mark.parametrize('kind', ['report', 'answer'])
 def test_unfolded_report_is_pasted_submitted_and_record_confirmed_once(literal_claude, kind):
-    seat, calls = literal_claude
+    seat, calls, working = literal_claude
     text = report(seat, kind)
     result = Door(seat).deliver(text)
-    assert result.result == 'delivered', result
+    assert result.result == ('queued' if working else 'delivered'), result
     assert calls == dict(paste=1, submit=1)
-    turns = wait_for(lambda: seat.harness.turns(seat.record()) or None)
-    assert turns[0].input == text.rstrip('\n')
+    received = [item for item in seat.harness.inputs(seat.record()) if item.text == text.rstrip('\n')]
+    assert len(received) == 1 and received[0].kind == ('queued' if working else 'accepted')
 
 
 @pytest.mark.parametrize('kind', ['report', 'answer'])
 def test_submit_finds_the_saved_report_in_its_wrapped_box(literal_claude, kind):
-    seat, calls = literal_claude
+    seat, calls, working = literal_claude
     text = report(seat, kind)
     door = Door(seat)
     door.tmux.paste(seat.pane().id, text)
@@ -120,5 +133,5 @@ def test_submit_finds_the_saved_report_in_its_wrapped_box(literal_claude, kind):
     candidate, refusal = pending._submit_candidate(door, screen, seat.pane(), [proof])
     assert candidate is proof and refusal == ''
     door.submit(seat.pane().id)
-    assert door.confirm(text).result == 'delivered'
+    assert door.confirm(text).result == ('queued' if working else 'delivered')
     assert calls == dict(paste=1, submit=1)
