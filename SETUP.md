@@ -19,7 +19,7 @@ Run everything after this from inside the checkout, where `qd` is `.venv/bin/qd`
 
 ## 2. Look at the machine
 
-`for p in claude codex grok agy opencode pi; do command -v "$p"; done` shows which harnesses are installed (`agy` is Antigravity; `qd doctor` later names the version each one runs). `command -v bwrap` shows whether bubblewrap is installed: an agent on a local model or other endpoint runs in a bubblewrap sandbox unless the ship's file says otherwise, and cannot start without it. `git config --global user.name` and `git config --global user.email` must each print a value, which is your person's to set: setup commits what it writes, and stops halfway without them. Tell your person what you found, and that the agents run without approval prompts: Claude Code with its permission prompts bypassed, Codex with full access.
+`for p in claude codex grok agy opencode pi; do command -v "$p"; done` shows which harnesses are installed (`agy` is Antigravity; `qd doctor` later names the version each one runs). `command -v bwrap` shows whether bubblewrap is installed: an agent on a local model or other endpoint runs in a bubblewrap sandbox unless the ship's file says otherwise, and cannot start without it. `git config --global user.name` and `git config --global user.email` must each print a value, which is your person's to set: setup commits what it writes. Tell your person what you found, and that the agents run without approval prompts: Claude Code with its permission prompts bypassed, Codex with full access.
 
 ## 3. Ask your person
 
@@ -68,7 +68,7 @@ For the ship below, this is the whole file:
 - `qd setup --help` lists every answer. An answer's name in the file is its flag's name, with `_` for `-`.
 - Run setup from your person's own shell, never from the shell of a ship's agent.
 
-Setup prints a line for each harness it found, and then the ship:
+Setup prints a line for each harness it knows, found or not, and then the ship:
 
 ```
 Operator name:  Admiral

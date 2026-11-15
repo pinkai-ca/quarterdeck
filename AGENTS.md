@@ -29,6 +29,6 @@ With no ship named, `qd` acts on your person's default ship and says which; name
 
 - Work goes to another agent by `qd post` only, never by typing into its pane, tmux keys or MCP.
 - Never read, print or copy a sign-in file or key.
-- You type nothing into a session a person owns: in a ship made from the default, its `Office`. That pane is your person's.
+- You type nothing into a session a person owns: the `Office`, where their desk sits. That pane is your person's.
 - Muse is not in the code yet: do not run or promise it.
 - A refusal names its reason and what would lift it: report it, do not retry. Report a failed check as failed.

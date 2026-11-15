@@ -2,8 +2,8 @@
 
 A mission crew of three: the captain receives the task, the engineer builds it,
 and the first officer checks and signs the reviewed result. There is no desk or
-separate builder. This is a fifth named template beside drydock, default, forum
-and cascade. The default onboarding crew remains unchanged; replacing it waits
+separate builder. This is a named template beside drydock, default, forum,
+cascade and office. The default onboarding crew remains unchanged; replacing it waits
 for the separate Office/fleet design.
 
 Copy this entire folder into a ship folder of its own. Edit `ship.toml` for the
@@ -11,7 +11,7 @@ mission workspace and programs actually available. Choose a unique ship name and
 crew session title for concurrent shuttles. Put the first officer on another
 provider from the engineer where one exists; disclose when one does not. The
 example subscriptions and models do not establish availability. There is no
-automatic provider binding, sign-in, fleet forwarding or `qd raise` here.
+automatic provider binding, sign-in or fleet forwarding here.
 
 From a checkout, after the live mission has been authorized:
 
@@ -77,5 +77,5 @@ then directs. No timer, service command, root operation or undo is performed by
 copying, installing or loading this template.
 
 Default selection and `qd sync --all` recognize `ships/shuttle` as a tracked
-template alongside the other four. A copied shuttle under another folder name
+template alongside the other five. A copied shuttle under another folder name
 is an ordinary ship; its declared name does not exclude it from discovery.

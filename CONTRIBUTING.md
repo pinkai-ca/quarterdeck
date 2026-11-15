@@ -36,7 +36,7 @@ python3 -I tests/testrun.py clean --change <branch>   # after the branch is merg
 ```
 
 - The tool downloads nothing: the ordinary `python3`, the first on the PATH, must already provide pytest and pytest-xdist, in its system site-packages or your user site, and pip and setuptools in its system site-packages. Without pytest the run is refused: `the ordinary python3 provides no pytest`.
-- The main checkout's path must be short, 31 bytes at most: the suite keeps its sockets under the main checkout's `.testruns/`, and a socket's path holds 107 bytes. Under a longer path pytest stops: `the project path is too long for its .testruns/s anchor`.
+- The main checkout's path must be short, 31 bytes at most: the suite keeps its sockets under the main checkout's `.testruns/`, and a socket's path holds 107 bytes. Under a longer path the run stops and says so.
 - The fast selection is the default for the person or agent who builds a change. A fast run signs nothing: the whole suite is the only run that signs a change. A project with neither folder runs every test instead, and says why.
 - A change that touches the integration tests, or code that they exercise, also runs those test files by name, or the whole suite, before the change is handed up.
 - Every run names its selection in its first line, in its report and in its result file.
