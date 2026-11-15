@@ -44,7 +44,9 @@ def _json(text) -> dict:
 
 def records(home: Path) -> list[Path]:
     """Every launch's database, oldest first: the data directories are numbered in launch order."""
-    found = [p for p in home.glob(f"{DATA_PREFIX}*/{RECORD}") if p.is_file()]
+    from .. import record_location
+    found = {*(p for p in home.glob(f"{DATA_PREFIX}*/{RECORD}") if p.is_file()),
+             *record_location.records(home, f"{DATA_PREFIX}*/{RECORD}")}
     return sorted(found, key=lambda p: (_launch_number(p), str(p)))
 
 

@@ -286,6 +286,9 @@ class OpenCodeHarness(EndpointHarness):
                 matches = sum(row[0] == resume for row in rows.sessions)
                 if not matches:
                     continue
+                from ..record_location import retired
+                if retired(record):
+                    raise ShipError(f"{seat_name}: conversation is retired; use qd fresh {seat_name}")
                 if working_folder is None:
                     return data_dir_of(record)
                 if selected is not None or matches != 1:

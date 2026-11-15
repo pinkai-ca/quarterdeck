@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 from .base import RecordError, record_fingerprint
+from ..record_location import resolve
 
 WAL_MAGIC = (0x377F0682, 0x377F0683)
 WAL_VERSION = 3007000
@@ -78,6 +79,7 @@ def _apply_wal(name: str, db_bytes: bytes, wal_bytes: bytes | None) -> bytes:
 
 def snapshot(record: Path) -> tuple[tuple, bytes]:
     """The record's fingerprint and its merged bytes, read without a write beside the source (law: one-folder)."""
+    record = resolve(record)
     if not record.is_file():
         raise RecordError(f"{record.name}: record does not exist")
     wal = Path(f"{record}-wal")

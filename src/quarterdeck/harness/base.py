@@ -31,6 +31,8 @@ from .capabilities import (DefaultMetadata, EffortCapability, reject_default_ove
 
 def record_fingerprint(record: Path) -> tuple:
     """Presence, inode, size and mtime of a record and of its SQLite write-ahead log."""
+    from ..record_location import resolve
+    record = resolve(record)
     def stat_of(path: Path) -> tuple:
         try:
             s = path.stat()
@@ -452,7 +454,8 @@ class Harness(ABC):
         """The first record written after the launch; ambiguity reported, never guessed."""
         after = []
         for record in self.records(home):
-            if record in excluded:
+            from ..record_location import retired
+            if record in excluded or retired(record):
                 continue
             first = self.first_timestamp(record)
             if first is not None and first >= launched_at:

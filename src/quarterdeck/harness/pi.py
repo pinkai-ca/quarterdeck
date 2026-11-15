@@ -45,8 +45,10 @@ THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh")
 
 
 def records(home: Path) -> list[Path]:
+    from .. import record_location
     folder = home / "sessions"
-    return sorted(p for p in folder.glob("*.jsonl") if p.is_file()) if folder.is_dir() else []
+    return sorted({*(p for p in folder.glob("*.jsonl") if p.is_file()),
+                   *record_location.records(home, "sessions/*.jsonl")})
 
 
 def _session(record: Path) -> dict | None:
@@ -417,6 +419,9 @@ class PiHarness(EndpointHarness):
             record = next((r for r in reversed(records(home)) if session_id(r) == resume), None)
             if record is None:
                 raise ShipError(f"{seat.name}: no record in {home} holds the session {resume}; qd fresh {seat.name} starts a new one")
+            from ..record_location import retired
+            if retired(record):
+                raise ShipError(f"{seat.name}: conversation is retired; use qd fresh {seat.name}")
             argv += ["--session", str(record)]
         if first:
             argv.append(first)

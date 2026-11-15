@@ -17,6 +17,7 @@ import time
 from threading import RLock
 from typing import TYPE_CHECKING
 from . import reading_scope
+from ..record_location import resolve
 
 if TYPE_CHECKING:
     from .base import State, Turn
@@ -68,11 +69,12 @@ def _parsed(record: Path) -> _Snapshot:
 
 def _parse(record: Path) -> _Snapshot:
     """Private immutable views; every changed/racy source is byte-checked before prefix reuse."""
+    source = resolve(record)
     record = Path(record)
     cached = _snapshots.pop(record, None)  # a failed read cannot preserve a certified success
     for attempt in range(3):
         started = time.time_ns()
-        info = record.stat()
+        info = source.stat()
         checked = time.time_ns()
         stamp = _stamp(info)
         if (attempt == 0 and cached is not None and cached.stamp == stamp and cached.certified_at is not None
@@ -80,10 +82,10 @@ def _parse(record: Path) -> _Snapshot:
             _snapshots[record] = cached
             return cached
         try:
-            raw = record.read_bytes().decode('utf-8')
+            raw = source.read_bytes().decode('utf-8')
         except UnicodeError as error:
             raise RecordError("record is not UTF-8 JSON lines") from error
-        if _stamp(record.stat()) == stamp:
+        if _stamp(source.stat()) == stamp:
             break
         # A live writer can append between stat and read. Re-read fresh bytes,
         # never a cached fallback; a continuously changing source still refuses.

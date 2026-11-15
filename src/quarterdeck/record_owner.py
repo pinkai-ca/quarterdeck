@@ -184,7 +184,8 @@ class Owned:
     def read(self) -> tuple[State, list[Turn]]:
         if self.reader is None:
             raise RecordError(self.reason or f"record reader unknown: {self.path.name}; inspect with qd ledger")
-        return self.reader.read(self.path)
+        from .record_location import resolve
+        return self.reader.read(resolve(self.path))
 
 
 def records(seat: Seat, *, publish=True) -> list[Owned]:

@@ -11,7 +11,7 @@ from pathlib import Path
 import sqlite3
 import time
 
-from . import post, record_owner
+from . import post, record_owner, record_location
 from .harness import reader_stamp
 
 BACKSTOP = 600.0
@@ -75,6 +75,7 @@ def capture(service, records, *, issues=None):
             path = Path(os.path.abspath(record))
             if not path.is_relative_to(runtime):
                 continue  # an external legacy binding grants no new stat authority
+            path = record_location.resolve(path)
             paths.update((path, Path(str(path) + '-wal')))
             classes[path], classes[Path(str(path) + '-wal')] = 'record', '-wal'
             if not path.exists():

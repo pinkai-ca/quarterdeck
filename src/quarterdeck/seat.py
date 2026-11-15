@@ -583,6 +583,9 @@ class Seat:
                             f"historical reader evidence is unchanged by a new launch; inspect with qd watch {self.name}")
             if self.launched() is not None and record_owner.launch_reader(self.launched()) != owner:
                 return Join(None, f"record reader changed: {record.name} and saved launch disagree; inspect with qd watch {self.name}")
+            from .record_location import retired
+            if retired(record):
+                return Join(None, f"record retired: {record.name}; use qd fresh {self.name}")
             if record.exists():
                 if publish and not self._join_retained(record, self.launched()):
                     self._note_owned(record)
@@ -923,6 +926,10 @@ class Seat:
         return f"{self.name} up in {pane.id} · {self.harness.name} {launched.version or ''} · provider {providers.display(pool.provider)} · pool {pool.name} · {how}{carried_note}{jail_note}{notice_note}{unchecked_note}"
 
     def _resume_id(self) -> str | None:
+        from .record_location import retired
+        pinned = self.folder / "record"
+        if pinned.is_file() and retired(Path(pinned.read_text().strip())):
+            raise ShipError(f"{self.name}: conversation is retired; use qd fresh {self.name}")
         record = self.record()
         try:
             return self.harness.session_id(record) if record else None
