@@ -18,7 +18,8 @@ from quarterdeck.ship import ShipError
 from .test_drop_count_bound import file
 
 FLOOD = 8 * post.DROP_MAX_FILES + 37  # far over one window
-FREE = 'f' + '400'  # a suffix no flood here holds
+WIDTH = 2 * post.SHORT_ID_BYTES  # hex digits in a new short's suffix
+FREE = 'f4'.ljust(WIDTH, '0')  # a suffix no flood here holds
 
 
 def forum(tmp_path) -> shipmod.Ship:
@@ -32,7 +33,7 @@ def flood(runtime: Path, seat: str, count: int, *, kind: str = 'order') -> list[
     at = datetime(2032, 1, 1, tzinfo=timezone.utc)
     queued = []
     for number in range(count):
-        identity = '-'.join((kind[:3], '20320101', '0000', seat, f'{number:04x}'))
+        identity = '-'.join((kind[:3], '20320101', '0000', seat, f'{number:0{WIDTH}x}'))
         message = post.Message(identity, kind, seat, 'ship', at, f'ordinary queued {kind} {number}')
         queued.append((message, post.write_drop(runtime, message)))
     return queued
@@ -117,7 +118,7 @@ def test_a_short_beyond_the_window_drawn_again_is_filed_twice_and_refused_by_sho
     draw = post.secrets.token_hex
     suffixes = iter([beyond.id.rsplit('-', 1)[1]])
     monkeypatch.setattr(post.secrets, 'token_hex',
-                        lambda size: next(suffixes, None) or draw(size) if size == 2 else draw(size))
+                        lambda size: next(suffixes, None) or draw(size) if size == post.SHORT_ID_BYTES else draw(size))
     drawn = store.new('order', 'lead', 'reviewer-1', 'ordinary new task')
     assert drawn.short == beyond.short and drawn.id != beyond.id, 'beyond the window, the short is not seen'
     assert beyond_path.exists()
@@ -156,18 +157,30 @@ def test_the_senders_own_queued_id_is_never_drawn_again_beyond_its_window(tmp_pa
     assert store.prepare('order', 'waiting', 'ship', 'ordinary new task').short == 'ord-' + FREE
 
 
-def test_a_taken_set_covering_a_kinds_whole_space_is_refused_in_bounded_time(tmp_path, monkeypatch):
+def test_a_kind_whose_every_draw_is_taken_is_refused_in_bounded_time(tmp_path, monkeypatch):
+    # A kind's whole space, 16 ** WIDTH shorts, is too many to list. The allocator sees a space only through its draws
+    # and what it avoids, so a space whose every draw lands on a taken short is, to it, a full one: each draw here is
+    # a real draw of the new width, mapped onto a short the round holds.
     store = post.Store(tmp_path / 'runtime')
-    taken = {f'ord-{n:04x}' for n in range(16 ** 4)}
+    taken = {f'ord-{n:0{WIDTH}x}' for n in range(0, 16 ** WIDTH, 16 ** WIDTH // 4096)}
+    held = sorted(short.split('-', 1)[1] for short in taken)
     draws = []
     draw = post.secrets.token_hex
-    monkeypatch.setattr(post.secrets, 'token_hex', lambda size: (size == 2 and draws.append(size)) or draw(size))
+
+    def drawing(size):
+        if size != post.SHORT_ID_BYTES:
+            return draw(size)
+        suffix = held[int(draw(size), 16) % len(held)]
+        draws.append(suffix)
+        return suffix
+    monkeypatch.setattr(post.secrets, 'token_hex', drawing)
     started = time.monotonic()
     with pytest.raises(post.IdSpaceExhausted) as refused:
         store.prepare('order', 'lead', 'member', 'ordinary new task', taken=taken)
     assert str(refused.value) == post.ID_SPACE_REASON
     assert len(draws) == post.ID_DRAWS and time.monotonic() - started < 5
-    assert len(taken) == 16 ** 4, 'a refusal adds nothing to the round'
+    assert all(len(suffix) == WIDTH and f'ord-{suffix}' in taken for suffix in draws)
+    assert len(taken) == 4096, 'a refusal adds nothing to the round'
     report = store.prepare('report', 'lead', 'member', 'another kind still has room', taken=taken)
     assert report.short.startswith('rep-')
 
@@ -181,7 +194,7 @@ def test_a_group_intent_with_no_free_short_is_held_with_the_fixed_reason(tmp_pat
     taken_suffix = root.id.rsplit('-', 1)[1]  # every draw is the root's own short, which the round holds
     draw = post.secrets.token_hex
     monkeypatch.setattr(post.secrets, 'token_hex',
-                        lambda size: draws.append(size) or taken_suffix if size == 2 else draw(size))
+                        lambda size: draws.append(size) or taken_suffix if size == post.SHORT_ID_BYTES else draw(size))
     started = time.monotonic()
     file(store, caller, ship)
     assert len(draws) == post.ID_DRAWS and time.monotonic() - started < 30
