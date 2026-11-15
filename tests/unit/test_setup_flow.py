@@ -465,7 +465,7 @@ def test_non_tty_cli_uses_same_setup_without_inherited_ship_handoff(answers, tmp
 
 
 def test_unfinished_first_commit_requires_person_to_resolve_git(answers, monkeypatch):
-    def refuse_commit(*_):
+    def refuse_commit(*_, **__):
         raise ship.ShipError("example git identity is unavailable")
     monkeypatch.setattr(ship, "commit", refuse_commit)
     with pytest.raises(ship.ShipError, match="first commit is unfinished.*resolve the git reason yourself"):

@@ -662,7 +662,7 @@ def _write_atomically(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
-def create(folder: Path, text: str, orders: str) -> Ship:
+def create(folder: Path, text: str, orders: str, *, identity: dict[str, str] | None = None) -> Ship:
     """Create one new ship from a validated declaration; never replace an existing folder."""
     _validate(_from_text(text, folder))
     try:
@@ -674,7 +674,7 @@ def create(folder: Path, text: str, orders: str) -> Ship:
     _write_atomically(folder / ".gitignore", f"/{RUNTIME}/\n")
     try:
         _git(folder, "init", "--quiet")
-        commit(folder, ["ship.toml", "orders.md", ".gitignore"], "qd setup: declare crew")
+        commit(folder, ["ship.toml", "orders.md", ".gitignore"], "qd setup: declare crew", identity=identity)
     except ShipError as error:
         raise ShipError(f"ship files saved in {folder}, but the first commit is unfinished: {error}; "
                         "resolve the git reason yourself, initialize this ship's repository if needed, "
@@ -692,12 +692,15 @@ def _git(folder: Path, *args: str) -> str:
     return done.stdout.strip()
 
 
-def commit(folder: Path, paths: list[str], message: str) -> str:
+def commit(folder: Path, paths: list[str], message: str, *, identity: dict[str, str] | None = None) -> str:
     """Stage ``paths`` and commit them in ``folder``; the short sha, or 'nothing' when clean."""
     _git(folder, "add", "--", *paths)
     if not _git(folder, "status", "--porcelain", "--", *paths):
         return "nothing"
-    _git(folder, "commit", "--quiet", "--only", "-m", message, "--", *paths)  # the named files, nothing swept in (law: nothing-leaks)
+    # New ships have independent repositories: carry the identity resolved in the
+    # project into this commit only, without writing anyone's Git configuration.
+    config = [part for key, value in (identity or {}).items() for part in ("-c", f"{key}={value}")]
+    _git(folder, *config, "commit", "--quiet", "--only", "-m", message, "--", *paths)  # the named files, nothing swept in (law: nothing-leaks)
     return _git(folder, "rev-parse", "--short", "HEAD")
 
 

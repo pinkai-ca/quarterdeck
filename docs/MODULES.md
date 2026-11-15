@@ -68,7 +68,7 @@ quarterdeck/                       the project folder: the framework repository
   CONTRIBUTING.md for whoever works on Quarterdeck itself, person or agent
   src/quarterdeck/
     cli.py         the qd command
-    setup.py       office initialization and guided crew creation/reruns, with replaceable machine and live-operation seams
+    setup.py       office initialization and guided crew creation/reruns, with Git identity checked before writes and replaceable machine/live seams
     raise_ship.py  exact template proposals, person-shell approval records in the office runtime, and crew creation/launch
     setup_answers.py   one flags/file/terminal answer model, edits and explicit acceptance
     setup_proposal.py  read-only setup proposals and their shared text/JSON summary

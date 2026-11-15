@@ -202,6 +202,24 @@ def refuse_embedded_office(project: Path) -> None:
                             "init and setup leave that ship untouched and create no second office")
 
 
+def git_identity(project: Path) -> dict[str, str]:
+    """Ask Git for an explicit, usable identity before setup writes a declaration."""
+    identity = {}
+    for role in ("author", "committer"):
+        try:
+            resolved = ships._git(project, "-c", "user.useConfigOnly=true", "var", f"GIT_{role.upper()}_IDENT")
+            match = re.fullmatch(r"(.+) <([^<>]+)> -?\d+ [+-]\d{4}", resolved)
+            if match is None:
+                raise ShipError("Git returned an incomplete identity")
+        except ShipError:
+            raise ShipError("Git needs your name and email before setup can write files. "
+                            "Set your own identity, then rerun setup: "
+                            "git config --global user.name \"Your Name\" && "
+                            "git config --global user.email \"you@example.com\"") from None
+        identity[f"{role}.name"], identity[f"{role}.email"] = match.groups()
+    return identity
+
+
 def init_office(args: argparse.Namespace, *, operations: Operations | None = None, start: bool = True,
                 declaration: str | None = None) -> list[str]:
     """Copy only the office declarations, commit them, then use normal up for its desk."""
@@ -225,6 +243,7 @@ def init_office(args: argparse.Namespace, *, operations: Operations | None = Non
         if declaration is not None:
             files["ship.toml"] = declaration
         ships._validate(ships._from_text(files["ship.toml"], folder))
+        identity = git_identity(project)
         # law: one-folder
         # The fence's empty mount point is inside the project, where the office's
         # own declaration belongs; accept only that empty folder, never its files.
@@ -239,7 +258,7 @@ def init_office(args: argparse.Namespace, *, operations: Operations | None = Non
             ships._write_atomically(path, text)
         try:
             ships._git(folder, "init", "--quiet")
-            commit = ships.commit(folder, [*names, ".gitignore"], "qd init: declare office")
+            commit = ships.commit(folder, [*names, ".gitignore"], "qd init: declare office", identity=identity)
         except ShipError as error:
             raise ShipError(f"office files saved in {folder}, but its first commit is unfinished: {error}; "
                             "resolve git identity and commit only its declaration, orders, cards, README and .gitignore before rerunning qd init") from None
@@ -576,6 +595,9 @@ def run(args: argparse.Namespace, *, operations: Operations | None = None,
         return lines
     if not accepted:
         return finish(["Setup stopped before acceptance; no ship changes were written."])
+    identity = git_identity(operations.project_folder()) if proposal.mode == "new" else None
+    if proposal.mode == "update":
+        git_identity(proposal.ship.folder)
     if initialize_office:
         start_office = conversation.choice("start", "Start the office and crew? Opening briefs may spend turns. yes or no",
                                            ("yes", "no"), "yes")
@@ -586,7 +608,7 @@ def run(args: argparse.Namespace, *, operations: Operations | None = None,
     rerun = shlex.join(["qd", "--ship", str(folder), "setup", "--existing", "keep",
                        "--use-defaults", "yes", "--accept", "yes"])
     if proposal.mode == "new":
-        ship = ships.create(folder, proposal.text, proposal.orders)
+        ship = ships.create(folder, proposal.text, proposal.orders, identity=identity)
         conversation.say(f"Created and committed {ship.file} and orders.md; runtime is ignored.")
         ships.mark_default(folder.name, project=operations.project_folder())
         conversation.say(f"{folder.name} marked as your default ship: qd acts on it when no ship is named")
