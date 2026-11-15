@@ -120,6 +120,7 @@ def test_copied_scoped_accounting_replay(tmp_path, capsys):
     source = Path(os.environ['QD_ACCOUNTING_MEASURE_SOURCE']).resolve() / 'runtime'
     runtime = tmp_path/'ship'/'runtime'
     stage = 'copy'
+    phase_error = None
     try:
         counts = copied_runtime(source,runtime,compact_sqlite=True)
         copied_selection_metadata(source,runtime)
@@ -138,6 +139,13 @@ def test_copied_scoped_accounting_replay(tmp_path, capsys):
             done = subprocess.run([sys.executable,str(Path(__file__).resolve()),'--phase',str(runtime),label],
                                   env=env,capture_output=True,text=True,timeout=1200,check=False)
             if done.returncode:
+                try:
+                    detail = json.loads(done.stderr)
+                    if (set(detail) == {'error','file','line'} and isinstance(detail['line'],int)
+                            and all(isinstance(detail[key],str) for key in ('error','file'))):
+                        phase_error = detail
+                except (ValueError,TypeError):
+                    pass
                 raise RuntimeError('copy phase exited ' + str(done.returncode))
             results[label] = json.loads(done.stdout)
         if results['warm']['tables'] != results['candidate']['tables']:
@@ -151,6 +159,7 @@ def test_copied_scoped_accounting_replay(tmp_path, capsys):
             print('COPIED_SCOPED_REPLAY '+json.dumps(results,sort_keys=True),flush=True)
     except Exception as error:
         raise RuntimeError('copied scoped replay failed at '+stage+': '+type(error).__name__+
+                           '; phase metadata '+json.dumps(phase_error)+
                            '; no native details displayed') from None
 
 
