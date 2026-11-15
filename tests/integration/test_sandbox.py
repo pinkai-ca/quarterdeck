@@ -631,7 +631,7 @@ def test_a_jailed_seat_reads_plain_success_words_and_cannot_post_the_same_report
     drop = ship.runtime / "post" / "drop" / "worker-1"
     try:
         worker.up(resume=False)
-        assert worker.launched().argv[0] == "bwrap"
+        assert sandbox.seats_hidden(worker.launched().argv) is True
         wait_for(lambda: Door(worker).reading().open)
         first = store.new("order", "desk", worker.name,
                           "$ qd post ack --re {this}\n"
