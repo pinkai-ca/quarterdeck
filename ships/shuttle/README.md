@@ -3,8 +3,7 @@
 A mission crew of three: the captain receives the task, the engineer builds it,
 and the first officer checks and signs the reviewed result. There is no desk or
 separate builder. This is a named template beside drydock, default, forum,
-cascade and office. The default onboarding crew remains unchanged; replacing it waits
-for the separate Office/fleet design.
+cascade and office.
 
 Copy this entire folder into a ship folder of its own. Edit `ship.toml` for the
 mission workspace and programs actually available. Choose a unique ship name and

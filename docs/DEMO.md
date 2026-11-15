@@ -106,10 +106,42 @@ The engineer's figures are lower bounds, as the ledger marks them: part of its t
 
 ## The recordings on the product page
 
-The product page shows three longer recordings, one for each kind of ship. Each is one run on real programs and real models, recorded in a terminal with asciinema. In each, a script typed the sentence at the desk and chose which agents fill the screen. While a stretch plays faster than it was recorded, the page marks it.
+The product page shows three recordings, one for each kind of ship. In each, one sentence is typed at the desk of an office. The desk passes it to a ship, the ship's crew does the work in its own programs, and the desk says what came of it. Each is one whole run on real programs and real models, recorded in a terminal with asciinema on 14 November 2026, on Quarterdeck at commit `8ab1d2c`. Nothing was typed into any agent's pane but that sentence.
 
-| Recording | What it is | What was done to it |
-| --- | --- | --- |
-| Flagship | A rehearsal take of 11 November 2026. Its text can be selected. The helper on a local model, named hand, had no job in this take. | Eleven minutes of work are shown in four. Long work plays from three to twenty times faster. Each change of view plays over 0.4 seconds, thirty-seven messages wait 0.8 seconds in an agent's box before they are sent, and one pause is shortened. |
-| Forum | A rehearsal take of 12 November 2026. The desk stands in for the person. The lead and the four reviewers are the forum as the framework ships it, on Opus 5.5, GPT-6.1 Sol, and Gemma 4 and Qwen 3.8 served on the same machine. | Six minutes of work are shown in under three. The last two reviewers' long work plays ten to twelve times faster. |
-| Shuttle | A rehearsal take of 12 November 2026. Its text can be selected. | Three minutes of work are shown in a minute and a third. Long work, the engineer's and the first officer's, plays twelve times faster. Each change of view plays over 0.4 seconds, five messages wait 0.8 seconds in an agent's box before they are sent, and one pause is shortened. |
+Each recording can be watched in three views, Web, Portrait and Desktop: 112 by 46 characters, 80 by 71, and 225 by 63 with the office beside the ship. A view is a recording of its own run, made at that size, so the three views of one ship differ in what the crew said and did. Every recording is cut to about a minute, and the page marks, at every moment, how much faster than recorded it is playing.
+
+| Recording | The sentence typed | The ship | Its three runs |
+| --- | --- | --- | --- |
+| Flagship | "Have our flagship perform a roll call: name, provider, model and effort please" | A captain and a worker on Claude Code (Opus 5.5), an engineer on Codex (GPT-6.1 Sol), a worker on Antigravity (Gemini 4 Argon), and two helpers on pi with Qwen 3.8 served on the same machine. | About 70 seconds of work each. Only the waits play faster. |
+| Forum | "Use the forum to review the qd readme, with individual and combined reports in reviews folder" | A lead on Claude Code (Opus 5.5) and four reviewers, each alone: on Claude Code (Opus 5.5), Codex (GPT-6.1 Sol), Antigravity (Gemini 4 Argon) and pi (Qwen 3.8). | Between five and eight minutes of work each. Between the waits they play from 1.5 to 1.8 times faster. |
+| Shuttle | "Have the shuttle make the headline glimmer when its last pink period is clicked" | A captain and a first officer on Claude Code (Opus 5.5) and an engineer on Codex (GPT-6.1 Sol). The work is a change to the product page itself, in a copy of its repository. | Web: seven minutes, a straight run, only the waits faster. Portrait: thirteen minutes, sent back twice, shown in a minute and a quarter at twice the speed. Desktop: thirteen minutes, the captain's review finds a fault and it goes back, 1.6 times faster between the waits. |
+
+The desk in every recording is Claude Code with Fable 5.2. The programs are Claude Code 2.1.317, Codex 0.166.0, Antigravity 1.5.9 and pi 0.79.0.
+
+### What was arranged for the camera
+
+- **The view.** A script decides which agents are open on the screen. An agent opens when a message is stored for it, and closes a few seconds after its turn ends. Each open agent's pane is a read-only tmux client of that agent's own window; a closed agent is its label and nothing else. The label under each pane, with the agent's name, its ship, its program and its model, is the camera's, and so are the pink rules. A change of view plays over a third of a second at most.
+- **The typing.** The script types the sentence at the desk with tmux `send-keys`, at about a person's speed.
+- **The line under each Claude Code pane** is the camera's own, drawn with the framework's code. It lists only the subscriptions the recording uses, with the share of each one's week that was used.
+- **The project.** The ships work in a copy of this repository under `/tmp`, so that no path carries a user name. The copy has no `AGENTS.md` and no `CLAUDE.md`: with either there, pi prints a notice in its pane that the project is not trusted. So when the forum's reviewers call the README's link to `AGENTS.md` broken, that is true of the copy, not of this repository.
+- **The crews.** The flagship and the shuttle are the `default` and the `shuttle` ship, with each seat's program and model chosen for the recording; the flagship has two workers and two helpers added. The forum is the `forum` ship with Antigravity in one reviewer's seat. Claude Code's and Codex's tips and recap lines are turned off, and Claude Code's own announcements are marked as seen.
+- **The ships' orders.** Each ship carries a few orders written for the recording, as any ship's owner may write them: how a roll call is answered (each agent for itself, in one line of a given form, posted once); that a review is one page, and the combined report as well; that a small change to a page is checked once, in one browser, at two widths and in both themes, and lands on `main`; that the desk passes a request on as it was asked, and words one for the forum for a reviewer, with a last sentence for its lead.
+- **A clean start.** Before a take every agent is started fresh, the shuttle's project is put back to its first commit, and the forum's earlier reviews are removed.
+- **More than one take.** Each recording is one whole run, chosen from several. Takes were set aside when a helper on a local model filed the same answer many times, when a message could not be delivered, and when the desk began by speaking of an earlier run. The first two were faults in the framework, found by these recordings and since mended or being mended; the third was the camera's own.
+
+### What was changed in the recordings
+
+1. Each is cut where the recorder detaches, and its last frame is held for three seconds.
+2. Blanks, each character replaced by a space: the user's name and the machine's, a path under the home folder, a mail address, and the name of the plan that Claude Code and Antigravity print beside the model. Every frame is checked for these after the cut.
+3. A message is held in its box. The ship submits a message about a sixth of a second after typing it. So that it can be read, the recording plays slower from the moment a message appears in an agent's box until the box is empty again: one second for one message, and a third of a second more for each further one.
+4. A wait plays faster. Where no message is stored, typed or sent for more than two and a half seconds, outside the typing of the sentence, the wait keeps its first and last moments and what lies between plays a whole number of times faster, to last a second or two.
+5. Where that alone leaves a recording longer than a minute, everything else plays faster too, by one factor for the whole recording and twice at most.
+6. Chapter marks and the terminal's colours are added.
+
+Nothing is spliced or reordered.
+
+### What to know of what they show
+
+- Each message typed into a pane ends with a line that names the reader's own inbox. Later versions leave it out.
+- The desk's pane opens with the index of one earlier notice. The ship carried it into every fresh start of that desk: a fault these recordings found, whose mend is planned.
+- The forum reviews the README as it stood that afternoon. What its four reviewers found was checked against the code the same day: it led to one mend in setup and to about twenty-five corrections in the README and the pages beside it. The README has them now.

@@ -75,7 +75,7 @@ Setup's last lines include its Desk access line, with your own folder in it. Run
 qd --ship ~/quarterdeck/office attach office  # opens your office, where the desk is
 ```
 
-Your desk is there. Say what you want in plain words, and the desk gives the crew its orders and tells you when the work is done.
+Your desk is there. Say what you want in plain words, and the desk gives the crew its orders and tells you when the work is done. A desk on Antigravity hears the crew only after you have spoken to it; on any other harness the ship wakes the desk when a message waits for it.
 
 ### Or do it yourself
 
