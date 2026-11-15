@@ -162,8 +162,10 @@ def whole(store: post.Store, reference: str, reader: str) -> Thread:
             forwards.append(f"{message.short}: {route['from']} forwarded to {route['to']}")
     readable = tuple(message.id for message in visible
                      if message.to == reader and not message.obligation and message.kind != 'ack')
+    settled = store.settled_notices(reader)
     return Thread(root.id, requested.id, shown, others, delivered_continuations(store, reader, visible),
-                  tuple(forwards), readable, tuple(store.settled_notices(reader).items()))
+                  tuple(forwards), readable, tuple((message.id, settled[message.id])
+                                                  for message in mine if message.id in settled))
 
 
 def render(thread: Thread) -> str:

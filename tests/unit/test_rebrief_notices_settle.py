@@ -150,6 +150,22 @@ def test_settled_notice_is_not_an_active_index_root(store):
     assert not post_threads.index_rows(store, (), (message,), frozenset(), seat='reader')
 
 
+def test_thread_metadata_does_not_carry_unrelated_settled_history(store):
+    settled = notice(store)
+    unrelated = notice(store, 1, body='unrelated ordinary report')
+    launch(store, AT + timedelta(seconds=2))
+    assert post_threads.whole(store, unrelated.id, 'reader').settled == ()
+    assert settled.id not in post_threads.render(post_threads.whole(store, unrelated.id, 'reader'))
+
+
+def test_recent_inbox_does_not_copy_settlement_metadata_outside_its_tail(store, monkeypatch):
+    notice(store)
+    launch(store, AT + timedelta(seconds=2))
+    monkeypatch.setattr(post, 'now', lambda: AT + timedelta(days=2))
+    data = post.inbox_reading(store, 'reader', recent=True)
+    assert not data['received'] and not data['settled']
+
+
 def test_direct_door_delivery_does_not_open_a_settled_notice(store, monkeypatch):
     message = notice(store)
     launch(store, AT + timedelta(seconds=1))

@@ -1247,6 +1247,8 @@ def inbox_reading(store: Store, seat: str, *, recent: bool = False) -> dict:
             size += entry_size
         data["received"] = tail
         data["older_received"] = len(received) - len(tail)
+        if 'settled' in data:
+            data['settled'] = {m.id: settled[m.id] for m in tail if m.id in settled}
     return data
 
 
