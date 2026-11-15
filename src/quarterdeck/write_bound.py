@@ -13,8 +13,17 @@ Nothing bounds those but this alarm. It needs no daemon and no root:
   folder's own device and counts each inode once in a group, by its blocks on the disk.
 - Files the jail's processes hold open after unlinking them, which no walk can see, are read from
   ``/proc/<pid>/fd`` and counted against the largest bound on their device, where their folder is no longer known.
-- A walk is bounded by entries (``ENTRIES``, the open files counted too), by time (``SECONDS``) and by depth
-  (``DEPTH``). A walk that reaches a bound reads as over: a jail cannot hide its writes behind a costly tree.
+- A walk is bounded by entries (``ENTRIES``, the open files counted too), by the alarm thread's own CPU time for
+  that seat's measure (``SECONDS``, ``time.thread_time``) and by depth (``DEPTH``). A walk that reaches one of these
+  reads as over: a jail cannot hide its writes behind a costly tree, and it drives the walk's own CPU only through
+  what it builds, which the entry bound caps.
+- A walk is bounded on the clock as well, generously (``WALL``). The clock measures how busy the service and the
+  machine are, not the jail: the alarm thread shares the interpreter with a busy service, which can starve it. So a
+  walk that passes it reads as unmeasured, not over: the seat stays up, the status line names it, and the next pass
+  retries with the same bounds. What a walk cut short reached still counts: if that already passes a bound, it is
+  over now. A jail can raise the machine's load on purpose, so unmeasured is no free window: ``PASSES`` unmeasured
+  passes in a row stop the seat as a measured over does, and a measured pass starts the count again
+  (``runtime/post/write-bound/unmeasured/<seat>.json``, which no jail is shown).
 - Over a bound, the hold is placed first, then the jail's whole process tree is stopped with SIGSTOP and killed with
   SIGKILL, an endpoint seat's relay included. The hold (``runtime/post/write-bound/<seat>.json``, which no jail is
   shown) registers in ``relaunch_intent.HOLDS`` and clears the seat's relaunch intent where it is placed, so no
@@ -30,7 +39,7 @@ law: nothing-waits-silently
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 import json
 import os
@@ -50,7 +59,11 @@ SEAT, WORKSPACE, SMALL = 'seat folder', 'workspace', 'drop, check and relay'
 # workspace under 10 MiB. The drop holds messages a few kilobytes long, the check folder one proof, the relay a socket.
 BOUNDS = {SEAT: 4 * GiB, WORKSPACE: 2 * GiB, SMALL: 64 * MiB}
 ENTRIES = 200_000  # a hand's seat folder held about 30,000 entries; a walk of 200,000 took about 0.4 s (measured)
-SECONDS = 2.0  # one seat's whole measure, its open files included
+SECONDS = 2.0  # the alarm thread's own CPU time for one seat's whole measure, its open files included
+# On the clock. On 15 Nov a walk of a 47-entry home passed 2 s at load 12 to 16 with the alarm thread starved: the
+# clock read the service's load, not the jail's tree. Passing this bound reads as unmeasured, never as over.
+WALL = 30.0
+PASSES = 5  # unmeasured passes in a row that stop a seat as a measured over does
 DEPTH = 512  # folders held open at once; real trees are a few dozen deep, and the service's descriptors are finite
 # Measured (15 Nov): a writer at full speed against a 2 GiB bound, looked at every 1 s, was stopped 0.08 GiB over;
 # every 5 s, 1.97 GiB over. The overshoot is the write rate times the period, so the period is the short one.
@@ -63,24 +76,35 @@ class Over(Exception):
     """A walk that reached a bound, or a folder it could not read: either reads as over."""
 
 
+class Unmeasured(Exception):
+    """A walk cut short by the clock alone: it measured the machine's load, not the jail. Never over by itself."""
+
+
 @dataclass
 class Budget:
+    """One seat's measure: entries, depth and the thread's own CPU time are hard; the clock only cuts it short."""
+
     entries: int = ENTRIES
-    seconds: float = SECONDS
+    seconds: float = SECONDS  # CPU time of the thread that walks (time.thread_time)
     depth: int = DEPTH
-    deadline: float = 0.0
+    wall: float = WALL
+    deadline: float = 0.0  # on the thread's CPU clock
+    wall_deadline: float = 0.0  # on the monotonic clock
     seen: int = 0
 
     def start(self) -> 'Budget':
-        self.deadline = time.monotonic() + self.seconds
+        self.deadline = time.thread_time() + self.seconds
+        self.wall_deadline = time.monotonic() + self.wall
         return self
 
     def tick(self) -> None:
         self.seen += 1
         if self.seen > self.entries:
             raise Over(f'the walk passed {self.entries} entries')
-        if time.monotonic() > self.deadline:
-            raise Over(f'the walk passed {self.seconds:g} s')
+        if time.thread_time() > self.deadline:
+            raise Over(f'the walk passed {self.seconds:g} s of CPU time')
+        if time.monotonic() > self.wall_deadline:
+            raise Unmeasured(f'the walk passed {self.wall:g} s on the clock')
 
 
 @dataclass
@@ -109,6 +133,8 @@ class Reading:
     groups: list[Group]
     over: tuple[str, int, int, str] | None  # (group, held, bound, why) of the first group over, or None
     pids: dict[int, str]
+    # (group, held, bound, why) where the clock cut the walk short and nothing it reached was over; else None
+    unmeasured: tuple[str, int, int, str] | None = None
 
 
 # -- processes -------------------------------------------------------------------------
@@ -344,6 +370,12 @@ def measure(ship, jail: Jail, *, bounds=None, budget: Budget | None = None) -> R
                     place.held += size
     except Over as why:
         return Reading(jail.seat, found, (current.label, current.held, current.bound, str(why)), jail.pids)
+    except Unmeasured as why:
+        for group in found:  # what the walk reached still counts: over already is over now
+            if group.held > group.bound:
+                return Reading(jail.seat, found, (group.label, group.held, group.bound,
+                                                  f'over its bound before {why}'), jail.pids)
+        return Reading(jail.seat, found, None, jail.pids, (current.label, current.held, current.bound, str(why)))
     for group in found:
         if group.held > group.bound:
             return Reading(jail.seat, found, (group.label, group.held, group.bound, 'over its bound'), jail.pids)
@@ -483,18 +515,80 @@ def lift(runtime, seat: str, who: str) -> bool:
 
 
 def status(ship) -> list[str]:
-    """One line for each seat held at its write bound: law: nothing-waits-silently."""
+    """One line for each seat held at its write bound, and for each left unmeasured: law: nothing-waits-silently."""
     try:
         names = sorted(name[:-5] for name in os.listdir(folder(ship.runtime)) if name.endswith('.json'))
     except FileNotFoundError:
-        return []  # no hold was ever placed: the seats need not be read
+        return []  # no hold was ever placed and no seat left unmeasured: the seats need not be read
     except OSError as error:
         return [f'write-bound holds unreadable ({type(error).__name__}); qd status reads them']
     lines = []
     for name in names:
         if words := reason(ship.runtime, name):
             lines.append(f'{name}: {words}')  # law: nothing-waits-silently
+    try:
+        left = sorted(name[:-5] for name in os.listdir(unmeasured_folder(ship.runtime)) if name.endswith('.json'))
+    except FileNotFoundError:
+        left = []
+    except OSError as error:
+        left, lines = [], [*lines, f'write-bound unmeasured passes unreadable ({type(error).__name__})']
+    for name in left:
+        if name in names:
+            continue  # held already: the hold's line says more
+        data = unmeasured_read(ship.runtime, name)
+        passes = data.get('passes') if data else None
+        why = data.get('why') if data and isinstance(data.get('why'), str) else 'the walk was cut short'
+        count = f'{passes} of {PASSES} passes in a row' if isinstance(passes, int) else 'passes unreadable'
+        lines.append(f'{name}: write bound unmeasured, {count} ({why}); '
+                     f'retried each pass, stopped at {PASSES}')  # law: nothing-waits-silently
     return lines
+
+
+# -- a seat left unmeasured ----------------------------------------------------------------------
+
+
+def unmeasured_folder(runtime) -> Path:
+    return folder(runtime) / 'unmeasured'
+
+
+def unmeasured_path(runtime, seat: str) -> Path:
+    return unmeasured_folder(runtime) / f'{seat}.json'
+
+
+def unmeasured_read(runtime, seat: str) -> dict | None:
+    """The seat's run of unmeasured passes, or None. One that cannot be read reads as none: no jail can write it."""
+    target = unmeasured_path(runtime, seat)
+    try:
+        mode = post_dir.mode(target)
+        if mode is None or not stat.S_ISREG(mode):
+            return None
+        data = json.loads(post_dir.read_bytes(target, limit=LIMIT))
+    except (OSError, ShipError, ValueError):
+        return None
+    return data if isinstance(data, dict) and data.get('seat') == seat else None
+
+
+def unmeasured(runtime, reading: Reading) -> int:
+    """Count one more unmeasured pass in a row for the seat, kept where no jail is shown; the passes so far."""
+    label, held, bound, why = reading.unmeasured
+    before = unmeasured_read(runtime, reading.seat) or {}
+    passes = before.get('passes') if isinstance(before.get('passes'), int) and before.get('passes') > 0 else 0
+    now = datetime.now(timezone.utc).isoformat()
+    data = dict(version=1, seat=reading.seat, passes=passes + 1, first_at=before.get('first_at') or now, at=now,
+                group=label, held=held, bound=bound, why=why)
+    post_dir.ensure_directory(unmeasured_folder(runtime))
+    post_dir.replace_bytes(unmeasured_path(runtime, reading.seat), (json.dumps(data) + '\n').encode())
+    return passes + 1
+
+
+def measured(runtime, seat: str) -> None:
+    """A measured pass, a stop, or no jail left to measure: the run of unmeasured passes ends."""
+    target = unmeasured_path(runtime, seat)
+    try:
+        if post_dir.mode(target) is not None:
+            post_dir.remove(target)
+    except FileNotFoundError:
+        pass
 
 
 def _held(seat) -> str | None:
@@ -509,17 +603,43 @@ if _held not in relaunch_intent.HOLDS:
 
 
 def look(ship, log, *, bounds=None, budget: Budget | None = None) -> list[str]:
-    """One look over every running jail; the seats stopped."""
+    """One look over every running jail; the seats stopped.
+
+    A seat whose walk the clock cut short is counted unmeasured and retried on the next look with the same bounds;
+    ``PASSES`` such looks in a row stop it as a measured over does. A seat with no jail running has nothing left to
+    measure, and its count ends with it.
+    """
     stopped = []
-    for name, jail in sorted(jails(ship).items()):
+    running = jails(ship)
+    for name, jail in sorted(running.items()):
         try:
-            fresh = Budget(budget.entries, budget.seconds, budget.depth) if budget else None
+            fresh = replace(budget, deadline=0.0, wall_deadline=0.0, seen=0) if budget else None
             reading = measure(ship, jail, bounds=bounds, budget=fresh)
+            if reading.over is None and reading.unmeasured is not None:
+                passes = unmeasured(ship.runtime, reading)
+                label, held, bound, why = reading.unmeasured
+                log('write-bound', seat=name, outcome='unmeasured', passes=passes, group=label, held=held,
+                    bound=bound, why=why)
+                if passes >= PASSES:
+                    reading.over = (label, held, bound, f'unmeasured {passes} passes in a row, {why}')
             if reading.over is not None:
                 stop(ship, reading, log)
                 stopped.append(name)
+                measured(ship.runtime, name)
+            elif reading.unmeasured is None:
+                measured(ship.runtime, name)
         except Exception as error:  # one seat's failure never keeps the alarm from the others
             log('error', step='write-bound', seat=name, error=repr(error))
+    try:
+        left = [entry[:-5] for entry in os.listdir(unmeasured_folder(ship.runtime)) if entry.endswith('.json')]
+    except OSError:
+        left = []
+    for name in left:
+        if name not in running:
+            try:
+                measured(ship.runtime, name)
+            except Exception as error:
+                log('error', step='write-bound', seat=name, error=repr(error))
     return stopped
 
 
