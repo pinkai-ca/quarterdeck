@@ -57,7 +57,7 @@ def test_plausible_punctuation_is_not_an_arbitrary_break(monkeypatch, left, righ
     assert door.matches(door.harness.box(first+"\n"+right), door.screen())
 
 
-@pytest.mark.parametrize("name", ["pi", "claude", "antigravity", "fake", "opencode"])
+@pytest.mark.parametrize("name", ["pi", "claude", "antigravity", "fake"])
 def test_other_adapters_do_not_acquire_codex_break_rules(name, monkeypatch):
     from quarterdeck.harness import get
     width = 48

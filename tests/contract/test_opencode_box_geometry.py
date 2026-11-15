@@ -118,3 +118,32 @@ def test_other_adapters_keep_their_existing_column_declaration(name):
     screen = SimpleNamespace(text='unfamiliar drawing', box='raw box   ')
     assert reader.box_columns_for_screen(112, screen) == reader.box_columns(112)
     assert reader.box_comparison(screen, 112) == screen.box
+
+
+@pytest.mark.parametrize('width', [64, 80, 112])
+def test_native_opencode_slash_break_replaces_the_assumed_negative_contract(width):
+    fixture = example('capped', 'slash', width)
+    reader = OpenCodeHarness()
+    screen = reader.screen(fixture['capture'])
+    original_box = screen.box
+    door = door_for(reader, width)
+    assert screen.box.splitlines()[0].rstrip(' ').endswith('/')
+    assert [len(row.rstrip(' ')) for row in screen.box.splitlines()] == fixture['row_lengths']
+    assert door.matches(reader.box(fixture['payload']), screen)
+    assert not door.matches(reader.box(fixture['payload'].replace('/branch', '/brunch')), screen)
+    assert not door.matches(reader.box(fixture['payload'].replace('/branch', 'branch')), screen)
+    assert not door.matches(reader.box(fixture['payload'] + 'z'), screen)
+    assert screen.box == original_box
+
+
+def test_a_slash_break_that_fits_the_row_still_refuses():
+    fixture = example('capped', 'slash', 80)
+    # Derived control keeps the same native wrapping but replaces most of its prefix.
+    # The remaining word would fit; the short hard newline must not become a wrap.
+    prefix = fixture['payload'].split('/')[0]
+    capture = fixture['capture'].replace(prefix + '/', 'short/')
+    reader = OpenCodeHarness()
+    screen = reader.screen(capture)
+    door = door_for(reader, 80)
+    assert not door.matches(reader.box('short/branch'), screen)
+    assert door.matches(reader.box('short/\nbranch'), screen)

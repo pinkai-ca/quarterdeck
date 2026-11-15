@@ -16,3 +16,10 @@ The door reads the recognised rule's span minus five non-text cells. Only
 comparison discards ASCII spaces proven to lie beyond that text area; the raw
 `Screen.box` keeps them. Unrecognised geometry uses the older declared bound,
 which does not certify a missing input box. No older fixture was replaced.
+
+The three `capped-slash-*.json` fixtures were captured in a further unsent native
+measurement. OpenCode breaks after `/` before `branch` when the latter cannot
+fit: text widths 55/70/70 produce content rows 51+6/66+6/66+6. This replaces the
+older inherited assumption that OpenCode rejects Codex's slash boundary. The
+other adapters' negative contract stays unchanged. Changed text and a short
+hard newline that would fit a row remain mismatches.
