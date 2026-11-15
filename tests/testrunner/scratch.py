@@ -17,6 +17,7 @@ import stat
 import time
 
 from .layout import DIRECTORY, RESULTS, RUNS, Refused, identity, open_child, read_json, write_json
+from . import resources
 
 BOUND = 4 * 1024 ** 3
 MARGIN = 8 * 1024 ** 3
@@ -325,7 +326,7 @@ def usage(path):
                     total['allocated_bytes'] += info.st_blocks * 512
         return folders
 
-    stack = []
+    stack, depth = [], 0
     try:
         # The measurement root is named by the caller and opened as named; a missing root is
         # unknown, rather than measured zero.
@@ -343,6 +344,7 @@ def usage(path):
                 continue
             try:
                 # Gone, or replaced by a link or a file since it was read: tolerated as a removal.
+                depth = len(stack)
                 child = os.open(name, DIRECTORY, dir_fd=parent)
             except (FileNotFoundError, NotADirectoryError):
                 continue
@@ -358,6 +360,8 @@ def usage(path):
                 os.close(child)
                 raise
     except OSError as error:
+        if error.errno in (errno.EMFILE, errno.ENFILE):
+            raise Refused(resources.descriptor_refusal('measure working files', depth) + '; run stopped') from None
         raise Refused(f'cannot measure working files at {path}: {type(error).__name__}: {error}; run stopped') from None
     finally:
         for fd, _ in stack:

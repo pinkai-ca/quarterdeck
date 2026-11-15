@@ -10,6 +10,7 @@ import stat
 import time
 
 from .layout import DIRECTORY, Refused, identity
+from . import resources
 
 
 class Tally:
@@ -136,37 +137,64 @@ class Budget:
 
 
 def _retire_walk(fd, device, where, tally, budget, *, remove, top=False):
-    """A racing writer may add entries, but cannot extend the budget or make us follow links."""
-    budget.check(where)
-    info = os.fstat(fd)
-    if remove and not info.st_mode & stat.S_IWUSR:
-        os.fchmod(fd, stat.S_IMODE(info.st_mode) | stat.S_IRWXU)
-    with os.scandir(fd) as entries:
-        for item in entries:
-            name, path = item.name, where / item.name
-            budget.check(path)
-            if top and name == MARKER:
-                continue  # partial retirement must keep its ownership proof
-            try:
-                entry = os.stat(name, dir_fd=fd, follow_symlinks=False)
-                if entry.st_uid != os.getuid() or entry.st_dev != device:
-                    raise Refused(f'{path}: ownership or filesystem differs; remainder retained')
-                if stat.S_ISDIR(entry.st_mode):
-                    child = os.open(name, DIRECTORY, dir_fd=fd)
+    """Iterative, one held descriptor per level; racing writers still share one bounded budget."""
+    def names(folder, path):
+        budget.check(path)
+        info = os.fstat(folder)
+        if remove and not info.st_mode & stat.S_IWUSR:
+            os.fchmod(folder, stat.S_IMODE(info.st_mode) | stat.S_IRWXU)
+        found = []
+        # Close the iterator before descending, rather than holding a second descriptor per level.
+        with os.scandir(folder) as entries:
+            for item in entries:
+                budget.check(path)
+                found.append(item.name)
+        return iter(found)
+
+    stack, depth = [], 0
+    try:
+        stack.append((fd, where, names(fd, where), None, None))
+        while stack:
+            parent, path, entries, own_name, expected = stack[-1]
+            name = next(entries, None)
+            if name is None:
+                stack.pop()
+                if own_name is not None:
                     try:
-                        if identity(os.fstat(child)) != identity(entry):
-                            raise Refused(f'{path}: replaced while being walked; remainder retained')
-                        _retire_walk(child, device, path, tally, budget, remove=remove)
-                        if identity(os.stat(name, dir_fd=fd, follow_symlinks=False)) != identity(entry):
+                        budget.check(path)
+                        above = stack[-1][0]
+                        if identity(os.stat(own_name, dir_fd=above, follow_symlinks=False)) != expected:
                             raise Refused(f'{path}: replaced during retirement; replacement retained')
                         if remove:
-                            os.rmdir(name, dir_fd=fd)
+                            os.rmdir(own_name, dir_fd=above)
+                        tally.dirs += 1
+                    except FileNotFoundError:
+                        pass
                     finally:
+                        os.close(parent)
+                continue
+            child_path = path / name
+            budget.check(child_path)
+            if top and len(stack) == 1 and name == MARKER:
+                continue  # partial retirement must keep its ownership proof
+            try:
+                entry = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                if entry.st_uid != os.getuid() or entry.st_dev != device:
+                    raise Refused(f'{child_path}: ownership or filesystem differs; remainder retained')
+                if stat.S_ISDIR(entry.st_mode):
+                    depth = len(stack)
+                    child = os.open(name, DIRECTORY, dir_fd=parent)
+                    try:
+                        if identity(os.fstat(child)) != identity(entry):
+                            raise Refused(f'{child_path}: replaced while being walked; remainder retained')
+                        children = names(child, child_path)
+                        stack.append((child, child_path, children, name, identity(entry)))
+                    except BaseException:
                         os.close(child)
-                    tally.dirs += 1
+                        raise
                 else:
                     if remove:
-                        os.unlink(name, dir_fd=fd)
+                        os.unlink(name, dir_fd=parent)
                     if stat.S_ISLNK(entry.st_mode):
                         tally.links += 1
                     else:
@@ -174,6 +202,13 @@ def _retire_walk(fd, device, where, tally, budget, *, remove, top=False):
                         tally.bytes += entry.st_size
             except FileNotFoundError:
                 continue  # an entry vanished inside the already verified tree
+    except OSError as error:
+        if error.errno in (errno.EMFILE, errno.ENFILE):
+            raise Refused(resources.descriptor_refusal('retire working files', depth) + '; remainder retained') from None
+        raise
+    finally:
+        for child, *_ in stack[1:]:  # the caller keeps ownership of the root descriptor
+            os.close(child)
 
 
 def retire(parent_fd, name, expected, where, token, *, budget=None):

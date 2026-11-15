@@ -260,6 +260,7 @@ class Runner:
     # -- the run --------------------------------------------------------------------------------------------
     def main(self) -> int:
         args = self.args
+        self.open_files = resources.apply_open_files()  # the controller and every child own the same policy
         root = slot = None
         self.run_guard = None
         self.bound(SETUP_SECONDS, f'time limit of setup, {SETUP_SECONDS:g} s')
@@ -388,7 +389,8 @@ class Runner:
                 result['jail'] = {'jailed': False}
                 result['environment'] = {**settings, 'workers': args.workers, 'timeout': args.timeout,
                                          'memory_mib': args.memory_mib, 'memory_resource': 'RLIMIT_AS',
-                                         'memory_soft_and_hard': True, 'uid': os.getuid(), 'cpus': os.cpu_count()}
+                                         'memory_soft_and_hard': True, 'open_files': self.open_files,
+                                         'uid': os.getuid(), 'cpus': os.cpu_count()}
                 result['tools'] = environment.tool_versions(env)
                 target_before = {'tracked': gitops.tracked_manifest(target.top, target.head),
                                  'extra': gitops.extra_manifest(target.top)}

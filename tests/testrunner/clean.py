@@ -10,7 +10,7 @@ import stat
 import sys
 import time
 
-from . import evidence, gitops, owned, procs, report, sessions, scratch as storage
+from . import evidence, gitops, owned, procs, report, resources, sessions, scratch as storage
 from .layout import (CHANGES, DIRECTORY, KEEPS, RESULTS, RETIREMENTS, RUNS, RUN_SOCKETS, SOCKETS, Refused, Root, RunGuard, RunBusy, Slot, change_file,
                      identity, read_json, run_active, run_name, write_json)
 
@@ -179,6 +179,7 @@ def retire(args) -> int:
     # Reuse the landed finalization policy; the local import avoids the runner/cleanup import cycle.
     from .run import Runner, FinalizationTimeout, FINALIZATION_SECONDS, EMERGENCY_SECONDS, FINALIZATION_EXIT
 
+    resources.apply_open_files()
     run = run_name(args.run)
     project = gitops.resolve(Path.cwd()).project
     root = Root(project, create=False)

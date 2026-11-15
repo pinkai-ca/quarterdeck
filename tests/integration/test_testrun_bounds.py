@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import resource
 import subprocess
 import sys
 import tempfile
@@ -51,6 +52,69 @@ def run_result(project, done):
     working = Path(result['working_storage']['path'])
     assert not working.exists() and not working.is_symlink(), 'its working storage is gone, in memory as on disk'
     return result, report, records[0].parent
+
+
+def test_tool_raises_its_own_open_file_limit_and_retires_deep_scratch(synthetic_project):
+    project, commit = synthetic_project
+    (project / 'tests/test_descriptors.py').write_text('''
+import os, resource
+def test_deep_working_tree():
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    assert soft >= 8192
+    root = os.path.join(os.environ['TMPDIR'], 'deep-working-tree')
+    os.mkdir(root)
+    held = [os.open(root, os.O_RDONLY | os.O_DIRECTORY)]
+    try:
+        for _ in range(1500):
+            os.mkdir('d', dir_fd=held[-1])
+            held.append(os.open('d', os.O_RDONLY | os.O_DIRECTORY, dir_fd=held[-1]))
+        leaf = os.open('bottom', os.O_WRONLY | os.O_CREAT, 0o600, dir_fd=held[-1])
+        os.close(leaf)
+    finally:
+        for fd in held:
+            os.close(fd)
+''')
+    commit()
+    driver = '''
+import resource, runpy, sys
+soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+resource.setrlimit(resource.RLIMIT_NOFILE, (1024, hard))
+assert resource.getrlimit(resource.RLIMIT_NOFILE)[0] == 1024
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name='__main__')
+'''
+    done = command([sys.executable, '-B', '-I', '-c', driver, str(ROOT / 'tests/testrun.py'),
+                    'run', '--target', str(project), '-n', '0', '--timeout', '60'], cwd=ROOT)
+    result, report, _ = run_result(project, done)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert result['outcome']['status'] == 'passed' and result['evidence']['complete']
+    assert result['evidence']['counts']['passed'] == 1
+    limits = result['environment']['open_files']
+    assert limits == dict(resource='RLIMIT_NOFILE', requested_soft=8192, soft=8192,
+                          hard=resource.getrlimit(resource.RLIMIT_NOFILE)[1])
+    assert '- open_files:' in report and '"soft": 8192' in report
+
+
+def test_explicit_retirement_raises_its_own_limit_and_removes_deep_scratch(tmp_path):
+    from tests.integration.test_testrun_retire import assert_original, crashed
+    from tests.unit.test_testrun_scratch_walk import deep
+    project, run, _, original = crashed(tmp_path)
+    scratch = project / '.testruns/runs' / run
+    deep(scratch, 1500, 'd', b'synthetic deep output')
+    driver = '''
+import resource, runpy, sys
+resource.setrlimit(resource.RLIMIT_NOFILE, (1024, resource.getrlimit(resource.RLIMIT_NOFILE)[1]))
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name='__main__')
+'''
+    done = command([sys.executable, '-B', '-I', '-c', driver, str(ROOT / 'tests/testrun.py'),
+                    'retire', run], cwd=project)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert not scratch.exists()
+    retirement = json.loads((project / '.testruns/retirements' / (run + '.json')).read_text())
+    assert retirement['cleanup']['outcome'] == 'complete'
+    assert retirement['cleanup']['removed']['dirs'] == 1501
+    assert_original(project, run, original)
 
 
 def test_tool_caps_an_older_target_and_retains_the_first_memory_failure(synthetic_project):
