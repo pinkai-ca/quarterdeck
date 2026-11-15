@@ -178,6 +178,34 @@ def inside_foreign_runtime(folder: Path, ship: Ship) -> Path | None:
     return None
 
 
+def bindable(folder: Path, ship: Ship, fleet: tuple[Path, ...]) -> bool:
+    """Whether a folder may be bound back into a jail, judged by this one form of its path.
+
+    Never this ship's folder or a folder inside it: the ship folder is bound once, at its own path, with its runtime
+    fenced. Never another ship's runtime, nor a folder inside one. Never a folder inside the fleet (ships/, office/, a
+    peer's folder): the fence shows only this ship's folder and the peers' ship files there, whatever the mount order.
+    """
+    roots = {*fleet, *(root.resolve() for root in fleet)}
+    own = {ship.folder, ship.folder.resolve()}
+    return (not any(folder == place or place in folder.parents for place in own)
+            and inside_foreign_runtime(folder, ship) is None
+            and not any(folder == root or folder.is_relative_to(root) for root in roots))
+
+
+def reaches_through_link(folder: Path, ship: Ship, fleet: tuple[Path, ...]) -> bool:
+    """Whether a folder whose path passes through a link holds, at its real place, the fleet or this ship's folder.
+
+    bwrap binds the link's target at the link's path, where no fence lies: the fleet's fence and this ship's runtime
+    fence lie at their own paths only. Reached directly, such a folder (the framework's checkout) keeps the fences.
+    Another ship's runtime outside the fleet is covered at the link's path as anywhere else (held_runtimes).
+    """
+    real = Path(os.path.realpath(folder))
+    if real == folder:
+        return False
+    places = {*fleet, *(root.resolve() for root in fleet), ship.folder, ship.folder.resolve()}
+    return any(place == real or real in place.parents for place in places)
+
+
 def endpoint_parts(endpoint: str) -> tuple[str, int, str | None]:
     """The host and port a jail's relay carries, and the name its hosts file maps to the jail's loopback.
 
@@ -243,11 +271,9 @@ def plan(ship: Ship, seat_name: str, seat_folder: Path, seat_home: Path, workspa
                         f"runtime ({elsewhere}); no jail binds another ship's runtime, so the seat could not post. "
                         "Run qd from this ship's own installed copy, or from the framework's checkout")
     folders = [f for f in (*program_folders(programs, path, home), *hidden_folders(programs, path, home))
-               if f != workspace and workspace not in f.parents and ship.folder not in f.parents and f != ship.folder
-               and inside_foreign_runtime(f, ship) is None  # never another ship's runtime, nor a folder inside one
-               # Never a folder inside the fleet (ships/, office/, a peer's folder) but this ship's own, dropped above:
-               # the fence shows only this ship's folder and the peers' ship files there, whatever the mount order.
-               and not any(f == root or f.is_relative_to(root) for root in fleet)]
+               if f != workspace and workspace not in f.parents
+               and all(bindable(place, ship, fleet) for place in (f, Path(os.path.realpath(f))))
+               and not reaches_through_link(f, ship, fleet)]
     # A folder bound back that holds another ship's runtime (the framework's checkout holds every ship's) keeps it
     # covered by an empty tmpfs; this ship's own runtime is shown as always, with its seats and tmux hidden.
     # So does a test run's folder (.testruns): its live tmux servers listen there, and a path socket ignores the
