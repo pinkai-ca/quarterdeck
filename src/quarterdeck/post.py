@@ -1493,16 +1493,81 @@ class Attempts:
         neither is sent again by the service (law: one-door); an acknowledgment claims and
         never wakes, so it is never delivered at all (law: open-until-closed).
         """
-        skip = {m for m, r in (self.latest() if results is None else results).items()
-                if r in (*ACCEPTED, "blind", None, "pending", "abandoned", "uncertain", "not-in-closed-record")
-                or r == "unacted" and not for_launch}  # law: one-door
+        results = self.latest() if results is None else results
+        held = (*ACCEPTED, "blind", None, "pending", "abandoned", "uncertain", "not-in-closed-record")
+
+        def skipped(identifier: str) -> bool:
+            # Only a message with an attempt is judged by its latest result; one never attempted is not held.
+            if identifier not in results:
+                return False
+            result = results[identifier]
+            return result in held or result == "unacted" and not for_launch  # law: one-door
+
+        reserved = set()
         if not for_launch:
             from .compaction import withheld
             reserved, transitioning = withheld(store.dir.parent.parent, seat)
             if transitioning:
                 return []
-            skip |= reserved
-        return [m for m in store.for_seat(seat) if m.id not in skip and m.kind != "ack"]  # law: open-until-closed
+        # Only the seat's own messages are judged, never every message's latest result.
+        return [m for m in store.for_seat(seat)
+                if m.id not in reserved and not skipped(m.id) and m.kind != "ack"]  # law: open-until-closed
+
+
+WAIT_RESCAN_SECONDS = 60.0  # a waiting watch reads every attempt in full at least this often
+
+
+class AttemptsLook:
+    """A waiting watch's reading of each message's latest attempt result, read in full only when it may have changed.
+
+    Every attempt the framework writes is renamed into ``post/attempts`` (``post_dir.replace_bytes``), and
+    retirement publishes its batch into ``post/retired/index`` before it moves an attempt out of that folder, so
+    any change moves one of the two folders' times. A matching stamp of both is trusted only under the store's
+    racy-timestamp rule (docs/design/post.md): the reading in hand began more than a tick after both folders'
+    times. Anything else, and at least every WAIT_RESCAN_SECONDS, reads every attempt again as ``Attempts.all``
+    does, so an edit made in place is still seen. The caller looks under the seat's admission, as before: a look
+    skipped can only delay a delivery, and what is delivered is decided from a reading equal to a full one.
+    """
+
+    def __init__(self, attempts: 'Attempts', *, rescan: float = WAIT_RESCAN_SECONDS):
+        self.attempts, self.rescan = attempts, rescan
+        self._results: dict[str, str | None] | None = None
+        self._stamp = None
+        self._certified_at: int | None = None
+        self._read_at = 0.0
+        self.full_reads = 0
+
+    def _folders_stamp(self):
+        stamp = []
+        for folder in (self.attempts.dir, self.attempts.dir.parent / 'retired' / 'index'):
+            try:
+                info = os.lstat(folder)
+            except FileNotFoundError:
+                stamp.append(None)
+                continue
+            if not stat.S_ISDIR(info.st_mode):
+                return None  # a link or anything else is never trusted; the full read judges it
+            stamp.append((info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns))
+        return tuple(stamp)
+
+    def latest(self) -> dict[str, str | None]:
+        certified_at, self._certified_at = self._certified_at, None  # a failed read certifies nothing
+        started = time.time_ns()
+        stamp = self._folders_stamp()
+        checked = time.time_ns()
+        if (self._results is not None and stamp is not None and stamp == self._stamp and certified_at is not None
+                and certified_at <= started <= checked and time.monotonic() - self._read_at < self.rescan):
+            self._certified_at = certified_at
+            return self._results
+        self._results, self._stamp = None, None
+        read_at = time.monotonic()
+        results = self.attempts.latest()
+        self.full_reads += 1
+        self._results, self._stamp, self._read_at = results, stamp, read_at
+        times = [max(part[2], part[3]) for part in stamp or () if part is not None]
+        if stamp is not None and (not times or max(times) + POST_TIMESTAMP_TICK_NS < started) and started <= time.time_ns():
+            self._certified_at = started
+        return results
 
 
 # -- the watch: how a seat in a human session is reached -----------------------------------------
@@ -1600,6 +1665,7 @@ def wait_batch(runtime: Path, seat: str, interval: float = 1.0, stop_after: floa
         # Inside a jail the post folder is read-only: the service opens and closes this watch's attempts.
         return watch_broker.wait(runtime, seat, interval, stop_after, validate)
     store, attempts = Store(runtime), Attempts(runtime)
+    look = AttemptsLook(attempts)
     if validate is not None:
         validate()
     from . import inbox_watch
@@ -1618,7 +1684,8 @@ def wait_batch(runtime: Path, seat: str, interval: float = 1.0, stop_after: floa
             with admission(runtime, seat):
                 if validate is not None:
                     validate()
-                waiting = attempts.undelivered(store, seat)
+                # Read under the admission, as before; the attempts are read in full only when they may have changed.
+                waiting = attempts.undelivered(store, seat, results=look.latest())
                 if waiting:
                     opened = [attempts.open(message, seat, None, None, None) for message in waiting]
                     return waiting, opened

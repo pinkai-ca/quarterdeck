@@ -166,6 +166,8 @@ The supported timestamp tick is two seconds: [Python documents coarse filesystem
 
 Attempt files are mutable: each read scans their file identities, sizes and nanosecond modification/change times, reusing parsed attempts only while those match. This sees another process's same-path or same-size rewrite without relying on directory time. Failed scans or malformed files raise rather than return cached success or a partial empty reading. Both caches are in memory; their on-disk formats are unchanged. A reading or service phase derives its attempt results from one explicit inventory; journal reconciliation takes a fresh inventory after it may have changed receipts.
 
+A waiting inbox watch (`qd inbox --wait`) is the one reader that uses directory time for attempts, to cost nothing while nothing arrives: between full readings it trusts its last results only while the stamps of `post/attempts` and `post/retired/index` match, under the same racy-timestamp rule as the store cache. Every framework attempt write renames a file into the attempts folder, and retirement publishes its batch into the index before it moves an attempt out, so each moves one of those directory times. It also reads in full at least once a minute, so an edit made in place is seen within that minute. It looks under the seat's admission as before, and a skipped look can only delay a delivery: what it opens is decided from results equal to a full reading. `undelivered` judges only the seat's own messages by their latest result, never every message's.
+
 
 How a message is typed into a seat, the person's own session and the waking line are [the door](door.md#the-door).
 
