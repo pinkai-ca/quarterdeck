@@ -24,6 +24,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import harness as harnesses
+from . import service_status, service_timing, service_wait
 from . import shutdown, lifecycle
 from .harness import reader_stamp
 from . import pending as pending_delivery, delivery_record
@@ -42,7 +43,8 @@ from .ship import Ship, ShipError
 from .tmux import Tmux, TmuxError, ship_sessions
 
 TYPING_QUIET = 30  # seconds since a client's last key or mouse input before its session may be switched
-STATUS_INTERVAL = 0.7  # presentation only; rendering age and owner are checked independently
+STATUS_INTERVAL = 0.7  # cheap change checks; deadlines start after the check/collection finishes
+STATUS_REFRESH = 5.0  # unchanged presentation is refreshed within the ten-second plain-line age
 ACCOUNT_RETRY = 60.0  # unchanged transient source failures, never provider pacing
 QUICK_REQUEST_SECONDS = 0.02
 QUICK_REQUEST_OPERATIONS = 128
@@ -137,6 +139,8 @@ class Service:
         self.loaded_attempts: list | None = None  # the attempts reconcile loaded this pass; the look reads these
         self.next_status = 0.0
         self.status_checked: float | None = None
+        self.status_inputs = None
+        self.status_refresh = 0.0
         from .structure_outcome import Passes
         self.structure_passes = Passes()
         self.earlier_installer: tuple[int, str] | None = None  # an earlier-code installer that started this service
@@ -164,18 +168,18 @@ class Service:
         beat.start()
         watch = threading.Thread(target=self.watch_credentials, args=(beat_stop,), name='service-credentials', daemon=True)
         watch.start()
+        arrivals = service_wait.Arrivals(self.runtime)
         try:
             with Stop(self.runtime, self.lock).installed():
                 while True:
                     self.tick()
-                    until = time.monotonic() + self.ship.tick  # read after tick() reloads the ship file
-                    while time.monotonic() < until:
-                        self.drain_accounting()
-                        self.status_due()
-                        remaining = until - time.monotonic()
-                        if remaining > 0:
-                            time.sleep(min(remaining, max(0.001, self.next_status - time.monotonic())))
+                    self.drain_accounting()
+                    arrivals.refresh(self.ship.seats)
+                    with self.timings().measure('sleep'):
+                        arrivals.wait(self.ship.tick)  # arrival or one tick; no full status work in this rest
+                    self.timings().publish(self.log)
         finally:
+            arrivals.close()
             beat_stop.set()
             beat.join(timeout=0.2)
             watch.join(timeout=0.2)
@@ -214,7 +218,17 @@ class Service:
         self.legacy_lock = None
         self.log("earlier-installer-done", pid=pid)
 
+    def timings(self):
+        if getattr(self, 'service_timings', None) is None:
+            self.service_timings = service_timing.Timings()
+        return self.service_timings
+
     def tick(self) -> None:
+        with self.timings().measure('pass'):
+            self._tick()
+        self.timings().publish(self.log)
+
+    def _tick(self) -> None:
         """One pass: the ship file read afresh, then every duty, each failing alone."""
         from . import post_retirement
         self.pass_had_work = False
@@ -227,7 +241,6 @@ class Service:
         except ShipError as error:
             self.log("error", step="load", error=str(error))
         self.rebind()
-        self.status_checked = None  # each pass checks presentation demand, even when shorter than the interval
         self.structure_passes.begin()
         self._accounting_tick = True
         try:
@@ -245,13 +258,15 @@ class Service:
                      self.rebrief, self.push_reminders, self.credentials, self.authentications, self.model_differences, self.failover, self.account, self.refresh_usage, self.pool_forecasts, self.retire_post):
             self.heartbeat()  # before every step: a slow delivery or usage read reads as busy, never as dead
             try:
-                step()
+                with self.timings().measure(step.__name__):
+                    step()
             except Exception as error:  # one failing step never stops the others
                 self.log("error", step=step.__name__, error=repr(error), trace=traceback.format_exc())
             self.drain_drops()
             self.drain_accounting()
             self.drain_requests()
             self.status_due()
+            self.timings().publish(self.log)
 
     def drain_drops(self) -> None:
         """Give queued post a bounded turn between duties, independently of pass length."""
@@ -310,25 +325,43 @@ class Service:
         post_retirement.due(self, idle=idle_pass)
 
     def status_due(self) -> None:
+        with self.timings().measure('status'):
+            self._status_due()
+
+    def _status_due(self) -> None:
         now = time.monotonic()
         if self.status_checked is not None and self.status_checked <= now < self.next_status:
             return
+        reversed_clock = self.status_checked is not None and now < self.status_checked
         self.status_checked = now
-        self.next_status = now + STATUS_INTERVAL
         try:
             sessions = [session.title for session in self.ship.sessions.values()]
             demand = self.tmux.clients_attached(sessions) if hasattr(self.tmux, 'clients_attached') else None
-            if demand is not False:
+            if demand is False:
+                return
+            inputs = service_status.inputs(self.ship)
+            if (reversed_clock or inputs is None or inputs != getattr(self, 'status_inputs', None)
+                    or now >= getattr(self, 'status_refresh', 0.0)):
                 self.heartbeat()
-                self.publish_status()
+                if self.publish_status() is False:
+                    return
+                # Remember the observation BEFORE collection: a change during it
+                # remains owed. No read or failed collection renews the rendering.
+                self.status_inputs = inputs
+                finished = time.monotonic()
+                self.status_refresh = finished + max(STATUS_INTERVAL, STATUS_REFRESH - (finished - now))
         except Exception as error:
             self.log('error', step='publish_status', error=repr(error), trace=traceback.format_exc())
+        finally:
+            # A collection can cost more than an interval. Starting the deadline
+            # here prevents the next duty/resting loop from being already overdue.
+            self.next_status = time.monotonic() + STATUS_INTERVAL
 
-    def publish_status(self) -> None:
+    def publish_status(self) -> bool:
         if getattr(self, 'journal_reader', None) is None:
             self.journal_reader = pending_delivery.JournalReader()
         with pending_delivery.journal_reading(self.journal_reader):
-            presentation.publish(self.ship, self.tmux, self.status_framework, self.store, self.attempts)
+            return presentation.publish(self.ship, self.tmux, self.status_framework, self.store, self.attempts)
 
     def push_reminders(self) -> None:
         """A local origin/main change starts a durable reminder, without reading GitHub."""
@@ -358,7 +391,7 @@ class Service:
             self.accounting_health_error = None
 
     def log(self, event: str, **data) -> None:
-        if event != 'post-retired':
+        if event not in ('post-retired', 'service-timing'):
             self.pass_had_work = True
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         with self.log_path.open("a") as f:

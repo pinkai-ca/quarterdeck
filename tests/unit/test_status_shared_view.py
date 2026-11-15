@@ -133,12 +133,12 @@ def test_human_presentation_shares_the_callers_attempt_reader(tmp_path, monkeypa
     assert scans == [attempts]
 
 
-def test_short_passes_publish_and_keep_the_existing_wall_cadence(tmp_path, monkeypatch):
+def test_short_passes_keep_the_change_check_deadline_and_periodic_refresh(tmp_path, monkeypatch):
     ship = shipmod.Ship(tmp_path, 'synthetic', 'operator', tmp_path, {}, {}, {})
     svc = Service.__new__(Service)
     svc.ship = ship
-    svc.status_checked = 0.0
-    svc.next_status = 99.0
+    svc.status_checked = None
+    svc.next_status = 0.0
     svc.tmux = SimpleNamespace(clients_attached=lambda sessions: True)
     svc.rebind = lambda: None
     svc.structure_passes = SimpleNamespace(begin=lambda: None, finish=lambda: None)
@@ -148,27 +148,28 @@ def test_short_passes_publish_and_keep_the_existing_wall_cadence(tmp_path, monke
     monkeypatch.setattr('quarterdeck.service.time.monotonic', lambda: now[0])
     monkeypatch.setattr('quarterdeck.service.ship_file_stamp', lambda ship: None)
     monkeypatch.setattr('quarterdeck.service.shipmod.load', lambda folder: ship)
+    monkeypatch.setattr('quarterdeck.service.service_status.inputs', lambda ship: 'unchanged')
     calls = []
     svc.publish_status = lambda: calls.append(now[0])
     svc._tick_steps = svc.status_due
     svc.tick()
     now[0] = 1.1
     svc.tick()
-    assert calls == [1.0, 1.1], 'a short pass still collects and publishes once'
-    now[0] = 1.79
-    svc.status_due()
-    assert len(calls) == 2
+    assert calls == [1.0], 'a short pass must not force another full collection'
     now[0] = 1.8
     svc.status_due()
-    assert calls == [1.0, 1.1, 1.8]
+    assert calls == [1.0], 'an unchanged check is cheap'
+    now[0] = 6.0
+    svc.status_due()
+    assert calls == [1.0, 6.0], 'periodic collection refreshes unchanged presentation'
     svc.tmux.clients_attached = lambda sessions: False
-    now[0] = 1.9
+    now[0] = 12.0
     svc.tick()
-    assert calls == [1.0, 1.1, 1.8], 'a known no-viewer pass keeps the existing skip'
+    assert calls == [1.0, 6.0], 'a known no-viewer pass keeps the existing skip'
     svc.tmux.clients_attached = lambda sessions: None
-    now[0] = 2.0
+    now[0] = 12.8
     svc.tick()
-    assert calls[-1] == 2.0, 'an unknown viewer still collects on every short pass'
+    assert calls[-1] == 12.8, 'unknown demand cannot suppress a due collection'
 
 
 def test_reader_reuse_refreshes_each_new_view_after_external_changes(tmp_path, monkeypatch):

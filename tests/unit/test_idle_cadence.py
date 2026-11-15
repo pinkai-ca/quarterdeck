@@ -65,7 +65,7 @@ def test_known_no_clients_skips_only_presentation_and_unknown_collects(tmp_path,
     svc.tick()
     assert not collected,'no viewer must not trigger a complete status collection every tick'
     clients[0]=True;clock[0]=.8;svc.tick()
-    clients[0]=None;clock[0]=1.6;svc.tick()
+    clients[0]=None;clock[0]=6.0;svc.tick()
     assert len(collected)==2 and duties==['account']*3
     svc.ledger.close()
 
@@ -74,6 +74,8 @@ def test_presentation_deadlines_do_not_move_actor_tick_cadence(tmp_path,monkeypa
     clock=[0.];clients=[True];published=[];actors=[]
     monkeypatch.setattr(servicemod.time,'monotonic',lambda:clock[0])
     monkeypatch.setattr(servicemod.signal,'signal',lambda *a:None)
+    monkeypatch.setattr(servicemod.service_wait, 'Arrivals', lambda runtime: SimpleNamespace(
+        refresh=lambda names: None, wait=lambda delay: servicemod.time.sleep(delay), close=lambda: None))
     svc=empty_service(tmp_path,monkeypatch,clients)
     monkeypatch.setattr(svc,'heartbeat',lambda:None)
     def account():
@@ -87,7 +89,8 @@ def test_presentation_deadlines_do_not_move_actor_tick_cadence(tmp_path,monkeypa
     monkeypatch.setattr(servicemod.time,'sleep',sleep)
     with pytest.raises(Stop):svc.run()
     assert actors==pytest.approx([0.,1.2,2.4]),'record/actor duties keep sleep-after-work cadence'
-    assert max(b-a for a,b in zip(published,published[1:]))<=1.,'short actor duties keep collection starts within one second'
+    assert published,'the first demanded presentation is collected'
+    assert all(b-a>=.7 for a,b in zip(published,published[1:])), 'short duties must not force more frequent collection'
     assert len(published)<=5,'fresh presentation must not require eight full collections in three actor ticks'
     svc.lock.close();svc.ledger.close()
 

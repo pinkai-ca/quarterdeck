@@ -175,6 +175,11 @@ def test_retirement_is_once_after_delivery_and_accounting_in_a_service_pass():
     from quarterdeck.service import Service
     events = []
     class Duties:
+        def timings(self):
+            from contextlib import nullcontext
+            from types import SimpleNamespace
+            return SimpleNamespace(measure=lambda name: nullcontext(), publish=lambda log: None)
+
         def __getattr__(self, name):
             return lambda *args, **kwargs: events.append(name)
     Service._tick_steps(Duties())

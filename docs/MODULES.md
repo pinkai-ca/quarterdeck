@@ -139,6 +139,9 @@ The modules that the framework table does not list, the module of each part amon
 | `seat_command.py` | the exact `qd` command a seat is told to run, shell quoting included, shared by the brief and the record readers |
 | `server_recovery.py` | a ship brought back when its own tmux server has gone: only when the server is proved gone, at most twice in an hour, and through `qd up`'s own path |
 | `service.py` | the service: the ship's one long-running process, not a seat, which renders inboxes, delivers, writes attempts, answers requests, the quick ones in short bounded turns between its other duties, re-briefs seats, writes the heartbeat and alone writes the Ledger |
+| `service_status.py` | cheap change hints and bounded refresh scheduling for status publication; never delivery evidence |
+| `service_timing.py` | one numeric summary per minute: pass count, duty totals/maxima and resting time |
+| `service_wait.py` | directory arrival notifications during service rest, with the ship tick as fallback |
 | `setup.py` | guided setup, which asks Git for a usable identity before it writes anything, with one replaceable boundary for every machine, account and live operation |
 | `setup_answers.py` | one answer resolver for setup's conversation, flags, file and summary edits |
 | `setup_proposal.py` | read-only setup discovery, and the one renderer of a proposed ship |
