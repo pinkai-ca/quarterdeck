@@ -71,8 +71,10 @@ def cached_line(folder):
                 or not servicectl.alive(runtime)  # law: nothing-waits-silently
                 or process_start(beat[0]) != data['process_start']):
             return None
-        from . import accounting_health, ledger_recovery
+        from . import accounting_health, ledger_recovery, post_retirement
         if data.get('ledger_recovery') != ledger_recovery.alarms(runtime):
+            return None
+        if data.get('retirement') != post_retirement.reading(runtime):
             return None
         current = accounting_health.reading(runtime)
         if ('accounting' not in data or current == accounting_health.UNKNOWN
@@ -111,7 +113,8 @@ def _publish(ship, tmux, framework, store, attempts):
         return False
     data = dict(format=1, wall=wall, monotonic=monotonic, pid=os.getpid(), process_start=start,
                 ship=stamp, framework=framework, line=line, accounting=getattr(facts, 'accounting', None),
-                ledger_recovery=getattr(facts, 'ledger_recovery', []))
+                ledger_recovery=getattr(facts, 'ledger_recovery', []),
+                retirement=getattr(facts, 'retirement', None))
     path = ship.runtime / NAME
     temporary = path.with_suffix('.tmp')
     temporary.write_text(json.dumps(data, allow_nan=False) + '\n')

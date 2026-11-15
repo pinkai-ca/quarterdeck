@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from . import accounting_health, acts, check_outcome, credential, idle, ledger, move_hold, server_recovery, pending as pending_delivery, post, post_dir, program_use, providers, quota, record_owner, recovery, request_queue, servicectl as service
+from . import post_retirement, accounting_health, acts, check_outcome, credential, idle, ledger, move_hold, server_recovery, pending as pending_delivery, post, post_dir, program_use, providers, quota, record_owner, recovery, request_queue, servicectl as service
 from .door import Door, Reading
 from .harness.capabilities import selection_label
 from .harness import reading_scope
@@ -522,6 +522,7 @@ class Facts:
     request_waits: list[str] = field(default_factory=list)
     cutover: str = ""  # the ship still runs on tmux's default server, until one qd down and qd up
     server_recovery: list[str] = field(default_factory=list)  # a gone ship server: stopped or unknown
+    retirement: str | None = None
     accounting: str | None = None
     ledger_recovery: list[str] = field(default_factory=list)
     check_failed: list[str] = field(default_factory=list)
@@ -534,6 +535,8 @@ class Facts:
 
     def line(self) -> str:  # law: nothing-waits-silently
         parts = ["SERVICE DOWN" if self.service == "down" else f"service {self.service}"]
+        if self.retirement:
+            parts.append(self.retirement)
         parts += self.ledger_recovery
         if self.accounting:
             parts.append(self.accounting)
@@ -922,6 +925,7 @@ def facts(ship: Ship, tmux: Tmux, walls: list[str] | None = None, login: list[tu
         cascade_held=cascade_runtime.holds(ship.runtime),
         structure_waiting=structure_outcome.waits(ship, selected),
         accounting=accounting_reading(ship.runtime, state),
+        retirement=post_retirement.reading(ship.runtime),
         ledger_recovery=ledger_recovery.alarms(ship.runtime),
         check_failed=check_outcome.alarms(outcomes),
         check_unknown=outcome_errors,

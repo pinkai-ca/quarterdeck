@@ -15,7 +15,7 @@ from pathlib import Path
 import secrets
 import time
 
-from . import post_dir
+from . import durable, post_dir
 from .ship import ShipError
 
 # These are finished outcomes, not a pending input or an unresolved receipt.
@@ -27,6 +27,10 @@ BATCH = 1000
 SECONDS = 1.0
 HEARTBEAT = 0.1
 INTERVAL = 60.0
+STALLED_AFTER = 300.0
+STATUS = 'retirement-status.json'
+PHASES = frozenset({'start', 'recovery', 'attempts read', 'store read', 'eligibility',
+                    'seat selection', 'journals read', 'batch', 'moves'})
 
 
 def retired(path: Path, runtime: Path) -> Path:
@@ -90,6 +94,7 @@ def _files(runtime, data):
 def _resume(service, path, data, progress, counts):
     """Replay a prepublished batch; a done marker follows its whole-file moves."""
     runtime = service.runtime
+    progress.phase = 'moves'
     for source, digest in _files(runtime, data):
         progress()
         destination = retired(source, runtime)
@@ -131,11 +136,12 @@ def _recover(service, progress, counts):
             raise ShipError('retirement batch seat invalid; originals retained')
         try:
             with lifecycle.claim(service.runtime, name), post.admission(service.runtime, name), service.attempts._locked():
-                messages = _settled(service.store, service.attempts.all(progress=progress), progress)
+                messages = _settled(service.store, progress.read('attempts read', service.attempts.all, progress=progress), progress)
                 if any(message not in messages for message in data['messages']):
                     return {**counts, 'held': 'batch delivery unsettled'}
                 return _resume(service, path, data, progress, counts)
         except lifecycle.Busy:
+            progress.blocked = True
             continue
     return None
 
@@ -176,7 +182,8 @@ def _settled(store, records, progress):
         latest[attempt.message] = attempt.result
     # One immutable post snapshot. Repeated Store.closing calls would re-read
     # every message while a newly written directory is inside its timestamp bucket.
-    messages = store.all()
+    messages = progress.read('store read', store.all)
+    progress.phase = 'eligibility'
     by_id = {m.id: m for m in messages}
     closed = set()
     for index, message in enumerate(messages):
@@ -190,41 +197,78 @@ def _settled(store, records, progress):
             and (not m.obligation or m.id in closed)}
 
 
-def run(service, *, limit=BATCH, seconds=SECONDS):
-    """Service duty, after accounting: catch-up and current owners always go first.
+class _Progress:
+    """The service fits complete mandatory inventories around its work allowance."""
 
-    Lifecycle -> recipient admission -> attempts is the same order as delivery.
-    All attempts for a message must be finished. A terminal journal only moves
-    after all its attempts are eligible, and moves before those attempt files.
-    """
-    counts = dict(attempts=0, journals=0)
-    start = time.monotonic()
-    last_beat = start - HEARTBEAT
-    def progress():
-        nonlocal last_beat
+    def __init__(self, service, seconds, complete_reads):
+        self.service = service
+        self.start = time.monotonic()
+        self.deadline = self.start + seconds
+        self.last_beat = self.start - HEARTBEAT
+        self.complete_reads = complete_reads
+        self.reading = False
+        self.read_seconds = 0.0
+        self.phase = 'start'
+        self.candidates = None
+        self.retirable = 0
+        self.blocked = False
+
+    def __call__(self):
         now = time.monotonic()
-        if now - last_beat >= HEARTBEAT:
-            beat = getattr(service, 'heartbeat', None)
+        if now - self.last_beat >= HEARTBEAT:
+            beat = getattr(self.service, 'heartbeat', None)
             if beat is not None:
                 beat()
-            last_beat = now
-        if now - start >= seconds:
+            self.last_beat = now
+        if not self.reading and now >= self.deadline:
             raise SliceEnded()
+
+    def read(self, phase, reader, *args, **kwargs):
+        self.phase = phase
+        start = time.monotonic()
+        self.reading = self.complete_reads
+        try:
+            return reader(*args, **kwargs)
+        finally:
+            elapsed = max(0.0, time.monotonic() - start)
+            self.read_seconds += elapsed
+            if self.complete_reads:
+                self.deadline += elapsed
+            self.reading = False
+
+
+def run(service, *, limit=BATCH, seconds=SECONDS, complete_reads=False):
+    """Fresh locked evidence always decides; service inventories finish before yielding.
+
+    Direct callers retain the wall-time slice. The service separately accounts for
+    complete inventories using its persistent readers, leaving the ordinary work
+    allowance for selection and whole-file moves. No partial reading is authority.
+    """
+    counts = dict(attempts=0, journals=0)
+    progress = _Progress(service, seconds, complete_reads)
+    result = None
     try:
         progress()
-        return _run(service, limit, counts, progress)
+        result = _run(service, limit, counts, progress)
     except SliceEnded:
-        return {**counts, 'paused': True}
+        result = {**counts, 'paused': True}
+    finally:
+        service.post_retirement_observation = dict(
+            seconds=time.monotonic() - progress.start, phase=progress.phase,
+            read_seconds=progress.read_seconds, candidates=progress.candidates,
+            retirable=progress.retirable, blocked=progress.blocked)
+    return result
 
 
 def _run(service, limit, counts, progress):
     from . import lifecycle, pending, post, receipt_refresh
     if service.ledger.catching_up():
         return {**counts, 'held': 'ledger catch-up'}
+    progress.phase = 'recovery'
     recovered = _recover(service, progress, counts)
     if recovered is not None:
         return recovered
-    records = service.attempts.all(progress=progress)
+    records = progress.read('attempts read', service.attempts.all, progress=progress)
     settled = _settled(service.store, records, progress)
     grouped = {}
     for attempt in records:
@@ -232,6 +276,8 @@ def _run(service, limit, counts, progress):
     eligible = {a.path.name for group in grouped.values()
                 if group[0].message in settled and all(a.result in FINISHED for a in group)
                 for a in group}
+    progress.candidates = sum(a.path.parent == service.attempts.dir and a.path.name in eligible for a in records)
+    progress.phase = 'seat selection'
     names = sorted({a.seat for a in records if a.path.parent == service.attempts.dir
                     and a.path.name in eligible}
                    | set(post_dir.directory_names(service.runtime / 'post' / 'pending')))
@@ -250,7 +296,7 @@ def _run(service, limit, counts, progress):
                 with service.attempts._locked():
                     if service.ledger.catching_up():
                         return {**counts, 'held': 'ledger catch-up'}
-                    current = service.attempts.all(progress=progress)
+                    current = progress.read('attempts read', service.attempts.all, progress=progress)
                     launch_path = service.runtime / 'seats' / name / 'launch.json'
                     try:
                         launch = json.loads(launch_path.read_text())
@@ -258,6 +304,7 @@ def _run(service, limit, counts, progress):
                     except FileNotFoundError:
                         live_join = None
                     except (OSError, ValueError, KeyError, TypeError):
+                        progress.blocked = True
                         continue  # current ownership is unknown, so preserve this seat's files
                     def old(a):
                         return live_join is None or (a.pane, a.pid, a.launched_at) != live_join
@@ -271,8 +318,11 @@ def _run(service, limit, counts, progress):
                             and a.path.parent == service.attempts.dir
                             and old(a) and a.message in settled
                             and all(v.result in FINISHED and old(v) for v in groups[a.message])}
-                    proofs, errors = pending._journals(service.runtime, name, progress=progress)
+                    proofs, errors = progress.read('journals read', pending._journals,
+                                                   service.runtime, name, progress=progress)
+                    progress.phase = 'eligibility'
                     if errors:
+                        progress.blocked = True
                         continue  # incomplete journal inventory cannot authorize a move
                     blocked, finished = set(), []
                     for proof in proofs:
@@ -305,8 +355,11 @@ def _run(service, limit, counts, progress):
                     selected = [proof for proof in finished
                                 if not set(proof.data['attempts']) & blocked][:limit]
                     if mine or selected:
+                        progress.retirable += len(mine) + len(selected)
+                        progress.phase = 'batch'
                         return _batch(service, name, mine, selected, progress, counts, all_names)
         except lifecycle.Busy:
+            progress.blocked = True
             continue
         finally:
             # A bounded pass must not repeatedly spend its whole slice scanning
@@ -315,11 +368,51 @@ def _run(service, limit, counts, progress):
     return counts
 
 
+def reading(runtime):
+    """Derived display evidence only; never a retirement eligibility decision."""
+    try:
+        path = runtime / STATUS
+        if path.stat().st_size > 4096:
+            return 'retirement status unreadable'
+        data = json.loads(path.read_text())
+        if (not isinstance(data, dict) or set(data) != {'format', 'since', 'phase'}
+                or type(data['format']) is not int or data['format'] != 1
+                or type(data['since']) not in (int, float) or data['phase'] not in PHASES):
+            return 'retirement status unreadable'
+        age = time.time() - data['since']
+        if not 0 <= age < float('inf'):
+            return 'retirement status unreadable'
+        return f"retirement stalled: {data['phase']}" if age >= STALLED_AFTER else None
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, TypeError, KeyError):
+        return 'retirement status unreadable'
+
+
+def _status(service, result, observation):
+    path = service.runtime / STATUS
+    waiting = (result.get('paused') or observation['retirable']
+               or observation['candidates'] and observation['blocked'])
+    if result['attempts'] or result['journals'] or result.get('held') or not waiting:
+        path.unlink(missing_ok=True)
+        return
+    since = time.time()
+    try:
+        previous = json.loads(path.read_text())
+        if reading(service.runtime) != 'retirement status unreadable':
+            since = previous['since']
+    except (OSError, ValueError, TypeError, KeyError):
+        pass
+    durable.replace_file(path, json.dumps(dict(format=1, since=since, phase=observation['phase'])) + '\n')
+
+
 def due(service):
     now = time.monotonic()
     if now < getattr(service, 'post_retirement_due', 0):
         return
-    result = run(service)
+    result = run(service, complete_reads=True)
     service.post_retirement_due = now + INTERVAL
-    if result['attempts'] or result['journals']:
-        service.log('post-retired', **result)
+    observation = service.post_retirement_observation
+    _status(service, result, observation)
+    # Every scheduled pass is visible, including an ordinary pause or a no-op.
+    service.log('post-retired', **result, **observation)

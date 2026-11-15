@@ -10,6 +10,8 @@ def status_line(facts, alerts: list[str]) -> str:
     if len(text) <= WIDTH:
         return text
     parts = ["SERVICE DOWN" if facts.service == "down" else f"service {facts.service}"]
+    if retirement := getattr(facts, 'retirement', None):
+        parts.append(retirement)
     parts += getattr(facts, 'ledger_recovery', ())  # preserve the evidence path on overflow
     if accounting := getattr(facts, 'accounting', None):
         parts.append(accounting)  # keep its time and safe cause even when other alerts overflow
