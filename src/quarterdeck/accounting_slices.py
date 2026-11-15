@@ -265,6 +265,7 @@ class Driver:
 
     def __init__(self):
         self.process = None
+        self.reaping = []
         self.plan = None
         self.plan_offset = 0
         self.incoming, self.outgoing = bytearray(), bytearray()
@@ -293,25 +294,36 @@ class Driver:
         self.full_continuation = self.continuing = None
         self.retry_generation = None
 
+    def reap(self):
+        """Collect retired children without waiting for one that is still exiting."""
+        self.reaping[:] = [child for child in self.reaping if child.poll() is None]
+
     def close(self):
         self.gate.reject()
         self.full_generation += 1
         self.full_continuation = self.continuing = None
         self.retry_generation = None
-        if self.process is not None:
-            if self.process.poll() is None:
-                self.process.terminate()
-                try:
-                    self.process.wait(timeout=0.2)
-                except subprocess.TimeoutExpired:
-                    self.process.kill()
-                    self.process.wait(timeout=0.2)
-            self.process.stdin.close()
-            self.process = None
-        if self.plan is not None:
-            self.plan.close()
-            self.plan = None
+        process, self.process = self.process, None
+        plan, self.plan = self.plan, None
         self.plan_offset = 0
+        try:
+            self.reap()
+            if process is not None and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=0.2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.poll()  # one non-blocking reap; the next pass collects a later exit
+        finally:
+            try:
+                if process is not None:
+                    if process.returncode is None:
+                        self.reaping.append(process)
+                    process.stdin.close()
+            finally:
+                if plan is not None:
+                    plan.close()
 
     def collect(self, service):
         for seat in service.resolved_seats():
@@ -508,6 +520,7 @@ class Driver:
         before = service.accounting_health.shown()
         self.step_changes = service.ledger.db.total_changes
         try:
+            self.reap()  # even a gated step retires the previous pass's exiting child
             if (self.active and self.scope is not None
                     and self.continuing is None
                     and (self.gate.full_due() or service.ledger.catching_up())):
