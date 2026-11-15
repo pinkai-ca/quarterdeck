@@ -13,17 +13,22 @@ clock are stood in, so every proof of the asking turn is set exactly. Names are 
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import os
 from types import SimpleNamespace
 
 import pytest
 
 from quarterdeck import idle, post, recovery, request_queue, service as servicemod, servicectl
 from quarterdeck.harness.types import State, Tokens, Turn
+from quarterdeck.seat import process_start
 from quarterdeck.ship import ShipError
 
 T0 = datetime(2032, 7, 8, 9, 10, tzinfo=timezone.utc)
 SEAT = 'desk-larch'
-LAUNCH = SimpleNamespace(pane='%71', pid=707070, at=(T0 - timedelta(hours=1)).isoformat(), harness='claude')
+# The test process stands in for the seat's pane process: its own pid and start time, read from /proc, so an own
+# request filed here is proved by the same ancestry the real filer is.
+LAUNCH = SimpleNamespace(pane='%71', pid=os.getpid(), at=(T0 - timedelta(hours=1)).isoformat(), harness='claude',
+                         start=process_start(os.getpid()))
 
 
 class Desk:
@@ -61,9 +66,7 @@ class Desk:
     def ask(self, caller=SEAT, seconds=0.0, resume=False, name=None):
         """The request as `qd fresh`/`qd restart` files it, stamped with the asking time and launch."""
         self.now = self.at(seconds)
-        data = dict(seat=SEAT, resume=resume, caller=caller, origin=dict(
-            pane=self.launch.pane, pid=self.launch.pid, at=self.launch.at, harness=self.launch.harness),
-            requested_at=self.at(seconds).isoformat())
+        data = dict(seat=SEAT, resume=resume, caller=caller, origin=request_queue.launch_binding(self.seat))
         return request_queue.enqueue(self.runtime, 'relaunch', data, name=name or f'r{int(seconds * 10):05d}-larch')
 
     def tick(self, seconds: float):

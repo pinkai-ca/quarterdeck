@@ -11,6 +11,8 @@ and the clock are stood in, as in test_request_human_claude_validation. Names ar
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from quarterdeck import post, request_queue, service as servicemod
@@ -195,17 +197,19 @@ def recorded(tmp_path, monkeypatch):
 
     from quarterdeck import person_quiet
     from quarterdeck.harness.base import Join
-    from quarterdeck.seat import Launched, Seat
+    from quarterdeck.seat import Launched, Seat, process_start
     from quarterdeck.ship import Pool, SeatSpec, Session, Ship
     from tests.unit import test_claude_background_ordinary as shapes
 
     spec = SeatSpec('desk', 'office', 'desk', 'claude', ('synthetic',))
     ship = Ship(tmp_path / 'ship', 'synthetic', 'operator', tmp_path, {'synthetic': Pool('synthetic', 'claude')},
                 {'office': Session('office', 'Synthetic office', True)}, {'desk': spec})
-    seat = Seat(ship, spec, SimpleNamespace(pane=lambda _: SimpleNamespace(id='%1', pid=123, dead=False)))
+    # The test process stands in for the desk's pane process, by its own pid and start: its own requests are proved.
+    pane = os.getpid()
+    seat = Seat(ship, spec, SimpleNamespace(pane=lambda _: SimpleNamespace(id='%1', pid=pane, dead=False)))
     seat.folder.mkdir(parents=True)
-    Launched('%1', 123, (shapes.AT - timedelta(hours=1)).isoformat(), 'synthetic', None, ['claude'], 'synthetic',
-             harness='claude').write(seat.folder / 'launch.json')
+    Launched('%1', pane, (shapes.AT - timedelta(hours=1)).isoformat(), 'synthetic', None, ['claude'], 'synthetic',
+             harness='claude', start=process_start(pane)).write(seat.folder / 'launch.json')
     record = seat.home / 'record-larch.jsonl'
     record.parent.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(seat, 'record', lambda: record)

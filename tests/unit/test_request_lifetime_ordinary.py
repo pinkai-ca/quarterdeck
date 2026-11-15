@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 import json
+import os
 import fcntl
 import subprocess
 import sys
@@ -12,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from quarterdeck import cli, durable, post, request_queue, servicectl, watch
+from quarterdeck.seat import process_start
 from quarterdeck.service import Service
 from quarterdeck.ship import ShipError
 
@@ -32,6 +34,9 @@ def enqueue(runtime, kind='relaunch', **extra):
     data.update(extra)
     if kind == 'relaunch':
         data['caller'] = SEAT
+        # The seat's own request, filed from its pane: this test process stands in for the pane process.
+        data.setdefault('origin', dict(pane='%1', pid=os.getpid(), at=AT.isoformat(), harness='synthetic',
+                                       start=process_start(os.getpid())))
     return request_queue.enqueue(runtime, kind, data,
                                  name=f'request-orchid-{next(IDS)}-zz')
 
@@ -350,7 +355,7 @@ def test_direct_act_retires_queued_relaunch_before_existing_manual_action(runtim
     assert proof.startswith('synthetic direct restart') and path.stem in proof
 
 
-def test_direct_act_rechecks_work_after_coordination_and_keeps_asking_time(runtime, monkeypatch):
+def test_direct_act_rechecks_work_after_coordination_and_leaves_the_asking_time_to_enqueue(runtime, monkeypatch):
     path = enqueue(runtime)
     working = iter([False, True])
     ship = SimpleNamespace(runtime=runtime, seat=lambda name: SimpleNamespace(name=name))
@@ -369,7 +374,7 @@ def test_direct_act_rechecks_work_after_coordination_and_keeps_asking_time(runti
     proof = cli.relaunch(ship, SEAT, True)
     assert proof.startswith('synthetic queued answer') and path.stem in proof
     assert len(observed) == 1 and observed[0][:2] == (runtime, 'relaunch')
-    assert observed[0][2]['requested_at'] == AT.isoformat()
+    assert 'requested_at' not in observed[0][2], 'the asked time is stamped at enqueue, never sent by the filer'
 
 
 def test_unknown_time_keeps_known_target_visible_and_withdrawable(runtime):
