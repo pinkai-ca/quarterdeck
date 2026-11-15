@@ -108,13 +108,13 @@ The engineer's figures are lower bounds, as the ledger marks them: part of its t
 
 The product page shows three recordings, one for each kind of ship. In each, one sentence is typed at the desk of an office. The desk passes it to a ship, the ship's crew does the work in its own programs, and the desk says what came of it. Each is one whole run on real programs and real models, recorded in a terminal with asciinema on 14 November 2026, on Quarterdeck at commit `0895228`. Nothing was typed into any agent's pane but that sentence.
 
-Each recording can be watched in three views, Web, Portrait and Desktop: 112 by 46 characters, 80 by 71, and 225 by 63 with the office beside the ship. A view is a recording of its own run, made at that size, so the three views of one ship differ in what the crew said and did. Every recording is cut to about a minute, and the page marks, at every moment, how much faster than recorded it is playing.
+Each recording can be watched in three views, Web, Portrait and Desktop: 112 by 46 characters, 80 by 71, and 225 by 63 with the office beside the ship. A view is a recording of its own run, made at that size, so the three views of one ship differ in what the crew said and did. Every recording is cut to between one minute and a little over three, and the page shows, at every moment, how many times faster or slower than recorded it is playing.
 
 | Recording | The sentence typed | The ship | Its three runs |
 | --- | --- | --- | --- |
-| Flagship | "Have our flagship perform a roll call: name, provider, model and effort please" | A captain and a worker on Claude Code (Opus 5.5), an engineer on Codex (GPT-6.1 Sol), a worker on Antigravity (Gemini 4 Argon), and two helpers on pi with Qwen 3.8 served on the same machine. | About 70 seconds of work each. Only the waits play faster. |
-| Forum | "Use the forum to review the qd readme, with individual and combined reports in reviews folder" | A lead on Claude Code (Opus 5.5) and four reviewers, each alone: on Claude Code (Opus 5.5), Codex (GPT-6.1 Sol), Antigravity (Gemini 4 Argon) and pi (Qwen 3.8). | Between five and eight minutes of work each. Between the waits they play from 1.5 to 1.8 times faster. |
-| Shuttle | "Have the shuttle make the headline glimmer when its last pink period is clicked" | A captain and a first officer on Claude Code (Opus 5.5) and an engineer on Codex (GPT-6.1 Sol). The work is a change to the product page itself, in a copy of its repository. | Web: seven minutes, a straight run, only the waits faster. Portrait: thirteen minutes, sent back twice, shown in a minute and a quarter at twice the speed. Desktop: thirteen minutes, the captain's review finds a fault and it goes back, 1.6 times faster between the waits. |
+| Flagship | "Have our flagship perform a roll call: name, provider, model and effort please" | A captain and a worker on Claude Code (Opus 5.5), an engineer on Codex (GPT-6.1 Sol), a worker on Antigravity (Gemini 4 Argon), and two helpers on pi with Qwen 3.8 served on the same machine. | About 70 seconds of work each, shown in about 65: almost all of it is the ship's own acts, which play as recorded. |
+| Forum | "Use the forum to review the qd readme, with individual and combined reports in reviews folder" | A lead on Claude Code (Opus 5.5) and four reviewers, each alone: on Claude Code (Opus 5.5), Codex (GPT-6.1 Sol), Antigravity (Gemini 4 Argon) and pi (Qwen 3.8). | Between five and eight minutes of work each, shown in under two. The reviewers' own work plays up to twenty times faster. |
+| Shuttle | "Have the shuttle make the headline glimmer when its last pink period is clicked" | A captain and a first officer on Claude Code (Opus 5.5) and an engineer on Codex (GPT-6.1 Sol). The work is a change to the product page itself, in a copy of its repository. | Web: seven minutes, a straight run, shown in a minute and a half. Portrait: thirteen minutes, sent back twice, shown in three. Desktop: thirteen minutes, the captain's review finds a fault and it goes back, shown in two and a quarter. |
 
 The desk in every recording is Claude Code with Fable 5.2. The programs are Claude Code 2.1.317, Codex 0.166.0, Antigravity 1.5.9 and pi 0.79.0.
 
@@ -133,10 +133,11 @@ The desk in every recording is Claude Code with Fable 5.2. The programs are Clau
 
 1. Each is cut where the recorder detaches, and its last frame is held for three seconds.
 2. Blanks, each character replaced by a space: the user's name and the machine's, a path under the home folder, a mail address, and the name of the plan that Claude Code and Antigravity print beside the model. Every frame is checked for these after the cut.
-3. A message is held in its box. The ship submits a message about a sixth of a second after typing it. So that it can be read, the recording plays slower from the moment a message appears in an agent's box until the box is empty again: one second for one message, and a third of a second more for each further one.
-4. A wait plays faster. Where no message is stored, typed or sent for more than two and a half seconds, outside the typing of the sentence, the wait keeps its first and last moments and what lies between plays a whole number of times faster, to last a second or two.
-5. Where that alone leaves a recording longer than a minute, everything else plays faster too, by one factor for the whole recording and twice at most.
-6. Chapter marks and the terminal's colours are added.
+3. The framework's own acts play as recorded. While the sentence is typed, when a message is stored, while it is typed into an agent's box and sent, and while the view changes, the recording plays at the speed it was recorded, from a little before the act to a little after it.
+4. A message is held in its box. The ship submits a message about a sixth of a second after typing it. So that it can be seen there, the recording plays slower than recorded from the moment a message appears in an agent's box until the box is empty again: one second for one message, and a third of a second more for each further one.
+5. The agents' own work plays faster. Between two acts the speed rises to ten times at most, to twenty on a stretch of several minutes, and is back at the recorded speed before the next act begins. A pause of under three seconds plays as recorded.
+6. The speed never jumps. It eases from one value to the next, and the page shows it at the terminal's corner at every moment, to two places: 1.00 while the framework acts, more while the agents work, less while a message is held.
+7. Chapter marks and the terminal's colours are added.
 
 Nothing is spliced or reordered.
 
