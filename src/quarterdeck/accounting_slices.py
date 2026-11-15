@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter, deque
 from contextlib import nullcontext
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 import os
 from pathlib import Path
@@ -251,6 +251,13 @@ def worker():
                 book.close()
 
 
+@dataclass
+class FullContinuation:
+    generation: int
+    completion: tuple
+    remaining: set
+
+
 class Driver:
     """One child and one resumable incoming plan; no database transaction spans calls."""
 
@@ -280,9 +287,15 @@ class Driver:
         self.completed_records = self.reported_records = 0
         self.gate = Gate()
         self.step_changes = 0
+        self.full_generation = 0
+        self.full_continuation = self.continuing = None
+        self.retry_generation = None
 
     def close(self):
         self.gate.reject()
+        self.full_generation += 1
+        self.full_continuation = self.continuing = None
+        self.retry_generation = None
         if self.process is not None:
             if self.process.poll() is None:
                 self.process.terminate()
@@ -333,6 +346,9 @@ class Driver:
         if self.gate.begin(service, (path for item in self.seats for path, *_ in item['sources'])) is False:
             self.active = False
             return False  # inventory raced a barrier/outside seat; the next duty starts full
+        if self.scope is None:
+            self.full_generation += 1
+            self.full_continuation = self.continuing = None
         if self.process is None:
             environment = dict(os.environ, PYTHONDONTWRITEBYTECODE='1', OPENBLAS_NUM_THREADS='1')
             for name in ('QD_SEAT', 'QD_SHIP', 'QD_TMUX_SOCKET', 'TMUX', 'TMUX_PANE'):
@@ -413,10 +429,18 @@ class Driver:
     def valid(self, service, names=None):
         names = self.context[1] if names is None else names
         self.watched.update(names)
+        if self.continuing is not None and not self.current_continuation():
+            self.invalid.update(self.scope or names)
+            return False
         for name in names:
             if name not in self.identities or self.identity(service.runtime, name) != self.identities[name]:
                 self.invalid.add(name)
         return not self.invalid.intersection(names)
+
+    def current_continuation(self):
+        return (self.continuing is not None and self.continuing is self.full_continuation
+                and self.continuing.generation == self.full_generation
+                and self.retry_generation == self.full_generation)
 
     def callbacks(self, service, deadline):
         while self.events and time.monotonic() < deadline:
@@ -433,7 +457,17 @@ class Driver:
             elif packet[0] == 'done':
                 self.valid(service, tuple(self.watched))
                 if self.invalid:
-                    self.retry_seats = set(self.invalid)
+                    if self.scope is None:
+                        self.full_continuation = FullContinuation(
+                            self.full_generation, tuple(self.completion), set(self.invalid))
+                    if (self.full_continuation is not None
+                            and self.full_continuation.generation == self.full_generation):
+                        self.retry_seats = set(self.invalid)
+                        self.retry_generation = self.full_generation
+                    else:
+                        self.full_continuation = None
+                        self.retry_seats.clear()
+                        self.retry_generation = None
                     self.reset_child = True
                     service.log('accounting-job-reset', job=self.job, seats=sorted(self.invalid))
                 else:
@@ -442,6 +476,15 @@ class Driver:
                     with service.ledger.record_pass() as book:
                         for sql, parameters, many in self.completion:
                             (book.db.executemany if many else book.db.execute)(sql, parameters)
+                        if self.current_continuation():
+                            self.continuing.remaining.difference_update(self.scope)
+                            if not self.continuing.remaining:
+                                # This fence came from the preceding full job,
+                                # never from the scoped child's plan or a flag.
+                                for sql, parameters, many in self.continuing.completion:
+                                    (book.db.executemany if many else book.db.execute)(sql, parameters)
+                                self.full_continuation = None
+                                self.retry_generation = None
                 self.active = False
                 service.accounting_health.committed()
                 service.log('accounting-job-end', job=self.job, seconds=time.monotonic() - self.started,
@@ -460,6 +503,7 @@ class Driver:
         self.step_changes = service.ledger.db.total_changes
         try:
             if (self.active and self.scope is not None
+                    and self.continuing is None
                     and (self.gate.full_due() or service.ledger.catching_up())):
                 # Each prior slice is already committed. Discard only the remaining
                 # private plan, so a long scoped job cannot postpone the full scan.
@@ -478,7 +522,19 @@ class Driver:
             if not self.active:
                 if self.process is not None and self.process.poll() is not None:
                     raise OSError('accounting child ended')
-                if not self.gate.allowed(service, retry=bool(self.retry_seats)):
+                continuation = None
+                if self.retry_seats:
+                    candidate = self.full_continuation
+                    if (candidate is not None and candidate.generation == self.full_generation
+                            and self.retry_generation == self.full_generation
+                            and self.retry_seats <= candidate.remaining):
+                        continuation = candidate
+                    else:
+                        self.retry_seats.clear()
+                        self.full_continuation = None
+                        self.retry_generation = None
+                        self.gate.reject()
+                if not self.gate.allowed(service, retry=continuation is not None):
                     timings = getattr(service, 'timings', None)
                     if timings is not None:
                         timings().accounting_waits += 1
@@ -487,7 +543,9 @@ class Driver:
                 self.started = None
                 self.changed = False
                 self.invalid = set()
-                self.scope = None if self.gate.force_full else (self.retry_seats or self.gate.scope)
+                self.continuing = continuation
+                self.scope = (set(self.retry_seats) if continuation is not None else
+                              None if self.gate.force_full else self.gate.scope)
                 self.retry_seats = set()
                 self.completion = []
                 self.counts, self.records = Counter(), set()

@@ -193,7 +193,7 @@ class Gate:
     def allowed(self, service, *, retry=False):
         self.scope = None
         self.force_full = False
-        if self.partitions is not None and (self.catching_up(service) or self.full_due()):
+        if self.partitions is not None and not retry and (self.catching_up(service) or self.full_due()):
             self.force_full = True
             self.decision = {'catch-up' if self.catching_up(service) else 'backstop': 1}
             if self.previous:
