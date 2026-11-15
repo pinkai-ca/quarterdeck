@@ -20,7 +20,7 @@ def test_a_message_is_one_immutable_file(tmp_path: Path):
     assert files == [tmp_path / "post" / "store" / f"{order.id}.json"]
     data = json.loads(files[0].read_text())
     assert data["from"] == "desk" and data["to"] == "scott" and data["kind"] == "order" and data["re"] is None
-    assert order.id.startswith("ord-") and order.short == f"ord-{order.id[-4:]}"
+    assert order.id.startswith("ord-") and order.short == f"ord-{order.id[-6:]}"
     with pytest.raises(ShipError, match="immutable"):
         store.write(order)  # law: post-is-files
     assert store.get(order.short) == order and store.get(order.id) == order
