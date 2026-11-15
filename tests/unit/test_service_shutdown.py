@@ -99,7 +99,6 @@ def test_stop_keeps_a_heartbeat_that_now_names_another_pid(tmp_path, monkeypatch
 
     stopped_pid, next_pid = 999999998, 999999999
     heartbeat = servicectl.heartbeat_path(tmp_path)
-    heartbeat.parent.mkdir()
     stamp = datetime.now(timezone.utc).isoformat()
     heartbeat.write_text(f"{stopped_pid} {stamp}\n")
     monkeypatch.setattr(servicectl, "alive", lambda _: True)
@@ -114,7 +113,6 @@ def test_stop_waits_for_the_process_to_be_gone_after_its_lock_frees(tmp_path, mo
     from quarterdeck import servicectl
 
     pid, stamp = 999999997, datetime.now(timezone.utc).isoformat()
-    servicectl.heartbeat_path(tmp_path).parent.mkdir()
     servicectl.heartbeat_path(tmp_path).write_text(f"{pid} {stamp}\n")
     expected = {"pid": pid, "start": "synthetic-start-zzzz"}
     gone = iter([False, False, True])

@@ -228,10 +228,10 @@ def annotate(runtime: Path, expected: dict | None, *, forced: bool) -> str:
                 return "delivery lock has another owner; journal left unchanged"
             detail = finish(runtime, expected, forced=forced)
             if owner(runtime) == expected and process_gone(expected):
-                from .servicectl import read_heartbeat, remove_heartbeat
+                from .servicectl import heartbeat_path, read_heartbeat
                 beat = read_heartbeat(runtime)
                 if beat is not None and beat[0] == expected["pid"]:
-                    remove_heartbeat(runtime)
+                    heartbeat_path(runtime).unlink(missing_ok=True)
             return detail
         finally:
             os.close(fd)

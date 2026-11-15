@@ -9,7 +9,6 @@ than the tick (law: events-not-clocks).
 
 from __future__ import annotations
 
-import contextlib
 import json
 import hashlib
 import os
@@ -39,8 +38,7 @@ from .provenance import UNKNOWN
 from .post import Attempts, Store
 from .seat import SEAT_HOLDS, Seat, SelectionError, UnresolvedSeat, launch_pool_refusal, seats
 from .servicectl import (  # noqa: F401  (the process control, reachable as service.* too)
-    acquire_lock, alive, heartbeat_path, legacy_heartbeat_path, locked, read_heartbeat, remove_heartbeat, request, stale,
-    start, stop, write_heartbeat, write_legacy_heartbeat,
+    acquire_lock, alive, heartbeat_path, locked, read_heartbeat, request, stale, start, stop, write_heartbeat,
 )
 from .ship import Ship, ShipError
 from .tmux import Tmux, TmuxError, ship_sessions
@@ -163,15 +161,13 @@ class Service:
         self.log("start", pid=os.getpid())
         self.clean_server_environment()
         (self.runtime / SEAT_HOLDS).unlink(missing_ok=True)  # an earlier service's holds are its own; this one observes anew
-        if getattr(self, 'legacy_lock', None) is None:
-            legacy_heartbeat_path(self.runtime).unlink(missing_ok=True)  # the earlier code's beat; this one writes its own place
         from .shutdown import Stop
         beat_stop = threading.Event()
         def keep_heartbeat():
             while not beat_stop.wait(2.0):
                 try:
                     with self.heartbeat_lock:
-                        self.beat()
+                        write_heartbeat(self.runtime)
                 except OSError:
                     pass  # the main step reports storage failures through its usual path
         beat = threading.Thread(target=keep_heartbeat, name='service-heartbeat', daemon=True)
@@ -240,9 +236,6 @@ class Service:
             if servicectl.process_start(pid) == start:
                 return
             servicectl.release_legacy(self.runtime, self.legacy_lock)
-            with getattr(self, 'heartbeat_lock', None) or contextlib.nullcontext():
-                self.legacy_lock = None  # the beat thread writes the earlier place no more
-                servicectl.legacy_heartbeat_path(self.runtime).unlink(missing_ok=True)  # its beat goes with its lock
         except Exception as error:  # outside the steps' guard: a failure here must not stop the service
             self.log("error", step="release_earlier_installer", error="earlier-installer release failed",
                      kind=type(error).__name__, detail=str(error))
@@ -413,15 +406,9 @@ class Service:
         from . import push_reminder
         push_reminder.run(self)
 
-    def beat(self) -> None:
-        """The heartbeat, and at its earlier place too while an earlier-code installer that started this service runs."""
-        write_heartbeat(self.runtime)
-        if getattr(self, 'legacy_lock', None) is not None:
-            write_legacy_heartbeat(self.runtime)
-
     def heartbeat(self) -> None:
         with self.heartbeat_lock:
-            self.beat()
+            write_heartbeat(self.runtime)
         self.publish_accounting_health()
 
     def publish_accounting_health(self, *, force=False) -> None:
