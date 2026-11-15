@@ -325,7 +325,10 @@ class Service:
             self.log('error', step='publish_status', error=repr(error), trace=traceback.format_exc())
 
     def publish_status(self) -> None:
-        presentation.publish(self.ship, self.tmux, self.status_framework, self.store, self.attempts)
+        if getattr(self, 'journal_reader', None) is None:
+            self.journal_reader = pending_delivery.JournalReader()
+        with pending_delivery.journal_reading(self.journal_reader):
+            presentation.publish(self.ship, self.tmux, self.status_framework, self.store, self.attempts)
 
     def push_reminders(self) -> None:
         """A local origin/main change starts a durable reminder, without reading GitHub."""

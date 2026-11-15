@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from datetime import datetime
 from contextlib import contextmanager
+from contextvars import ContextVar
+from copy import deepcopy
 import errno
 import fcntl
 import json
@@ -34,6 +36,7 @@ if TYPE_CHECKING:
     from .tmux import Pane
 
 WAIT_SECONDS = 600  # intervention policy, not a claim about normal program latency
+_JOURNAL_READER = ContextVar('quarterdeck_status_journals', default=None)
 TERMINAL = {"delivered", "cancelled", "carried", "abandoned", "withheld", "unacted", "uncertain", closed_record.PHASE}
 # unacted: the record ended its turn in an error with proved no model output; uncertain: output unknown.
 # Neither is ever typed again by a tick (law: one-door).
@@ -275,7 +278,89 @@ class Proof:
 
 def journals(seat: Seat) -> tuple[list[Proof], list[str]]:
     runtime = getattr(getattr(seat, "ship", None), "runtime", None)
+    if runtime is not None and (reader := _JOURNAL_READER.get()) is not None:
+        return reader.journals(runtime, seat.name)
     return _journals(runtime, seat.name) if runtime is not None else ([], [])
+
+
+@contextmanager
+def journal_reading(reader):
+    """A service presentation may reuse parsed journals, never an action's evidence."""
+    token = _JOURNAL_READER.set(reader)
+    try:
+        yield
+    finally:
+        _JOURNAL_READER.reset(token)
+
+
+class JournalReader:
+    """Status-only parsed data; every new collection validates names and file identities."""
+
+    def __init__(self):
+        self._folders = {}
+
+    @staticmethod
+    def _stamp(info):
+        return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+    def journals(self, runtime, name):
+        folder = runtime / 'post' / 'pending' / name
+        found, errors = post.reading_value('journals', folder.absolute(),
+                                          lambda: self._read(runtime, name, folder))
+        # Proof.save and callers' nested edits must never alter cached observations.
+        return [Proof(path, deepcopy(data)) for path, data in found], list(errors)
+
+    def _read(self, runtime, name, folder):
+        found, errors = [], []
+        try:
+            descriptor = post_dir.open_directory(folder, create=False)
+        except FileNotFoundError:
+            self._folders.pop(folder, None)
+            return found, errors
+        try:
+            info = os.fstat(descriptor)
+            identity = info.st_dev, info.st_ino
+            previous_identity, previous = self._folders.get(folder, (None, {}))
+            if previous_identity != identity:
+                previous = {}
+            current = {}
+            for filename in sorted(os.listdir(descriptor)):
+                if not filename.endswith('.json'):
+                    continue
+                path = folder / filename
+                try:
+                    info = os.stat(filename, dir_fd=descriptor, follow_symlinks=False)
+                    if stat.S_ISLNK(info.st_mode):
+                        post_dir._link_held(path)
+                    if not stat.S_ISREG(info.st_mode):
+                        continue
+                    stamp = self._stamp(info)
+                    cached = previous.get(filename)
+                    if cached is None or cached[0] != stamp:
+                        data = json.loads(post_dir._read_nofollow(descriptor, filename, path).decode(
+                            locale.getpreferredencoding(False)))
+                        validate(data, name)
+                        # A complete replacement during the guarded read may be returned,
+                        # but is cached only if it still matches the identity we inspected.
+                        after = os.stat(filename, dir_fd=descriptor, follow_symlinks=False)
+                        if self._stamp(after) == stamp:
+                            current[filename] = stamp, data
+                    else:
+                        data = cached[1]
+                        current[filename] = cached
+                    # Receipts may disappear or move independently of an unchanged journal.
+                    if any(not post.attempt_path(runtime, n).is_file() for n in data['attempts']):
+                        raise ValueError('pending attempt receipt missing')
+                    found.append((path, data))
+                except FileNotFoundError:
+                    if not post_dir.gone(path):
+                        errors.append(path.name)
+                except (OSError, ValueError, TypeError, KeyError):
+                    errors.append(path.name)
+            self._folders[folder] = identity, current
+            return found, errors
+        finally:
+            os.close(descriptor)
 
 
 def journal_path(runtime: Path, name: str, filename: str) -> Path:
