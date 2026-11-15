@@ -23,6 +23,7 @@ from quarterdeck import cli, door, idle, post, request_queue
 from quarterdeck.harness.claude import ClaudeHarness
 from quarterdeck.harness.types import ActiveTool
 from quarterdeck.ship import ShipError
+from quarterdeck.tmux import TmuxError, TmuxUnanswered
 
 from .test_request_human_claude_validation import SEAT, T0, desk, state, turn  # noqa: F401 (desk: the fixture)
 
@@ -241,6 +242,8 @@ def test_a_word_whose_time_is_unknown_or_a_reading_with_nothing_held_changes_not
     composer(box='synthetic layout with no composer'),
     None,
     OSError('synthetic unreadable pane'),
+    TmuxError("tmux capture-pane: can't find pane: %71"),
+    TmuxUnanswered('tmux capture-pane: private server did not answer'),
 ])
 def test_the_box_must_still_be_read_empty_and_idle(desk, shown, screen):
     shown.screen = screen

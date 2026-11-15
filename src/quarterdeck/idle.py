@@ -223,10 +223,11 @@ def release(seat, state: State | None, hold: Hold | None, asked) -> Hold | None:
             or state.last_input_at is None or state.last_input_at > asked):
         return hold  # the turn that last ended is not the one the word was given in
     from .door import Door
+    from .tmux import TmuxError
     try:
         screen = Door(seat).screen()
-    except OSError:
-        return BOX
+    except (OSError, TmuxError):
+        return BOX  # a capture that fails is never an empty box, and its error never leaves the proof
     return None if at_rest(screen) else BOX
 
 
