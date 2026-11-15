@@ -286,13 +286,15 @@ def wire_parties(runtime, sender, to):
     return f'{sending}@{here}', f'{seat}@{target}'
 
 
-def _source(ship, identifier):
+def _source(ship, identifier, *, directory=None):
     from . import post
     if not component(identifier):
         # Generated cross-ship ids contain @ in their sender; it is a filename, not a path.
         if not isinstance(identifier, str) or not identifier or identifier.startswith('.') or any(c in identifier for c in '/\\\x00\n\r'):
             raise ShipError('invalid post transport id')
-    data = stable_bytes(ship.runtime / 'post' / 'store' / (identifier + '.json'))
+    path = ship.runtime / 'post' / 'store' / (identifier + '.json')
+    data = (stable_bytes(path) if directory is None else
+            post_dir._read_nofollow(directory, path.name, path))
     message = post.Message.from_json(data.decode('utf-8'))
     if message.id != identifier:
         raise ShipError('post transport filename and id differ')
@@ -382,11 +384,95 @@ def _ownership(source, identifier, origin, message, data, *, root):
         raise ShipError('a ship offers as origin only the posts it authored')
 
 
+class _LocalReports:
+    """One classification's original-byte chain proofs; never transport evidence.
+
+    A no-re report has only its own address. Otherwise require an addressee's
+    report on an order, then prove its entire ancestry local. Unknown, missing
+    or cyclic history stays a candidate. The one no-follow directory descriptor
+    and memoized reads last only this build; export's before/after directory key
+    must still match before any excluded report can be skipped on another pass.
+    """
+
+    def __init__(self, ship):
+        self.ship = ship
+        self.raw = {}
+        self.local = {}
+        self.forwards = None
+        self.directory = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            if self.directory is not None:
+                os.close(self.directory)
+        finally:
+            self.directory = None
+            self.raw.clear()
+            self.local.clear()
+            self.forwards = None
+
+    def source(self, identifier):
+        if identifier not in self.raw:
+            if self.directory is None:
+                self.directory = post_dir.open_directory(self.ship.runtime / 'post' / 'store', create=False)
+            self.raw[identifier] = _source(self.ship, identifier, directory=self.directory)[0]
+        return self.raw[identifier]
+
+    def proves(self, message):
+        try:
+            if owner(self.ship.runtime) != self.ship.folder.name:
+                return False
+            original = self.source(message.id)
+            if original.kind != 'report':
+                return False
+            if original.re:
+                parent = self.source(original.re)
+                if parent.kind != 'order' or original.sender != parent.to:
+                    return False
+            return self._chain_local(original.id)
+        except (OSError, ValueError, KeyError, TypeError, ShipError):
+            return False
+
+    def _chain_local(self, identifier):
+        from .forward_post import declared, recorded
+        if self.forwards is None:
+            self.forwards = set(getattr(self.ship, 'forward', {})) | set(declared(self.ship.runtime))
+        current, trail, seen = identifier, [], set()
+        while current not in self.local:
+            if current in seen:
+                result = False
+                break
+            seen.add(current)
+            trail.append(current)
+            message = self.source(current)
+            if ('@' in message.sender or '@' in message.to
+                    or message.sender in self.forwards or message.to in self.forwards
+                    or provenance(self.ship.runtime, current) is not None
+                    or recorded(self.ship.runtime, current) is not None
+                    or post_dir.exists(self.ship.runtime / 'post' / 'addressed' / (current + '.json'))):
+                result = False
+                break
+            address(message.sender, self.ship.folder.name)
+            address(message.to, self.ship.folder.name)
+            if not message.re:
+                result = True
+                break
+            current = message.re
+        else:
+            result = self.local[current]
+        self.local.update((value, result) for value in trail)
+        return result
+
+
 class ExportWorklist:
     """Only the local-message classification is reusable; transport evidence is not.
 
-    Post, import and forwarding files are immutable, so their directory stamps
-    cover the whole re-chain. Mutable declarations and compaction reservations
+    Local reports prove their original-byte re-chain (or their own no-re
+    address) in one read-only classification. Post, import and forwarding files
+    are immutable, so their directory stamps cover that whole proof. Mutable declarations and compaction reservations
     have their own identities. A recent observation never ages into a certificate.
     """
 
@@ -426,16 +512,26 @@ class ExportWorklist:
                         repr(getattr(ship, 'groups', {})))
         return declarations, tuple(result)
 
-    def retained(self, ship, message, imported):
+    def retained(self, ship, message, imported, reports=None):
         from .forward_post import recorded
-        return (imported is not None or message.kind == 'report'
-                or '@' in message.to or '@' in message.sender
+        if imported is not None:
+            return True
+        if message.kind == 'report':
+            if reports is not None:
+                return not reports.proves(message)
+            with _LocalReports(ship) as proof:
+                return not proof.proves(message)
+        return ('@' in message.to or '@' in message.sender
                 or message.to in getattr(ship, 'forward', {})
                 or recorded(ship.runtime, message.id) is not None)
 
 
 def export(ship, store, *, worklist=None):
-    """Write offers only beside this ship's own source files."""
+    """Classify in one read-only view; publish offers outside it, on every pass.
+
+    Only local classification is certified. An unproved report stays in the
+    worklist; no receipt, offer, peer or transport observation is cached here.
+    """
     from . import post
     started = time.time_ns()
     before = worklist.stamp(ship) if worklist is not None else None
@@ -444,15 +540,27 @@ def export(ship, store, *, worklist=None):
              and certificate[0] == before and certificate[1] <= started)
     if worklist is not None:
         worklist.certificate = None  # any failure, including an exception, certifies nothing
-    messages = worklist.messages if reuse else store.all()
-    retained = []
+    if worklist is None:
+        messages, retained = store.all(), []
+    elif reuse:
+        messages = worklist.messages
+        retained = list(messages)
+    else:
+        with post.reading_pass(store=store), _LocalReports(ship) as reports:
+            messages = store.all()
+            retained = []
+            for message in messages:
+                try:
+                    keep = worklist.retained(ship, message, provenance(ship.runtime, message.id), reports)
+                except (OSError, ValueError, KeyError, TypeError, ShipError):
+                    keep = True  # uncertainty cannot remove work; ordinary export reads afresh below
+                if keep:
+                    retained.append(message)
     errors = []
     for message in messages:
         # Imported posts produce offers only through this ship's declared forward.
         try:
             imported = provenance(ship.runtime, message.id)
-            if worklist is not None and (reuse or worklist.retained(ship, message, imported)):
-                retained.append(message)
             if imported:
                 raw, _ = _source(ship, message.id)
                 seat, here = address(raw.to, imported['origin'])

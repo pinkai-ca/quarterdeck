@@ -140,7 +140,7 @@ def test_failed_export_and_failed_peer_pass_invalidate_certificate(pair, clock, 
     assert worklist.certificate is not None
 
 
-def test_qualified_posts_reports_and_saved_routes_remain_candidates(pair, clock):
+def test_qualified_posts_and_saved_routes_remain_but_local_reports_leave(pair, clock):
     ship, other, store, destination = pair
     plain = store.new('order', 'writer', 'captain', 'Local.')
     remote = store.new('question', 'writer', 'captain@beta', 'Remote.')
@@ -149,7 +149,8 @@ def test_qualified_posts_reports_and_saved_routes_remain_candidates(pair, clock)
     assert fleet.run(ship, store, worklist=worklist) == []
     # First offer creates folders, so rebuild once to certify the final inputs.
     assert fleet.run(ship, store, worklist=worklist) == []
-    assert {m.id for m in worklist.messages} == {remote.id, report.id}
+    assert {m.id for m in worklist.messages} == {remote.id}
+    assert report.id not in {m.id for m in worklist.messages}
     assert fleet.run(other, destination) == []
     received = destination.get(remote.id)
     imported = fleet.provenance(other.runtime, remote.id)
