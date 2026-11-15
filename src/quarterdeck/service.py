@@ -563,7 +563,8 @@ class Service:
                     except Exception as error:
                         self.human_wake_error(seat, 'alarm', error)
                     continue
-                pending = [m for m in self.attempts.undelivered(self.store, seat.name, results=results) if self._due(m, seat)]
+                with post.reading_pass(store=self.store, attempts=self.attempts):
+                    pending = [m for m in self.attempts.undelivered(self.store, seat.name, results=results) if self._due(m, seat)]
                 if pending and seat.is_up:
                     self.deliver(seat, pending)
                 self.needs_human(seat)
