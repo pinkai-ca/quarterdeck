@@ -54,7 +54,8 @@ def phase(runtime, label):
                                              None if reader else 'reader unavailable in copied history'))
     for name, sources in inventory.items():
         spec = service.ship.seats.get(name)
-        harness = get(spec.harness) if spec is not None else next(item.reader for item in sources if item.reader)
+        harness = (get(spec.harness) if spec is not None else
+                   next((item.reader for item in sources if item.reader), get('fake')))
         pool = service.ship.pools[spec.pools[0]] if spec is not None else SimpleNamespace(name='copied-history')
         session = service.ship.sessions.get(spec.session) if spec is not None else None
         selected.append(SimpleNamespace(name=name,home=runtime/'seats'/name/'home',harness=harness,
