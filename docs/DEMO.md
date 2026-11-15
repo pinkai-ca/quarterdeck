@@ -127,7 +127,7 @@ The desk in every recording is Claude Code with Fable 5.2. The programs are Clau
 - **The crews.** The flagship and the shuttle are the `default` and the `shuttle` ship, with each seat's program and model chosen for the recording; the flagship has two workers and two helpers added. The forum is the `forum` ship with Antigravity in one reviewer's seat. Claude Code's and Codex's tips and recap lines are turned off, and Claude Code's own announcements are marked as seen.
 - **The ships' orders.** Each ship carries a few orders written for the recording, as any ship's owner may write them: how a roll call is answered (each agent for itself, in one line of a given form, posted once); that a review is one page, and the combined report as well; that a small change to a page is checked once, in one browser, at two widths and in both themes, and lands on `main`; that the desk passes a request on as it was asked, and words one for the forum for a reviewer, with a last sentence for its lead.
 - **A clean start.** Before a take every agent is started fresh, the shuttle's project is put back to its first commit, and the forum's earlier reviews are removed.
-- **More than one take.** Each recording is one whole run, chosen from several. Takes were set aside when a helper on a local model filed the same answer many times, when a message could not be delivered, and when the desk began by speaking of an earlier run. The first two were faults in the framework, found by these recordings and since mended or being mended; the third was the camera's own.
+- **More than one take.** Each recording is one whole run, chosen from several. Takes were set aside when a helper on a local model filed the same answer many times, when a message could not be delivered, and when the desk began by speaking of an earlier run. The first two were faults in the framework, found by these recordings and since mended; the third was the camera's own.
 
 ### What was changed in the recordings
 
@@ -143,5 +143,5 @@ Nothing is spliced or reordered.
 ### What to know of what they show
 
 - Each message typed into a pane ends with a line that names the reader's own inbox. Later versions leave it out.
-- The desk's pane opens with the index of one earlier notice. The ship carried it into every fresh start of that desk: a fault these recordings found, whose mend is planned.
+- The desk's pane opens with the index of one earlier notice. The ship carried it into every fresh start of that desk: a fault these recordings found, since mended.
 - The forum reviews the README as it stood that afternoon. What its four reviewers found was checked against the code the same day: it led to one mend in setup and to about twenty-five corrections in the README and the pages beside it. The README has them now.
