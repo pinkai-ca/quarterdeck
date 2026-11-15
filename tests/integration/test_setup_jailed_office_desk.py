@@ -248,7 +248,7 @@ def test_a_desk_folder_that_is_not_the_operators_own_real_folder_is_refused(tmp_
         work.write_text('not a folder')
     else:
         work.mkdir(mode=0o755)
-        monkeypatch.setattr(setup.os, 'getuid', lambda: os.stat(work).st_uid + 1)
+        monkeypatch.setattr(os, 'getuid', lambda: os.stat(work).st_uid + 1)
     with pytest.raises(shipmod.ShipError, match='is a link|not this user\'s own folder'):
-        setup.make_jailed_work(office, text)
+        setup.make_jailed_work(office)
     assert stat.S_IMODE(elsewhere.stat().st_mode) == 0o755 and not any(elsewhere.iterdir()), 'nothing changed there'

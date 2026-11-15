@@ -98,6 +98,9 @@ class SeatSpec:
     fresh_after_compactions: int | None = None
     model_mode: str | None = None
     effort_mode: str | None = None
+    # The cwd as the declaration writes it, joined to the ship folder but never resolved: ``cwd`` is resolved at
+    # load, so a link on its way would read as its target. The jail's own-work check walks this one.
+    declared_cwd: Path | None = field(default=None, compare=False)
 
     def for_pool(self, name: str) -> SeatSpec:
         if name not in self.pools:
@@ -478,6 +481,7 @@ def _seat(name: str, table: dict, folder: Path) -> SeatSpec:
         effort=table.get("effort"),
         persona=table.get("persona"),
         cwd=_path(table["cwd"], folder) if "cwd" in table else None,
+        declared_cwd=_declared_path(table["cwd"], folder) if "cwd" in table else None,
         up=bool(table.get("up", True)),
         fresh=table.get("fresh"),
         fresh_after_compactions=table.get("fresh_after_compactions"),
@@ -497,6 +501,12 @@ SEAT_KEYS = frozenset({"session", "role", "harness", "pool", "model", "effort", 
 def _path(value: str, folder: Path) -> Path:
     path = Path(value).expanduser()
     return path if path.is_absolute() else (folder / path).resolve()
+
+
+def _declared_path(value: str, folder: Path) -> Path:
+    """A path as the declaration writes it, relative to the ship folder: normalized, no link followed."""
+    path = Path(value).expanduser()
+    return Path(os.path.normpath(path if path.is_absolute() else folder / path))
 
 
 def _validate(ship: Ship) -> None:

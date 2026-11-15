@@ -645,6 +645,12 @@ class Seat:
         if self.spec.remote_control and not self.harness.remote_control:
             raise ShipError(f"{self.name}: remote_control = true, and {self.harness.name} has no Remote Control; "
                             "select a harness that offers it or drop the key")
+        if self.ship.jailed(self.spec, self.pool):
+            from . import sandbox  # the sandbox reads the ship and the standing orders, so it is imported here, not above
+
+            # A jailed seat's own folder under its ship's work/, as declared, never through a link, before anything
+            # of the launch is made (law: one-folder).
+            sandbox.check_own_work(self.ship, self.name, self.spec)
         version, effort_note = observation if observation is not None else self._observe_selection()
         shipmod.fence(self.ship)
         self.folder.mkdir(parents=True, exist_ok=True)

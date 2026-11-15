@@ -6,11 +6,9 @@ and qd set's application path; the conversation does not maintain another config
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import shlex
 import shutil
-import stat
 import sys
 import tomllib
 from pathlib import Path
@@ -185,53 +183,28 @@ def template(kind: str = "default") -> tuple[str, str, dict]:
 JAILED_DESK_WORK = "work/desk"
 
 
-def jailed_work_folders(office: Ship, text: str | None = None) -> list[Path]:
-    """The office's jailed seats' own working folders under its work/, which must exist before their launch.
-
-    Each is taken as the declaration writes it, never through a link: loading a ship resolves a seat's cwd, so a link
-    planted at work/desk would otherwise turn the desk's folder into the link's target, unseen here. ``text`` is the
-    declaration when it is not yet on disk.
-    """
+def jailed_work_folders(office: Ship) -> list[Path]:
+    """The office's jailed seats' own working folders under its work/, as the declaration writes them, never through
+    a link: loading a ship resolves a seat's cwd, so a link planted at work/desk would otherwise read as its target."""
     from . import sandbox
-    own = Path(os.path.normpath(office.folder / sandbox.OWN_WORK))
-    seats = tomllib.loads(text if text is not None else office.file.read_text()).get("seats", {})
-    found = []
-    for name, spec in office.seats.items():
-        declared = seats.get(name, {}).get("cwd") if isinstance(seats.get(name), dict) else None
-        if not isinstance(declared, str) or not office.jailed(spec):
-            continue
-        path = Path(declared).expanduser()
-        path = Path(os.path.normpath(path if path.is_absolute() else office.folder / path))
-        if path.is_relative_to(own) and path != own:
-            found.append(path)
-    return found
+    return [folder for spec in office.seats.values()
+            if office.jailed(spec) and (folder := sandbox.own_work_folder(office, spec)) is not None]
 
 
-def make_jailed_work(office: Ship, text: str | None = None) -> None:
+def make_jailed_work(office: Ship) -> None:
     """Make each jailed office seat's own working folder before its launch: empty and 0700 when absent.
 
     One already there, from an earlier start, is kept with what the seat left in it, but only as this user's real
     folder: a link, anything but a folder, or another user's is refused, and a mode looser than 0700 is set to 0700.
+    Every later launch of a jailed seat checks it again the same way (sandbox.check_own_work), without making it.
 
     law: one-folder. The folder lies inside the office, in the project; it is ignored by the office's repository, and
     nothing is written in it.
     """
-    for folder in jailed_work_folders(office, text):
-        for part in (folder, *folder.parents):
-            if part == office.folder:
-                break
-            if part.is_symlink():
-                raise ShipError(f"{part} is a link; a jailed seat's working folder is a real folder of the office")
-        try:
-            folder.mkdir(mode=0o700, parents=True, exist_ok=True)
-        except FileExistsError:
-            pass  # something else stands there: refused below, as it is
-        info = os.lstat(folder)
-        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
-            raise ShipError(f"{folder} is not this user's own folder; a jailed seat's working folder is a real folder "
-                            "of the office, its operator's. Remove it, then start again")
-        if stat.S_IMODE(info.st_mode) != 0o700:
-            os.chmod(folder, 0o700)  # private, as when it is made
+    from . import sandbox
+    for name, spec in office.seats.items():
+        if office.jailed(spec):
+            sandbox.check_own_work(office, name, spec, make=True)
 
 
 def office_folder(project: Path) -> Path:
@@ -302,7 +275,7 @@ def init_office(args: argparse.Namespace, *, operations: Operations | None = Non
         declared = ships._from_text(files["ship.toml"], folder)
         ships._validate(declared)
         # A jailed seat's own working folder under work/ is ignored with the runtime: nothing in it is the office's.
-        ignored = "/runtime/\n" + ("/work/\n" if jailed_work_folders(declared, files["ship.toml"]) else "")
+        ignored = "/runtime/\n" + ("/work/\n" if jailed_work_folders(declared) else "")
         identity = git_identity(project)
         # law: one-folder
         # The fence's empty mount point is inside the project, where the office's
