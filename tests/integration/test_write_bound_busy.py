@@ -25,7 +25,10 @@ from quarterdeck import ship as shipmod, write_bound
 
 from .test_write_bound import MiB, SMALL, jail_for, jailed, logger, until
 
-IDLE = 'import time; time.sleep(600)'
+# An idle program that says from inside the jail that it runs. A jail is up only once its own program runs: one killed by its
+# outer bwrap earlier can lose the race to the inner bwrap arming its death with its parent, and that inner bwrap, the
+# jail's pid 1, then lives on under the user's manager. Measured under load, 15 Nov.
+IDLE_READY = "import sys, time; open(sys.argv[1] + '/ready', 'w').close(); time.sleep(600)"
 # Burns every CPU it is given from inside the jail, ending by itself, while it writes past its bound. argv[1] is the
 # folder; a 'sub' folder of many small files is made after the stream, so a walk reaches the stream first.
 BURNING = r"""
@@ -163,10 +166,11 @@ def test_a_hand_shaped_seat_folder_on_a_busy_machine_stays_up_unmeasured_then_me
     workspace = tmp_path / 'work'
     workspace.mkdir()
     home = os.path.realpath(hand_home(ship))
-    jail = jailed_program(ship, workspace, IDLE)
+    jail = jailed_program(ship, workspace, IDLE_READY)
     logs, log = logger()
     try:
-        assert until(lambda: 'worker-1' in write_bound.jails(ship))
+        assert until(lambda: (workspace / 'ready').exists(), 60), 'the jailed program runs'
+        assert 'worker-1' in write_bound.jails(ship)
         with busy_machine():
             # The fault itself: with the bounds as they stand, the walk takes longer than 2 s on the clock and well
             # under it in CPU. It is measured, and the seat stays up.
@@ -196,6 +200,7 @@ def test_a_hand_shaped_seat_folder_on_a_busy_machine_stays_up_unmeasured_then_me
         assert jail.poll() is None, 'the seat stayed up throughout'
     finally:
         ended(jail)
+        assert until(lambda: write_bound.jails(ship) == {}), 'the jail is gone, its inner bwrap too'
 
 
 def test_the_status_line_names_a_seat_left_unmeasured(ship, tmux):
@@ -289,10 +294,11 @@ def test_three_unmeasured_passes_in_a_row_stop_a_jail_that_burns_cpu_and_writes(
 def test_a_measured_pass_starts_the_count_again_and_a_gone_jail_ends_it(ship, tmp_path, small):
     workspace = tmp_path / 'work'
     workspace.mkdir()
-    jail = jailed_program(ship, workspace, IDLE)
+    jail = jailed_program(ship, workspace, IDLE_READY)
     logs, log = logger()
     try:
-        assert until(lambda: 'worker-1' in write_bound.jails(ship))
+        assert until(lambda: (workspace / 'ready').exists(), 60), 'the jailed program runs'
+        assert 'worker-1' in write_bound.jails(ship)
         for _ in range(write_bound.PASSES - 1):
             assert write_bound.look(ship, log, budget=write_bound.Budget(wall=0.0)) == []
         assert write_bound.unmeasured_read(ship.runtime, 'worker-1')['passes'] == write_bound.PASSES - 1
