@@ -393,6 +393,11 @@ class Tmux:
         # -u: a client without a UTF-8 locale prints a format's tabs as "_"; -u keeps them whatever the locale.
         command = ['tmux', '-u', *address, *args]
         env = dict(os.environ, **{OWNER: self._owned.nonce}) if start else None
+        if self.ship and not self.legacy and args and args[0] == 'new-session':
+            # The ship's own server starts, and tmux copies a client's desktop variables into each new session, from
+            # a declared environment, never the caller's: every seat it runs inherits it.
+            from .jail_environment import unjailed_environment
+            env = unjailed_environment(os.environ)
         bound = PRIVATE_COMMAND_WAIT if self._private else None
         try:
             done = subprocess.run(command, input=stdin, capture_output=True, text=True, env=env, timeout=bound)

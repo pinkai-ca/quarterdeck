@@ -1,4 +1,5 @@
-"""What a jailed program's environment may hold, named in one place, and the launcher that starts a jail from nothing.
+"""What a jailed program's environment may hold, and the service's, named in one place; and the launcher that starts a
+jail from nothing.
 
 A jail starts from bwrap's ``--clearenv``: nothing of the environment that launched it passes in, since that is the
 operator's desktop shell, which carries secrets. Inside, only the names below are set:
@@ -29,11 +30,51 @@ FROM_PANE_PREFIXES = ('LC_',)
 
 # A name looks secret when one of its words (split at anything but a letter or digit, any case) ends with one of
 # these, or is one of the whole words below. "TOKEN" followed by a word of counting (a program's cap on its output
-# tokens, as ..._OUTPUT_TOKEN_MAX) is a number of tokens, not a token.
+# tokens, as ..._OUTPUT_TOKEN_MAX) is a number of tokens, not a token; "AUTH" followed by SOCK or SOCKET (the SSH
+# agent's SSH_AUTH_SOCK) is a socket's path, not a secret.
 SECRET_ENDINGS = ('KEY', 'KEYS', 'TOKEN', 'TOKENS', 'SECRET', 'SECRETS', 'PASS', 'PASSWORD', 'PASSWORDS', 'PASSWD',
                   'PASSPHRASE', 'CREDENTIAL', 'CREDENTIALS', 'CREDS', 'AUTH', 'COOKIE', 'COOKIES', 'JWT')
 SECRET_WORDS = ('AUTHORIZATION', 'BEARER', 'PRIVATE', 'SIGNATURE', 'SALT')
 COUNTING = ('MAX', 'MIN', 'LIMIT', 'COUNT', 'BUDGET')
+SOCKETS = ('SOCK', 'SOCKET')
+
+
+# Unjailed panes: the ship's own tmux server starts from this second list, never the caller's whole environment, and
+# every unjailed seat inherits what the server holds. It is the framework's names the jail also has, the pane's own
+# TERM, LANG, TZ and LC_*, and the desktop session's (DESKTOP), which a jail never receives. Filtered by
+# looks_secret like the jail's: no secret-named variable reaches any seat, jailed or not.
+DESKTOP = ('DISPLAY', 'WAYLAND_DISPLAY', 'XDG_CURRENT_DESKTOP', 'DBUS_SESSION_BUS_ADDRESS', 'SSH_AUTH_SOCK')
+DESKTOP_PREFIXES = ('XDG_SESSION_',)
+UNJAILED = (*ALLOWED, *FROM_PANE, *DESKTOP)
+UNJAILED_PREFIXES = (*FROM_PANE_PREFIXES, *DESKTOP_PREFIXES)
+
+# The service starts from a declared list too: the unjailed panes' (it may start the ship's server, which they
+# inherit), what it needs to run (the tmux folder of a test's private namespace, certificates and proxies for its
+# readers, the framework's QD_*, git's identity and isolation, Python's own), and the pools' keys the ship file names
+# (api_key = "env:NAME"). Never QD_SEAT: the pane that ran qd sync is not the service.
+SERVICE = (*UNJAILED, 'TMUX_TMPDIR', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY',
+           'ALL_PROXY', 'http_proxy', 'https_proxy', 'no_proxy', 'all_proxy')
+SERVICE_PREFIXES = (*UNJAILED_PREFIXES, 'QD_', 'GIT_', 'PYTHON')
+NEVER = ('QD_SEAT',)
+
+
+def declared(environ, names, prefixes, keys=()) -> dict[str, str]:
+    """The variables of ``environ`` a list names, by name or prefix, but never QD_SEAT nor a secret-looking name; then
+    the ``keys`` named, a ship file's declared pool keys. Names are judged, never values."""
+    kept = {name: value for name, value in environ.items()
+            if name not in NEVER and (name in names or name.startswith(prefixes)) and not looks_secret(name)}
+    kept.update({name: environ[name] for name in keys if name in environ and name not in NEVER})
+    return kept
+
+
+def unjailed_environment(environ) -> dict[str, str]:
+    """What the ship's own tmux server starts with, and so what an unjailed seat's pane inherits."""
+    return declared(environ, UNJAILED, UNJAILED_PREFIXES)
+
+
+def service_environment(environ, keys=()) -> dict[str, str]:
+    """What the service starts with: its own list, and the pools' declared ``keys``."""
+    return declared(environ, SERVICE, SERVICE_PREFIXES, keys)
 
 
 def looks_secret(name: str) -> bool:
@@ -41,7 +82,7 @@ def looks_secret(name: str) -> bool:
     words = [word for word in re.split(r'[^A-Z0-9]+', name.upper()) if word]
     for at, word in enumerate(words):
         following = words[at + 1] if at + 1 < len(words) else ''
-        if word in ('TOKEN', 'TOKENS') and following in COUNTING:
+        if word in ('TOKEN', 'TOKENS') and following in COUNTING or word == 'AUTH' and following in SOCKETS:
             continue
         if word in SECRET_WORDS or word.endswith(SECRET_ENDINGS):
             return True

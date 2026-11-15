@@ -248,7 +248,11 @@ def start(ship: Ship, qd: Path | None = None, *, expected: dict | None = None,
     log_dir.mkdir(parents=True, exist_ok=True)
     from .tmux import Tmux, TmuxError
 
-    environment = {key: value for key, value in os.environ.items() if key not in ('TMUX', 'TMUX_PANE')}
+    from . import jail_environment
+
+    # Declared, never inherited: not the caller's seat (QD_SEAT) nor the desktop's secrets.
+    environment = jail_environment.service_environment(os.environ, pool_keys(ship))
+    environment['QD_SHIP'] = str(ship.folder)
     if named := environment.get('QD_TMUX_SOCKET'):
         # The service keeps a caller's binding only where the ship's own choice of server accepts it (a
         # private test namespace, or the default server the ship still runs on); otherwise it finds the
@@ -262,9 +266,11 @@ def start(ship: Ship, qd: Path | None = None, *, expected: dict | None = None,
     environment.pop('QD_COPY_START', None)
     if startup_token:
         environment['QD_COPY_START'] = startup_token
+    command = [str(qd or qd_bin() / 'qd'), '--ship', str(ship.folder), 'service']
+    scope, unscoped = scoped(ship, environment)
     with (log_dir / 'service.out').open('ab') as out:
         process = subprocess.Popen(
-            [str(qd or qd_bin() / 'qd'), '--ship', str(ship.folder), 'service'],
+            [*scope, *command],
             stdin=subprocess.DEVNULL, stdout=out, stderr=out, start_new_session=True,
             cwd=str(ship.folder), env=environment,
         )
@@ -292,7 +298,48 @@ def start(ship: Ship, qd: Path | None = None, *, expected: dict | None = None,
                 process.wait(timeout=2)
         raise ShipError(f'service startup identity/heartbeat not confirmed within {START_SECONDS:.0f}s; '
                         f'see {log_dir / "service.out"}')
-    return f"service started · pid {process.pid} · heartbeat {heartbeat_path(ship.runtime).relative_to(ship.folder)}"
+    where = f"in its own scope {scope_unit(scope)}" if scope else f"in the caller's scope: {unscoped}"
+    return (f"service started · pid {process.pid} · heartbeat {heartbeat_path(ship.runtime).relative_to(ship.folder)}"
+            f" · {where}")
+
+
+SCOPE_PROGRAM = 'systemd-run'
+
+
+def pool_keys(ship: Ship) -> list[str]:
+    """The variables the ship file names for its pools' keys (api_key = "env:NAME"): the service reads them."""
+    return [pool.api_key.partition(':')[2] for pool in ship.pools.values()
+            if pool.api_key and pool.api_key.startswith('env:')]
+
+
+def scope_unit(scope: list[str]) -> str:
+    return next(word.partition('=')[2] for word in scope if word.startswith('--unit='))
+
+
+def scoped(ship: Ship, environment: dict[str, str]) -> tuple[list[str], str | None]:
+    """The words that start the service in a transient systemd scope of its own, named for the ship, so that a stop of
+    the caller's scope (the pane that ran qd sync) leaves it running; or none, and why, where the user's service
+    manager cannot be reached. systemd-run --scope execs the command itself, so the pid is the service's."""
+    import re
+    import secrets
+    import shutil
+
+    program = shutil.which(SCOPE_PROGRAM, path=environment.get('PATH'))
+    if program is None:
+        return [], f"{SCOPE_PROGRAM} is absent"
+    name = re.sub(r'[^A-Za-z0-9_.-]', '_', ship.name)[:64] or 'ship'
+    unit = f"qd-service-{name}-{secrets.token_hex(4)}.scope"
+    words = [program, '--user', '--scope', '--quiet', '--collect', '--expand-environment=no', f'--unit={unit}',
+             f'--description=qd service of {ship.name}', '--']
+    try:
+        probe = subprocess.run([*words[:-1], f'--unit=qd-probe-{name}-{secrets.token_hex(4)}.scope', '--', 'true'],
+                               env=environment, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return [], f"{SCOPE_PROGRAM} --user did not answer ({type(error).__name__})"
+    if probe.returncode:
+        reason = ' '.join(probe.stderr.split())[:160] or f'exit {probe.returncode}'
+        return [], f"{SCOPE_PROGRAM} --user cannot reach the user's service manager ({reason})"
+    return words, None
 
 
 def stop(runtime: Path) -> str:

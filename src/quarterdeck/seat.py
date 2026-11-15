@@ -175,6 +175,26 @@ def launch_words(path: str, argv: list[str], *, socket: str | None, tmux_tmpdir:
             *function, *argv]
 
 
+def refuse_secret_names(seat: str, env: dict[str, str], pool) -> None:
+    """An unjailed seat's program receives no variable whose name looks secret, by the jail's rule (jail_environment):
+    a refusal before anything opens. One exception: the one variable its own pool's declared key (api_key) fills,
+    which is how its program pays. That variable is found by holding the key, never by its name or by showing it."""
+    from . import jail_environment
+
+    secret = sorted(name for name in env if jail_environment.looks_secret(name))
+    if secret and getattr(pool, 'api_key', None):
+        from .harness.home import key_environment
+
+        key = key_environment(pool, 'key')['key']
+        filled = [name for name in secret if env[name] == key]
+        if len(filled) == 1:
+            secret.remove(filled[0])
+    if secret:
+        raise ShipError(f"{seat}: its program's environment names {', '.join(secret)}, which looks secret; no "
+                        "secret-named variable reaches a seat but the one its own pool's declared key fills, so "
+                        "nothing was started")
+
+
 def launch_script(seat: str, words: list[str]) -> str:
     """The seat's command as a script for tmux to run: tmux refuses a window command over 16 KiB, and a
     brief or a first message can be longer. The PATH travels inside it, since the login shell resets the
@@ -691,6 +711,8 @@ class Seat:
                 jail = sandbox.plan(self.ship, self.name, self.folder, self.home, self.ship.cwd_of(self.spec), launch.argv[0], path,
                                     endpoint=endpoint, pool=pool, synthetic=self.harness.synthetic)
                 argv = sandbox.command(jail, argv, launch.env)  # the jail starts from nothing but these
+            else:
+                refuse_secret_names(self.name, launch.env, pool)
             return launch, argv
 
         self._launch_tmpdir = self._fresh_tmux_tmpdir()
