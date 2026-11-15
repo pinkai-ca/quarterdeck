@@ -281,3 +281,43 @@ print(json.dumps(dict(reached=reached, there=os.path.exists(sys.argv[1]))))
     finally:
         server.close()
         shutil.rmtree(short, ignore_errors=True)
+
+
+def test_a_jailed_seat_whose_workspace_is_a_project_holding_an_office_and_ships_starts(drydock: Path, tmp_path: Path):
+    """The workspace is the project folder itself, with office/ and two other ships beside this one: the fleet fence
+    already leaves their runtimes absent, so no cover of its own may be laid over one (bwrap could not make its mount
+    point in the read-only fence). This ship's own runtime shows only its allowlist."""
+    project = tmp_path / 'project'
+    own_folder = project / 'ships' / 'own'
+    shutil.copytree(drydock, own_folder)
+    for name in ('alpha', 'beta'):
+        other = project / 'ships' / name
+        (other / 'runtime' / 'post' / 'store').mkdir(parents=True)
+        (other / 'ship.toml').write_text(f'[ship]\nname = "{name}"\n')
+        (other / 'runtime' / 'post' / 'store' / 'secret.json').write_text('another ship\'s post')
+    office = project / 'office'
+    (office / 'runtime' / 'post').mkdir(parents=True)
+    (office / 'ship.toml').write_text('[ship]\nname = "office"\nkind = "office"\n')
+    (office / 'runtime' / 'post' / 'secret.json').write_text("the office's post")
+    ship = shipmod.load(own_folder)
+    shipmod.fence(ship)
+    (ship.runtime / 'ledger.sqlite').write_text('not for a jail')
+    own = own_seat(ship)
+    path = os.pathsep.join([str(Path(sys.executable).parent), '/usr/bin', '/bin'])
+    jail = sandbox.plan(ship, 'worker-1', own, own / 'home', project, sys.executable, path, home=HOME)
+    probe = r"""
+import json, os, sys
+project, runtime = sys.argv[1], sys.argv[2]
+def listing(path):
+    return sorted(os.listdir(path)) if os.path.isdir(path) else None
+print(json.dumps(dict(
+    alpha=listing(os.path.join(project, 'ships', 'alpha', 'runtime')),
+    beta=listing(os.path.join(project, 'ships', 'beta', 'runtime')),
+    office=listing(os.path.join(project, 'office', 'runtime')),
+    own=listing(runtime),
+)))
+"""
+    seen = run_probe(jail, probe, str(project), str(ship.runtime), path=path)
+    assert seen['alpha'] is None and seen['beta'] is None and seen['office'] is None, seen
+    allowed = {*sandbox.RUNTIME_SHOWN, 'seats', 'tmux', 'locks', 'post', 'check', 'brief'}
+    assert set(seen['own']) <= allowed and 'ledger.sqlite' not in seen['own'], seen['own']
