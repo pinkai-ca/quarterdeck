@@ -23,7 +23,7 @@ import subprocess
 import sys
 import time
 
-from . import clean, environment, evidence, gitops, jail, owned, procs, report, resources, scratch as storage, sessions, usersite
+from . import clean, environment, evidence, gitops, jail, owned, procs, report, resources, scratch as storage, sessions, socket_paths, usersite
 from .layout import RESULTS, RUNS, RUN_SOCKETS, SOCKETS, Refused, Root, RunGuard, Slot, git_environment, identity, reserve_run_id, write_json
 
 GRACE = 15.0
@@ -288,6 +288,7 @@ class Runner:
                                 'the repository\'s config, then run again')
                     except jail.JailRefused as refused:
                         raise Refused(str(refused)) from None
+                socket_paths.preflight(target.top, target.project, jailed=getattr(args, 'jail', False))
                 change = None if (target.main_checkout or target.branch is None) else target.branch
                 root = Root(target.project)
                 slot = self.slot = Slot(root)

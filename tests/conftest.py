@@ -13,15 +13,13 @@ from pathlib import Path
 
 import pytest
 
-from tests.testrunner import layout, owned, resources, sessions, scratch, servers
+from tests.testrunner import layout, owned, resources, sessions, scratch, servers, socket_paths
+from tests.testrunner.socket_paths import SOCKET_LIMIT, SOCKET_MARGIN, SESSION_PREFIX
 
 OPENBLAS_AT_IMPORT = os.environ.get('OPENBLAS_NUM_THREADS')
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 TEST_TICK = 0.1  # seconds: every test ship's declared [ship] tick, so the service passes quickly (production: 1.0)
-SOCKET_LIMIT = 107   # bytes of a Unix socket path, without its terminating zero
-SOCKET_MARGIN = 12   # kept free below the limit on the deepest socket path the suite generates
-SESSION_PREFIX = 'u-'  # the session's container under the anchor: short, so the margin holds
 
 
 def socket_parent():
@@ -358,16 +356,10 @@ def private_socket_root():
     previous = os.environ.get('TMUX_TMPDIR')
     parent = Path(previous).expanduser().resolve() if previous else socket_parent()
     parent.mkdir(parents=True, exist_ok=True)
-    sample = parent / (SESSION_PREFIX + '12345678')
-    generated = [sample / 'qs-12345678/qd-pt-12345678/s-replacement']  # the deepest socket the suite makes
-    legacy = [sample / f'tmux-{os.getuid()}/qd-test-9999999999-abcdef-replacement',
-              sample / f'tmux-{os.getuid()}/qd-synthetic-attribution-no-server']
-    deepest = max(len(os.fsencode(path)) for path in generated)
-    longest = max(len(os.fsencode(path)) for path in legacy)
-    if deepest + SOCKET_MARGIN > SOCKET_LIMIT or longest > SOCKET_LIMIT:
-        raise pytest.UsageError(f'test socket anchor {parent} gives sockets of {deepest} bytes (named probes '
-                                f'{longest}); the native limit is {SOCKET_LIMIT} and the suite keeps a margin '
-                                f'of {SOCKET_MARGIN}; the project path is too long for its .testruns/s anchor')
+    try:
+        socket_paths.check(parent)
+    except layout.Refused as error:
+        raise pytest.UsageError(str(error)) from error
     with socket_container(parent, SESSION_PREFIX, record=sessions.automatic(parent)) as folder:
         os.environ['TMUX_TMPDIR'] = str(folder)
         try:
