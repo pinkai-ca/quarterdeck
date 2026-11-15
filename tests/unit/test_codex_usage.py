@@ -140,9 +140,9 @@ def make_service(tmp_path):
 
 def launch(svc, name, pool, at, *events):
     seat = Seat(svc.ship, svc.ship.seats[name], svc.tmux)
-    seat.folder.mkdir(parents=True, exist_ok=True)
+    seat.home.mkdir(parents=True, exist_ok=True)
     seat.trusted.mkdir(parents=True, exist_ok=True)
-    path = write(seat.folder/'synthetic.jsonl', *events)
+    path = write(seat.home/'synthetic.jsonl', *events)  # a seat's record lies in its own home
     Launched('%0', 1, at.isoformat(), pool, None, ['codex'], '0.166.0', 'codex').write(seat.trusted/'launch.json')
     seat._note_owned(path)
     (seat.trusted/'record').write_text(str(path))

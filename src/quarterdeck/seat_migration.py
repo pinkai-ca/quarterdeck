@@ -107,8 +107,10 @@ def _rows(raw: bytes | None) -> list[dict]:
 
 
 def _inside(record: str, home: Path) -> bool:
-    path = Path(record)
-    return path.is_absolute() and '..' not in path.parts and path.is_relative_to(home)
+    """Inside the seat's home as written and with every link resolved: a home is its jail's to write, so a path there
+    may be a link to another seat's record (harness.base.inside_home)."""
+    from .harness.base import inside_home
+    return inside_home(Path(record), home)
 
 
 def _window(tmux, seat_folder: Path) -> tuple[str, int] | None | str:

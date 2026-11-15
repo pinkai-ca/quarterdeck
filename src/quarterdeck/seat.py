@@ -586,6 +586,10 @@ class Seat:
             if not named:  # an emptied pointer names no record; Path('') would be the working folder
                 return Join(None, f"record pointer empty: {pinned}; restore the owned record if available; inspect with qd watch {self.name}")  # law: one-record
             record = Path(named)
+            from .harness.base import inside_home
+            if self.harness.home_variable is not None and not inside_home(record, self.home):
+                # A home is its jail's to write: a pin through a link there is never this seat's record.
+                return Join(None, f"record outside the home: {record.name} is not this seat's own; inspect with qd watch {self.name}")  # law: one-record
             try:
                 owner = (record_owner.pinned_reader(self, record) if publish else
                          record_owner.lookup_reader(self, record))

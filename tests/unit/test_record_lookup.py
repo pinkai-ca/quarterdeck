@@ -241,6 +241,27 @@ def test_lookup_and_join_refuse_the_same_invalid_pin(tmp_path, monkeypatch, chan
     assert counts == ZERO
 
 
+def test_a_pin_through_a_link_in_the_home_to_another_seats_record_is_refused(tmp_path, monkeypatch):
+    seat = make_seat(tmp_path)
+    launch(seat)
+    other = make_seat(tmp_path, 'other')
+    launch(other)
+    theirs = candidate(other)
+    assert other.record() == theirs
+    (seat.home / 'elsewhere').symlink_to(other.home, target_is_directory=True)  # the jail's to plant
+    through = seat.home / 'elsewhere' / theirs.relative_to(other.home)
+    assert through.exists() and through.resolve() == theirs.resolve()
+    (seat.trusted / 'record').write_text(str(through) + '\n')  # a pointer written before the move
+    record_owner.register(seat.trusted, through, 'fake')  # its reader agrees, so only containment refuses it
+    with mutations(monkeypatch, tmp_path) as counts:
+        assert seat.lookup_record() is None
+        assert seat.record() is None
+        found = seat.join()
+    assert found.record is None and found.reason.startswith('record outside the home:')  # law: one-record
+    assert counts == ZERO, 'nothing of the other seat is registered or retained'
+    assert other.record() == theirs
+
+
 def test_quiet_service_pass_writes_nothing_after_the_first_join(tmp_path, monkeypatch):
     seats = [make_seat(tmp_path, f'worker-{n}') for n in range(4)]
     for seat in seats:

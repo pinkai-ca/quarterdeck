@@ -162,6 +162,35 @@ def test_registries_selection_pointer_and_holds_keep_only_what_is_the_seats_own(
     tmux.kill_window(pane.id, expected_pid=pane.pid)
 
 
+def test_a_row_or_pointer_through_a_link_in_the_home_to_another_seats_record_is_not_taken(ship, tmux):
+    pane = old_window(ship, tmux, 'worker-1')
+    launch = old_launch(ship, 'worker-1', pane.id, pane.pid)
+    folder = old_folder(ship, 'worker-1')
+    captain_home = ship.runtime / 'seats' / 'captain' / 'home'
+    captain_home.mkdir(parents=True, exist_ok=True)
+    (captain_home / 'theirs.jsonl').write_text('{}\n')
+    (folder / 'home' / 'linked').symlink_to(captain_home, target_is_directory=True)  # the jail's to plant
+    own_record = folder / 'home' / 'own.jsonl'
+    through = folder / 'home' / 'linked' / 'theirs.jsonl'  # inside the home as written, the captain's as it lies
+    rows = [dict(record=str(own_record), at=launch['at'], pool='fake', harness='fake', price=None),
+            dict(record=str(through), at=launch['at'], pool='fake', harness='fake', price=None)]
+    (folder / 'record-launches.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows))
+    (folder / 'record-readers.jsonl').write_text(json.dumps(dict(record=str(own_record), harness='fake')) + '\n'
+                                                + json.dumps(dict(record=str(through), harness='fake')) + '\n')
+    (folder / 'record').write_text(str(through) + '\n')  # bound by a row to the confirmed launch
+
+    outcome = seat_migration.migrate(ship, ship.seat('worker-1'), tmux)
+
+    trusted = trusted_files.folder(ship.runtime, 'worker-1')
+    kept = [json.loads(line) for line in (trusted / 'record-launches.jsonl').read_text().splitlines()]
+    assert kept == rows[:1], 'a row through the link is not the seat\'s own'
+    readers = [json.loads(line) for line in (trusted / 'record-readers.jsonl').read_text().splitlines()]
+    assert readers == [dict(record=str(own_record), harness='fake')]
+    assert not (trusted / 'record').exists() and outcome['record'] == 'set aside', 'the join finds its own again'
+    assert (evidence(ship, 'worker-1') / 'record').read_text().strip() == str(through)
+    tmux.kill_window(pane.id, expected_pid=pane.pid)
+
+
 def test_where_windows_cannot_be_read_nothing_moves_and_a_running_seat_is_never_read_down(ship):
     folder = old_folder(ship, 'worker-1')
     old_launch(ship, 'worker-1', '%1', os.getpid())
