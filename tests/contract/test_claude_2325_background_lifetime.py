@@ -160,3 +160,42 @@ def test_a_conflicting_status_does_not_disappear_as_a_duplicate(tmp_path):
     record = tmp_path / 'record.jsonl'
     write(record, [*initial(), carrier('enqueue', notice(), 4), carrier('remove', notice('failed'))])
     assert claude.state(record).pending_tools is None
+
+
+@pytest.mark.parametrize('enqueued', [False, True])
+def test_foreground_output_with_notice_text_is_not_background_execution_evidence(tmp_path, enqueued):
+    record = tmp_path / 'record.jsonl'; text = notice()
+    rows = initial()[:3]
+    foreground = call('synthetic-foreground'); foreground['input']['run_in_background'] = False
+    rows.append(row('assistant', 3, message=dict(role='assistant', content=[foreground])))
+    if enqueued:
+        rows.extend([carrier('enqueue', text, 4), carrier('remove', text, 5)])
+    output = row('user', 6, toolUseResult=dict(stdout='synthetic output', stderr='', interrupted=False,
+                                            isImage=False, noOutputExpected=False),
+                 message=dict(role='user', content=[dict(type='tool_result', tool_use_id='synthetic-foreground',
+                     content='synthetic foreground output\n'+text, is_error=False)]))
+    rows.extend([output, row('system', 7, subtype='turn_duration')])
+    write(record, rows)
+    state = claude.state(record)
+    assert state.turn_open is False
+    assert state.pending_tools == (() if enqueued else ('Bash',))
+    reader = claude._Reader(record); reader.state()
+    task = reader.background.tasks['synthetic-call']
+    assert task.phase == ('ended' if enqueued else 'pending')
+    assert task.latest == AT+timedelta(seconds=4 if enqueued else 2)
+    assert not task.invalid
+    assert (idle.check(state) is None) if enqueued else idle.check(state).dimension == 'tools-pending'
+
+
+def test_opening_notice_words_in_foreground_output_leave_the_background_call_pending(tmp_path):
+    record = tmp_path / 'record.jsonl'
+    foreground = call('synthetic-foreground'); foreground['input']['run_in_background'] = False
+    rows = [*initial()[:3], row('assistant', 3, message=dict(role='assistant', content=[foreground])),
+            row('user', 4, toolUseResult=dict(stdout='synthetic output'), message=dict(role='user', content=[dict(
+                type='tool_result', tool_use_id='synthetic-foreground',
+                content='synthetic output with <task-notification> opening words', is_error=False)])),
+            row('system', 5, subtype='turn_duration')]
+    write(record, rows)
+    state = claude.state(record)
+    assert state.pending_tools == ('Bash',)
+    assert idle.check(state).dimension == 'tools-pending'
