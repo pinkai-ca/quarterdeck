@@ -63,3 +63,13 @@ The failed-paste journal retains its observed geometry. Its owner then atomicall
 The same boundary recognizes the waking line's `human-wake.json` reservation. A stop before paste keeps that prepared reservation unchanged and unsent. The `paste_boundary = "prepared-before-paste-v1"` marker proves that no payload paste began, so the next service may cancel that reservation and deliver the open message once through the ordinary door. Ambiguous paste and submission keep their holds.
 
 A message the door typed into a turn that ended in an error is not settled as received. Where the record proves no model output, the attempt and its journal read `unacted`: no tick types it again, and the next start carries it as unread. Where output is unknown they read `uncertain` and wait for a hand. Where the record shows output, its receipt stands. How a turn's error is classified, and what a provider refusal does to the seat, is [Seats](seats.md#6-seats). What the attempt file stores, and when a delivery counts, is [Post](post.md#7-post).
+
+OpenCode 1.19.5 draws a centred, capped composer before its first turn and a
+full-width composer afterwards. At pane widths 64/80/112, measured text widths
+are 55/70/70 before and 55/71/103 after that turn. The door asks each adapter
+for the text width of the screen already read; the default retains its ordinary
+`box_columns` declaration. OpenCode reads its recognised bottom-rule span minus
+five cells and retains its measured ASCII word/hyphen wrapping. For comparison
+alone it excludes ASCII padding beyond the text area, bounded by the actual pane;
+`Screen.box` remains the native observation. An unrecognised rule supplies no
+measured width and falls back to the old declaration, never a guessed cap.

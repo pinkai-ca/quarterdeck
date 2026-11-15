@@ -377,10 +377,52 @@ class OpenCodeHarness(EndpointHarness):
     def box_columns(self, pane_width: int) -> int | None:
         return pane_width - 7  # two cells of margin, the bar, two more cells, and a margin at the right
 
+    def _box_geometry(self, pane_width: int, screen: Screen) -> tuple[int, int] | None:
+        """1.19.5: the bottom rule spans the composer, including its five non-text cells."""
+        if screen.box is None or screen.unknown or screen.interruption:
+            return None
+        lines = screen.text.rstrip('\n').split('\n')
+        at = next((i for i in range(len(lines) - 1, 0, -1)
+                   if RULE.match(lines[i]) and STATUS.match(lines[i - 1])), None)
+        if at is None:
+            return None
+        rule = lines[at].rstrip(' ')
+        if RULE.fullmatch(rule) is None:
+            return None
+        left = len(rule) - len(rule.lstrip(' '))
+        columns = len(rule) - left - 5
+        if columns < 1 or len(rule) > pane_width or rule[left:left + 1] != '╹':
+            return None
+        # Every row of the already-recognized composer must share this left edge.
+        i = at - 1
+        while i >= 0 and _bar(lines[i]) is not None and not QUEUED_TAG.match(lines[i]):
+            if not lines[i].startswith(' ' * left + '┃'):
+                return None
+            i -= 1
+        return columns, pane_width - left - 3
+
+    def box_columns_for_screen(self, pane_width: int, screen: Screen) -> int | None:
+        geometry = self._box_geometry(pane_width, screen)
+        return geometry[0] if geometry else self.box_columns(pane_width)
+
+    def box_comparison(self, screen: Screen, pane_width: int) -> str | None:
+        geometry = self._box_geometry(pane_width, screen)
+        if geometry is None:
+            return screen.box
+        columns, row_bound = geometry
+        rows = []
+        for row in screen.box.split('\n'):
+            width, content = _cells(row), _cells(row.rstrip(' '))
+            if width is None or content is None or width > row_bound or content > columns:
+                return None
+            # Remove only ASCII padding beyond the text area, for comparison alone.
+            rows.append(row[:len(row) - max(0, width - columns)])
+        return '\n'.join(rows)
+
     def box(self, text: str) -> Box:
         """Probed on 1.19.5: a paste of three lines or more, or a long one, folds to a count of its lines."""
         lines = text.rstrip("\n").count("\n") + 1
-        return Box(text, folded=rf"\[Pasted ~{lines} lines\]")
+        return Box(text, folded=rf"\[Pasted ~{lines} lines\]", textwrap_ascii=True)
 
     def controls(self) -> tuple[Control, ...]:
         return (Control("model", launch="--model <pool>/<value>", session=None, confirmed_by="record"),)

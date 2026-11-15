@@ -1,0 +1,11 @@
+{
+  "payload": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+  "width": 80,
+  "height": 40,
+  "capture": "   ┃                                                                            \n   ┃  XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX    \n   ┃  XXXXXXXXXXXXXXXXXXXXXXX                                                   \n   ┃                                                                            \n   ┃  Build auto · Sample Model                                                 \n   └─▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  \n",
+  "row_lengths": [
+    70,
+    23
+  ],
+  "provenance": "Control derived from a native capture by replacing its bottom-rule glyphs; not a native rendering."
+}

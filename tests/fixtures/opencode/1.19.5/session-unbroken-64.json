@@ -1,0 +1,10 @@
+{
+  "payload": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+  "width": 64,
+  "height": 40,
+  "capture": "  ┃                                                             \n  ┃  XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX    \n  ┃  XXXXXXXXXXXXXXXXXXXXXXXXX                                  \n  ┃                                                             \n  ┃  Build auto · Sample Model                                  \n  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  \n",
+  "row_lengths": [
+    55,
+    25
+  ]
+}

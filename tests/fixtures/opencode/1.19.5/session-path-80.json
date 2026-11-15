@@ -1,0 +1,11 @@
+{
+  "payload": "Write /example/long-hyphenated-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/check-result.txt now.",
+  "width": 80,
+  "height": 40,
+  "capture": "  ┃                                                                             \n  ┃  Write /example/long-hyphenated-                                            \n  ┃  xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/check-result.txt     \n  ┃  now.                                                                       \n  ┃                                                                             \n  ┃  Build auto · Sample Model                                                  \n  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  \n",
+  "row_lengths": [
+    31,
+    70,
+    4
+  ]
+}

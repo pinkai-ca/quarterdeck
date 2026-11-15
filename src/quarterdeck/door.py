@@ -672,8 +672,9 @@ class Door:
 
     def matches(self, box, screen: Screen) -> bool:
         pane = self.seat.pane()
-        columns = self.harness.box_columns(pane.width) if pane else None
-        if box.matches(screen.box, columns, self.harness.wrap_slack):
+        columns = self.harness.box_columns_for_screen(pane.width, screen) if pane else None
+        shown = self.harness.box_comparison(screen, pane.width) if pane else screen.box
+        if box.matches(shown, columns, self.harness.wrap_slack):
             return True
         scroll = getattr(self.harness, 'box_scroll', None)
         height = getattr(pane, 'height', None)

@@ -505,6 +505,14 @@ class Harness(ABC):
         """Text-area columns for a recognized ordinary box, never a guessed width."""
         return pane_width - 2
 
+    def box_columns_for_screen(self, pane_width: int, screen: Screen) -> int | None:
+        """An adapter may measure its composer from this already-read screen."""
+        return self.box_columns(pane_width)
+
+    def box_comparison(self, screen: Screen, pane_width: int) -> str | None:
+        """The observed box, with only adapter-proved outside padding excluded."""
+        return screen.box
+
     def human_wake_box_margin(self, pane_width: int) -> int | None:
         """Proved non-input columns for one waking row; unknown refuses waking."""
         return None
