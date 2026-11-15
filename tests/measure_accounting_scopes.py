@@ -128,7 +128,7 @@ def test_copied_scoped_accounting_replay(tmp_path, capsys):
         # seats. It launches no program, reads no screen and uses no credentials.
         base = tmp_path/'base'
         base.mkdir()
-        archive = subprocess.check_output(['git','archive',BASE,'src'])
+        archive = subprocess.check_output(['git','archive',BASE,'src','standing-orders','pyproject.toml'])
         with tarfile.open(fileobj=io.BytesIO(archive)) as stream:
             stream.extractall(base,filter='data')
         time.sleep(2.1)  # copied metadata must age past the actual filesystem tick
