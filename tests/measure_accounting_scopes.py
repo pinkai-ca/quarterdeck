@@ -122,6 +122,7 @@ def test_copied_scoped_accounting_replay(tmp_path, capsys):
     runtime = tmp_path/'ship'/'runtime'
     stage = 'copy'
     phase_error = None
+    comparison = None
     try:
         counts = copied_runtime(source,runtime,compact_sqlite=True)
         copied_selection_metadata(source,runtime)
@@ -150,8 +151,13 @@ def test_copied_scoped_accounting_replay(tmp_path, capsys):
                 raise RuntimeError('copy phase exited ' + str(done.returncode))
             results[label] = json.loads(done.stdout)
         if results['warm']['tables'] != results['candidate']['tables']:
+            comparison = {name: dict(before=value,after=results['candidate']['tables'].get(name))
+                          for name,value in results['warm']['tables'].items()
+                          if value != results['candidate']['tables'].get(name)}
+            stage = 'base-to-candidate table equality'
             raise RuntimeError('base-to-candidate frozen replay changed ledger rows')
         if results['warm']['epoch'] != results['candidate']['epoch']:
+            stage = 'reader and attribution epoch equality'
             raise RuntimeError('reader or attribution epoch unexpectedly changed')
         results['counts'] = counts
         results['base'] = BASE
@@ -161,6 +167,7 @@ def test_copied_scoped_accounting_replay(tmp_path, capsys):
     except Exception as error:
         raise RuntimeError('copied scoped replay failed at '+stage+': '+type(error).__name__+
                            '; phase metadata '+json.dumps(phase_error)+
+                           '; table metadata '+json.dumps(comparison)+
                            '; no native details displayed') from None
 
 
