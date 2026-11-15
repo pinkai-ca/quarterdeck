@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 import re
 
-from . import post, seat_files
+from . import post
 
 
 def notice_class(message):
@@ -21,18 +21,18 @@ def notice_class(message):
 
 def launched_at(runtime, seat):
     """Only a readable, validated recorded launch can settle earlier notices."""
-    from .seat import parse_launch
-    from .ship import ShipError
+    from .seat import Seat
+    from . import ship as shipmod
     if Path(seat).name != seat or seat in ('', '.', '..'):
         return None
     try:
-        text = seat_files.read_text(runtime / 'seats' / seat / 'launch.json')
-        if text is None:
+        ship = post.reading_value('notice-ship', runtime, lambda: shipmod.load(runtime.parent))
+        launched = Seat(ship, ship.seat(seat), None).launched()
+        if launched is None:
             return None
-        data = parse_launch(text, seat)
-        at = datetime.fromisoformat(data['at'])
+        at = launched.when
         return at if at.tzinfo is not None else None
-    except (OSError, ValueError, ShipError):
+    except (OSError, ValueError, shipmod.ShipError):
         return None  # missing/unreadable evidence grants no settlement
 
 

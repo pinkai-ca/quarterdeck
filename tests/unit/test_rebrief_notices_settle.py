@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from quarterdeck import carriage_plan, post, post_notices, post_threads
+from quarterdeck import carriage_plan, post, post_notices, post_threads, ship as shipmod
 from quarterdeck.seat import Seat
 from quarterdeck.service import Service
 
@@ -17,6 +17,17 @@ AT = datetime(2030, 1, 1, tzinfo=timezone.utc)
 
 @pytest.fixture
 def store(tmp_path):
+    (tmp_path / 'ship.toml').write_text('''[ship]
+name = "synthetic"
+[pools.example]
+provider = "openai"
+[sessions.crew]
+[seats.reader]
+session = "crew"
+role = "worker"
+harness = "codex"
+pool = "example"
+''')
     return post.Store(tmp_path / 'runtime')
 
 
@@ -29,7 +40,9 @@ def notice(store, n=0, *, body=None, **fields):
 
 
 def launch(store, at):
-    path = store.dir.parent.parent / 'seats' / 'reader' / 'launch.json'
+    ship = shipmod.load(store.dir.parent.parent.parent)
+    seat = Seat(ship, ship.seat('reader'), None)
+    path = getattr(seat, 'trusted', seat.folder) / 'launch.json'
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(dict(pane='%1', pid=1, at=at.isoformat(), pool='example',
                                     resume=None, argv=['example'], version=None)))
@@ -126,6 +139,19 @@ def test_launch_change_is_seen_without_post_or_store_changes(store):
     assert message.id in store.settled_notices('reader')
     launch(store, AT - timedelta(seconds=1))
     assert not store.settled_notices('reader')
+
+
+def test_launch_time_comes_from_the_seat_api(store, monkeypatch):
+    message = notice(store)
+    calls = []
+
+    def launched(seat):
+        calls.append((seat.name, seat.ship.runtime))
+        return SimpleNamespace(when=AT + timedelta(seconds=1))
+
+    monkeypatch.setattr(Seat, 'launched', launched)
+    assert message.id in store.settled_notices('reader')
+    assert calls == [('reader', store.dir.parent.parent)]
 
 
 def test_thread_and_inbox_label_received_history_and_keep_complete_body(store):
