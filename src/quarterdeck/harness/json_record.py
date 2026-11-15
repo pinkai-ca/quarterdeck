@@ -317,7 +317,7 @@ class JsonLinesReader(RecordReader):
         from .types import ActiveTool
 
         try:
-            last_write = datetime.fromtimestamp(self.record.stat().st_mtime, timezone.utc)
+            last_write = datetime.fromtimestamp(resolve(self.record).stat().st_mtime, timezone.utc)
         except FileNotFoundError:
             last_write = None
         tool = next(iter(self.pending.values()), None) if self.open is not None else None

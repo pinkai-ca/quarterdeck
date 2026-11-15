@@ -110,7 +110,14 @@ def run(service, *, now=None, limit=1):
                     if (state.turn_open is not False or state.turns is None or state.open_tool
                             or state.pending_tools != () or state.queued != () or state.queue_error):
                         continue
+                    before = {p: (p.stat().st_dev, p.stat().st_ino, p.stat().st_size,
+                                  p.stat().st_mtime_ns, p.stat().st_ctime_ns) for p in files}
                     if opened(files) or stamp != (owned.name, record_fingerprint(record)):
+                        continue
+                    checked_unit, checked = _unit(record, owned.name)
+                    after = {p: (p.stat().st_dev, p.stat().st_ino, p.stat().st_size,
+                                 p.stat().st_mtime_ns, p.stat().st_ctime_ns) for p in checked}
+                    if checked_unit != unit or before != after:
                         continue
                     target = kept if owned.name == 'pi' else kept.parent
                     if target.exists():

@@ -35,6 +35,11 @@ def remember_launch(folder: Path, record: Path, launched) -> None:
     """Journal a proven join before its launch file can be replaced or removed."""
     if launched is None:
         return
+    from .record_location import retired
+    from .ship import ShipError
+    if retired(record):
+        raise ShipError("retired conversation cannot be joined to another launch; start fresh")
+
     event = launch_event(record, launched)
     from . import ship_locks
     # The lock is the ship's, not the file's: the seat's own jail sees its folder and could hold the file.

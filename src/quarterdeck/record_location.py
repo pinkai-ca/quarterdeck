@@ -32,7 +32,14 @@ def resolve(record: Path) -> Path:
 
 
 def retired(record: Path) -> bool:
-    return resolve(record) != Path(record)
+    record = Path(record)
+    for home in record.parents:
+        if (home.name == 'home' and home.parent.parent.name == 'hand-transcripts'
+                and home.parents[2].name == 'retired' and home.parents[3].name == 'runtime'):
+            logical = home.parents[3] / 'seats' / home.parent.name / 'home' / record.relative_to(home)
+            if destination(logical) == record:
+                return True
+    return resolve(record) != record
 
 
 def records(home: Path, pattern: str) -> list[Path]:
