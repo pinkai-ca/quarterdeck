@@ -57,6 +57,7 @@ def transcript(home, name, kind, at, *, complete=True):
                     json.dumps(dict(role='user', time=dict(created=ms+2000)))))
                 db.execute('INSERT INTO part VALUES (?,?,?,?,?,?)', ('text2', 'u2', name, ms+2000, ms+2000,
                     json.dumps(dict(type='text', text='Synthetic unfinished task'))))
+        db.close()
         # Match the native per-launch ancillary folders without importing native content.
         for folder in ('log', 'repos', 'snapshot'):
             (path.parent / folder).mkdir()

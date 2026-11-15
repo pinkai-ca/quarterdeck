@@ -18,7 +18,8 @@ def opened(paths):
     """An uncertain descriptor inventory cannot authorize moving a native source.
 
     Inspect this user's processes, including a program surviving an older launch.
-    Disappearing processes/descriptors are ordinary; unreadable ones hold the move.
+    Disappearing processes/descriptors are ordinary. An unreadable native program
+    (including its Node/Bun host) holds the move; unrelated privileged agents do not.
     """
     identities = {(p.stat().st_dev, p.stat().st_ino) for p in paths}
     for process in Path('/proc').iterdir():
@@ -37,7 +38,14 @@ def opened(paths):
         except FileNotFoundError:
             continue
         except OSError:
-            return True
+            try:
+                name = (process / 'comm').read_text().strip()
+            except FileNotFoundError:
+                continue
+            except OSError:
+                return True
+            if name in {'pi', 'opencode', 'node', 'bun'}:
+                return True
     return False
 
 
@@ -99,7 +107,8 @@ def run(service, *, now=None, limit=1):
                     if checkpoint is None or not book.accounted(record, checkpoint):
                         continue
                     state, _ = owned.read()
-                    if state.turn_open is not False or state.turns is None or state.open_tool:
+                    if (state.turn_open is not False or state.turns is None or state.open_tool
+                            or state.pending_tools != () or state.queued != () or state.queue_error):
                         continue
                     if opened(files) or stamp != (owned.name, record_fingerprint(record)):
                         continue
