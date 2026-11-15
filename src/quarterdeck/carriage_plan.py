@@ -50,10 +50,10 @@ class Plan:
 
 
 def build(rows: tuple[IndexRow, ...], *, handoff: str, header: str, directory: Path,
-          limit: int, inline_limit: int = 32768, force_files: bool = False) -> Plan:
+          limit: int, inline_limit: int = 32768, force_files: bool = False, history: str = '') -> Plan:
     if type(limit) is not int or limit <= 0:
         raise ValueError('carry_bytes must be a positive integer')
-    if not rows and not handoff:
+    if not rows and not handoff and not history:
         return Plan(None, {}, directory, limit)  # an empty index adds no model turn; the native brief still loads
     budget = min(limit, inline_limit)
     files: dict[str, str] = {}
@@ -99,6 +99,8 @@ def build(rows: tuple[IndexRow, ...], *, handoff: str, header: str, directory: P
     lines = []
     for row in rows:
         data = asdict(row)
+        if not data.get('settled'):
+            data.pop('settled', None)  # keep ordinary index rows unchanged
         data['thread'] = f'qd thread {row.id}'
         if row.subject and size(json.dumps(row.subject)) > 200:
             prefix = row.subject[:200]
@@ -109,8 +111,8 @@ def build(rows: tuple[IndexRow, ...], *, handoff: str, header: str, directory: P
         line = _line(data)
         if size(line) > limit:
             # The one thread line still names every long id list through bounded pages.
-            for key in ('amendments', 'active', 'awaiting', 'withheld'):
-                values = data[key]
+            for key in ('amendments', 'active', 'awaiting', 'withheld', 'settled'):
+                values = data.get(key, ())
                 if values:
                     path = pages([(f'{n:020d}', json.dumps({'value': value}) + '\n')
                                   for n, value in enumerate(values)], key)
@@ -124,7 +126,7 @@ def build(rows: tuple[IndexRow, ...], *, handoff: str, header: str, directory: P
                     'qd > before acting on any message, run qd thread ID and read that thread whole. '
                     'Sent, awaiting threads hold no duty. Every message stays a file.\n')
     inline_handoff = f'qd > your handoff, in full; read it first\n{handoff}\n' if handoff else ''
-    prefix = header + '\n'
+    prefix = header + '\n' + (history + '\n' if history else '')
     inline = prefix + inline_handoff + instructions + ''.join(line for _, line in lines)
     if not force_files and not files and size(inline) <= budget:
         return Plan(inline, {}, directory, limit)

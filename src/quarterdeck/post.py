@@ -531,6 +531,12 @@ class Store:
 
         return reading_value('body-read', (self.dir.absolute(), seat), read)
 
+    def settled_notices(self, seat: str, *, brief_at=None) -> dict[str, str]:
+        """Informational history, independent of actual read receipts and obligations."""
+        from . import post_notices
+        return dict(reading_value('settled-notices', (self.dir.absolute(), seat, brief_at),
+                                  lambda: post_notices.settled(self, seat, brief_at=brief_at)))
+
     def claimed(self, seat: str, before: datetime) -> str | None:
         """The message the seat last claimed with an ack and still had open at ``before``, for the Ledger.
 
@@ -1222,6 +1228,9 @@ def inbox_reading(store: Store, seat: str, *, recent: bool = False) -> dict:
             "received": list(reversed([m for m in messages if not store.is_open(m)])),
             "closed_by": {m.id: closed.id for m in messages if m.kind == "order"
                           and (closed := store.closing_report(m))}}
+    settled = store.settled_notices(seat)
+    if settled:
+        data['settled'] = settled
     if recent:
         received = data["received"]
         cutoff = now() - INBOX_TAIL_AGE
@@ -1229,7 +1238,8 @@ def inbox_reading(store: Store, seat: str, *, recent: bool = False) -> dict:
         size = len((f"## Received ({INBOX_TAIL_MESSAGES})\n\n" + _older_line(len(received)) + "\n").encode("utf-8"))
         tail = []
         for message in received:
-            entry_size = len(("\n".join(_entry(message, data["closed_by"].get(message.id))) + "\n").encode("utf-8"))
+            entry_size = len(("\n".join(_entry(message, data["closed_by"].get(message.id),
+                                           settled.get(message.id))) + "\n").encode("utf-8"))
             if (message.at < cutoff or len(tail) >= INBOX_TAIL_MESSAGES
                     or size + entry_size > INBOX_TAIL_BYTES):
                 break
@@ -1274,17 +1284,19 @@ def render_inbox_reading(data: dict) -> str:
     for title, key in (("Open", "open"), ("Received", "received")):
         lines += [f"## {title} ({len(data[key])})", ""]
         for message in data[key]:
-            lines += _entry(message, data["closed_by"].get(message.id))
+            lines += _entry(message, data["closed_by"].get(message.id), data.get('settled', {}).get(message.id))
     if "older_received" in data:
         lines += [_older_line(data["older_received"])]
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _entry(message: Message, closed: str | None) -> list[str]:
+def _entry(message: Message, closed: str | None, settled: str | None = None) -> list[str]:
     head = f"### {message.kind} {message.short} from {message.sender} · {message.at.strftime('%m-%d %H:%M')}"
     if message.subject:
         head += f" · {message.subject}"
     details = []
+    if settled:
+        details.append(settled)
     if message.re:
         details.append(f"re {message.re}")
     if message.due:
@@ -1689,6 +1701,7 @@ class Attempts:
 
         reserved = set()
         read = store.read_ids(seat)  # messages this seat has already read whole are not delivered again
+        read |= store.settled_notices(seat).keys()
         from .pr_screen import spent_instructions  # a screen's instruction is never delivered again (pr_screen)
         read |= spent_instructions(store.dir.parent.parent, seat, store)
         if not for_launch:

@@ -24,6 +24,7 @@ class Thread:
     continuations: tuple[str, ...] = ()  # delivered recovery continuations among messages, labelled when printed
     forwards: tuple[str, ...] = ()
     readable: tuple[str, ...] = ()  # incoming non-obligations whose complete bodies this snapshot contains
+    settled: tuple[tuple[str, str], ...] = ()  # immutable notice history, never a read receipt
 
 
 def party(message: post.Message, seat: str) -> bool:
@@ -61,6 +62,7 @@ class IndexRow:
     active: tuple[str, ...] = ()
     awaiting: tuple[str, ...] = ()
     withheld: tuple[str, ...] = ()
+    settled: tuple[str, ...] = ()
 
 
 def index_rows(store: post.Store, roots: tuple[post.Message, ...],
@@ -71,6 +73,7 @@ def index_rows(store: post.Store, roots: tuple[post.Message, ...],
     With ``seat``, each row's amendments, active, waiting and withheld lists hold only messages that seat
     sent or received, and a root it neither sent nor received gives no subject."""
     by_id = {message.id: message for message in store.all()}
+    settled = store.settled_notices(seat) if seat is not None else {}
 
     root_for: dict[str, str] = {}
 
@@ -90,9 +93,9 @@ def index_rows(store: post.Store, roots: tuple[post.Message, ...],
         root_for.update((value, identifier) for value in trail)
         return identifier
 
-    eligible = {message.id for message in (*roots, *incoming, *sent)}
+    eligible = {message.id for message in (*roots, *incoming, *sent) if message.id not in settled}
     selected_roots = {root_of(by_id[identifier]) for identifier in eligible}
-    active_ids = {message.id for message in (*roots, *incoming)}
+    active_ids = {message.id for message in (*roots, *incoming) if message.id not in settled}
     grouped: dict[str, list[post.Message]] = {identifier: [] for identifier in selected_roots}
     for message in by_id.values():
         try:
@@ -114,7 +117,8 @@ def index_rows(store: post.Store, roots: tuple[post.Message, ...],
         rows.append(IndexRow(root.id, root.kind, root.sender, subject, root.due, amendments,
                              notice,
                              tuple(message.id for message in members if message.id in active_ids), waiting,
-                             hidden))
+                             hidden, tuple(f'{message.id}: {settled[message.id]}'
+                                           for message in members if message.id in settled)))
     return tuple(rows)
 
 
@@ -159,7 +163,7 @@ def whole(store: post.Store, reference: str, reader: str) -> Thread:
     readable = tuple(message.id for message in visible
                      if message.to == reader and not message.obligation and message.kind != 'ack')
     return Thread(root.id, requested.id, shown, others, delivered_continuations(store, reader, visible),
-                  tuple(forwards), readable)
+                  tuple(forwards), readable, tuple(store.settled_notices(reader).items()))
 
 
 def render(thread: Thread) -> str:
@@ -169,7 +173,10 @@ def render(thread: Thread) -> str:
         head += f'; {len(thread.others)} more in it, named below by id only'
     parts = [head + '\n']
     parts += [f'qd > {route}\n' for route in thread.forwards]
+    settled = dict(thread.settled)
     for message in thread.messages:
+        if message.id in settled:
+            parts.append(f'qd > {message.short}: {settled[message.id]} · received history\n')
         if message.id in thread.continuations:
             parts.append(CONTINUATION_LABEL + '\n')
         parts.append(post.typed([message], whole=True))

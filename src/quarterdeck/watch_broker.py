@@ -234,8 +234,11 @@ def wait(runtime: Path, seat: str, interval: float, stop_after: float | None, va
             offer = read_offer(runtime, seat)
             if offer is not None and offer['generation'] == registration['generation'] and offer['attempts']:
                 attempts = [_attempt(runtime, name) for name in offer['attempts']]
-                if all(a is not None and a.seat == seat and a.result is None for a in attempts):
-                    return [store.get(identifier) for identifier in offer['messages']], attempts
+                settled = store.settled_notices(seat)
+                messages = [store.get(identifier) for identifier in offer['messages'] if identifier not in settled]
+                attempts = [a for a in attempts if a is None or a.message not in settled]
+                if messages and attempts and all(a is not None and a.seat == seat and a.result is None for a in attempts):
+                    return messages, attempts
             if deadline is not None and time.monotonic() > deadline:
                 return None
             time.sleep(interval)
@@ -351,6 +354,11 @@ def _run(service, seat) -> None:
         reading = post.watch_reading(runtime, name)
         data = request(runtime, name)
         if offer is not None:
+            settled = service.store.settled_notices(name)
+            for identifier in offer['attempts']:
+                attempt = _attempt(runtime, identifier)
+                if attempt is not None and attempt.result is None and attempt.message in settled:
+                    service.attempts.close(attempt, 'abandoned', settled[attempt.message], wait=WAIT)
             pending = [a for a in (_attempt(runtime, item) for item in offer['attempts']) if a is not None and a.result is None]
             if pending and offer['generation'] == reading.generation:
                 return  # offered to this watch and not yet receipted

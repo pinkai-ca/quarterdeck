@@ -911,6 +911,8 @@ class Service:
 
     def _deliver_current(self, seat: Seat, message: post.Message, resend: bool = False) -> str:
         """The caller owns the same seat claim as every lifecycle transition."""
+        if message.id in self.store.settled_notices(seat.name):
+            return f'{message.short} to {seat.name} · settled notice; not delivered'
         door = Door(seat)
         speed = message.speed
         reading = door.reading()
@@ -919,6 +921,8 @@ class Service:
             return f"{seat.name}: {reading}"
         with ExitStack() as delivery_scope:
             with post.admission(self.runtime, seat.name):
+                if message.id in self.store.settled_notices(seat.name):
+                    return f'{message.short} to {seat.name} · settled notice; not delivered'
                 from . import compaction
                 reserved, transitioning = compaction.withheld(self.runtime, seat.name)
                 if transitioning or message.id in reserved:

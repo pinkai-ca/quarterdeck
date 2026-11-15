@@ -869,7 +869,8 @@ class Seat:
         resume_id = self._resume_id() if resume else None
         if resume and resume_id is None and prior:
             self.harness.preflight_resume(spec, self.home, lambda: None)
-        carriage = self.carriage(resume_id=resume_id)  # read while the last record is still pinned
+        carriage = self.carriage(resume_id=resume_id, brief_at=datetime.now(timezone.utc))
+        # Plan after supplying the brief, while the last record is still pinned.
         carried = carriage.carried
         if not resume_id:
             (self.trusted / trusted_files.RECORD).unlink(missing_ok=True)
@@ -909,7 +910,8 @@ class Seat:
                 # law: context-is-cache -- only admitted self-orders are full, and only on an actual fresh conversation
                 return carriage_plan.build(carriage.rows, handoff=carriage.text or '', header=carriage.header,
                                            directory=generation, limit=getattr(self.ship, 'carry_bytes', shipmod.CARRY_BYTES),
-                                           inline_limit=carriagemod.INLINE_BYTES, force_files=force_files)
+                                           inline_limit=carriagemod.INLINE_BYTES, force_files=force_files,
+                                           history=carriage.history)
             except carriage_plan.ImpossibleBudget as error:
                 raise ShipError(f'{self.name}: {error}; nothing was started or published') from None
 
@@ -971,10 +973,10 @@ class Seat:
         carriage = self.carriage(resume_id=resume_id)
         planned = carriage_plan.build(carriage.rows, handoff=carriage.text or '', header=carriage.header,
                                       directory=self.folder / carriagemod.FOLDER / 'preview',
-                                      limit=getattr(self.ship, 'carry_bytes', shipmod.CARRY_BYTES))
+                                      limit=getattr(self.ship, 'carry_bytes', shipmod.CARRY_BYTES), history=carriage.history)
         return planned.opening, carriage.carried
 
-    def carriage(self, *, resume_id: str | None = None) -> carriagemod.Carriage:
+    def carriage(self, *, resume_id: str | None = None, brief_at=None) -> carriagemod.Carriage:
         """Index incoming work and outgoing waits; fresh self-handoffs alone are full.
 
         Closed obligations never return through unread or unconfirmed transport
@@ -999,6 +1001,8 @@ class Seat:
 
             extra = [message for message in (*unread, *queued) if outstanding(message)]
             consumed = self._consumed_messages(store, attempts, resume_id, refused) | store.read_ids(self.name)
+            settled = store.settled_notices(self.name, brief_at=brief_at)
+            consumed |= settled.keys()
             from .pr_screen import spent_instructions  # a screen's instruction never comes back at a launch
             consumed |= spent_instructions(self.ship.runtime, self.name, store)
             consumed |= thread_context.closed_order_answers(store, self.name)
@@ -1024,7 +1028,9 @@ class Seat:
         carried = list({message.id: message for message in (*selection.roots, *pending_messages)
                         if message.id not in refused}.values())
         header = post.briefed_header(self.name, self.spec.role, list(selection.roots))
-        return carriagemod.Carriage(post.typed(handoffs, whole=True) if handoffs else None, carried, header, rows)
+        from .post_notices import summary
+        return carriagemod.Carriage(post.typed(handoffs, whole=True) if handoffs else None, carried, header, rows,
+                                   summary(settled))
 
     def _consumed_messages(self, store: post.Store, attempts: post.Attempts, resume_id: str | None,
                            excluded: frozenset[str]) -> frozenset[str]:

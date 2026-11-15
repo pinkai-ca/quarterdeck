@@ -35,6 +35,7 @@ class Carriage:
     carried: list[post.Message]
     header: str = ""
     rows: tuple[IndexRow, ...] = ()  # open incoming, undelivered and sent-awaiting threads
+    history: str = ''  # bounded notice-settlement count, without message bodies or ids
 
     @property
     def size(self) -> int:

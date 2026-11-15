@@ -4,6 +4,22 @@ A page of [the design](../DESIGN.md).
 
 ## 7. Post
 
+### Informational notices that have become history
+
+An exact plain report from ship asking a recipient to reread its brief is settled
+by a later recorded launch or a newer notice of the same class. Pool-move notices
+use the same supersession rule. A saved group/cascade terminal notice is settled
+when its own work is closed. Unknown launch evidence, near-form bodies and other
+reports grant no settlement. Orders retain their ordinary closing-report rule.
+
+Settlement is derived when the post is read: immutable message files and actual
+read receipts are unchanged. Settled notices are excluded from door/watch delivery
+and launch carriage. Thread and inbox history retain their full bodies and label
+the reason. A launch index carries only one short count/reason line for omitted
+notices, and labels settled amendments inside any otherwise selected thread.
+Planning a launch can use its freshly supplied brief provisionally; a failed
+startup does not persist settlement before a launch record exists.
+
 ### Message ids
 
 New messages use six random hexadecimal digits after their kind, timestamp and
