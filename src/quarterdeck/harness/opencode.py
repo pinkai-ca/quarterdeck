@@ -216,7 +216,7 @@ class OpenCodeHarness(EndpointHarness):
     def _working_folder(seat: SeatSpec, home: Path) -> Path | None:
         # OpenCode uses endpoint pools, which are jailed unless explicitly opted out.
         if not seat.human_session and seat.role == 'hand' and seat.sandbox is not False:
-            return home.parent / 'work'
+            return seat.cwd if seat.cwd is not None else home.parent / 'work'
         return None
 
     def preflight_resume(self, seat: SeatSpec, home: Path, resume_id: Callable[[], str | None]) -> None:
@@ -260,7 +260,7 @@ class OpenCodeHarness(EndpointHarness):
             except FileExistsError:
                 if not stat.S_ISDIR(folder.lstat().st_mode):
                     raise ShipError(f'opencode: {folder} must be a seat-owned working directory') from None
-            # The native project argument scopes its finder. The jail still binds the declared cwd.
+            # The native project argument starts its finder in the declared workspace.
             argv.insert(1, str(folder))
             if seat.cwd is not None:
                 env['QD_WORKSPACE'] = str(seat.cwd)
@@ -296,7 +296,8 @@ class OpenCodeHarness(EndpointHarness):
                 data, directory = selected
                 # Native search follows the session's saved directory after resume.
                 if directory != str(working_folder):
-                    raise ShipError(f'opencode: {seat_name} session directory does not prove its seat-owned working folder; '
+                    raise ShipError(f'opencode: {seat_name} session directory does not prove its seat-owned working folder: '
+                                    f'recorded {directory!r}, expected {str(working_folder)!r}; '
                                     f'qd fresh {seat_name} starts a scoped session and retains the old record')
                 return data
             raise ShipError(f"{seat_name}: no record in {home} holds the session {resume}; qd fresh {seat_name} starts a new one")
